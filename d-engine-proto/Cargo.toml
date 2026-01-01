@@ -3,13 +3,13 @@ name = "d-engine-proto"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Protocol definitions and message types for d-engine using Prost"
+description = "gRPC protocol definitions - for building non-Rust d-engine clients"
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
 keywords = ["raft", "protobuf", "grpc"]
 categories = ["encoding", "network-programming"]
-publish = false
+publish = true
 
 [package.metadata.docs.rs]
 all-features = true

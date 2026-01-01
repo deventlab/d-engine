@@ -1,6 +1,12 @@
 # Service Discovery Example
 
-Demonstrates using d-engine for **service discovery** — a Type 2 use case from [user personas](../../d-engine-docs/src/docs/client_guide/service-discovery-pattern.md).
+Demonstrates d-engine's **Watch API** through a practical service discovery use case.
+
+**What you'll learn:**
+
+- How to use the Watch API for real-time change notifications
+- Implementing the read-then-watch pattern
+- Building reactive systems without polling
 
 ## Architecture
 
@@ -50,19 +56,27 @@ cargo run --bin admin -- unregister --name api-gateway --instance node1
 
 ## Components
 
-| Binary | Purpose |
-|--------|---------|
-| `admin` | Registers/unregisters service endpoints |
+| Binary    | Purpose                                   |
+| --------- | ----------------------------------------- |
+| `admin`   | Registers/unregisters service endpoints   |
 | `watcher` | Watches for service changes via Watch API |
 
 ## Key Concepts Demonstrated
 
+### Primary: Watch API Usage
+
 1. **Watch API** — Real-time change notifications without polling
-2. **EventualConsistency** — Fastest reads from any node
-3. **Read-then-Watch Pattern** — Read current state, then watch for changes
+2. **Read-then-Watch Pattern** — Read current state, then watch for changes
+3. **Event Handling** — Process PUT/DELETE events reactively
+
+### Secondary: Service Discovery Pattern
+
+- Using d-engine as a service registry
+- EventualConsistency reads for fast lookups
+- Key-value schema design for services
 
 ## Related Documentation
 
-- [Service Discovery Pattern](../../d-engine-docs/src/docs/client_guide/service-discovery-pattern.md)
-- [Watch Feature Guide](../../d-engine-docs/src/docs/server_guide/watch-feature.md)
-- [Read Consistency Guide](../../d-engine-docs/src/docs/client_guide/read_consistency.md)
+- Service Discovery Pattern (coming soon on docs.rs)
+- [Watch Feature Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/watch_feature/index.html)
+- [Read Consistency Guide](https://docs.rs/d-engine/latest/d_engine/docs/client_guide/read_consistency/index.html)

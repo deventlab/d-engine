@@ -3,13 +3,13 @@ name = "d-engine-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Core Raft consensus algorithm implementation and traits"
+description = "Pure Raft consensus algorithm - for building custom Raft-based systems"
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
 keywords = ["raft", "consensus", "algorithm"]
 categories = ["algorithms", "concurrency"]
-publish = false
+publish = true
 
 [package.metadata.docs.rs]
 all-features = true

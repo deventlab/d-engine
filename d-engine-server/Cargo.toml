@@ -9,7 +9,7 @@ repository.workspace = true
 license.workspace = true
 keywords = ["raft", "consensus", "distributed-systems", "async"]
 categories = ["asynchronous", "concurrency", "network-programming"]
-publish = false
+publish = true
 
 [package.metadata.docs.rs]
 all-features = true

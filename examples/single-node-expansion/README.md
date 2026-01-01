@@ -175,7 +175,7 @@ make clean-logs   # Remove logs and DB only
 
 ## Further Reading
 
-- [Single-Node Expansion Guide](../../d-engine-docs/src/docs/examples/single-node-expansion.md) - Detailed explanation
+- [Single-Node Expansion Guide](https://docs.rs/d-engine/latest/d_engine/docs/examples/single_node_expansion/index.html) - Detailed explanation
 
 ---
 

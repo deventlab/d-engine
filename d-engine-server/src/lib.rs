@@ -1,52 +1,94 @@
 //! # d-engine-server
 //!
-//! Production-ready Raft consensus server implementation.
+//! Complete Raft server with gRPC and storage - batteries included
 //!
-//! ## Architecture
-//! - [`node`] - Node lifecycle management
-//! - [`storage`] - Pluggable storage backends
-//! - Core Raft protocol (re-exported from `d-engine-core`)
-//! - Protocol definitions (re-exported from `d-engine-proto`)
+//! ## When to use this crate directly
+//!
+//! - ✅ Embedding server in a larger Rust application
+//! - ✅ Need programmatic access to server APIs
+//! - ✅ Building custom tooling around d-engine
+//! - ✅ Already have your own client implementation
+//!
+//! ## When to use `d-engine` instead
+//!
+//! Most users should use [`d-engine`](https://crates.io/crates/d-engine):
+//!
+//! ```toml
+//! [dependencies]
+//! d-engine = { version = "0.2", features = ["server"] }
+//! ```
+//!
+//! It re-exports this crate plus optional client libraries with simpler dependency management.
 //!
 //! ## Quick Start
-//! ```ignore
-//! use d_engine_server::{NodeBuilder, FileStorageEngine, FileStateMachine};
-//! use std::sync::Arc;
-//! use std::path::PathBuf;
 //!
-//! #[tokio::main(flavor = "current_thread")]
+//! **Embedded Mode** (zero-overhead local client):
+//!
+//! ```rust,ignore
+//! use d_engine_server::EmbeddedEngine;
+//! use std::time::Duration;
+//!
+//! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let (tx, rx) = tokio::sync::watch::channel(());
+//!     let engine = EmbeddedEngine::start_with("config.toml").await?;
+//!     engine.wait_ready(Duration::from_secs(5)).await?;
 //!
-//!     let storage = Arc::new(FileStorageEngine::new(PathBuf::from("/tmp/storage"))?);
-//!     let state_machine = Arc::new(FileStateMachine::new(PathBuf::from("/tmp/sm")).await?);
+//!     let client = engine.client();
+//!     client.put(b"key".to_vec(), b"value".to_vec()).await?;
 //!
-//!     let node = NodeBuilder::new(None, rx)
-//!         .storage_engine(storage)
-//!         .state_machine(state_machine)
-//!         .start()
-//!         .await?;
-//!
-//!     node.run().await?;
+//!     engine.stop().await?;
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## Custom Storage Backend
+//! **Standalone Mode** (independent server):
+//!
+//! ```rust,ignore
+//! use d_engine_server::StandaloneServer;
+//! use tokio::sync::watch;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     std::env::set_var("CONFIG_PATH", "config.toml");
+//!     let (_shutdown_tx, shutdown_rx) = watch::channel(());
+//!     StandaloneServer::run(shutdown_rx).await?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Features
+//!
+//! This crate provides:
+//! - **gRPC Server** - Production-ready Raft RPC implementation
+//! - **Storage Backends** - File-based and RocksDB storage
+//! - **Cluster Orchestration** - Node lifecycle and membership management
+//! - **Snapshot Coordination** - Automatic log compaction
+//! - **Watch API** - Real-time state change notifications
+//!
+//! ## Custom Storage
 //!
 //! Implement the [`StateMachine`] and [`StorageEngine`] traits:
 //!
 //! ```rust,ignore
 //! use d_engine_server::{StateMachine, StorageEngine};
 //!
-//! struct MyStateMachine { /* ... */ }
-//! impl StateMachine for MyStateMachine { /* ... */ }
+//! struct MyStateMachine;
+//! impl StateMachine for MyStateMachine {
+//!     // Apply committed entries to your application state
+//! }
 //!
-//! struct MyStorageEngine { /* ... */ }
-//! impl StorageEngine for MyStorageEngine { /* ... */ }
+//! struct MyStorageEngine;
+//! impl StorageEngine for MyStorageEngine {
+//!     // Persist Raft logs and metadata
+//! }
 //! ```
 //!
-//! See the [d-engine-docs](https://docs.rs/d-engine-docs) for architecture details.
+//! ## Documentation
+//!
+//! For comprehensive guides:
+//! - [Customize Storage Engine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_storage_engine/index.html)
+//! - [Customize State Machine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_state_machine/index.html)
+//! - [Watch Feature Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/watch_feature/index.html)
 
 #![warn(missing_docs)]
 

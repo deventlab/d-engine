@@ -4,11 +4,11 @@
 //! All KV operations run locally with <0.1ms latency.
 
 use d_engine::prelude::*;
-use std::error::Error;
+use std::error::Error as StdError;
 use std::time::Duration;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> std::result::Result<(), Box<dyn StdError>> {
     // Optional: control d-engine logs via RUST_LOG env (default: warn)
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -46,17 +46,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn run_demo(client: &LocalKvClient) -> Result<(), Box<dyn Error>> {
+async fn run_demo(client: &LocalKvClient) -> std::result::Result<(), Box<dyn StdError>> {
     println!("=== Quick Start Demo ===");
 
     // Store workflow state
     println!("1. Store workflow state");
-    client.put("workflow:status".as_bytes().to_vec(), b"running".to_vec()).await?;
+    client
+        .put("workflow:status".as_bytes().to_vec(), b"running".to_vec())
+        .await
+        .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
     println!("   ✓ workflow:status = running");
 
     // Read it back
     println!("2. Read workflow state");
-    let value = client.get_eventual("workflow:status".as_bytes().to_vec()).await?;
+    let value = client
+        .get_eventual("workflow:status".as_bytes().to_vec())
+        .await
+        .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
     if let Some(v) = value {
         println!("   ✓ workflow:status = {}", String::from_utf8_lossy(&v));
     }
@@ -65,7 +71,10 @@ async fn run_demo(client: &LocalKvClient) -> Result<(), Box<dyn Error>> {
     println!("3. Store task results");
     for i in 1..=3 {
         let key = format!("task:{i}");
-        client.put(key.as_bytes().to_vec(), b"completed".to_vec()).await?;
+        client
+            .put(key.as_bytes().to_vec(), b"completed".to_vec())
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
         println!("   ✓ {key} stored");
     }
 
@@ -73,7 +82,11 @@ async fn run_demo(client: &LocalKvClient) -> Result<(), Box<dyn Error>> {
     println!("4. Retrieve task results");
     for i in 1..=3 {
         let key = format!("task:{i}");
-        if let Some(v) = client.get_eventual(key.as_bytes().to_vec()).await? {
+        if let Some(v) = client
+            .get_eventual(key.as_bytes().to_vec())
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn StdError>)?
+        {
             println!("   ✓ {key} = {}", String::from_utf8_lossy(&v));
         }
     }
@@ -81,7 +94,7 @@ async fn run_demo(client: &LocalKvClient) -> Result<(), Box<dyn Error>> {
     println!("\n=== Demo Complete ===");
     println!("All data persisted locally and durable");
     println!(
-        "Scale to cluster: https://docs.rs/d-engine-docs/latest/d_engine_docs/docs/examples/single_node_expansion.html\n"
+        "Scale to cluster: https://docs.rs/d-engine/latest/d_engine/docs/examples/single_node_expansion/index.html\n"
     );
 
     Ok(())

@@ -5,9 +5,9 @@
 //!
 //! ## Documentation Sections
 //!
-//! - [Client Guide](self::client_guide) - Client application development and API usage
-//! - [Performance](self::performance) - Optimization techniques and benchmarking
-//! - [Server Guide](self::server_guide) - Server deployment and customization
+//! - [Client Guide](crate::docs::client_guide) - Client application development and API usage
+//! - [Performance](crate::docs::performance) - Optimization techniques and benchmarking
+//! - [Server Guide](crate::docs::server_guide) - Server deployment and customization
 
 pub mod quick_start_5min {
     #![doc = include_str!("quick-start-5min.md")]

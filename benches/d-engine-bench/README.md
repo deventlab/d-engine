@@ -12,7 +12,7 @@ Ensure you're using the correct d-engine version in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-d-engine = "0.1.2"  # Verify latest version
+d-engine = "0.2.0"  # Verify latest version
 ```
 
 ### 2. Setup Cluster

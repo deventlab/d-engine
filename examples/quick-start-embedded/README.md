@@ -18,13 +18,13 @@ Minimal example of embedding d-engine in a Rust application.
 
 ```bash
 # Clone and build
-cd examples/quick-start
+cd examples/quick-start-embedded
 make run
 ```
 
 That's it! The engine starts with:
 
-- Data stored in `./data/single-node`
+- Data stored in `./data/single-node` (configured in `d-engine.toml`)
 - Single-node mode (no cluster)
 - Default port 9081
 
@@ -49,12 +49,14 @@ RUST_LOG=d_engine=trace make run
 You'll see:
 
 ```
-Starting d-engine in embedded mode...
-Node 1 initialized
-Node ready for operations
-=== d-engine Embedded Mode Demo ===
-All operations: local-first, <0.1ms latency
+🚀 Starting d-engine...
+✅ d-engine ready!
+   → Data directory: ./data/single-node
+   → Node ID: 1
+   → Listening on: 127.0.0.1:9081
 
+─────────────────────────────────────
+=== Quick Start Demo ===
 1. Store workflow state
    ✓ workflow:status = running
 2. Read workflow state
@@ -70,39 +72,33 @@ All operations: local-first, <0.1ms latency
 
 === Demo Complete ===
 All data persisted locally and durable
-Press Ctrl+C to exit
+Scale to cluster: https://docs.rs/d-engine/latest/d_engine/docs/examples/single_node_expansion/index.html
+
+─────────────────────────────────────
+🛑 Shutting down...
+✅ Stopped cleanly
 ```
 
 ## How It Works
 
-The example demonstrates 5 key steps:
+The example demonstrates 3 simple steps:
 
 ```rust
-// 1. Create storage engine (persists Raft logs)
-let storage = Arc::new(RocksDBStorageEngine::new(path)?);
+// 1. Start embedded engine with config file
+let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 
-// 2. Create state machine (persists KV data)
-let state_machine = Arc::new(RocksDBStateMachine::new(path)?);
+// 2. Wait for leader election (single-node: instant)
+let leader = engine.wait_ready(Duration::from_secs(5)).await?;
 
-// 3. Create shutdown signal
-let (shutdown_tx, shutdown_rx) = watch::channel(());
-
-// 4. Build the Raft node
-let node = NodeBuilder::new(None, shutdown_rx)
-    .storage_engine(storage)
-    .state_machine(state_machine)
-    .start()
-    .await?;
-
-// 5. Get the embedded KV client (in-process, zero-copy)
-let client = node.local_client();
+// 3. Get the embedded KV client (in-process, zero-copy)
+let client = engine.client();
 ```
 
 Then use it like a local HashMap:
 
 ```rust
-client.put("key", b"value").await?;
-let value = client.get("key").await?;
+client.put("key".as_bytes().to_vec(), b"value".to_vec()).await?;
+let value = client.get_eventual("key".as_bytes().to_vec()).await?;
 ```
 
 All operations run locally in your process. No network calls. No serialization overhead.
@@ -122,14 +118,14 @@ This example runs a single-node d-engine. The node automatically becomes leader 
 
 When you need high availability, add peers to your configuration. Your application code stays unchanged.
 
-See [Single-Node Expansion](../../../d-engine-docs/src/docs/examples/single-node-expansion.md) for step-by-step instructions.
+See [Single-Node Expansion](https://docs.rs/d-engine/latest/d_engine/docs/examples/single_node_expansion/index.html) for step-by-step instructions.
 
 ## Using This as a Template
 
 Copy this example and modify `src/main.rs`:
 
-1. Replace `demo_kv_operations()` with your own business logic
-2. Use `client.put()` and `client.get()` for distributed state
+1. Replace `run_demo()` with your own business logic
+2. Use `client.put()` and `client.get_eventual()` for distributed state
 3. Keep everything else as-is
 
 Example:
@@ -137,8 +133,8 @@ Example:
 ```rust
 async fn my_app(client: &LocalKvClient) -> Result<(), Box<dyn Error>> {
     // Your code here
-    client.put("user:1:name", b"alice").await?;
-    client.put("user:1:email", b"alice@example.com").await?;
+    client.put("user:1:name".as_bytes().to_vec(), b"alice".to_vec()).await?;
+    client.put("user:1:email".as_bytes().to_vec(), b"alice@example.com".to_vec()).await?;
     Ok(())
 }
 ```
@@ -174,8 +170,8 @@ make run
 
 ## Next Steps
 
-- Read the full [quick-start guide](../../../d-engine-docs/src/docs/quick-start-5min.md)
-- Learn about [scaling to clusters](../../../d-engine-docs/src/docs/examples/single-node-expansion.md)
+- Read the full [quick-start guide](https://docs.rs/d-engine/latest/d_engine/docs/quick_start_5min/index.html)
+- Learn about [scaling to clusters](https://docs.rs/d-engine/latest/d_engine/docs/examples/single_node_expansion/index.html)
 - Explore more [examples](../)
 
 ## Key Takeaways
