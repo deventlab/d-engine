@@ -57,8 +57,9 @@ impl HealthChecker {
             .connect()
             .await
             .map_err(|err| {
-                error!("connect to {} failed: {}", address, err);
-                eprintln!("{err:?}");
+                // Use debug level during startup - connection failures are expected
+                // when peers are still starting up
+                tracing::debug!("Failed to connect to {}: {}", address, err);
                 NetworkError::ConnectError(err.to_string())
             })?;
 

@@ -566,7 +566,8 @@ where
             .buffer_unordered(10)
             .for_each(|result| async move {
                 if result.is_err() {
-                    warn!("Connection pre-warming failed for one or more peers");
+                    // Use debug level - pre-warming failures during startup are expected
+                    debug!("Connection pre-warming failed for one or more peers");
                 }
             })
             .await;
@@ -598,7 +599,8 @@ where
                 // Remove failed connection from cache
                 self.connection_cache.remove_node(node_id);
                 self.health_monitor.record_failure(node_id).await;
-                warn!("Connection to node {} failed: {}", node_id, e);
+                // Use debug level - connection failures during startup are expected
+                debug!("Connection to node {} failed: {}", node_id, e);
                 None
             }
         }

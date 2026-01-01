@@ -1,3 +1,58 @@
+//! # d-engine-core
+//!
+//! Pure Raft consensus algorithm - for building custom Raft-based systems
+//!
+//! ## ⚠️ Internal Crate - Not Ready for Standalone Use
+//!
+//! **Use [`d-engine`](https://crates.io/crates/d-engine) instead.**
+//!
+//! This crate contains the pure Raft consensus algorithm used internally by d-engine.
+//! The API is unstable before v1.0.
+//!
+//! ```toml
+//! # ❌ Don't use this directly
+//! [dependencies]
+//! d-engine-core = "0.2"
+//!
+//! # ✅ Use this instead
+//! [dependencies]
+//! d-engine = "0.2"
+//! ```
+//!
+//! ## For Contributors
+//!
+//! ## What this crate provides
+//!
+//! This crate focuses solely on the Raft consensus algorithm:
+//!
+//! - **Leader Election** - Automatic leader election with randomized timeouts
+//! - **Log Replication** - Reliable log replication to followers
+//! - **Membership Changes** - Dynamic cluster membership changes
+//! - **Snapshot Support** - Log compaction via snapshots
+//!
+//! Storage, networking, and state machine implementation are **your responsibility**.
+//!
+//! **Reference integration**: See how [d-engine-server](https://github.com/deventlab/d-engine/tree/main/d-engine-server) uses this crate.
+//!
+//! ## Future Vision
+//!
+//! **Post-1.0 goal**: Become a standalone Raft library with stable API.
+//!
+//! **Current status**: Internal to d-engine, API may change between minor versions.
+//!
+//! ## Key Traits
+//!
+//! - [`StorageEngine`] - Persistent storage for Raft logs
+//! - [`StateMachine`] - Application-specific state transitions
+//! - [`LogStore`] - Log entry persistence
+//! - [`MetaStore`] - Metadata persistence (term, voted_for)
+//!
+//! ## Documentation
+//!
+//! For comprehensive guides:
+//! - [Customize Storage Engine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_storage_engine/index.html)
+//! - [Customize State Machine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_state_machine/index.html)
+
 mod commit_handler;
 pub mod config;
 mod election;

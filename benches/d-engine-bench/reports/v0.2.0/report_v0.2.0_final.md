@@ -8,7 +8,7 @@
 - ⚠️ **Read**: etcd 11.7x faster in linearizable reads (hardware difference)
 - ✅ **Unique**: LeaseRead provides 6.9x performance vs linearizable with strong consistency
 
-**vs v0.1.4**:
+**vs v0.2.0**:
 
 - ✅ **All scenarios improved** 2.3% to 11% throughput
 - ✅ **LeaseRead p99**: -44% latency (7.87ms vs 14.05ms) - biggest win

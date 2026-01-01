@@ -22,32 +22,32 @@ build:
 # Cluster Management (Normal Mode)
 # ===============================
 start-node1:
-	@echo "Starting Node 1..."
-	CONFIG_PATH=config/n1 \
+	@echo "🚀 Starting Node 1..."
+	@CONFIG_PATH=config/n1 \
 	DB_PATH="./db/1" \
 	LOG_DIR="./logs/1" \
 	METRICS_PORT=8081 \
 	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
-	./target/release/demo
+	./target/release/demo 2>&1 | sed 's/^/[Node1] /'
 
 start-node2:
-	@echo "Starting Node 2..."
-	CONFIG_PATH=config/n2 \
+	@echo "🚀 Starting Node 2..."
+	@CONFIG_PATH=config/n2 \
 	DB_PATH="./db/2" \
 	LOG_DIR="./logs/2" \
 	METRICS_PORT=8082 \
 	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
-	./target/release/demo
+	./target/release/demo 2>&1 | sed 's/^/[Node2] /'
 
 start-node3:
-	@echo "Starting Node 3..."
-	CONFIG_PATH=config/n3 \
+	@echo "🚀 Starting Node 3..."
+	@CONFIG_PATH=config/n3 \
 	DB_PATH="./db/3" \
 	LOG_DIR="./logs/3" \
 	METRICS_PORT=8083 \
 	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
-	./target/release/demo
+	./target/release/demo 2>&1 | sed 's/^/[Node3] /'
 
 
 start-cluster: clean build

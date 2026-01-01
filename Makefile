@@ -35,7 +35,7 @@ RUST_LOG_LEVEL ?= d_engine_server=debug,d_engine_core=debug,d_engine_client=debu
 RUST_BACKTRACE ?= 1
 
 # Workspace member crates
-WORKSPACE_MEMBERS := d-engine-proto d-engine-core d-engine-client d-engine-server d-engine-docs d-engine
+WORKSPACE_MEMBERS := d-engine-proto d-engine-core d-engine-client d-engine-server d-engine
 
 # Color codes for formatted output
 RED := \033[0;31m
@@ -382,19 +382,19 @@ bench-gate: check-workspace
 ## docs                Generate API documentation and open in browser (opens d-engine API hub)
 docs: check-workspace
 	@echo "$(BLUE)Generating API documentation for public crates...$(NC)"
-	@$(CARGO) doc --package d-engine --package d-engine-docs --no-deps \
+	@$(CARGO) doc --package d-engine --no-deps \
 		--features "d-engine/client,d-engine/server,d-engine/rocksdb,d-engine/watch"
 	@echo "$(GREEN)✓ Documentation generated$(NC)"
-	@echo "$(CYAN)Opening documentation hub at: target/doc/d_engine_docs/index.html$(NC)"
-	@open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || echo "Please open: target/doc/d_engine_docs/index.html"
+	@echo "$(CYAN)Opening documentation at: target/doc/d_engine/index.html$(NC)"
+	@open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || true
 
 ## docs-all             Generate documentation with all features enabled
 docs-all: check-workspace
 	@echo "$(BLUE)Generating API documentation (all features)...$(NC)"
 	@$(CARGO) doc --workspace --all-features --no-deps
 	@echo "$(GREEN)✓ Documentation generated$(NC)"
-	@echo "$(CYAN)Opening documentation hub at: target/doc/d_engine_docs/index.html$(NC)"
-	@open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || echo "Please open: target/doc/d_engine_docs/index.html"
+	@echo "$(CYAN)Opening documentation at: target/doc/d_engine/index.html$(NC)"
+	@open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || true
 
 ## docs-check           Check documentation without opening browser (CI-safe)
 docs-check: check-workspace

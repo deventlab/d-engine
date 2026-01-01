@@ -1,46 +1,68 @@
-//! Client module for distributed consensus system
+//! # d-engine-client
 //!
-//! Provides core components for interacting with the d_engine cluster:
-//! - [`Client`] - Main entry point with cluster access
-//! - [`ClientBuilder`] - Configurable client construction
-//! - [`KvClient`] - Key-value store operations
-//! - [`ClusterClient`] - Cluster management operations
-//! - [`ConnectionPool`] - Underlying connection management
+//! Client library for interacting with d-engine Raft clusters via gRPC
 //!
-//! # Basic Usage
-//! ```no_run
+//! ## ⚠️ You Probably Don't Need This Crate
+//!
+//! **Use [`d-engine`](https://crates.io/crates/d-engine) instead:**
+//!
+//! ```toml
+//! [dependencies]
+//! d-engine = { version = "0.2", features = ["client"] }
+//! ```
+//!
+//! This provides the same API with simpler dependency management. The `d-engine-client` crate
+//! is automatically included when you enable the `client` feature.
+//!
+//! ## For Contributors
+//!
+//! This crate exists for architectural reasons:
+//! - Clean boundaries between client and server
+//! - Faster builds during development
+//! - Isolated client testing
+//!
+//! ## Quick Start
+//!
+//! ```rust,ignore
 //! use d_engine_client::Client;
-//! use d_engine_client::ClientBuilder;
-//! use std::time::Duration;
-//! use core::error::Error;
 //!
-//! #[tokio::main(flavor = "current_thread")]
-//! async fn main(){
-//!     // Initialize client with automatic cluster discovery
-//!     let client = Client::builder(vec![
-//!         "http://node1:9081".into(),
-//!         "http://node2:9082".into()
-//!     ])
-//!     .connect_timeout(Duration::from_secs(3))
-//!     .request_timeout(Duration::from_secs(1))
-//!     .enable_compression(true)
-//!     .build()
-//!     .await
-//!     .unwrap();
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let client = Client::connect(vec!["http://localhost:50051"]).await?;
 //!
-//!     // Execute key-value operations
-//!     client.kv().put("user:1001", "Alice").await.unwrap();
+//!     // Write data
+//!     client.put(b"key".to_vec(), b"value".to_vec()).await?;
 //!
-//!     let value = client.kv().get("user:1001").await.unwrap();
+//!     // Read data
+//!     if let Some(value) = client.get(b"key".to_vec()).await? {
+//!         println!("Value: {:?}", value);
+//!     }
 //!
-//!     println!("User data: {:?}", value);
-//!
-//!     // Perform cluster management
-//!     let members = client.cluster().list_members().await.unwrap();
-//!     println!("Cluster members: {:?}", members);
-//!
+//!     Ok(())
 //! }
 //! ```
+//!
+//! ## Read Consistency
+//!
+//! Choose consistency level based on your needs:
+//!
+//! - `get_linearizable()` - Strong consistency (read from Leader)
+//! - `get_eventual()` - Fast local reads (stale OK)
+//! - `get_lease()` - Optimized with leader lease
+//!
+//! ## Features
+//!
+//! This crate provides:
+//! - [`Client`] - Main entry point with cluster access
+//! - [`ClientBuilder`] - Configurable client construction
+//! - [`KvClient`] - Key-value store operations trait
+//! - [`ClusterClient`] - Cluster management operations
+//!
+//! ## Documentation
+//!
+//! For comprehensive guides:
+//! - [Read Consistency](https://docs.rs/d-engine/latest/d_engine/docs/client_guide/read_consistency/index.html)
+//! - [Error Handling](https://docs.rs/d-engine/latest/d_engine/docs/client_guide/error_handling/index.html)
 
 mod builder;
 mod cluster;

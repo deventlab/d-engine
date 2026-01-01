@@ -34,4 +34,4 @@ Value: world
 
 ## Full Documentation
 
-See [Quick Start: Standalone Mode](../../d-engine-docs/src/docs/quick-start-standalone.md)
+See [Quick Start: Standalone Mode](https://docs.rs/d-engine/latest/d_engine/docs/quick_start_standalone/index.html)

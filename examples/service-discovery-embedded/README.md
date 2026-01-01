@@ -1,6 +1,12 @@
 # Service Discovery - Embedded Mode
 
-Demonstrates **embedded** service discovery — each application node embeds d-engine directly.
+Demonstrates d-engine's **Watch API in embedded mode** — ultra-low latency change notifications through in-process communication.
+
+**What you'll learn:**
+
+- Using Watch API with LocalKvClient (no gRPC overhead)
+- Sub-millisecond read and watch latency
+- Embedded d-engine architecture patterns
 
 ## Architecture (Consul-style)
 
@@ -47,13 +53,26 @@ The demo will:
 3. Show how to read with LocalKvClient
 4. Demonstrate in-process watch notifications
 
+## Key Concepts Demonstrated
+
+### Primary: Embedded Watch API
+
+- **LocalKvClient** — In-process KV operations with <0.1ms latency
+- **Watch notifications** — Microsecond-level event delivery
+- **Zero serialization** — Direct memory access, no gRPC overhead
+
+### Secondary: Embedded Architecture
+
+- Each app instance embeds d-engine (similar to Consul)
+- Raft replication between embedded nodes
+- Service discovery as a practical use case
+
 ## When to Use Embedded Mode
 
-- **Ultra-low latency required** — DNS/service discovery needs <1ms response
-- **Each app instance is a Raft participant** — Similar to Consul architecture
-- **Rust-only** — LocalKvClient is Rust-native, no gRPC serialization
+- **Ultra-low latency required** — Watch events need microsecond response
+- **Rust-only applications** — LocalKvClient is Rust-native
+- **Co-located architecture** — App and storage in same process
 
 ## Related
 
 - [Standalone Example](../service-discovery-standalone/) — gRPC client mode
-- [Service Discovery Pattern](../../d-engine-docs/src/docs/client_guide/service-discovery-pattern.md)
