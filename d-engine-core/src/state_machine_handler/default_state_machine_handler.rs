@@ -180,8 +180,10 @@ where
         })
         .await
         .map_err(|_| {
+            let current_applied = *rx.borrow();
             crate::Error::Fatal(format!(
-                "Timeout waiting for state machine to apply index {target_index} (timeout: {timeout:?})"
+                "Timeout waiting for state machine to apply index {target_index} \
+                 (timeout: {timeout:?}, current_applied: {current_applied})"
             ))
         })?
     }
