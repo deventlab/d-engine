@@ -92,7 +92,7 @@ async fn start_dengine_server(
 ) {
     println!("╔════════════════════════════════════════╗");
     println!("║  d-engine Node Starting...             ║");
-    println!("║  Config: {:<28} ║", config_path);
+    println!("║  Config: {config_path:<28} ║");
     println!("╚════════════════════════════════════════╝");
 
     // StandaloneServer with explicit config path
