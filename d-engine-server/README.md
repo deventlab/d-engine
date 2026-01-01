@@ -1,69 +1,47 @@
 # d-engine-server
 
-Production-ready Raft consensus server implementation. Provides strongly-consistent distributed key-value storage with pluggable backends.
+[![Crates.io](https://img.shields.io/crates/v/d-engine-server.svg)](https://crates.io/crates/d-engine-server)
+[![docs.rs](https://docs.rs/d-engine-server/badge.svg)](https://docs.rs/d-engine-server)
 
-## What is d-engine-server?
+Complete Raft server with gRPC and storage - batteries included
 
-d-engine-server is the server runtime for d-engine - it combines:
+---
 
-- **Raft consensus protocol** (from d-engine-core)
-- **gRPC networking** for cluster communication
-- **Pluggable storage backends** (File, RocksDB)
-- **State machine** for executing client commands
+## What is this?
 
-Think of it as: **Raft protocol + Storage + Network = Running Server**
+This crate provides a **complete Raft server implementation** with gRPC networking, persistent storage, and cluster orchestration. It's the server runtime component of d-engine.
 
-## Architecture
+**d-engine** is a lightweight distributed coordination engine written in Rust, designed for embedding into applications that need strong consistency—the consensus layer for building reliable distributed systems.
 
-```
-┌─────────────────────────────────────────────────────┐
-│ d-engine-server                                     │
-│                                                      │
-│  ┌────────────────────────────────────────────────┐ │
-│  │ Node (Raft node lifecycle)                     │ │
-│  │  - Leader election                             │ │
-│  │  - Log replication                             │ │
-│  │  - Cluster membership                          │ │
-│  └──────────┬──────────────────┬──────────────────┘ │
-│             │                  │                     │
-│  ┌──────────▼────────┐  ┌─────▼──────────────────┐ │
-│  │ StorageEngine     │  │ StateMachine           │ │
-│  │  - Log storage    │  │  - Apply commands      │ │
-│  │  - Metadata       │  │  - Snapshots           │ │
-│  │  - HardState      │  │  - KV operations       │ │
-│  └───────────────────┘  └────────────────────────┘ │
-│                                                      │
-│  ┌────────────────────────────────────────────────┐ │
-│  │ gRPC Services                                  │ │
-│  │  - RaftClientService (client read/write)      │ │
-│  │  - RaftService (peer-to-peer replication)     │ │
-│  │  - RaftClusterService (membership changes)    │ │
-│  └────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────┘
-```
+---
 
-### Key Components
+## When to use this crate
 
-**Node** - The Raft consensus participant
+- ✅ **Embedding server** in a larger Rust application
+- ✅ Need **programmatic access** to server APIs
+- ✅ Building **custom tooling** around d-engine
+- ✅ Already have your own client implementation
 
-- Manages node lifecycle (follower → candidate → leader)
-- Coordinates log replication across cluster
-- Handles client requests and membership changes
+---
 
-**StorageEngine** - Persistent storage for Raft state
+## When NOT to use this crate
 
-- `LogStore`: Raft log entries
-- `MetaStore`: Term, voted_for, commit_index
+- ❌ **Most applications** → Use [`d-engine`](https://crates.io/crates/d-engine) for simpler dependency management
+- ❌ **Need client + server** → Use [`d-engine`](https://crates.io/crates/d-engine) with `features = ["server", "client"]`
+- ❌ **Quick start preferred** → Use [`d-engine`](https://crates.io/crates/d-engine) for unified API
 
-**StateMachine** - Application state executor
-
-- Applies committed log entries to KV store
-- Generates snapshots for log compaction
-- Restores state from snapshots
+---
 
 ## Quick Start
 
-### 1. Single Node (Development)
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+d-engine-server = "0.2"
+```
+
+### Basic Usage (Direct Use)
 
 ```rust
 use d_engine_server::{NodeBuilder, FileStorageEngine, FileStateMachine};
@@ -74,78 +52,90 @@ use std::path::PathBuf;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
-    // Create storage components
-    let storage = Arc::new(
-        FileStorageEngine::new(PathBuf::from("/tmp/raft-log"))?
-    );
-    let state_machine = Arc::new(
-        FileStateMachine::new(PathBuf::from("/tmp/raft-sm")).await?
-    );
+    let storage = Arc::new(FileStorageEngine::new(PathBuf::from("./storage"))?);
+    let state_machine = Arc::new(FileStateMachine::new(PathBuf::from("./sm")).await?);
 
-    // Build and start node
     let node = NodeBuilder::new(None, shutdown_rx)
         .storage_engine(storage)
         .state_machine(state_machine)
-        .start()
-        .await?;
+        .build()
+        .start_rpc_server()
+        .await
+        .ready()
+        .expect("Failed to start node");
 
-    // Run until shutdown
     node.run().await?;
     Ok(())
 }
 ```
 
-### 2. Three-Node Cluster (Production)
+---
 
-**Node 1** (`cluster.yaml`):
+## Features
 
-```yaml
-cluster_id: "prod-cluster"
-node_id: 1
-rpc_addr: "0.0.0.0:9081"
-peers:
-  - id: 2
-    addr: "node2:9082"
-  - id: 3
-    addr: "node3:9083"
+This crate provides:
+
+- **gRPC Server** - Production-ready Raft RPC implementation
+- **Storage Backends** - File-based and RocksDB storage
+- **Cluster Orchestration** - Node lifecycle and membership management
+- **Snapshot Coordination** - Automatic log compaction
+- **Watch API** (optional) - Real-time state change notifications
+- **EmbeddedEngine API** - High-level API for embedded mode
+
+---
+
+## Architecture
+
+```text
+┌─────────────────────────────────────────┐
+│ d-engine-server                         │
+│                                         │
+│  ┌─────────────────────────────────┐   │
+│  │ API Layer                       │   │
+│  │  - EmbeddedEngine               │   │
+│  │  - StandaloneServer             │   │
+│  │  - LocalKvClient                │   │
+│  └──────────────┬──────────────────┘   │
+│                 │                       │
+│  ┌──────────────▼──────────────────┐   │
+│  │ Node (Raft orchestration)       │   │
+│  │  - Leader election              │   │
+│  │  - Log replication              │   │
+│  │  - Membership changes           │   │
+│  └───────┬──────────────┬──────────┘   │
+│          │              │               │
+│  ┌───────▼────────┐  ┌──▼────────────┐ │
+│  │ StorageEngine  │  │ StateMachine  │ │
+│  │ (Raft logs)    │  │ (KV store)    │ │
+│  └────────────────┘  └───────────────┘ │
+│                                         │
+│  ┌─────────────────────────────────┐   │
+│  │ gRPC Services                   │   │
+│  │  - Client RPC (read/write)      │   │
+│  │  - Cluster RPC (membership)     │   │
+│  │  - Internal RPC (replication)   │   │
+│  └─────────────────────────────────┘   │
+└─────────────────────────────────────────┘
 ```
 
-**Start node**:
-
-```rust
-let node = NodeBuilder::new(Some("cluster.yaml"), shutdown_rx)
-    .storage_engine(storage)
-    .state_machine(state_machine)
-    .start()
-    .await?;
-
-node.run().await?;
-```
-
-Repeat for nodes 2 and 3 with their respective configs.
+---
 
 ## Storage Backends
 
 ### File Storage (Default)
 
-Simple file-based storage. Good for development and small deployments.
+Simple file-based storage for development and small deployments.
 
 ```rust
 use d_engine_server::{FileStorageEngine, FileStateMachine};
 
-let storage = Arc::new(FileStorageEngine::new("/tmp/logs")?);
-let sm = Arc::new(FileStateMachine::new("/tmp/sm").await?);
+let storage = Arc::new(FileStorageEngine::new("./logs")?);
+let sm = Arc::new(FileStateMachine::new("./sm").await?);
 ```
-
-**Characteristics**:
-
-- One file per log entry
-- Simple snapshot files
-- No external dependencies
 
 ### RocksDB Storage (Production)
 
-High-performance embedded database. Recommended for production.
+High-performance embedded database for production use.
 
 ```toml
 [dependencies]
@@ -155,89 +145,92 @@ d-engine-server = { version = "0.2", features = ["rocksdb"] }
 ```rust
 use d_engine_server::{RocksDBStorageEngine, RocksDBStateMachine};
 
-let storage = Arc::new(RocksDBStorageEngine::new("/data/logs")?);
-let sm = Arc::new(RocksDBStateMachine::new("/data/sm").await?);
+let storage = Arc::new(RocksDBStorageEngine::new("./data/logs")?);
+let sm = Arc::new(RocksDBStateMachine::new("./data/sm").await?);
 ```
 
-**Characteristics**:
+---
 
-- LSM-tree storage engine
-- Efficient compaction
-- Better write throughput
+## Custom Storage
 
-## Custom Storage Backend
-
-Implement `StorageEngine` and `StateMachine` traits:
+Implement [`StateMachine`] and [`StorageEngine`] traits:
 
 ```rust
-use d_engine_server::{StorageEngine, StateMachine, LogStore, MetaStore};
-use d_engine_core::{Entry, Result};
+use d_engine_server::{StateMachine, StorageEngine};
 
-struct MyStorageEngine { /* ... */ }
-
-impl StorageEngine for MyStorageEngine {
-    type LogStore = MyLogStore;
-    type MetaStore = MyMetaStore;
-
-    fn log_store(&self) -> Arc<Self::LogStore> { /* ... */ }
-    fn meta_store(&self) -> Arc<Self::MetaStore> { /* ... */ }
-}
-
-#[async_trait]
+struct MyStateMachine;
 impl StateMachine for MyStateMachine {
-    async fn apply(&mut self, entry: Entry) -> Result<Vec<u8>> {
-        // Apply committed log entry
-    }
+    // Apply committed entries to your application state
+}
 
-    async fn snapshot(&self) -> Result<Vec<u8>> {
-        // Generate snapshot
-    }
-
-    async fn restore(&mut self, snapshot: &[u8]) -> Result<()> {
-        // Restore from snapshot
-    }
+struct MyStorageEngine;
+impl StorageEngine for MyStorageEngine {
+    // Persist Raft logs and metadata
 }
 ```
 
-## Client Integration
+See the [Customize guides](https://github.com/deventlab/d-engine/tree/main/docs/src/docs/server_guide) for detailed implementation instructions.
 
-d-engine-server exposes three gRPC services:
+---
 
-### 1. RaftClientService (Client Operations)
+## EmbeddedEngine API
 
-```protobuf
-service RaftClientService {
-    rpc HandleClientWrite (ClientWriteRequest) returns (ClientResponse);
-    rpc HandleClientRead (ClientReadRequest) returns (ClientResponse);
+High-level API for embedding d-engine in Rust applications:
+
+```rust
+use d_engine_server::EmbeddedEngine;
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Start with RocksDB storage
+    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+
+    // Wait for leader election
+    engine.wait_leader(Duration::from_secs(5)).await?;
+
+    // Get zero-overhead client
+    let client = engine.client();
+    client.put(b"key".to_vec(), b"value".to_vec()).await?;
+
+    Ok(())
 }
 ```
 
-Use **d-engine-client** (Rust) or generate bindings for your language:
+---
 
-```bash
-# Generate Go client
-protoc --go_out=. --go-grpc_out=. proto/client/*.proto
-```
+## Documentation
 
-### 2. RaftService (Internal - Peer Replication)
+For comprehensive guides:
 
-For cluster nodes to communicate (not for application use).
+- [Customize Storage Engine](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/customize-storage-engine.md)
+- [Customize State Machine](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/customize-state-machine.md)
+- [Watch Feature Guide](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/watch-feature.md)
+- [Consistency Tuning](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/server_guide/consistency-tuning.md)
 
-### 3. RaftClusterService (Membership Management)
+---
 
-```protobuf
-service RaftClusterService {
-    rpc AddNode (AddNodeRequest) returns (AddNodeResponse);
-    rpc RemoveNode (RemoveNodeRequest) returns (RemoveNodeResponse);
-}
-```
+## Examples
 
-## Resources
+See working examples in the repository:
 
-- **d-engine-client**: Rust client library
-- **d-engine-proto**: Protocol buffer definitions
-- **d-engine-core**: Core Raft implementation
+- [Single Node Expansion](https://github.com/deventlab/d-engine/tree/main/examples/single-node-expansion)
+- [Three Nodes Cluster](https://github.com/deventlab/d-engine/tree/main/examples/three-nodes-cluster)
+- [Quick Start Embedded](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-embedded)
+
+---
+
+## Related Crates
+
+| Crate                                                         | Purpose                                      |
+| ------------------------------------------------------------- | -------------------------------------------- |
+| [`d-engine`](https://crates.io/crates/d-engine)               | **Recommended** - Unified API for most users |
+| [`d-engine-client`](https://crates.io/crates/d-engine-client) | Client library for Rust applications         |
+| [`d-engine-core`](https://crates.io/crates/d-engine-core)     | Pure Raft algorithm for custom integrations  |
+| [`d-engine-proto`](https://crates.io/crates/d-engine-proto)   | Protocol definitions for non-Rust clients    |
+
+---
 
 ## License
 
-See LICENSE file in repository root.
+MIT or Apache-2.0
