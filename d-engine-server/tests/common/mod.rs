@@ -434,6 +434,23 @@ pub async fn test_put_get(
     Ok(())
 }
 
+/// Test PUT followed immediately by linearizable read with NO sleep
+///
+/// This verifies that get_linearizable() waits for state machine to apply
+/// the committed entry before returning, ensuring strong consistency.
+pub async fn test_put_get_no_sleep(
+    client_manager: &mut ClientManager,
+    key: u64,
+    value: u64,
+) -> Result<(), ClientApiError> {
+    println!("put {key} {value} (no sleep)");
+    client_manager.execute_command(ClientCommands::Put, key, Some(value)).await?;
+
+    // Immediately read - linearizable read should wait for apply
+    client_manager.verify_read(key, value, 1).await;
+    Ok(())
+}
+
 /// Helper function to create bootstrap URLs
 pub fn create_bootstrap_urls(ports: &[u16]) -> Vec<String> {
     ports.iter().map(|port| format!("http://127.0.0.1:{port}")).collect()

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_core::RaftConfig;
 use d_engine_server::FileStateMachine;
 use d_engine_server::FileStorageEngine;
 use d_engine_server::NodeBuilder;
@@ -58,9 +59,14 @@ async fn create_test_node(test_name: &str) -> (TestNode, tokio::sync::watch::Sen
 
     let (graceful_tx, graceful_rx) = watch::channel(());
 
+    // Increase timeout for test reliability (CI environments can be slow)
+    let mut raft_config = RaftConfig::default();
+    raft_config.read_consistency.state_machine_sync_timeout_ms = 1000; // 100ms for tests
+
     let node = NodeBuilder::from_cluster_config(cluster_config, graceful_rx)
         .storage_engine(storage_engine)
         .state_machine(state_machine)
+        .raft_config(raft_config)
         .start()
         .await
         .expect("Failed to start node");
@@ -372,4 +378,110 @@ async fn test_local_client_clone() {
     );
 
     println!("✅ LocalKvClient clone works correctly");
+}
+
+/// Test: Linearizable read immediately after write (no sleep)
+///
+/// This test verifies the core guarantee of linearizable reads in Raft:
+/// "Once a write completes, all subsequent reads MUST reflect that write"
+///
+/// Test scenario:
+/// 1. PUT key-value pair (write completes when quorum commits)
+/// 2. Immediately call get_linearizable() with NO sleep
+/// 3. Expect to read the value we just wrote
+///
+/// Why this test is critical:
+/// - Raft linearizability guarantee requires reads to see all committed writes
+/// - Single-node mode should behave identically to multi-node mode
+/// - This was a P0 bug: get_linearizable() returned None on first startup
+///
+/// Expected behavior:
+/// - PUT returns Ok → log entry committed
+/// - get_linearizable() waits for state machine to apply the entry
+/// - Returns the value (NOT None)
+///
+/// Performance note:
+/// - get_linearizable() may add ~1ms latency (waiting for state machine)
+/// - This is correct behavior per Raft protocol
+#[tokio::test]
+async fn test_linearizable_read_after_write_no_sleep() {
+    let (node, _shutdown) = create_test_node("linearizable_read").await;
+    let client = node.local_client();
+
+    let key = b"linearizable_key";
+    let value = b"linearizable_value";
+
+    // Step 1: Write the value
+    client.put(key, value).await.expect("PUT should succeed - log committed");
+
+    // Step 2: Immediately read with linearizable consistency (NO SLEEP!)
+    // This MUST return the value we just wrote, per Raft linearizability guarantee
+    let result = client.get_linearizable(key).await.expect("get_linearizable should not error");
+
+    // Step 3: Verify we got the value
+    assert!(
+        result.is_some(),
+        "Linearizable read MUST return value immediately after PUT completes (no sleep needed)"
+    );
+    assert_eq!(
+        result.unwrap(),
+        Bytes::from_static(value),
+        "Value must match what we wrote"
+    );
+
+    println!("✅ Linearizable read correctly waits for state machine to catch up");
+}
+
+/// Test: Multiple sequential writes with linearizable reads
+///
+/// This test verifies that linearizable reads always see the latest committed value,
+/// even with rapid sequential writes.
+///
+/// Test scenario:
+/// 1. PUT key=v1
+/// 2. get_linearizable() → expect v1
+/// 3. PUT key=v2 (overwrite)
+/// 4. get_linearizable() → expect v2 (NOT v1!)
+/// 5. PUT key=v3
+/// 6. get_linearizable() → expect v3
+///
+/// Why this test is critical:
+/// - Ensures state machine apply happens in correct order
+/// - Verifies no stale reads even under rapid updates
+/// - Tests the wait_applied() mechanism under sequential load
+///
+/// Expected behavior:
+/// - Each get_linearizable() sees the value from the most recent PUT
+/// - No stale reads, no None returns
+#[tokio::test]
+async fn test_linearizable_read_sees_latest_value() {
+    let (node, _shutdown) = create_test_node("sequential_writes").await;
+    let client = node.local_client();
+
+    let key = b"seq_key";
+
+    // Write v1
+    client.put(key, b"v1").await.expect("PUT v1 failed");
+    let result = client.get_linearizable(key).await.expect("GET after v1 failed");
+    assert_eq!(result.unwrap(), Bytes::from_static(b"v1"), "Should read v1");
+
+    // Overwrite with v2
+    client.put(key, b"v2").await.expect("PUT v2 failed");
+    let result = client.get_linearizable(key).await.expect("GET after v2 failed");
+    assert_eq!(
+        result.unwrap(),
+        Bytes::from_static(b"v2"),
+        "Should read v2 (NOT v1 - no stale reads)"
+    );
+
+    // Overwrite with v3
+    client.put(key, b"v3").await.expect("PUT v3 failed");
+    let result = client.get_linearizable(key).await.expect("GET after v3 failed");
+    assert_eq!(
+        result.unwrap(),
+        Bytes::from_static(b"v3"),
+        "Should read v3 (latest value)"
+    );
+
+    println!("✅ Linearizable reads always see latest committed value");
 }

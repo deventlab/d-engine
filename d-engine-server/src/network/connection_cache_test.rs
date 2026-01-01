@@ -108,15 +108,16 @@ async fn test_remove_node() {
     let cache = ConnectionCache::new(test_config());
     let node1 = 1;
     let node2 = 2;
-    let (address, _tx) = mock_address().await;
 
-    // Create connections for two nodes
-    cache.get_channel(node1, ConnectionType::Data, address.clone()).await.unwrap();
-    cache
-        .get_channel(node1, ConnectionType::Control, address.clone())
-        .await
-        .unwrap();
-    cache.get_channel(node2, ConnectionType::Data, address.clone()).await.unwrap();
+    // Create connections for two nodes - use independent mock addresses
+    let (address1, _tx1) = mock_address().await;
+    cache.get_channel(node1, ConnectionType::Data, address1).await.unwrap();
+
+    let (address2, _tx2) = mock_address().await;
+    cache.get_channel(node1, ConnectionType::Control, address2).await.unwrap();
+
+    let (address3, _tx3) = mock_address().await;
+    cache.get_channel(node2, ConnectionType::Data, address3).await.unwrap();
 
     assert_eq!(cache.cache.len(), 3);
 
