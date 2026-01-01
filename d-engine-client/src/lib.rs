@@ -2,22 +2,24 @@
 //!
 //! Client library for interacting with d-engine Raft clusters via gRPC
 //!
-//! ## When to use this crate directly
+//! ## ⚠️ You Probably Don't Need This Crate
 //!
-//! - ✅ Building client-only Rust applications
-//! - ✅ Need fine-grained control over client behavior
-//! - ✅ Integrating d-engine into existing Rust services
-//!
-//! ## When to use `d-engine` instead
-//!
-//! Most users prefer [`d-engine`](https://crates.io/crates/d-engine) with the `client` feature:
+//! **Use [`d-engine`](https://crates.io/crates/d-engine) instead:**
 //!
 //! ```toml
 //! [dependencies]
 //! d-engine = { version = "0.2", features = ["client"] }
 //! ```
 //!
-//! This gives you the same client APIs with simpler dependency management.
+//! This provides the same API with simpler dependency management. The `d-engine-client` crate
+//! is automatically included when you enable the `client` feature.
+//!
+//! ## For Contributors
+//!
+//! This crate exists for architectural reasons:
+//! - Clean boundaries between client and server
+//! - Faster builds during development
+//! - Isolated client testing
 //!
 //! ## Quick Start
 //!
@@ -61,20 +63,6 @@
 //! For comprehensive guides:
 //! - [Read Consistency](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/client_guide/read-consistency.md)
 //! - [Error Handling](https://github.com/deventlab/d-engine/blob/main/docs/src/docs/client_guide/error-handling.md)
-//!
-//!     // Execute key-value operations
-//!     client.kv().put("user:1001", "Alice").await.unwrap();
-//!
-//!     let value = client.kv().get("user:1001").await.unwrap();
-//!
-//!     println!("User data: {:?}", value);
-//!
-//!     // Perform cluster management
-//!     let members = client.cluster().list_members().await.unwrap();
-//!     println!("Cluster members: {:?}", members);
-//!
-//! }
-//! ```
 
 mod builder;
 mod cluster;

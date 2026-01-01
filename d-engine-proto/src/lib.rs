@@ -1,6 +1,6 @@
 //! # d-engine-proto
 //!
-//! gRPC protocol definitions - for building non-Rust d-engine clients
+//! gRPC protocol definitions for d-engine - foundation for all client implementations
 //!
 //! ## When to use this crate
 //!
@@ -20,20 +20,32 @@
 //! d-engine = { version = "0.2", features = ["client"] }
 //! ```
 //!
-//! ## For non-Rust developers
+//! ## For Non-Rust Developers
 //!
 //! The `.proto` files are included in this crate. Generate client code for your language:
 //!
 //! ```bash
-//! # Python example
-//! protoc --python_out=. --grpc_python_out=. d-engine.proto
+//! # Go (✅ Tested - see examples/quick-start-standalone)
+//! protoc -I. \
+//!   --go_out=./go \
+//!   --go_opt=module=github.com/deventlab/d-engine/proto \
+//!   --go-grpc_out=./go \
+//!   --go-grpc_opt=module=github.com/deventlab/d-engine/proto \
+//!   proto/common.proto \
+//!   proto/error.proto \
+//!   proto/client/client_api.proto
 //!
-//! # Go example
-//! protoc --go_out=. --go-grpc_out=. d-engine.proto
-//!
-//! # Java example
-//! protoc --java_out=. --grpc-java_out=. d-engine.proto
+//! # Python (⚠️ Command verified, end-to-end integration not yet tested)
+//! protoc --python_out=./out \
+//!   proto/common.proto \
+//!   proto/error.proto \
+//!   proto/client/client_api.proto
 //! ```
+//!
+//! **Language Support Status:**
+//! - ✅ **Go** - Production-ready with working example
+//! - ⚠️ **Python** - Proto generation verified, client integration pending
+//! - 🔜 **Other languages** - Community contributions welcome
 //!
 //! Protocol files are located in the source repository under `d-engine-proto/proto/`.
 //!

@@ -2,27 +2,24 @@
 //!
 //! Pure Raft consensus algorithm - for building custom Raft-based systems
 //!
-//! ## When to use this crate
+//! ## ⚠️ Internal Crate - Not Ready for Standalone Use
 //!
-//! - ✅ Building custom Raft integrations
-//! - ✅ Need fine-grained control over storage and networking
-//! - ✅ Embedding Raft in specialized environments
-//! - ✅ Research or educational purposes
+//! **Use [`d-engine`](https://crates.io/crates/d-engine) instead.**
 //!
-//! ## When to use `d-engine` instead
-//!
-//! Most users find [`d-engine`](https://crates.io/crates/d-engine) more convenient:
+//! This crate contains the pure Raft consensus algorithm used internally by d-engine.
+//! The API is unstable before v1.0.
 //!
 //! ```toml
+//! # ❌ Don't use this directly
 //! [dependencies]
-//! d-engine = { version = "0.2", features = ["server"] }
+//! d-engine-core = "0.2"
+//!
+//! # ✅ Use this instead
+//! [dependencies]
+//! d-engine = "0.2"
 //! ```
 //!
-//! It provides:
-//! - ✅ Batteries-included server implementation
-//! - ✅ gRPC networking out of the box
-//! - ✅ Multiple storage backends (RocksDB, File)
-//! - ✅ Client libraries
+//! ## For Contributors
 //!
 //! ## What this crate provides
 //!
@@ -35,54 +32,13 @@
 //!
 //! Storage, networking, and state machine implementation are **your responsibility**.
 //!
-//! ## Architecture
+//! **Reference integration**: See how [d-engine-server](https://github.com/deventlab/d-engine/tree/main/d-engine-server) uses this crate.
 //!
-//! ```text
-//! ┌─────────────────────────────────┐
-//! │   Your Application              │
-//! ├─────────────────────────────────┤
-//! │   d-engine-core (Raft)          │  ← You are here
-//! ├─────────────────────────────────┤
-//! │   Your Storage │ Your Network   │  ← You implement
-//! └─────────────────────────────────┘
-//! ```
+//! ## Future Vision
 //!
-//! ## Example
+//! **Post-1.0 goal**: Become a standalone Raft library with stable API.
 //!
-//! ```rust,ignore
-//! use d_engine_core::{Raft, StorageEngine, StateMachine};
-//!
-//! // 1. Implement storage engine
-//! struct MyStorage;
-//! impl StorageEngine for MyStorage {
-//!     // Store Raft logs and metadata
-//! }
-//!
-//! // 2. Implement state machine
-//! struct MyStateMachine;
-//! impl StateMachine for MyStateMachine {
-//!     // Apply committed entries
-//! }
-//!
-//! // 3. Create Raft instance
-//! let raft = Raft::new(
-//!     node_id,
-//!     Arc::new(MyStorage),
-//!     Arc::new(MyStateMachine),
-//!     config,
-//! );
-//! ```
-//!
-//! ## Comparison with other crates
-//!
-//! | Crate | Purpose | Networking | Storage |
-//! |-------|---------|-----------|---------|
-//! | **d-engine-core** | Algorithm only | ❌ You implement | ❌ You implement |
-//! | [`d-engine-server`] | Complete server | ✅ gRPC | ✅ Multiple backends |
-//! | [`d-engine`] | Unified API | ✅ gRPC | ✅ Multiple backends |
-//!
-//! [`d-engine-server`]: https://crates.io/crates/d-engine-server
-//! [`d-engine`]: https://crates.io/crates/d-engine
+//! **Current status**: Internal to d-engine, API may change between minor versions.
 //!
 //! ## Key Traits
 //!

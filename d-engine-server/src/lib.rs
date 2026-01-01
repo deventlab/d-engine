@@ -20,30 +20,38 @@
 //!
 //! It re-exports this crate plus optional client libraries with simpler dependency management.
 //!
-//! ## Quick Start (Direct Use)
+//! ## Quick Start
+//!
+//! **Embedded Mode** (zero-overhead local client):
 //!
 //! ```rust,ignore
-//! use d_engine_server::{NodeBuilder, FileStorageEngine, FileStateMachine};
-//! use std::sync::Arc;
-//! use std::path::PathBuf;
+//! use d_engine_server::EmbeddedEngine;
+//! use std::time::Duration;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+//!     let engine = EmbeddedEngine::start_with("config.toml").await?;
+//!     engine.wait_ready(Duration::from_secs(5)).await?;
 //!
-//!     let storage = Arc::new(FileStorageEngine::new(PathBuf::from("./storage"))?);
-//!     let state_machine = Arc::new(FileStateMachine::new(PathBuf::from("./sm")).await?);
+//!     let client = engine.client();
+//!     client.put(b"key".to_vec(), b"value".to_vec()).await?;
 //!
-//!     let node = NodeBuilder::new(None, shutdown_rx)
-//!         .storage_engine(storage)
-//!         .state_machine(state_machine)
-//!         .build()
-//!         .start_rpc_server()
-//!         .await
-//!         .ready()
-//!         .expect("Failed to start node");
+//!     engine.stop().await?;
+//!     Ok(())
+//! }
+//! ```
 //!
-//!     node.run().await?;
+//! **Standalone Mode** (independent server):
+//!
+//! ```rust,ignore
+//! use d_engine_server::StandaloneServer;
+//! use tokio::sync::watch;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     std::env::set_var("CONFIG_PATH", "config.toml");
+//!     let (_shutdown_tx, shutdown_rx) = watch::channel(());
+//!     StandaloneServer::run(shutdown_rx).await?;
 //!     Ok(())
 //! }
 //! ```

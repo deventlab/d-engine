@@ -41,30 +41,36 @@ Add to your `Cargo.toml`:
 d-engine-server = "0.2"
 ```
 
-### Basic Usage (Direct Use)
+### Embedded Mode (zero-overhead local client)
 
 ```rust
-use d_engine_server::{NodeBuilder, FileStorageEngine, FileStateMachine};
-use std::sync::Arc;
-use std::path::PathBuf;
+use d_engine_server::EmbeddedEngine;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let engine = EmbeddedEngine::start_with("config.toml").await?;
+    engine.wait_ready(Duration::from_secs(5)).await?;
 
-    let storage = Arc::new(FileStorageEngine::new(PathBuf::from("./storage"))?);
-    let state_machine = Arc::new(FileStateMachine::new(PathBuf::from("./sm")).await?);
+    let client = engine.client();
+    client.put(b"key".to_vec(), b"value".to_vec()).await?;
 
-    let node = NodeBuilder::new(None, shutdown_rx)
-        .storage_engine(storage)
-        .state_machine(state_machine)
-        .build()
-        .start_rpc_server()
-        .await
-        .ready()
-        .expect("Failed to start node");
+    engine.stop().await?;
+    Ok(())
+}
+```
 
-    node.run().await?;
+### Standalone Mode (independent server)
+
+```rust
+use d_engine_server::StandaloneServer;
+use tokio::sync::watch;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::env::set_var("CONFIG_PATH", "config.toml");
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    StandaloneServer::run(shutdown_rx).await?;
     Ok(())
 }
 ```
@@ -183,16 +189,19 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Start with RocksDB storage
-    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+    // Start embedded engine with config file
+    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 
     // Wait for leader election
-    engine.wait_leader(Duration::from_secs(5)).await?;
+    let leader = engine.wait_ready(Duration::from_secs(5)).await?;
+    println!("Leader elected: {}", leader.leader_id);
 
     // Get zero-overhead client
     let client = engine.client();
     client.put(b"key".to_vec(), b"value".to_vec()).await?;
 
+    // Graceful shutdown
+    engine.stop().await?;
     Ok(())
 }
 ```
@@ -222,12 +231,12 @@ See working examples in the repository:
 
 ## Related Crates
 
-| Crate                                                         | Purpose                                      |
-| ------------------------------------------------------------- | -------------------------------------------- |
-| [`d-engine`](https://crates.io/crates/d-engine)               | **Recommended** - Unified API for most users |
-| [`d-engine-client`](https://crates.io/crates/d-engine-client) | Client library for Rust applications         |
-| [`d-engine-core`](https://crates.io/crates/d-engine-core)     | Pure Raft algorithm for custom integrations  |
-| [`d-engine-proto`](https://crates.io/crates/d-engine-proto)   | Protocol definitions for non-Rust clients    |
+| Crate                                                         | Purpose                                           |
+| ------------------------------------------------------------- | ------------------------------------------------- |
+| [`d-engine`](https://crates.io/crates/d-engine)               | **Recommended** - Unified API for most users      |
+| [`d-engine-client`](https://crates.io/crates/d-engine-client) | Client library for Rust applications              |
+| [`d-engine-core`](https://crates.io/crates/d-engine-core)     | Pure Raft algorithm for custom integrations       |
+| [`d-engine-proto`](https://crates.io/crates/d-engine-proto)   | Protocol definitions (foundation for all clients) |
 
 ---
 
