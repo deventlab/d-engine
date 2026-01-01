@@ -16,6 +16,7 @@ use crate::common::node_config;
 use crate::common::reset;
 use crate::common::start_node;
 use crate::common::test_put_get;
+use crate::common::test_put_get_no_sleep;
 
 // Constants for test configuration
 const TEST_CASE1_DIR: &str = "cluster_start_stop/case1";
@@ -325,13 +326,13 @@ async fn test_multi_node_linearizable_read_consistency() -> Result<(), ClientApi
     // Test: PUT → get_linearizable with NO sleep (same as single-node test)
     let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
 
-    // Use the existing test_put_get helper which tests linearizable reads
-    test_put_get(&mut client_manager, 1, 100).await?;
+    // Test immediate linearizable read after PUT (no sleep)
+    test_put_get_no_sleep(&mut client_manager, 1, 100).await?;
     println!("✅ Multi-node linearizable read consistency verified (PUT → GET with no sleep)");
 
     // Additional test: Sequential writes verify latest value is always visible
-    test_put_get(&mut client_manager, 2, 200).await?;
-    test_put_get(&mut client_manager, 2, 201).await?; // Overwrite - should read 201, not 200
+    test_put_get_no_sleep(&mut client_manager, 2, 200).await?;
+    test_put_get_no_sleep(&mut client_manager, 2, 201).await?; // Overwrite - should read 201, not 200
 
     println!("✅ Multi-node sequential writes verified");
 

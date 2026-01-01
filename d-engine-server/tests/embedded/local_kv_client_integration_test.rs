@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_core::RaftConfig;
 use d_engine_server::FileStateMachine;
 use d_engine_server::FileStorageEngine;
 use d_engine_server::NodeBuilder;
@@ -58,9 +59,14 @@ async fn create_test_node(test_name: &str) -> (TestNode, tokio::sync::watch::Sen
 
     let (graceful_tx, graceful_rx) = watch::channel(());
 
+    // Increase timeout for test reliability (CI environments can be slow)
+    let mut raft_config = RaftConfig::default();
+    raft_config.read_consistency.state_machine_sync_timeout_ms = 1000; // 100ms for tests
+
     let node = NodeBuilder::from_cluster_config(cluster_config, graceful_rx)
         .storage_engine(storage_engine)
         .state_machine(state_machine)
+        .raft_config(raft_config)
         .start()
         .await
         .expect("Failed to start node");
