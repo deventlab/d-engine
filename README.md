@@ -48,26 +48,19 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
-    // Start embedded engine (uses default config or CONFIG_PATH env)
     let engine = EmbeddedEngine::start().await.unwrap();
-
-    // Wait for leader election (single-node: instant)
     engine.wait_ready(Duration::from_secs(5)).await.unwrap();
 
-    // Get KV client (zero-overhead, in-process)
     let client = engine.client();
-
-    // Store and retrieve data
     client.put(b"hello".to_vec(), b"world".to_vec()).await.unwrap();
+    let value = client.get_linearizable(b"hello".to_vec()).await.unwrap();
 
-    if let Some(value) = client.get_linearizable(b"hello".to_vec()).await.unwrap() {
-        println!("Retrieved: hello = {}", String::from_utf8_lossy(&value));
-    }
-
-    // Graceful shutdown
+    println!("Retrieved: {}", String::from_utf8_lossy(&value.unwrap()));
     engine.stop().await.unwrap();
 }
 ```
+
+**→ Full example:** [examples/quick-start-embedded](examples/quick-start-embedded/README.md)
 
 ---
 
@@ -81,6 +74,11 @@ d-engine = "0.2"
 
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
+
+**→ Examples:**
+
+- [Quick Start Embedded](examples/quick-start-embedded/README.md) - Minimal setup
+- [Service Discovery Embedded](examples/service-discovery-embedded/README.md) - Watch API with sub-millisecond latency
 
 ---
 
@@ -96,6 +94,8 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 > **Performance note**: Benchmark shows 45% higher write throughput vs etcd 3.5 in high-concurrency tests (M2 Mac single machine vs etcd on 3 GCE instances). See [benches/](benches/d-engine-bench/reports/v0.2.0/) for methodology and hardware details.
 
 **Note**: Rust apps can use both modes - embedded for performance, standalone for operational flexibility
+
+**→ Example:** [Quick Start Standalone (Go client)](examples/quick-start-standalone/README.md)
 
 ---
 
