@@ -51,10 +51,9 @@ Usage examples demonstrating different d-engine integration modes.
 
 ## Storage Backend Examples
 
-| Example                             | Description                             |
-| ----------------------------------- | --------------------------------------- |
-| [rocksdb-cluster](rocksdb-cluster/) | Production setup with RocksDB storage   |
-| [sled-cluster](sled-cluster/)       | Alternative with Sled embedded database |
+| Example                       | Description                             |
+| ----------------------------- | --------------------------------------- |
+| [sled-cluster](sled-cluster/) | Alternative with Sled embedded database |
 
 ---
 

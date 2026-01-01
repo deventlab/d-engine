@@ -10,7 +10,6 @@ members = [
 exclude = [
   "docs",
   "examples/client_usage",
-  "examples/rocksdb-cluster",
   "examples/sled-cluster",
   "examples/three-nodes-cluster",
   "examples/single-node-expansion",

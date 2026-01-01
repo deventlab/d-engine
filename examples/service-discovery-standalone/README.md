@@ -1,6 +1,12 @@
 # Service Discovery Example
 
-Demonstrates using d-engine for **service discovery** — a common pattern for distributed systems.
+Demonstrates d-engine's **Watch API** through a practical service discovery use case.
+
+**What you'll learn:**
+
+- How to use the Watch API for real-time change notifications
+- Implementing the read-then-watch pattern
+- Building reactive systems without polling
 
 ## Architecture
 
@@ -57,9 +63,17 @@ cargo run --bin admin -- unregister --name api-gateway --instance node1
 
 ## Key Concepts Demonstrated
 
+### Primary: Watch API Usage
+
 1. **Watch API** — Real-time change notifications without polling
-2. **EventualConsistency** — Fastest reads from any node
-3. **Read-then-Watch Pattern** — Read current state, then watch for changes
+2. **Read-then-Watch Pattern** — Read current state, then watch for changes
+3. **Event Handling** — Process PUT/DELETE events reactively
+
+### Secondary: Service Discovery Pattern
+
+- Using d-engine as a service registry
+- EventualConsistency reads for fast lookups
+- Key-value schema design for services
 
 ## Related Documentation
 
