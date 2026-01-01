@@ -60,7 +60,7 @@ async fn run_demo(client: &LocalKvClient) -> std::result::Result<(), Box<dyn Std
     // Read it back
     println!("2. Read workflow state");
     let value = client
-        .get_eventual("workflow:status".as_bytes().to_vec())
+        .get_linearizable("workflow:status".as_bytes().to_vec())
         .await
         .map_err(|e| Box::new(e) as Box<dyn StdError>)?;
     if let Some(v) = value {
@@ -78,16 +78,18 @@ async fn run_demo(client: &LocalKvClient) -> std::result::Result<(), Box<dyn Std
         println!("   ✓ {key} stored");
     }
 
-    // Retrieve all tasks
-    println!("4. Retrieve task results");
+    // Retrieve all tasks with linearizable reads
+    println!("4. Retrieve task results (linearizable)");
     for i in 1..=3 {
         let key = format!("task:{i}");
         if let Some(v) = client
-            .get_eventual(key.as_bytes().to_vec())
+            .get_linearizable(key.as_bytes().to_vec())
             .await
             .map_err(|e| Box::new(e) as Box<dyn StdError>)?
         {
             println!("   ✓ {key} = {}", String::from_utf8_lossy(&v));
+        } else {
+            eprintln!("   ✗ Failed to read {key} (should never happen after successful PUT)");
         }
     }
 

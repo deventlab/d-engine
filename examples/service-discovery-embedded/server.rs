@@ -85,6 +85,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Perform local write (direct to Raft core)
     client.put(service_key, endpoint).await?;
 
+    // Verify write with linearizable read (guarantees we see the latest write)
+    match client.get_linearizable(service_key).await? {
+        Some(value) => {
+            let stored = String::from_utf8_lossy(&value);
+            println!("✓ Verified: {service_key} -> {stored}");
+            assert_eq!(stored, endpoint, "Read value must match written value");
+        }
+        None => {
+            panic!("❌ BUG: get_linearizable returned None immediately after PUT!");
+        }
+    }
+
     // Give time for watcher to print
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -94,6 +106,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let new_endpoint = "10.0.0.5:9090";
     println!("Updating: {service_key} -> {new_endpoint}");
     client.put(service_key, new_endpoint).await?;
+
+    // Verify update with linearizable read
+    match client.get_linearizable(service_key).await? {
+        Some(value) => {
+            let stored = String::from_utf8_lossy(&value);
+            println!("✓ Verified: {service_key} -> {stored}");
+            assert_eq!(stored, new_endpoint, "Read value must match updated value");
+        }
+        None => {
+            panic!("❌ BUG: get_linearizable returned None immediately after UPDATE!");
+        }
+    }
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
