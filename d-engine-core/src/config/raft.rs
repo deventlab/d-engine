@@ -949,6 +949,14 @@ pub struct ReadConsistencyConfig {
     /// When false, all reads use the cluster's default_policy setting.
     #[serde(default = "default_allow_client_override")]
     pub allow_client_override: bool,
+
+    /// Timeout in milliseconds to wait for state machine to catch up with commit index
+    ///
+    /// Used by LinearizableRead to ensure the state machine has applied all committed
+    /// entries before serving reads. Typical apply latency is <1ms on local SSD.
+    /// Default: 10ms (safe buffer for single-node local deployments)
+    #[serde(default = "default_state_machine_sync_timeout_ms")]
+    pub state_machine_sync_timeout_ms: u64,
 }
 
 impl Default for ReadConsistencyConfig {
@@ -957,6 +965,7 @@ impl Default for ReadConsistencyConfig {
             default_policy: ReadConsistencyPolicy::default(),
             lease_duration_ms: default_lease_duration_ms(),
             allow_client_override: default_allow_client_override(),
+            state_machine_sync_timeout_ms: default_state_machine_sync_timeout_ms(),
         }
     }
 }
@@ -969,6 +978,10 @@ fn default_lease_duration_ms() -> u64 {
 fn default_allow_client_override() -> bool {
     // Allow flexibility by default — clients can choose stronger consistency when needed
     true
+}
+
+fn default_state_machine_sync_timeout_ms() -> u64 {
+    10 // 10ms is safe for typical <1ms apply latency on local SSD
 }
 
 impl ReadConsistencyConfig {

@@ -911,10 +911,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                 Err(tonic::Status::failed_precondition(
                                     "enforce_quorum_consensus failed".to_string(),
                                 ))
-                            } else if let Err(e) = self.ensure_state_machine_upto_commit_index(
-                                &ctx.handlers.state_machine_handler,
-                                last_applied_index,
-                            ) {
+                            } else if let Err(e) = self
+                                .ensure_state_machine_upto_commit_index(
+                                    &ctx.handlers.state_machine_handler,
+                                    last_applied_index,
+                                )
+                                .await
+                            {
                                 warn!(
                                     "ensure_state_machine_upto_commit_index failed for linear read request"
                                 );
@@ -1842,7 +1845,7 @@ impl<T: TypeConfig> LeaderState<T> {
         (false, current_commit_index)
     }
 
-    pub fn ensure_state_machine_upto_commit_index(
+    pub async fn ensure_state_machine_upto_commit_index(
         &self,
         state_machine_handler: &Arc<SMHOF<T>>,
         last_applied: u64,
@@ -1855,6 +1858,13 @@ impl<T: TypeConfig> LeaderState<T> {
         );
         if last_applied < commit_index {
             state_machine_handler.update_pending(commit_index);
+
+            // Wait for state machine to catch up
+            // This ensures linearizable reads see all committed writes
+            let timeout_ms = self.node_config.raft.read_consistency.state_machine_sync_timeout_ms;
+            state_machine_handler
+                .wait_applied(commit_index, std::time::Duration::from_millis(timeout_ms))
+                .await?;
 
             debug!("ensure_state_machine_upto_commit_index success");
         }

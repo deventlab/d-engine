@@ -409,8 +409,10 @@ async fn test_ensure_state_machine_upto_commit_index_case1() {
     // Test fun
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().times(1).returning(|_| {});
+    state_machine_handler.expect_wait_applied().times(1).return_once(|_, _| Ok(()));
     state
         .ensure_state_machine_upto_commit_index(&Arc::new(state_machine_handler), last_applied)
+        .await
         .expect("should succeed");
 }
 
@@ -437,8 +439,10 @@ async fn test_ensure_state_machine_upto_commit_index_case2() {
     // Test fun
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().times(0).returning(|_| {});
+    state_machine_handler.expect_wait_applied().times(0);
     state
         .ensure_state_machine_upto_commit_index(&Arc::new(state_machine_handler), last_applied)
+        .await
         .expect("should succeed");
 }
 

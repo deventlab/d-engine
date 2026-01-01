@@ -83,6 +83,10 @@ max_buffered_entries = 10000
 default_policy = "LinearizableRead"
 lease_duration_ms = 250
 allow_client_override = true
+# Timeout to wait for state machine to catch up with commit index (milliseconds)
+# Used by LinearizableRead to ensure reads reflect all committed writes
+# Typical apply latency: <1ms on local SSD. Default: 10ms (safe buffer)
+state_machine_sync_timeout_ms = 10
 
 
 # Granular RPC compression configuration

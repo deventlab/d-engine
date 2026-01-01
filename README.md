@@ -29,120 +29,89 @@ with pluggable storage backends, built-in observability, and tokio runtime suppo
 - **Tunable Persistence**: DiskFirst for durability or MemFirst for lower latency
 - **Flexible Read Consistency**: Three-tier model (Linearizable/Lease-Based/Eventual)
 - **Pluggable Storage**: Custom backends supported (RocksDB, Sled, Raw File)
-- **Observability**: Built-in metrics, structured logging, distributed tracing
-- **Extensible Design**: Business logic decoupled from protocol layer
 
 ---
 
-## Quick Start
-
-### Installation
+## Quick Start (Embedded Mode)
 
 Add d-engine to your `Cargo.toml`:
 
 ```toml
-# Default: Embedded mode with RocksDB (recommended for most use cases)
-d-engine = "0.2"
-
-# Standalone mode: Connect to existing d-engine cluster
-d-engine = { version = "0.2", features = ["client"], default-features = false }
-
-# Custom storage backend (disable RocksDB)
-d-engine = { version = "0.2", features = ["server"], default-features = false }
-```
-
-### When to Use
-
-#### Embedded Mode (Default) - Rust Applications
-
-```toml
 d-engine = "0.2"
 ```
 
-**Use when**: Building Rust services needing distributed coordination  
-**Examples**: Database HA coordinators, distributed schedulers, control plane services  
-**Why**: Zero-overhead (<0.1ms), single binary, type-safe
-
-❌ **Don't use**: For non-Rust applications (use Standalone mode instead)
-
----
-
-#### Standalone Mode - Non-Rust Applications
-
-```toml
-d-engine = { version = "0.2", features = ["client"], default-features = false }
-```
-
-**Use when**: Go/Python/Java apps need distributed KV  
-**Examples**: Microservices requiring distributed KV, multi-language deployments  
-**Why**: Language-agnostic gRPC API, optimized for write-heavy workloads
-
-\*Benchmarks show 51% higher write throughput vs etcd in test environments. Production results vary by hardware. See benches/ for methodology.
-
-❌ **Don't use**: For Rust apps (embedded mode has zero overhead)
-
----
-
-#### Custom Storage - Advanced Use Cases
-
-```toml
-d-engine = { version = "0.2", features = ["server"], default-features = false }
-```
-
-**Use when**: Specific storage requirements (Sled, memory-only, cloud storage)  
-**Examples**: Embedded devices, testing environments  
-**See**: [Custom Storage Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines) | [Sled Example](examples/sled-cluster)
-
----
-
-## Basic Usage (Single-Node Mode)
+Example code:
 
 ```rust
 use d_engine::prelude::*;
 use std::time::Duration;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Start embedded engine with RocksDB (auto-creates directories)
-    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+async fn main() {
+    // Start embedded engine (uses default config or CONFIG_PATH env)
+    let engine = EmbeddedEngine::start().await.unwrap();
 
     // Wait for leader election (single-node: instant)
-    engine.wait_ready(Duration::from_secs(5)).await?;
+    engine.wait_ready(Duration::from_secs(5)).await.unwrap();
 
     // Get KV client (zero-overhead, in-process)
     let client = engine.client();
 
     // Store and retrieve data
-    client.put(b"hello".to_vec(), b"world".to_vec()).await?;
+    client.put(b"hello".to_vec(), b"world".to_vec()).await.unwrap();
 
-    if let Some(value) = client.get(b"hello".to_vec()).await? {
+    if let Some(value) = client.get_linearizable(b"hello".to_vec()).await.unwrap() {
         println!("Retrieved: hello = {}", String::from_utf8_lossy(&value));
     }
 
     // Graceful shutdown
-    engine.stop().await?;
-    Ok(())
+    engine.stop().await.unwrap();
 }
 ```
 
-## **Custom Storage Implementations**
+---
 
-d-engine provides flexible storage abstraction layers. Implement your own storage engines and state machines by implementing the respective traits:
+## Integration Modes
 
-- **Custom Storage Engines**: See [Implementing Custom Storage Engines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
-- **Custom State Machines**: See [Implementing Custom State Machines](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
+### Embedded Mode - In-Process Deployment
 
-Note: Single-node deployment is supported for development and low-traffic production. For high availability, you can dynamically expand to a 3-node cluster with zero downtime.
+```toml
+d-engine = "0.2"
+```
+
+**Use when**: Building Rust applications that need distributed coordination  
+**Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
 ---
 
-## Architecture
+### Standalone Mode - Separate Service Deployment
 
-**Hybrid threading model**: Single-threaded Raft core + async I/O layer
+```toml
+d-engine = { version = "0.2", features = ["client"], default-features = false }
+```
 
-- **Consensus logic**: Dedicated event loop (eliminates lock contention)
-- **Network/Storage**: Tokio's async runtime for efficient I/O multiplexing
-- **Design goal**: Maximize single CPU core performance while minimizing resource overhead
+**Use when**: Application and d-engine run as separate processes  
+**Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
+
+> **Performance note**: Benchmark shows 45% higher write throughput vs etcd 3.5 in high-concurrency tests (M2 Mac single machine vs etcd on 3 GCE instances). See [benches/](benches/d-engine-bench/reports/v0.2.0/) for methodology and hardware details.
+
+**Note**: Rust apps can use both modes - embedded for performance, standalone for operational flexibility
+
+---
+
+## Advanced: Custom Storage Backends
+
+For specific storage requirements (Sled, memory-only, cloud storage):
+
+```toml
+d-engine = { version = "0.2", features = ["server"], default-features = false }
+```
+
+Implement custom storage engines and state machines by implementing the respective traits:
+
+- **Custom Storage Engines**: [Implementation Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
+- **Custom State Machines**: [Implementation Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
+- **Example**: [Sled Storage Backend](examples/sled-cluster)
 
 ---
 
