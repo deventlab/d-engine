@@ -409,8 +409,10 @@ async fn test_ensure_state_machine_upto_commit_index_case1() {
     // Test fun
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().times(1).returning(|_| {});
+    state_machine_handler.expect_wait_applied().times(1).return_once(|_, _| Ok(()));
     state
         .ensure_state_machine_upto_commit_index(&Arc::new(state_machine_handler), last_applied)
+        .await
         .expect("should succeed");
 }
 
@@ -437,8 +439,10 @@ async fn test_ensure_state_machine_upto_commit_index_case2() {
     // Test fun
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().times(0).returning(|_| {});
+    state_machine_handler.expect_wait_applied().times(0);
     state
         .ensure_state_machine_upto_commit_index(&Arc::new(state_machine_handler), last_applied)
+        .await
         .expect("should succeed");
 }
 
@@ -887,12 +891,21 @@ async fn test_handle_raft_event_case6_2() {
         .expect_calculate_majority_matched_index()
         .returning(move |_, _, _| Some(expect_new_commit_index));
 
+    // Mock state machine handler for linearizable read
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler.expect_update_pending().times(1).returning(|_| {});
+    state_machine_handler.expect_wait_applied().times(1).return_once(|_, _| Ok(()));
+    state_machine_handler
+        .expect_read_from_state_machine()
+        .returning(|_| Some(vec![]));
+
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_raft_event_case6_2")
         .with_raft_log(raft_log)
         .with_replication_handler(replication_handler)
+        .with_state_machine_handler(state_machine_handler)
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -4910,11 +4923,20 @@ mod handle_client_read_request {
         raft_log.expect_last_entry_id().returning(|| 10);
         raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
 
+        // Mock state machine handler for linearizable read
+        let mut state_machine_handler = MockStateMachineHandler::new();
+        state_machine_handler.expect_update_pending().times(1).returning(|_| {});
+        state_machine_handler.expect_wait_applied().times(1).return_once(|_, _| Ok(()));
+        state_machine_handler
+            .expect_read_from_state_machine()
+            .returning(|_| Some(vec![]));
+
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let context = MockBuilder::new(graceful_rx)
             .with_db_path("/tmp/leader_unspecified_policy")
             .with_replication_handler(replication_handler)
             .with_raft_log(raft_log)
+            .with_state_machine_handler(state_machine_handler)
             .build_context();
 
         let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());

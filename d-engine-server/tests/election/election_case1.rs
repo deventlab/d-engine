@@ -36,8 +36,6 @@ use crate::common::start_node;
 
 // Constants for test configuration
 const ELECTION_CASE1_DIR: &str = "election/case1";
-const ELECTION_CASE1_DB_ROOT_DIR: &str = "./db/election/case1";
-const ELECTION_CASE1_LOG_DIR: &str = "./logs/election/case1";
 
 #[tokio::test]
 async fn test_leader_election_based_on_log_term_and_index() -> Result<(), ClientApiError> {
@@ -46,19 +44,23 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     debug!("...test_leader_election_based_on_log_term_and_index...");
     reset(ELECTION_CASE1_DIR).await?;
 
+    let temp_dir = tempfile::tempdir()?;
+    let db_root_dir = temp_dir.path().join("db");
+    let log_dir = temp_dir.path().join("logs");
+
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
 
     // Prepare raft logs
-    let r1 = prepare_storage_engine(1, &format!("{ELECTION_CASE1_DB_ROOT_DIR}/cs/1"), 0);
+    let r1 = prepare_storage_engine(1, &format!("{}/cs/1", db_root_dir.display()), 0);
     manipulate_log(&r1, (1..=10).collect(), 2).await;
     init_hard_state(&r1, 2, None);
-    let r2 = prepare_storage_engine(2, &format!("{ELECTION_CASE1_DB_ROOT_DIR}/cs/2"), 0);
+    let r2 = prepare_storage_engine(2, &format!("{}/cs/2", db_root_dir.display()), 0);
     manipulate_log(&r2, (1..=2).collect(), 2).await;
     init_hard_state(&r2, 3, None);
     manipulate_log(&r2, (3..=8).collect(), 3).await;
-    let r3 = prepare_storage_engine(3, &format!("{ELECTION_CASE1_DB_ROOT_DIR}/cs/3"), 0);
+    let r3 = prepare_storage_engine(3, &format!("{}/cs/3", db_root_dir.display()), 0);
     init_hard_state(&r3, 0, None);
 
     // Start cluster nodes
@@ -72,8 +74,8 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
             (i + 1) as u64,
             *port,
             ports,
-            &format!("{}/cs/{}", ELECTION_CASE1_DB_ROOT_DIR, i + 1),
-            ELECTION_CASE1_LOG_DIR,
+            &format!("{}/cs/{}", db_root_dir.display(), i + 1),
+            &log_dir.display().to_string(),
         )
         .await;
 

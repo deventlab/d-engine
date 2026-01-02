@@ -102,6 +102,11 @@ where
     /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
     snapshot_lock: RwLock<()>,
 
+    /// Watch channel to notify when last_applied advances
+    /// Used for linearizable reads to wait until state machine catches up with commit_index
+    applied_notify_tx: tokio::sync::watch::Sender<u64>,
+    applied_notify_rx: tokio::sync::watch::Receiver<u64>,
+
     /// Broadcast channel for watch event notifications (fire-and-forget)
     /// StateMachine sends events here without blocking on watchers
     #[cfg(feature = "watch")]
@@ -153,6 +158,44 @@ where
                 Err(e) => current = e,
             }
         }
+    }
+
+    async fn wait_applied(
+        &self,
+        target_index: u64,
+        timeout: Duration,
+    ) -> Result<()> {
+        let mut rx = self.applied_notify_rx.clone();
+
+        // Fast path: check if already applied (avoid timeout future overhead)
+        {
+            let current = *rx.borrow();
+            if current >= target_index {
+                return Ok(());
+            }
+        }
+
+        // Slow path: need to wait for notification
+        tokio::time::timeout(timeout, async {
+            loop {
+                rx.changed()
+                    .await
+                    .map_err(|_| crate::Error::Fatal("apply notify channel closed".into()))?;
+
+                let current = *rx.borrow();
+                if current >= target_index {
+                    return Ok(());
+                }
+            }
+        })
+        .await
+        .map_err(|_| {
+            let current_applied = *rx.borrow();
+            crate::Error::Fatal(format!(
+                "Timeout waiting for state machine to apply index {target_index} \
+                 (timeout: {timeout:?}, current_applied: {current_applied})"
+            ))
+        })?
     }
 
     async fn apply_chunk(
@@ -210,6 +253,10 @@ where
                 // Efficiently obtain the maximum index: directly get the index of the last entry
                 if let Some(idx) = last_index {
                     self.last_applied.store(idx, Ordering::Release);
+                    // Notify waiters that last_applied has advanced
+                    if let Err(e) = self.applied_notify_tx.send(idx) {
+                        debug_assert!(false, "apply notify send failed: {e:?}");
+                    }
                 }
 
                 metrics::counter!(
@@ -764,6 +811,9 @@ where
             tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
         >,
     ) -> Self {
+        let (applied_notify_tx, applied_notify_rx) =
+            tokio::sync::watch::channel(last_applied_index);
+
         Self {
             node_id,
             last_applied: AtomicU64::new(last_applied_index),
@@ -779,6 +829,8 @@ where
 
             snapshot_lock: RwLock::new(()),
             snapshot_in_progress: AtomicBool::new(false),
+            applied_notify_tx,
+            applied_notify_rx,
             #[cfg(feature = "watch")]
             watch_event_tx,
         }
@@ -1193,6 +1245,16 @@ where
     #[cfg(test)]
     pub fn snapshot_in_progress(&self) -> bool {
         self.snapshot_in_progress.load(Ordering::Acquire)
+    }
+
+    /// Test helper: simulate state machine applying to target index
+    #[cfg(test)]
+    pub fn test_simulate_apply(
+        &self,
+        target_index: u64,
+    ) {
+        self.last_applied.store(target_index, Ordering::Release);
+        let _ = self.applied_notify_tx.send(target_index);
     }
 }
 

@@ -45,6 +45,8 @@ pub use snapshot_policy::*;
 mod default_state_machine_handler_test;
 #[cfg(test)]
 mod snapshot_assembler_test;
+#[cfg(test)]
+mod wait_applied_test;
 
 use std::sync::Arc;
 
@@ -77,6 +79,18 @@ where
         &self,
         new_commit: u64,
     );
+
+    /// Waits until the state machine has applied entries up to the target index.
+    /// Returns error if timeout is reached before the target is applied.
+    ///
+    /// This is used to ensure linearizable reads: after leader confirms a log entry
+    /// is committed (via quorum), we must wait for the state machine to apply it
+    /// before reading to guarantee the read reflects all committed writes.
+    async fn wait_applied(
+        &self,
+        target_index: u64,
+        timeout: std::time::Duration,
+    ) -> Result<()>;
 
     /// Applies a batch of committed log entries to the state machine
     async fn apply_chunk(
