@@ -1,4 +1,6 @@
-#![doc = include_str!("../../../d-engine/src/docs/server_guide/customize-storage-engine.md")]
+//! Storage engine trait for Raft consensus.
+//!
+//! See the [server customization guide](https://github.com/deventlab/d-engine/blob/master/d-engine/src/docs/server_guide/customize-storage-engine.md) for details.
 
 use std::ops::RangeInclusive;
 use std::sync::Arc;

@@ -1,4 +1,6 @@
-#![doc = include_str!("../../../d-engine/src/docs/server_guide/customize-state-machine.md")]
+//! State machine trait for Raft consensus.
+//!
+//! See the [server customization guide](https://github.com/deventlab/d-engine/blob/master/d-engine/src/docs/server_guide/customize-state-machine.md) for details.
 
 use bytes::Bytes;
 use d_engine_proto::common::Entry;

@@ -23,7 +23,7 @@ jobs:
 
           ALLOWED_TYPES="feat|fix|refs|doc|docs|perf|refactor|style|test|chore|ci|revert"
           SCOPE_PATTERN="([a-z][a-z0-9-]*)"
-          TICKET_PATTERN="#[0-9]+:"
+          TICKET_PATTERN="#[0-9]+(, #[0-9]+)*:"
           FULL_PATTERN="^($ALLOWED_TYPES)(\($SCOPE_PATTERN\))? $TICKET_PATTERN.+$"
 
           # Validate the format of all new submissions
@@ -32,6 +32,11 @@ jobs:
 
             # skip merge
             if [[ "$msg" =~ ^Merge ]]; then
+              continue
+            fi
+
+            # skip cargo release auto-generated commits
+            if [[ "$msg" =~ ^chore:\ Release ]]; then
               continue
             fi
 
