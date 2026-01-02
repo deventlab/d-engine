@@ -45,6 +45,8 @@ pub use snapshot_policy::*;
 mod default_state_machine_handler_test;
 #[cfg(test)]
 mod snapshot_assembler_test;
+#[cfg(test)]
+mod wait_applied_test;
 
 use std::sync::Arc;
 

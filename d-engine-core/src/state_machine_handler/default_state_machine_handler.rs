@@ -167,15 +167,25 @@ where
     ) -> Result<()> {
         let mut rx = self.applied_notify_rx.clone();
 
+        // Fast path: check if already applied (avoid timeout future overhead)
+        {
+            let current = *rx.borrow();
+            if current >= target_index {
+                return Ok(());
+            }
+        }
+
+        // Slow path: need to wait for notification
         tokio::time::timeout(timeout, async {
             loop {
-                let current = *rx.borrow_and_update();
-                if current >= target_index {
-                    return Ok(());
-                }
                 rx.changed()
                     .await
                     .map_err(|_| crate::Error::Fatal("apply notify channel closed".into()))?;
+
+                let current = *rx.borrow();
+                if current >= target_index {
+                    return Ok(());
+                }
             }
         })
         .await
@@ -244,7 +254,9 @@ where
                 if let Some(idx) = last_index {
                     self.last_applied.store(idx, Ordering::Release);
                     // Notify waiters that last_applied has advanced
-                    let _ = self.applied_notify_tx.send(idx);
+                    if let Err(e) = self.applied_notify_tx.send(idx) {
+                        debug_assert!(false, "apply notify send failed: {e:?}");
+                    }
                 }
 
                 metrics::counter!(
@@ -1233,6 +1245,16 @@ where
     #[cfg(test)]
     pub fn snapshot_in_progress(&self) -> bool {
         self.snapshot_in_progress.load(Ordering::Acquire)
+    }
+
+    /// Test helper: simulate state machine applying to target index
+    #[cfg(test)]
+    pub fn test_simulate_apply(
+        &self,
+        target_index: u64,
+    ) {
+        self.last_applied.store(target_index, Ordering::Release);
+        let _ = self.applied_notify_tx.send(target_index);
     }
 }
 

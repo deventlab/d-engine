@@ -61,7 +61,7 @@ async fn create_test_node(test_name: &str) -> (TestNode, tokio::sync::watch::Sen
 
     // Increase timeout for test reliability (CI environments can be slow)
     let mut raft_config = RaftConfig::default();
-    raft_config.read_consistency.state_machine_sync_timeout_ms = 1000; // 100ms for tests
+    raft_config.read_consistency.state_machine_sync_timeout_ms = 1000; // 1000ms for tests
 
     let node = NodeBuilder::from_cluster_config(cluster_config, graceful_rx)
         .storage_engine(storage_engine)
@@ -484,4 +484,50 @@ async fn test_linearizable_read_sees_latest_value() {
     );
 
     println!("✅ Linearizable reads always see latest committed value");
+}
+
+/// Test: High concurrent read/write - verify no stale reads under load
+///
+/// This test validates wait_applied behavior under concurrent load:
+/// - 100 concurrent writes to different keys
+/// - Each write immediately followed by linearizable read (no sleep)
+/// - Every linearizable read must see its own write
+///
+/// This stresses the wait_applied fast path and concurrent waiter handling.
+#[tokio::test]
+async fn test_concurrent_write_and_linearizable_read() {
+    let (node, _shutdown) = create_test_node("concurrent_rw").await;
+    let client = node.local_client();
+
+    let mut tasks = vec![];
+
+    // Spawn 100 concurrent write-then-read operations
+    for i in 0..100 {
+        let c = client.clone();
+        tasks.push(tokio::spawn(async move {
+            let key = format!("key_{i}").into_bytes();
+            let value = format!("value_{i}").into_bytes();
+
+            // Write
+            c.put(&key, &value).await.unwrap_or_else(|_| panic!("PUT key_{i} failed"));
+
+            // Immediately linearizable read (no sleep)
+            let result =
+                c.get_linearizable(&key).await.unwrap_or_else(|_| panic!("GET key_{i} failed"));
+
+            // Must see own write
+            assert_eq!(
+                result.unwrap(),
+                Bytes::from(value),
+                "Linearizable read must see its own write for key_{i}"
+            );
+        }));
+    }
+
+    // Wait for all tasks
+    for task in tasks {
+        task.await.unwrap();
+    }
+
+    println!("✅ All 100 concurrent linearizable reads saw their own writes");
 }
