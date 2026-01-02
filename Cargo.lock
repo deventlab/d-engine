@@ -626,7 +626,6 @@ dependencies = [
  "d-engine-client",
  "d-engine-core",
  "d-engine-proto",
- "d-engine-server",
  "dashmap",
  "futures",
  "http-body",
