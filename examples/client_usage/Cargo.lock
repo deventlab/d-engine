@@ -455,14 +455,14 @@ dependencies = [
 
 [[package]]
 name = "d-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "d-engine-client",
 ]
 
 [[package]]
 name = "d-engine-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "d-engine-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "d-engine-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "prost",

@@ -63,7 +63,6 @@ metrics = { version = "0.24", features = [] }
 
 
 [dev-dependencies]
-d-engine-server = { workspace = true, features = ["test-utils"] }
 d-engine-core = { workspace = true, features = ["test-utils"] }
 serial_test = "3.2.0"
 temp-env = "0.3.6"
