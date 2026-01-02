@@ -23,7 +23,7 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["Joshua Chi <joshokn@gmail.com>"]
 homepage = "https://github.com/deventlab/d-engine"
@@ -31,10 +31,10 @@ repository = "https://github.com/deventlab/d-engine"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-d-engine-proto = { path = "./d-engine-proto", version = "0.2.0" }
-d-engine-core = { path = "./d-engine-core", version = "0.2.0" }
-d-engine-client = { path = "./d-engine-client", version = "0.2.0" }
-d-engine-server = { path = "./d-engine-server", version = "0.2.0" }
+d-engine-proto = { path = "./d-engine-proto", version = "0.2.1" }
+d-engine-core = { path = "./d-engine-core", version = "0.2.1" }
+d-engine-client = { path = "./d-engine-client", version = "0.2.1" }
+d-engine-server = { path = "./d-engine-server", version = "0.2.1" }
 
 tokio = { version = "1", features = [
     "macros",
