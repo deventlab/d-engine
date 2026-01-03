@@ -406,6 +406,11 @@ docs-check: check-workspace
 docs-check-all: check-workspace
 	@echo "$(BLUE)Checking documentation (all features, strict mode)...$(NC)"
 	@RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --all-features --no-deps
+	@echo "$(BLUE)Simulating docs.rs build for each crate...$(NC)"
+	@for crate in d-engine-proto d-engine-core d-engine-client d-engine-server d-engine; do \
+		echo "  Checking $$crate..."; \
+		RUSTDOCFLAGS="-D warnings" $(CARGO) rustdoc --lib -p $$crate --all-features || exit 1; \
+	done
 	@echo "$(GREEN)✓ Documentation compiled without warnings$(NC)"
 
 ## docs-private         Generate documentation including private items (architecture)

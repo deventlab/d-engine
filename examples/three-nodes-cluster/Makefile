@@ -15,8 +15,8 @@ LOG_LEVEL ?= warn
 # Build Targets
 # ===============================
 build:
-	@echo "Building release binary with watch feature..."
-	cargo build --release --features watch --jobs 4
+	@echo "Building release binary..."
+	cargo build --release --jobs 4
 
 # ===============================
 # Cluster Management (Normal Mode)
@@ -94,7 +94,7 @@ perf-cluster: clean build
 
 
 build-tokio-console:
-	RUSTFLAGS="--cfg tokio_unstable" cargo build --release --features watch --jobs 4
+	RUSTFLAGS="--cfg tokio_unstable" cargo build --release --jobs 4
 
 tokio-console-node1:
 	@echo "Starting Node 1 with tokio console monitoring..."

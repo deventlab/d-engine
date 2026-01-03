@@ -12,11 +12,16 @@ categories = ["asynchronous", "concurrency", "network-programming"]
 publish = true
 
 [package.metadata.docs.rs]
-all-features = true
+# Only enable user-facing features, exclude test-utils
+features = ["rocksdb", "watch"]
 rustdoc-args = ["--cfg", "docsrs"]
 
+[package.metadata.release]
+# Disable individual crate tags, use workspace-level tag only
+tag = false
+
 [features]
-test-utils = ["mockall", "astral-tokio-tar", "async-compression", "nanoid"]
+test-utils = ["mockall", "astral-tokio-tar", "async-compression", "nanoid", "d-engine-core/test-utils"]
 rocksdb = ["dep:rocksdb"]
 # Experimental: Watch API for key change notifications
 # WARNING: This feature is under active development and not production-ready

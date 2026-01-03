@@ -60,6 +60,8 @@ async fn main() {
 }
 ```
 
+> **Note**: Release builds require explicit `db_root_dir` configuration. Set `CONFIG_PATH` env or use `EmbeddedEngine::with_config(...)`. See [Quick Start Guide](https://docs.rs/d-engine/latest/d_engine/docs/quick_start_5min/index.html).
+
 **→ Full example:** [examples/quick-start-embedded](examples/quick-start-embedded/README.md)
 
 ---
@@ -140,7 +142,7 @@ sequenceDiagram
 
 ## Performance Comparison (d-engine v0.2.0 vs etcd 3.5)
 
-![d-engine vs etcd comparison](./benches/d-engine-bench/reports/v0.2.0/dengine_comparison_v0.2.0.png)
+![d-engine vs etcd comparison](https://github.com/deventlab/d-engine/raw/HEAD/benches/d-engine-bench/reports/v0.2.0/dengine_comparison_v0.2.0.png)
 
 ### View Benchmarks Detailed Reports
 

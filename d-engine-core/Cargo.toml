@@ -12,8 +12,13 @@ categories = ["algorithms", "concurrency"]
 publish = true
 
 [package.metadata.docs.rs]
-all-features = true
+# Only enable user-facing features, exclude test-utils
+features = ["watch"]
 rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.release]
+# Disable individual crate tags, use workspace-level tag only
+tag = false
 
 
 [features]

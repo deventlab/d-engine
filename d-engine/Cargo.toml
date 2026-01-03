@@ -18,8 +18,13 @@ categories = ["concurrency", "asynchronous", "algorithms", "database"]
 readme = "../README.md"
 
 [package.metadata.docs.rs]
-all-features = true
+# Enable all user-facing features (default already includes server + rocksdb)
+features = ["client", "server", "rocksdb", "watch"]
 rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.release]
+# Disable individual crate tags, use workspace-level tag only
+tag = false
 
 [features]
 default = ["server", "rocksdb"]

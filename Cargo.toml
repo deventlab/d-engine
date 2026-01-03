@@ -81,3 +81,15 @@ debug = 1                    # Reduce debug information
 
 [profile.test.build-override]
 opt-level = 3 # Full optimization of dependencies
+
+[workspace.metadata.release]
+# Use unified v{version} format for tags
+tag-name = "v{{version}}"
+# Create workspace-level unified tag
+tag = true
+# Synchronize versions across workspace members
+shared-version = true
+# Ensure clean git working tree before release
+allow-branch = ["main", "release/*"]
+# Auto push tags and commits
+push = true

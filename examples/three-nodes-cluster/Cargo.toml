@@ -3,12 +3,10 @@ name = "demo"
 version = "0.2.0"
 edition = "2024"
 
-[features]
-watch = ["d-engine/watch"]
 
 [dependencies]
-d-engine = { path = "../../d-engine", features = ["rocksdb"] }
-# d-engine = "0.1.1"
+# d-engine = { path = "../../d-engine", features = ["rocksdb"] }
+d-engine = "0.2"
 # d-engine = { git = "https://github.com/deventlab/d-engine.git", branch = "feature/79-snapshot" }
 
 metrics-exporter-prometheus = "0.17.2"

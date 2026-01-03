@@ -519,6 +519,8 @@ dependencies = [
 [[package]]
 name = "d-engine"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4efacdb3b4973dae1b6f97acd2b1d0cf78b87ea68ebe226f5c85983bc200b53c"
 dependencies = [
  "d-engine-client",
  "d-engine-server",
@@ -542,6 +544,8 @@ dependencies = [
 [[package]]
 name = "d-engine-client"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b90568094f57760e07f2aae3062687d35aa6d08099a434fa5930b41cdddd8ccd"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -561,6 +565,8 @@ dependencies = [
 [[package]]
 name = "d-engine-core"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bff3eba06da88951f376556d3f4bf6300570515870e091732981c681c28bc0b"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
@@ -597,6 +603,8 @@ dependencies = [
 [[package]]
 name = "d-engine-proto"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a12a722030fa1648f58743248478ddf648ab3a83b52799a5761a43db027b1ac"
 dependencies = [
  "bytes",
  "prost",
@@ -610,6 +618,8 @@ dependencies = [
 [[package]]
 name = "d-engine-server"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c32c3ca4729bd53d975e9a438c70d974b6b8a14546c68e662d626124aa812e0"
 dependencies = [
  "arc-swap",
  "async-trait",
