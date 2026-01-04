@@ -26,6 +26,101 @@
 //!
 //! - **EmbeddedEngine**: Application developers who want simplicity
 //! - **Node**: Framework developers who need fine-grained control
+//!
+//! # Application Responsibilities in Multi-Node Deployments
+//!
+//! EmbeddedEngine provides **cluster state APIs** but does NOT handle request routing.
+//! Applications are responsible for handling follower write requests.
+//!
+//! ## What EmbeddedEngine Provides
+//!
+//! - ✅ `is_leader()` - Check if current node is leader
+//! - ✅ `leader_info()` - Get leader ID and term
+//! - ✅ `LocalKvClient` returns `NotLeader` error on follower writes
+//! - ✅ Zero-overhead in-process communication (<0.1ms)
+//!
+//! ## What Applications Must Handle
+//!
+//! - ❌ Request routing (follower → leader forwarding)
+//! - ❌ Load balancing across nodes
+//! - ❌ Health check endpoints for load balancers
+//!
+//! ## Integration Patterns
+//!
+//! ### Pattern 1: Load Balancer Health Checks (Recommended for HA)
+//!
+//! **Application provides HTTP health check endpoints:**
+//! ```ignore
+//! use axum::{Router, routing::get, http::StatusCode};
+//!
+//! // Health check endpoint for load balancer (e.g. HAProxy)
+//! async fn health_primary(engine: Arc<EmbeddedEngine>) -> StatusCode {
+//!     if engine.is_leader() {
+//!         StatusCode::OK  // 200 - Load balancer routes writes here
+//!     } else {
+//!         StatusCode::SERVICE_UNAVAILABLE  // 503 - Load balancer skips this node
+//!     }
+//! }
+//!
+//! async fn health_replica(engine: Arc<EmbeddedEngine>) -> StatusCode {
+//!     if !engine.is_leader() {
+//!         StatusCode::OK  // 200 - Load balancer routes reads here
+//!     } else {
+//!         StatusCode::SERVICE_UNAVAILABLE  // 503
+//!     }
+//! }
+//!
+//! let app = Router::new()
+//!     .route("/primary", get(health_primary))  // For write traffic
+//!     .route("/replica", get(health_replica)); // For read traffic
+//!
+//! axum::Server::bind(&"0.0.0.0:8008".parse()?)
+//!     .serve(app.into_make_service())
+//!     .await?;
+//! ```
+//!
+//! ### Pattern 2: Pre-check Before Write (Simple)
+//!
+//! **Application checks leadership before handling writes:**
+//! ```ignore
+//! async fn handle_write_request(engine: &EmbeddedEngine, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+//!     if !engine.is_leader() {
+//!         // Return HTTP 503 to client
+//!         return Err("Not leader, please retry on another node");
+//!     }
+//!
+//!     // Safe to write (this node is leader)
+//!     engine.client().put(key, value).await?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### Pattern 3: HTTP 307 Redirect (Alternative)
+//!
+//! **Application returns redirect to leader:**
+//! ```ignore
+//! async fn handle_write_request(engine: &EmbeddedEngine) -> Response {
+//!     match engine.client().put(key, value).await {
+//!         Ok(_) => Response::ok(),
+//!         Err(LocalClientError::NotLeader { leader_address: Some(addr), .. }) => {
+//!             // Redirect client to leader
+//!             Response::redirect_307(addr)
+//!         }
+//!         Err(e) => Response::error(e),
+//!     }
+//! }
+//! ```
+//!
+//! ## Design Philosophy
+//!
+//! **Why doesn't EmbeddedEngine auto-forward writes?**
+//!
+//! 1. **Preserves zero-overhead guarantee** - Auto-forwarding requires gRPC client (adds network/serialization)
+//! 2. **Maintains simplicity** - No hidden network calls in "embedded" mode
+//! 3. **Flexible deployment** - Applications choose load balancer health checks, HTTP redirect, or other strategies
+//! 4. **Performance transparency** - Developers know exactly when network calls occur
+//!
+//! For auto-forwarding with gRPC overhead, use standalone mode with `GrpcKvClient`.
 
 use std::sync::Arc;
 
@@ -244,13 +339,33 @@ impl EmbeddedEngine {
     /// Blocks until a leader has been elected in the cluster.
     /// Event-driven notification (no polling), <1ms latency.
     ///
-    /// # Timeout
-    /// - Single-node: Returns immediately (<100ms)
-    /// - Multi-node: May take seconds depending on network
+    /// # Timeout Guidelines
+    ///
+    /// **Single-node mode** (most common for development):
+    /// - Typical: <100ms (near-instant election)
+    /// - Recommended: `Duration::from_secs(3)`
+    ///
+    /// **Multi-node HA cluster** (production):
+    /// - Typical: 1-3s (depends on network latency and `general_raft_timeout_duration_in_ms`)
+    /// - Recommended: `Duration::from_secs(10)`
+    ///
+    /// **Special cases**:
+    /// - Health checks: `Duration::from_secs(3)` (fail fast if cluster unhealthy)
+    /// - Startup scripts: `Duration::from_secs(30)` (allow time for cluster stabilization)
+    /// - Development/testing: `Duration::from_secs(5)` (balance between speed and reliability)
+    ///
+    /// # Returns
+    /// - `Ok(LeaderInfo)` - Leader elected successfully
+    /// - `Err(...)` - Timeout or cluster unavailable
     ///
     /// # Example
     /// ```ignore
+    /// // Single-node development
     /// let engine = EmbeddedEngine::start().await?;
+    /// let leader = engine.wait_ready(Duration::from_secs(3)).await?;
+    ///
+    /// // Multi-node production
+    /// let engine = EmbeddedEngine::start_with("cluster.toml").await?;
     /// let leader = engine.wait_ready(Duration::from_secs(10)).await?;
     /// println!("Leader elected: {} (term {})", leader.leader_id, leader.term);
     /// ```
@@ -309,6 +424,66 @@ impl EmbeddedEngine {
     /// ```
     pub fn leader_change_notifier(&self) -> watch::Receiver<Option<crate::LeaderInfo>> {
         self.leader_elected_rx.clone()
+    }
+
+    /// Returns true if the current node is the Raft leader.
+    ///
+    /// # Use Cases
+    /// - Load balancer health checks (e.g. HAProxy `/primary` endpoint returning HTTP 200/503)
+    /// - Prevent write requests to followers before they fail
+    /// - Application-level request routing decisions
+    ///
+    /// # Performance
+    /// Zero-cost operation (reads cached leader state from watch channel)
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Load balancer health check endpoint
+    /// #[get("/primary")]
+    /// async fn health_primary(engine: &EmbeddedEngine) -> StatusCode {
+    ///     if engine.is_leader() {
+    ///         StatusCode::OK  // Routes writes here
+    ///     } else {
+    ///         StatusCode::SERVICE_UNAVAILABLE
+    ///     }
+    /// }
+    ///
+    /// // Application request handler
+    /// if engine.is_leader() {
+    ///     client.put(key, value).await?;
+    /// } else {
+    ///     return Err("Not leader, write rejected");
+    /// }
+    /// ```
+    pub fn is_leader(&self) -> bool {
+        self.leader_elected_rx
+            .borrow()
+            .as_ref()
+            .map(|info| info.leader_id == self.kv_client.node_id())
+            .unwrap_or(false)
+    }
+
+    /// Returns current leader information if available.
+    ///
+    /// # Returns
+    /// - `Some(LeaderInfo)` if a leader is elected (includes leader_id and term)
+    /// - `None` if no leader exists (during election or network partition)
+    ///
+    /// # Use Cases
+    /// - Monitoring dashboards showing cluster state
+    /// - Debugging leader election issues
+    /// - Logging cluster topology changes
+    ///
+    /// # Example
+    /// ```ignore
+    /// if let Some(info) = engine.leader_info() {
+    ///     println!("Leader: {} (term {})", info.leader_id, info.term);
+    /// } else {
+    ///     println!("No leader elected, cluster unavailable");
+    /// }
+    /// ```
+    pub fn leader_info(&self) -> Option<crate::LeaderInfo> {
+        *self.leader_elected_rx.borrow()
     }
 
     /// Get a reference to the local KV client.

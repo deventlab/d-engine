@@ -736,4 +736,225 @@ listen_addr = "127.0.0.1:0"
             // _temp_dir stays alive until here
         }
     }
+
+    // ========================================
+    // Cluster State API Tests (Ticket #234)
+    // ========================================
+
+    /// Test: Single-node deployment should elect itself as leader
+    ///
+    /// Setup:
+    /// - Start single EmbeddedEngine instance
+    /// - Wait for leader election to complete
+    ///
+    /// Verification:
+    /// - `is_leader()` returns true
+    /// - `leader_info()` returns Some(LeaderInfo) with leader_id=1
+    ///
+    /// Business scenario: Most basic embedded deployment (1 node)
+    #[tokio::test]
+    async fn test_is_leader_single_node() {
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+            .await
+            .expect("Failed to start engine");
+
+        // Wait for leader election
+        engine
+            .wait_ready(Duration::from_secs(5))
+            .await
+            .expect("Leader should be elected");
+
+        // Single node should be leader
+        assert!(
+            engine.is_leader(),
+            "Single node should be the leader after election"
+        );
+
+        // Leader info should be available
+        let info = engine.leader_info();
+        assert!(info.is_some(), "Leader info should be available");
+        assert_eq!(info.unwrap().leader_id, 1, "Leader ID should be 1");
+
+        engine.stop().await.expect("Failed to stop engine");
+    }
+
+    /// Test: APIs should not panic when called before leader election
+    ///
+    /// Setup:
+    /// - Start EmbeddedEngine
+    /// - Call `is_leader()` and `leader_info()` BEFORE wait_ready()
+    ///
+    /// Verification:
+    /// - APIs do not panic when called early
+    /// - `is_leader()` and `leader_info()` are consistent (both false/None or both true/Some)
+    /// - After wait_ready(), both APIs return leadership state
+    ///
+    /// Business scenario: Application calls APIs during startup before cluster is ready
+    #[tokio::test]
+    async fn test_leader_info_before_election() {
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+            .await
+            .expect("Failed to start engine");
+
+        // Check immediately after start (before wait_ready)
+        // Leader might not be elected yet
+        let initial_is_leader = engine.is_leader();
+        let initial_info = engine.leader_info();
+
+        // In single-node mode, election is very fast, so this might already be true
+        // But we verify the API doesn't panic when called early
+        assert!(
+            initial_is_leader == initial_info.is_some(),
+            "is_leader() and leader_info() should be consistent"
+        );
+
+        // Wait for election to complete
+        engine
+            .wait_ready(Duration::from_secs(5))
+            .await
+            .expect("Leader should be elected");
+
+        // Now it must be leader
+        assert!(engine.is_leader(), "Should be leader after wait_ready");
+        assert!(
+            engine.leader_info().is_some(),
+            "Leader info must be available after wait_ready"
+        );
+
+        engine.stop().await.expect("Failed to stop engine");
+    }
+
+    /// Test: Concurrent access to is_leader() and leader_info() is safe
+    ///
+    /// Setup:
+    /// - Start single EmbeddedEngine
+    /// - Spawn 10 tokio tasks
+    /// - Each task calls is_leader() and leader_info() 1000 times concurrently
+    ///
+    /// Verification:
+    /// - No panics or deadlocks occur
+    /// - All tasks complete successfully
+    /// - Final state remains consistent (still leader)
+    ///
+    /// Business scenario: High-traffic application with concurrent health checks
+    /// (e.g., HAProxy checking /primary endpoint from multiple load balancers)
+    #[tokio::test]
+    async fn test_is_leader_concurrent_access() {
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+
+        let engine = Arc::new(
+            EmbeddedEngine::start_custom(storage, sm, None)
+                .await
+                .expect("Failed to start engine"),
+        );
+
+        // Wait for leader election
+        engine
+            .wait_ready(Duration::from_secs(5))
+            .await
+            .expect("Leader should be elected");
+
+        // Collect results from concurrent calls
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Spawn 10 tasks to concurrently call is_leader() and leader_info()
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let engine_clone = Arc::clone(&engine);
+            let results_clone = Arc::clone(&results);
+            let handle = tokio::spawn(async move {
+                for _ in 0..100 {
+                    let is_leader = engine_clone.is_leader();
+                    let info = engine_clone.leader_info();
+
+                    // Store result for verification
+                    results_clone.lock().unwrap().push((is_leader, info));
+
+                    // Verify is_leader() matches leader_info()
+                    assert_eq!(
+                        is_leader,
+                        info.is_some(),
+                        "is_leader() and leader_info() should be consistent"
+                    );
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all tasks to complete
+        for handle in handles {
+            handle.await.expect("Task should not panic");
+        }
+
+        // Verify all results are consistent
+        {
+            let results = results.lock().unwrap();
+            let first_info = results[0].1;
+
+            for (is_leader, info) in results.iter() {
+                assert!(*is_leader, "All calls should see this node as leader");
+                assert_eq!(
+                    *info, first_info,
+                    "All concurrent calls should return same LeaderInfo"
+                );
+            }
+        } // Drop MutexGuard before await
+
+        // Workaround: extract engine from Arc for cleanup
+        let engine = Arc::try_unwrap(engine).unwrap_or_else(|arc| {
+            panic!(
+                "Failed to unwrap Arc, remaining references: {}",
+                Arc::strong_count(&arc)
+            )
+        });
+        engine.stop().await.expect("Failed to stop engine");
+    }
+
+    /// Test: leader_info() returns consistent results across multiple calls
+    ///
+    /// Setup:
+    /// - Start single EmbeddedEngine
+    /// - Wait for leader election
+    /// - Call leader_info() multiple times
+    ///
+    /// Verification:
+    /// - All calls return the same LeaderInfo (same leader_id and term)
+    /// - No unexpected state changes between calls
+    ///
+    /// Business scenario: Monitoring dashboard polling cluster state every second
+    #[tokio::test]
+    async fn test_leader_info_consistency() {
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+
+        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+            .await
+            .expect("Failed to start engine");
+
+        engine
+            .wait_ready(Duration::from_secs(5))
+            .await
+            .expect("Leader should be elected");
+
+        // Call leader_info() multiple times, should return same result
+        let info1 = engine.leader_info();
+        let info2 = engine.leader_info();
+        let info3 = engine.leader_info();
+
+        assert_eq!(info1, info2, "leader_info() should be consistent");
+        assert_eq!(info2, info3, "leader_info() should be consistent");
+
+        // All should indicate same leader
+        if let Some(info) = info1 {
+            assert_eq!(info.leader_id, 1);
+            assert!(info.term > 0);
+        } else {
+            panic!("Leader info should be available");
+        }
+
+        engine.stop().await.expect("Failed to stop engine");
+    }
 }

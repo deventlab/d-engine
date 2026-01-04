@@ -1,5 +1,4 @@
 use d_engine::EmbeddedEngine;
-use d_engine::LocalClientError;
 use std::env;
 use std::time::Duration;
 
@@ -12,7 +11,7 @@ async fn main() {
     let leader_info = match engine.wait_ready(Duration::from_secs(5)).await {
         Ok(info) => info,
         Err(err) => {
-            eprintln!("Failed to wait for engine readiness: {}", err);
+            eprintln!("Failed to wait for engine readiness: {err}");
             std::process::exit(1);
         }
     };
