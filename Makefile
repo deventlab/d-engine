@@ -74,7 +74,6 @@ help:
 	@echo "  $(YELLOW)Testing:$(NC)"
 	@echo "    make test                  # Run unit + integration tests"
 	@echo "    make test-all              # Fast parallel testing (nextest)"
-	@echo "    make test-all-legacy       # Comprehensive pre-release suite"
 	@echo "    make test-unit             # Run unit tests only"
 	@echo "    make test-integration      # Run integration tests only"
 	@echo ""
@@ -338,9 +337,6 @@ test-all: check-all-projects test-doc test-examples docs-check-all
 	@$(CARGO) test --doc --workspace
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
-## test-all-legacy      Comprehensive test suite (includes clippy/docs/bench checks)
-test-all-legacy: check-all-projects test-unit test-integration test-doc test-examples docs-check-all bench
-	@echo "$(GREEN)✓ All test suites passed (ready for release)$(NC)"
 
 ## test-verbose         Run tests with verbose output and single-threaded execution
 test-verbose: install-tools check-workspace

@@ -1,8 +1,17 @@
 # d-engine - Distributed Coordination Engine
 
-**d-engine** is a lightweight distributed coordination engine written in Rust, designed for
-embedding into applications that need strong consistency—the consensus layer for building
-reliable distributed systems.
+**d-engine** is a lightweight distributed coordination engine written in Rust,
+designed for embedding into applications that need strong consistency—the consensus
+layer for building reliable distributed systems.
+
+**Built with a simple vision**: make distributed coordination accessible - cheap
+to run, simple to use. **Built on a core philosophy**: choose simple architectures
+over complex ones.
+
+d-engine's Raft core uses a single-threaded event loop to guarantee strong consistency
+and strict ordering while keeping the codebase clean and performant. Production-ready
+Raft implementation with flexible read consistency (Linearizable/Lease-Based/Eventual)
+and pluggable storage backends. Start with one node, scale to a cluster when needed.
 
 ## 🚀 New to d-engine? Start Here
 

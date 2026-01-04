@@ -7,8 +7,18 @@
 [![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/deventlab/d-engine)
 
-**d-engine** is a lightweight distributed coordination engine written in Rust, designed for embedding into applications that need strong consistency—the consensus layer for building reliable distributed systems. Start with a single node and scale to a cluster when you need high availability. **Designed for resource efficiency**, d-engine employs a single-threaded event-driven architecture that minimizes resource overhead while maintaining high performance. It provides a production-ready implementation of the Raft consensus algorithm,
-with pluggable storage backends, built-in observability, and tokio runtime support.
+**d-engine** is a lightweight distributed coordination engine written in Rust,
+designed for embedding into applications that need strong consistency—the consensus
+layer for building reliable distributed systems.
+
+**Built with a simple vision**: make distributed coordination accessible - cheap
+to run, simple to use. **Built on a core philosophy**: choose simple architectures
+over complex ones.
+
+d-engine's Raft core uses a single-threaded event loop to guarantee strong consistency
+and strict ordering while keeping the codebase clean and performant. Production-ready
+Raft implementation with flexible read consistency (Linearizable/Lease-Based/Eventual)
+and pluggable storage backends. Start with one node, scale to a cluster when needed.
 
 ---
 
@@ -16,18 +26,18 @@ with pluggable storage backends, built-in observability, and tokio runtime suppo
 
 ### New in v0.2.0 🎉
 
-- **Modular Workspace**: Feature flags (`client`/`server`) - depend only on what you need
-- **TTL/Lease**: Automatic key expiration for distributed locks and session management
-- **Watch API**: Real-time key change notifications (config updates, service discovery)
-- **EmbeddedEngine**: Single-node start, one-line scale to 3-node cluster
+- **EmbeddedEngine**: Single-node start, scale to 3-node cluster when needed
 - **LocalKvClient**: Zero-overhead in-process access (<0.1ms latency)
+- **Watch API**: Real-time key change notifications (config updates, service discovery)
+- **TTL/Lease**: Automatic key expiration for distributed locks and session management
+- **Modular Workspace**: Feature flags (`client`/`server`) - depend only on what you need
 
 ### Core Capabilities
 
-- **Single-Node Start**: Begin with one node, expand to 3-node cluster when needed (zero downtime)
 - **Strong Consistency**: Full Raft protocol implementation for distributed consensus
-- **Tunable Persistence**: DiskFirst for durability or MemFirst for lower latency
 - **Flexible Read Consistency**: Three-tier model (Linearizable/Lease-Based/Eventual)
+- **Single-Node Start**: Begin with one node, expand to 3-node cluster when needed (zero downtime)
+- **Tunable Persistence**: DiskFirst for durability or MemFirst for lower latency
 - **Pluggable Storage**: Custom backends supported (RocksDB, Sled, Raw File)
 
 ---
@@ -170,10 +180,8 @@ See [examples/three-nodes-cluster/docker/jepsen/README.md](./examples/three-node
 ### Development Workflow
 
 ```bash
-# Build and test
-make test
-make clippy
-make fmt-check
+#  Run all checks (tests + linters)
+make test-all
 ```
 
 ---
