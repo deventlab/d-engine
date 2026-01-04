@@ -18,6 +18,7 @@ exclude = [
   "examples/service-discovery-standalone",
   "examples/service-discovery-embedded",
   "benches/d-engine-bench",
+  "benches/embedded-bench"
 ]
 
 resolver = "2"

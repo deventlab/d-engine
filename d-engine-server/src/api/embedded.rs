@@ -402,7 +402,6 @@ impl EmbeddedEngine {
     ///
     /// Useful in integration tests that need to identify which node
     /// they're interacting with, especially in multi-node scenarios.
-    #[cfg(any(test, feature = "test-utils"))]
     pub fn node_id(&self) -> u32 {
         self.kv_client.node_id()
     }

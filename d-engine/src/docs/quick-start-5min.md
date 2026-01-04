@@ -157,13 +157,24 @@ Returns `LocalKvClient` for zero-overhead KV operations.
 
 ---
 
-### 2. Local-First Operations
+### 2. In-Process Client Access
 
 ```rust,ignore
-client.put(key, value).await?;  // <0.1ms (local memory + disk)
+client.put(key, value).await?;
 ```
 
-No network, no serialization. Just direct function calls to Raft core.
+No gRPC overhead - direct function calls to embedded Raft core.
+
+**For complete API reference, see** [LocalKvClient docs](https://docs.rs/d-engine/latest/d_engine/prelude/struct.LocalKvClient.html).
+
+**Key methods**:
+
+- `put(key, value)` - Write with Raft consensus
+- `get_linearizable(key)` - Strong consistency read
+- `get_eventual(key)` - Fast local read (may be stale)
+- `delete(key)` - Delete key
+
+See docs for TTL, multi-key operations, and advanced consistency control.
 
 ---
 
@@ -224,6 +235,8 @@ client.get(key: Vec<u8>) -> Result<Option<Vec<u8>>>
 // Delete
 client.delete(key: Vec<u8>) -> Result<DeleteResponse>
 ```
+
+See [complete API documentation](https://docs.rs/d-engine/latest/d_engine/prelude/struct.LocalKvClient.html) for all available methods including TTL operations, multi-key reads, and consistency control.
 
 ---
 

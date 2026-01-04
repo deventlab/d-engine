@@ -431,7 +431,6 @@ impl LocalKvClient {
     }
 
     /// Returns the node ID for testing purposes
-    #[cfg(any(test, feature = "test-utils"))]
     pub fn node_id(&self) -> u32 {
         self.client_id
     }

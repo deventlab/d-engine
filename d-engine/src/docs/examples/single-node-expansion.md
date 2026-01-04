@@ -9,7 +9,7 @@
 | Single Node                        | 3-Node Cluster               |
 | ---------------------------------- | ---------------------------- |
 | No fault tolerance                 | Tolerates 1 node failure     |
-| $100/month                         | $300/month                   |
+| 1 server                           | 3 servers                    |
 | If node crashes → data unavailable | Auto leader re-election      |
 | No replication                     | Data replicated across nodes |
 

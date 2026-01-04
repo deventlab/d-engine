@@ -1,0 +1,9 @@
+[cluster]
+node_id = 2
+listen_address = "0.0.0.0:9082"
+initial_cluster = [
+    { id = 1, address = "0.0.0.0:9081", role = 0, status = 2 },
+    { id = 2, address = "0.0.0.0:9082", role = 0, status = 2 },
+    { id = 3, address = "0.0.0.0:9083", role = 0, status = 2 }
+]
+db_root_dir = "./data/n2"
