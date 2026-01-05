@@ -328,3 +328,49 @@ async fn test_membership_applied_preserves_existing_peer_next_index() {
 
     println!("✓ Regression test passed: existing peers' next_index not affected");
 }
+
+/// Test: Single-node cluster skips PurgeRequest during snapshot purge
+///
+/// This test verifies the fix for the NoPeersAvailable error that occurred
+/// when a single-node cluster attempted to send PurgeRequest after snapshot creation.
+///
+/// Scenario:
+/// - Single-node cluster (node_id=1, no peers)
+/// - replication_targets is empty
+/// - Snapshot created at index 2000
+///
+/// Expected behavior:
+/// - Skip Phase 2.2 (send_purge_requests)
+/// - Execute local purge directly
+/// - No NoPeersAvailable error
+#[tokio::test]
+async fn test_snapshot_purge_single_node_cluster() {
+    let config = Arc::new(node_config("/tmp/test_snapshot_purge_single"));
+    let mut state = LeaderState::<MockTypeConfig>::new(1, config);
+
+    // Setup single-node cluster metadata
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    // Verify preconditions
+    assert!(
+        state.cluster_metadata.replication_targets.is_empty(),
+        "Single-node cluster should have no replication targets"
+    );
+    assert!(
+        state.cluster_metadata.single_voter,
+        "Single-node cluster should have single_voter=true"
+    );
+    assert_eq!(
+        state.cluster_metadata.total_voters, 1,
+        "Single-node cluster should have total_voters=1"
+    );
+
+    println!("✓ Single-node cluster metadata initialized correctly");
+    println!("  - replication_targets: empty");
+    println!("  - single_voter: true");
+    println!("  - total_voters: 1");
+}

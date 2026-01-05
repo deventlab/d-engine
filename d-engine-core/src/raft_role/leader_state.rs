@@ -1064,55 +1064,53 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             }
 
                             // ----------------------
-                            // Phase 2.1: Pre-Checks before sending Purge request
+                            // Phase 2: Send Purge request (multi-node only)
                             // ----------------------
-                            trace!("Phase 2.1: Pre-Checks before sending Purge request");
-                            let membership = ctx.membership();
-                            let members = membership.voters().await;
-                            if members.is_empty() {
-                                warn!("no peer found for leader({})", my_id);
-                                return Err(MembershipError::NoPeersAvailable.into());
+                            // Check replication_targets to support:
+                            // 1. True single-node (no peers) - skip this phase
+                            // 2. Single-voter + Learner - send to Learner
+                            // 3. Multi-voter cluster - send to all peers
+                            if !self.cluster_metadata.replication_targets.is_empty() {
+                                trace!("Phase 2: Send Purge request to replication targets");
+                                let membership = ctx.membership();
+                                let transport = ctx.transport();
+                                match transport
+                                    .send_purge_requests(
+                                        PurgeLogRequest {
+                                            term: my_term,
+                                            leader_id: my_id,
+                                            last_included: Some(last_included),
+                                            snapshot_checksum: checksum.clone(),
+                                            leader_commit: self.commit_index(),
+                                        },
+                                        &self.node_config.retry,
+                                        membership,
+                                    )
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        info!(?result, "receive PurgeLogResult");
+                                        self.peer_purge_progress(result, &role_tx)?;
+                                    }
+                                    Err(e) => {
+                                        error!(?e, "RaftEvent::CreateSnapshotEvent");
+                                        return Err(e);
+                                    }
+                                }
+                            } else {
+                                debug!(
+                                    "Standalone node (leader={}): no replication targets, skip PurgeRequest",
+                                    my_id
+                                );
                             }
 
                             // ----------------------
-                            // Phase 2.2: Send Purge request to the other nodes
-                            // ----------------------
-                            trace!("Phase 2.2: Send Purge request to the other nodes");
-                            let transport = ctx.transport();
-                            match transport
-                                .send_purge_requests(
-                                    PurgeLogRequest {
-                                        term: my_term,
-                                        leader_id: my_id,
-                                        last_included: Some(last_included),
-                                        snapshot_checksum: checksum.clone(),
-                                        leader_commit: self.commit_index(),
-                                    },
-                                    &self.node_config.retry,
-                                    membership,
-                                )
-                                .await
-                            {
-                                Ok(result) => {
-                                    info!(?result, "receive PurgeLogResult");
-
-                                    self.peer_purge_progress(result, &role_tx)?;
-                                }
-                                Err(e) => {
-                                    error!(?e, "RaftEvent::CreateSnapshotEvent");
-                                    return Err(e);
-                                }
-                            }
-
-                            // ----------------------
-                            // Phase 3: Execute scheduled purge task
+                            // Phase 3: Execute local purge (all nodes)
                             // ----------------------
                             trace!("Phase 3: Execute scheduled purge task");
                             debug!(?last_included, "Execute scheduled purge task");
                             if let Some(scheduled) = self.scheduled_purge_upto {
                                 let purge_executor = ctx.purge_executor();
-                                // //TODO: bug
-                                // self.last_purged_index = Some(scheduled);
                                 match purge_executor.execute_purge(scheduled).await {
                                     Ok(_) => {
                                         if let Err(e) = send_replay_raft_event(
