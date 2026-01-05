@@ -504,6 +504,12 @@ pub enum MembershipError {
 
     #[error("Mark leader id failed: {0}")]
     MarkLeaderIdFailed(String),
+
+    /// Cluster metadata not initialized when required
+    #[error(
+        "BUG: cluster_metadata not initialized! Leader must call init_cluster_metadata() after election"
+    )]
+    ClusterMetadataNotInitialized,
 }
 
 #[derive(Debug, thiserror::Error)]

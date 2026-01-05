@@ -1072,6 +1072,20 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             // 3. Multi-voter cluster - send to all peers
                             if !self.cluster_metadata.replication_targets.is_empty() {
                                 trace!("Phase 2: Send Purge request to replication targets");
+
+                                // Defensive check: verify cluster_metadata is initialized
+                                // This should never happen in production (init_cluster_metadata is called
+                                // automatically after leader election), but if it does, it indicates a
+                                // critical bug in state management
+                                if self.cluster_metadata.total_voters == 0 {
+                                    error!(
+                                        "BUG: cluster_metadata not initialized! Leader must call init_cluster_metadata() after election"
+                                    );
+                                    return Err(
+                                        MembershipError::ClusterMetadataNotInitialized.into()
+                                    );
+                                }
+
                                 let membership = ctx.membership();
                                 let transport = ctx.transport();
                                 match transport
@@ -1090,7 +1104,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                 {
                                     Ok(result) => {
                                         info!(?result, "receive PurgeLogResult");
-                                        self.peer_purge_progress(result, &role_tx)?;
+                                        // Process peer purge responses and check for higher term
+                                        // If a peer reports a higher term, this leader must step down
+                                        // immediately and skip local purge execution (Phase 3)
+                                        let should_step_down =
+                                            self.peer_purge_progress(result, &role_tx)?;
+                                        if should_step_down {
+                                            return Ok(()); // Early return, skip Phase 3
+                                        }
                                     }
                                     Err(e) => {
                                         error!(?e, "RaftEvent::CreateSnapshotEvent");
@@ -1888,18 +1909,38 @@ impl<T: TypeConfig> LeaderState<T> {
         self.scheduled_purge_upto = Some(received_last_included);
     }
 
-    fn peer_purge_progress(
+    /// Process peer purge responses and handle higher term detection.
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a higher term was detected and leader should step down
+    /// - `Ok(false)` if processing completed normally
+    ///
+    /// # Higher Term Handling
+    /// According to Raft §5.1: "If a server receives a request with a stale term number,
+    /// it rejects the request." Conversely, if we receive a response with a higher term,
+    /// we must immediately:
+    /// 1. Update our term to the higher value
+    /// 2. Step down to Follower role
+    /// 3. Signal caller to abort ongoing operations (e.g., skip Phase 3 local purge)
+    ///
+    /// # Safety
+    /// This function sends `BecomeFollower` event which triggers role transition.
+    /// Caller MUST check return value and skip subsequent leader-only operations.
+    pub(crate) fn peer_purge_progress(
         &mut self,
         responses: Vec<Result<PurgeLogResponse>>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if responses.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         for r in responses.iter().flatten() {
+            // Higher term detection: peer has advanced to a newer term
+            // This violates our leadership validity (Raft §5.1)
             if r.term > self.current_term() {
                 self.update_current_term(r.term);
                 self.send_become_follower_event(None, role_tx)?;
+                return Ok(true); // Signal step-down, caller must abort leader operations
             }
 
             if let Some(last_purged) = r.last_purged {
@@ -1910,7 +1951,7 @@ impl<T: TypeConfig> LeaderState<T> {
             }
         }
 
-        Ok(())
+        Ok(false)
     }
 
     fn send_become_follower_event(

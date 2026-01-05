@@ -374,3 +374,238 @@ async fn test_snapshot_purge_single_node_cluster() {
     println!("  - single_voter: true");
     println!("  - total_voters: 1");
 }
+
+#[cfg(test)]
+mod peer_purge_progress_tests {
+    use super::*;
+    use crate::Result;
+    use crate::raft_role::RoleEvent;
+    use d_engine_proto::common::LogId;
+    use d_engine_proto::server::storage::PurgeLogResponse;
+    use tokio::sync::mpsc;
+
+    /// Test: peer_purge_progress returns false when responses are empty
+    #[test]
+    fn test_peer_purge_progress_empty_responses() {
+        let config = Arc::new(node_config("/tmp/test_empty"));
+        let mut state = LeaderState::<MockTypeConfig>::new(1, config);
+        state.update_current_term(3);
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let responses: Vec<Result<PurgeLogResponse>> = vec![];
+
+        let should_step_down = state
+            .peer_purge_progress(responses, &role_tx)
+            .expect("Should handle empty responses");
+
+        assert!(
+            !should_step_down,
+            "Empty responses should not trigger step-down"
+        );
+        assert!(
+            role_rx.try_recv().is_err(),
+            "No event should be sent for empty responses"
+        );
+        assert_eq!(state.current_term(), 3, "Term should remain unchanged");
+    }
+
+    /// Test: peer_purge_progress returns false for normal responses (same term)
+    #[test]
+    fn test_peer_purge_progress_normal_responses() {
+        let config = Arc::new(node_config("/tmp/test_normal"));
+        let mut state = LeaderState::<MockTypeConfig>::new(1, config);
+        state.update_current_term(5);
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let responses = vec![
+            Ok(PurgeLogResponse {
+                node_id: 2,
+                term: 5, // Same term
+                success: true,
+                last_purged: Some(LogId {
+                    term: 5,
+                    index: 100,
+                }),
+            }),
+            Ok(PurgeLogResponse {
+                node_id: 3,
+                term: 5, // Same term
+                success: true,
+                last_purged: Some(LogId {
+                    term: 5,
+                    index: 100,
+                }),
+            }),
+        ];
+
+        let should_step_down = state
+            .peer_purge_progress(responses, &role_tx)
+            .expect("Should handle normal responses");
+
+        assert!(
+            !should_step_down,
+            "Normal responses should not trigger step-down"
+        );
+        assert!(
+            role_rx.try_recv().is_err(),
+            "No step-down event should be sent"
+        );
+        assert_eq!(state.current_term(), 5, "Term should remain unchanged");
+        assert_eq!(
+            state.peer_purge_progress.get(&2),
+            Some(&100),
+            "Peer 2 progress should be updated"
+        );
+        assert_eq!(
+            state.peer_purge_progress.get(&3),
+            Some(&100),
+            "Peer 3 progress should be updated"
+        );
+    }
+
+    /// Test: peer_purge_progress returns true when higher term detected
+    /// This is the critical test for the bug fix
+    #[test]
+    fn test_peer_purge_progress_higher_term_step_down() {
+        let config = Arc::new(node_config("/tmp/test_higher_term"));
+        let mut state = LeaderState::<MockTypeConfig>::new(1, config);
+        state.update_current_term(3);
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let responses = vec![Ok(PurgeLogResponse {
+            node_id: 2,
+            term: 6, // Higher than current term (3)
+            success: true,
+            last_purged: Some(LogId {
+                term: 5,
+                index: 100,
+            }),
+        })];
+
+        let should_step_down = state
+            .peer_purge_progress(responses, &role_tx)
+            .expect("Should handle higher term response");
+
+        assert!(
+            should_step_down,
+            "Higher term response MUST trigger step-down signal"
+        );
+        assert_eq!(
+            state.current_term(),
+            6,
+            "Term should be updated to higher value"
+        );
+
+        let event = role_rx.try_recv().expect("BecomeFollower event should be sent");
+        assert!(
+            matches!(event, RoleEvent::BecomeFollower(None)),
+            "Should send BecomeFollower(None) event"
+        );
+    }
+
+    /// Test: peer_purge_progress handles mixed responses (higher term found first)
+    #[test]
+    fn test_peer_purge_progress_mixed_responses_higher_term_first() {
+        let config = Arc::new(node_config("/tmp/test_mixed_first"));
+        let mut state = LeaderState::<MockTypeConfig>::new(1, config);
+        state.update_current_term(4);
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let responses = vec![
+            Ok(PurgeLogResponse {
+                node_id: 2,
+                term: 7, // Higher term - should trigger immediate step-down
+                success: true,
+                last_purged: Some(LogId {
+                    term: 6,
+                    index: 100,
+                }),
+            }),
+            Ok(PurgeLogResponse {
+                node_id: 3,
+                term: 4, // This should not be processed due to early return
+                success: true,
+                last_purged: Some(LogId { term: 4, index: 90 }),
+            }),
+        ];
+
+        let should_step_down = state
+            .peer_purge_progress(responses, &role_tx)
+            .expect("Should handle mixed responses");
+
+        assert!(should_step_down, "Should signal step-down");
+        assert_eq!(state.current_term(), 7, "Term should be updated to 7");
+
+        // Verify peer 3's progress was NOT updated (early return)
+        assert!(
+            !state.peer_purge_progress.contains_key(&3),
+            "Peer 3 progress should NOT be updated after step-down"
+        );
+
+        let event = role_rx.try_recv().expect("Should receive event");
+        assert!(matches!(event, RoleEvent::BecomeFollower(None)));
+    }
+
+    /// Test: peer_purge_progress ignores lower term responses
+    #[test]
+    fn test_peer_purge_progress_lower_term() {
+        let config = Arc::new(node_config("/tmp/test_lower_term"));
+        let mut state = LeaderState::<MockTypeConfig>::new(1, config);
+        state.update_current_term(10);
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let responses = vec![Ok(PurgeLogResponse {
+            node_id: 2,
+            term: 5, // Lower than current term (10)
+            success: true,
+            last_purged: Some(LogId {
+                term: 5,
+                index: 100,
+            }),
+        })];
+
+        let should_step_down = state
+            .peer_purge_progress(responses, &role_tx)
+            .expect("Should handle lower term response");
+
+        assert!(!should_step_down, "Lower term should not trigger step-down");
+        assert_eq!(state.current_term(), 10, "Term should remain unchanged");
+        assert!(
+            role_rx.try_recv().is_err(),
+            "No event should be sent for lower term"
+        );
+        // Progress should still be updated even for lower term
+        assert_eq!(
+            state.peer_purge_progress.get(&2),
+            Some(&100),
+            "Peer progress should be updated"
+        );
+    }
+
+    /// Test: peer_purge_progress handles response without last_purged
+    #[test]
+    fn test_peer_purge_progress_no_last_purged() {
+        let config = Arc::new(node_config("/tmp/test_no_purged"));
+        let mut state = LeaderState::<MockTypeConfig>::new(1, config);
+        state.update_current_term(5);
+
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let responses = vec![Ok(PurgeLogResponse {
+            node_id: 2,
+            term: 5,
+            success: false,
+            last_purged: None, // No purge progress
+        })];
+
+        let should_step_down = state
+            .peer_purge_progress(responses, &role_tx)
+            .expect("Should handle response without last_purged");
+
+        assert!(!should_step_down, "Should not trigger step-down");
+        assert!(
+            !state.peer_purge_progress.contains_key(&2),
+            "Peer progress should not be updated when last_purged is None"
+        );
+        assert!(role_rx.try_recv().is_err(), "No event should be sent");
+    }
+}
