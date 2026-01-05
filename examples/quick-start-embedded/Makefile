@@ -22,7 +22,7 @@ build:
 
 run: build
 	@mkdir -p data/single-node
-	@CONFIG_PATH=./d-engine.toml ./target/release/quick-start
+	@./target/release/quick-start
 
 clean:
 	rm -rf target/ data/ *.log

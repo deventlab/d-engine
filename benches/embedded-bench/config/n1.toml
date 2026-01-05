@@ -7,3 +7,13 @@ initial_cluster = [
     { id = 3, address = "0.0.0.0:9083", role = 0, status = 2 }
 ]
 db_root_dir = "./data/n1"
+log_dir = "./logs"
+
+
+[raft.election]
+election_timeout_min = 100
+election_timeout_max = 1000
+
+
+[raft.snapshot]
+enable = false

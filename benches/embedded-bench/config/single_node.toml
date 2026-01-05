@@ -6,6 +6,14 @@
 # To scale to a 3-node cluster, see docs/scale-to-cluster.md
 # Your application code remains unchanged - only config changes.
 
-[node]
-id = 1
-data_dir = "./data/single-node"
+[cluster]
+node_id = 1
+listen_address = "127.0.0.1:9081"
+initial_cluster = [
+    { id = 1, address = "127.0.0.1:9081", role = 0, status = 2 }
+]
+db_root_dir = "./data/single-node"
+log_dir = "./logs"
+
+[raft.snapshot]
+enable = false
