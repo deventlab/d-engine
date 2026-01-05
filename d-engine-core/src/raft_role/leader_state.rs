@@ -2597,10 +2597,15 @@ impl<T: TypeConfig> LeaderState<T> {
         let last_confirmed = self.lease_timestamp.load(std::sync::atomic::Ordering::Acquire);
         let lease_duration = ctx.node_config().raft.read_consistency.lease_duration_ms;
 
-        if now <= last_confirmed {
-            // Clock moved backwards or equal: conservatively treat lease as invalid
-            error!("Clock moved backwards or equal: Now {now}, Last Confirmed {last_confirmed}");
+        if now < last_confirmed {
+            // Clock moved backwards: system clock issue, treat lease as invalid
+            error!("Clock moved backwards: Now {now}, Last Confirmed {last_confirmed}");
             return false;
+        }
+
+        // Allow multiple requests within the same millisecond (now == last_confirmed)
+        if now == last_confirmed {
+            return true;
         }
         (now - last_confirmed) < lease_duration
     }

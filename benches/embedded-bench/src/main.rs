@@ -16,6 +16,10 @@ use rand::distributions::Alphanumeric;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
+// Batch test configuration constants
+const BATCH_TEST_TOTAL_REQUESTS: u64 = 100000;
+const BATCH_TEST_CONCURRENT_CLIENTS: usize = 100;
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -64,6 +68,10 @@ struct Cli {
     /// Verify write results by reading back (put command only)
     #[arg(long, default_value = "false")]
     verify_write: bool,
+
+    /// Run all benchmark tests in sequence (batch mode)
+    #[arg(long, default_value = "false")]
+    batch: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -191,6 +199,232 @@ async fn main() {
     }
 }
 
+/// Run a single benchmark test with specified parameters
+#[allow(clippy::too_many_arguments)]
+async fn run_benchmark_task(
+    engine: &Arc<EmbeddedEngine>,
+    test_name: &str,
+    command: Commands,
+    total: u64,
+    clients: usize,
+    key_size: usize,
+    value_size: usize,
+    sequential_keys: bool,
+    key_space: Option<u64>,
+    verify_write: bool,
+) {
+    println!("\n========================================");
+    println!("{test_name}");
+    println!("========================================");
+
+    let stats = Arc::new(BenchmarkStats::new());
+    let key_counter = Arc::new(AtomicU64::new(0));
+    let start_time = Instant::now();
+
+    let mut handles = Vec::with_capacity(clients);
+
+    for _ in 0..clients {
+        let engine = engine.clone();
+        let stats = stats.clone();
+        let key_counter = key_counter.clone();
+        let command = command.clone();
+
+        let handle = tokio::spawn(async move {
+            while key_counter.load(Ordering::Relaxed) < total {
+                let counter = key_counter.fetch_add(1, Ordering::Relaxed);
+                let key = generate_prefixed_key(sequential_keys, key_size, counter, key_space);
+
+                let op_start = Instant::now();
+
+                match &command {
+                    Commands::Put => {
+                        let value = generate_value(value_size);
+                        match engine.client().put(key.as_bytes().to_vec(), value.clone()).await {
+                            Ok(_) => {
+                                if verify_write {
+                                    match engine
+                                        .client()
+                                        .get_linearizable(key.as_bytes().to_vec())
+                                        .await
+                                    {
+                                        Ok(Some(read_value)) if read_value == value => {}
+                                        _ => continue,
+                                    }
+                                }
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+                    Commands::Get { consistency } => {
+                        let result = match consistency.as_str() {
+                            "l" | "linearizable" => {
+                                engine.client().get_linearizable(key.as_bytes().to_vec()).await
+                            }
+                            "s" | "sequential" | "lease" => {
+                                engine
+                                    .client()
+                                    .get_with_consistency(
+                                        key.as_bytes().to_vec(),
+                                        ReadConsistencyPolicy::LeaseRead,
+                                    )
+                                    .await
+                            }
+                            "e" | "eventual" => {
+                                engine.client().get_eventual(key.as_bytes().to_vec()).await
+                            }
+                            _ => engine.client().get_linearizable(key.as_bytes().to_vec()).await,
+                        };
+
+                        if result.is_err() {
+                            continue;
+                        }
+                    }
+                }
+
+                stats.record(op_start.elapsed());
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    futures::future::join_all(handles).await;
+    stats.summary(start_time.elapsed());
+}
+
+/// Run all benchmark tests in batch mode
+async fn run_batch_tests(
+    engine: &Arc<EmbeddedEngine>,
+    cli: &Cli,
+) {
+    println!("\n╔════════════════════════════════════════╗");
+    println!("║  Running Batch Benchmark Tests        ║");
+    println!("╚════════════════════════════════════════╝\n");
+
+    // Test 1: High concurrency write (100K requests)
+    if let Err(e) = run_single_batch_test(
+        engine,
+        "High Concurrency Write (100K requests)",
+        Commands::Put,
+        BATCH_TEST_TOTAL_REQUESTS,
+        BATCH_TEST_CONCURRENT_CLIENTS,
+        cli,
+    )
+    .await
+    {
+        eprintln!("Batch test failed: {e}. Stopping all tests.");
+        return;
+    }
+
+    // 2-second delay between tests for cluster stabilization
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Test 2: Linearizable read (100K requests)
+    if let Err(e) = run_single_batch_test(
+        engine,
+        "Linearizable Read (100K requests)",
+        Commands::Get {
+            consistency: "l".to_string(),
+        },
+        BATCH_TEST_TOTAL_REQUESTS,
+        BATCH_TEST_CONCURRENT_CLIENTS,
+        cli,
+    )
+    .await
+    {
+        eprintln!("Batch test failed: {e}. Stopping all tests.");
+        return;
+    }
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Test 3: Lease-based read (100K requests)
+    if let Err(e) = run_single_batch_test(
+        engine,
+        "Lease-Based Read (100K requests)",
+        Commands::Get {
+            consistency: "s".to_string(),
+        },
+        BATCH_TEST_TOTAL_REQUESTS,
+        BATCH_TEST_CONCURRENT_CLIENTS,
+        cli,
+    )
+    .await
+    {
+        eprintln!("Batch test failed: {e}. Stopping all tests.");
+        return;
+    }
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Test 4: Eventual consistency read (100K requests)
+    if let Err(e) = run_single_batch_test(
+        engine,
+        "Eventual Consistency Read (100K requests)",
+        Commands::Get {
+            consistency: "e".to_string(),
+        },
+        BATCH_TEST_TOTAL_REQUESTS,
+        BATCH_TEST_CONCURRENT_CLIENTS,
+        cli,
+    )
+    .await
+    {
+        eprintln!("Batch test failed: {e}. Stopping all tests.");
+        return;
+    }
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Test 5: Hot-key test (100K requests, 10 keys)
+    let mut cli_hotkey = cli.clone();
+    cli_hotkey.key_space = Some(10);
+    if let Err(e) = run_single_batch_test(
+        engine,
+        "Hot-Key Test (100K requests, 10 keys)",
+        Commands::Get {
+            consistency: "l".to_string(),
+        },
+        BATCH_TEST_TOTAL_REQUESTS,
+        BATCH_TEST_CONCURRENT_CLIENTS,
+        &cli_hotkey,
+    )
+    .await
+    {
+        eprintln!("Batch test failed: {e}. Stopping all tests.");
+        return;
+    }
+
+    println!("\n╔════════════════════════════════════════╗");
+    println!("║  All Batch Tests Completed!           ║");
+    println!("╚════════════════════════════════════════╝\n");
+}
+
+/// Helper function to run a single test in batch mode
+async fn run_single_batch_test(
+    engine: &Arc<EmbeddedEngine>,
+    test_name: &str,
+    command: Commands,
+    total: u64,
+    clients: usize,
+    cli: &Cli,
+) -> Result<(), String> {
+    run_benchmark_task(
+        engine,
+        test_name,
+        command,
+        total,
+        clients,
+        cli.key_size,
+        cli.value_size,
+        cli.sequential_keys,
+        cli.key_space,
+        cli.verify_write,
+    )
+    .await;
+    Ok(())
+}
+
 async fn run_local_benchmark(cli: Cli) {
     println!("Starting local benchmark mode...");
 
@@ -220,144 +454,168 @@ async fn run_local_benchmark(cli: Cli) {
         let _ = shutdown_tx.send(());
     });
 
-    // Determine benchmark behavior based on role and command
-    let should_run_benchmark = match (&cli.command, engine.is_leader()) {
-        (Commands::Put, true) => true, // Leader runs write tests
-        (Commands::Get { consistency: _ }, true) => true, // Leader runs all read tests
-        (Commands::Get { consistency }, false)
-            if consistency == "e" || consistency == "eventual" =>
-        {
-            true
-        } // Follower runs eventual read tests
-        _ => false,                    // All other cases: idle
-    };
-
-    if should_run_benchmark {
-        let role = if engine.is_leader() {
-            "Leader"
+    // Check if running in batch mode
+    if cli.batch {
+        if engine.is_leader() {
+            run_batch_tests(&engine, &cli).await;
         } else {
-            "Follower"
+            println!(
+                "This node is Follower, keeping cluster membership alive during batch tests..."
+            );
+            println!("Press Ctrl+C to shutdown.");
+            let _ = shutdown_rx.changed().await;
+        }
+    } else {
+        // Single test mode (original behavior)
+        let should_run_benchmark = match (&cli.command, engine.is_leader()) {
+            (Commands::Put, true) => true, // Leader runs write tests
+            (Commands::Get { consistency: _ }, true) => true, // Leader runs all read tests
+            (Commands::Get { consistency }, false)
+                if consistency == "e" || consistency == "eventual" =>
+            {
+                true
+            } // Follower runs eventual read tests
+            _ => false,                    // All other cases: idle
         };
-        println!("This node is {role}, starting benchmark...");
 
-        let stats = Arc::new(BenchmarkStats::new());
-        let key_counter = Arc::new(AtomicU64::new(0));
-        let start_time = Instant::now();
+        if should_run_benchmark {
+            let role = if engine.is_leader() {
+                "Leader"
+            } else {
+                "Follower"
+            };
+            println!("This node is {role}, starting benchmark...");
 
-        let mut handles = Vec::with_capacity(cli.clients);
+            let stats = Arc::new(BenchmarkStats::new());
+            let key_counter = Arc::new(AtomicU64::new(0));
+            let start_time = Instant::now();
 
-        for _ in 0..cli.clients {
-            let engine = engine.clone();
-            let stats = stats.clone();
-            let key_counter = key_counter.clone();
-            let cli = cli.clone();
+            let mut handles = Vec::with_capacity(cli.clients);
 
-            let handle = tokio::spawn(async move {
-                while key_counter.load(Ordering::Relaxed) < cli.total {
-                    let counter = key_counter.fetch_add(1, Ordering::Relaxed);
-                    let key = generate_prefixed_key(
-                        cli.sequential_keys,
-                        cli.key_size,
-                        counter,
-                        cli.key_space,
-                    );
+            for _ in 0..cli.clients {
+                let engine = engine.clone();
+                let stats = stats.clone();
+                let key_counter = key_counter.clone();
+                let cli = cli.clone();
 
-                    let op_start = Instant::now();
+                let handle = tokio::spawn(async move {
+                    while key_counter.load(Ordering::Relaxed) < cli.total {
+                        let counter = key_counter.fetch_add(1, Ordering::Relaxed);
+                        let key = generate_prefixed_key(
+                            cli.sequential_keys,
+                            cli.key_size,
+                            counter,
+                            cli.key_space,
+                        );
 
-                    match &cli.command {
-                        Commands::Put => {
-                            let value = generate_value(cli.value_size);
-                            match engine.client().put(key.as_bytes().to_vec(), value.clone()).await
-                            {
-                                Ok(_) => {
-                                    // Write succeeded - optionally verify
-                                    if cli.verify_write {
-                                        match engine
-                                            .client()
-                                            .get_linearizable(key.as_bytes().to_vec())
-                                            .await
-                                        {
-                                            Ok(Some(read_value)) if read_value == value => {
-                                                // Verification passed
-                                            }
-                                            Ok(Some(_)) => {
-                                                eprintln!(
-                                                    "Write verification failed: value mismatch"
-                                                );
-                                                continue;
-                                            }
-                                            Ok(None) => {
-                                                eprintln!(
-                                                    "Write verification failed: key not found"
-                                                );
-                                                continue;
-                                            }
-                                            Err(_) => {
-                                                eprintln!("Write verification failed: read error");
-                                                continue;
+                        let op_start = Instant::now();
+
+                        match &cli.command {
+                            Commands::Put => {
+                                let value = generate_value(cli.value_size);
+                                match engine
+                                    .client()
+                                    .put(key.as_bytes().to_vec(), value.clone())
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        // Write succeeded - optionally verify
+                                        if cli.verify_write {
+                                            match engine
+                                                .client()
+                                                .get_linearizable(key.as_bytes().to_vec())
+                                                .await
+                                            {
+                                                Ok(Some(read_value)) if read_value == value => {
+                                                    // Verification passed
+                                                }
+                                                Ok(Some(_)) => {
+                                                    eprintln!(
+                                                        "Write verification failed: value mismatch"
+                                                    );
+                                                    continue;
+                                                }
+                                                Ok(None) => {
+                                                    eprintln!(
+                                                        "Write verification failed: key not found"
+                                                    );
+                                                    continue;
+                                                }
+                                                Err(_) => {
+                                                    eprintln!(
+                                                        "Write verification failed: read error"
+                                                    );
+                                                    continue;
+                                                }
                                             }
                                         }
                                     }
+                                    Err(_) => {
+                                        // Write failed - skip recording
+                                        continue;
+                                    }
                                 }
-                                Err(_) => {
-                                    // Write failed - skip recording
+                            }
+                            Commands::Get { consistency } => {
+                                let result = match consistency.as_str() {
+                                    "l" | "linearizable" => {
+                                        engine
+                                            .client()
+                                            .get_linearizable(key.as_bytes().to_vec())
+                                            .await
+                                    }
+                                    "s" | "sequential" | "lease" => {
+                                        engine
+                                            .client()
+                                            .get_with_consistency(
+                                                key.as_bytes().to_vec(),
+                                                ReadConsistencyPolicy::LeaseRead,
+                                            )
+                                            .await
+                                    }
+                                    "e" | "eventual" => {
+                                        engine.client().get_eventual(key.as_bytes().to_vec()).await
+                                    }
+                                    _ => {
+                                        engine
+                                            .client()
+                                            .get_linearizable(key.as_bytes().to_vec())
+                                            .await
+                                    }
+                                };
+
+                                // Only record successful operations
+                                if result.is_err() {
                                     continue;
                                 }
                             }
                         }
-                        Commands::Get { consistency } => {
-                            let result = match consistency.as_str() {
-                                "l" | "linearizable" => {
-                                    engine.client().get_linearizable(key.as_bytes().to_vec()).await
-                                }
-                                "s" | "sequential" | "lease" => {
-                                    engine
-                                        .client()
-                                        .get_with_consistency(
-                                            key.as_bytes().to_vec(),
-                                            ReadConsistencyPolicy::LeaseRead,
-                                        )
-                                        .await
-                                }
-                                "e" | "eventual" => {
-                                    engine.client().get_eventual(key.as_bytes().to_vec()).await
-                                }
-                                _ => {
-                                    engine.client().get_linearizable(key.as_bytes().to_vec()).await
-                                }
-                            };
 
-                            // Only record successful operations
-                            if result.is_err() {
-                                continue;
-                            }
-                        }
+                        // Record latency only for successful operations
+                        stats.record(op_start.elapsed());
                     }
+                });
 
-                    // Record latency only for successful operations
-                    stats.record(op_start.elapsed());
-                }
-            });
+                handles.push(handle);
+            }
 
-            handles.push(handle);
-        }
+            futures::future::join_all(handles).await;
+            stats.summary(start_time.elapsed());
 
-        futures::future::join_all(handles).await;
-        stats.summary(start_time.elapsed());
-
-        println!("\nBenchmark completed. Press Ctrl+C to shutdown.");
-        let _ = shutdown_rx.changed().await;
-    } else {
-        let role = if engine.is_leader() {
-            "Leader"
+            println!("\nBenchmark completed. Press Ctrl+C to shutdown.");
+            let _ = shutdown_rx.changed().await;
         } else {
-            "Follower"
-        };
-        println!(
-            "This node is {role}, keeping cluster membership alive (no benchmark to run)..."
-        );
-        println!("Press Ctrl+C to shutdown.");
-        let _ = shutdown_rx.changed().await;
+            let role = if engine.is_leader() {
+                "Leader"
+            } else {
+                "Follower"
+            };
+            println!(
+                "This node is {role}, keeping cluster membership alive (no benchmark to run)..."
+            );
+            println!("Press Ctrl+C to shutdown.");
+            let _ = shutdown_rx.changed().await;
+        }
     }
 
     // Graceful shutdown

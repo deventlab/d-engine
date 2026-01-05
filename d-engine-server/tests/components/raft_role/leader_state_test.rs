@@ -4850,16 +4850,8 @@ mod handle_client_read_request {
     async fn test_handle_client_read_lease_read_valid_lease() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
 
-        let mut replication_handler = MockReplicationCore::new();
-        replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-            |_, _, _, _, _| {
-                Ok(AppendResults {
-                    commit_quorum_achieved: true,
-                    peer_updates: HashMap::new(),
-                    learner_progress: HashMap::new(),
-                })
-            },
-        );
+        // Valid lease doesn't need replication verification
+        let replication_handler = MockReplicationCore::new();
 
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().returning(|| 10);

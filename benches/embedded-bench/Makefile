@@ -55,7 +55,7 @@ help:
 	@echo "  make test-linearizable-read NODE=n3      # Run on n3"
 	@echo ""
 	@echo "Note: Ensure 3-node cluster is running before testing"
-	@echo "  cd ../../examples/three-nodes-cluster && make start-cluster"
+	@echo "  cd ./embedded-bench && make start-cluster"
 
 build:
 	@echo "Building embedded-bench..."
@@ -65,9 +65,9 @@ clean:
 	@echo "Cleaning build artifacts and data directories..."
 	cargo clean
 	@echo "Removing data directories..."
-	rm -rf ../../examples/three-nodes-cluster/db
-	rm -rf ../../examples/three-nodes-cluster/logs
-	rm -rf ../../examples/three-nodes-cluster/snapshots
+	rm -rf ./data/*
+	rm -rf ./logs/*
+	rm -rf ./snapshots/*
 	@echo "Clean complete!"
 
 # ============================================
@@ -192,11 +192,20 @@ test-hot-key: build
 # Run All Tests
 # ============================================
 
-all-tests: test-high-conc-write test-linearizable-read test-lease-read test-eventual-read test-hot-key
-	@echo ""
+all-tests: build
 	@echo "========================================"
-	@echo "All benchmark tests completed!"
+	@echo "Running All Tests in Batch Mode"
+	@echo "Node: $(NODE)"
 	@echo "========================================"
+	CONFIG_PATH=$(CONFIG_PATH) \
+	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	$(BENCH_BIN) \
+		--mode local \
+		--batch \
+		--key-size $(KEY_SIZE) \
+		--value-size $(VALUE_SIZE) \
+		$(SEQUENTIAL) \
+		put
 	@echo ""
 	@echo "Compare results with Standalone mode:"
 	@echo "  Standalone report: ../../benches/d-engine-bench/reports/v0.2.0/report_v0.2.0_final.md"

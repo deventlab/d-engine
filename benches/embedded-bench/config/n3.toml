@@ -10,9 +10,8 @@ db_root_dir = "./data/n3"
 log_dir = "./logs"
 
 
-[raft.election]
-election_timeout_min = 100
-election_timeout_max = 1000
+[raft]
+general_raft_timeout_duration_in_ms = 10000  # 10 sec
 
 [raft.snapshot]
 enable = false
