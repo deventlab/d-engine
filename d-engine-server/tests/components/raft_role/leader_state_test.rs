@@ -147,6 +147,26 @@ fn create_mock_membership() -> MockMembership<MockTypeConfig> {
     membership
 }
 
+/// Helper function to create a mock membership with replication peers for multi-node tests.
+/// This reduces boilerplate in tests that need initialized cluster_metadata.
+fn create_mock_membership_with_peers(
+    peers: Vec<d_engine_proto::server::cluster::NodeMeta>
+) -> MockMembership<MockTypeConfig> {
+    let mut membership = MockMembership::new();
+    membership.expect_is_single_node_cluster().returning(|| false);
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
+
+    let peers_for_voters = peers.clone();
+    membership.expect_voters().returning(move || peers_for_voters.clone());
+
+    let peers_for_replication = peers.clone();
+    membership
+        .expect_replication_peers()
+        .returning(move || peers_for_replication.clone());
+
+    membership
+}
+
 /// Verify client response
 pub async fn assert_client_response(
     mut rx: MaybeCloneOneshotReceiver<std::result::Result<ClientResponse, Status>>
@@ -1174,16 +1194,13 @@ mod snapshot_created_event_tests {
         let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
         // Prepare AppendResults
-        let mut membership = create_mock_membership();
-        membership.expect_can_rejoin().returning(|_, _| Ok(()));
-        membership.expect_voters().returning(move || {
-            vec![NodeMeta {
-                id: 2,
-                address: "http://127.0.0.1:55001".to_string(),
-                role: Follower.into(),
-                status: NodeStatus::Active.into(),
-            }]
-        });
+        let peers = vec![NodeMeta {
+            id: 2,
+            address: "http://127.0.0.1:55001".to_string(),
+            role: Follower.into(),
+            status: NodeStatus::Active.into(),
+        }];
+        let membership = create_mock_membership_with_peers(peers);
         context.membership = Arc::new(membership);
 
         let mut transport = MockTransport::new();
@@ -1195,6 +1212,12 @@ mod snapshot_created_event_tests {
 
         let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
         state.snapshot_in_progress.store(true, Ordering::SeqCst);
+
+        // Initialize cluster_metadata with replication targets
+        state
+            .init_cluster_metadata(&context.membership)
+            .await
+            .expect("Should initialize cluster metadata");
 
         let raft_event = RaftEvent::SnapshotCreated(Ok((
             SnapshotMetadata {
@@ -1226,16 +1249,13 @@ mod snapshot_created_event_tests {
         let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
         // Mock peer configuration
-        let mut membership = create_mock_membership();
-        membership.expect_can_rejoin().returning(|_, _| Ok(()));
-        membership.expect_voters().returning(|| {
-            vec![NodeMeta {
-                id: 2,
-                address: "".to_string(),
-                role: Follower.into(),
-                status: NodeStatus::Active.into(),
-            }]
-        });
+        let peers = vec![NodeMeta {
+            id: 2,
+            address: "".to_string(),
+            role: Follower.into(),
+            status: NodeStatus::Active.into(),
+        }];
+        let membership = create_mock_membership_with_peers(peers);
         context.membership = Arc::new(membership);
 
         // Mock transport with successful response
@@ -1272,6 +1292,12 @@ mod snapshot_created_event_tests {
         state.last_purged_index = Some(LogId { term: 2, index: 80 });
         state.peer_purge_progress.insert(2, 100); // Peer has progressed beyond snapshot
         state.snapshot_in_progress.store(true, Ordering::SeqCst);
+
+        // Initialize cluster_metadata with replication targets
+        state
+            .init_cluster_metadata(&context.membership)
+            .await
+            .expect("Should initialize cluster metadata");
 
         // Trigger event
         let raft_event = RaftEvent::SnapshotCreated(Ok((
@@ -1378,6 +1404,14 @@ mod snapshot_created_event_tests {
                 status: NodeStatus::Active.into(),
             }]
         });
+        membership.expect_replication_peers().returning(move || {
+            vec![NodeMeta {
+                id: 2,
+                address: "http://127.0.0.1:55001".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            }]
+        });
         context.membership = Arc::new(membership);
 
         // Mock transport with higher term response
@@ -1402,6 +1436,13 @@ mod snapshot_created_event_tests {
         state.last_purged_index = Some(LogId { term: 2, index: 80 });
         state.peer_purge_progress.insert(2, 100);
         state.snapshot_in_progress.store(true, Ordering::SeqCst);
+
+        // Initialize cluster_metadata with replication targets
+        // This is critical: Phase 2 only executes if replication_targets is non-empty
+        state
+            .init_cluster_metadata(&context.membership)
+            .await
+            .expect("Should initialize cluster metadata");
 
         // Trigger event
         let raft_event = RaftEvent::SnapshotCreated(Ok((
@@ -1442,16 +1483,13 @@ mod snapshot_created_event_tests {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
-        let mut membership = create_mock_membership();
-        membership.expect_can_rejoin().returning(|_, _| Ok(()));
-        membership.expect_voters().returning(move || {
-            vec![NodeMeta {
-                id: 2,
-                address: "http://127.0.0.1:55001".to_string(),
-                role: Follower.into(),
-                status: NodeStatus::Active.into(),
-            }]
-        });
+        let peers = vec![NodeMeta {
+            id: 2,
+            address: "http://127.0.0.1:55001".to_string(),
+            role: Follower.into(),
+            status: NodeStatus::Active.into(),
+        }];
+        let membership = create_mock_membership_with_peers(peers);
         context.membership = Arc::new(membership);
 
         // Mock transport with successful response
@@ -1476,6 +1514,12 @@ mod snapshot_created_event_tests {
         state.last_purged_index = Some(LogId { term: 2, index: 80 });
         state.peer_purge_progress.insert(2, 100);
         state.snapshot_in_progress.store(true, Ordering::SeqCst);
+
+        // Initialize cluster_metadata with replication targets
+        state
+            .init_cluster_metadata(&context.membership)
+            .await
+            .expect("Should initialize cluster metadata");
 
         // Trigger event
         let raft_event = RaftEvent::SnapshotCreated(Ok((
@@ -1513,24 +1557,21 @@ mod snapshot_created_event_tests {
         let mut context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
 
         // Mock peer configuration (multiple peers)
-        let mut membership = create_mock_membership();
-        membership.expect_can_rejoin().returning(|_, _| Ok(()));
-        membership.expect_voters().returning(move || {
-            vec![
-                NodeMeta {
-                    id: 2,
-                    address: "http://127.0.0.1:55001".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-                NodeMeta {
-                    id: 3,
-                    address: "http://127.0.0.1:55002".to_string(),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                },
-            ]
-        });
+        let peers = vec![
+            NodeMeta {
+                id: 2,
+                address: "http://127.0.0.1:55001".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            },
+            NodeMeta {
+                id: 3,
+                address: "http://127.0.0.1:55002".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            },
+        ];
+        let membership = create_mock_membership_with_peers(peers);
         context.membership = Arc::new(membership);
 
         // Mock transport with mixed responses
@@ -1562,6 +1603,12 @@ mod snapshot_created_event_tests {
         state.shared_state.commit_index = 150;
         state.last_purged_index = Some(LogId { term: 2, index: 80 });
         state.snapshot_in_progress.store(true, Ordering::SeqCst);
+
+        // Initialize cluster_metadata with replication targets
+        state
+            .init_cluster_metadata(&context.membership)
+            .await
+            .expect("Should initialize cluster metadata");
 
         // Trigger event
         let raft_event = RaftEvent::SnapshotCreated(Ok((
