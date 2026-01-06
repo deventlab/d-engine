@@ -155,7 +155,8 @@ pub struct LeaderState<T: TypeConfig> {
 
     /// === Volatile State ===
     /// Temporary storage for no-op entry log ID during leader initialization
-    pub(super) noop_log_id: Option<u64>,
+    #[doc(hidden)]
+    pub noop_log_id: Option<u64>,
 
     // -- Log Compaction & Purge --
     /// === Volatile State ===
@@ -346,6 +347,18 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             self.update_next_index(peer_id, new_next_id)?;
             self.update_match_index(peer_id, 0)?;
         }
+        Ok(())
+    }
+
+    /// Track no-op entry index for linearizable read optimization.
+    /// Called after no-op entry is committed on leadership transition.
+    fn on_noop_committed(
+        &mut self,
+        ctx: &RaftContext<Self::T>,
+    ) -> Result<()> {
+        let noop_index = ctx.raft_log().last_entry_id();
+        self.noop_log_id = Some(noop_index);
+        debug!("Tracked noop_log_id: {}", noop_index);
         Ok(())
     }
     fn noop_log_id(&self) -> Result<Option<u64>> {
@@ -901,6 +914,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     // Apply consistency policy
                     match effective_policy {
                         ServerReadConsistencyPolicy::LinearizableRead => {
+                            // Calculate read_index before verification to avoid waiting for concurrent writes
+                            let read_index = self.calculate_read_index();
+
                             if !self
                                 .verify_leadership_limited_retry(vec![], true, ctx, &role_tx)
                                 .await
@@ -912,17 +928,19 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                     "enforce_quorum_consensus failed".to_string(),
                                 ))
                             } else if let Err(e) = self
-                                .ensure_state_machine_upto_commit_index(
+                                .wait_until_applied(
+                                    read_index,
                                     &ctx.handlers.state_machine_handler,
                                     last_applied_index,
                                 )
                                 .await
                             {
                                 warn!(
-                                    "ensure_state_machine_upto_commit_index failed for linear read request"
+                                    "wait_until_applied failed for linear read request: read_index={}",
+                                    read_index
                                 );
                                 Err(tonic::Status::failed_precondition(format!(
-                                    "ensure_state_machine_upto_commit_index failed: {e:?}"
+                                    "wait_until_applied failed: {e:?}"
                                 )))
                             } else {
                                 read_operation()
@@ -1864,28 +1882,42 @@ impl<T: TypeConfig> LeaderState<T> {
         (false, current_commit_index)
     }
 
-    pub async fn ensure_state_machine_upto_commit_index(
+    /// Calculate safe read index for linearizable reads.
+    ///
+    /// Returns max(commitIndex, noopIndex) to ensure:
+    /// 1. All committed data is visible
+    /// 2. Current term's no-op entry is accounted for
+    /// 3. Read index is fixed at request arrival time (avoids waiting for concurrent writes)
+    ///
+    /// This optimization prevents reads from waiting for writes that arrived
+    /// after the read request started processing.
+    #[doc(hidden)]
+    pub fn calculate_read_index(&self) -> u64 {
+        let commit_index = self.commit_index();
+        let noop_index = self.noop_log_id.unwrap_or(0);
+        std::cmp::max(commit_index, noop_index)
+    }
+
+    /// Wait for state machine to apply up to target index.
+    ///
+    /// This is used by linearizable reads to ensure they see all committed data
+    /// up to the read_index calculated at request arrival time.
+    #[doc(hidden)]
+    pub async fn wait_until_applied(
         &self,
+        target_index: u64,
         state_machine_handler: &Arc<SMHOF<T>>,
         last_applied: u64,
     ) -> Result<()> {
-        let commit_index = self.commit_index();
+        if last_applied < target_index {
+            state_machine_handler.update_pending(target_index);
 
-        debug!(
-            "ensure_state_machine_upto_commit_index: last_applied:{} < commit_index:{} ?",
-            last_applied, commit_index
-        );
-        if last_applied < commit_index {
-            state_machine_handler.update_pending(commit_index);
-
-            // Wait for state machine to catch up
-            // This ensures linearizable reads see all committed writes
             let timeout_ms = self.node_config.raft.read_consistency.state_machine_sync_timeout_ms;
             state_machine_handler
-                .wait_applied(commit_index, std::time::Duration::from_millis(timeout_ms))
+                .wait_applied(target_index, std::time::Duration::from_millis(timeout_ms))
                 .await?;
 
-            debug!("ensure_state_machine_upto_commit_index success");
+            debug!("wait_until_applied: target_index={} success", target_index);
         }
         Ok(())
     }
@@ -2631,6 +2663,12 @@ impl<T: TypeConfig> LeaderState<T> {
         timestamp: u64,
     ) {
         self.lease_timestamp.store(timestamp, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Get noop_log_id for testing purposes
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn test_get_noop_log_id(&self) -> Option<u64> {
+        self.noop_log_id
     }
 }
 

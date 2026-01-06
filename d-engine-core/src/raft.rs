@@ -376,6 +376,9 @@ where
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
+                } else {
+                    // Track no-op index for linearizable read optimization
+                    self.role.on_noop_committed(&self.ctx)?;
                 }
 
                 #[cfg(any(test, feature = "test-utils"))]

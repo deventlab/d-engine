@@ -390,6 +390,15 @@ impl<T: TypeConfig> RaftRole<T> {
             .verify_leadership_persistent(payloads, bypass_queue, ctx, role_tx)
             .await
     }
+
+    /// Notify role that no-op entry has been committed.
+    /// Only Leader role performs actual tracking.
+    pub(crate) fn on_noop_committed(
+        &mut self,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        self.state_mut().on_noop_committed(ctx)
+    }
 }
 
 impl Serialize for HardState {

@@ -12,6 +12,7 @@ mod election;
 mod embedded;
 
 mod join_cluster;
+mod linearizable_read;
 mod readonly_mode;
 mod snapshot;
 #[cfg(all(feature = "watch", feature = "rocksdb"))]

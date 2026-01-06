@@ -100,6 +100,16 @@ pub trait RaftRoleState: Send + Sync + 'static {
         Err(MembershipError::NotLeader.into())
     }
 
+    /// Called when no-op entry is committed after becoming leader.
+    /// Only relevant for Leader role to track linearizable read optimization.
+    fn on_noop_committed(
+        &mut self,
+        _ctx: &RaftContext<Self::T>,
+    ) -> Result<()> {
+        // Default: no-op for non-leader roles
+        Ok(())
+    }
+
     async fn verify_internal_quorum(
         &mut self,
         _payloads: Vec<EntryPayload>,
