@@ -853,8 +853,6 @@ async fn test_handle_raft_event_case6_2() {
 
     // Mock state machine handler for linearizable read
     let mut state_machine_handler = MockStateMachineHandler::new();
-    state_machine_handler.expect_update_pending().times(1).returning(|_| {});
-    state_machine_handler.expect_wait_applied().times(1).return_once(|_, _| Ok(()));
     state_machine_handler
         .expect_read_from_state_machine()
         .returning(|_| Some(vec![]));
@@ -4904,8 +4902,6 @@ mod handle_client_read_request {
 
         // Mock state machine handler for linearizable read
         let mut state_machine_handler = MockStateMachineHandler::new();
-        state_machine_handler.expect_update_pending().times(1).returning(|_| {});
-        state_machine_handler.expect_wait_applied().times(1).return_once(|_, _| Ok(()));
         state_machine_handler
             .expect_read_from_state_machine()
             .returning(|_| Some(vec![]));
@@ -5476,4 +5472,159 @@ async fn test_on_noop_committed_non_leader() {
         result.is_ok(),
         "Candidate should handle on_noop_committed as no-op"
     );
+}
+
+/// Test wait_until_applied with slow state machine apply
+///
+/// # Test Scenario
+/// This verifies the optimization where linearizable reads do NOT wait for
+/// state machine apply when commit_index already satisfies the read requirement.
+///
+/// # Background
+/// Before optimization (#236), readers would wait for:
+///   commit_index >= readIndex AND apply_index >= readIndex
+///
+/// After optimization, readers only wait for:
+///   commit_index >= readIndex
+///
+/// This test simulates a slow state machine where apply lags behind commit.
+///
+/// # Given
+/// - commit_index = 100 (entries committed to quorum)
+/// - last_applied = 90 (state machine apply is slow)
+/// - read_index = 95 (calculated at request arrival)
+///
+/// # When
+/// - wait_until_applied(95, ..., 90) is called
+/// - commit_index(100) >= read_index(95) ✓
+/// - last_applied(90) < read_index(95) ✗
+///
+/// # Then
+/// - Should call update_pending(95) to notify state machine
+/// - Should call wait_applied(95, timeout) to wait
+/// - This ensures linearizability: read sees committed data up to index 95
+///
+/// # Note
+/// This is correct behavior! We wait for apply when:
+///   - commit_index >= readIndex (already satisfied)
+///   - last_applied < readIndex (need to wait)
+///
+/// The optimization is in verify_leadership: we skip waiting for commit_index
+/// to advance when it already satisfies readIndex.
+#[tokio::test]
+#[traced_test]
+async fn test_wait_until_applied_with_slow_state_machine() {
+    // Given: Slow state machine (apply lags behind commit)
+    let context = setup_raft_components(
+        "/tmp/test_wait_until_applied_with_slow_state_machine",
+        None,
+        false,
+    );
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.arc_node_config.clone());
+
+    // Simulate: commit_index advanced to 100
+    state.update_commit_index(100).expect("should succeed");
+
+    // Simulate: read_index calculated as 95 (at request arrival time)
+    let read_index = 95;
+
+    // Simulate: state machine apply is slow, only applied to 90
+    let last_applied = 90;
+
+    // Mock state machine handler
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_update_pending()
+        .times(1)
+        .with(mockall::predicate::eq(read_index))
+        .returning(|_| {});
+    state_machine_handler
+        .expect_wait_applied()
+        .times(1)
+        .with(
+            mockall::predicate::eq(read_index),
+            mockall::predicate::always(),
+        )
+        .return_once(|_, _| Ok(()));
+
+    // When: Reader waits until applied
+    state
+        .wait_until_applied(read_index, &Arc::new(state_machine_handler), last_applied)
+        .await
+        .expect("should succeed");
+
+    // Then: Should wait for state machine to apply up to read_index
+    // (verified by mock expectations)
+    //
+    // Key insight: This is correct! We must wait for apply when last_applied < readIndex,
+    // even if commit_index >= readIndex. The optimization is that we don't wait for
+    // commit_index to advance further when it already satisfies readIndex.
+}
+
+/// Test optimization: skip waiting when commit_index already >= readIndex
+///
+/// # Test Scenario
+/// This verifies the core optimization (#236): when commit_index already satisfies
+/// the read requirement, we skip waiting for it to advance further.
+///
+/// # Background
+/// Before optimization, verify_leadership would always wait for:
+///   1. Heartbeat response from quorum
+///   2. commit_index to advance
+///
+/// After optimization, we check if current commit_index >= readIndex first.
+///
+/// # Given
+/// - commit_index = 100 (current state)
+/// - read_index = 95 (calculated at request arrival)
+/// - last_applied = 100 (state machine is up-to-date)
+///
+/// # When
+/// - commit_index(100) >= read_index(95) ✓
+/// - last_applied(100) >= read_index(95) ✓
+///
+/// # Then
+/// - Should NOT wait for commit_index update
+/// - Should NOT wait for state machine apply
+/// - Read can proceed immediately
+///
+/// # Implementation Note
+/// This test verifies wait_until_applied behavior. The actual optimization
+/// happens in verify_leadership (RaftRole::verify_leadership_for_read_index).
+#[tokio::test]
+#[traced_test]
+async fn test_optimization_skip_wait_when_commit_satisfies_read() {
+    // Given: commit_index already ahead of read_index
+    let context = setup_raft_components(
+        "/tmp/test_optimization_skip_wait_when_commit_satisfies_read",
+        None,
+        false,
+    );
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.arc_node_config.clone());
+
+    // Simulate: commit_index = 100
+    state.update_commit_index(100).expect("should succeed");
+
+    // Simulate: read_index = 95 (older than commit_index)
+    let read_index = 95;
+
+    // Simulate: state machine is up-to-date
+    let last_applied = 100;
+
+    // Mock state machine handler
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    // Should NOT call update_pending or wait_applied
+    state_machine_handler.expect_update_pending().times(0);
+    state_machine_handler.expect_wait_applied().times(0);
+
+    // When: Check if need to wait
+    state
+        .wait_until_applied(read_index, &Arc::new(state_machine_handler), last_applied)
+        .await
+        .expect("should succeed");
+
+    // Then: Should skip waiting (verified by mock expectations: 0 calls)
+    //
+    // This demonstrates the optimization: when both commit_index and last_applied
+    // already satisfy readIndex, we don't need to wait for anything.
 }

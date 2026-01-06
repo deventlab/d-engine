@@ -58,9 +58,9 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: true
+          large-packages: false
           docker-images: true
-          swap-storage: true
+          swap-storage: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
