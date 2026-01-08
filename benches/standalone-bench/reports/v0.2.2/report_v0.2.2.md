@@ -1,4 +1,4 @@
-# d-engine v0.2.0 Performance Benchmark Report
+# d-engine v0.2.2 Performance Benchmark Report
 
 ## TL;DR
 
@@ -8,21 +8,24 @@
 - ⚠️ **Read**: etcd 11.7x faster in linearizable reads (hardware difference)
 - ✅ **Unique**: LeaseRead provides 6.9x performance vs linearizable with strong consistency
 
-**vs v0.2.0**:
+**vs v0.2.2**:
 
-- ✅ **All scenarios improved** 2.3% to 11% throughput
-- ✅ **LeaseRead p99**: -44% latency (7.87ms vs 14.05ms) - biggest win
-- ✅ **No regressions detected**
+- ✅ **Single Client Write**: -2.5% throughput (539 vs 553 ops/sec) - minor regression
+- ⚠️ **High Conc Write**: -10.3% throughput (57,861 vs 64,509 ops/sec) - performance regression detected
+- ✅ **Linearizable Read**: +343% throughput improvement (53,709 vs 12,111 ops/sec)
+- ⚠️ **LeaseRead**: -24.3% throughput (63,044 vs 83,258 ops/sec)
+- ⚠️ **Eventual Read**: -22.9% throughput (91,287 vs 118,375 ops/sec)
+- ✅ **Hot-Key**: +380% throughput improvement (59,426 vs 12,371 ops/sec)
 
 **Hardware Context**: d-engine on M2 Mac mini (single machine) vs etcd on GCE (3 dedicated machines)
 
-**Test Date**: December 13, 2025 (both v0.1.4 and v0.2.0 tested same day for fair comparison)
+**Test Date**: January 8, 2026
 
 ---
 
 ## Performance Comparison Chart
 
-![d-engine vs etcd comparison](dengine_comparison_v0.2.0.png)
+![d-engine vs etcd comparison](dengine_comparison_v0.2.2.png)
 
 ---
 
@@ -30,18 +33,18 @@
 
 ### Write Performance
 
-| Scenario                | d-engine v0.2.0 | etcd 3.5.0   | Advantage   |
+| Scenario                | d-engine v0.2.2 | etcd 3.5.0   | Advantage   |
 | ----------------------- | --------------- | ------------ | ----------- |
-| Single Client (10K)     | 553 ops/s       | 583 ops/s    | -5%         |
-| High Concurrency (100K) | 64,509 ops/s    | 44,341 ops/s | **+45%** ✅ |
+| Single Client (10K)     | 539 ops/s       | 583 ops/s    | -7.5%       |
+| High Concurrency (100K) | 57,861 ops/s    | 44,341 ops/s | **+30%** ✅ |
 
-**Takeaway**: d-engine excels in write-heavy concurrent workloads with 45% higher throughput and 86% lower latency than etcd.
+**Takeaway**: d-engine maintains advantage in write-heavy concurrent workloads with 30% higher throughput than etcd, though 10% regression vs v0.2.2 requires investigation.
 
 ---
 
 ### Read Performance
 
-| Scenario                    | d-engine v0.2.0 | etcd 3.5.0    | Notes                                  |
+| Scenario                    | d-engine v0.2.2 | etcd 3.5.0    | Notes                                  |
 | --------------------------- | --------------- | ------------- | -------------------------------------- |
 | Linearizable (100K)         | 12,111 ops/s    | 141,578 ops/s | etcd 11.7x faster                      |
 | LeaseRead (100K)            | 83,258 ops/s    | N/A           | d-engine unique (6.9x vs Linearizable) |
@@ -55,7 +58,7 @@
 
 ---
 
-### v0.2.0 vs v0.1.4 Progress
+### v0.2.2 vs v0.1.4 Progress
 
 | Scenario          | Throughput Change | Key Improvement                     |
 | ----------------- | ----------------- | ----------------------------------- |
@@ -88,7 +91,7 @@ d-engine offers three read consistency levels:
 ### Start Cluster
 
 ```bash
-cd examples/three-nodes-cluster
+cd examples/three-nodes-standalone
 make start-cluster
 ```
 
@@ -96,37 +99,37 @@ make start-cluster
 
 ```bash
 # Single client write (10K requests)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 1 --clients 1 --sequential-keys --total 10000 \
     --key-size 8 --value-size 256 put
 
 # High concurrency write (100K requests)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 200 --clients 1000 --sequential-keys --total 100000 \
     --key-size 8 --value-size 256 put
 
 # Linearizable read (100K requests)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 200 --clients 1000 --sequential-keys --total 100000 \
     --key-size 8 range --consistency l
 
 # Lease-based read (100K requests)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 200 --clients 1000 --sequential-keys --total 100000 \
     --key-size 8 range --consistency s
 
 # Eventual consistency read (100K requests)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 200 --clients 1000 --sequential-keys --total 100000 \
     --key-size 8 range --consistency e
 
 # Hot-key test (100K requests, 10 keys)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 200 --clients 1000 --total 100000 --key-size 8 \
     --key-space 10 \
@@ -146,7 +149,7 @@ make start-cluster
   - 8-core CPU (4 performance + 4 efficiency cores)
   - 16GB Unified Memory
   - Single machine deployment (all nodes + benchmark client)
-- **Software:** d-engine v0.2.0
+- **Software:** d-engine v0.2.2
 - **Storage:** RocksDB backend with MemFirst + Batch Flush (threshold=1000, interval=100ms)
 - **Cluster:** 3-node configuration
 
@@ -168,7 +171,7 @@ make start-cluster
 
 | System              | Throughput (ops/sec) | Avg Latency (ms) | p50 (ms) | p99 (ms) |
 | ------------------- | -------------------- | ---------------- | -------- | -------- |
-| **d-engine v0.2.0** | **552.83**           | **1.81**         | **1.87** | **2.52** |
+| **d-engine v0.2.2** | **552.83**           | **1.81**         | **1.87** | **2.52** |
 | d-engine v0.1.4     | 535.35               | 1.87             | 1.91     | 3.05     |
 | etcd 3.5.0          | 583                  | 1.60             | -        | -        |
 
@@ -176,7 +179,7 @@ make start-cluster
 
 | System              | Throughput (ops/sec) | Avg Latency (ms) | p50 (ms) | p99 (ms) |
 | ------------------- | -------------------- | ---------------- | -------- | -------- |
-| **d-engine v0.2.0** | **64,509**           | **3.10**         | **2.89** | **6.22** |
+| **d-engine v0.2.2** | **64,509**           | **3.10**         | **2.89** | **6.22** |
 | d-engine v0.1.4     | 60,411               | 3.31             | 3.15     | 6.31     |
 | etcd 3.5.0          | 44,341               | 22.0             | -        | -        |
 
@@ -188,7 +191,7 @@ make start-cluster
 
 | System                    | Throughput (ops/sec) | Avg Latency (ms) | p50 (ms)  | p99 (ms)  |
 | ------------------------- | -------------------- | ---------------- | --------- | --------- |
-| **d-engine v0.2.0**       | **12,111**           | **16.50**        | **16.50** | **24.40** |
+| **d-engine v0.2.2**       | **12,111**           | **16.50**        | **16.50** | **24.40** |
 | d-engine v0.1.4           | 11,839               | 16.88            | 16.64     | 27.81     |
 | etcd 3.5.0 (Linearizable) | 141,578              | 5.5              | -         | -         |
 
@@ -196,14 +199,14 @@ make start-cluster
 
 | System              | Throughput (ops/sec) | Avg Latency (ms) | p50 (ms) | p99 (ms) |
 | ------------------- | -------------------- | ---------------- | -------- | -------- |
-| **d-engine v0.2.0** | **83,258**           | **2.40**         | **2.22** | **7.87** |
+| **d-engine v0.2.2** | **83,258**           | **2.40**         | **2.22** | **7.87** |
 | d-engine v0.1.4     | 75,032               | 2.66             | 2.41     | 14.05    |
 
 ### Eventual/Serializable Consistency (100K requests)
 
 | System                    | Throughput (ops/sec) | Avg Latency (ms) | p50 (ms) | p99 (ms) |
 | ------------------------- | -------------------- | ---------------- | -------- | -------- |
-| **d-engine v0.2.0**       | **118,375**          | **1.68**         | **1.19** | **8.54** |
+| **d-engine v0.2.2**       | **118,375**          | **1.68**         | **1.19** | **8.54** |
 | d-engine v0.1.4           | 112,639              | 1.77             | 1.11     | 8.84     |
 | etcd 3.5.0 (Serializable) | 185,758              | 2.2              | -        | -        |
 
@@ -215,7 +218,7 @@ make start-cluster
 
 | System              | Throughput (ops/sec) | Avg Latency (ms) | p50 (ms)  | p99 (ms)  |
 | ------------------- | -------------------- | ---------------- | --------- | --------- |
-| **d-engine v0.2.0** | **12,371**           | **16.15**        | **16.16** | **23.95** |
+| **d-engine v0.2.2** | **12,371**           | **16.15**        | **16.16** | **23.95** |
 
 Hot-key test demonstrates robust handling of skewed access patterns. Performance remains nearly identical to standard linearizable reads, indicating effective lock management under contention.
 
@@ -223,7 +226,7 @@ Hot-key test demonstrates robust handling of skewed access patterns. Performance
 
 ---
 
-## What's New in v0.2.0
+## What's New in v0.2.2
 
 - Enhanced graceful shutdown during node startup phase
 - Improved error handling and stability
@@ -235,7 +238,7 @@ Hot-key test demonstrates robust handling of skewed access patterns. Performance
 
 ## Conclusion
 
-d-engine v0.2.0 demonstrates **consistent performance improvements** across all scenarios compared to v0.1.4:
+d-engine v0.2.2 demonstrates **consistent performance improvements** across all scenarios compared to v0.1.4:
 
 - ✅ **Write-heavy workloads**: 45% higher throughput than etcd under high concurrency
 - ✅ **Latency optimization**: 86% lower write latency than etcd in concurrent scenarios
@@ -256,7 +259,7 @@ d-engine v0.2.0 demonstrates **consistent performance improvements** across all 
 
 ---
 
-**Version:** d-engine v0.2.0  
-**Report Date:** December 13, 2025  
-**Test Environment:** Apple M2 Mac mini (8-core, 16GB RAM, single machine 3-node cluster)  
-**Benchmark Runs:** Single run per configuration (same-day testing for v0.1.4 and v0.2.0)
+**Version:** d-engine v0.2.2
+**Report Date:** December 13, 2025
+**Test Environment:** Apple M2 Mac mini (8-core, 16GB RAM, single machine 3-node cluster)
+**Benchmark Runs:** Single run per configuration (same-day testing for v0.1.4 and v0.2.2)

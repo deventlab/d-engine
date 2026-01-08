@@ -7,5 +7,5 @@ pub mod single_node_expansion {
 }
 
 pub mod three_nodes_cluster {
-    #![doc = include_str!("three-nodes-cluster.md")]
+    #![doc = include_str!("three-nodes-standalone.md")]
 }

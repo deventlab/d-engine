@@ -301,7 +301,25 @@ async fn run_batch_tests(
     println!("║  Running Batch Benchmark Tests        ║");
     println!("╚════════════════════════════════════════╝\n");
 
-    // Test 1: High concurrency write (100K requests)
+    // Test 1: Single client write (10K requests)
+    if let Err(e) = run_single_batch_test(
+        engine,
+        "Single Client Write (10K requests)",
+        Commands::Put,
+        10_000,
+        1,
+        cli,
+    )
+    .await
+    {
+        eprintln!("Batch test failed: {e}. Stopping all tests.");
+        return;
+    }
+
+    // 2-second delay between tests for cluster stabilization
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Test 2: High concurrency write (100K requests)
     if let Err(e) = run_single_batch_test(
         engine,
         "High Concurrency Write (100K requests)",
@@ -319,7 +337,7 @@ async fn run_batch_tests(
     // 2-second delay between tests for cluster stabilization
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Test 2: Linearizable read (100K requests)
+    // Test 3: Linearizable read (100K requests)
     if let Err(e) = run_single_batch_test(
         engine,
         "Linearizable Read (100K requests)",
@@ -338,7 +356,7 @@ async fn run_batch_tests(
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Test 3: Lease-based read (100K requests)
+    // Test 4: Lease-based read (100K requests)
     if let Err(e) = run_single_batch_test(
         engine,
         "Lease-Based Read (100K requests)",
@@ -357,7 +375,7 @@ async fn run_batch_tests(
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Test 4: Eventual consistency read (100K requests)
+    // Test 5: Eventual consistency read (100K requests)
     if let Err(e) = run_single_batch_test(
         engine,
         "Eventual Consistency Read (100K requests)",
@@ -376,7 +394,7 @@ async fn run_batch_tests(
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Test 5: Hot-key test (100K requests, 10 keys)
+    // Test 6: Hot-key test (100K requests, 10 keys)
     let mut cli_hotkey = cli.clone();
     cli_hotkey.key_space = Some(10);
     if let Err(e) = run_single_batch_test(

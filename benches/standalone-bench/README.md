@@ -1,7 +1,9 @@
-# d-engine-bench
+# standalone-bench
 
 ## Background
+
 Standalone mode benchmark using gRPC client (comparable with [etcd benchmarks](https://etcd.io/docs/v3.5/op-guide/performance/)).
+
 ## Getting Started
 
 ### 1. Dependency Setup
@@ -15,11 +17,11 @@ d-engine = "0.2.0"  # Verify latest version
 
 ### 2. Setup Cluster
 
-Start cluster from `/examples/three-nodes-cluster/`
+Start cluster from `/examples/three-nodes-standalone/`
 
 ```bash
 # Start 3-node cluster (required for accurate benchmarking)
-cd /examples/three-nodes-cluster/
+cd /examples/three-nodes-standalone/
 make start-cluster
 ```
 
@@ -27,11 +29,11 @@ make start-cluster
 
 ```bash
 # Start 3-node cluster
-cd examples/three-nodes-cluster
+cd examples/three-nodes-standalone
 make start-cluster
 
 # Run benchmark
-cd benches/d-engine-bench
+cd benches/standalone-bench
 cargo run --release -- \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 200 --clients 1000 --total 100000 --key-size 8 --value-size 256 --sequential-keys \

@@ -21,7 +21,7 @@ COPY ./Cargo.lock ./Cargo.lock
 COPY src ./src
 
 # Build bench binary
-RUN cargo build --release --bin d-engine-bench
+RUN cargo build --release --bin standalone-bench
 
 # ------------------------
 # Runtime Stage
@@ -39,7 +39,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy built binary
-COPY --from=builder /usr/src/bench/target/release/d-engine-bench /usr/local/bin/d-engine-bench
+COPY --from=builder /usr/src/bench/target/release/standalone-bench /usr/local/bin/standalone-bench
 
 # Copy soak test script
 COPY ./docker/soak-test.sh /usr/local/bin/

@@ -145,31 +145,31 @@ Latency distribution (μs):
 
 ```bash
 # Single client write (10K requests)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 1 --clients 1 --sequential-keys --total 10000 \
     --key-size 8 --value-size 256 put
 
 # High concurrency write (100K requests)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 200 --clients 1000 --sequential-keys --total 100000 \
     --key-size 8 --value-size 256 put
 
 # Linearizable read (100K requests)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 200 --clients 1000 --sequential-keys --total 100000 \
     --key-size 8 range --consistency l
 
 # Lease-based read (100K requests)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 200 --clients 1000 --sequential-keys --total 100000 \
     --key-size 8 range --consistency s
 
 # Eventual consistency read (100K requests)
-./target/release/d-engine-bench \
+./target/release/standalone-bench \
     --endpoints http://127.0.0.1:9081 --endpoints http://127.0.0.1:9082 --endpoints http://127.0.0.1:9083 \
     --conns 200 --clients 1000 --sequential-keys --total 100000 \
     --key-size 8 range --consistency e

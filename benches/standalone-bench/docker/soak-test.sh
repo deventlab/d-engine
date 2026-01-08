@@ -43,7 +43,7 @@ while [ $(( $(date +%s) - START )) -lt $DURATION ]; do
         0)
             # Basic write (1 connection, 1 client)
             log "Running basic write test..."
-            d-engine-bench \
+            standalone-bench \
                 --endpoints $ENDPOINTS \
                 --conns 1 --clients 1 \
                 --total $((TOTAL / 10)) \
@@ -53,7 +53,7 @@ while [ $(( $(date +%s) - START )) -lt $DURATION ]; do
         1)
             # High-concurrency write
             log "Running high-concurrency write test..."
-            d-engine-bench \
+            standalone-bench \
                 --endpoints $ENDPOINTS \
                 --conns 10 --clients 100 \
                 --total $TOTAL \
@@ -63,7 +63,7 @@ while [ $(( $(date +%s) - START )) -lt $DURATION ]; do
         2)
             # Strong consistency read (linearizable)
             log "Running strong consistency read test..."
-            d-engine-bench \
+            standalone-bench \
                 --endpoints $ENDPOINTS \
                 --conns 10 --clients 50 \
                 --sequential-keys \
@@ -74,7 +74,7 @@ while [ $(( $(date +%s) - START )) -lt $DURATION ]; do
         3)
             # Eventual consistency read (sequential)
             log "Running eventual consistency read test..."
-            d-engine-bench \
+            standalone-bench \
                 --endpoints $ENDPOINTS \
                 --conns 10 --clients 50 \
                 --sequential-keys \

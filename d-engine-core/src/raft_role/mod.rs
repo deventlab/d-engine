@@ -8,7 +8,13 @@ pub mod role_state;
 mod raft_role_test;
 
 #[cfg(test)]
+mod candidate_state_test;
+#[cfg(test)]
+mod follower_state_test;
+#[cfg(test)]
 mod leader_state_test;
+#[cfg(test)]
+mod learner_state_test;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU32;
@@ -398,6 +404,12 @@ impl<T: TypeConfig> RaftRole<T> {
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         self.state_mut().on_noop_committed(ctx)
+    }
+
+    /// Drain pending read buffer when stepping down from Leader.
+    /// Only Leader implements this; other roles are no-op.
+    pub(crate) fn drain_read_buffer(&mut self) -> Result<()> {
+        self.state_mut().drain_read_buffer()
     }
 }
 

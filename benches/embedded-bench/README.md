@@ -24,7 +24,7 @@ make all-tests
 
 **Compare with Standalone mode:**
 
-- Standalone report: `../../benches/d-engine-bench/reports/v0.2.0/report_v0.2.0_final.md`
+- Standalone report: `../../benches/standalone-bench/reports/v0.2.2/report_v0.2.2.md`
 - Same test parameters (key-size=8, value-size=256, sequential-keys)
 - Direct performance comparison (Embedded vs Standalone)
 
@@ -38,7 +38,7 @@ make all-tests
 
 ## Node Behavior Matrix
 
-The following table describes which nodes participate in benchmarks based on operation type, matching the behavior of `d-engine-bench` (Standalone mode):
+The following table describes which nodes participate in benchmarks based on operation type, matching the behavior of `standalone-bench` (Standalone mode):
 
 | Operation Type        | Leader Node      | Follower Nodes        | Notes                                      |
 | --------------------- | ---------------- | --------------------- | ------------------------------------------ |
@@ -54,7 +54,7 @@ The following table describes which nodes participate in benchmarks based on ope
 - **Eventual Reads**: All nodes (Leader + Followers) run the benchmark concurrently, simulating load-balanced read traffic across the cluster.
 - **Idle Nodes**: Non-participating nodes maintain cluster membership and wait for Ctrl+C to shutdown gracefully.
 
-This design mirrors how `d-engine-bench` (Standalone) distributes requests via gRPC client load balancing.
+This design mirrors how `standalone-bench` (Standalone) distributes requests via gRPC client load balancing.
 
 ## Architecture
 

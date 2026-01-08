@@ -1,11 +1,11 @@
 [package]
-name = "d-engine-bench"
+name = "standalone-bench"
 version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-# d-engine = { path = "../../d-engine", features = ["client"] }
-d-engine = { version= "0.2", features = ["client"] }
+d-engine = { path = "../../d-engine", features = ["client"] }
+# d-engine = { version= "0.2", features = ["client"] }
 
 
 tokio = { version = "1.44", features = ["full"] }

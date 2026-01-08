@@ -957,6 +957,29 @@ pub struct ReadConsistencyConfig {
     /// Default: 10ms (safe buffer for single-node local deployments)
     #[serde(default = "default_state_machine_sync_timeout_ms")]
     pub state_machine_sync_timeout_ms: u64,
+
+    /// ReadIndex batching configuration
+    #[serde(default)]
+    pub read_batching: ReadBatchingConfig,
+}
+
+/// Read batching configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReadBatchingConfig {
+    /// Flush when buffer reaches this size
+    pub size_threshold: usize,
+
+    /// Flush when first request ages beyond this (milliseconds)
+    pub time_threshold_ms: u64,
+}
+
+impl Default for ReadBatchingConfig {
+    fn default() -> Self {
+        Self {
+            size_threshold: 50,
+            time_threshold_ms: 10,
+        }
+    }
 }
 
 impl Default for ReadConsistencyConfig {
@@ -966,6 +989,7 @@ impl Default for ReadConsistencyConfig {
             lease_duration_ms: default_lease_duration_ms(),
             allow_client_override: default_allow_client_override(),
             state_machine_sync_timeout_ms: default_state_machine_sync_timeout_ms(),
+            read_batching: ReadBatchingConfig::default(),
         }
     }
 }

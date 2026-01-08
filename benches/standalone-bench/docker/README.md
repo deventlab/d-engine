@@ -7,7 +7,7 @@ This document explains how to run the stability (soak) test for the d-engine ben
 ## Prerequisites
 
 - You must have a **three-node cluster** running successfully.
-- To start the cluster, navigate to `three-nodes-cluster/docker/` and run:
+- To start the cluster, navigate to `three-nodes-standalone/docker/` and run:
 
 ```bash
 docker-compose up -d

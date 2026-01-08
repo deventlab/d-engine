@@ -8,7 +8,7 @@ This directory contains [Jepsen](https://jepsen.io/) tests for validating the co
 - Java (for Leiningen / Clojure tooling)
 - Rust toolchain (for building `dengine`)
 - SSH keys available under `jepsen/sshkeys/` (mounted into the Jepsen container)
-- **Example cluster(three-nodes-cluster) running:**
+- **Example cluster(three-nodes-standalone) running:**
 
 ## Usage
 

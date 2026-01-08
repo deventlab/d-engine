@@ -499,4 +499,9 @@ pub trait RaftRoleState: Send + Sync + 'static {
         }
         return Ok(());
     }
+
+    fn drain_read_buffer(&mut self) -> Result<()> {
+        warn!("update_match_index NotLeader error");
+        Err(MembershipError::NotLeader.into())
+    }
 }

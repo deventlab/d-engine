@@ -23,7 +23,7 @@ build:
 # Basic Write Test (1 connection, 1 client)
 basic-write:
 	@echo "\n=== Basic Write Test (1C/1W) ==="
-	@./target/release/d-engine-bench \
+	@./target/release/standalone-bench \
 		${ENDPOINTS} \
 		--conns 1 \
 		--clients 1 \
@@ -36,7 +36,7 @@ basic-write:
 # High Concurrency Write Test (10 connections, 100 clients)
 high-concurrency-write:
 	@echo "\n=== High Concurrency Write Test (10C/100W) ==="
-	@./target/release/d-engine-bench \
+	@./target/release/standalone-bench \
 		${ENDPOINTS} \
 		--conns 10 \
 		--clients 100 \
@@ -49,7 +49,7 @@ high-concurrency-write:
 # Linearizable Read Test
 linear-read:
 	@echo "\n=== Linearizable Read Test ==="
-	@./target/release/d-engine-bench \
+	@./target/release/standalone-bench \
 		${ENDPOINTS} \
 		--conns 10 \
 		--clients 100 \
@@ -61,7 +61,7 @@ linear-read:
 # Serializable Read Test
 serial-read:
 	@echo "\n=== Serializable Read Test ==="
-	@./target/release/d-engine-bench \
+	@./target/release/standalone-bench \
 		${ENDPOINTS} \
 		--conns 10 \
 		--clients 100 \
@@ -76,4 +76,3 @@ build-soak-tester:
 soak-test: build-soak-tester
 	@docker compose -f $(SOAK_COMPOSE_FILE) down
 	@docker compose -f $(SOAK_COMPOSE_FILE) up -d
-

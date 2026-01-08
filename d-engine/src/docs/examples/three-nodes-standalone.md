@@ -2,7 +2,7 @@
 
 ## Overview
 
-This example demonstrates a **production-ready three-node d-engine cluster** with automatic failover and data replication. All benchmark data in [benches/d-engine-bench/reports/](../../benches/d-engine-bench/reports/) is generated using this configuration.
+This example demonstrates a **production-ready three-node d-engine cluster** with automatic failover and data replication. All benchmark data in [benches/standalone-bench/reports/](../../benches/standalone-bench/reports/) is generated using this configuration.
 
 **Key characteristics:**
 
@@ -23,7 +23,7 @@ Use this example for:
 ## Quick Start
 
 ```bash
-cd examples/three-nodes-cluster
+cd examples/three-nodes-standalone
 
 # Build and start cluster
 make start-cluster
@@ -120,7 +120,7 @@ curl http://localhost:9081/get?key=test-key&consistency=linearizable
 
 ## Benchmark Configuration Reference
 
-All performance reports in `/benches/d-engine-bench/reports` use this exact configuration:
+All performance reports in `/benches/standalone-bench/reports` use this exact configuration:
 
 **Raft settings:**
 
@@ -135,7 +135,7 @@ All performance reports in `/benches/d-engine-bench/reports` use this exact conf
 - Benchmark client connects to all 3 nodes (ports 9081/9082/9083)
 - Workload: Mixed read/write operations under various concurrency levels
 
-See [benches/d-engine-bench/README.md](../../benches/d-engine-bench/README.md) for benchmark reproduction steps.
+See [benches/standalone-bench/README.md](../../benches/standalone-bench/README.md) for benchmark reproduction steps.
 
 ## Advanced Features
 
@@ -244,4 +244,4 @@ LOG_LEVEL=info make start-node1
 ## Next Steps
 
 - **Single-node expansion**: See [single-node-expansion.md](single-node-expansion.md) for dynamic 1→3 scaling
-- **Run benchmarks**: See [../../benches/d-engine-bench/README.md](../../../../benches/d-engine-bench/README.md) to reproduce performance tests
+- **Run benchmarks**: See [../../benches/standalone-bench/README.md](../../../../benches/standalone-bench/README.md) to reproduce performance tests

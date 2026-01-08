@@ -44,7 +44,7 @@ Usage examples demonstrating different d-engine integration modes.
 
 | Example                                         | Description                           |
 | ----------------------------------------------- | ------------------------------------- |
-| [three-nodes-cluster](three-nodes-cluster/)     | Bootstrap 3-node cluster from scratch |
+| [three-nodes-standalone](three-nodes-standalone/)     | Bootstrap 3-node cluster from scratch |
 | [single-node-expansion](single-node-expansion/) | Start with 1 node, expand to 3 nodes  |
 
 ---

@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Standalone Mode (Any Language)
 
 ```bash
-cd examples/three-nodes-cluster
+cd examples/three-nodes-standalone
 make start-cluster
 ```
 

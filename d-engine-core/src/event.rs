@@ -131,6 +131,10 @@ pub enum RaftEvent {
     /// Membership change has been applied to state
     /// Leader should refresh cluster metadata cache
     MembershipApplied,
+
+    /// Signal to flush pending read requests
+    /// Sent by timeout task when read buffer reaches time threshold
+    FlushReadBuffer,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -169,6 +173,8 @@ pub enum TestEvent {
     LogPurgeCompleted(LogId),
 
     PromoteReadyLearners,
+
+    FlushReadBuffer,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -201,5 +207,6 @@ pub fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
             // MembershipApplied is internal event for cache refresh
             TestEvent::CreateSnapshotEvent // Placeholder
         }
+        RaftEvent::FlushReadBuffer => TestEvent::FlushReadBuffer,
     }
 }
