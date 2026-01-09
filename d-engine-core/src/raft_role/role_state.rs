@@ -149,38 +149,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
         warn!("verify_leadership NotLeader error");
         Err(MembershipError::NotLeader.into())
     }
-    /// Immidiatelly verifies leadership status using a limited retry strategy.
-    ///
-    /// - Bypasses all queues with direct RPC transmission
-    /// - Enforces synchronous quorum validation
-    /// - Guarantees real-time network visibility
-    ///
-    /// This function is designed for latency-sensitive operations like linear reads,
-    /// where rapid failure is preferred over prolonged retries. It implements:
-    ///   - Exponential backoff with jitter
-    ///   - Fixed maximum retry attempts
-    ///   - Immediate failure on leadership loss
-    ///
-    /// # Parameters
-    /// - `payloads`: Log entries to verify (typically empty for leadership checks)
-    /// - `bypass_queue`: Whether to skip request queues for direct transmission
-    /// - `ctx`: Raft execution context
-    /// - `role_tx`: Channel for role transition events
-    ///
-    /// # Returns
-    /// - `Ok(true)`: Quorum verification succeeded within retry limits
-    /// - `Ok(false)`: Leadership definitively lost during verification
-    /// - `Err(_)`: Maximum retries exceeded or critical failure occurred
-    async fn verify_leadership_limited_retry(
-        &mut self,
-        _payloads: Vec<EntryPayload>,
-        _bypass_queue: bool,
-        _ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<bool> {
-        warn!("verify_leadership_limited_retry NotLeader error");
-        Err(MembershipError::NotLeader.into())
-    }
 
     async fn join_cluster(
         &self,

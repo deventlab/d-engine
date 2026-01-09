@@ -773,9 +773,14 @@ async fn test_handle_raft_event_case6_1() {
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_raft_event_case6_1")
         .with_replication_handler(replication_handler)
+        .with_node_config(node_config)
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -792,11 +797,13 @@ async fn test_handle_raft_event_case6_1() {
     let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    // Event handling should succeed (error is sent to client via resp_rx)
     state
         .handle_raft_event(raft_event, &context, role_tx)
         .await
-        .expect("should succeed");
+        .expect("Event should be handled successfully");
 
+    // Client receives error via response channel
     let e = resp_rx.recv().await.unwrap().unwrap_err();
     assert_eq!(e.code(), Code::FailedPrecondition);
 }
@@ -853,17 +860,24 @@ async fn test_handle_raft_event_case6_2() {
 
     // Mock state machine handler for linearizable read
     let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler.expect_update_pending().times(1).returning(|_| ());
+    state_machine_handler.expect_wait_applied().times(1).returning(|_, _| Ok(()));
     state_machine_handler
         .expect_read_from_state_machine()
         .returning(|_| Some(vec![]));
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_raft_event_case6_2")
         .with_raft_log(raft_log)
         .with_replication_handler(replication_handler)
         .with_state_machine_handler(state_machine_handler)
+        .with_node_config(node_config)
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -937,9 +951,14 @@ async fn test_handle_raft_event_case6_3() {
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_raft_event_case6_3")
         .with_replication_handler(replication_handler)
+        .with_node_config(node_config)
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -956,20 +975,20 @@ async fn test_handle_raft_event_case6_3() {
     let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    // Event handling should succeed (HigherTerm is handled, client gets error via resp_rx)
     state
         .handle_raft_event(raft_event, &context, role_tx)
         .await
-        .expect("should succeed");
+        .expect("Event should be handled successfully");
 
-    // Validation criteria 1: Leader commit should be updated to: 3(new commit
-    // index)
+    // Validation criteria 1: Leader commit should remain unchanged (HigherTerm aborted the operation)
     assert_eq!(state.commit_index(), 1);
 
     // Validation criteria 2: event "RoleEvent::BecomeFollower" should be received
     let event = role_rx.try_recv().unwrap();
     assert!(matches!(event, RoleEvent::BecomeFollower(None)));
 
-    // Validation criteria 3: resp_rx receives Err(e)
+    // Validation criteria 3: Client receives error via response channel
     assert!(resp_rx.recv().await.unwrap().is_err());
 }
 
@@ -4798,6 +4817,7 @@ mod handle_client_read_request {
         // Configure server to allow client override
         let mut node_config = RaftNodeConfig::default();
         node_config.raft.read_consistency.allow_client_override = true;
+        node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
 
         let context = MockBuilder::new(graceful_rx)
             .with_db_path("/tmp/leader_lease_read_valid")
@@ -4852,6 +4872,7 @@ mod handle_client_read_request {
         // Configure server to allow client override
         let mut node_config = RaftNodeConfig::default();
         node_config.raft.read_consistency.allow_client_override = true;
+        node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
 
         let context = MockBuilder::new(graceful_rx)
             .with_db_path("/tmp/leader_lease_read_expired")
@@ -4905,13 +4926,20 @@ mod handle_client_read_request {
         state_machine_handler
             .expect_read_from_state_machine()
             .returning(|_| Some(vec![]));
+        state_machine_handler.expect_update_pending().times(1).returning(|_| ());
+        state_machine_handler.expect_wait_applied().times(1).returning(|_, _| Ok(()));
 
         let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+
         let context = MockBuilder::new(graceful_rx)
             .with_db_path("/tmp/leader_unspecified_policy")
             .with_replication_handler(replication_handler)
             .with_raft_log(raft_log)
             .with_state_machine_handler(state_machine_handler)
+            .with_node_config(node_config)
             .build_context();
 
         let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -4943,6 +4971,7 @@ mod handle_client_read_request {
         // Configure server to allow client override
         let mut node_config = RaftNodeConfig::default();
         node_config.raft.read_consistency.allow_client_override = true;
+        node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
 
         let context = MockBuilder::new(graceful_rx)
             .with_db_path("/tmp/leader_eventual_consistency")
@@ -4980,6 +5009,7 @@ mod handle_client_read_request {
         let mut node_config = RaftNodeConfig::default();
         node_config.raft.read_consistency.default_policy = ServerPolicy::EventualConsistency;
         node_config.raft.read_consistency.allow_client_override = false;
+        node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
 
         let context = MockBuilder::new(graceful_rx)
             .with_db_path("/tmp/leader_server_default_eventual")

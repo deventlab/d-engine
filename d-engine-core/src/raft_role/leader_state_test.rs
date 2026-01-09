@@ -640,7 +640,7 @@ mod read_batching_tests {
     /// Scenario: Send 50 linearizable read requests (reaching size_threshold)
     /// Expected:
     ///   - 49th request: buffer accumulates, NO flush yet
-    ///   - 50th request: triggers flush_read_buffer() immediately
+    ///   - 50th request: triggers process_linearizable_read_batch() immediately
     ///   - All 50 requests share single verify_leadership() call
     #[tokio::test]
     async fn test_read_buffer_size_trigger() {
@@ -814,7 +814,7 @@ mod read_batching_tests {
             "Start time should be cleared after first flush"
         );
 
-        // NOTE: In real code, flush_read_buffer() checks if buffer is empty
+        // NOTE: In real code, process_linearizable_read_batch() checks if buffer is empty
         // and returns early (no-op). This prevents duplicate work when
         // delayed timeout events arrive after size threshold flush.
     }
@@ -1052,7 +1052,7 @@ mod read_batching_tests {
     ///
     /// Scenario: Send 50th LinearizableRead request (size threshold reached)
     /// Expected:
-    ///   - flush_read_buffer() called immediately
+    ///   - process_linearizable_read_batch() called immediately
     ///   - Buffer cleared
     ///   - read_buffer_start_time cleared
     ///   - Requests receive responses
@@ -1142,7 +1142,7 @@ mod read_batching_tests {
     ///
     /// Scenario: Handle FlushReadBuffer event when buffer has requests
     /// Expected:
-    ///   - flush_read_buffer() called
+    ///   - process_linearizable_read_batch() called
     ///   - Buffer cleared
     ///   - Requests receive responses
     #[tokio::test]
@@ -1250,13 +1250,13 @@ mod read_batching_tests {
         drop(shutdown_tx);
     }
 
-    /// Test: flush_read_buffer updates lease timestamp after successful verification
+    /// Test: process_linearizable_read_batch updates lease timestamp after successful verification
     ///
     /// Scenario:
     /// 1. Leader has invalid lease (lease_timestamp = 0)
-    /// 2. LinearizableRead request triggers flush_read_buffer
-    /// 3. verify_leadership_for_read succeeds (mocked)
-    /// 4. flush_read_buffer calls update_lease_timestamp
+    /// 2. LinearizableRead request triggers process_linearizable_read_batch
+    /// 3. verify_leadership_and_refresh_lease succeeds (mocked)
+    /// 4. process_linearizable_read_batch calls update_lease_timestamp
     ///
     /// Purpose:
     /// Verify that successful LinearizableRead verification updates the lease timestamp,
@@ -1316,12 +1316,13 @@ mod read_batching_tests {
             resp_tx,
         ));
 
-        let result = state.flush_read_buffer(&ctx).await;
+        let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = state.process_linearizable_read_batch(&ctx, &role_tx).await;
 
-        // Verify: flush_read_buffer succeeded
+        // Verify: process_linearizable_read_batch succeeded
         assert!(
             result.is_ok(),
-            "flush_read_buffer should succeed after verification"
+            "process_linearizable_read_batch should succeed after verification"
         );
 
         // Verify: Lease timestamp updated (now > 0)
@@ -1338,7 +1339,7 @@ mod read_batching_tests {
         // Verify: Lease is now valid
         assert!(
             state.is_lease_valid(&ctx),
-            "Lease should be valid after flush_read_buffer updates timestamp"
+            "Lease should be valid after process_linearizable_read_batch updates timestamp"
         );
 
         drop(shutdown_tx);
