@@ -162,16 +162,28 @@ sequenceDiagram
 open benches/reports/
 ```
 
-## Jepsen Tests
+---
 
-d-engine includes [Jepsen](https://jepsen.io/) tests to validate linearizability and fault-tolerance under partitions and crashes.
+## Maintainer Philosophy
 
-To run Jepsen tests (requires Docker & Leiningen):
-See [examples/three-nodes-standalone/docker/jepsen/README.md](./examples/three-nodes-standalone/docker/jepsen/README.md) for full instructions.
+d-engine is maintained by a single author with a clear vision.
+We value quality over quantity:
+
+- **PRs are not guaranteed to be merged** - even good code may be declined
+  if it conflicts with roadmap priorities
+- **Response time varies** - active development takes precedence over PR reviews
+- **Breaking changes are OK pre-1.0** - we prioritize getting it right over
+  backward compatibility
+
+This approach keeps d-engine focused and maintainable.
 
 ---
 
 ## Contribution Guide
+
+d-engine follows the 20/80 rule - solve real production problems, not experiments.
+Read [Contributing Guide](CONTRIBUTING.md) and open an issue before feature PRs.
+Bug fixes are always welcome.
 
 ### Prerequisites
 

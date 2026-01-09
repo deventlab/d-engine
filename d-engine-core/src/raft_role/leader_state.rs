@@ -2688,8 +2688,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 batch_size, e
             );
             let status = tonic::Status::failed_precondition(format!(
-                "Leadership verification failed: {}",
-                e
+                "Leadership verification failed: {e:?}"
             ));
             for (_, sender) in batch {
                 let _ = sender.send(Err(status.clone()));
