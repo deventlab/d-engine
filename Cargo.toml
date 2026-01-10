@@ -12,6 +12,7 @@ exclude = [
   "examples/client_usage",
   "examples/sled-cluster",
   "examples/three-nodes-standalone",
+  "examples/three-nodes-embedded",
   "examples/single-node-expansion",
   "examples/quick-start",
   "examples/quick-start-embedded",

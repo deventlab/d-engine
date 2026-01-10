@@ -100,7 +100,10 @@ impl MockBuilder {
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config.unwrap_or_else(|| {
-                RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")
+                RaftNodeConfig::new()
+                    .expect("Should succeed to init RaftNodeConfig")
+                    .validate()
+                    .expect("Should succeed to validate RaftNodeConfig")
             }),
         );
 
@@ -147,7 +150,10 @@ impl MockBuilder {
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config.unwrap_or_else(|| {
-                RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig")
+                RaftNodeConfig::new()
+                    .expect("Should succeed to init RaftNodeConfig")
+                    .validate()
+                    .expect("Should succeed to validate RaftNodeConfig")
             }),
             self.role_tx.unwrap_or(role_tx),
             self.role_rx.unwrap_or(role_rx),
@@ -289,9 +295,10 @@ impl MockBuilder {
         mut self,
         db_root_dir: impl AsRef<Path>,
     ) -> Self {
-        let mut node_config =
-            RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+        let mut node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig");
         node_config.cluster.db_root_dir = db_root_dir.as_ref().to_path_buf();
+        let node_config =
+            node_config.validate().expect("Should succeed to validate RaftNodeConfig");
         self.node_config = Some(node_config);
         self
     }

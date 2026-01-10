@@ -130,13 +130,20 @@ where
         cluster_path: Option<&str>,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
-        let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully");
-        if let Some(p) = cluster_path {
+        let node_config = if let Some(p) = cluster_path {
             info!("with_override_config from: {}", &p);
-            node_config = node_config
+            RaftNodeConfig::new()
+                .expect("Load node_config successfully")
                 .with_override_config(p)
-                .expect("Overwrite node_config successfully.");
-        }
+                .expect("Overwrite node_config successfully")
+                .validate()
+                .expect("Validate node_config successfully")
+        } else {
+            RaftNodeConfig::new()
+                .expect("Load node_config successfully")
+                .validate()
+                .expect("Validate node_config successfully")
+        };
 
         Self::init(node_config, shutdown_signal)
     }
@@ -155,8 +162,9 @@ where
         cluster_config: ClusterConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
-        let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully!");
+        let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully");
         node_config.cluster = cluster_config;
+        let node_config = node_config.validate().expect("Validate node_config successfully");
         Self::init(node_config, shutdown_signal)
     }
 
@@ -628,8 +636,9 @@ where
     ) -> Self {
         use std::path::PathBuf;
 
-        let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully!");
+        let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully");
         node_config.cluster.db_root_dir = PathBuf::from(db_path);
+        let node_config = node_config.validate().expect("Validate node_config successfully");
 
         Self::init(node_config, shutdown_signal)
     }
