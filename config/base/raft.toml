@@ -1,62 +1,148 @@
 [raft]
-# /// the metric used to convert a follower to learner,
-# ///     if learner's next_id is far away from leader's commit_index
-# /// be careful on the value, if it is too smal it might create a ‘competition’
-# ///     situation is that leader will keep convert a node between learner and follower
-# ///
-learner_raft_log_gap = 10
+# Metric used to convert a follower to learner if its next_id is far behind leader's commit_index
+# Be careful: too small may cause oscillation between learner and follower states
+learner_catchup_threshold = 10
+
+# Interval for checking if learners need to be converted to followers (milliseconds)
+learner_check_throttle_ms = 1000
+
+# General Raft operation timeout duration (milliseconds)
 general_raft_timeout_duration_in_ms = 100
-# 1hour
+
+# Timeout for snapshot-related RPC operations (milliseconds)
+# Default: 1 hour for large snapshot transfers
 snapshot_rpc_timeout_ms = 3_600_000
 
 [raft.replication]
-# [raft], leader append frequence
+# Leader's append entries tick interval (milliseconds)
 rpc_append_entries_clock_in_ms = 100
-# Process commands when this number is reached
-rpc_append_entries_in_batch_threshold = 100
-# Ensure the batch is processed within a maximum delay (e.g., 10ms)
-rpc_append_entries_batch_process_delay_in_ms = 1
-# timeout in ms
 
-# if a follower is very slow to catch up with leader, we should limit the max number of the entries could sync per time
+# Process batch when this number of entries is reached
+rpc_append_entries_in_batch_threshold = 100
+
+# Maximum delay to ensure batch processing (milliseconds)
+rpc_append_entries_batch_process_delay_in_ms = 1
+
+# Maximum entries per replication request to slow followers
+# Prevents overwhelming slow followers with too many entries at once
 append_entries_max_entries_per_replication = 100
 
 [raft.election]
+# Minimum election timeout (milliseconds)
 election_timeout_min = 500
+
+# Maximum election timeout (milliseconds)
 election_timeout_max = 1000
 
-# check rpc connection health per 30 sec
+# Interval for checking RPC connection health (seconds)
 rpc_peer_connectinon_monitor_interval_in_sec = 30
+
+# Internal RPC client request ID
 internal_rpc_client_request_id = 0
 
-
-[raft.commit_handler]
-batch_size_threshold = 100
-process_interval_ms = 10
-max_entries_per_chunk = 100
-
-[raft.snapshot]
-enable = true
-max_log_entries_before_snapshot = 1000
-
-# in secs
-snapshot_cool_down_since_last_check = { secs = 3600 }
-
-cleanup_retain_count = 2
-snapshots_dir = "./snapshots/"
-# 1KB
-chunk_size = 1024
-# Number of log entries to retain (0 = disable retention)
-retained_log_entries = 1
-sender_yield_every_n_chunks = 1
-receiver_yield_every_n_chunks = 1
-
 [raft.membership]
+# Service name for cluster health check probes
 cluster_healthcheck_probe_service_name = "d_engine.server.cluster.ClusterManagementService"
 
-[raft.auto_join]
-rpc_enable_compression = true
+# Timeout for leader to keep verifying its leadership
+# Leader will retry sending no-op entries to confirm leadership within this duration
+verify_leadership_persistent_timeout = { secs = 3600 }
 
+# Interval for membership maintenance tasks (seconds)
+membership_maintenance_interval = { secs = 30 }
+
+# Zombie node detection and cleanup configuration
+[raft.membership.zombie]
+# Number of consecutive connection failures before marking node as zombie
+threshold = 3
+
+# Interval for purging zombie nodes (seconds)
+purge_interval = { secs = 30 }
+
+# Learner promotion configuration
+[raft.membership.promotion]
+# Duration after which a learner is considered stale if not promoted
+stale_learner_threshold = { secs = 300 }
+
+# Interval for checking stale learners (seconds)
+stale_check_interval = { secs = 30 }
+
+[raft.commit_handler]
+# Number of entries to accumulate before processing
+batch_size_threshold = 100
+
+# Maximum delay for processing batches (milliseconds)
+process_interval_ms = 10
+
+# Maximum entries per processing chunk
+max_entries_per_chunk = 100
+
+[raft.state_machine]
+# Lease (time-based expiration) configuration
+# Alias: can also be configured as "ttl" in TOML files
+# Example: [raft.state_machine.lease] or [raft.state_machine.ttl]
+
+[raft.snapshot]
+# Enable snapshot functionality
+enable = true
+
+# Maximum log entries before triggering snapshot creation
+max_log_entries_before_snapshot = 1000
+
+# Cooldown period between consecutive snapshot checks
+snapshot_cool_down_since_last_check = { secs = 3600 }
+
+# Number of historical snapshot versions to retain during cleanup
+cleanup_retain_count = 2
+
+# Directory for storing snapshots
+snapshots_dir = "./snapshots/"
+
+# Prefix for snapshot directory names
+snapshots_dir_prefix = "snapshot"
+
+# Size of individual chunks for snapshot transfer (bytes)
+chunk_size = 1024
+
+# Number of log entries to retain after snapshot (0 = disable retention)
+retained_log_entries = 1
+
+# Number of chunks to process before yielding (sender side)
+sender_yield_every_n_chunks = 1
+
+# Number of chunks to process before yielding (receiver side)
+receiver_yield_every_n_chunks = 1
+
+# Maximum bandwidth for snapshot transfer (Mbps)
+max_bandwidth_mbps = 1
+
+# Queue size for snapshot push operations
+push_queue_size = 100
+
+# Cache size for snapshot data (entries)
+cache_size = 10000
+
+# Maximum retries for snapshot transfer operations
+max_retries = 1
+
+# Timeout for snapshot transfer operations (seconds)
+transfer_timeout_in_sec = 600
+
+# Retry interval for failed snapshot operations (milliseconds)
+retry_interval_in_ms = 10
+
+# Backoff duration before retrying snapshot push (milliseconds)
+snapshot_push_backoff_in_ms = 100
+
+# Maximum retry attempts for snapshot push operations
+snapshot_push_max_retry = 3
+
+# Timeout for snapshot push operations (milliseconds)
+push_timeout_in_ms = 300_000
+
+[raft.auto_join]
+# Enable compression for auto-join RPC operations
+rpc_enable_compression = true
 
 [raft.persistence]
 # Persistence strategy:
@@ -66,35 +152,54 @@ strategy = "DiskFirst"
 
 # Flush policy controls when memory logs are flushed to disk:
 #   - "Immediate": Flush every entry immediately to disk (sync write).
-#   - 'Batch { threshold, interval_ms }': Flush when either count or time is exceeded.
-#
-# Example:
-# flush_policy = "Immediate"
-# OR
-# flush_policy = { Batch = { threshold = 1000, interval_ms = 10 } }
+#   - { Batch = { threshold, interval_ms } }: Flush when either count or time is exceeded.
 flush_policy = { Batch = { threshold = 1000, interval_ms = 10 } }
 
-# Upcoming feature(v0.1.4)
 # Maximum number of log entries to buffer in memory
-# when using async persistence strategies (MemFirst/Batched)
+# Applies when using async persistence strategies (MemFirst/Batched)
 max_buffered_entries = 10000
 
+# Number of flush worker threads for log persistence
+# - 0: Spawn new task per flush (legacy behavior, lower latency)
+# - >0: Use worker pool (more stable under high load)
+flush_workers = 2
+
+# Capacity of internal task channel for flush workers
+# Provides backpressure during high write throughput
+channel_capacity = 100
+
 [raft.read_consistency]
+# Default read consistency policy for the cluster
+# Options: "LeaseRead", "LinearizableRead", "EventualConsistency"
 default_policy = "LinearizableRead"
+
+# Lease duration for LeaseRead policy (milliseconds)
+# Only applicable when using LeaseRead policy
 lease_duration_ms = 250
+
+# Allow clients to override default policy per request
 allow_client_override = true
+
 # Timeout to wait for state machine to catch up with commit index (milliseconds)
 # Used by LinearizableRead to ensure reads reflect all committed writes
 # Typical apply latency: <1ms on local SSD. Default: 10ms (safe buffer)
 state_machine_sync_timeout_ms = 10
 
+# ReadIndex batching configuration
+[raft.read_consistency.read_batching]
+
+# Number of read requests to batch together
+size_threshold = 50
+
+# Maximum time to wait before processing batch (milliseconds)
+time_threshold_ms = 10
 
 # Granular RPC compression configuration
 [raft.rpc_compression]
 # High-frequency replication traffic - compression CPU overhead outweighs network benefit in VPC
 replication_response = false
 
-# Election traffic - low volume, low benefit but kept true for backward compatibility
+# Election traffic - low volume, kept enabled for backward compatibility
 election_response = true
 
 # Snapshot transfers - large data volumes benefit from compression

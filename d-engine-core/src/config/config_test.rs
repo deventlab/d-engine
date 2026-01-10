@@ -30,7 +30,7 @@ fn default_config_should_initialize_with_hardcoded_values() {
 fn new_should_merge_environment_overrides() {
     cleanup_all_raft_env_vars();
     with_vars(vec![("RAFT__NETWORK__BUFFER_SIZE", Some("1025"))], || {
-        let config = RaftNodeConfig::new().unwrap();
+        let config = RaftNodeConfig::new().unwrap().validate().unwrap();
 
         assert_eq!(config.network.buffer_size, 1025);
     });
@@ -62,7 +62,9 @@ fn with_override_config_should_merge_file_settings() {
     with_vars(empty_vars, || {
         // Execute test logic
         let base_config = RaftNodeConfig::new().expect("success");
-        let result = base_config.with_override_config(config_path.to_str().unwrap());
+        let result = base_config
+            .with_override_config(config_path.to_str().unwrap())
+            .and_then(|c| c.validate());
 
         // Verify result
         assert!(result.is_ok());
@@ -120,7 +122,7 @@ fn environment_variables_should_have_highest_priority() {
             ("RAFT__CLUSTER__NODE_ID", Some("200")),
         ],
         || {
-            let config = RaftNodeConfig::new().unwrap();
+            let config = RaftNodeConfig::new().unwrap().validate().unwrap();
 
             // Debug output to see what's in the configuration
             println!("Final node_id: {}", config.cluster.node_id);
@@ -177,7 +179,7 @@ fn config_should_handle_nested_structures_correctly() {
     with_vars(
         vec![("CONFIG_PATH", Some(config_path.to_str().unwrap()))],
         || {
-            let config = RaftNodeConfig::new().unwrap();
+            let config = RaftNodeConfig::new().unwrap().validate().unwrap();
             assert_eq!(config.retry.election.max_retries, 10);
             assert_eq!(config.retry.append_entries.max_retries, 250);
         },
@@ -356,4 +358,218 @@ mod join_status_tests {
 
         assert!(!config.is_learner(), "Invalid status should not be joining");
     }
+}
+
+// ============================================================================
+// Delayed Validation Tests (validate() mechanism)
+// ============================================================================
+
+#[test]
+fn test_new_returns_unvalidated_config() {
+    cleanup_all_raft_env_vars();
+
+    // new() should succeed even if config might be invalid in release builds
+    let cfg = RaftNodeConfig::new().expect("new() should succeed");
+
+    // Config exists but not validated yet
+    assert!(cfg.cluster.node_id > 0);
+}
+
+#[test]
+fn test_invalid_config_fails_on_validate() {
+    let mut cfg = RaftNodeConfig::default();
+    cfg.cluster.node_id = 0; // Invalid node_id
+
+    let result = cfg.validate();
+    assert!(result.is_err(), "validate() should fail for invalid config");
+}
+
+#[test]
+fn test_override_then_validate_succeeds() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("valid.toml");
+    let mut file = std::fs::File::create(&config_path).unwrap();
+    write!(
+        file,
+        r#"
+[cluster]
+node_id = 1
+db_root_dir = "{}/db"
+
+[[cluster.initial_cluster]]
+id = 1
+address = "127.0.0.1:9091"
+role = 2
+status = 2
+"#,
+        temp_dir.path().display()
+    )
+    .unwrap();
+    drop(file);
+
+    let cfg = RaftNodeConfig::new()
+        .expect("new() should succeed")
+        .with_override_config(config_path.to_str().unwrap())
+        .expect("override should succeed")
+        .validate()
+        .expect("validate should succeed");
+
+    assert_eq!(cfg.cluster.node_id, 1);
+}
+
+// ============================================================================
+// Config Loading Method Tests
+// ============================================================================
+
+#[test]
+#[serial]
+fn test_config_path_env_loads_and_validates() {
+    use std::io::Write;
+
+    cleanup_all_raft_env_vars();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("test.toml");
+    let mut file = std::fs::File::create(&config_path).unwrap();
+    write!(
+        file,
+        r#"
+[cluster]
+node_id = 99
+db_root_dir = "{}/db"
+
+[[cluster.initial_cluster]]
+id = 99
+address = "127.0.0.1:9091"
+role = 2
+status = 2
+"#,
+        temp_dir.path().display()
+    )
+    .unwrap();
+    drop(file);
+
+    unsafe {
+        std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
+    }
+
+    let cfg = RaftNodeConfig::new()
+        .expect("Should load from CONFIG_PATH")
+        .validate()
+        .expect("Should validate");
+
+    assert_eq!(cfg.cluster.node_id, 99);
+
+    unsafe {
+        std::env::remove_var("CONFIG_PATH");
+    }
+}
+
+#[test]
+#[serial]
+fn test_config_path_env_with_env_override() {
+    use std::io::Write;
+
+    cleanup_all_raft_env_vars();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("base.toml");
+    let mut file = std::fs::File::create(&config_path).unwrap();
+    write!(
+        file,
+        r#"
+[cluster]
+node_id = 1
+db_root_dir = "{}/db"
+
+[[cluster.initial_cluster]]
+id = 1
+address = "127.0.0.1:9091"
+role = 2
+status = 2
+
+[[cluster.initial_cluster]]
+id = 200
+address = "127.0.0.1:9092"
+role = 2
+status = 2
+"#,
+        temp_dir.path().display()
+    )
+    .unwrap();
+    drop(file);
+
+    unsafe {
+        std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
+    }
+    unsafe {
+        std::env::set_var("RAFT__CLUSTER__NODE_ID", "200");
+    }
+
+    let cfg = RaftNodeConfig::new().expect("Should load").validate().expect("Should validate");
+
+    assert_eq!(cfg.cluster.node_id, 200); // Env var overrides file
+
+    unsafe {
+        std::env::remove_var("CONFIG_PATH");
+    }
+    unsafe {
+        std::env::remove_var("RAFT__CLUSTER__NODE_ID");
+    }
+}
+
+#[test]
+fn test_explicit_override_config_file() {
+    use std::io::Write;
+
+    cleanup_all_raft_env_vars();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("custom.toml");
+    let mut file = std::fs::File::create(&config_path).unwrap();
+    write!(
+        file,
+        r#"
+[cluster]
+node_id = 42
+db_root_dir = "{}/db"
+
+[[cluster.initial_cluster]]
+id = 42
+address = "127.0.0.1:9091"
+role = 2
+status = 2
+"#,
+        temp_dir.path().display()
+    )
+    .unwrap();
+    drop(file);
+
+    let cfg = RaftNodeConfig::new()
+        .expect("new() should succeed")
+        .with_override_config(config_path.to_str().unwrap())
+        .expect("override should succeed")
+        .validate()
+        .expect("validate should succeed");
+
+    assert_eq!(cfg.cluster.node_id, 42);
+}
+
+// ============================================================================
+// API Design Test
+// ============================================================================
+
+#[test]
+fn test_validate_consumes_self_returns_self() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut cfg = RaftNodeConfig::new().unwrap();
+    cfg.cluster.db_root_dir = temp_dir.path().to_path_buf();
+
+    // validate() consumes cfg and returns Result<Self>
+    let validated = cfg.validate().expect("Should validate");
+
+    // Can use validated
+    assert!(validated.cluster.node_id > 0);
 }

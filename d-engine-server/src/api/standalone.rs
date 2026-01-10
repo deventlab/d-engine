@@ -36,7 +36,7 @@ impl StandaloneServer {
     /// ```
     #[cfg(feature = "rocksdb")]
     pub async fn run(shutdown_rx: watch::Receiver<()>) -> Result<()> {
-        let config = d_engine_core::RaftNodeConfig::new()?;
+        let config = d_engine_core::RaftNodeConfig::new()?.validate()?;
         let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
 
         tokio::fs::create_dir_all(&base_dir)
@@ -83,7 +83,9 @@ impl StandaloneServer {
         config_path: &str,
         shutdown_rx: watch::Receiver<()>,
     ) -> Result<()> {
-        let config = d_engine_core::RaftNodeConfig::new()?.with_override_config(config_path)?;
+        let config = d_engine_core::RaftNodeConfig::new()?
+            .with_override_config(config_path)?
+            .validate()?;
         let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
 
         tokio::fs::create_dir_all(&base_dir)
@@ -140,9 +142,11 @@ impl StandaloneServer {
         SM: StateMachine + std::fmt::Debug + 'static,
     {
         let node_config = if let Some(path) = config_path {
-            d_engine_core::RaftNodeConfig::default().with_override_config(path)?
+            d_engine_core::RaftNodeConfig::default()
+                .with_override_config(path)?
+                .validate()?
         } else {
-            d_engine_core::RaftNodeConfig::new()?
+            d_engine_core::RaftNodeConfig::new()?.validate()?
         };
 
         let node = NodeBuilder::init(node_config, shutdown_rx)

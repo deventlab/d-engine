@@ -1,5 +1,5 @@
 # Makefile for embedded-bench
-# Provides benchmark commands matching d-engine-bench/reports/v0.2.0/report_v0.2.0_final.md
+# Provides benchmark commands matching embedded-bench/reports/v0.2.0/report_v0.2.0_final.md
 
 .PHONY: help build clean test-single-write test-high-conc-write test-linearizable-read test-lease-read test-eventual-read test-hot-key all-tests
 
@@ -75,7 +75,7 @@ clean:
 # ============================================
 
 # Single client write (10K requests)
-# Comparable to: d-engine-bench --conns 1 --clients 1 --total 10000
+# Comparable to: embedded-bench --conns 1 --clients 1 --total 10000
 test-single-write: build
 	@echo "========================================"
 	@echo "Single Client Write (10K requests)"
@@ -94,7 +94,7 @@ test-single-write: build
 		put
 
 # High concurrency write (100K requests)
-# Comparable to: d-engine-bench --conns 200 --clients 1000 --total 100000
+# Comparable to: embedded-bench --conns 200 --clients 1000 --total 100000
 test-high-conc-write: build
 	@echo "========================================"
 	@echo "High Concurrency Write (100K requests)"
@@ -117,7 +117,7 @@ test-high-conc-write: build
 # ============================================
 
 # Linearizable read (100K requests)
-# Comparable to: d-engine-bench --conns 200 --clients 1000 --total 100000 range --consistency l
+# Comparable to: embedded-bench --conns 200 --clients 1000 --total 100000 range --consistency l
 test-linearizable-read: build
 	@echo "========================================"
 	@echo "Linearizable Read (100K requests)"
@@ -135,7 +135,7 @@ test-linearizable-read: build
 		get --consistency l
 
 # Lease-based read (100K requests)
-# Comparable to: d-engine-bench --conns 200 --clients 1000 --total 100000 range --consistency s
+# Comparable to: embedded-bench --conns 200 --clients 1000 --total 100000 range --consistency s
 test-lease-read: build
 	@echo "========================================"
 	@echo "Lease-Based Read (100K requests)"
@@ -153,7 +153,7 @@ test-lease-read: build
 		get --consistency s
 
 # Eventual consistency read (100K requests)
-# Comparable to: d-engine-bench --conns 200 --clients 1000 --total 100000 range --consistency e
+# Comparable to: embedded-bench --conns 200 --clients 1000 --total 100000 range --consistency e
 test-eventual-read: build
 	@echo "========================================"
 	@echo "Eventual Consistency Read (100K requests)"
@@ -171,7 +171,7 @@ test-eventual-read: build
 		get --consistency e
 
 # Hot-key test (100K requests, 10 keys)
-# Comparable to: d-engine-bench --conns 200 --clients 1000 --total 100000 --key-space 10 range --consistency l
+# Comparable to: embedded-bench --conns 200 --clients 1000 --total 100000 --key-space 10 range --consistency l
 test-hot-key: build
 	@echo "========================================"
 	@echo "Hot-Key Test (100K requests, 10 keys)"
@@ -208,4 +208,4 @@ all-tests: build
 		put
 	@echo ""
 	@echo "Compare results with Standalone mode:"
-	@echo "  Standalone report: ../../benches/d-engine-bench/reports/v0.2.0/report_v0.2.0_final.md"
+	@echo "  Standalone report: ../../benches/standalone-bench/reports/v0.2.2/report_v0.2.2.md"

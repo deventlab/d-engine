@@ -17,11 +17,11 @@
 ## Step 1: Start Demo Cluster (1 minute)
 
 > **What is this?**  
-> `examples/three-nodes-cluster` is a demo project included in d-engine repository.  
+> `examples/three-nodes-standalone` is a demo project included in d-engine repository.
 > It simulates a production-like 3-node cluster for quick testing.
 
 ```bash
-cd examples/three-nodes-cluster
+cd examples/three-nodes-standalone
 make start-cluster
 ```
 
@@ -84,7 +84,7 @@ Value: world
 
 - [Monitor cluster and test failover](#monitor-cluster)
 - [Embedded vs Standalone comparison](#embedded-vs-standalone)
-- [Production deployment example](https://github.com/deventlab/d-engine/tree/main/examples/three-nodes-cluster)
+- [Production deployment example](https://github.com/deventlab/d-engine/tree/main/examples/three-nodes-standalone)
 
 **Clean up:**
 

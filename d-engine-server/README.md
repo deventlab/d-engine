@@ -224,7 +224,7 @@ For comprehensive guides:
 See working examples in the repository:
 
 - [Single Node Expansion](https://github.com/deventlab/d-engine/tree/main/examples/single-node-expansion)
-- [Three Nodes Cluster](https://github.com/deventlab/d-engine/tree/main/examples/three-nodes-cluster)
+- [Three Nodes Cluster](https://github.com/deventlab/d-engine/tree/main/examples/three-nodes-standalone)
 - [Quick Start Embedded](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-embedded)
 
 ---

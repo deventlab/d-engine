@@ -10,11 +10,11 @@ help: ## Show this help message
 	@echo '  check-cluster     Check if d-engine cluster is reachable'
 	@echo ''
 	@echo 'Prerequisites:'
-	@echo '  Ensure d-engine cluster is running (cd ../three-nodes-cluster && make start-cluster)'
+	@echo '  Ensure d-engine cluster is running (cd ../three-nodes-standalone && make start-cluster)'
 
 check-cluster:
 	@echo "Checking connectivity to 127.0.0.1:9081..."
-	@nc -z 127.0.0.1 9081 || (echo "❌ Cluster not reachable. Please start three-nodes-cluster first." && exit 1)
+	@nc -z 127.0.0.1 9081 || (echo "❌ Cluster not reachable. Please start three-nodes-standalone first." && exit 1)
 	@echo "✅ Cluster reachable"
 
 run-watcher: check-cluster ## Start the watcher

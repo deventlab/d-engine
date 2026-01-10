@@ -8,7 +8,15 @@ pub mod role_state;
 mod raft_role_test;
 
 #[cfg(test)]
+mod candidate_state_test;
+#[cfg(test)]
+mod follower_state_test;
+#[cfg(test)]
+mod leader_state_client_read_test;
+#[cfg(test)]
 mod leader_state_test;
+#[cfg(test)]
+mod learner_state_test;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU32;
@@ -389,6 +397,21 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut()
             .verify_leadership_persistent(payloads, bypass_queue, ctx, role_tx)
             .await
+    }
+
+    /// Notify role that no-op entry has been committed.
+    /// Only Leader role performs actual tracking.
+    pub(crate) fn on_noop_committed(
+        &mut self,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        self.state_mut().on_noop_committed(ctx)
+    }
+
+    /// Drain pending read buffer when stepping down from Leader.
+    /// Only Leader implements this; other roles are no-op.
+    pub(crate) fn drain_read_buffer(&mut self) -> Result<()> {
+        self.state_mut().drain_read_buffer()
     }
 }
 

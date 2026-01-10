@@ -24,7 +24,10 @@ pub fn create_test_node() -> (Node<d_engine_core::MockTypeConfig>, watch::Sender
 
     let node = MockBuilder::new(shutdown_rx.clone())
         .with_node_config({
-            let mut config = RaftNodeConfig::new().expect("Default config");
+            let mut config = RaftNodeConfig::new()
+                .expect("Default config")
+                .validate()
+                .expect("Validate RaftNodeConfig successfully");
             config.cluster.initial_cluster = vec![NodeMeta {
                 id: 1,
                 address: "127.0.0.1:9001".to_string(),
@@ -48,7 +51,10 @@ pub fn create_test_node_with_id(
     let node = MockBuilder::new(shutdown_rx.clone())
         .id(node_id)
         .with_node_config({
-            let mut config = RaftNodeConfig::new().expect("Default config");
+            let mut config = RaftNodeConfig::new()
+                .expect("Default config")
+                .validate()
+                .expect("Validate RaftNodeConfig successfully");
             config.cluster.node_id = node_id;
             config.cluster.initial_cluster = vec![NodeMeta {
                 id: node_id,

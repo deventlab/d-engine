@@ -5,13 +5,13 @@ Go client example for connecting to d-engine standalone cluster.
 ## Prerequisites
 
 - Go 1.20+
-- Running d-engine 3-node cluster (see `../three-nodes-cluster`)
+- Running d-engine 3-node cluster (see `../three-nodes-standalone`)
 
 ## Run
 
 ```bash
 # Start cluster first
-cd ../three-nodes-cluster
+cd ../three-nodes-standalone
 make start-cluster
 
 # Run this example

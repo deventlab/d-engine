@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
 use d_engine_proto::common::AddNode;
@@ -155,7 +156,8 @@ pub struct LeaderState<T: TypeConfig> {
 
     /// === Volatile State ===
     /// Temporary storage for no-op entry log ID during leader initialization
-    pub(super) noop_log_id: Option<u64>,
+    #[doc(hidden)]
+    pub noop_log_id: Option<u64>,
 
     // -- Log Compaction & Purge --
     /// === Volatile State ===
@@ -245,6 +247,15 @@ pub struct LeaderState<T: TypeConfig> {
     /// Cached cluster metadata (updated on membership changes)
     /// Avoids repeated async calls in hot paths
     pub(super) cluster_metadata: ClusterMetadata,
+
+    /// Buffered read requests awaiting batch processing
+    pub(super) read_buffer: Vec<(
+        ClientReadRequest,
+        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+    )>,
+
+    /// Timestamp when first request entered buffer (for metrics/debugging)
+    pub(super) read_buffer_start_time: Option<Instant>,
 
     // -- Type System Marker --
     /// Phantom data for type parameter anchoring
@@ -348,6 +359,18 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         }
         Ok(())
     }
+
+    /// Track no-op entry index for linearizable read optimization.
+    /// Called after no-op entry is committed on leadership transition.
+    fn on_noop_committed(
+        &mut self,
+        ctx: &RaftContext<Self::T>,
+    ) -> Result<()> {
+        let noop_index = ctx.raft_log().last_entry_id();
+        self.noop_log_id = Some(noop_index);
+        debug!("Tracked noop_log_id: {}", noop_index);
+        Ok(())
+    }
     fn noop_log_id(&self) -> Result<Option<u64>> {
         Ok(self.noop_log_id)
     }
@@ -387,7 +410,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
         loop {
             match self.verify_internal_quorum(payloads.clone(), bypass_queue, ctx, role_tx).await {
-                Ok(QuorumVerificationResult::Success) => return Ok(true),
+                Ok(QuorumVerificationResult::Success) => {
+                    // Update lease timestamp after successful quorum verification.
+                    // This allows subsequent LeaseRead requests to benefit from this verification,
+                    // avoiding redundant quorum checks and improving read performance.
+                    self.update_lease_timestamp();
+                    return Ok(true);
+                }
                 Ok(QuorumVerificationResult::LeadershipLost) => return Ok(false),
                 Ok(QuorumVerificationResult::RetryRequired) => {
                     // Check global timeout before retrying
@@ -402,69 +431,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         current_delay.checked_mul(2).unwrap_or(max_delay).min(max_delay);
                     let jitter = Duration::from_millis(rand::random::<u64>() % 500);
                     sleep(current_delay + jitter).await;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    /// Immidiatelly verifies leadership status using a limited retry strategy.
-    ///
-    /// - Bypasses all queues with direct RPC transmission
-    /// - Enforces synchronous quorum validation
-    /// - Guarantees real-time network visibility
-    ///
-    /// This function is designed for latency-sensitive operations like linear reads,
-    /// where rapid failure is preferred over prolonged retries. It implements:
-    ///   - Exponential backoff with jitter
-    ///   - Fixed maximum retry attempts
-    ///   - Immediate failure on leadership loss
-    ///
-    /// # Parameters
-    /// - `payloads`: Log entries to verify (typically empty for leadership checks)
-    /// - `bypass_queue`: Whether to skip request queues for direct transmission
-    /// - `ctx`: Raft execution context
-    /// - `role_tx`: Channel for role transition events
-    ///
-    /// # Returns
-    /// - `Ok(true)`: Quorum verification succeeded within retry limits
-    /// - `Ok(false)`: Leadership definitively lost during verification
-    /// - `Err(_)`: Maximum retries exceeded or critical failure occurred
-    async fn verify_leadership_limited_retry(
-        &mut self,
-        payloads: Vec<EntryPayload>,
-        bypass_queue: bool,
-        ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<bool> {
-        let retry_policy = ctx.node_config.retry.internal_quorum;
-        let max_retries = retry_policy.max_retries;
-        let initial_delay =
-            Duration::from_millis(ctx.node_config.retry.internal_quorum.base_delay_ms);
-        let max_delay = Duration::from_millis(ctx.node_config.retry.internal_quorum.max_delay_ms);
-
-        let mut current_delay = initial_delay;
-        let mut attempts = 0;
-
-        loop {
-            match self.verify_internal_quorum(payloads.clone(), bypass_queue, ctx, role_tx).await {
-                Ok(QuorumVerificationResult::Success) => return Ok(true),
-                Ok(QuorumVerificationResult::LeadershipLost) => return Ok(false),
-                Ok(QuorumVerificationResult::RetryRequired) => {
-                    debug!(%attempts, "verify_internal_quorum");
-                    if attempts >= max_retries {
-                        return Err(NetworkError::TaskBackoffFailed(
-                            "Max retries exceeded".to_string(),
-                        )
-                        .into());
-                    }
-
-                    current_delay =
-                        current_delay.checked_mul(2).unwrap_or(max_delay).min(max_delay);
-                    let jitter = Duration::from_millis(rand::random::<u64>() % 500);
-                    sleep(current_delay + jitter).await;
-
-                    attempts += 1;
                 }
                 Err(e) => return Err(e),
             }
@@ -692,14 +658,27 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(())
     }
 
+    fn drain_read_buffer(&mut self) -> Result<()> {
+        if !self.read_buffer.is_empty() {
+            warn!(
+                "Read batch: draining {} requests due to role change",
+                self.read_buffer.len()
+            );
+            for (_, sender) in std::mem::take(&mut self.read_buffer) {
+                let _ = sender.send(Err(tonic::Status::unavailable("Leader stepped down")));
+            }
+            self.read_buffer_start_time = None;
+        }
+
+        Ok(())
+    }
+
     async fn handle_raft_event(
         &mut self,
         raft_event: RaftEvent,
         ctx: &RaftContext<T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        let state_machine = ctx.state_machine();
-        let last_applied_index = state_machine.last_applied().index;
         let my_id = self.shared_state.node_id;
         let my_term = self.current_term();
 
@@ -901,55 +880,59 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     // Apply consistency policy
                     match effective_policy {
                         ServerReadConsistencyPolicy::LinearizableRead => {
-                            if !self
-                                .verify_leadership_limited_retry(vec![], true, ctx, &role_tx)
-                                .await
-                                .unwrap_or(false)
-                            {
-                                warn!("enforce_quorum_consensus failed for linear read request");
+                            // 1. Add to buffer
+                            self.read_buffer.push((client_read_request, sender));
 
-                                Err(tonic::Status::failed_precondition(
-                                    "enforce_quorum_consensus failed".to_string(),
-                                ))
-                            } else if let Err(e) = self
-                                .ensure_state_machine_upto_commit_index(
-                                    &ctx.handlers.state_machine_handler,
-                                    last_applied_index,
-                                )
-                                .await
-                            {
-                                warn!(
-                                    "ensure_state_machine_upto_commit_index failed for linear read request"
+                            // 2. First request: spawn timeout task
+                            if self.read_buffer.len() == 1 {
+                                self.read_buffer_start_time = Some(Instant::now());
+
+                                let role_tx = role_tx.clone(); // Use role_tx (already available in signature)
+                                let timeout_ms = self
+                                    .node_config
+                                    .raft
+                                    .read_consistency
+                                    .read_batching
+                                    .time_threshold_ms;
+
+                                debug!(
+                                    "Read batch: first request, spawning {}ms timeout",
+                                    timeout_ms
                                 );
-                                Err(tonic::Status::failed_precondition(format!(
-                                    "ensure_state_machine_upto_commit_index failed: {e:?}"
-                                )))
-                            } else {
-                                read_operation()
+
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
+                                    debug!(
+                                        "Read batch: timeout expired, sending flush signal via ReprocessEvent"
+                                    );
+                                    // Use RoleEvent::ReprocessEvent to re-inject FlushReadBuffer into event loop
+                                    let _ = role_tx.send(RoleEvent::ReprocessEvent(Box::new(
+                                        RaftEvent::FlushReadBuffer,
+                                    )));
+                                });
                             }
+
+                            // 3. Size threshold: immediate flush
+                            let size_threshold =
+                                self.node_config.raft.read_consistency.read_batching.size_threshold;
+                            if self.read_buffer.len() >= size_threshold {
+                                debug!(
+                                    "Read batch: size threshold reached ({}), flushing",
+                                    size_threshold
+                                );
+                                self.process_linearizable_read_batch(ctx, &role_tx).await?;
+                            }
+                            // Early return: response will be sent via process_linearizable_read_batch
+                            return Ok(());
                         }
                         ServerReadConsistencyPolicy::LeaseRead => {
-                            // New lease-based implementation
-                            if self.is_lease_valid(ctx) {
-                                // Lease is valid, serve read locally
-                                read_operation()
-                            } else {
-                                // Lease expired, need to refresh with quorum
-                                if !self
-                                    .verify_leadership_limited_retry(vec![], true, ctx, &role_tx)
-                                    .await
-                                    .unwrap_or(false)
-                                {
-                                    warn!("LeaseRead policy: lease renewal failed");
-                                    Err(tonic::Status::failed_precondition(
-                                        "LeaseRead policy: lease renewal failed".to_string(),
-                                    ))
-                                } else {
-                                    // Update lease timestamp after successful verification
-                                    self.update_lease_timestamp();
-                                    read_operation()
-                                }
+                            // Lease-based read: verify only if lease expired
+                            if !self.is_lease_valid(ctx) {
+                                // Lease expired, refresh with quorum verification
+                                self.verify_leadership_and_refresh_lease(ctx, &role_tx).await?;
                             }
+                            // Lease is valid, serve read locally
+                            read_operation()
                         }
                         ServerReadConsistencyPolicy::EventualConsistency => {
                             // Eventual consistency: serve immediately without verification
@@ -969,6 +952,18 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)
                 })?;
+            }
+
+            RaftEvent::FlushReadBuffer => {
+                if !self.read_buffer.is_empty() {
+                    debug!(
+                        "Read batch: flushing {} pending reads (timeout)",
+                        self.read_buffer.len()
+                    );
+                    self.process_linearizable_read_batch(ctx, &role_tx).await?;
+                } else {
+                    debug!("Read batch: flush signal received but buffer empty (already flushed)");
+                }
             }
 
             RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
@@ -1798,8 +1793,9 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // 3. Submit single config change for all ready learners
         debug!("3. Submit single config change for all ready learners");
+        // Use verify_leadership_persistent for config changes (must eventually succeed)
         match self
-            .verify_leadership_limited_retry(
+            .verify_leadership_persistent(
                 vec![EntryPayload::config(config_change)],
                 true,
                 ctx,
@@ -1864,28 +1860,42 @@ impl<T: TypeConfig> LeaderState<T> {
         (false, current_commit_index)
     }
 
-    pub async fn ensure_state_machine_upto_commit_index(
+    /// Calculate safe read index for linearizable reads.
+    ///
+    /// Returns max(commitIndex, noopIndex) to ensure:
+    /// 1. All committed data is visible
+    /// 2. Current term's no-op entry is accounted for
+    /// 3. Read index is fixed at request arrival time (avoids waiting for concurrent writes)
+    ///
+    /// This optimization prevents reads from waiting for writes that arrived
+    /// after the read request started processing.
+    #[doc(hidden)]
+    pub fn calculate_read_index(&self) -> u64 {
+        let commit_index = self.commit_index();
+        let noop_index = self.noop_log_id.unwrap_or(0);
+        std::cmp::max(commit_index, noop_index)
+    }
+
+    /// Wait for state machine to apply up to target index.
+    ///
+    /// This is used by linearizable reads to ensure they see all committed data
+    /// up to the read_index calculated at request arrival time.
+    #[doc(hidden)]
+    pub async fn wait_until_applied(
         &self,
+        target_index: u64,
         state_machine_handler: &Arc<SMHOF<T>>,
         last_applied: u64,
     ) -> Result<()> {
-        let commit_index = self.commit_index();
+        if last_applied < target_index {
+            state_machine_handler.update_pending(target_index);
 
-        debug!(
-            "ensure_state_machine_upto_commit_index: last_applied:{} < commit_index:{} ?",
-            last_applied, commit_index
-        );
-        if last_applied < commit_index {
-            state_machine_handler.update_pending(commit_index);
-
-            // Wait for state machine to catch up
-            // This ensures linearizable reads see all committed writes
             let timeout_ms = self.node_config.raft.read_consistency.state_machine_sync_timeout_ms;
             state_machine_handler
-                .wait_applied(commit_index, std::time::Duration::from_millis(timeout_ms))
+                .wait_applied(target_index, std::time::Duration::from_millis(timeout_ms))
                 .await?;
 
-            debug!("ensure_state_machine_upto_commit_index success");
+            debug!("wait_until_applied: target_index={} success", target_index);
         }
         Ok(())
     }
@@ -2059,8 +2069,9 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // 3. Submit config change, and wait for quorum confirmation
         debug!("3. Wait for quorum confirmation");
+        // Use verify_leadership_persistent for config changes (must eventually succeed)
         match self
-            .verify_leadership_limited_retry(
+            .verify_leadership_persistent(
                 vec![EntryPayload::config(config_change)],
                 true,
                 ctx,
@@ -2198,8 +2209,10 @@ impl<T: TypeConfig> LeaderState<T> {
             snapshot_in_progress: AtomicBool::new(false),
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
-            _marker: PhantomData,
             lease_timestamp: AtomicU64::new(0),
+            read_buffer: Vec::new(),
+            read_buffer_start_time: None,
+            _marker: PhantomData,
         }
     }
 
@@ -2392,13 +2405,9 @@ impl<T: TypeConfig> LeaderState<T> {
         });
 
         // Submit batch activation
-        self.verify_leadership_limited_retry(
-            vec![EntryPayload::config(change)],
-            true,
-            ctx,
-            role_tx,
-        )
-        .await?;
+        // Use verify_leadership_persistent for config changes (must eventually succeed)
+        self.verify_leadership_persistent(vec![EntryPayload::config(change)], true, ctx, role_tx)
+            .await?;
 
         Ok(())
     }
@@ -2512,8 +2521,9 @@ impl<T: TypeConfig> LeaderState<T> {
             );
 
             // Submit single config change for all nodes
+            // Use verify_leadership_persistent for config changes (must eventually succeed)
             match self
-                .verify_leadership_limited_retry(
+                .verify_leadership_persistent(
                     vec![EntryPayload::config(change)],
                     false,
                     ctx,
@@ -2562,8 +2572,9 @@ impl<T: TypeConfig> LeaderState<T> {
         });
 
         // Submit removal through membership change entry (requires quorum consensus)
+        // Use verify_leadership_persistent for config changes (must eventually succeed)
         match self
-            .verify_leadership_limited_retry(vec![EntryPayload::config(change)], true, ctx, role_tx)
+            .verify_leadership_persistent(vec![EntryPayload::config(change)], true, ctx, role_tx)
             .await
         {
             Ok(true) => {
@@ -2620,6 +2631,106 @@ impl<T: TypeConfig> LeaderState<T> {
         self.lease_timestamp.store(now, std::sync::atomic::Ordering::Release);
     }
 
+    /// Verify leadership with quorum and refresh lease timestamp on success.
+    /// This is a single-shot verification (fast-fail) optimized for read operations.
+    ///
+    /// Returns Ok(()) if verification succeeds and lease is refreshed.
+    /// Returns Err on any verification failure.
+    async fn verify_leadership_and_refresh_lease(
+        &mut self,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        match self.verify_internal_quorum(vec![], true, ctx, role_tx).await {
+            Ok(QuorumVerificationResult::Success) => {
+                self.update_lease_timestamp();
+                Ok(())
+            }
+            Ok(QuorumVerificationResult::LeadershipLost) => Err(ConsensusError::Replication(
+                ReplicationError::NotLeader { leader_id: None },
+            )
+            .into()),
+            Ok(QuorumVerificationResult::RetryRequired) => {
+                Err(ConsensusError::Replication(ReplicationError::QuorumNotReached).into())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Process batched LinearizableRead requests with a single quorum verification.
+    ///
+    /// This function takes all pending read requests from the buffer, performs one
+    /// leadership verification for the entire batch, waits for state machine to catch up,
+    /// and executes all reads. This batching strategy significantly reduces the number
+    /// of quorum checks required for high read throughput scenarios.
+    pub(super) async fn process_linearizable_read_batch(
+        &mut self,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // Take buffer atomically
+        let batch = std::mem::take(&mut self.read_buffer);
+        self.read_buffer_start_time = None;
+
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let batch_size = batch.len();
+        info!("Read batch: flushing {} requests", batch_size);
+
+        // All requests in read_buffer are LinearizableRead (filtered in handle_raft_event)
+        // Perform single verification for the entire batch and refresh lease
+        if let Err(e) = self.verify_leadership_and_refresh_lease(ctx, role_tx).await {
+            // Leadership verification failed - drain buffer with error
+            error!(
+                "Read batch: verification failed - draining {} requests: {}",
+                batch_size, e
+            );
+            let status = tonic::Status::failed_precondition(format!(
+                "Leadership verification failed: {e:?}"
+            ));
+            for (_, sender) in batch {
+                let _ = sender.send(Err(status.clone()));
+            }
+            return Ok(());
+        }
+
+        // Wait for state machine to catch up
+        let last_applied = ctx.state_machine().last_applied().index;
+        let read_index = self.calculate_read_index();
+
+        if last_applied < read_index {
+            ctx.handlers.state_machine_handler.update_pending(read_index);
+            let timeout_ms = self.node_config.raft.read_consistency.state_machine_sync_timeout_ms;
+            ctx.handlers
+                .state_machine_handler
+                .wait_applied(read_index, Duration::from_millis(timeout_ms))
+                .await
+                .map_err(|e| {
+                    error!("Read batch: wait_applied failed: {}", e);
+                    e
+                })?;
+        }
+
+        // Execute all reads and respond
+        for (req, sender) in batch {
+            let results = ctx
+                .handlers
+                .state_machine_handler
+                .read_from_state_machine(req.keys)
+                .unwrap_or_default();
+            let _ = sender.send(Ok(ClientResponse::read_results(results)));
+        }
+
+        // // Metrics
+        // if let Some(metrics) = &ctx.metrics {
+        //     metrics.read_batch_size.observe(batch_size as f64);
+        // }
+
+        Ok(())
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     pub fn test_update_lease_timestamp(&self) {
         self.update_lease_timestamp();
@@ -2631,6 +2742,12 @@ impl<T: TypeConfig> LeaderState<T> {
         timestamp: u64,
     ) {
         self.lease_timestamp.store(timestamp, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Get noop_log_id for testing purposes
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn test_get_noop_log_id(&self) -> Option<u64> {
+        self.noop_log_id
     }
 }
 
@@ -2676,9 +2793,10 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
                 total_voters: 0,
                 replication_targets: vec![],
             },
-
-            _marker: PhantomData,
             lease_timestamp: AtomicU64::new(0),
+            read_buffer: Vec::new(),
+            read_buffer_start_time: None,
+            _marker: PhantomData,
         }
     }
 }

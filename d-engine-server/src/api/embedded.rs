@@ -191,7 +191,7 @@ impl EmbeddedEngine {
     /// ```
     #[cfg(feature = "rocksdb")]
     pub async fn start() -> Result<Self> {
-        let config = d_engine_core::RaftNodeConfig::new()?;
+        let config = d_engine_core::RaftNodeConfig::new()?.validate()?;
         let base_dir = &config.cluster.db_root_dir;
         tokio::fs::create_dir_all(base_dir)
             .await
@@ -232,7 +232,9 @@ impl EmbeddedEngine {
     /// ```
     #[cfg(feature = "rocksdb")]
     pub async fn start_with(config_path: &str) -> Result<Self> {
-        let config = d_engine_core::RaftNodeConfig::new()?.with_override_config(config_path)?;
+        let config = d_engine_core::RaftNodeConfig::new()?
+            .with_override_config(config_path)?
+            .validate()?;
         let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
 
         tokio::fs::create_dir_all(&base_dir)
@@ -290,9 +292,11 @@ impl EmbeddedEngine {
 
         // Load config or use default
         let node_config = if let Some(path) = config_path {
-            d_engine_core::RaftNodeConfig::default().with_override_config(path)?
+            d_engine_core::RaftNodeConfig::default()
+                .with_override_config(path)?
+                .validate()?
         } else {
-            d_engine_core::RaftNodeConfig::new()?
+            d_engine_core::RaftNodeConfig::new()?.validate()?
         };
 
         // Build node and start RPC server

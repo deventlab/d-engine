@@ -105,7 +105,10 @@ async fn run_success_without_joining() {
             .with_raft_log(raft_log)
             .with_replication_handler(replication_handler)
             .with_node_config({
-                let mut config = RaftNodeConfig::new().expect("Default config");
+                let mut config = RaftNodeConfig::new()
+                    .expect("Default config")
+                    .validate()
+                    .expect("Validate RaftNodeConfig successfully");
                 // Mark as non-joining node
                 config.cluster.initial_cluster = vec![
                     NodeMeta {
@@ -198,7 +201,10 @@ async fn run_success_with_joining() {
     // Build node using MockBuilder
     let node_id = 100;
     let config = {
-        let mut config = RaftNodeConfig::new().expect("Default config");
+        let mut config = RaftNodeConfig::new()
+            .expect("Default config")
+            .validate()
+            .expect("Validate RaftNodeConfig successfully");
         // Mark as non-joining node
         config.cluster.node_id = node_id;
         config.cluster.initial_cluster = vec![
@@ -286,7 +292,10 @@ async fn run_fails_on_health_check() {
         let builder = MockBuilder::new(shutdown_rx.clone())
             .with_membership(membership) // Inject our mock membership
             .with_node_config({
-                let mut config = RaftNodeConfig::new().expect("Default config");
+                let mut config = RaftNodeConfig::new()
+                    .expect("Default config")
+                    .validate()
+                    .expect("Validate RaftNodeConfig successfully");
                 // Mark as non-joining node
                 config.cluster.initial_cluster = vec![
                     NodeMeta {
@@ -674,7 +683,10 @@ mod bootstrap_strategy_tests {
             .returning(|_, _, _, _| Err(d_engine_core::Error::Fatal("no snapshot".to_string())));
 
         let config = {
-            let mut cfg = RaftNodeConfig::new().expect("Default config");
+            let mut cfg = RaftNodeConfig::new()
+                .expect("Default config")
+                .validate()
+                .expect("Validate RaftNodeConfig successfully");
             cfg.cluster.node_id = node_id;
             cfg.cluster.initial_cluster = vec![
                 NodeMeta {
@@ -766,7 +778,10 @@ mod bootstrap_strategy_tests {
                 .with_raft_log(prepare_mock_raft_log())
                 .with_replication_handler(prepare_mock_replication())
                 .with_node_config({
-                    let mut cfg = RaftNodeConfig::new().expect("Default config");
+                    let mut cfg = RaftNodeConfig::new()
+                        .expect("Default config")
+                        .validate()
+                        .expect("Validate RaftNodeConfig successfully");
                     cfg.cluster.initial_cluster = vec![
                         NodeMeta {
                             id: 100,
@@ -839,7 +854,10 @@ mod bootstrap_strategy_tests {
             let builder = MockBuilder::new(shutdown_rx.clone())
                 .with_membership(membership)
                 .with_node_config({
-                    let mut cfg = RaftNodeConfig::new().expect("Default config");
+                    let mut cfg = RaftNodeConfig::new()
+                        .expect("Default config")
+                        .validate()
+                        .expect("Validate RaftNodeConfig successfully");
                     cfg.cluster.initial_cluster = vec![NodeMeta {
                         id: 100,
                         address: "127.0.0.1:8080".to_string(),
@@ -917,7 +935,10 @@ mod bootstrap_strategy_tests {
             .returning(|_, _, _, _| Err(d_engine_core::Error::Fatal("no snapshot".to_string())));
 
         let config = {
-            let mut cfg = RaftNodeConfig::new().expect("Default config");
+            let mut cfg = RaftNodeConfig::new()
+                .expect("Default config")
+                .validate()
+                .expect("Validate RaftNodeConfig successfully");
             cfg.cluster.node_id = node_id;
             cfg.cluster.initial_cluster = vec![
                 NodeMeta {

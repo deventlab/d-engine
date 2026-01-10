@@ -142,13 +142,9 @@ fn bench_ttl_registration(c: &mut Criterion) {
     let (sm_no_ttl, _temp1) = rt.block_on(create_sm_background());
 
     group.bench_function("no_ttl_baseline", |b| {
-        let mut index = 1;
-        b.iter(|| {
-            let entry = create_entry_with_ttl(index, 1, b"key", b"value", 0);
-            index += 1;
-            rt.block_on(async {
-                sm_no_ttl.apply_chunk(vec![entry]).await.unwrap();
-            });
+        b.to_async(&rt).iter(|| async {
+            let entry = create_entry_with_ttl(1, 1, b"key", b"value", 0);
+            sm_no_ttl.apply_chunk(vec![entry]).await.unwrap();
         });
     });
 
@@ -159,13 +155,9 @@ fn bench_ttl_registration(c: &mut Criterion) {
     let (sm_ttl, _temp2) = rt.block_on(create_sm_background());
 
     group.bench_function("with_ttl_background", |b| {
-        let mut index = 1;
-        b.iter(|| {
-            let entry = create_entry_with_ttl(index, 1, b"key", b"value", 3600);
-            index += 1;
-            rt.block_on(async {
-                sm_ttl.apply_chunk(vec![entry]).await.unwrap();
-            });
+        b.to_async(&rt).iter(|| async {
+            let entry = create_entry_with_ttl(1, 1, b"key", b"value", 3600);
+            sm_ttl.apply_chunk(vec![entry]).await.unwrap();
         });
     });
 
@@ -181,20 +173,19 @@ fn bench_batch_ttl_operations(c: &mut Criterion) {
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
-    for batch_size in [10, 100, 1000].iter() {
-        // Background strategy
-        let (sm_bg, _temp_bg) = rt.block_on(create_sm_background());
+    // Create StateMachine once for all batch sizes
+    let (sm_bg, _temp_bg) = rt.block_on(create_sm_background());
 
+    for batch_size in [10, 100, 1000].iter() {
         group.bench_with_input(
             BenchmarkId::new("background", batch_size),
             batch_size,
             |b, &size| {
-                let mut start_index = 1;
-                b.iter(|| {
+                b.to_async(&rt).iter(|| async {
                     let entries: Vec<Entry> = (0..size)
                         .map(|i| {
                             create_entry_with_ttl(
-                                start_index + i as u64,
+                                1 + i as u64,
                                 1,
                                 format!("key_{i}").as_bytes(),
                                 b"value",
@@ -202,17 +193,14 @@ fn bench_batch_ttl_operations(c: &mut Criterion) {
                             )
                         })
                         .collect();
-                    start_index += size as u64;
-                    rt.block_on(async {
-                        sm_bg.apply_chunk(entries).await.unwrap();
-                    });
+                    sm_bg.apply_chunk(entries).await.unwrap();
                 });
             },
         );
-
-        drop(sm_bg);
-        drop(_temp_bg);
     }
+
+    drop(sm_bg);
+    drop(_temp_bg);
 
     group.finish();
 }
