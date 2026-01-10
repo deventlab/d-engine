@@ -31,7 +31,6 @@ start-node1:
 
 start-node2:
 	@echo "🚀 Starting Node 2..."
-	@CONFIG_PATH=config/n2 \
 	RUST_LOG=three-nodes-embedded=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BIN) \
 		--port 8082 \
@@ -41,7 +40,6 @@ start-node2:
 
 start-node3:
 	@echo "🚀 Starting Node 3..."
-	@CONFIG_PATH=config/n3 \
 	RUST_LOG=three-nodes-embedded=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BIN) \
 		--port 8083 \

@@ -194,8 +194,8 @@ Bug fixes are always welcome.
 ### Development Workflow
 
 ```bash
-#  Run all checks (tests + linters)
-make test-all
+# Run all tests (fast, parallel with nextest)
+make test
 ```
 
 ---

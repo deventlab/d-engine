@@ -68,7 +68,7 @@ We're in **active development** based on real user feedback. Our priorities evol
 ```bash
 git clone https://github.com/deventlab/d-engine.git
 cd d-engine
-make test-all  # Runs fmt, clippy, and all tests
+make test  # Run all tests with nextest (fast, parallel)
 ```
 
 ### Branch Naming
@@ -79,8 +79,8 @@ make test-all  # Runs fmt, clippy, and all tests
 
 ### Code Quality
 
-- **Format & Link**: `make check` (required)
-- **Test**: `make test-all` must pass
+- **Format & Lint**: `make check` (required)
+- **Test**: `make test` must pass
 
 ---
 
@@ -89,7 +89,7 @@ make test-all  # Runs fmt, clippy, and all tests
 ### Before Submitting
 
 - [ ] Feature approved in issue (if applicable)
-- [ ] `make test-all` passes locally
+- [ ] `make test` passes locally
 - [ ] Added tests for new code
 - [ ] Updated docs if API changed
 - [ ] Commits squashed to 1-2 logical units

@@ -24,7 +24,7 @@
 
 **Required:**
 
-- [ ] `make test-all` passes
+- [ ] `make test` passes
 - [ ] Added tests for new code
 - [ ] Commits squashed to 1-2 logical units
 

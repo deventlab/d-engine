@@ -31,6 +31,15 @@ Follow this learning path to get started quickly:
 
 **→ Start: [Is d-engine Right for You?](crate::docs::use_cases)**
 
+## Recommended Entry Point
+
+**This is the recommended crate for most users.** It re-exports all functionality from the internal crates below.
+
+```toml
+[dependencies]
+d-engine = "0.2"  # This is all you need
+```
+
 ## Crate Organization
 
 | Crate               | Purpose                         |
@@ -95,7 +104,9 @@ make start-cluster
 
 ### Examples & Performance
 
+- [HA Deployment with Load Balancing](crate::docs::examples::ha_deployment_load_balancing) - Production HA setup
 - [Single Node Expansion](crate::docs::examples::single_node_expansion) - Scale from 1 to 3 nodes
+- [Three-Node Standalone Cluster](crate::docs::examples::three_nodes_cluster) - Standalone mode cluster
 - [Throughput Optimization](crate::docs::performance::throughput_optimization_guide)
 
 ## License

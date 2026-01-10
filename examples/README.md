@@ -42,10 +42,18 @@ Usage examples demonstrating different d-engine integration modes.
 
 ## Cluster Management
 
-| Example                                         | Description                           |
-| ----------------------------------------------- | ------------------------------------- |
-| [three-nodes-standalone](three-nodes-standalone/)     | Bootstrap 3-node cluster from scratch |
-| [single-node-expansion](single-node-expansion/) | Start with 1 node, expand to 3 nodes  |
+### Embedded Mode Clusters
+
+| Example                                         | Description                                        |
+| ----------------------------------------------- | -------------------------------------------------- |
+| [three-nodes-embedded](three-nodes-embedded/)   | 3-node HA cluster with HTTP API for load balancers |
+| [single-node-expansion](single-node-expansion/) | Scale from 1 to 3 nodes dynamically                |
+
+### Standalone Mode Clusters
+
+| Example                                           | Description           |
+| ------------------------------------------------- | --------------------- |
+| [three-nodes-standalone](three-nodes-standalone/) | 3-node cluster (gRPC) |
 
 ---
 
