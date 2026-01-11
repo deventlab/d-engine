@@ -20,7 +20,7 @@ build:
 # ===============================
 start-node1:
 	@echo "=== Starting Node 1 (Single-Node Bootstrap) ==="
-	@echo "This node will start as a standalone leader (initial_cluster_size=1)"
+	@echo "This node will start as a standalone leader "
 	@echo ""
 	CONFIG_PATH=config/n1 \
 	DB_PATH="./db/1" \

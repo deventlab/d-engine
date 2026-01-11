@@ -49,7 +49,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 2, status = 2 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 2, status = 2 }}
 ]
-initial_cluster_size = 3
 db_root_dir = '{}'
 log_dir = '{}'
 
@@ -209,7 +208,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 2, status = 2 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 2, status = 2 }}
 ]
-initial_cluster_size = 3
 db_root_dir = '{}'
 log_dir = '{}'
 
@@ -392,7 +390,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 2, status = 2 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 2, status = 2 }}
 ]
-initial_cluster_size = 3
 db_root_dir = '{}'
 log_dir = '{}'
 

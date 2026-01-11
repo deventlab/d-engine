@@ -39,7 +39,6 @@ listen_address = '127.0.0.1:{}'
 initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }}
 ]
-initial_cluster_size = 1
 db_root_dir = '{}'
 log_dir = '{}'
 
@@ -95,7 +94,6 @@ initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }},
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 3, status = 0 }}
 ]
-initial_cluster_size = 1
 db_root_dir = '{}'
 log_dir = '{}'
 
@@ -139,7 +137,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 2 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 3, status = 0 }}
 ]
-initial_cluster_size = 1
 db_root_dir = '{}'
 log_dir = '{}'
 
