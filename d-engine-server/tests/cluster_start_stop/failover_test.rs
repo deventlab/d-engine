@@ -221,10 +221,20 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
     .await;
 
     // Expect timeout or error (cluster has no leader)
-    assert!(
-        write_result.is_err() || write_result.unwrap().is_err(),
-        "Write should fail without majority"
-    );
+    // Both timeout and client errors indicate cluster is unavailable (correct behavior)
+    match write_result {
+        Err(_timeout) => {
+            // Timeout - cluster cannot respond (expected)
+            info!("Write timed out as expected (no majority)");
+        }
+        Ok(Err(e)) => {
+            // Client returned error - cluster rejected request (also expected)
+            info!("Write failed as expected: {:?}", e);
+        }
+        Ok(Ok(_)) => {
+            panic!("Write should fail without majority, but succeeded!");
+        }
+    }
 
     info!("Minority failure test passed. Cluster correctly refused writes");
 

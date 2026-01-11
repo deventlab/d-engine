@@ -441,8 +441,15 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
-        // Background cleanup strategy: expired keys are cleaned by background worker
-        // No on-read checks needed (simplifies get() hot path)
+        // Guard against reads during snapshot restoration
+        // During apply_snapshot_from_file(), is_serving is set to false while the database
+        // is being replaced. This prevents reads from accessing temporary or inconsistent state.
+        if !self.is_serving.load(Ordering::SeqCst) {
+            return Err(StorageError::NotServing(
+                "State machine is restoring from snapshot".to_string(),
+            )
+            .into());
+        }
 
         let db = self.db.load();
         let cf = db
@@ -637,6 +644,21 @@ impl StateMachine for RocksDBStateMachine {
             old_db.cancel_all_background_work(true);
             info!("Flushed and stopped background work on old DB");
         }
+
+        // PHASE 2.5: Create temporary DB and swap to release old DB's lock
+        // This is critical: we must release the old DB instance completely before moving directories
+        // Otherwise, the old DB still holds a lock on rocksdb_sm/LOCK even after directory rename
+        let temp_dir = tempfile::TempDir::new()?;
+        let temp_db_path = temp_dir.path().join("temp_db");
+        let temp_db = Self::open_db(&temp_db_path).map_err(|e| {
+            error!("Failed to create temporary DB: {:?}", e);
+            e
+        })?;
+
+        // Swap temp DB into self.db, which releases the old DB's Arc
+        // Now old DB's Arc refcount drops to 0, DB instance is dropped, lock is released
+        self.db.store(Arc::new(temp_db));
+        info!("Swapped to temporary DB, old DB lock released");
 
         // PHASE 3: Atomic directory replacement
         let backup_dir = self.db_path.with_extension("backup");

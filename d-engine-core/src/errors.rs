@@ -240,6 +240,14 @@ pub enum StorageError {
     /// and ensures explicit feature activation.
     #[error("Feature not enabled: {0}")]
     FeatureNotEnabled(String),
+
+    /// State machine not serving requests
+    ///
+    /// Returned when read operations are attempted during critical operations
+    /// such as snapshot restoration. This ensures reads never access inconsistent
+    /// or temporary state during database transitions.
+    #[error("State machine not serving: {0}")]
+    NotServing(String),
 }
 
 #[derive(Debug, thiserror::Error)]
