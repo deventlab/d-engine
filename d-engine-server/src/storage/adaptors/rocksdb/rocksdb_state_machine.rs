@@ -665,7 +665,7 @@ impl StateMachine for RocksDBStateMachine {
             e
         })?;
 
-        // Atomically swap DB reference
+        // Atomically swap DB reference (replacing temp DB with new DB)
         self.db.store(Arc::new(new_db));
         info!("Atomically swapped to new DB instance");
 
@@ -751,7 +751,17 @@ impl StateMachine for RocksDBStateMachine {
     }
 
     fn flush(&self) -> Result<(), Error> {
-        self.db.load().flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        let db = self.db.load();
+
+        // Step 1: Sync WAL to disk (critical!)
+        // true = sync to disk
+        db.flush_wal(true).map_err(|e| StorageError::DbError(e.to_string()))?;
+        // Step 2: Flush memtables to SST files
+        db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+
+        // Persist state machine metadata (last_applied_index, last_applied_term, snapshot_metadata)
+        self.persist_state_machine_metadata()?;
+
         Ok(())
     }
 
@@ -829,5 +839,25 @@ impl StateMachine for RocksDBStateMachine {
         );
 
         Ok(expired_keys)
+    }
+}
+impl Drop for RocksDBStateMachine {
+    fn drop(&mut self) {
+        // save_hard_state() persists last_applied metadata before flush
+        // This is critical to prevent replay of already-applied entries on restart
+        if let Err(e) = self.save_hard_state() {
+            error!("Failed to save hard state on drop: {}", e);
+        }
+
+        // Then flush data to disk
+        if let Err(e) = self.flush() {
+            error!("Failed to flush on drop: {}", e);
+        } else {
+            debug!("RocksDBStateMachine flushed successfully on drop");
+        }
+
+        // This ensures flush operations are truly finished
+        self.db.load().cancel_all_background_work(true); // true = wait for completion
+        debug!("RocksDB background work cancelled on drop");
     }
 }

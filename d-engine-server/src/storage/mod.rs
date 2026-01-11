@@ -13,7 +13,12 @@
 //!
 //! This module is designed so developers can easily implement custom
 //! storage backends without changing the Raft protocol logic.
-mod adaptors;
+
+/// Storage adaptors providing different backend implementations.
+///
+/// This module contains pluggable storage backends including file-based
+/// and RocksDB-based state machines that implement the `StateMachine` trait.
+pub mod adaptors;
 mod buffered;
 mod lease;
 

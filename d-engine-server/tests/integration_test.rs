@@ -17,3 +17,6 @@ mod readonly_mode;
 mod snapshot;
 #[cfg(all(feature = "watch", feature = "rocksdb"))]
 mod watch;
+
+mod state_machine;
+mod storage_engine;
