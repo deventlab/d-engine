@@ -69,3 +69,32 @@ pub fn mock_raft_context(
 
     MockBuilder::new(shutdown_signal).with_node_config(node_config).build_context()
 }
+
+/// Creates mock RaftContext with automatic TempDir cleanup
+///
+/// This is the recommended helper for unit tests. It automatically manages
+/// temporary directories and provides a clean testing environment.
+///
+/// Returns:
+/// - RaftContext configured for testing
+/// - TempDir that auto-cleans on drop
+///
+/// Example:
+/// ```rust,ignore
+/// let (_graceful_tx, graceful_rx) = watch::channel(());
+/// let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+/// // Use context in test...
+/// // _temp_dir automatically cleaned up when dropped
+/// ```
+pub fn mock_raft_context_with_temp(
+    shutdown_signal: watch::Receiver<()>,
+    peers_meta_option: Option<Vec<NodeMeta>>,
+) -> (RaftContext<MockTypeConfig>, tempfile::TempDir) {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let ctx = mock_raft_context(
+        temp_dir.path().to_str().unwrap(),
+        shutdown_signal,
+        peers_meta_option,
+    );
+    (ctx, temp_dir)
+}
