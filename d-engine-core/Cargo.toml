@@ -15,6 +15,7 @@ publish = true
 # Only enable user-facing features, exclude test-utils
 features = ["watch"]
 rustdoc-args = ["--cfg", "docsrs"]
+default-features = false
 
 [package.metadata.release]
 # Disable individual crate tags, use workspace-level tag only

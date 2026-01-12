@@ -192,4 +192,5 @@ pub use d_engine_core::Raft;
 ///
 /// Contains mock implementations and test helpers.
 #[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
 pub mod test_utils;
