@@ -133,9 +133,6 @@ listen_address = "127.0.0.1:{port}"
     let key = b"test-key";
     let _watcher = engine.watch(key)?;
 
-    // Success - watch is available even without explicit config
-    // This reflects our design principle: "编译了就一定要用" (If compiled, it must be used)
-
     // Cleanup
     engine.stop().await?;
 

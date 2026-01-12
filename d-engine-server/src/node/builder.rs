@@ -508,7 +508,6 @@ where
     /// # Design Principles
     /// - **Zero overhead**: If disabled, returns None immediately (no task spawned)
     /// - **One page visible**: All long-running tasks spawned here in builder.rs
-    /// - **Industry standard**: Follows etcd/TiKV/Consul background cleanup pattern
     /// - **Graceful shutdown**: Monitors shutdown signal for clean termination
     fn spawn_background_cleanup_worker(
         state_machine: Arc<SM>,

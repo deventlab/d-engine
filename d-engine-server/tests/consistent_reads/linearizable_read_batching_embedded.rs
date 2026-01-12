@@ -45,21 +45,23 @@ async fn create_single_node_with_batching(
             .expect("Failed to create state machine"),
     );
 
+    let listen_address: std::net::SocketAddr = format!(
+        "127.0.0.1:{}",
+        9081 + (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            % 1000) as u16
+    )
+    .parse()
+    .unwrap();
+
     let cluster_config = ClusterConfig {
         node_id: 1,
-        listen_address: format!(
-            "127.0.0.1:{}",
-            9081 + (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-                % 1000) as u16
-        )
-        .parse()
-        .unwrap(),
+        listen_address,
         initial_cluster: vec![NodeMeta {
             id: 1,
-            address: "127.0.0.1:9081".to_string(),
+            address: listen_address.to_string(),
             role: NodeRole::Follower as i32,
             status: NodeStatus::Active as i32,
         }],

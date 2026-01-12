@@ -223,35 +223,29 @@ fn bench_mixed_ttl_workload(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark: Piggyback cleanup with high frequency
-/// Tests the cost when piggyback cleanup runs frequently
+/// Benchmark: Piggyback cleanup with expired entries
+/// Measures the actual cleanup overhead when expired entries exist
 fn bench_piggyback_high_frequency(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let mut group = c.benchmark_group("piggyback_high_frequency");
     group.sample_size(10);
 
-    // Setup: Create state machine with expired entries
-    let (sm, _temp_dir) = runtime.block_on(async {
+    let (_temp_dir, sm) = runtime.block_on(async {
         let (sm, temp_dir) = create_test_state_machine().await;
-
-        // Insert 100 entries with short TTL
-        let entries = create_entries_with_ttl(100, 1, 1);
-        sm.apply_chunk(entries).await.unwrap();
-
-        // Wait for expiration
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        (sm, temp_dir)
+        (temp_dir, sm)
     });
 
-    group.bench_function("frequent_cleanup", |b| {
+    group.bench_function("cleanup_with_expired_entries", |b| {
         b.to_async(&runtime).iter(|| async {
-            // Only measure the cleanup operations
-            for i in 0..10 {
-                let noop = create_noop_entry(10000 + i);
-                sm.apply_chunk(vec![noop]).await.unwrap();
-            }
+            // Setup: Populate 100 expired entries (not measured)
+            let entries = create_entries_with_ttl(100, 1, 1);
+            sm.apply_chunk(entries).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            // Measure: Trigger cleanup via noop entry
+            let noop = create_noop_entry(10000);
+            sm.apply_chunk(vec![noop]).await.unwrap();
             black_box(());
         });
     });
@@ -311,7 +305,12 @@ fn bench_worst_case_all_expired(c: &mut Criterion) {
 
     group.bench_function("cleanup_all_expired", |b| {
         b.to_async(&runtime).iter(|| async {
-            // Only measure the cleanup operation
+            // Repopulate expired entries before each measurement
+            let entries = create_entries_with_ttl(1000, 1, 1);
+            sm.apply_chunk(entries).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            // Measure: Trigger cleanup via noop entry
             let noop = create_noop_entry(10000);
             sm.apply_chunk(vec![noop]).await.unwrap();
             black_box(());

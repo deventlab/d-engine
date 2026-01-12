@@ -1,6 +1,17 @@
-# d-engine v0.2.2 Embedded Benchmark Report
+# d-engine Embedded Mode Performance (v0.2.2)
+
+> **Integration Mode:** Embedded (in-process) - Rust-only, ultra-low latency  
+> **Alternative:** [Standalone Mode](../../../standalone-bench/reports/v0.2.2/report_v0.2.2.md) (Multi-language, 0.2-0.04x performance)  
+> **Decision Guide:** [Integration Modes](../../../../d-engine/src/docs/integration-modes.md)
 
 ## TL;DR
+
+**Why Embedded Mode?**
+
+- ✅ Rust-native applications requiring ultra-low latency
+- ✅ High-throughput systems (200K+ ops/sec)
+- ✅ Zero serialization overhead (direct memory access)
+- ✅ Single-machine vertical scaling
 
 **Embedded Mode Performance**:
 
@@ -327,10 +338,13 @@ d-engine v0.2.2 embedded mode delivers **exceptional performance** for in-proces
 
 **Unique Value**: Code optimizations dramatically improved linearizable read performance while maintaining strong consistency guarantees, narrowing the gap between consistency modes. Single-client write shows expected Raft overhead, but high-concurrency scenarios achieve significant speedups.
 
-**When to Choose**:
+**When to Choose Embedded**:
 
-- **Embedded**: Rust applications prioritizing performance, high-concurrency workloads, single-machine deployment
-- **Standalone**: Multi-language support, microservices, horizontal scaling, low-concurrency use cases
+- Rust-native applications
+- Ultra-low latency requirements (<0.1ms)
+- High-throughput workloads (200K+ ops/sec)
+- Single-machine deployment acceptable
+- Zero-copy operations critical
 
 **Production Ready**: Robust hot-key handling (306K ops/sec under contention), predictable tail latencies, zero-copy operations.
 

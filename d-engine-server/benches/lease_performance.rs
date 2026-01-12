@@ -173,10 +173,10 @@ fn bench_batch_ttl_operations(c: &mut Criterion) {
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
-    // Create StateMachine once for all batch sizes
-    let (sm_bg, _temp_bg) = rt.block_on(create_sm_background());
-
     for batch_size in [10, 100, 1000].iter() {
+        // Create fresh StateMachine for each batch size to avoid state pollution
+        let (sm_bg, _temp_bg) = rt.block_on(create_sm_background());
+
         group.bench_with_input(
             BenchmarkId::new("background", batch_size),
             batch_size,
@@ -197,10 +197,10 @@ fn bench_batch_ttl_operations(c: &mut Criterion) {
                 });
             },
         );
-    }
 
-    drop(sm_bg);
-    drop(_temp_bg);
+        drop(sm_bg);
+        drop(_temp_bg);
+    }
 
     group.finish();
 }

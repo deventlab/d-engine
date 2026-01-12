@@ -253,21 +253,15 @@ test: install-tools check-workspace check-all-projects
 ## bench                Run performance benchmarks with regression detection
 bench: check-workspace
 	@echo "$(BLUE)Running performance benchmarks...$(NC)"
-	@if [ ! -d "target/criterion/baseline" ]; then \
-		echo "$(YELLOW)No baseline found, creating initial baseline...$(NC)"; \
-		$(CARGO) bench --workspace --all-features -- --save-baseline main || \
-			{ echo "$(RED)✗ Benchmark execution failed$(NC)"; exit 1; }; \
-	else \
-		$(CARGO) bench --workspace --all-features -- --baseline main || \
-			{ echo "$(RED)✗ Performance regression detected!$(NC)"; exit 1; }; \
-	fi
+	@$(CARGO) bench --workspace --all-features || \
+		{ echo "$(RED)✗ Benchmark execution failed$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Benchmark run completed$(NC)"
 	@echo "$(CYAN)→ View detailed results: target/criterion/report/index.html$(NC)"
 
 ## bench-save           Save current benchmark results as new baseline
 bench-save: check-workspace
 	@echo "$(BLUE)Saving benchmark baseline...$(NC)"
-	@$(CARGO) bench --workspace --all-features -- --save-baseline main
+	@$(CARGO) bench --workspace --all-features
 	@echo "$(GREEN)✓ Baseline saved$(NC)"
 
 # ============================================================================

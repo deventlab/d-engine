@@ -387,8 +387,13 @@ where
                         NetworkError::SingalSendFailed(error_str)
                     })?;
                 } else {
-                    // Track no-op index for linearizable read optimization
-                    self.role.on_noop_committed(&self.ctx)?;
+                    // Track no-op index for linearizable read optimization (best-effort)
+                    if let Err(e) = self.role.on_noop_committed(&self.ctx) {
+                        warn!(
+                            ?e,
+                            "Failed to track no-op commit index after leadership verification"
+                        );
+                    }
                 }
 
                 #[cfg(any(test, feature = "test-utils"))]

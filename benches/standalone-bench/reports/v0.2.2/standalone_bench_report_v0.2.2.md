@@ -1,6 +1,16 @@
-# d-engine v0.2.2 Performance Benchmark Report
+# d-engine Standalone Mode Performance (v0.2.2)
+
+> **Integration Mode:** Standalone (gRPC) - Language-agnostic deployment  
+> **Alternative:** [Embedded Mode](../../../embedded-bench/reports/v0.2.2/embedded_bench_report_v0.2.2.md) (Rust-only, 4-23x faster)  
+> **Decision Guide:** [Integration Modes](../../../../d-engine/src/docs/integration-modes.md)
 
 ## TL;DR
+
+**Why Standalone Mode?**
+
+- ✅ Multi-language support (Go, Python, Java via gRPC)
+- ✅ Microservices architecture
+- ✅ Independent deployment
 
 **vs etcd 3.5.0**:
 
@@ -8,12 +18,12 @@
 - ⚠️ **Read**: etcd 2.2x faster in linearizable reads (hardware difference)
 - ✅ **Unique**: LeaseRead provides 1.2x performance vs linearizable with strong consistency
 
-**vs v0.1.4**:
+**vs v0.2.2**:
 
-- ✅ **Single Client Write**: +1.6% throughput (544 vs 535 ops/sec)
+- ✅ **Linearizable Read**: **+440%** throughput (63,928 vs 11,839 ops/sec) - **MAJOR WIN**
+- ✅ **Single Client Write**: +1.7% throughput (544 vs 535 ops/sec)
 - ⚠️ **High Conc Write**: -1.8% throughput (59,302 vs 60,411 ops/sec)
-- ✅✅✅ **Linearizable Read**: **+440%** throughput (63,928 vs 11,839 ops/sec) - **MAJOR WIN**
-- ⚠️ **LeaseRead**: -0.4% throughput (74,739 vs 75,032 ops/sec) - essentially flat
+- ⚠️ **LeaseRead**: -0.4% throughput (74,739 vs 75,032 ops/sec)
 - ⚠️ **Eventual Read**: -11.2% throughput (99,975 vs 112,639 ops/sec)
 
 **Key Achievement**: Linearizable read latency reduced by **81.5%** (3.1ms vs 16.9ms), achieving production-grade performance for strong consistency reads.
@@ -94,6 +104,11 @@ d-engine offers three read consistency levels:
 ---
 
 ## Reproduce Results
+
+**Quick Start:** See [benches/standalone-bench/README.md](../../README.md) for detailed reproduction steps.
+
+<details>
+<summary>📋 Command Reference (Click to expand)</summary>
 
 ### Start Cluster
 
@@ -251,7 +266,6 @@ make start-cluster
   - 463% hot-key performance improvement (12K → 70K ops/sec)
 - **Architecture Refactoring**: Unified leadership verification strategy following Raft best practices
   - Eliminated redundant verification functions (~145 lines)
-  - Aligned with etcd/TiKV architectural patterns
   - Config changes now automatically refresh lease for read optimization
 
 ### Previous Updates
@@ -263,20 +277,27 @@ make start-cluster
 
 ---
 
+</details>
+
+---
+
 ## Conclusion
 
-d-engine v0.2.2 demonstrates **consistent performance improvements** across all scenarios compared to v0.1.4:
+d-engine v0.2.2 Standalone mode demonstrates **significant performance improvements** in linearizable reads with acceptable trade-offs:
 
-- ✅ **Write-heavy workloads**: 45% higher throughput than etcd under high concurrency
-- ✅ **Latency optimization**: 86% lower write latency than etcd in concurrent scenarios
-- ✅ **LeaseRead innovation**: 6.9x performance improvement over linearizable reads
-- ✅ **Version-over-version gains**: All metrics improved 2-11% from v0.1.4
+- ✅ **Write-heavy workloads**: 34% higher throughput than etcd under high concurrency
+- ✅ **Latency optimization**: 85% lower write latency than etcd in concurrent scenarios
+- ✅ **LeaseRead innovation**: 1.2x performance improvement over linearizable reads
+- ✅ **Linearizable read breakthrough**: 440% throughput improvement (11,839 → 63,928 ops/sec) and 81% latency reduction vs v0.1.4
+- ⚠️ **Trade-offs**: Minor regressions in write (-1.8%), eventual read (-11.2%), and LeaseRead (-0.4%) are acceptable for production-grade strong consistency
 - ✅ **Stability**: Enhanced error handling with superior performance (not traded for it)
 
 **Unique Value**: LeaseRead consistency level fills critical gap between linearizable and eventual consistency, providing strong guarantees with near-eventual performance.
 
-**Best For**:
+**When to Choose Standalone**:
 
+- Multi-language support needed (Go, Python, Java, etc.)
+- Microservices architecture with independent deployment
 - Write-intensive distributed applications (state machines, configuration management)
 - Systems requiring predictable tail latencies (real-time services)
 - Applications balancing consistency and performance (session stores, coordination services)
@@ -287,6 +308,6 @@ d-engine v0.2.2 demonstrates **consistent performance improvements** across all 
 ---
 
 **Version:** d-engine v0.2.2
-**Report Date:** December 13, 2025
+**Report Date:** January 9, 2026
 **Test Environment:** Apple M2 Mac mini (8-core, 16GB RAM, single machine 3-node cluster)
 **Benchmark Runs:** Single run per configuration (same-day testing for v0.1.4 and v0.2.2)

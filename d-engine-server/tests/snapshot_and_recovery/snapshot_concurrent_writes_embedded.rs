@@ -32,7 +32,7 @@ use crate::common::get_available_ports;
 ///
 /// This test validates that the Leader can generate snapshots without blocking
 /// client write operations, addressing the question from todo3.md:
-/// "Leader 生成 snapshot 时是否能正常接受客户端读写请求？"
+/// "Can the Leader accept client read/write requests while generating snapshots?"
 ///
 /// ## Test Flow
 ///

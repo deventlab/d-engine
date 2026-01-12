@@ -40,21 +40,23 @@ async fn create_single_node(_test_name: &str) -> (TestNode, TempDir, watch::Send
             .expect("Failed to create state machine"),
     );
 
+    let listen_address: std::net::SocketAddr = format!(
+        "127.0.0.1:{}",
+        9081 + (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            % 1000) as u16
+    )
+    .parse()
+    .unwrap();
+
     let cluster_config = ClusterConfig {
         node_id: 1,
-        listen_address: format!(
-            "127.0.0.1:{}",
-            9081 + (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-                % 1000) as u16
-        )
-        .parse()
-        .unwrap(),
+        listen_address,
         initial_cluster: vec![NodeMeta {
             id: 1,
-            address: "127.0.0.1:9081".to_string(),
+            address: listen_address.to_string(),
             role: NodeRole::Follower as i32,
             status: NodeStatus::Active as i32,
         }],
@@ -377,6 +379,9 @@ general_raft_timeout_duration_in_ms = 3000
         log_dir.display()
     );
 
+    // Create TempDir for config files
+    let config_temp_dir = tempfile::tempdir()?;
+
     // Node 1 config
     let node1_config = format!(
         r#"
@@ -387,8 +392,8 @@ listen_address = '127.0.0.1:{}'
 "#,
         ports[0], cluster_config
     );
-    let node1_config_path = "/tmp/linear_read_n1.toml";
-    tokio::fs::write(node1_config_path, &node1_config).await?;
+    let node1_config_path = config_temp_dir.path().join("linear_read_n1.toml");
+    tokio::fs::write(&node1_config_path, &node1_config).await?;
 
     // Node 2 config
     let node2_config = format!(
@@ -400,8 +405,8 @@ listen_address = '127.0.0.1:{}'
 "#,
         ports[1], cluster_config
     );
-    let node2_config_path = "/tmp/linear_read_n2.toml";
-    tokio::fs::write(node2_config_path, &node2_config).await?;
+    let node2_config_path = config_temp_dir.path().join("linear_read_n2.toml");
+    tokio::fs::write(&node2_config_path, &node2_config).await?;
 
     // Node 3 config
     let node3_config = format!(
@@ -413,8 +418,8 @@ listen_address = '127.0.0.1:{}'
 "#,
         ports[2], cluster_config
     );
-    let node3_config_path = "/tmp/linear_read_n3.toml";
-    tokio::fs::write(node3_config_path, &node3_config).await?;
+    let node3_config_path = config_temp_dir.path().join("linear_read_n3.toml");
+    tokio::fs::write(&node3_config_path, &node3_config).await?;
 
     // Start nodes
     tokio::fs::create_dir_all(db_root.join("node1")).await?;
@@ -422,21 +427,27 @@ listen_address = '127.0.0.1:{}'
     let sm1 = Arc::new(RocksDBStateMachine::new(
         db_root.join("node1/state_machine"),
     )?);
-    let engine1 = EmbeddedEngine::start_custom(storage1, sm1, Some(node1_config_path)).await?;
+    let engine1 =
+        EmbeddedEngine::start_custom(storage1, sm1, Some(node1_config_path.to_str().unwrap()))
+            .await?;
 
     tokio::fs::create_dir_all(db_root.join("node2")).await?;
     let storage2 = Arc::new(RocksDBStorageEngine::new(db_root.join("node2/storage"))?);
     let sm2 = Arc::new(RocksDBStateMachine::new(
         db_root.join("node2/state_machine"),
     )?);
-    let engine2 = EmbeddedEngine::start_custom(storage2, sm2, Some(node2_config_path)).await?;
+    let engine2 =
+        EmbeddedEngine::start_custom(storage2, sm2, Some(node2_config_path.to_str().unwrap()))
+            .await?;
 
     tokio::fs::create_dir_all(db_root.join("node3")).await?;
     let storage3 = Arc::new(RocksDBStorageEngine::new(db_root.join("node3/storage"))?);
     let sm3 = Arc::new(RocksDBStateMachine::new(
         db_root.join("node3/state_machine"),
     )?);
-    let engine3 = EmbeddedEngine::start_custom(storage3, sm3, Some(node3_config_path)).await?;
+    let engine3 =
+        EmbeddedEngine::start_custom(storage3, sm3, Some(node3_config_path.to_str().unwrap()))
+            .await?;
 
     // Wait for cluster ready
     engine1.wait_ready(Duration::from_secs(10)).await?;
