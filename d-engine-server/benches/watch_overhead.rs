@@ -127,34 +127,31 @@ fn bench_embedded_mode_with_watchers(c: &mut Criterion) {
             BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
             &watcher_count,
             |b, &count| {
-                // Setup: Create engine once, reuse across iterations
-                let (engine, _temp_dir) = runtime.block_on(async {
-                    create_embedded_engine().await.expect("Failed to create engine")
-                });
-
-                // Register watchers once
-                let mut _watchers = Vec::new();
-                for i in 0..count {
-                    let key = format!("watch_key_{i}").into_bytes();
-                    let watcher = engine.watch(&key).expect("Failed to register watcher");
-                    _watchers.push(watcher);
-                }
-
-                runtime.block_on(async {
-                    sleep(Duration::from_millis(100)).await;
-                });
-
-                // Benchmark: Only measure PUT operations
+                // Benchmark: Create fresh engine per iteration to avoid state pollution
                 b.to_async(&runtime).iter(|| async {
+                    // Setup: Create engine
+                    let (engine, _temp_dir) =
+                        create_embedded_engine().await.expect("Failed to create engine");
+
+                    // Register watchers
+                    let mut _watchers = Vec::new();
+                    for i in 0..count {
+                        let key = format!("watch_key_{i}").into_bytes();
+                        let watcher = engine.watch(&key).expect("Failed to register watcher");
+                        _watchers.push(watcher);
+                    }
+
+                    // Small delay for engine stabilization
+                    sleep(Duration::from_millis(100)).await;
+
+                    // Measure: PUT operations
                     for i in 0..100 {
                         let key = format!("key_{i}").into_bytes();
                         let value = format!("value_{i}").into_bytes();
                         engine.client().put(&key, &value).await.expect("PUT failed");
                     }
-                });
 
-                // Cleanup after all iterations
-                runtime.block_on(async {
+                    // Cleanup
                     engine.stop().await.expect("Failed to stop engine");
                 });
             },
