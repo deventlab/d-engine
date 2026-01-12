@@ -240,6 +240,14 @@ pub enum StorageError {
     /// and ensures explicit feature activation.
     #[error("Feature not enabled: {0}")]
     FeatureNotEnabled(String),
+
+    /// State machine not serving requests
+    ///
+    /// Returned when read operations are attempted during critical operations
+    /// such as snapshot restoration. This ensures reads never access inconsistent
+    /// or temporary state during database transitions.
+    #[error("State machine not serving: {0}")]
+    NotServing(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -440,6 +448,22 @@ pub enum ReplicationError {
     /// Node not in leader state for replication requests
     #[error("Replication requires leader role (known leader: {leader_id:?})")]
     NotLeader { leader_id: Option<u32> },
+}
+
+/// Errors that can occur during ReadIndex batching for linearizable reads
+#[derive(Debug, thiserror::Error, Clone)]
+pub enum ReadIndexError {
+    /// This node is no longer the leader
+    #[error("Not leader - cannot serve linearizable read")]
+    NotLeader,
+
+    /// Leadership verification timed out (possible network partition)
+    #[error("Verification timeout after {timeout_ms}ms")]
+    Timeout { timeout_ms: u64 },
+
+    /// Leadership verification failed for other reasons
+    #[error("Verification failed: {reason}")]
+    VerificationFailed { reason: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -685,6 +709,18 @@ impl From<JoinError> for Error {
 impl From<SnapshotError> for Error {
     fn from(e: SnapshotError) -> Self {
         Error::Consensus(ConsensusError::Snapshot(e))
+    }
+}
+
+impl From<ReadIndexError> for Error {
+    fn from(e: ReadIndexError) -> Self {
+        Error::Consensus(ConsensusError::Replication(match e {
+            ReadIndexError::NotLeader => ReplicationError::NotLeader { leader_id: None },
+            ReadIndexError::Timeout { timeout_ms } => ReplicationError::RpcTimeout {
+                duration: timeout_ms,
+            },
+            ReadIndexError::VerificationFailed { reason: _ } => ReplicationError::QuorumNotReached,
+        }))
     }
 }
 

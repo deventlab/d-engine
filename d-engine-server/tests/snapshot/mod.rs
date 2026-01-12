@@ -1,1 +1,0 @@
-mod generate_snapshot_case1;

@@ -354,7 +354,17 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     }
                 }
             }
-
+            RaftEvent::FlushReadBuffer => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Follower",
+                    required_role: "Leader",
+                    context: format!(
+                        "Follower node {} attempted to create snapshot.",
+                        ctx.node_id
+                    ),
+                }
+                .into());
+            }
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
                 // Create ACK channel (follower sends ACKs to leader)
                 let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);

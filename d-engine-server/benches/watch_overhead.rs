@@ -171,11 +171,12 @@ fn bench_embedded_mode_with_watchers(c: &mut Criterion) {
 fn bench_watch_notification_latency(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
+    // Setup: Create engine once outside the benchmark loop
+    let (engine, _temp_dir) = runtime
+        .block_on(async { create_embedded_engine().await.expect("Failed to create engine") });
+
     c.bench_function("watch_notification_latency", |b| {
         b.to_async(&runtime).iter(|| async {
-            let (engine, _temp_dir) =
-                create_embedded_engine().await.expect("Failed to create engine");
-
             let key = b"latency_test_key";
             let mut watcher = engine.watch(key).expect("Failed to register watcher");
 
@@ -196,10 +197,12 @@ fn bench_watch_notification_latency(c: &mut Criterion) {
             let latency = recv_handle.await.expect("Receiver task failed");
 
             black_box(latency);
-
-            // Cleanup
-            engine.stop().await.expect("Failed to stop engine");
         });
+    });
+
+    // Cleanup after all iterations
+    runtime.block_on(async {
+        engine.stop().await.expect("Failed to stop engine");
     });
 }
 
@@ -212,42 +215,45 @@ fn bench_multiple_watchers_same_key(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("multiple_watchers_same_key");
 
+    // Setup: Create engine once outside the benchmark loop
+    let (engine, _temp_dir) = runtime
+        .block_on(async { create_embedded_engine().await.expect("Failed to create engine") });
+
     for &watcher_count in &[1, 10, 100] {
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
             &watcher_count,
             |b, &count| {
-                b.to_async(&runtime).iter(|| async {
-                    let (engine, _temp_dir) =
-                        create_embedded_engine().await.expect("Failed to create engine");
+                // Register watchers once per parameter
+                let key = b"shared_key";
+                let mut _watchers = Vec::new();
+                for _ in 0..count {
+                    let watcher = engine.watch(key).expect("Failed to register watcher");
+                    _watchers.push(watcher);
+                }
 
-                    let key = b"shared_key";
-
-                    // Register multiple watchers for the same key
-                    let mut _watchers = Vec::new();
-                    for _ in 0..count {
-                        let watcher = engine.watch(key).expect("Failed to register watcher");
-                        _watchers.push(watcher);
-                    }
-
-                    // Give watchers time to register
+                runtime.block_on(async {
                     sleep(Duration::from_millis(50)).await;
+                });
 
-                    // Perform PUT
+                b.to_async(&runtime).iter(|| async {
+                    // Only measure PUT broadcast time
                     let start = std::time::Instant::now();
                     engine.client().put(key, b"broadcast_value").await.expect("PUT failed");
                     let elapsed = start.elapsed();
 
                     black_box(elapsed);
-
-                    // Cleanup
-                    engine.stop().await.expect("Failed to stop engine");
                 });
             },
         );
     }
 
     group.finish();
+
+    // Cleanup after all iterations
+    runtime.block_on(async {
+        engine.stop().await.expect("Failed to stop engine");
+    });
 }
 
 //=============================================================================
@@ -259,41 +265,47 @@ fn bench_watcher_cleanup(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("watcher_cleanup");
 
+    // Setup: Create engine once outside the benchmark loop
+    let (engine, _temp_dir) = runtime
+        .block_on(async { create_embedded_engine().await.expect("Failed to create engine") });
+
     for &watcher_count in &[10, 100, 1000] {
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
             &watcher_count,
             |b, &count| {
-                b.to_async(&runtime).iter(|| async {
-                    let (engine, _temp_dir) =
-                        create_embedded_engine().await.expect("Failed to create engine");
-
-                    // Register many watchers
-                    let mut watchers = Vec::new();
-                    for i in 0..count {
-                        let key = format!("cleanup_key_{i}").into_bytes();
-                        let watcher = engine.watch(&key).expect("Failed to register watcher");
-                        watchers.push(watcher);
-                    }
-
-                    // Give watchers time to register
-                    sleep(Duration::from_millis(100)).await;
-
-                    // Measure cleanup time
-                    let start = std::time::Instant::now();
-                    drop(watchers);
-                    let elapsed = start.elapsed();
-
-                    black_box(elapsed);
-
-                    // Cleanup
-                    engine.stop().await.expect("Failed to stop engine");
-                });
+                b.iter_with_setup(
+                    || {
+                        // Setup: Register watchers (not measured)
+                        let mut watchers = Vec::new();
+                        for i in 0..count {
+                            let key = format!("cleanup_key_{i}").into_bytes();
+                            let watcher = engine.watch(&key).expect("Failed to register watcher");
+                            watchers.push(watcher);
+                        }
+                        runtime.block_on(async {
+                            sleep(Duration::from_millis(100)).await;
+                        });
+                        watchers
+                    },
+                    |watchers| {
+                        // Only measure cleanup time
+                        let start = std::time::Instant::now();
+                        drop(watchers);
+                        let elapsed = start.elapsed();
+                        black_box(elapsed);
+                    },
+                );
             },
         );
     }
 
     group.finish();
+
+    // Cleanup after all iterations
+    runtime.block_on(async {
+        engine.stop().await.expect("Failed to stop engine");
+    });
 }
 
 //=============================================================================

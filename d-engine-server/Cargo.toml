@@ -95,3 +95,7 @@ required-features = ["watch", "rocksdb"]
 [[bench]]
 name = "lease_performance"
 harness = false
+
+[[bench]]
+name = "leader_state_bench"
+harness = false

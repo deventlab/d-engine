@@ -305,6 +305,11 @@ where
 
         match role_event {
             RoleEvent::BecomeFollower(leader_id_option) => {
+                // Drain read buffer before stepping down
+                if let Err(e) = self.role.drain_read_buffer() {
+                    tracing::warn!("Failed to drain read buffer during role transition: {e:?}");
+                }
+
                 debug!("BecomeFollower");
                 self.role = self.role.become_follower()?;
 
@@ -321,6 +326,11 @@ where
                 //TODO: update membership
             }
             RoleEvent::BecomeCandidate => {
+                // Drain read buffer before stepping down
+                if let Err(e) = self.role.drain_read_buffer() {
+                    tracing::warn!("Failed to drain read buffer during role transition: {e:?}");
+                }
+
                 debug!("BecomeCandidate");
                 self.role = self.role.become_candidate()?;
 
@@ -376,12 +386,25 @@ where
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
+                } else {
+                    // Track no-op index for linearizable read optimization (best-effort)
+                    if let Err(e) = self.role.on_noop_committed(&self.ctx) {
+                        warn!(
+                            ?e,
+                            "Failed to track no-op commit index after leadership verification"
+                        );
+                    }
                 }
 
                 #[cfg(any(test, feature = "test-utils"))]
                 self.notify_role_transition();
             }
             RoleEvent::BecomeLearner => {
+                // Drain read buffer before stepping down
+                if let Err(e) = self.role.drain_read_buffer() {
+                    tracing::warn!("Failed to drain read buffer during role transition: {e:?}");
+                }
+
                 debug!("BecomeLearner");
                 self.role = self.role.become_learner()?;
 

@@ -151,14 +151,27 @@ impl StorageEngine for RocksDBStorageEngine {
     }
 }
 
+impl Drop for RocksDBLogStore {
+    fn drop(&mut self) {
+        // Flush WAL and memtables on drop to ensure durability
+        // This is critical for crash recovery - data must survive process termination
+        if let Err(e) = self.flush() {
+            tracing::error!("Failed to flush RocksDBLogStore on drop: {}", e);
+        } else {
+            tracing::debug!("RocksDBLogStore flushed successfully on drop");
+        }
+    }
+}
+
 impl RocksDBLogStore {
     fn new(db: Arc<DB>) -> Result<Self, Error> {
         let mut last_index = 0;
 
-        // Find the last index by seeking to the last key
+        // Find the last index by seeking to the end and reading the first (largest) key
+        // IteratorMode::End positions at the end, next() gives us the largest key
         if let Some(cf) = db.cf_handle(LOG_CF) {
-            let iter = db.iterator_cf(&cf, IteratorMode::End);
-            if let Some(Ok((key, _))) = iter.last() {
+            let mut iter = db.iterator_cf(&cf, IteratorMode::End);
+            if let Some(Ok((key, _))) = iter.next() {
                 if key.len() == 8 {
                     last_index = u64::from_be_bytes([
                         key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
@@ -402,6 +415,18 @@ impl LogStore for RocksDBLogStore {
     #[instrument(skip(self))]
     fn last_index(&self) -> u64 {
         self.last_index.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for RocksDBMetaStore {
+    fn drop(&mut self) {
+        // Flush WAL and memtables on drop to ensure HardState durability
+        // HardState (current_term, voted_for) MUST survive crashes per Raft protocol
+        if let Err(e) = self.flush() {
+            tracing::error!("Failed to flush RocksDBMetaStore on drop: {}", e);
+        } else {
+            tracing::debug!("RocksDBMetaStore flushed successfully on drop");
+        }
     }
 }
 

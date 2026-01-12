@@ -155,7 +155,7 @@ fn test_config_override_success() {
 
     // Use temporary environment variables
     temp_env::with_var("CONFIG_PATH", Some(config_path.clone()), || {
-        let base_config = RaftNodeConfig::new().unwrap();
+        let base_config = RaftNodeConfig::new().unwrap().validate().unwrap();
         let updated_config = base_config.with_override_config(&config_path).unwrap();
 
         // Verify path coverage
@@ -175,7 +175,7 @@ fn test_config_override_success() {
 
 #[test]
 fn test_config_override_invalid_path() {
-    let base_config = RaftNodeConfig::new().unwrap();
+    let base_config = RaftNodeConfig::new().unwrap().validate().unwrap();
     let result = base_config.with_override_config("non_existent.toml");
 
     assert!(
@@ -196,7 +196,7 @@ fn test_config_override_invalid_format() {
     "#,
     );
 
-    let base_config = RaftNodeConfig::new().unwrap();
+    let base_config = RaftNodeConfig::new().unwrap().validate().unwrap();
     let result = base_config.with_override_config(&config_path);
 
     assert!(
@@ -227,7 +227,7 @@ fn test_config_override_priority() {
             ),
         ],
         || {
-            let config = RaftNodeConfig::new().unwrap();
+            let config = RaftNodeConfig::new().unwrap().validate().unwrap();
 
             // Verify that environment variables have higher priority than configuration
             // files
@@ -249,7 +249,7 @@ fn test_partial_override() {
     "#,
     );
 
-    let base_config = RaftNodeConfig::new().unwrap();
+    let base_config = RaftNodeConfig::new().unwrap().validate().unwrap();
     let updated_config = base_config.with_override_config(&config_path).unwrap();
 
     // Validate covered fields

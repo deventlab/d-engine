@@ -163,9 +163,10 @@ fn create_entries_with_ttl(
 fn bench_apply_without_ttl(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
+    let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+
     c.bench_function("apply_without_ttl", |b| {
         b.to_async(&runtime).iter(|| async {
-            let (sm, _temp_dir) = create_test_state_machine().await;
             let entries = create_entries_without_ttl(1, 1);
 
             // Measure pure apply performance
@@ -180,9 +181,10 @@ fn bench_apply_without_ttl(c: &mut Criterion) {
 fn bench_apply_with_ttl(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
+    let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+
     c.bench_function("apply_with_ttl", |b| {
         b.to_async(&runtime).iter(|| async {
-            let (sm, _temp_dir) = create_test_state_machine().await;
             let entries = create_entries_with_ttl(1, 1, 3600); // 1 hour TTL
 
             // Measure apply with TTL registration
@@ -268,10 +270,11 @@ fn bench_batch_apply(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let mut group = c.benchmark_group("batch_apply");
 
+    let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let (sm, _temp_dir) = create_test_state_machine().await;
                 let entries = create_entries_without_ttl(size, 1);
 
                 sm.apply_chunk(entries).await.unwrap();
@@ -288,10 +291,11 @@ fn bench_batch_apply_with_ttl(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let mut group = c.benchmark_group("batch_apply_with_ttl");
 
+    let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let (sm, _temp_dir) = create_test_state_machine().await;
                 let entries = create_entries_with_ttl(size, 1, 3600);
 
                 sm.apply_chunk(entries).await.unwrap();
@@ -308,9 +312,11 @@ fn bench_batch_apply_with_ttl(c: &mut Criterion) {
 fn bench_apply_without_watch(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
+    // Initialize state machine once outside the iteration loop
+    let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+
     c.bench_function("apply_without_watch", |b| {
         b.to_async(&runtime).iter(|| async {
-            let (sm, _temp_dir) = create_test_state_machine().await;
             let entries = create_entries_without_ttl(100, 1);
 
             // Measure pure apply performance without watch
@@ -325,9 +331,10 @@ fn bench_apply_without_watch(c: &mut Criterion) {
 fn bench_apply_with_1_watcher(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
+    let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+
     c.bench_function("apply_with_1_watcher", |b| {
         b.to_async(&runtime).iter(|| async {
-            let (sm, _temp_dir) = create_test_state_machine().await;
             let (registry, broadcast_tx) = create_watch_system(1000, 10);
 
             // Register 1 watcher (keep handle alive to prevent unregistration)
@@ -381,9 +388,10 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
 fn bench_apply_with_10_watchers(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
+    let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+
     c.bench_function("apply_with_10_watchers", |b| {
         b.to_async(&runtime).iter(|| async {
-            let (sm, _temp_dir) = create_test_state_machine().await;
             let (registry, broadcast_tx) = create_watch_system(1000, 10);
 
             // Register 10 watchers (keep handles alive to prevent unregistration)
@@ -437,9 +445,10 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
 fn bench_apply_with_100_watchers(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
+    let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+
     c.bench_function("apply_with_100_watchers", |b| {
         b.to_async(&runtime).iter(|| async {
-            let (sm, _temp_dir) = create_test_state_machine().await;
             let (registry, broadcast_tx) = create_watch_system(1000, 10);
 
             // Register 100 watchers (keep handles alive to prevent unregistration)

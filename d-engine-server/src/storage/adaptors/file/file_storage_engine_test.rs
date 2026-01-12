@@ -467,4 +467,123 @@ mod tests {
             println!("Note: Operation succeeded because fs::create_dir_all recreates directories");
         }
     }
+
+    // Integration tests using StorageEngineTestSuite
+
+    use d_engine_core::Error;
+    use d_engine_core::storage::storage_engine_test::{
+        StorageEngineBuilder, StorageEngineTestSuite,
+    };
+    use tonic::async_trait;
+
+    /// Builder for FileStorageEngine test instances
+    struct FileStorageEngineBuilder {
+        temp_dir: TempDir,
+    }
+
+    impl FileStorageEngineBuilder {
+        fn new() -> Self {
+            Self {
+                temp_dir: TempDir::new().expect("Failed to create temp dir"),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl StorageEngineBuilder for FileStorageEngineBuilder {
+        type Engine = FileStorageEngine;
+
+        async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
+            // Use fixed path to support restart recovery testing
+            let path = self.temp_dir.path().join("file_storage");
+            let engine = FileStorageEngine::new(path)?;
+            Ok(Arc::new(engine))
+        }
+
+        async fn cleanup(&self) -> Result<(), Error> {
+            // TempDir automatically cleans up on drop
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_file_storage_engine_suite() {
+        let builder = FileStorageEngineBuilder::new();
+        StorageEngineTestSuite::run_all_tests(builder)
+            .await
+            .expect("FileStorageEngine should pass all tests");
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_file_storage_performance_batch_write() {
+        let (storage, _dir) = setup_storage();
+        let log_store = storage.log_store();
+
+        let start = std::time::Instant::now();
+        let batch_size = 1000;
+
+        // Write 1000 entries
+        log_store.persist_entries(create_entries(1..=batch_size)).await.unwrap();
+
+        let duration = start.elapsed();
+        let ops_per_sec = batch_size as f64 / duration.as_secs_f64();
+
+        println!("Batch write performance:");
+        println!("  - Entries: {batch_size}");
+        println!("  - Duration: {duration:?}");
+        println!("  - Ops/sec: {ops_per_sec:.2}");
+
+        assert_eq!(log_store.last_index(), batch_size);
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_file_storage_performance_random_read() {
+        let (storage, _dir) = setup_storage();
+        let log_store = storage.log_store();
+
+        let total_entries = 1000u64;
+        log_store.persist_entries(create_entries(1..=total_entries)).await.unwrap();
+
+        let start = std::time::Instant::now();
+        let read_count = 100;
+
+        // Random reads
+        for i in 1..=read_count {
+            let index = (i * 7) % total_entries + 1; // Pseudo-random access
+            let _ = log_store.entry(index).await.unwrap();
+        }
+
+        let duration = start.elapsed();
+        let ops_per_sec = read_count as f64 / duration.as_secs_f64();
+
+        println!("Random read performance:");
+        println!("  - Reads: {read_count}");
+        println!("  - Duration: {duration:?}");
+        println!("  - Ops/sec: {ops_per_sec:.2}");
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_file_storage_performance_range_query() {
+        let (storage, _dir) = setup_storage();
+        let log_store = storage.log_store();
+
+        let total_entries = 10000u64;
+        log_store.persist_entries(create_entries(1..=total_entries)).await.unwrap();
+
+        let start = std::time::Instant::now();
+
+        // Range query
+        let range = log_store.get_entries(1000..=2000).unwrap();
+
+        let duration = start.elapsed();
+
+        println!("Range query performance:");
+        println!("  - Range size: {}", range.len());
+        println!("  - Duration: {duration:?}");
+
+        assert_eq!(range.len(), 1001);
+    }
 }

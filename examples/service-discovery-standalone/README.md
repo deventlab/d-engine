@@ -29,11 +29,11 @@ Demonstrates d-engine's **Watch API** through a practical service discovery use 
 
 ## Prerequisites
 
-**Start the d-engine server cluster first** using the three-nodes-cluster example:
+**Start the d-engine server cluster first** using the three-nodes-standalone example:
 
 ```bash
 # In another terminal, start at least one node
-cd examples/three-nodes-cluster
+cd examples/three-nodes-standalone
 make start-cluster  # or: make start-node-1
 ```
 

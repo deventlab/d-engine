@@ -11,13 +11,14 @@ exclude = [
   "docs",
   "examples/client_usage",
   "examples/sled-cluster",
-  "examples/three-nodes-cluster",
+  "examples/three-nodes-standalone",
+  "examples/three-nodes-embedded",
   "examples/single-node-expansion",
   "examples/quick-start",
   "examples/quick-start-embedded",
   "examples/service-discovery-standalone",
   "examples/service-discovery-embedded",
-  "benches/d-engine-bench",
+  "benches/standalone-bench",
   "benches/embedded-bench"
 ]
 

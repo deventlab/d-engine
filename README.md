@@ -87,6 +87,8 @@ d-engine = "0.2"
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
+> **Performance note**: Embedded mode delivers exceptional performance - **4.6x higher write throughput** and **2x faster linearizable reads** vs etcd 3.5 (M2 Mac single machine vs etcd on 3 GCE instances). Achieves 203K writes/sec and 279K linearizable reads/sec. See [benches/embedded-bench/reports/v0.2.2/](benches/embedded-bench/reports/v0.2.2/) for detailed benchmarks.
+
 **→ Examples:**
 
 - [Quick Start Embedded](examples/quick-start-embedded/README.md) - Minimal setup
@@ -103,7 +105,7 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 **Use when**: Application and d-engine run as separate processes  
 **Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
 
-> **Performance note**: Benchmark shows 45% higher write throughput vs etcd 3.5 in high-concurrency tests (M2 Mac single machine vs etcd on 3 GCE instances). See [benches/](benches/d-engine-bench/reports/v0.2.0/) for methodology and hardware details.
+> **Performance note**: Standalone mode achieves 64K writes/sec and 12K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (3.1x faster writes, 23x faster reads). See [benches/standalone-bench/reports/v0.2.2/](benches/standalone-bench/reports/v0.2.2/) for benchmarks.
 
 **Note**: Rust apps can use both modes - embedded for performance, standalone for operational flexibility
 
@@ -150,9 +152,9 @@ sequenceDiagram
 
 ---
 
-## Performance Comparison (d-engine v0.2.0 vs etcd 3.5)
+## Performance Comparison (d-engine v0.2.2 vs etcd 3.5)
 
-![d-engine vs etcd comparison](https://github.com/deventlab/d-engine/raw/HEAD/benches/embedded-bench/reports/v0.2.0/dengine_comparison_v0.2.0.png)
+![d-engine vs etcd comparison](https://github.com/deventlab/d-engine/raw/HEAD/benches/embedded-bench/reports/v0.2.2/dengine_comparison_v0.2.2.png)
 
 ### View Benchmarks Detailed Reports
 
@@ -160,16 +162,28 @@ sequenceDiagram
 open benches/reports/
 ```
 
-## Jepsen Tests
+---
 
-d-engine includes [Jepsen](https://jepsen.io/) tests to validate linearizability and fault-tolerance under partitions and crashes.
+## Maintainer Philosophy
 
-To run Jepsen tests (requires Docker & Leiningen):
-See [examples/three-nodes-cluster/docker/jepsen/README.md](./examples/three-nodes-cluster/docker/jepsen/README.md) for full instructions.
+d-engine is maintained by a single author with a clear vision.
+We value quality over quantity:
+
+- **PRs are not guaranteed to be merged** - even good code may be declined
+  if it conflicts with roadmap priorities
+- **Response time varies** - active development takes precedence over PR reviews
+- **Breaking changes are OK pre-1.0** - we prioritize getting it right over
+  backward compatibility
+
+This approach keeps d-engine focused and maintainable.
 
 ---
 
 ## Contribution Guide
+
+d-engine follows the 20/80 rule - solve real production problems, not experiments.
+Read [Contributing Guide](CONTRIBUTING.md) and open an issue before feature PRs.
+Bug fixes are always welcome.
 
 ### Prerequisites
 
@@ -180,8 +194,8 @@ See [examples/three-nodes-cluster/docker/jepsen/README.md](./examples/three-node
 ### Development Workflow
 
 ```bash
-#  Run all checks (tests + linters)
-make test-all
+# Run all tests (fast, parallel with nextest)
+make test
 ```
 
 ---

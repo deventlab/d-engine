@@ -67,10 +67,11 @@ mod raft_context;
 mod raft_role;
 mod replication;
 mod state_machine_handler;
-mod storage;
 mod timer;
 mod type_config;
 mod utils;
+
+pub mod storage;
 
 #[cfg(feature = "watch")]
 pub mod watch;
