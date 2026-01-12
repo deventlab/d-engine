@@ -1,19 +1,25 @@
 #[cfg(any(test, feature = "test-utils"))]
 mod components;
 
-// Integration tests moved from d-engine/tests/
-mod append_entries;
-mod client_manager;
-mod cluster_start_stop;
+// Integration tests organized by business domain
+mod cluster_lifecycle;
+mod cluster_membership;
+mod cluster_state_and_metadata;
 mod common;
-mod election;
+mod consistent_reads;
+mod failover_and_recovery;
+mod leader_election;
+mod local_kv_client;
+mod replication_and_sync;
 
 #[cfg(feature = "rocksdb")]
-mod embedded;
+mod readonly_and_learner_mode;
 
-mod join_cluster;
-mod linearizable_read;
-mod readonly_mode;
-mod snapshot;
+#[cfg(feature = "rocksdb")]
+mod snapshot_and_recovery;
+
 #[cfg(all(feature = "watch", feature = "rocksdb"))]
-mod watch;
+mod watch_and_subscriptions;
+
+// Support modules
+mod client_manager;
