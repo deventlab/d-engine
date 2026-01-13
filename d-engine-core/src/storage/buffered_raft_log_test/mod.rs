@@ -28,4 +28,5 @@ mod flush_strategy_test;
 mod helper_functions_test;
 mod id_allocation_test;
 mod performance_test;
+mod remove_range_test;
 mod term_index_test;
