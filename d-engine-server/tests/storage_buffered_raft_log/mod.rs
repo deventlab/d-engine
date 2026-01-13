@@ -15,12 +15,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::MockStateMachine;
 use d_engine_core::{
-    BufferedRaftLog, FlushPolicy, PersistenceConfig, PersistenceStrategy, alias::ROF,
+    BufferedRaftLog, FlushPolicy, PersistenceConfig, PersistenceStrategy, RaftLog, alias::ROF,
 };
 use d_engine_proto::common::{Entry, EntryPayload};
-use d_engine_server::{FileStorageEngine, node::RaftTypeConfig};
+use d_engine_server::{FileStateMachine, FileStorageEngine, node::RaftTypeConfig};
 use tempfile::tempdir;
 
 mod crash_recovery_test;
@@ -30,7 +29,7 @@ mod stress_test;
 
 /// Test context with real FileStorageEngine for integration tests
 pub struct TestContext {
-    pub raft_log: Arc<ROF<RaftTypeConfig<FileStorageEngine, MockStateMachine>>>,
+    pub raft_log: Arc<ROF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
     pub storage: Arc<FileStorageEngine>,
     pub _temp_dir: Option<tempfile::TempDir>,
     pub strategy: PersistenceStrategy,
