@@ -852,7 +852,7 @@ async fn test_join_cluster_succeeds_with_known_leader() {
     });
     context.transport = Arc::new(transport);
 
-    let mut state = LearnerState::<MockTypeConfig>::new(100, context.node_config.clone());
+    let state = LearnerState::<MockTypeConfig>::new(100, context.node_config.clone());
     state.shared_state.set_current_leader(5);
 
     let result = state.join_cluster(&context).await;
@@ -965,7 +965,7 @@ async fn test_join_cluster_fails_on_rpc_failure() {
     });
     context.transport = Arc::new(transport);
 
-    let mut state = LearnerState::<MockTypeConfig>::new(100, context.node_config.clone());
+    let state = LearnerState::<MockTypeConfig>::new(100, context.node_config.clone());
     state.shared_state.set_current_leader(5);
 
     let result = state.join_cluster(&context).await;
@@ -1010,7 +1010,7 @@ async fn test_join_cluster_fails_invalid_response() {
     });
     context.transport = Arc::new(transport);
 
-    let mut state = LearnerState::<MockTypeConfig>::new(100, context.node_config.clone());
+    let state = LearnerState::<MockTypeConfig>::new(100, context.node_config.clone());
     state.shared_state.set_current_leader(5);
 
     let result = state.join_cluster(&context).await;
@@ -1049,7 +1049,7 @@ async fn test_join_cluster_handles_redirect() {
     });
     context.transport = Arc::new(transport);
 
-    let mut state = LearnerState::<MockTypeConfig>::new(100, context.node_config.clone());
+    let state = LearnerState::<MockTypeConfig>::new(100, context.node_config.clone());
     state.shared_state.set_current_leader(5);
 
     let result = state.join_cluster(&context).await;

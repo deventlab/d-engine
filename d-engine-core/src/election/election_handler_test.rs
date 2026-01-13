@@ -1006,8 +1006,7 @@ mod single_node_election_tests {
         // Verify - should succeed with majority votes
         assert!(
             result.is_ok(),
-            "Expected successful election with majority votes, got: {:?}",
-            result
+            "Expected successful election with majority votes, got: {result:?}"
         );
     }
 
