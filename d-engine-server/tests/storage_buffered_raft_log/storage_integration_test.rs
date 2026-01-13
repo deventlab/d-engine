@@ -3,13 +3,8 @@
 //! These tests verify BufferedRaftLog integration with FileStorageEngine
 //! at the storage layer, including compaction and storage-specific operations.
 
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-
-use bytes::Bytes;
-use d_engine_core::{BufferedRaftLog, FlushPolicy, PersistenceStrategy, RaftLog};
-use d_engine_proto::common::{Entry, EntryPayload, LogId};
+use d_engine_core::{FlushPolicy, PersistenceStrategy, RaftLog};
+use d_engine_proto::common::LogId;
 
 use super::TestContext;
 

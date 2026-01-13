@@ -10,7 +10,6 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::test_utils::BufferedRaftLogTestContext;
 use crate::{
     BufferedRaftLog, FlushPolicy, MockStorageEngine, MockTypeConfig, PersistenceConfig,
     PersistenceStrategy, RaftLog,
@@ -145,13 +144,13 @@ async fn test_concurrent_mixed_allocations() {
     for result in &results {
         match result {
             AllocationResult::Single(id) => {
-                assert!(!all_ids.contains(id), "Duplicate ID: {}", id);
+                assert!(!all_ids.contains(id), "Duplicate ID: {id}");
                 all_ids.insert(*id);
             }
             AllocationResult::Range(range) => {
                 if !range.is_empty() {
                     for id in *range.start()..=*range.end() {
-                        assert!(!all_ids.contains(&id), "Duplicate ID: {}", id);
+                        assert!(!all_ids.contains(&id), "Duplicate ID: {id}");
                         all_ids.insert(id);
                     }
                 }

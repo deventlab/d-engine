@@ -277,7 +277,6 @@ async fn test_term_index_performance_large_dataset() {
 
     assert!(
         elapsed.as_millis() < 100,
-        "Term index lookup should be fast (took {:?})",
-        elapsed
+        "Term index lookup should be fast (took {elapsed:?})"
     );
 }

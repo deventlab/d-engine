@@ -3,15 +3,10 @@
 //! These tests verify BufferedRaftLog behavior under high load with
 //! real FileStorageEngine, testing race conditions and resource limits.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use std::sync::atomic::Ordering;
-
 use bytes::Bytes;
-use d_engine_core::{
-    BufferedRaftLog, FlushPolicy, LogStore, PersistenceStrategy, RaftLog, StorageEngine,
-};
+use d_engine_core::{FlushPolicy, LogStore, PersistenceStrategy, RaftLog, StorageEngine};
 use d_engine_proto::common::{Entry, EntryPayload};
 use futures::future::join_all;
 use tokio::time::Instant;

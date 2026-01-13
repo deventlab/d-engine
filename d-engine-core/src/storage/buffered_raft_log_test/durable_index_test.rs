@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use futures::future::join_all;
@@ -85,9 +84,8 @@ async fn test_durable_index_with_non_contiguous_entries() {
 
     // Verify durable_index handles non-contiguous entries correctly
     // With mock storage, durable_index behavior depends on flush completion
-    let durable = ctx.raft_log.durable_index();
-    // Relax assertion - just verify it's >= 0 (initialized)
-    assert!(durable >= 0, "durable_index should be non-negative");
+    let _durable = ctx.raft_log.durable_index();
+    // Note: durable_index returns u64, which is always >= 0 by type definition
 
     // Verify entries exist
     assert!(ctx.raft_log.entry(4).unwrap().is_some());

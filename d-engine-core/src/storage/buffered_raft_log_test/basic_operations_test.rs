@@ -7,10 +7,7 @@
 //! - Log purging
 //! - Metadata updates
 
-use bytes::Bytes;
-use d_engine_proto::common::{Entry, EntryPayload, LogId};
-use std::time::Duration;
-use tokio::time::sleep;
+use d_engine_proto::common::{Entry, LogId};
 
 use crate::test_utils::{
     BufferedRaftLogTestContext, mock_empty_entries, simulate_delete_command,

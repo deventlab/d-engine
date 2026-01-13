@@ -116,7 +116,7 @@ pub fn mock_entries(
             index,
             term,
             payload: Some(EntryPayload::command(Bytes::from(
-                format!("data_{}", index).into_bytes(),
+                format!("data_{index}").into_bytes(),
             ))),
         })
         .collect()
@@ -153,7 +153,7 @@ pub async fn insert_single_entry(
 
 /// Generate mock insert command payload bytes
 fn mock_insert_command_payload(ids: Vec<u64>) -> Bytes {
-    let commands: Vec<String> = ids.iter().map(|id| format!("insert_{}", id)).collect();
+    let commands: Vec<String> = ids.iter().map(|id| format!("insert_{id}")).collect();
     Bytes::from(commands.join(","))
 }
 
@@ -193,7 +193,7 @@ pub async fn simulate_delete_command(
         let entry = Entry {
             index: raft_log.pre_allocate_raft_logs_next_index(),
             term,
-            payload: Some(EntryPayload::command(Bytes::from(format!("delete_{}", id)))),
+            payload: Some(EntryPayload::command(Bytes::from(format!("delete_{id}")))),
         };
         entries.push(entry);
     }
