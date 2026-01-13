@@ -1,5 +1,5 @@
 use crate::storage::raft_log::RaftLog;
-use crate::test_utils::BufferedRaftLogTestContext;
+use crate::test_utils::{BufferedRaftLogTestContext, simulate_insert_command};
 use crate::{FlushPolicy, PersistenceStrategy};
 use d_engine_proto::common::Entry;
 
@@ -74,4 +74,160 @@ async fn test_leader_completeness_property() {
             "Entry {i} should exist",
         );
     }
+}
+
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case0() {
+    let ctx = BufferedRaftLogTestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        },
+        "test_calculate_majority_matched_index_case0",
+    );
+    ctx.raft_log.reset().await.expect("reset successfully!");
+
+    let current_term = 2;
+    let commit_index = 2;
+
+    simulate_insert_command(&ctx.raft_log, vec![1], 1).await;
+    simulate_insert_command(&ctx.raft_log, vec![2, 3], 2).await;
+
+    assert_eq!(
+        Some(3),
+        ctx.raft_log
+            .calculate_majority_matched_index(current_term, commit_index, vec![2, 12])
+    );
+}
+
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case1() {
+    let ctx = BufferedRaftLogTestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        },
+        "test_calculate_majority_matched_index_case1",
+    );
+    ctx.raft_log.reset().await.expect("reset successfully!");
+
+    // Case 1: majority matched index is 2, commit_index: 4, current_term is 3,
+    // while log(2) term is 2, return None
+    let ct = 3;
+    let ci = 4;
+
+    simulate_insert_command(&ctx.raft_log, vec![1], 1).await;
+    simulate_insert_command(&ctx.raft_log, vec![2], 2).await;
+    assert_eq!(
+        None,
+        ctx.raft_log.calculate_majority_matched_index(ct, ci, vec![1, 2])
+    );
+}
+
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case2() {
+    let ctx = BufferedRaftLogTestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        },
+        "test_calculate_majority_matched_index_case2",
+    );
+    ctx.raft_log.reset().await.expect("reset successfully!");
+
+    // Case 2: majority matched index is 3, commit_index: 2, current_term is 3,
+    // while log(3) term is 3, return Some(3)
+    let ct = 3;
+    let ci = 2;
+
+    simulate_insert_command(&ctx.raft_log, vec![1], 1).await;
+    simulate_insert_command(&ctx.raft_log, vec![2], 2).await;
+    simulate_insert_command(&ctx.raft_log, vec![3], 3).await;
+    assert_eq!(
+        Some(3),
+        ctx.raft_log.calculate_majority_matched_index(ct, ci, vec![4, 2])
+    );
+}
+
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case3() {
+    let ctx = BufferedRaftLogTestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        },
+        "test_calculate_majority_matched_index_case3",
+    );
+
+    // Case 3: majority matched index is 3, commit_index: 2, current_term is 3,
+    // while log(3) term is 2, return None
+    let ct = 3;
+    let ci = 2;
+    simulate_insert_command(&ctx.raft_log, vec![1], 1).await;
+    simulate_insert_command(&ctx.raft_log, vec![2], 2).await;
+
+    assert_eq!(
+        None,
+        ctx.raft_log.calculate_majority_matched_index(ct, ci, vec![3, 2])
+    );
+}
+
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case4() {
+    let ctx = BufferedRaftLogTestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        },
+        "test_calculate_majority_matched_index_case4",
+    );
+
+    // Case 4: majority matched index is 2, commit_index: 2, current_term is 3,
+    // while log(2) term is 2, return None
+    let ct = 3;
+    let ci = 2;
+
+    simulate_insert_command(&ctx.raft_log, vec![1], 1).await;
+    simulate_insert_command(&ctx.raft_log, vec![2], 2).await;
+
+    assert_eq!(
+        None,
+        ctx.raft_log.calculate_majority_matched_index(ct, ci, vec![2, 2])
+    );
+}
+
+#[tokio::test]
+async fn test_calculate_majority_matched_index_case5() {
+    let ctx = BufferedRaftLogTestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 1,
+        },
+        "test_calculate_majority_matched_index_case5",
+    );
+
+    // Case 5: stress testing with 100,000 entries
+    // Simulate 100,000 local log entries
+    // peer1's match: 97,000, peer2's match 98,000
+    let term = 1;
+    let raft_log_length = 100000;
+    let commit = 90000;
+
+    let peer1_match = 97000;
+    let peer2_match = 98000;
+
+    let raft_log_entry_ids: Vec<u64> = (1..=raft_log_length).collect();
+    simulate_insert_command(&ctx.raft_log, raft_log_entry_ids, 1).await;
+
+    assert_eq!(
+        Some(peer2_match),
+        ctx.raft_log
+            .calculate_majority_matched_index(term, commit, vec![peer1_match, peer2_match])
+    );
 }
