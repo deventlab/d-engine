@@ -4,12 +4,21 @@
 //! mock Raft instances with sensible defaults.
 
 mod mock_node_builder;
+mod mock_rpc;
+mod mock_rpc_service;
+mod snapshot;
+mod stream;
+
+pub use mock_node_builder::*;
+pub use mock_rpc::*;
+pub use mock_rpc_service::*;
+pub use snapshot::*;
+pub use stream::*;
 
 use d_engine_core::MockTypeConfig;
 use d_engine_core::Raft;
 use d_engine_core::node_config;
 use d_engine_proto::server::cluster::NodeMeta;
-pub use mock_node_builder::*;
 use tokio::sync::watch;
 
 use crate::Node;

@@ -8,8 +8,6 @@ use d_engine_core::MockStorageEngine;
 use d_engine_core::MockTypeConfig;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::ensure_safe_join;
-use d_engine_core::test_utils::MockNode;
-use d_engine_core::test_utils::MockRpcService;
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::BatchRemove;
 use d_engine_proto::common::MembershipChange;
@@ -29,6 +27,8 @@ use tracing_test::traced_test;
 
 use super::RaftMembership;
 use crate::node::RaftTypeConfig;
+use crate::test_utils::MockNode;
+use crate::test_utils::MockRpcService;
 
 // Helper function to create a test instance
 pub fn create_test_membership()
@@ -875,8 +875,6 @@ async fn test_get_peers_id_with_condition() {
 mod check_cluster_is_ready_test {
     use d_engine_core::MockStateMachine;
     use d_engine_core::MockStorageEngine;
-    use d_engine_core::test_utils::MockNode;
-    use d_engine_core::test_utils::MockRpcService;
     use tokio::sync::oneshot;
 
     use super::*;
@@ -1179,10 +1177,7 @@ mod pre_warm_connections_tests {
         let (tx, rx) = oneshot::channel::<()>();
         let is_ready = true;
         let mock_service = MockRpcService::default();
-        let (_port, addr) =
-            d_engine_core::test_utils::MockNode::mock_listener(mock_service, rx, is_ready)
-                .await
-                .unwrap();
+        let (_port, addr) = MockNode::mock_listener(mock_service, rx, is_ready).await.unwrap();
 
         (address_str(&addr.to_string()), tx)
     }

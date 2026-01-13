@@ -178,7 +178,6 @@ mod filter_out_conflicts_and_append_performance_tests {
 }
 
 #[tokio::test]
-#[ignore] // Heavy test - run explicitly
 async fn test_last_entry_id_performance() {
     use super::TestContext;
     use std::time::Duration;
@@ -228,11 +227,9 @@ async fn test_last_entry_id_performance() {
 }
 
 #[tokio::test]
-#[ignore] // Heavy test - run explicitly
 async fn test_performance_benchmarks() {
     use super::TestContext;
     use std::collections::HashMap;
-    use std::time::Duration;
 
     // Skip performance tests during coverage runs due to instrumentation overhead
     if std::env::var("CARGO_LLVM_COV").is_ok() || std::env::var("CARGO_TARPAULIN").is_ok() {
@@ -338,7 +335,6 @@ async fn test_performance_benchmarks() {
 }
 
 #[tokio::test]
-#[ignore] // Performance test - can be flaky, run explicitly
 async fn test_read_performance_remains_lockfree() {
     use super::TestContext;
     use std::time::Duration;

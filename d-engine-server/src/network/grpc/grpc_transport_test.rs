@@ -10,10 +10,6 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::RetryPolicies;
 use d_engine_core::SystemError;
 use d_engine_core::Transport;
-use d_engine_core::create_test_chunk;
-use d_engine_core::create_test_snapshot_stream;
-use d_engine_core::test_utils::MockNode;
-use d_engine_core::test_utils::node_config;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Candidate;
 use d_engine_proto::common::NodeRole::Follower;
@@ -41,6 +37,15 @@ use tracing_test::traced_test;
 
 use super::*;
 use crate::network::grpc::grpc_transport::GrpcTransport;
+use crate::test_utils::MockNode;
+use crate::test_utils::create_test_chunk;
+use crate::test_utils::create_test_snapshot_stream;
+
+fn node_config(db_path: &str) -> RaftNodeConfig {
+    let mut s = RaftNodeConfig::new().expect("RaftNodeConfig should be inited successfully");
+    s.cluster.db_root_dir = std::path::PathBuf::from(db_path);
+    s.validate().expect("RaftNodeConfig should be validated successfully")
+}
 
 fn mock_membership(
     peers: Vec<(u32, i32)>, //(node_id, role_i32)
