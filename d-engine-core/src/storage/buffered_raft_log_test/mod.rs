@@ -30,4 +30,5 @@ mod id_allocation_test;
 mod performance_test;
 mod raft_properties_test;
 mod remove_range_test;
+mod shutdown_test;
 mod term_index_test;
