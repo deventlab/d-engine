@@ -1,6 +1,3 @@
-#[cfg(any(test, feature = "test-utils"))]
-mod components;
-
 // Integration tests organized by business domain
 mod cluster_lifecycle;
 mod cluster_membership;

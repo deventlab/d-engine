@@ -79,3 +79,10 @@ nix = { version = "0.30.1", features = ["fs"] }
 mockall = "0.12.1"
 tonic-health = "0.12.3"
 uuid = { version = "1", features = ["v4"] }
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+# Benchmark configuration
+[[bench]]
+name = "leader_state_bench"
+harness = false
+required-features = ["test-utils"]

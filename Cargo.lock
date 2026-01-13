@@ -566,6 +566,7 @@ dependencies = [
  "bytes",
  "config",
  "crc32fast",
+ "criterion",
  "crossbeam",
  "crossbeam-channel",
  "crossbeam-skiplist",
