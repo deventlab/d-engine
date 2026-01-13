@@ -22,9 +22,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crossbeam::channel::Sender;
-use crossbeam::channel::bounded;
-use crossbeam_skiplist::SkipMap;
 use crate::Error;
 use crate::FlushPolicy;
 use crate::HardState;
@@ -39,6 +36,9 @@ use crate::StorageEngine;
 use crate::TypeConfig;
 use crate::alias::SOF;
 use crate::scoped_timer::ScopedTimer;
+use crossbeam::channel::Sender;
+use crossbeam::channel::bounded;
+use crossbeam_skiplist::SkipMap;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use dashmap::DashMap;
@@ -1173,10 +1173,32 @@ where
         debug!("Flush worker pool shut down successfully");
     }
 
+    /// Returns the number of entries in the buffer.
+    ///
+    /// # Visibility
+    /// This method is only available with the `test-utils` feature for cross-crate testing.
     #[cfg(any(test, feature = "test-utils"))]
     #[allow(dead_code)]
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Returns the current durable index (test-only).
+    ///
+    /// This accessor allows tests to verify persistence progress without
+    /// accessing the internal AtomicU64 directly.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn durable_index(&self) -> u64 {
+        self.durable_index.load(Ordering::Acquire)
+    }
+
+    /// Returns whether all flush workers have finished (test-only).
+    ///
+    /// This accessor enables tests to verify graceful shutdown behavior
+    /// without directly accessing worker handles.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn is_all_workers_finished(&self) -> bool {
+        self.flush_workers.worker_handles.iter().all(|h| h.is_finished())
     }
 
     /// Returns true if the buffer contains no entries.

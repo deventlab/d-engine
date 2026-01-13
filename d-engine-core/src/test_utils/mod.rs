@@ -1,5 +1,6 @@
 //! the test_utils folder here will share utils or test components betwee unit
 //! tests and integrations tests
+mod buffered_raft_log_test_helpers;
 mod common;
 mod entry_builder;
 pub mod mock;
@@ -12,6 +13,7 @@ mod common_test;
 #[cfg(test)]
 mod entry_builder_test;
 
+pub use buffered_raft_log_test_helpers::*;
 pub use common::*;
 pub use entry_builder::*;
 pub use mock::*;
