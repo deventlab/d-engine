@@ -1201,6 +1201,14 @@ where
         self.flush_workers.worker_handles.iter().all(|h| h.is_finished())
     }
 
+    /// Returns reference to next_id atomic for test verification (test-only).
+    ///
+    /// This accessor allows tests to verify ID allocation behavior.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn next_id(&self) -> &std::sync::atomic::AtomicU64 {
+        &self.next_id
+    }
+
     /// Returns true if the buffer contains no entries.
     ///
     /// This complements the `len()` method to follow Rust API conventions.
