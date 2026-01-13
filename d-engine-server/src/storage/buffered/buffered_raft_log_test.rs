@@ -30,11 +30,11 @@ use tokio::time::sleep;
 use tracing::debug;
 use tracing_test::traced_test;
 
-use super::*;
+use d_engine_core::BufferedRaftLog;
 use crate::FileStorageEngine;
 use crate::node::RaftTypeConfig;
-use crate::storage::BufferedRaftLog;
-use crate::test_utils::{self};
+use d_engine_core::storage::BufferedRaftLog;
+use d_engine_core::test_utils::{self};
 
 // Test utilities
 struct TestContext {
@@ -1607,7 +1607,7 @@ mod id_allocation_tests {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    use super::*;
+    use d_engine_core::BufferedRaftLog;
     use crate::FileStorageEngine;
 
     // In-memory test setup
@@ -1870,7 +1870,7 @@ mod id_allocation_tests {
 // Strategy-specific test module
 mod disk_first_tests {
 
-    use super::*;
+    use d_engine_core::BufferedRaftLog;
 
     #[tokio::test]
     async fn test_basic_write_and_read() {
@@ -2084,7 +2084,7 @@ mod mem_first_tests {
     use d_engine_core::LogStore;
     use d_engine_core::StorageEngine;
 
-    use super::*;
+    use d_engine_core::BufferedRaftLog;
 
     #[tokio::test]
     async fn test_basic_write_before_persist() {
@@ -2181,7 +2181,7 @@ mod mem_first_tests {
 }
 
 mod batched_tests {
-    use super::*;
+    use d_engine_core::BufferedRaftLog;
 
     #[tokio::test]
     async fn test_batch_flush_trigger() {
@@ -2298,7 +2298,7 @@ mod batched_tests {
 
 // Generic tests for all strategies
 mod common_tests {
-    use super::*;
+    use d_engine_core::BufferedRaftLog;
 
     #[tokio::test]
     async fn test_log_compaction() {
@@ -2378,7 +2378,7 @@ mod common_tests {
 }
 
 mod filter_out_conflicts_and_append_performance_tests {
-    use super::*;
+    use d_engine_core::BufferedRaftLog;
     use crate::FileStorageEngine;
 
     #[tokio::test]
@@ -2542,7 +2542,7 @@ mod performance_tests {
     use tokio::sync::Barrier;
     use tokio::time::Duration;
 
-    use super::*;
+    use d_engine_core::BufferedRaftLog;
 
     // Test helper: Creates storage with controllable delay
     fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
@@ -2826,7 +2826,7 @@ mod batch_processor_tests {
     use tokio::sync::mpsc;
     use tokio::sync::oneshot;
 
-    use super::*;
+    use d_engine_core::BufferedRaftLog;
 
     struct TestLog {
         // Used to observe if reset was called
@@ -2959,7 +2959,7 @@ mod save_load_hard_state_tests {
     use d_engine_core::StorageEngine;
     use d_engine_proto::server::election::VotedFor;
 
-    use super::*;
+    use d_engine_core::BufferedRaftLog;
     use crate::FileStorageEngine;
 
     /// Test that hard state operations use the meta tree and not the log tree
@@ -3222,8 +3222,8 @@ async fn test_last_entry_id_performance() {
 
 #[cfg(test)]
 mod remove_range_tests {
-    use super::*;
-    use crate::test_utils;
+    use d_engine_core::BufferedRaftLog;
+    use d_engine_core::test_utils;
 
     #[tokio::test]
     async fn test_remove_middle_range() {
@@ -4351,7 +4351,7 @@ async fn test_shutdown_awaits_worker_completion() {
 
     // Verify shutdown completed in reasonable time
     assert!(
-        shutdown_duration < Duration::from_secs(3),
+        shutdown_duration < Duration::from_millis(500),
         "Shutdown took too long: {shutdown_duration:?}",
     );
 }
@@ -4436,7 +4436,7 @@ async fn test_shutdown_handles_slow_workers() {
     let start = std::time::Instant::now();
     while !worker_busy.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(10)).await;
-        if start.elapsed() > Duration::from_secs(2) {
+        if start.elapsed() > Duration::from_millis(200) {
             panic!("Workers did not start within expected time");
         }
     }
@@ -4456,7 +4456,7 @@ async fn test_shutdown_handles_slow_workers() {
 
     // Should complete within reasonable timeout window
     assert!(
-        shutdown_duration < Duration::from_secs(5),
+        shutdown_duration < Duration::from_millis(500),
         "Shutdown exceeded expected duration: {shutdown_duration:?}",
     );
 
@@ -4516,7 +4516,7 @@ async fn test_shutdown_with_multiple_flushes() {
     let shutdown_duration = shutdown_start.elapsed();
 
     assert!(
-        shutdown_duration < Duration::from_secs(3),
+        shutdown_duration < Duration::from_millis(500),
         "Shutdown with multiple flushes took too long"
     );
 }
@@ -4531,7 +4531,7 @@ mod durable_index_test {
     use tempfile::tempdir;
     use tokio::sync::oneshot;
 
-    use super::*;
+    use d_engine_core::BufferedRaftLog;
 
     #[tokio::test]
     async fn test_durable_index_with_non_contiguous_entries() {
