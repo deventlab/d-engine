@@ -13,6 +13,9 @@ pub use replication_handler::*;
 #[cfg(test)]
 mod batch_buffer_test;
 
+#[cfg(test)]
+pub mod replication_handler_test;
+
 // Client Request Extension Definition
 // -----------------------------------------------------------------------------
 use std::collections::HashMap;

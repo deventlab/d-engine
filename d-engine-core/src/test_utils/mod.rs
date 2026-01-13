@@ -3,6 +3,7 @@
 mod common;
 mod entry_builder;
 pub mod mock;
+mod replication_test_helpers;
 mod snapshot;
 
 #[cfg(test)]
@@ -14,6 +15,7 @@ mod entry_builder_test;
 pub use common::*;
 pub use entry_builder::*;
 pub use mock::*;
+pub use replication_test_helpers::*;
 pub use snapshot::*;
 
 pub fn node_config(db_path: &str) -> crate::RaftNodeConfig {

@@ -4388,8 +4388,8 @@ async fn test_shutdown_handles_slow_workers() {
         while !worker_complete_clone.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(10));
 
-            // Safety timeout after 3 seconds to prevent test hanging
-            if start.elapsed() > Duration::from_secs(3) {
+            // Safety timeout after 300ms to prevent test hanging
+            if start.elapsed() > Duration::from_millis(300) {
                 break;
             }
         }
