@@ -9,6 +9,9 @@ mod leader_election;
 mod local_kv_client;
 mod replication_and_sync;
 
+// Storage layer integration tests
+mod storage_buffered_raft_log;
+
 #[cfg(feature = "rocksdb")]
 mod readonly_and_learner_mode;
 
