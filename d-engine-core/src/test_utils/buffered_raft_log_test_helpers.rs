@@ -57,6 +57,24 @@ impl BufferedRaftLogTestContext {
         }
     }
 
+    /// Helper to append a batch of entries with specified range and term
+    pub async fn append_entries(
+        &self,
+        start: u64,
+        count: u64,
+        term: u64,
+    ) {
+        let entries: Vec<_> = (start..start + count)
+            .map(|index| Entry {
+                index,
+                term,
+                payload: Some(EntryPayload::command(Bytes::from(b"data".to_vec()))),
+            })
+            .collect();
+
+        self.raft_log.append_entries(entries).await.unwrap();
+    }
+
     /// Simulate crash recovery from the same storage instance
     pub fn recover_from_crash(&self) -> Self {
         // Use same instance ID to recover data from thread_local storage
@@ -84,24 +102,6 @@ impl BufferedRaftLogTestContext {
             flush_policy: self.flush_policy.clone(),
             instance_id: self.instance_id.clone(),
         }
-    }
-
-    /// Append entries with sequential indexes
-    pub async fn append_entries(
-        &self,
-        start: u64,
-        count: u64,
-        term: u64,
-    ) {
-        let entries: Vec<_> = (start..start + count)
-            .map(|index| Entry {
-                index,
-                term,
-                payload: Some(EntryPayload::command(Bytes::from(b"data".to_vec()))),
-            })
-            .collect();
-
-        self.raft_log.append_entries(entries).await.unwrap();
     }
 }
 
