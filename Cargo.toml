@@ -33,10 +33,10 @@ repository = "https://github.com/deventlab/d-engine"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-d-engine-proto = { path = "./d-engine-proto", version = "0.2.1" }
-d-engine-core = { path = "./d-engine-core", version = "0.2.1" }
-d-engine-client = { path = "./d-engine-client", version = "0.2.1" }
-d-engine-server = { path = "./d-engine-server", version = "0.2.1" }
+d-engine-proto = { path = "./d-engine-proto", version = "0.2.2" }
+d-engine-core = { path = "./d-engine-core", version = "0.2.2" }
+d-engine-client = { path = "./d-engine-client", version = "0.2.2" }
+d-engine-server = { path = "./d-engine-server", version = "0.2.2" }
 
 tokio = { version = "1", features = [
     "macros",

@@ -24,7 +24,7 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 
 ## Features
 
-### New in v0.2.0 🎉
+### New in v0.2 🎉
 
 - **EmbeddedEngine**: Single-node start, scale to 3-node cluster when needed
 - **LocalKvClient**: Zero-overhead in-process access (<0.1ms latency)
