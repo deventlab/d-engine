@@ -16,7 +16,10 @@ pub use storage_engine::*;
 mod buffered_raft_log_test;
 #[cfg(test)]
 mod snapshot_path_manager_test;
+#[cfg(any(test, feature = "__test_support"))]
 #[doc(hidden)]
 pub mod state_machine_test;
+
+#[cfg(any(test, feature = "__test_support"))]
 #[doc(hidden)]
 pub mod storage_engine_test;

@@ -7,18 +7,17 @@
 //! - Case 4: Multiple scenarios with different peer positions
 //! - Case 5: Edge cases in log retrieval
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use crate::MockTypeConfig;
 use crate::ReplicationCore;
 use crate::ReplicationHandler;
+use crate::mock_insert_log_entries;
+use crate::mock_log_entries_exist;
 use crate::test_utils::generate_insert_commands;
-use crate::test_utils::mock_insert_log_entries;
-use crate::test_utils::mock_log_entries_exist;
 use crate::test_utils::setup_mock_replication_test_context;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Peer at end of old log should receive only new entries.
 ///

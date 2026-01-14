@@ -57,7 +57,7 @@ use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use futures::stream::BoxStream;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 use tonic::async_trait;
 
@@ -66,7 +66,7 @@ use crate::Result;
 use crate::TypeConfig;
 use crate::alias::ROF;
 
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait StateMachineHandler<T>: Send + Sync + 'static
 where

@@ -323,24 +323,26 @@ impl<T: TypeConfig> RaftRole<T> {
     }
 
     #[allow(dead_code)]
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn voted_for(&self) -> Result<Option<VotedFor>> {
+    #[cfg(test)]
+    pub(crate) fn voted_for(&self) -> Result<Option<VotedFor>> {
         self.state().voted_for()
     }
     #[allow(dead_code)]
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn commit_index(&self) -> u64 {
+    #[cfg(test)]
+    pub(crate) fn commit_index(&self) -> u64 {
         self.state().commit_index()
     }
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn match_index(
+    #[allow(dead_code)]
+    #[cfg(test)]
+    pub(crate) fn match_index(
         &self,
         node_id: u32,
     ) -> Option<u64> {
         self.state().match_index(node_id)
     }
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn next_index(
+    #[allow(dead_code)]
+    #[cfg(test)]
+    pub(crate) fn next_index(
         &self,
         node_id: u32,
     ) -> Option<u64> {
@@ -378,11 +380,6 @@ impl<T: TypeConfig> RaftRole<T> {
         T: TypeConfig,
     {
         self.state_mut().handle_raft_event(raft_event, ctx, role_tx).await
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn follower_role_i32() -> i32 {
-        0
     }
 
     pub(crate) async fn verify_leadership_persistent(

@@ -1176,8 +1176,8 @@ where
     /// Returns the number of entries in the buffer.
     ///
     /// # Visibility
-    /// This method is only available with the `test-utils` feature for cross-crate testing.
-    #[cfg(any(test, feature = "test-utils"))]
+    /// This method is only available in test builds.
+    #[cfg(any(test, feature = "__test_support"))]
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -1187,7 +1187,7 @@ where
     ///
     /// This accessor allows tests to verify persistence progress without
     /// accessing the internal AtomicU64 directly.
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(any(test, feature = "__test_support"))]
     pub fn durable_index(&self) -> u64 {
         self.durable_index.load(Ordering::Acquire)
     }
@@ -1196,7 +1196,7 @@ where
     ///
     /// This accessor enables tests to verify graceful shutdown behavior
     /// without directly accessing worker handles.
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub fn is_all_workers_finished(&self) -> bool {
         self.flush_workers.worker_handles.iter().all(|h| h.is_finished())
     }
@@ -1204,7 +1204,7 @@ where
     /// Returns reference to next_id atomic for test verification (test-only).
     ///
     /// This accessor allows tests to verify ID allocation behavior.
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub fn next_id(&self) -> &std::sync::atomic::AtomicU64 {
         &self.next_id
     }
@@ -1214,7 +1214,8 @@ where
     /// This complements the `len()` method to follow Rust API conventions.
     /// Clippy requires: Any struct with a public `len` method should also
     /// have a public `is_empty` method.
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(any(test, feature = "__test_support"))]
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

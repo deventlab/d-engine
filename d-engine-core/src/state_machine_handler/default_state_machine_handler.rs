@@ -840,7 +840,7 @@ where
     ///
     /// Backward-compatible wrapper that calls `new()` with None for watch_event_tx.
     #[cfg(test)]
-    pub fn new_without_watch(
+    pub(crate) fn new_without_watch(
         node_id: u32,
         last_applied_index: u64,
         max_entries_per_chunk: usize,
@@ -1238,18 +1238,18 @@ where
     }
 
     #[cfg(test)]
-    pub fn pending_commit(&self) -> u64 {
+    pub(crate) fn pending_commit(&self) -> u64 {
         self.pending_commit.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
-    pub fn snapshot_in_progress(&self) -> bool {
+    pub(crate) fn snapshot_in_progress(&self) -> bool {
         self.snapshot_in_progress.load(Ordering::Acquire)
     }
 
     /// Test helper: simulate state machine applying to target index
     #[cfg(test)]
-    pub fn test_simulate_apply(
+    pub(crate) fn test_simulate_apply(
         &self,
         target_index: u64,
     ) {

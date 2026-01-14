@@ -36,6 +36,7 @@
 //! - End-to-end simulation of node behavior
 //! - Cluster formation and interaction tests
 //! - Failure scenario testing with real component interactions
+#![allow(dead_code)]
 
 use std::ops::RangeInclusive;
 use std::path::PathBuf;

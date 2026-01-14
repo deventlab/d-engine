@@ -137,8 +137,8 @@ pub enum RaftEvent {
     FlushReadBuffer,
 }
 
-#[cfg(any(test, feature = "test-utils"))]
-#[cfg_attr(any(test, feature = "test-utils"), derive(Debug, Clone))]
+#[cfg(test)]
+#[cfg_attr(test, derive(Debug, Clone))]
 #[allow(unused)]
 pub enum TestEvent {
     ReceiveVoteRequest(VoteRequest),
@@ -177,8 +177,8 @@ pub enum TestEvent {
     FlushReadBuffer,
 }
 
-#[cfg(any(test, feature = "test-utils"))]
-pub fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
+#[cfg(test)]
+pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
     match event {
         RaftEvent::ReceiveVoteRequest(req, _) => TestEvent::ReceiveVoteRequest(*req),
         RaftEvent::ClusterConf(req, _) => TestEvent::ClusterConf(*req),

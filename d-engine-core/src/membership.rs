@@ -4,7 +4,7 @@ use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::NodeMeta;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 use tonic::async_trait;
 use tonic::transport::Channel;
@@ -31,7 +31,7 @@ impl ConnectionType {
     }
 }
 
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait Membership<T>: Sync + Send + 'static
 where

@@ -107,21 +107,20 @@
 //! - **v0.2.0** (#236): Added after ReadIndex batching refactor to ensure no regression
 //!   in promotion path
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use d_engine_core::leader_state::{LeaderState, PendingPromotion};
-use d_engine_core::test_utils::MockBuilder;
 use d_engine_core::{
-    AppendResults, MockMembership, MockRaftLog, MockTypeConfig, PeerUpdate, RaftContext,
-    RaftNodeConfig,
+    AppendResults, MockElectionCore, MockMembership, MockPurgeExecutor, MockRaftLog,
+    MockReplicationCore, MockStateMachine, MockStateMachineHandler, MockTransport, MockTypeConfig,
+    PeerUpdate, RaftContext, RaftCoreHandlers, RaftNodeConfig, RaftStorageHandles,
 };
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::common::{LogId, NodeStatus};
+use d_engine_proto::server::cluster::{ClusterMembership, NodeMeta};
 use tempfile::TempDir;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 /// Benchmark 1: LeaderState Creation Performance
@@ -158,34 +157,85 @@ impl BenchFixture {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let mut node_config = RaftNodeConfig::default();
         node_config.cluster.db_root_dir = temp_dir.path().join(test_name);
+        node_config.raft.membership.verify_leadership_persistent_timeout =
+            Duration::from_millis(100);
 
-        let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut raft_context =
-            MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
+        // Build mock storage
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 0);
+        raft_log.expect_last_log_id().returning(|| None);
+        raft_log.expect_flush().returning(|| Ok(()));
+        raft_log.expect_load_hard_state().returning(|| Ok(None));
+        raft_log.expect_save_hard_state().returning(|_| Ok(()));
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
 
-        // Mock successful quorum verification
-        raft_context
-            .handlers
-            .replication_handler
+        let mut state_machine = MockStateMachine::new();
+        state_machine.expect_start().returning(|| Ok(()));
+        state_machine.expect_stop().returning(|| Ok(()));
+        state_machine.expect_is_running().returning(|| true);
+        state_machine.expect_get().returning(|_| Ok(None));
+        state_machine.expect_entry_term().returning(|_| None);
+        state_machine.expect_apply_chunk().returning(|_| Ok(()));
+        state_machine.expect_len().returning(|| 0);
+        state_machine.expect_update_last_applied().returning(|_| ());
+        state_machine.expect_last_applied().return_const(LogId::default());
+        state_machine.expect_persist_last_applied().returning(|_| Ok(()));
+        state_machine.expect_update_last_snapshot_metadata().returning(|_| Ok(()));
+        state_machine.expect_snapshot_metadata().returning(|| None);
+        state_machine.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
+        state_machine.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
+        state_machine
+            .expect_generate_snapshot_data()
+            .returning(|_, _| Ok(bytes::Bytes::copy_from_slice(&[0u8; 32])));
+        state_machine.expect_save_hard_state().returning(|| Ok(()));
+        state_machine.expect_flush().returning(|| Ok(()));
+
+        let storage = RaftStorageHandles {
+            raft_log: Arc::new(raft_log),
+            state_machine: Arc::new(state_machine),
+        };
+
+        // Build mock transport
+        let transport = Arc::new(MockTransport::new());
+
+        // Build mock handlers
+        let mut election_handler = MockElectionCore::new();
+        election_handler
+            .expect_broadcast_vote_requests()
+            .returning(|_, _, _, _, _| Ok(()));
+
+        let mut replication_handler = MockReplicationCore::new();
+        replication_handler
             .expect_handle_raft_request_in_batch()
             .returning(|_, _, _, _, _| {
                 Ok(AppendResults {
                     commit_quorum_achieved: true,
-                    learner_progress: HashMap::new(),
-                    peer_updates: HashMap::from([
+                    learner_progress: std::collections::HashMap::new(),
+                    peer_updates: std::collections::HashMap::from([
                         (2, PeerUpdate::success(5, 6)),
                         (3, PeerUpdate::success(5, 6)),
                     ]),
                 })
             });
 
-        let mut raft_log = MockRaftLog::new();
-        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
-        raft_context.storage.raft_log = Arc::new(raft_log);
+        let mut state_machine_handler = MockStateMachineHandler::new();
+        state_machine_handler.expect_update_pending().returning(|_| {});
+        state_machine_handler.expect_read_from_state_machine().returning(|_| None);
 
-        // Mock membership
+        let mut purge_executor = MockPurgeExecutor::new();
+        purge_executor.expect_execute_purge().returning(|_| Ok(()));
+
+        let handlers = RaftCoreHandlers {
+            election_handler,
+            replication_handler,
+            state_machine_handler: Arc::new(state_machine_handler),
+            purge_executor: Arc::new(purge_executor),
+        };
+
+        // Build mock membership
         let mut membership = MockMembership::new();
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
+        membership.expect_pre_warm_connections().returning(|| Ok(()));
         membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
         membership.expect_voters().returning(|| {
             vec![NodeMeta {
@@ -195,16 +245,31 @@ impl BenchFixture {
                 role: d_engine_proto::common::NodeRole::Follower.into(),
             }]
         });
-        raft_context.membership = Arc::new(membership);
+        membership.expect_replication_peers().returning(Vec::new);
+        membership.expect_members().returning(Vec::new);
+        membership.expect_check_cluster_is_ready().returning(|| Ok(()));
+        membership
+            .expect_retrieve_cluster_membership_config()
+            .returning(|_| ClusterMembership {
+                version: 1,
+                nodes: vec![],
+                current_leader_id: None,
+            });
+        membership.expect_get_zombie_candidates().returning(Vec::new);
+        membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
+        membership.expect_is_single_node_cluster().returning(|| false);
+        membership.expect_initial_cluster_size().returning(|| 3);
+
+        let raft_context = RaftContext {
+            node_id: 1,
+            storage,
+            transport,
+            membership: Arc::new(membership),
+            handlers,
+            node_config: Arc::new(node_config.clone()),
+        };
 
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        // Set short timeout for benchmarks
-        let mut node_config = (*raft_context.node_config).clone();
-        node_config.raft.membership.verify_leadership_persistent_timeout =
-            Duration::from_millis(100);
-        raft_context.node_config = Arc::new(node_config.clone());
-
         let leader_state = LeaderState::new(1, Arc::new(node_config));
 
         BenchFixture {

@@ -9,7 +9,7 @@ members = [
 
 exclude = [
   "docs",
-  "examples/client_usage",
+  "examples/client-usage-standalone",
   "examples/sled-cluster",
   "examples/three-nodes-standalone",
   "examples/three-nodes-embedded",

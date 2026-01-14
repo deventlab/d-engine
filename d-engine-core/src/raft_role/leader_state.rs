@@ -2169,7 +2169,7 @@ impl<T: TypeConfig> LeaderState<T> {
         Err(error)
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(any(test, feature = "__test_support"))]
     pub fn new(
         node_id: u32,
         node_config: Arc<RaftNodeConfig>,
@@ -2731,23 +2731,9 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn test_update_lease_timestamp(&self) {
+    #[cfg(test)]
+    pub(crate) fn test_update_lease_timestamp(&self) {
         self.update_lease_timestamp();
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn test_set_lease_timestamp(
-        &self,
-        timestamp: u64,
-    ) {
-        self.lease_timestamp.store(timestamp, std::sync::atomic::Ordering::Release);
-    }
-
-    /// Get noop_log_id for testing purposes
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn test_get_noop_log_id(&self) -> Option<u64> {
-        self.noop_log_id
     }
 }
 

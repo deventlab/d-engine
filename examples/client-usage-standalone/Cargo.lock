@@ -325,6 +325,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
+name = "client-usage-standalone-demo"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "d-engine",
+ "env_logger",
+ "tokio",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -540,17 +551,6 @@ dependencies = [
  "lock_api",
  "once_cell",
  "parking_lot_core",
-]
-
-[[package]]
-name = "dengine-client-demo"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "clap",
- "d-engine",
- "env_logger",
- "tokio",
 ]
 
 [[package]]

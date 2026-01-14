@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 use tonic::async_trait;
 
@@ -35,7 +35,7 @@ pub trait StorageEngine: Send + Sync + 'static {
     fn meta_store(&self) -> Arc<Self::MetaStore>;
 }
 
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait LogStore: Send + Sync + 'static {
     /// Batch persist entries into disk (optimized for sequential writes)
@@ -95,7 +95,7 @@ pub trait LogStore: Send + Sync + 'static {
 }
 
 /// Metadata storage operations
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait MetaStore: Send + Sync + 'static {
     /// Atomically persist hard state (current term and votedFor)

@@ -16,11 +16,26 @@
 //! - `helper_functions_test`: Internal helper function unit tests
 //! - `batch_handling_test`: Batch request processing and aggregation
 
+#[cfg(test)]
 mod basic_scenarios_test;
+
+#[cfg(test)]
 mod command_handling_test;
+
+#[cfg(test)]
 mod edge_cases_test;
+
+#[cfg(test)]
 mod helper_functions_test;
+
+#[cfg(test)]
 mod index_tracking_test;
+
+#[cfg(test)]
 mod learner_management_test;
+
+#[cfg(test)]
 mod log_retrieval_test;
+
+#[cfg(test)]
 mod quorum_calculation_test;

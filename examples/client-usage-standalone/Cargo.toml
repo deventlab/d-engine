@@ -1,5 +1,5 @@
 [package]
-name = "dengine-client-demo"
+name = "client-usage-standalone-demo"
 version = "0.2.0"
 edition = "2024"
 
