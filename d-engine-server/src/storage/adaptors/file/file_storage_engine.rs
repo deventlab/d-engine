@@ -238,7 +238,8 @@ impl FileLogStore {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn reset_sync(&self) -> Result<(), Error> {
         {
             let mut file = self.file_handle.lock().unwrap();
@@ -313,29 +314,55 @@ impl LogStore for FileLogStore {
         &self,
         cutoff_index: LogId,
     ) -> Result<(), Error> {
-        let indexes_to_remove: Vec<u64> = {
-            let index_positions = self.index_positions.lock().unwrap();
-            index_positions.range(0..=cutoff_index.index).map(|(k, _)| *k).collect()
+        // Step 1: Collect entries to keep (index > cutoff_index)
+        let entries_to_keep: Vec<Entry> = {
+            let entries = self.entries.lock().unwrap();
+            entries
+                .range((cutoff_index.index + 1)..)
+                .map(|(_, entry)| entry.clone())
+                .collect()
         };
 
-        // Remove from memory
+        // Step 2: Rewrite file with only kept entries
+        {
+            let mut file = self.file_handle.lock().unwrap();
+
+            // Truncate file to empty
+            file.set_len(0)?;
+            file.seek(SeekFrom::Start(0))?;
+
+            // Rebuild position index while writing
+            let mut new_positions = BTreeMap::new();
+
+            for entry in &entries_to_keep {
+                // Record current position
+                let position = file.stream_position()?;
+
+                // Encode and write entry
+                let encoded = entry.encode_to_vec();
+                let len = encoded.len() as u64;
+
+                file.write_all(&len.to_be_bytes())?;
+                file.write_all(&encoded)?;
+
+                new_positions.insert(entry.index, position);
+            }
+
+            // Ensure durability
+            file.flush()?;
+            file.sync_all()?;
+
+            // Update position index
+            let mut index_positions = self.index_positions.lock().unwrap();
+            *index_positions = new_positions;
+        }
+
+        // Step 3: Update memory entries (remove purged entries)
         {
             let mut entries = self.entries.lock().unwrap();
-            for index in &indexes_to_remove {
-                entries.remove(index);
-            }
+            entries.retain(|&index, _| index > cutoff_index.index);
         }
 
-        // Remove from position index
-        {
-            let mut index_positions = self.index_positions.lock().unwrap();
-            for index in &indexes_to_remove {
-                index_positions.remove(index);
-            }
-        }
-
-        // Note: We don't actually remove from file for performance
-        // The file will be compacted during the next snapshot
         Ok(())
     }
 
@@ -434,6 +461,18 @@ impl LogStore for FileLogStore {
 
     fn last_index(&self) -> u64 {
         self.last_index.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for FileLogStore {
+    fn drop(&mut self) {
+        // Flush WAL and memtables on drop to ensure durability
+        // This is critical for crash recovery - data must survive process termination
+        if let Err(e) = self.flush() {
+            tracing::error!("Failed to flush FileLogStore on drop: {}", e);
+        } else {
+            tracing::debug!("FileLogStore flushed successfully on drop");
+        }
     }
 }
 

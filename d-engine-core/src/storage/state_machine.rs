@@ -6,7 +6,7 @@ use bytes::Bytes;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 use tonic::async_trait;
 
@@ -21,7 +21,7 @@ use crate::Error;
 /// - Read methods (`get()`, `len()`) may be called concurrently
 /// - Write methods should use internal synchronization
 /// - No assumptions about caller's threading model
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait StateMachine: Send + Sync + 'static {
     /// Starts the state machine service.

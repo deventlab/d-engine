@@ -12,11 +12,15 @@ categories = ["asynchronous", "concurrency", "network-programming"]
 publish = true
 
 [package.metadata.docs.rs]
-all-features = true
+# Only enable user-facing features
+features = ["rocksdb", "watch"]
 rustdoc-args = ["--cfg", "docsrs"]
 
+[package.metadata.release]
+# Disable individual crate tags, use workspace-level tag only
+tag = false
+
 [features]
-test-utils = ["mockall", "astral-tokio-tar", "async-compression", "nanoid"]
 rocksdb = ["dep:rocksdb"]
 # Experimental: Watch API for key change notifications
 # WARNING: This feature is under active development and not production-ready
@@ -54,16 +58,12 @@ tonic-health = "0.12.3"
 parking_lot = "0.12.3"
 crossbeam = "0.8"
 crossbeam-skiplist = "0.1"
-mockall = { version = "0.12.1", optional = true }
-nanoid = { version = "0.4.0", optional = true }
-astral-tokio-tar = { version = "0.5", optional = true }
-async-compression = { version = "0.4", features = ["tokio", "gzip"], optional = true}
 
 metrics = { version = "0.24", features = [] }
 
 
 [dev-dependencies]
-d-engine-core = { workspace = true, features = ["test-utils"] }
+d-engine-core = { workspace = true, features = ["__test_support"] }
 serial_test = "3.2.0"
 temp-env = "0.3.6"
 tracing-test = "0.2"
@@ -71,6 +71,10 @@ tokio-stream = "0.1.16"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["test-util", "process"] }
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+mockall = "0.12.1"
+nanoid = "0.4.0"
+astral-tokio-tar = "0.5"
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 
 # Benchmark configuration
 [[bench]]

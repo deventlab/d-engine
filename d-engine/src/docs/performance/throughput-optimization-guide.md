@@ -143,7 +143,7 @@ tonic::transport::Server::builder()
 
 ```
 
-## Performance Results
+## Performance Results (Optimization Impact)
 
 | **Metric**    | **Before**  | **After**   | **Delta**  |
 | ------------- | ----------- | ----------- | ---------- |
@@ -151,8 +151,10 @@ tonic::transport::Server::builder()
 | p99 Latency   | 5543 µs     | 4703 µs     | **-15.2%** |
 | p99.9 Latency | 14015 µs    | 11279 µs    | -19.5%     |
 
-> Key improvement: 15% reduction in tail latency - critical for consensus stability
-> Note: These results can be further improved by tuning the PersistenceStrategy for your specific workload.
+> **Key improvement**: 15% reduction in tail latency - critical for consensus stability  
+> **Note**: These metrics show the impact of connection pooling optimization. These results can be further improved by tuning the PersistenceStrategy for your specific workload.
+>
+> For absolute performance benchmarks, see [v0.2.2 Performance Report](../../../benches/standalone-bench/reports/v0.2.2/report_v0.2.2.md)
 
 ## Operational Recommendations
 

@@ -9,21 +9,23 @@ members = [
 
 exclude = [
   "docs",
-  "examples/client_usage",
+  "examples/client-usage-standalone",
   "examples/sled-cluster",
-  "examples/three-nodes-cluster",
+  "examples/three-nodes-standalone",
+  "examples/three-nodes-embedded",
   "examples/single-node-expansion",
   "examples/quick-start",
   "examples/quick-start-embedded",
   "examples/service-discovery-standalone",
   "examples/service-discovery-embedded",
-  "benches/d-engine-bench",
+  "benches/standalone-bench",
+  "benches/embedded-bench"
 ]
 
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 authors = ["Joshua Chi <joshokn@gmail.com>"]
 homepage = "https://github.com/deventlab/d-engine"
@@ -31,10 +33,10 @@ repository = "https://github.com/deventlab/d-engine"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-d-engine-proto = { path = "./d-engine-proto", version = "0.2.1" }
-d-engine-core = { path = "./d-engine-core", version = "0.2.1" }
-d-engine-client = { path = "./d-engine-client", version = "0.2.1" }
-d-engine-server = { path = "./d-engine-server", version = "0.2.1" }
+d-engine-proto = { path = "./d-engine-proto", version = "0.2.2" }
+d-engine-core = { path = "./d-engine-core", version = "0.2.2" }
+d-engine-client = { path = "./d-engine-client", version = "0.2.2" }
+d-engine-server = { path = "./d-engine-server", version = "0.2.2" }
 
 tokio = { version = "1", features = [
     "macros",
@@ -81,3 +83,15 @@ debug = 1                    # Reduce debug information
 
 [profile.test.build-override]
 opt-level = 3 # Full optimization of dependencies
+
+[workspace.metadata.release]
+# Use unified v{version} format for tags
+tag-name = "v{{version}}"
+# Create workspace-level unified tag
+tag = true
+# Synchronize versions across workspace members
+shared-version = true
+# Ensure clean git working tree before release
+allow-branch = ["main", "release/*"]
+# Auto push tags and commits
+push = true

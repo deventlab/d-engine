@@ -187,9 +187,9 @@ pub use d_engine_core::Raft;
 
 /// Test utilities for d-engine-server
 ///
-/// This module is only available when the `test-utils` feature is enabled
-/// or when running tests.
+/// This module is only available when running tests.
 ///
 /// Contains mock implementations and test helpers.
-#[cfg(any(test, feature = "test-utils"))]
-pub mod test_utils;
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) mod test_utils;

@@ -1,0 +1,21 @@
+[package]
+name = "demo"
+version = "0.2.0"
+edition = "2024"
+
+
+[dependencies]
+d-engine = { path = "../../d-engine", features = ["rocksdb", "watch"] }
+# d-engine = "0.2"
+# d-engine = { git = "https://github.com/deventlab/d-engine.git", branch = "feature/79-snapshot" }
+
+metrics-exporter-prometheus = "0.17.2"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+tokio-metrics = { version = "0.4.5"}
+metrics = "0.24"
+
+# For console support
+console-subscriber = "0.4"

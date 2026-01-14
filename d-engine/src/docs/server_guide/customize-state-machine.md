@@ -206,7 +206,7 @@ NodeBuilder::new(config, shutdown_rx)
 
 See complete implementations in:
 
-- `examples/three-nodes-cluster/src/main.rs` - Production cluster with RocksDB
+- `examples/three-nodes-standalone/src/main.rs` - Production cluster with RocksDB
 - `examples/sled-cluster/src/main.rs` - Sled state machine
 - `src/storage/adaptors/` - Built-in implementations
 

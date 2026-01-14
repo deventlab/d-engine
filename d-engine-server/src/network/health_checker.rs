@@ -3,9 +3,9 @@ use std::time::Duration;
 use d_engine_core::NetworkConfig;
 use d_engine_core::NetworkError;
 use d_engine_core::Result;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 use mockall::automock;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 use mockall::predicate::*;
 use tonic::async_trait;
 use tonic::transport::Channel;
@@ -17,7 +17,7 @@ use tracing::error;
 
 use crate::utils::net::address_str;
 
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(test, automock)]
 #[async_trait]
 pub(crate) trait HealthCheckerApis {
     async fn check_peer_is_ready(

@@ -12,8 +12,12 @@ categories = ["encoding", "network-programming"]
 publish = true
 
 [package.metadata.docs.rs]
-all-features = true
+# No features needed for proto definitions
 rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.release]
+# Disable individual crate tags, use workspace-level tag only
+tag = false
 
 [dependencies]
 # prost = { workspace = true }

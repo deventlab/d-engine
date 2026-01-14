@@ -131,10 +131,14 @@ pub enum RaftEvent {
     /// Membership change has been applied to state
     /// Leader should refresh cluster metadata cache
     MembershipApplied,
+
+    /// Signal to flush pending read requests
+    /// Sent by timeout task when read buffer reaches time threshold
+    FlushReadBuffer,
 }
 
-#[cfg(any(test, feature = "test-utils"))]
-#[cfg_attr(any(test, feature = "test-utils"), derive(Debug, Clone))]
+#[cfg(test)]
+#[cfg_attr(test, derive(Debug, Clone))]
 #[allow(unused)]
 pub enum TestEvent {
     ReceiveVoteRequest(VoteRequest),
@@ -169,10 +173,12 @@ pub enum TestEvent {
     LogPurgeCompleted(LogId),
 
     PromoteReadyLearners,
+
+    FlushReadBuffer,
 }
 
-#[cfg(any(test, feature = "test-utils"))]
-pub fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
+#[cfg(test)]
+pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
     match event {
         RaftEvent::ReceiveVoteRequest(req, _) => TestEvent::ReceiveVoteRequest(*req),
         RaftEvent::ClusterConf(req, _) => TestEvent::ClusterConf(*req),
@@ -201,5 +207,6 @@ pub fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
             // MembershipApplied is internal event for cache refresh
             TestEvent::CreateSnapshotEvent // Placeholder
         }
+        RaftEvent::FlushReadBuffer => TestEvent::FlushReadBuffer,
     }
 }

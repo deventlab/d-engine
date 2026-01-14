@@ -20,7 +20,7 @@ use super::RaftEvent;
 use super::RaftRole;
 use super::RaftStorageHandles;
 use super::RoleEvent;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 use super::raft_event_to_test_event;
 use crate::Membership;
 use crate::NetworkError;
@@ -58,10 +58,10 @@ where
     shutdown_signal: watch::Receiver<()>,
 
     // For unit test
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     test_role_transition_listener: Vec<mpsc::UnboundedSender<i32>>,
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     test_raft_event_listener: Vec<mpsc::UnboundedSender<super::TestEvent>>,
 }
 
@@ -136,10 +136,10 @@ where
 
             leader_change_listener: None,
 
-            #[cfg(any(test, feature = "test-utils"))]
+            #[cfg(test)]
             test_role_transition_listener: Vec::new(),
 
-            #[cfg(any(test, feature = "test-utils"))]
+            #[cfg(test)]
             test_raft_event_listener: Vec::new(),
         }
     }
@@ -280,14 +280,14 @@ where
                 Some(raft_event) = self.event_rx.recv() => {
                     trace!(%self.node_id, ?raft_event, "receive raft event");
 
-                    #[cfg(any(test, feature = "test-utils"))]
+                    #[cfg(test)]
                     let event = raft_event_to_test_event(&raft_event);
 
                     if let Err(e) = self.role.handle_raft_event(raft_event, &self.ctx, self.role_tx.clone()).await {
                         error!(%self.node_id, ?e, "handle_raft_event error");
                     }
 
-                    #[cfg(any(test, feature = "test-utils"))]
+                    #[cfg(test)]
                     self.notify_raft_event(event);
                 }
 
@@ -305,6 +305,11 @@ where
 
         match role_event {
             RoleEvent::BecomeFollower(leader_id_option) => {
+                // Drain read buffer before stepping down
+                if let Err(e) = self.role.drain_read_buffer() {
+                    tracing::warn!("Failed to drain read buffer during role transition: {e:?}");
+                }
+
                 debug!("BecomeFollower");
                 self.role = self.role.become_follower()?;
 
@@ -315,12 +320,17 @@ where
                 let current_term = self.role.current_term();
                 self.notify_leader_change(leader_id_option, current_term);
 
-                #[cfg(any(test, feature = "test-utils"))]
+                #[cfg(test)]
                 self.notify_role_transition();
 
                 //TODO: update membership
             }
             RoleEvent::BecomeCandidate => {
+                // Drain read buffer before stepping down
+                if let Err(e) = self.role.drain_read_buffer() {
+                    tracing::warn!("Failed to drain read buffer during role transition: {e:?}");
+                }
+
                 debug!("BecomeCandidate");
                 self.role = self.role.become_candidate()?;
 
@@ -328,7 +338,7 @@ where
                 let current_term = self.role.current_term();
                 self.notify_leader_change(None, current_term);
 
-                #[cfg(any(test, feature = "test-utils"))]
+                #[cfg(test)]
                 self.notify_role_transition();
             }
             RoleEvent::BecomeLeader => {
@@ -376,12 +386,25 @@ where
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
+                } else {
+                    // Track no-op index for linearizable read optimization (best-effort)
+                    if let Err(e) = self.role.on_noop_committed(&self.ctx) {
+                        warn!(
+                            ?e,
+                            "Failed to track no-op commit index after leadership verification"
+                        );
+                    }
                 }
 
-                #[cfg(any(test, feature = "test-utils"))]
+                #[cfg(test)]
                 self.notify_role_transition();
             }
             RoleEvent::BecomeLearner => {
+                // Drain read buffer before stepping down
+                if let Err(e) = self.role.drain_read_buffer() {
+                    tracing::warn!("Failed to drain read buffer during role transition: {e:?}");
+                }
+
                 debug!("BecomeLearner");
                 self.role = self.role.become_learner()?;
 
@@ -389,7 +412,7 @@ where
                 let current_term = self.role.current_term();
                 self.notify_leader_change(None, current_term);
 
-                #[cfg(any(test, feature = "test-utils"))]
+                #[cfg(test)]
                 self.notify_role_transition();
             }
             RoleEvent::NotifyNewCommitIndex(new_commit_data) => {
@@ -440,7 +463,7 @@ where
         }
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub fn register_role_transition_listener(
         &mut self,
         tx: mpsc::UnboundedSender<i32>,
@@ -448,7 +471,7 @@ where
         self.test_role_transition_listener.push(tx);
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub fn notify_role_transition(&self) {
         let new_role_i32 = self.role.as_i32();
         for tx in &self.test_role_transition_listener {
@@ -456,7 +479,7 @@ where
         }
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub fn register_raft_event_listener(
         &mut self,
         tx: mpsc::UnboundedSender<super::TestEvent>,
@@ -464,7 +487,7 @@ where
         self.test_raft_event_listener.push(tx);
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub fn notify_raft_event(
         &self,
         event: super::TestEvent,
@@ -476,7 +499,7 @@ where
         }
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub fn set_role(
         &mut self,
         role: RaftRole<T>,

@@ -7,8 +7,57 @@ use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::entry_payload::Payload;
 use prost::Message;
+use std::sync::Arc;
 
-use crate::FileStateMachine;
+use crate::storage::adaptors::file::FileStateMachine;
+use d_engine_core::Error;
+use d_engine_core::storage::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
+use tempfile::TempDir;
+use tonic::async_trait;
+
+/// Builder for FileStateMachine test instances
+struct FileStateMachineBuilder {
+    temp_dir: TempDir,
+}
+
+impl FileStateMachineBuilder {
+    fn new() -> Self {
+        Self {
+            temp_dir: TempDir::new().expect("Failed to create temp dir"),
+        }
+    }
+}
+
+#[async_trait]
+impl StateMachineBuilder for FileStateMachineBuilder {
+    async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
+        // Use fixed path to support restart recovery testing
+        let path = self.temp_dir.path().join("file_sm");
+        let sm = FileStateMachine::new(path).await?;
+        Ok(Arc::new(sm))
+    }
+
+    async fn cleanup(&self) -> Result<(), Error> {
+        // TempDir automatically cleans up on drop
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_file_state_machine_suite() {
+    let builder = FileStateMachineBuilder::new();
+    StateMachineTestSuite::run_all_tests(builder)
+        .await
+        .expect("FileStateMachine should pass all tests");
+}
+
+#[tokio::test]
+async fn test_file_state_machine_performance() {
+    let builder = FileStateMachineBuilder::new();
+    StateMachineTestSuite::run_performance_tests(builder)
+        .await
+        .expect("FileStateMachine should pass performance tests");
+}
 
 #[tokio::test]
 async fn test_wal_replay_after_crash() {
@@ -97,36 +146,4 @@ async fn test_wal_replay_after_crash() {
         sm_recovered.get(b"key3").unwrap(),
         Some(Bytes::from("value3"))
     );
-}
-
-#[tokio::test]
-#[ignore] // Optional: run with `cargo test -- --ignored`
-async fn test_file_state_machine_performance() {
-    use std::sync::Arc;
-
-    use d_engine_core::state_machine_test::StateMachineBuilder;
-    use d_engine_core::state_machine_test::StateMachineTestSuite;
-    use tonic::async_trait;
-
-    struct FileStateMachineBuilder {
-        temp_dir: tempfile::TempDir,
-    }
-
-    #[async_trait]
-    impl StateMachineBuilder for FileStateMachineBuilder {
-        async fn build(&self) -> Result<Arc<dyn StateMachine>, d_engine_core::Error> {
-            let sm = FileStateMachine::new(self.temp_dir.path().to_path_buf()).await?;
-            Ok(Arc::new(sm))
-        }
-
-        async fn cleanup(&self) -> Result<(), d_engine_core::Error> {
-            Ok(())
-        }
-    }
-
-    let builder = FileStateMachineBuilder {
-        temp_dir: tempfile::tempdir().unwrap(),
-    };
-
-    StateMachineTestSuite::run_performance_tests(builder).await.unwrap();
 }

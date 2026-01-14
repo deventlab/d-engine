@@ -15,11 +15,10 @@
 #
 # ============================================================================
 
-.PHONY: help all check fmt fmt-check clippy clippy-fix test test-unit \
-        test-integration test-doc bench bench-gate clean doc build build-release \
-        pre-release install check-env audit deny troubleshoot \
-        test-crate test-examples test-detailed \
-        docs docs-all docs-check docs-check-all
+.PHONY: help all check fmt fmt-check clippy clippy-fix test \
+        bench bench-save clean build build-release \
+        pre-release install check-env audit deny \
+        docs docs-all docs-check
 
 # ============================================================================
 # CONFIGURATION SECTION
@@ -67,16 +66,12 @@ help:
 	@echo ""
 	@echo "  $(YELLOW)Documentation:$(NC)"
 	@echo "    make docs           # Build and open documentation in browser"
-	@echo "    make docs-check     # Verify docs compile without warnings"
+	@echo "    make docs-check     # Simulate docs.rs build (all features, strict warnings)"
 	@echo "    make docs-private   # Build docs with private items visible"
 	@echo "    make docs-crate CRATE=name  # Build docs for specific crate"
 	@echo ""
 	@echo "  $(YELLOW)Testing:$(NC)"
-	@echo "    make test                  # Run unit + integration tests"
-	@echo "    make test-all              # Fast parallel testing (nextest)"
-	@echo "    make test-all-legacy       # Comprehensive pre-release suite"
-	@echo "    make test-unit             # Run unit tests only"
-	@echo "    make test-integration      # Run integration tests only"
+	@echo "    make test           # Run all tests with nextest (fast, parallel)"
 	@echo ""
 	@echo "  $(YELLOW)Release:$(NC)"
 	@echo "    make pre-release    # Full pre-release validation"
@@ -86,7 +81,6 @@ help:
 	@echo "    make clean          # Remove all build artifacts"
 	@echo "    make docs-clean     # Remove generated documentation"
 	@echo "    make audit          # Check for security vulnerabilities"
-	@echo "    make troubleshoot   # Diagnostic information"
 	@echo ""
 
 # ============================================================================
@@ -234,76 +228,12 @@ build-release: check check-workspace
 # TESTING
 # ============================================================================
 
-## test                 Run unit tests (parallel) + integration tests (serial)
-test: install-tools check-workspace
-	@$(MAKE) test-unit
-	@$(MAKE) test-integration
-	@echo ""
-	@echo "$(GREEN)╔════════════════════════════════════════╗$(NC)"
-	@echo "$(GREEN)║  ✓ All tests passed!                  ║$(NC)"
-	@echo "$(GREEN)╚════════════════════════════════════════╝$(NC)"
-
-## test-sequential            Run unit tests which requires sequential
-test-sequential:
-	@echo "$(BLUE)Running sequential tests (environment-sensitive)...$(NC)"
-	@echo "$(CYAN)Debug mode embedded_env_test (sequential)...$(NC)"
-	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-	$(CARGO) test -p d-engine-server --lib --features rocksdb,watch embedded_env_test -- --test-threads=1 --nocapture || \
-	{ echo "$(RED)✗ Debug embedded_env_test failed$(NC)"; exit 1; }
-	@echo "$(CYAN)Debug mode standalone_test (sequential)...$(NC)"
-	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-	$(CARGO) test -p d-engine-server --lib --features rocksdb,watch standalone_test -- --test-threads=1 --nocapture || \
-	{ echo "$(RED)✗ Debug standalone_test failed$(NC)"; exit 1; }
-	@echo "$(CYAN)Release mode embedded_env_test (sequential)...$(NC)"
-	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-	$(CARGO) test --release -p d-engine-server --lib --features rocksdb,watch embedded_env_test -- --test-threads=1 --nocapture || \
-	{ echo "$(RED)✗ Release embedded_env_test failed$(NC)"; exit 1; }
-	@echo "$(CYAN)Release mode standalone_test (sequential)...$(NC)"
-	RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-	$(CARGO) test --release -p d-engine-server --lib --features rocksdb,watch standalone_test -- --test-threads=1 --nocapture || \
-	{ echo "$(RED)✗ Release standalone_test failed$(NC)"; exit 1; }
-	@echo "$(GREEN)✓ Sequential tests passed (debug + release)$(NC)"
-	@echo ""
-
-## test-unit            Run unit tests only (parallel, fast)
-test-unit:
-	@echo "$(BLUE)Running unit tests per crate (parallel)...$(NC)"
-	@for member in $(WORKSPACE_MEMBERS); do \
-		echo "$(CYAN)Unit testing crate: $$member$(NC)"; \
-		if [ "$$member" = "d-engine-server" ]; then \
-			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test -p $$member --lib --features rocksdb,watch --no-fail-fast -- --skip embedded_env_test --skip standalone_test --nocapture || \
-			{ echo "$(RED)✗ Unit tests failed in crate: $$member$(NC)"; exit 1; }; \
-		elif [ "$$member" = "d-engine-core" ]; then \
-			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test -p $$member --lib --features watch --no-fail-fast -- --nocapture || \
-			{ echo "$(RED)✗ Unit tests failed in crate: $$member$(NC)"; exit 1; }; \
-		else \
-			RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-			$(CARGO) test -p $$member --lib --no-fail-fast -- --nocapture || \
-			{ echo "$(RED)✗ Unit tests failed in crate: $$member$(NC)"; exit 1; }; \
-		fi; \
-		echo "$(GREEN)✓ Unit tests passed for crate: $$member$(NC)"; \
-		echo ""; \
-	done
-	@$(MAKE) test-sequential
-
-## test-integration     Run integration tests only (serial, avoid port conflicts)
-test-integration:
-	@echo "$(BLUE)Running integration tests (serial)...$(NC)"
-	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --tests --features d-engine-server/rocksdb,d-engine-server/watch --no-fail-fast -- --nocapture --test-threads=1 || \
-		{ echo "$(RED)✗ Integration tests failed$(NC)"; exit 1; }
-	@echo "$(GREEN)✓ Integration tests passed$(NC)"
-
-## test-doc             Run documentation tests only
-test-doc: install-tools check-workspace
-	@echo "$(BLUE)Running documentation tests...$(NC)"
+## test                 Run all tests with nextest (fast, parallel)
+test: install-tools check-workspace check-all-projects
+	@echo "$(BLUE)Running all tests with nextest...$(NC)"
+	@CI=1 RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
+		$(CARGO) nextest run --all-features --workspace --no-fail-fast
 	@$(CARGO) test --doc --workspace
-	@echo "$(GREEN)✓ Documentation tests passed$(NC)"
-
-## test-examples        Verify all examples compile
-test-examples: install-tools check-workspace
 	@echo "$(BLUE)Verifying examples compilation...$(NC)"
 	@for dir in examples/*/; do \
 		if [ -f "$$dir/Cargo.toml" ]; then \
@@ -311,69 +241,31 @@ test-examples: install-tools check-workspace
 			(cd "$$dir" && $(CARGO) check --quiet) || exit 1; \
 		fi \
 	done
-	@echo "$(GREEN)✓ All examples verified$(NC)"
-
-## test-crate           Run tests for a specific crate (usage: make test-crate CRATE=d-engine)
-test-crate: install-tools check-workspace
-ifndef CRATE
-	@echo "$(RED)Error: CRATE variable not set. Usage: make test-crate CRATE=crate-name$(NC)"
-	@exit 1
-endif
-	@echo "$(BLUE)Running tests for crate: $(CRATE)$(NC)"
-	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test -p $(CRATE) --lib --tests --no-fail-fast -- --nocapture --show-output
-	@echo "$(GREEN)✓ All tests passed for crate: $(CRATE)$(NC)"
-
-## test-all             Run all tests with nextest (fast, parallel)
-test-all: check-all-projects test-doc test-examples docs-check-all
-	@echo "$(BLUE)Running all tests with nextest...$(NC)"
-	@if command -v cargo-nextest >/dev/null 2>&1; then \
-		CI=1 RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) nextest run --all-features --workspace --no-fail-fast; \
-	else \
-		echo "$(YELLOW)nextest not installed, falling back to cargo test$(NC)"; \
-		CI=1 RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) test --workspace --all-features --no-fail-fast; \
-	fi
-	@$(CARGO) test --doc --workspace
-	@echo "$(GREEN)✓ All tests passed$(NC)"
-
-## test-all-legacy      Comprehensive test suite (includes clippy/docs/bench checks)
-test-all-legacy: check-all-projects test-unit test-integration test-doc test-examples docs-check-all bench
-	@echo "$(GREEN)✓ All test suites passed (ready for release)$(NC)"
-
-## test-verbose         Run tests with verbose output and single-threaded execution
-test-verbose: install-tools check-workspace
-	@echo "$(BLUE)Running tests (verbose)...$(NC)"
-	@RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-	    $(CARGO) test --workspace --lib --tests --features d-engine-server/rocksdb --no-fail-fast --show-output
-	@echo "$(GREEN)✓ Verbose test run completed$(NC)"
+	@echo ""
+	@echo "$(GREEN)╔════════════════════════════════════════╗$(NC)"
+	@echo "$(GREEN)║  ✓ All tests passed!                  ║$(NC)"
+	@echo "$(GREEN)╚════════════════════════════════════════╝$(NC)"
 
 # ============================================================================
 # PERFORMANCE & BENCHMARKING
 # ============================================================================
 
-## bench                Run performance benchmarks (if configured)
+## bench                Run performance benchmarks with regression detection
+## bench                Run performance benchmarks
 bench: check-workspace
 	@echo "$(BLUE)Running performance benchmarks...$(NC)"
-	@$(CARGO) bench --workspace --all-features --no-fail-fast || \
-		{ echo "$(RED)✗ Benchmark execution failed$(NC)"; exit 1; }
+	@BENCH_OP_TIMEOUT_MS=200 $(CARGO) bench --workspace --all-features || \
+		{ echo "$(RED)✗ Benchmark execution failed$(NC)"; \
+		  echo "$(YELLOW)Tip: On slow machines, try: BENCH_OP_TIMEOUT_MS=500 make bench$(NC)"; \
+		  exit 1; }
 	@echo "$(GREEN)✓ Benchmark run completed$(NC)"
 	@echo "$(CYAN)→ View detailed results: target/criterion/report/index.html$(NC)"
 
-## bench-compile        Check that benchmarks compile without running them
-bench-compile: check-workspace
-	@echo "$(BLUE)Checking benchmark compilation...$(NC)"
-	@$(CARGO) bench --no-run --workspace || \
-		{ echo "$(RED)✗ Benchmark compilation failed$(NC)"; exit 1; }
-	@echo "$(GREEN)✓ Benchmarks compile successfully$(NC)"
-
-## bench-gate           Run performance gate tests (enforces thresholds)
-bench-gate: check-workspace
-	@echo "$(BLUE)Running performance gate tests...$(NC)"
-	@$(CARGO) test --release --workspace --tests --features rocksdb,watch -- --ignored --nocapture || \
-		{ echo "$(RED)✗ Performance gate FAILED - overhead exceeds threshold$(NC)"; exit 1; }
-	@echo "$(GREEN)✓ Performance gate PASSED$(NC)"
+## bench-save           Save current benchmark results as new baseline
+bench-save: check-workspace
+	@echo "$(BLUE)Saving benchmark baseline...$(NC)"
+	@$(CARGO) bench --workspace --all-features
+	@echo "$(GREEN)✓ Baseline saved$(NC)"
 
 # ============================================================================
 # DOCUMENTATION
@@ -382,63 +274,35 @@ bench-gate: check-workspace
 ## docs                Generate API documentation and open in browser (opens d-engine API hub)
 docs: check-workspace
 	@echo "$(BLUE)Generating API documentation for public crates...$(NC)"
-	@$(CARGO) doc --package d-engine --no-deps \
-		--features "d-engine/client,d-engine/server,d-engine/rocksdb,d-engine/watch"
+	@$(CARGO) doc --package d-engine --all-features --no-deps
 	@echo "$(GREEN)✓ Documentation generated$(NC)"
 	@echo "$(CYAN)Opening documentation at: target/doc/d_engine/index.html$(NC)"
 	@open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || true
 
-## docs-all             Generate documentation with all features enabled
+## docs-all            Generate documentation for all workspace crates
 docs-all: check-workspace
-	@echo "$(BLUE)Generating API documentation (all features)...$(NC)"
+	@echo "$(BLUE)Generating documentation for all workspace crates...$(NC)"
 	@$(CARGO) doc --workspace --all-features --no-deps
-	@echo "$(GREEN)✓ Documentation generated$(NC)"
+	@echo "$(GREEN)✓ All documentation generated$(NC)"
 	@echo "$(CYAN)Opening documentation at: target/doc/d_engine/index.html$(NC)"
 	@open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || true
 
-## docs-check           Check documentation without opening browser (CI-safe)
+## docs-check           Check documentation with all features and strict warnings
 docs-check: check-workspace
-	@echo "$(BLUE)Checking documentation generation...$(NC)"
-	@RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps
-	@echo "$(GREEN)✓ Documentation compiled without warnings$(NC)"
-
-## docs-check-all       Check documentation with all features and strict warnings
-docs-check-all: check-workspace
 	@echo "$(BLUE)Checking documentation (all features, strict mode)...$(NC)"
 	@RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --all-features --no-deps
+	@echo "$(BLUE)Simulating docs.rs build for each crate...$(NC)"
+	@for crate in d-engine-proto d-engine-core d-engine-client d-engine-server d-engine; do \
+		echo "  Checking $$crate..."; \
+		RUSTDOCFLAGS="-D warnings" $(CARGO) rustdoc --lib -p $$crate --all-features || exit 1; \
+	done
 	@echo "$(GREEN)✓ Documentation compiled without warnings$(NC)"
-
-## docs-private         Generate documentation including private items (architecture)
-docs-private: check-workspace
-	@echo "$(BLUE)Generating documentation with private items...$(NC)"
-	@$(CARGO) doc --workspace --no-deps --document-private-items
-	@echo "$(GREEN)✓ Documentation generated$(NC)"
-	@echo "$(CYAN)Opening documentation hub at: target/doc/d_engine_docs/index.html$(NC)"
-	@open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine_docs/index.html" 2>/dev/null || echo "Please open: target/doc/d_engine_docs/index.html"
-
-## docs-crate           Generate documentation for a single crate (usage: make docs-crate CRATE=d-engine-server)
-docs-crate: check-workspace
-ifndef CRATE
-	@echo "$(RED)Error: CRATE variable not set. Usage: make docs-crate CRATE=crate-name$(NC)"
-	@exit 1
-endif
-	@echo "$(BLUE)Generating documentation for crate: $(CRATE)...$(NC)"
-	@$(CARGO) doc -p $(CRATE) --no-deps
-	@echo "$(GREEN)✓ Documentation generated$(NC)"
-	@echo "$(CYAN)Opening crate documentation at: target/doc/$$(echo $(CRATE) | sed 's/-/_/g')/index.html$(NC)"
-	@open "file://$$(pwd)/target/doc/$$(echo $(CRATE) | sed 's/-/_/g')/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/$$(echo $(CRATE) | sed 's/-/_/g')/index.html" 2>/dev/null || echo "Please open: target/doc/$$(echo $(CRATE) | sed 's/-/_/g')/index.html"
 
 ## docs-clean           Remove generated documentation artifacts
 docs-clean:
 	@echo "$(BLUE)Cleaning documentation artifacts...$(NC)"
 	@rm -rf target/doc
 	@echo "$(GREEN)✓ Documentation cleaned$(NC)"
-
-## doc                  (Deprecated alias) Use 'docs' instead
-doc: docs
-
-## doc-check            (Deprecated alias) Use 'docs-check' instead
-doc-check: docs-check
 
 # ============================================================================
 # SECURITY & DEPENDENCY AUDITING
@@ -482,52 +346,27 @@ clean-deps: clean
 	@echo "$(GREEN)✓ Deep cleanup completed$(NC)"
 
 # ============================================================================
-# DIAGNOSTIC & TROUBLESHOOTING
-# ============================================================================
-
-## troubleshoot         Display diagnostic information for debugging build issues
-troubleshoot: check-env
-	@echo "$(MAGENTA)═══════════════════════════════════════════════════════$(NC)"
-	@echo "$(MAGENTA)  DIAGNOSTIC INFORMATION FOR TROUBLESHOOTING$(NC)"
-	@echo "$(MAGENTA)═══════════════════════════════════════════════════════$(NC)"
-	@echo ""
-	@echo "$(CYAN)1. Rust Environment:$(NC)"
-	@echo "   Rustc version:"
-	@rustc --version
-	@echo "   Cargo version:"
-	@$(CARGO) --version
-	@echo "   Toolchain info:"
-	@rustup show
-	@echo ""
-	@echo "$(CYAN)2. Workspace Metadata:$(NC)"
-	@$(CARGO) metadata --format-version=1 | grep -E '"name"|"version"' | head -20
-	@echo ""
-	@echo "$(CYAN)3. Workspace Members:$(NC)"
-	@for member in $(WORKSPACE_MEMBERS); do \
-		if [ -f "$$member/Cargo.toml" ]; then \
-			echo "   ✓ $$member"; \
-		else \
-			echo "   ✗ $$member (missing)"; \
-		fi; \
-	done
-	@echo ""
-	@echo "$(CYAN)4. Disk Usage:$(NC)"
-	@du -sh target/ 2>/dev/null || echo "   target/ not found"
-	@du -sh . | tail -1 || echo "   Unable to calculate"
-	@echo ""
-	@echo "$(CYAN)5. Common Issues & Fixes:$(NC)"
-	@echo "   • Compilation slow: Try 'make clean' and rebuild"
-	@echo "   • Tests timeout: Check 'make test-verbose' output"
-	@echo "   • Clippy errors: Run 'make clippy-fix' for automatic fixes"
-	@echo "   • Format issues: Run 'make fmt-fix' to auto-format"
-	@echo ""
-
-# ============================================================================
 # COMPOSITE WORKFLOWS
 # ============================================================================
 
 ## pre-release          Full pre-release validation (comprehensive checks)
-pre-release: install-tools check-workspace check test-all audit build-release
+pre-release: install-tools check-workspace check docs-check test audit build-release
+	@echo "$(BLUE)Checking version consistency across workspace...$(NC)"
+	@version=$$(grep '^version' d-engine/Cargo.toml | head -n1 | cut -d'"' -f2); \
+	for crate in d-engine-proto d-engine-core d-engine-client d-engine-server d-engine; do \
+		crate_version=$$(grep '^version' $$crate/Cargo.toml | head -n1 | cut -d'"' -f2); \
+		if [ "$$crate_version" != "$$version" ]; then \
+			echo "$(RED)✗ Version mismatch: $$crate has $$crate_version but expected $$version$(NC)"; \
+			exit 1; \
+		fi; \
+		echo "$(GREEN)✓ $$crate: $$crate_version$(NC)"; \
+	done
+	@echo "$(BLUE)Simulating docs.rs build...$(NC)"
+	@for crate in d-engine-proto d-engine-core d-engine-client d-engine-server d-engine; do \
+		echo "  Building docs for $$crate..."; \
+		RUSTDOCFLAGS="--cfg docsrs -D warnings" \
+		$(CARGO) rustdoc --lib -p $$crate --all-features -- --cfg docsrs || exit 1; \
+	done
 	@echo ""
 	@echo "$(GREEN)╔═══════════════════════════════════════════════════════╗$(NC)"
 	@echo "$(GREEN)║  ✓ ALL PRE-RELEASE CHECKS PASSED SUCCESSFULLY!       ║$(NC)"
@@ -535,7 +374,7 @@ pre-release: install-tools check-workspace check test-all audit build-release
 	@echo ""
 	@echo "$(MAGENTA)Next Steps:$(NC)"
 	@echo "  1. Review CHANGELOG.md for accuracy"
-	@echo "  2. Update version numbers in all Cargo.toml files"
+	@echo "  2. Update version numbers in all Cargo.toml files (if needed)"
 	@echo "  3. Create annotated git tag: git tag -a v<VERSION>"
 	@echo "  4. Push to repository: git push && git push --tags"
 	@echo ""
@@ -593,21 +432,7 @@ check-all-projects: check check-examples check-benches
 	@echo "$(GREEN)✓ ALL PROJECTS VALIDATED SUCCESSFULLY$(NC)"
 	@echo "$(GREEN)════════════════════════════════════════$(NC)"
 
-## build-examples       Build all examples
-build-examples:
-	@echo "$(CYAN)Building all examples...$(NC)"
-	@for example in examples/*/; do \
-		if [ -f "$$example/Cargo.toml" ]; then \
-			example_name=$$(basename "$$example"); \
-			echo "$(YELLOW)→ Building example: $$example_name$(NC)"; \
-			(cd "$$example" && $(CARGO) build 2>&1) || { \
-				echo "$(RED)✗ Example $$example_name failed$(NC)"; \
-				exit 1; \
-			}; \
-			echo "$(GREEN)✓ Example $$example_name built$(NC)"; \
-		fi \
-	done
-	@echo "$(GREEN)✓ All examples built successfully$(NC)"
+
 
 
 

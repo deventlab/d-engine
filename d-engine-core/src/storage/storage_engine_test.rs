@@ -46,16 +46,23 @@ impl StorageEngineTestSuite {
         Self::test_truncation(builder.build().await?).await?;
         Self::test_reset_operation(builder.build().await?).await?;
         Self::test_edge_cases(builder.build().await?).await?;
+        Self::test_purge_empty_range(builder.build().await?).await?;
         Self::test_hard_state_persistence(builder.build().await?).await?;
         Self::test_reset_preserves_meta(builder.build().await?).await?;
         Self::test_flush_persists_all_data(builder.build().await?).await?;
+
+        // Durability tests (crash recovery)
+        Self::test_persist_entries_durability(&builder).await?;
+        Self::test_hard_state_crash_recovery(&builder).await?;
+        Self::test_truncate_durability(&builder).await?;
+        Self::test_purge_durability(&builder).await?;
 
         builder.cleanup().await?;
         Ok(())
     }
 
     /// Test empty storage behavior
-    async fn test_empty_storage<E>(engine: Arc<E>) -> Result<(), Error>
+    pub async fn test_empty_storage<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
@@ -71,7 +78,7 @@ impl StorageEngineTestSuite {
     }
 
     /// Test single entry persistence and retrieval
-    async fn test_single_entry_persistence<E>(engine: Arc<E>) -> Result<(), Error>
+    pub async fn test_single_entry_persistence<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
@@ -90,7 +97,7 @@ impl StorageEngineTestSuite {
     }
 
     /// Test batch entry persistence and retrieval
-    async fn test_batch_persistence<E>(engine: Arc<E>) -> Result<(), Error>
+    pub async fn test_batch_persistence<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
@@ -119,7 +126,7 @@ impl StorageEngineTestSuite {
     }
 
     /// Test log purging functionality
-    async fn test_purge_logs<E>(engine: Arc<E>) -> Result<(), Error>
+    pub async fn test_purge_logs<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
@@ -143,8 +150,8 @@ impl StorageEngineTestSuite {
         Ok(())
     }
 
-    /// Test log truncation functionality
-    async fn test_truncation<E>(engine: Arc<E>) -> Result<(), Error>
+    /// Test log truncation functionality (in-memory consistency)
+    pub async fn test_truncation<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
@@ -153,13 +160,9 @@ impl StorageEngineTestSuite {
         let log_store = engine.log_store();
         log_store.reset().await?;
         log_store.persist_entries(create_test_entries(1..=100)).await?;
-        // Ensure all operations are flushed to disk before truncation
-        log_store.flush()?;
 
         // Truncate from index 76 onward
         log_store.truncate(76).await?;
-        // Ensure truncation is persisted
-        log_store.flush()?;
 
         assert_eq!(log_store.last_index(), 75);
         assert!(log_store.entry(76).await?.is_none());
@@ -170,7 +173,7 @@ impl StorageEngineTestSuite {
     }
 
     /// Test storage reset functionality
-    async fn test_reset_operation<E>(engine: Arc<E>) -> Result<(), Error>
+    pub async fn test_reset_operation<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
@@ -188,7 +191,7 @@ impl StorageEngineTestSuite {
     }
 
     /// Test edge cases and error conditions
-    async fn test_edge_cases<E>(engine: Arc<E>) -> Result<(), Error>
+    pub async fn test_edge_cases<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
@@ -205,8 +208,38 @@ impl StorageEngineTestSuite {
         Ok(())
     }
 
+    /// Test purge with empty range (edge case)
+    ///
+    /// Verifies purge operations with index=0 or empty log don't panic
+    /// and behave correctly as no-op operations.
+    pub async fn test_purge_empty_range<E>(engine: Arc<E>) -> Result<(), Error>
+    where
+        E: StorageEngine + Send + Sync + 'static,
+        E::LogStore: Send + Sync,
+        E::MetaStore: Send + Sync,
+    {
+        let log_store = engine.log_store();
+
+        // Purge on empty log - should not panic
+        log_store.purge(LogId { index: 0, term: 0 }).await?;
+        assert_eq!(log_store.last_index(), 0);
+
+        // Write entries then purge index 0 (no-op)
+        log_store.persist_entries(create_test_entries(1..=10)).await?;
+        log_store.purge(LogId { index: 0, term: 0 }).await?;
+
+        // Verify: no entries deleted
+        assert!(
+            log_store.entry(1).await?.is_some(),
+            "Entry 1 should still exist"
+        );
+        assert_eq!(log_store.last_index(), 10);
+
+        Ok(())
+    }
+
     /// Test hard state persistence and retrieval
-    async fn test_hard_state_persistence<E>(engine: Arc<E>) -> Result<(), Error>
+    pub async fn test_hard_state_persistence<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
@@ -224,7 +257,7 @@ impl StorageEngineTestSuite {
     }
 
     /// Test that reset preserves metadata
-    async fn test_reset_preserves_meta<E>(engine: Arc<E>) -> Result<(), Error>
+    pub async fn test_reset_preserves_meta<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
@@ -247,7 +280,7 @@ impl StorageEngineTestSuite {
     }
 
     /// Test that flush persists all data
-    async fn test_flush_persists_all_data<E>(engine: Arc<E>) -> Result<(), Error>
+    pub async fn test_flush_persists_all_data<E>(engine: Arc<E>) -> Result<(), Error>
     where
         E: StorageEngine + Send + Sync + 'static,
         E::LogStore: Send + Sync,
@@ -263,6 +296,186 @@ impl StorageEngineTestSuite {
         // Flush both stores
         log_store.flush()?;
         meta_store.flush()?;
+
+        Ok(())
+    }
+
+    /// Test persist_entries guarantees durability (crash recovery without explicit flush)
+    ///
+    /// Critical Raft requirement: Log entries MUST survive crashes.
+    /// This test verifies that persist_entries() alone (without explicit flush)
+    /// ensures durability by dropping the engine and reopening.
+    pub async fn test_persist_entries_durability<B: StorageEngineBuilder>(
+        builder: &B
+    ) -> Result<(), Error> {
+        // Step 1: Write entries and drop (simulate crash)
+        {
+            let engine = builder.build().await?;
+            let log_store = engine.log_store();
+
+            let entries = create_test_entries(1..=10);
+            log_store.persist_entries(entries).await?;
+        }
+
+        // Small delay for filesystem sync (especially macOS)
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Step 2: Reopen and verify all entries survived
+        let engine2 = builder.build().await?;
+        let log_store2 = engine2.log_store();
+
+        assert_eq!(
+            log_store2.last_index(),
+            10,
+            "BUG: persist_entries() must guarantee durability! \
+             Raft protocol requires log entries to survive crashes. \
+             Either: 1) Call sync/flush inside persist_entries, or \
+             2) Use write-ahead log with sync=true"
+        );
+
+        // Verify all entries are readable
+        assert!(
+            log_store2.entry(1).await?.is_some(),
+            "Entry 1 should survive crash"
+        );
+        assert!(
+            log_store2.entry(5).await?.is_some(),
+            "Entry 5 should survive crash"
+        );
+        assert!(
+            log_store2.entry(10).await?.is_some(),
+            "Entry 10 should survive crash"
+        );
+
+        Ok(())
+    }
+
+    /// Test save_hard_state guarantees durability (crash recovery)
+    ///
+    /// Critical Raft requirement: HardState (current_term, voted_for) MUST survive crashes.
+    /// This prevents voting for multiple candidates in same term.
+    pub async fn test_hard_state_crash_recovery<B: StorageEngineBuilder>(
+        builder: &B
+    ) -> Result<(), Error> {
+        let expected_term = 42;
+        let expected_node_id = 7;
+
+        // Step 1: Save hard state and drop
+        {
+            let engine = builder.build().await?;
+            let meta_store = engine.meta_store();
+
+            let hard_state =
+                create_test_hard_state(expected_term, Some((expected_node_id, expected_term)));
+            meta_store.save_hard_state(&hard_state)?;
+        }
+
+        // Small delay for filesystem sync
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Step 2: Reopen and verify
+        let engine2 = builder.build().await?;
+        let meta_store2 = engine2.meta_store();
+
+        let loaded = meta_store2.load_hard_state()?.unwrap();
+        assert_eq!(
+            loaded.current_term, expected_term,
+            "BUG: save_hard_state() must guarantee durability! \
+             Raft safety depends on HardState surviving crashes. \
+             Without durability, nodes may vote for multiple candidates in same term."
+        );
+
+        assert!(loaded.voted_for.is_some());
+        assert_eq!(
+            loaded.voted_for.as_ref().unwrap().voted_for_id,
+            expected_node_id
+        );
+
+        Ok(())
+    }
+
+    /// Test truncate survives crash without explicit flush
+    ///
+    /// Raft requirement: Log truncation (resolving conflicts) must be durable.
+    pub async fn test_truncate_durability<B: StorageEngineBuilder>(
+        builder: &B
+    ) -> Result<(), Error> {
+        // Step 1: Write entries, truncate, and drop
+        {
+            let engine = builder.build().await?;
+            let log_store = engine.log_store();
+
+            log_store.persist_entries(create_test_entries(1..=100)).await?;
+            log_store.truncate(76).await?;
+        }
+
+        // Small delay for filesystem sync
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Step 2: Reopen and verify truncation survived
+        let engine2 = builder.build().await?;
+        let log_store2 = engine2.log_store();
+
+        assert_eq!(
+            log_store2.last_index(),
+            75,
+            "BUG: truncate() must guarantee durability! \
+             Raft log truncation (conflict resolution) must survive crashes."
+        );
+        assert!(
+            log_store2.entry(76).await?.is_none(),
+            "Truncated entry 76 should not exist"
+        );
+        assert!(
+            log_store2.entry(100).await?.is_none(),
+            "Truncated entry 100 should not exist"
+        );
+        assert!(
+            log_store2.entry(75).await?.is_some(),
+            "Entry 75 should still exist"
+        );
+
+        Ok(())
+    }
+
+    /// Test purge survives crash without explicit flush
+    ///
+    /// Raft requirement: Log compaction (purge) must be durable.
+    pub async fn test_purge_durability<B: StorageEngineBuilder>(builder: &B) -> Result<(), Error> {
+        // Step 1: Write entries, purge, and drop
+        {
+            let engine = builder.build().await?;
+            let log_store = engine.log_store();
+
+            log_store.persist_entries(create_test_entries(1..=100)).await?;
+            log_store
+                .purge(LogId {
+                    index: 50,
+                    term: 50,
+                })
+                .await?;
+        }
+
+        // Small delay for filesystem sync
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Step 2: Reopen and verify purge survived
+        let engine2 = builder.build().await?;
+        let log_store2 = engine2.log_store();
+
+        assert!(
+            log_store2.entry(1).await?.is_none(),
+            "BUG: purge() must guarantee durability! \
+             Purged entries should not reappear after crash."
+        );
+        assert!(
+            log_store2.entry(50).await?.is_none(),
+            "Purged entry 50 should not exist"
+        );
+        assert!(
+            log_store2.entry(51).await?.is_some(),
+            "Entry 51 should still exist after purge"
+        );
 
         Ok(())
     }

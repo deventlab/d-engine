@@ -69,40 +69,43 @@ impl Debug for RaftNodeConfig {
     }
 }
 impl RaftNodeConfig {
-    /// Creates a new configuration with hierarchical override support:
+    /// Loads configuration from hierarchical sources without validation.
     ///
-    /// Configuration sources are merged in the following order (later sources
-    /// override earlier ones):
+    /// Configuration sources are merged in the following order (later sources override earlier):
     /// 1. Type defaults (lowest priority)
-    /// 2. Configuration file from `CONFIG_PATH` environment variable
+    /// 2. Configuration file from `CONFIG_PATH` environment variable (if set)
     /// 3. Environment variables with `RAFT__` prefix (highest priority)
     ///
-    /// # Returns
-    /// Merged configuration instance or error if:
-    /// - Config file parsing fails
-    /// - Validation rules are violated
+    /// # Note
+    /// This method does NOT validate the configuration. Validation is deferred to allow
+    /// further overrides via `with_override_config()`. Callers MUST call `validate()`
+    /// before using the configuration.
     ///
-    /// # Example
+    /// # Returns
+    /// Merged configuration instance or error if config file parsing fails.
+    ///
+    /// # Examples
     /// ```ignore
     /// // Load with default values only
-    /// let cfg = RaftNodeConfig::new()?;
+    /// let cfg = RaftNodeConfig::new()?.validate()?;
     ///
     /// // Load with config file and environment variables
     /// std::env::set_var("CONFIG_PATH", "config/cluster.toml");
     /// std::env::set_var("RAFT__CLUSTER__NODE_ID", "100");
-    /// let cfg = RaftNodeConfig::new()?;
+    /// let cfg = RaftNodeConfig::new()?.validate()?;
+    ///
+    /// // Apply runtime overrides
+    /// let cfg = RaftNodeConfig::new()?
+    ///     .with_override_config("custom.toml")?
+    ///     .validate()?;
     /// ```
     pub fn new() -> Result<Self> {
-        // Create a basic configuration builder
-        // 1. Default values ​​as the base layer
         let mut builder = Config::builder().add_source(Config::try_from(&Self::default())?);
 
-        // 2. Conditionally add configuration files
         if let Ok(config_path) = env::var("CONFIG_PATH") {
             builder = builder.add_source(File::with_name(&config_path).required(true));
         }
 
-        // 3. Add environment variable source
         builder = builder.add_source(
             Environment::with_prefix("RAFT")
                 .separator("__")
@@ -110,36 +113,35 @@ impl RaftNodeConfig {
                 .try_parsing(true),
         );
 
-        // Build and deserialize
         let config: Self = builder.build()?.try_deserialize()?;
-        config.validate()?;
-        Ok(config)
+        Ok(config) // No validation - deferred to validate()
     }
 
-    /// Creates a new configuration with additional overrides:
+    /// Applies additional configuration overrides from file without validation.
     ///
-    /// Merging order (later sources override earlier ones):
+    /// Merging order (later sources override earlier):
     /// 1. Current configuration values
     /// 2. New configuration file
     /// 3. Latest environment variables (highest priority)
     ///
+    /// # Note
+    /// This method does NOT validate the configuration. Callers MUST call `validate()`
+    /// after all overrides are applied.
+    ///
     /// # Example
     /// ```ignore
-    /// // Initial configuration
-    /// let base = RaftNodeConfig::new()?;
-    ///
-    /// // Apply runtime overrides
-    /// let final_cfg = base.with_override_config("runtime_overrides.toml")?;
+    /// let cfg = RaftNodeConfig::new()?
+    ///     .with_override_config("runtime_overrides.toml")?
+    ///     .validate()?;
     /// ```
     pub fn with_override_config(
         &self,
         path: &str,
     ) -> Result<Self> {
         let config: Self = Config::builder()
-            .add_source(Config::try_from(self)?) // Current config
-            .add_source(File::with_name(path)) // New overrides
+            .add_source(Config::try_from(self)?)
+            .add_source(File::with_name(path))
             .add_source(
-                // Fresh environment
                 Environment::with_prefix("RAFT")
                     .separator("__")
                     .ignore_empty(true)
@@ -147,29 +149,37 @@ impl RaftNodeConfig {
             )
             .build()?
             .try_deserialize()?;
-        config.validate()?;
-        Ok(config)
+        Ok(config) // No validation - deferred to validate()
     }
 
-    /// Validates cross-component configuration rules
+    /// Validates configuration and returns validated instance.
+    ///
+    /// Consumes self and performs validation of all subsystems. Must be called
+    /// after all configuration overrides to ensure the final config is valid.
     ///
     /// # Returns
-    /// `Ok(())` if all configurations are valid, or
-    /// `Err(Error)` containing validation failure details
+    /// Validated configuration or error if validation fails.
     ///
     /// # Errors
     /// Returns validation errors from any subsystem:
     /// - Invalid port bindings
     /// - Conflicting node IDs
     /// - Expired certificates
-    /// - Retry policy conflicts
-    pub fn validate(&self) -> Result<()> {
+    /// - Invalid directory paths
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = RaftNodeConfig::new()?
+    ///     .with_override_config("app.toml")?
+    ///     .validate()?; // Validation happens here
+    /// ```
+    pub fn validate(self) -> Result<Self> {
         self.cluster.validate()?;
         self.raft.validate()?;
         self.network.validate()?;
         self.tls.validate()?;
         self.retry.validate()?;
-        Ok(())
+        Ok(self)
     }
 
     /// Checks if this node is configured as a learner (not a voter)

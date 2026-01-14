@@ -1,0 +1,16 @@
+[cluster]
+node_id = 1
+listen_address = "0.0.0.0:9081"
+initial_cluster = [
+    { id = 1, address = "0.0.0.0:9081", role = 0, status = 2 },
+    { id = 2, address = "0.0.0.0:9082", role = 0, status = 2 },
+    { id = 3, address = "0.0.0.0:9083", role = 0, status = 2 }
+]
+db_root_dir = "./data/n1"
+log_dir = "./logs"
+
+[raft]
+general_raft_timeout_duration_in_ms = 10000  # 10 sec
+
+[raft.snapshot]
+enable = false

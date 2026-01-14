@@ -1,8 +1,17 @@
 # d-engine - Distributed Coordination Engine
 
-**d-engine** is a lightweight distributed coordination engine written in Rust, designed for
-embedding into applications that need strong consistency—the consensus layer for building
-reliable distributed systems.
+**d-engine** is a lightweight distributed coordination engine written in Rust,
+designed for embedding into applications that need strong consistency—the consensus
+layer for building reliable distributed systems.
+
+**Built with a simple vision**: make distributed coordination accessible - cheap
+to run, simple to use. **Built on a core philosophy**: choose simple architectures
+over complex ones.
+
+d-engine's Raft core uses a single-threaded event loop to guarantee strong consistency
+and strict ordering while keeping the codebase clean and performant. Production-ready
+Raft implementation with flexible read consistency (Linearizable/Lease-Based/Eventual)
+and pluggable storage backends. Start with one node, scale to a cluster when needed.
 
 ## 🚀 New to d-engine? Start Here
 
@@ -21,6 +30,15 @@ Follow this learning path to get started quickly:
 ```
 
 **→ Start: [Is d-engine Right for You?](crate::docs::use_cases)**
+
+## Recommended Entry Point
+
+**This is the recommended crate for most users.** It re-exports all functionality from the internal crates below.
+
+```toml
+[dependencies]
+d-engine = "0.2"  # This is all you need
+```
 
 ## Crate Organization
 
@@ -55,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Standalone Mode (Any Language)
 
 ```bash
-cd examples/three-nodes-cluster
+cd examples/three-nodes-standalone
 make start-cluster
 ```
 
@@ -86,7 +104,9 @@ make start-cluster
 
 ### Examples & Performance
 
+- [HA Deployment with Load Balancing](crate::docs::examples::ha_deployment_load_balancing) - Production HA setup
 - [Single Node Expansion](crate::docs::examples::single_node_expansion) - Scale from 1 to 3 nodes
+- [Three-Node Standalone Cluster](crate::docs::examples::three_nodes_cluster) - Standalone mode cluster
 - [Throughput Optimization](crate::docs::performance::throughput_optimization_guide)
 
 ## License

@@ -397,7 +397,17 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     }
                 }
             }
-
+            RaftEvent::FlushReadBuffer => {
+                return Err(ConsensusError::RoleViolation {
+                    current_role: "Candidate",
+                    required_role: "Leader",
+                    context: format!(
+                        "Candidate node {} attempted to create snapshot.",
+                        ctx.node_id
+                    ),
+                }
+                .into());
+            }
             RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
                 sender
                     .send(Err(Status::permission_denied("Not Follower or Learner.")))
@@ -622,8 +632,8 @@ impl<T: TypeConfig> CandidateState<T> {
         })
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn new(
+    #[cfg(test)]
+    pub(crate) fn new(
         node_id: u32,
         node_config: Arc<RaftNodeConfig>,
     ) -> Self {

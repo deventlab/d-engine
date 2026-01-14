@@ -20,7 +20,7 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 use tonic::async_trait;
 
@@ -89,7 +89,7 @@ pub struct ClusterUpdateResult {
     pub responses: Vec<Result<ClusterConfUpdateResponse>>,
 }
 
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait Transport<T>: Send + Sync + 'static
 where

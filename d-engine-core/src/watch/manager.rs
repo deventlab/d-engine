@@ -182,7 +182,7 @@ impl WatchRegistry {
 
     /// Get the number of active watchers for a specific key (for testing)
     #[cfg(test)]
-    pub fn watcher_count(
+    pub(crate) fn watcher_count(
         &self,
         key: &Bytes,
     ) -> usize {
@@ -191,7 +191,7 @@ impl WatchRegistry {
 
     /// Get the total number of watched keys (for testing)
     #[cfg(test)]
-    pub fn watched_key_count(&self) -> usize {
+    pub(crate) fn watched_key_count(&self) -> usize {
         self.watchers.len()
     }
 }

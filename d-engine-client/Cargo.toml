@@ -12,8 +12,13 @@ categories = ["asynchronous", "network-programming"]
 publish = true
 
 [package.metadata.docs.rs]
-all-features = true
+# Only enable user-facing features
+features = ["watch"]
 rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.release]
+# Disable individual crate tags, use workspace-level tag only
+tag = false
 
 [features]
 watch = ["d-engine-core/watch"]

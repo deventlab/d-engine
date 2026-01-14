@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 use tonic::async_trait;
 
@@ -34,7 +34,7 @@ pub struct StateUpdate {
     pub new_voted_for: Option<VotedFor>,
 }
 
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait ElectionCore<T>: Send + Sync + 'static
 where

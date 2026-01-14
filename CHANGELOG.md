@@ -4,7 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [v0.2.0] - 2026-01-01 [✅ Released]
+## [v0.2.2] - 2026-01-12 [🚀 Releasing]
+
+### 🎯 Key Improvements
+
+- **ReadIndex Batching** - 440% linearizable read performance improvement (#236)
+- **Embedded Mode Benchmarks** - Zero-copy performance validated (#233)
+- **Cluster State APIs** - HA support (#234)
+  - New: `is_leader()`, `node_id()`, `current_term()`, `wait_ready()`
+  - Use case: Load balancers, health checks, leader discovery
+
+---
+
+### 🐛 Critical Fixes
+
+- **Inconsistent Reads** (#228): Single-node mode returning stale data
+- **Learner Promotion** (#212): Promotion stuck due to voter count bugs
+- **Data Loss** (#242): Storage layer durability bugs
+- **Snapshot Purge** (#235): Single-node cluster NoPeersAvailable error
+- **Startup Race** (#209): `wait_ready()` timeout race condition
+
+---
+
+### ⚠️ Breaking Changes
+
+**None** - All changes are backward compatible
+
+---
+
+## [v0.2.1] - 2026-01-01 [✅ Released]
 
 ### 🎯 Highlights for Developers
 

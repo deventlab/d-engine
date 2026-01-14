@@ -35,6 +35,24 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 //=============================================================================
+// Configuration
+//=============================================================================
+
+/// Get operation timeout from environment variable or use default
+///
+/// Set BENCH_OP_TIMEOUT_MS to adjust timeout for slower machines:
+/// ```bash
+/// BENCH_OP_TIMEOUT_MS=500 cargo bench
+/// ```
+fn get_op_timeout() -> Duration {
+    std::env::var("BENCH_OP_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(200)) // Default: 200ms (was 50ms)
+}
+
+//=============================================================================
 // Helper Functions
 //=============================================================================
 
@@ -127,34 +145,31 @@ fn bench_embedded_mode_with_watchers(c: &mut Criterion) {
             BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
             &watcher_count,
             |b, &count| {
-                // Setup: Create engine once, reuse across iterations
-                let (engine, _temp_dir) = runtime.block_on(async {
-                    create_embedded_engine().await.expect("Failed to create engine")
-                });
-
-                // Register watchers once
-                let mut _watchers = Vec::new();
-                for i in 0..count {
-                    let key = format!("watch_key_{i}").into_bytes();
-                    let watcher = engine.watch(&key).expect("Failed to register watcher");
-                    _watchers.push(watcher);
-                }
-
-                runtime.block_on(async {
-                    sleep(Duration::from_millis(100)).await;
-                });
-
-                // Benchmark: Only measure PUT operations
+                // Benchmark: Create fresh engine per iteration to avoid state pollution
                 b.to_async(&runtime).iter(|| async {
+                    // Setup: Create engine
+                    let (engine, _temp_dir) =
+                        create_embedded_engine().await.expect("Failed to create engine");
+
+                    // Register watchers
+                    let mut _watchers = Vec::new();
+                    for i in 0..count {
+                        let key = format!("watch_key_{i}").into_bytes();
+                        let watcher = engine.watch(&key).expect("Failed to register watcher");
+                        _watchers.push(watcher);
+                    }
+
+                    // Small delay for engine stabilization
+                    sleep(Duration::from_millis(100)).await;
+
+                    // Measure: PUT operations
                     for i in 0..100 {
                         let key = format!("key_{i}").into_bytes();
                         let value = format!("value_{i}").into_bytes();
                         engine.client().put(&key, &value).await.expect("PUT failed");
                     }
-                });
 
-                // Cleanup after all iterations
-                runtime.block_on(async {
+                    // Cleanup
                     engine.stop().await.expect("Failed to stop engine");
                 });
             },
@@ -171,16 +186,17 @@ fn bench_embedded_mode_with_watchers(c: &mut Criterion) {
 fn bench_watch_notification_latency(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
+    // Setup: Create engine once outside the benchmark loop
+    let (engine, _temp_dir) = runtime
+        .block_on(async { create_embedded_engine().await.expect("Failed to create engine") });
+
     c.bench_function("watch_notification_latency", |b| {
         b.to_async(&runtime).iter(|| async {
-            let (engine, _temp_dir) =
-                create_embedded_engine().await.expect("Failed to create engine");
-
             let key = b"latency_test_key";
             let mut watcher = engine.watch(key).expect("Failed to register watcher");
 
             // Give watcher time to register
-            sleep(Duration::from_millis(50)).await;
+            sleep(get_op_timeout()).await;
 
             // Spawn receiver task
             let recv_handle = tokio::spawn(async move {
@@ -196,10 +212,12 @@ fn bench_watch_notification_latency(c: &mut Criterion) {
             let latency = recv_handle.await.expect("Receiver task failed");
 
             black_box(latency);
-
-            // Cleanup
-            engine.stop().await.expect("Failed to stop engine");
         });
+    });
+
+    // Cleanup after all iterations
+    runtime.block_on(async {
+        engine.stop().await.expect("Failed to stop engine");
     });
 }
 
@@ -212,42 +230,45 @@ fn bench_multiple_watchers_same_key(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("multiple_watchers_same_key");
 
+    // Setup: Create engine once outside the benchmark loop
+    let (engine, _temp_dir) = runtime
+        .block_on(async { create_embedded_engine().await.expect("Failed to create engine") });
+
     for &watcher_count in &[1, 10, 100] {
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
             &watcher_count,
             |b, &count| {
+                // Register watchers once per parameter
+                let key = b"shared_key";
+                let mut _watchers = Vec::new();
+                for _ in 0..count {
+                    let watcher = engine.watch(key).expect("Failed to register watcher");
+                    _watchers.push(watcher);
+                }
+
+                runtime.block_on(async {
+                    sleep(get_op_timeout()).await;
+                });
+
                 b.to_async(&runtime).iter(|| async {
-                    let (engine, _temp_dir) =
-                        create_embedded_engine().await.expect("Failed to create engine");
-
-                    let key = b"shared_key";
-
-                    // Register multiple watchers for the same key
-                    let mut _watchers = Vec::new();
-                    for _ in 0..count {
-                        let watcher = engine.watch(key).expect("Failed to register watcher");
-                        _watchers.push(watcher);
-                    }
-
-                    // Give watchers time to register
-                    sleep(Duration::from_millis(50)).await;
-
-                    // Perform PUT
+                    // Only measure PUT broadcast time
                     let start = std::time::Instant::now();
                     engine.client().put(key, b"broadcast_value").await.expect("PUT failed");
                     let elapsed = start.elapsed();
 
                     black_box(elapsed);
-
-                    // Cleanup
-                    engine.stop().await.expect("Failed to stop engine");
                 });
             },
         );
     }
 
     group.finish();
+
+    // Cleanup after all iterations
+    runtime.block_on(async {
+        engine.stop().await.expect("Failed to stop engine");
+    });
 }
 
 //=============================================================================
@@ -259,41 +280,47 @@ fn bench_watcher_cleanup(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("watcher_cleanup");
 
+    // Setup: Create engine once outside the benchmark loop
+    let (engine, _temp_dir) = runtime
+        .block_on(async { create_embedded_engine().await.expect("Failed to create engine") });
+
     for &watcher_count in &[10, 100, 1000] {
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{watcher_count}_watchers")),
             &watcher_count,
             |b, &count| {
-                b.to_async(&runtime).iter(|| async {
-                    let (engine, _temp_dir) =
-                        create_embedded_engine().await.expect("Failed to create engine");
-
-                    // Register many watchers
-                    let mut watchers = Vec::new();
-                    for i in 0..count {
-                        let key = format!("cleanup_key_{i}").into_bytes();
-                        let watcher = engine.watch(&key).expect("Failed to register watcher");
-                        watchers.push(watcher);
-                    }
-
-                    // Give watchers time to register
-                    sleep(Duration::from_millis(100)).await;
-
-                    // Measure cleanup time
-                    let start = std::time::Instant::now();
-                    drop(watchers);
-                    let elapsed = start.elapsed();
-
-                    black_box(elapsed);
-
-                    // Cleanup
-                    engine.stop().await.expect("Failed to stop engine");
-                });
+                b.iter_with_setup(
+                    || {
+                        // Setup: Register watchers (not measured)
+                        let mut watchers = Vec::new();
+                        for i in 0..count {
+                            let key = format!("cleanup_key_{i}").into_bytes();
+                            let watcher = engine.watch(&key).expect("Failed to register watcher");
+                            watchers.push(watcher);
+                        }
+                        runtime.block_on(async {
+                            sleep(Duration::from_millis(100)).await;
+                        });
+                        watchers
+                    },
+                    |watchers| {
+                        // Only measure cleanup time
+                        let start = std::time::Instant::now();
+                        drop(watchers);
+                        let elapsed = start.elapsed();
+                        black_box(elapsed);
+                    },
+                );
             },
         );
     }
 
     group.finish();
+
+    // Cleanup after all iterations
+    runtime.block_on(async {
+        engine.stop().await.expect("Failed to stop engine");
+    });
 }
 
 //=============================================================================

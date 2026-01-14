@@ -9,7 +9,7 @@
 | Single Node                        | 3-Node Cluster               |
 | ---------------------------------- | ---------------------------- |
 | No fault tolerance                 | Tolerates 1 node failure     |
-| $100/month                         | $300/month                   |
+| 1 server                           | 3 servers                    |
 | If node crashes → data unavailable | Auto leader re-election      |
 | No replication                     | Data replicated across nodes |
 
@@ -252,7 +252,7 @@ db_root_dir = "./db"
 
 - See `examples/single-node-expansion/README.md` for detailed architecture
 - Review [Quick Start Guide](crate::docs::quick_start_5min) for embedded mode basics
-- Check `examples/three-nodes-cluster/` for direct 3-node deployment
+- Check `examples/three-nodes-standalone/` for direct 3-node deployment
 
 ---
 

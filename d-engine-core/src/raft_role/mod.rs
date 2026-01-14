@@ -8,7 +8,13 @@ pub mod role_state;
 mod raft_role_test;
 
 #[cfg(test)]
+mod candidate_state_test;
+#[cfg(test)]
+mod follower_state_test;
+#[cfg(test)]
 mod leader_state_test;
+#[cfg(test)]
+mod learner_state_test;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU32;
@@ -317,24 +323,26 @@ impl<T: TypeConfig> RaftRole<T> {
     }
 
     #[allow(dead_code)]
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn voted_for(&self) -> Result<Option<VotedFor>> {
+    #[cfg(test)]
+    pub(crate) fn voted_for(&self) -> Result<Option<VotedFor>> {
         self.state().voted_for()
     }
     #[allow(dead_code)]
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn commit_index(&self) -> u64 {
+    #[cfg(test)]
+    pub(crate) fn commit_index(&self) -> u64 {
         self.state().commit_index()
     }
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn match_index(
+    #[allow(dead_code)]
+    #[cfg(test)]
+    pub(crate) fn match_index(
         &self,
         node_id: u32,
     ) -> Option<u64> {
         self.state().match_index(node_id)
     }
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn next_index(
+    #[allow(dead_code)]
+    #[cfg(test)]
+    pub(crate) fn next_index(
         &self,
         node_id: u32,
     ) -> Option<u64> {
@@ -374,11 +382,6 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().handle_raft_event(raft_event, ctx, role_tx).await
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn follower_role_i32() -> i32 {
-        0
-    }
-
     pub(crate) async fn verify_leadership_persistent(
         &mut self,
         payloads: Vec<EntryPayload>,
@@ -389,6 +392,21 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut()
             .verify_leadership_persistent(payloads, bypass_queue, ctx, role_tx)
             .await
+    }
+
+    /// Notify role that no-op entry has been committed.
+    /// Only Leader role performs actual tracking.
+    pub(crate) fn on_noop_committed(
+        &mut self,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        self.state_mut().on_noop_committed(ctx)
+    }
+
+    /// Drain pending read buffer when stepping down from Leader.
+    /// Only Leader implements this; other roles are no-op.
+    pub(crate) fn drain_read_buffer(&mut self) -> Result<()> {
+        self.state_mut().drain_read_buffer()
     }
 }
 

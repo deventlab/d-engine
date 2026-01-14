@@ -7,27 +7,37 @@
 [![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/deventlab/d-engine)
 
-**d-engine** is a lightweight distributed coordination engine written in Rust, designed for embedding into applications that need strong consistency—the consensus layer for building reliable distributed systems. Start with a single node and scale to a cluster when you need high availability. **Designed for resource efficiency**, d-engine employs a single-threaded event-driven architecture that minimizes resource overhead while maintaining high performance. It provides a production-ready implementation of the Raft consensus algorithm,
-with pluggable storage backends, built-in observability, and tokio runtime support.
+**d-engine** is a lightweight distributed coordination engine written in Rust,
+designed for embedding into applications that need strong consistency—the consensus
+layer for building reliable distributed systems.
+
+**Built with a simple vision**: make distributed coordination accessible - cheap
+to run, simple to use. **Built on a core philosophy**: choose simple architectures
+over complex ones.
+
+d-engine's Raft core uses a single-threaded event loop to guarantee strong consistency
+and strict ordering while keeping the codebase clean and performant. Production-ready
+Raft implementation with flexible read consistency (Linearizable/Lease-Based/Eventual)
+and pluggable storage backends. Start with one node, scale to a cluster when needed.
 
 ---
 
 ## Features
 
-### New in v0.2.0 🎉
+### New in v0.2 🎉
 
-- **Modular Workspace**: Feature flags (`client`/`server`) - depend only on what you need
-- **TTL/Lease**: Automatic key expiration for distributed locks and session management
-- **Watch API**: Real-time key change notifications (config updates, service discovery)
-- **EmbeddedEngine**: Single-node start, one-line scale to 3-node cluster
+- **EmbeddedEngine**: Single-node start, scale to 3-node cluster when needed
 - **LocalKvClient**: Zero-overhead in-process access (<0.1ms latency)
+- **Watch API**: Real-time key change notifications (config updates, service discovery)
+- **TTL/Lease**: Automatic key expiration for distributed locks and session management
+- **Modular Workspace**: Feature flags (`client`/`server`) - depend only on what you need
 
 ### Core Capabilities
 
-- **Single-Node Start**: Begin with one node, expand to 3-node cluster when needed (zero downtime)
 - **Strong Consistency**: Full Raft protocol implementation for distributed consensus
-- **Tunable Persistence**: DiskFirst for durability or MemFirst for lower latency
 - **Flexible Read Consistency**: Three-tier model (Linearizable/Lease-Based/Eventual)
+- **Single-Node Start**: Begin with one node, expand to 3-node cluster when needed (zero downtime)
+- **Tunable Persistence**: DiskFirst for durability or MemFirst for lower latency
 - **Pluggable Storage**: Custom backends supported (RocksDB, Sled, Raw File)
 
 ---
@@ -60,6 +70,8 @@ async fn main() {
 }
 ```
 
+> **Note**: Release builds require explicit `db_root_dir` configuration. Set `CONFIG_PATH` env or use `EmbeddedEngine::with_config(...)`. See [Quick Start Guide](https://docs.rs/d-engine/latest/d_engine/docs/quick_start_5min/index.html).
+
 **→ Full example:** [examples/quick-start-embedded](examples/quick-start-embedded/README.md)
 
 ---
@@ -74,6 +86,8 @@ d-engine = "0.2"
 
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
+
+> **Performance note**: Embedded mode delivers exceptional performance - **4.6x higher write throughput** and **2x faster linearizable reads** vs etcd 3.5 (M2 Mac single machine vs etcd on 3 GCE instances). Achieves 203K writes/sec and 279K linearizable reads/sec. See [benches/embedded-bench/reports/v0.2.2/](benches/embedded-bench/reports/v0.2.2/) for detailed benchmarks.
 
 **→ Examples:**
 
@@ -91,7 +105,7 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 **Use when**: Application and d-engine run as separate processes  
 **Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
 
-> **Performance note**: Benchmark shows 45% higher write throughput vs etcd 3.5 in high-concurrency tests (M2 Mac single machine vs etcd on 3 GCE instances). See [benches/](benches/d-engine-bench/reports/v0.2.0/) for methodology and hardware details.
+> **Performance note**: Standalone mode achieves 64K writes/sec and 12K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (3.1x faster writes, 23x faster reads). See [benches/standalone-bench/reports/v0.2.2/](benches/standalone-bench/reports/v0.2.2/) for benchmarks.
 
 **Note**: Rust apps can use both modes - embedded for performance, standalone for operational flexibility
 
@@ -138,9 +152,9 @@ sequenceDiagram
 
 ---
 
-## Performance Comparison (d-engine v0.2.0 vs etcd 3.5)
+## Performance Comparison (d-engine v0.2.2 vs etcd 3.5)
 
-![d-engine vs etcd comparison](./benches/d-engine-bench/reports/v0.2.0/dengine_comparison_v0.2.0.png)
+![d-engine vs etcd comparison](https://github.com/deventlab/d-engine/raw/HEAD/benches/embedded-bench/reports/v0.2.2/dengine_comparison_v0.2.2.png)
 
 ### View Benchmarks Detailed Reports
 
@@ -148,16 +162,28 @@ sequenceDiagram
 open benches/reports/
 ```
 
-## Jepsen Tests
+---
 
-d-engine includes [Jepsen](https://jepsen.io/) tests to validate linearizability and fault-tolerance under partitions and crashes.
+## Maintainer Philosophy
 
-To run Jepsen tests (requires Docker & Leiningen):
-See [examples/three-nodes-cluster/docker/jepsen/README.md](./examples/three-nodes-cluster/docker/jepsen/README.md) for full instructions.
+d-engine is maintained by a single author with a clear vision.
+We value quality over quantity:
+
+- **PRs are not guaranteed to be merged** - even good code may be declined
+  if it conflicts with roadmap priorities
+- **Response time varies** - active development takes precedence over PR reviews
+- **Breaking changes are OK pre-1.0** - we prioritize getting it right over
+  backward compatibility
+
+This approach keeps d-engine focused and maintainable.
 
 ---
 
 ## Contribution Guide
+
+d-engine follows the 20/80 rule - solve real production problems, not experiments.
+Read [Contributing Guide](CONTRIBUTING.md) and open an issue before feature PRs.
+Bug fixes are always welcome.
 
 ### Prerequisites
 
@@ -168,10 +194,8 @@ See [examples/three-nodes-cluster/docker/jepsen/README.md](./examples/three-node
 ### Development Workflow
 
 ```bash
-# Build and test
+# Run all tests (fast, parallel with nextest)
 make test
-make clippy
-make fmt-check
 ```
 
 ---

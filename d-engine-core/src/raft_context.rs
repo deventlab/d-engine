@@ -91,7 +91,7 @@ where
         &self.membership
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub fn set_membership(
         &mut self,
         membership: Arc<MOF<T>>,
@@ -99,7 +99,7 @@ where
         self.membership = membership;
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(test)]
     pub fn set_transport(
         &mut self,
         transport: Arc<TROF<T>>,

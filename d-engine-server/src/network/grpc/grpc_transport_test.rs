@@ -10,10 +10,6 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::RetryPolicies;
 use d_engine_core::SystemError;
 use d_engine_core::Transport;
-use d_engine_core::create_test_chunk;
-use d_engine_core::create_test_snapshot_stream;
-use d_engine_core::test_utils::MockNode;
-use d_engine_core::test_utils::node_config;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Candidate;
 use d_engine_proto::common::NodeRole::Follower;
@@ -41,6 +37,15 @@ use tracing_test::traced_test;
 
 use super::*;
 use crate::network::grpc::grpc_transport::GrpcTransport;
+use crate::test_utils::MockNode;
+use crate::test_utils::create_test_chunk;
+use crate::test_utils::create_test_snapshot_stream;
+
+fn node_config(db_path: &str) -> RaftNodeConfig {
+    let mut s = RaftNodeConfig::new().expect("RaftNodeConfig should be inited successfully");
+    s.cluster.db_root_dir = std::path::PathBuf::from(db_path);
+    s.validate().expect("RaftNodeConfig should be validated successfully")
+}
 
 fn mock_membership(
     peers: Vec<(u32, i32)>, //(node_id, role_i32)
@@ -381,7 +386,10 @@ async fn test_send_append_requests_case3_1() {
     channels.insert((peer_3_id, ConnectionType::Data), channel3.clone());
     let membership = mock_membership(vec![(leader_id, Leader as i32)], channels);
 
-    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new()
+        .expect("Should succeed to init RaftNodeConfig.")
+        .validate()
+        .expect("Validate RaftNodeConfig successfully");
 
     let my_id = 1;
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
@@ -458,7 +466,10 @@ async fn test_send_append_requests_case3_2() {
     channels.insert((peer_3_id, ConnectionType::Data), channel3.clone());
     let membership = mock_membership(vec![(leader_id, Leader as i32)], channels);
 
-    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new()
+        .expect("Should succeed to init RaftNodeConfig.")
+        .validate()
+        .expect("Validate RaftNodeConfig successfully");
 
     let my_id = 1;
     let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
@@ -488,7 +499,10 @@ async fn test_send_append_requests_case3_2() {
 #[traced_test]
 async fn test_send_vote_requests_case1() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new()
+        .expect("Should succeed to init RaftNodeConfig.")
+        .validate()
+        .expect("Validate RaftNodeConfig successfully");
     let request = VoteRequest {
         term: 1,
         candidate_id: my_id,
@@ -516,7 +530,10 @@ async fn test_send_vote_requests_case1() {
 #[traced_test]
 async fn test_send_vote_requests_case2() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new()
+        .expect("Should succeed to init RaftNodeConfig.")
+        .validate()
+        .expect("Validate RaftNodeConfig successfully");
 
     //prepare rpc service for getting peer address
     let (_tx1, rx1) = oneshot::channel::<()>();
@@ -563,7 +580,10 @@ async fn test_send_vote_requests_case2() {
 #[traced_test]
 async fn test_send_vote_requests_case3() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new()
+        .expect("Should succeed to init RaftNodeConfig.")
+        .validate()
+        .expect("Validate RaftNodeConfig successfully");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -615,7 +635,10 @@ async fn test_send_vote_requests_case3() {
 #[traced_test]
 async fn test_send_vote_requests_case4_1() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new()
+        .expect("Should succeed to init RaftNodeConfig.")
+        .validate()
+        .expect("Validate RaftNodeConfig successfully");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -668,7 +691,10 @@ async fn test_send_vote_requests_case4_1() {
 #[traced_test]
 async fn test_send_vote_requests_case4_2() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new()
+        .expect("Should succeed to init RaftNodeConfig.")
+        .validate()
+        .expect("Validate RaftNodeConfig successfully");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -716,7 +742,10 @@ async fn test_send_vote_requests_case4_2() {
 #[traced_test]
 async fn test_send_vote_requests_case4_3() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new()
+        .expect("Should succeed to init RaftNodeConfig.")
+        .validate()
+        .expect("Validate RaftNodeConfig successfully");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -762,7 +791,10 @@ async fn test_send_vote_requests_case4_3() {
 #[traced_test]
 async fn test_send_vote_requests_case5() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let node_config = RaftNodeConfig::new()
+        .expect("Should succeed to init RaftNodeConfig.")
+        .validate()
+        .expect("Validate RaftNodeConfig successfully");
 
     let peer1_id = 2;
     let peer2_id = 3;
@@ -828,7 +860,7 @@ async fn test_purge_requests_case1_empty_peers() {
     };
 
     let membership = mock_membership(vec![], HashMap::new());
-    let node_config = RaftNodeConfig::new().unwrap();
+    let node_config = RaftNodeConfig::new().unwrap().validate().unwrap();
     match client.send_purge_requests(req, &node_config.retry, membership).await {
         Ok(_) => panic!("Should reject empty peer list"),
         Err(e) => assert!(
@@ -850,7 +882,7 @@ async fn test_purge_requests_case1_empty_peers() {
 #[traced_test]
 async fn test_purge_requests_case2_self_reference() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().unwrap();
+    let node_config = RaftNodeConfig::new().unwrap().validate().unwrap();
     let req = PurgeLogRequest {
         term: 1,
         leader_id: my_id,
@@ -896,7 +928,7 @@ async fn test_purge_requests_case2_self_reference() {
 #[traced_test]
 async fn test_purge_requests_case3_duplicate_peers() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().unwrap();
+    let node_config = RaftNodeConfig::new().unwrap().validate().unwrap();
     let req = PurgeLogRequest {
         term: 1,
         leader_id: my_id,
@@ -942,7 +974,7 @@ async fn test_purge_requests_case3_duplicate_peers() {
 #[traced_test]
 async fn test_purge_requests_case4_mixed_responses() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().unwrap();
+    let node_config = RaftNodeConfig::new().unwrap().validate().unwrap();
     let req = PurgeLogRequest {
         term: 1,
         leader_id: my_id,
@@ -1009,7 +1041,7 @@ async fn test_purge_requests_case4_mixed_responses() {
 #[traced_test]
 async fn test_purge_requests_case5_full_success() {
     let my_id = 1;
-    let node_config = RaftNodeConfig::new().unwrap();
+    let node_config = RaftNodeConfig::new().unwrap().validate().unwrap();
     let req = PurgeLogRequest {
         term: 1,
         leader_id: my_id,

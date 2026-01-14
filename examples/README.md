@@ -34,7 +34,7 @@ Usage examples demonstrating different d-engine integration modes.
 | ------------------------------------------------------------- | --------------------------------------------- |
 | [quick-start-standalone](quick-start-standalone/)             | Go client + 3-node cluster                    |
 | [service-discovery-standalone](service-discovery-standalone/) | Service discovery with separate client/server |
-| [client_usage](client_usage/)                                 | Rust gRPC client examples                     |
+| [client-usage-standalone](client-usage-standalone/)           | Rust gRPC client examples                     |
 
 **Use case**: Language flexibility, separate services, microservices architecture
 
@@ -42,10 +42,18 @@ Usage examples demonstrating different d-engine integration modes.
 
 ## Cluster Management
 
-| Example                                         | Description                           |
-| ----------------------------------------------- | ------------------------------------- |
-| [three-nodes-cluster](three-nodes-cluster/)     | Bootstrap 3-node cluster from scratch |
-| [single-node-expansion](single-node-expansion/) | Start with 1 node, expand to 3 nodes  |
+### Embedded Mode Clusters
+
+| Example                                         | Description                                        |
+| ----------------------------------------------- | -------------------------------------------------- |
+| [three-nodes-embedded](three-nodes-embedded/)   | 3-node HA cluster with HTTP API for load balancers |
+| [single-node-expansion](single-node-expansion/) | Scale from 1 to 3 nodes dynamically                |
+
+### Standalone Mode Clusters
+
+| Example                                           | Description           |
+| ------------------------------------------------- | --------------------- |
+| [three-nodes-standalone](three-nodes-standalone/) | 3-node cluster (gRPC) |
 
 ---
 
