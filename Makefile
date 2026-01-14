@@ -66,7 +66,7 @@ help:
 	@echo ""
 	@echo "  $(YELLOW)Documentation:$(NC)"
 	@echo "    make docs           # Build and open documentation in browser"
-	@echo "    make docs-check     # Verify docs compile without warnings"
+	@echo "    make docs-check     # Simulate docs.rs build (all features, strict warnings)"
 	@echo "    make docs-private   # Build docs with private items visible"
 	@echo "    make docs-crate CRATE=name  # Build docs for specific crate"
 	@echo ""
@@ -251,10 +251,13 @@ test: install-tools check-workspace check-all-projects
 # ============================================================================
 
 ## bench                Run performance benchmarks with regression detection
+## bench                Run performance benchmarks
 bench: check-workspace
 	@echo "$(BLUE)Running performance benchmarks...$(NC)"
-	@$(CARGO) bench --workspace --all-features || \
-		{ echo "$(RED)✗ Benchmark execution failed$(NC)"; exit 1; }
+	@BENCH_OP_TIMEOUT_MS=200 $(CARGO) bench --workspace --all-features || \
+		{ echo "$(RED)✗ Benchmark execution failed$(NC)"; \
+		  echo "$(YELLOW)Tip: On slow machines, try: BENCH_OP_TIMEOUT_MS=500 make bench$(NC)"; \
+		  exit 1; }
 	@echo "$(GREEN)✓ Benchmark run completed$(NC)"
 	@echo "$(CYAN)→ View detailed results: target/criterion/report/index.html$(NC)"
 
@@ -347,7 +350,7 @@ clean-deps: clean
 # ============================================================================
 
 ## pre-release          Full pre-release validation (comprehensive checks)
-pre-release: install-tools check-workspace check test audit build-release
+pre-release: install-tools check-workspace check docs-check test audit build-release
 	@echo "$(BLUE)Checking version consistency across workspace...$(NC)"
 	@version=$$(grep '^version' d-engine/Cargo.toml | head -n1 | cut -d'"' -f2); \
 	for crate in d-engine-proto d-engine-core d-engine-client d-engine-server d-engine; do \
