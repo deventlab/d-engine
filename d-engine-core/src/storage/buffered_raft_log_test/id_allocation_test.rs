@@ -219,12 +219,33 @@ async fn test_mixed_allocation_strategies() {
 async fn test_edge_cases() {
     let raft_log = setup_memory();
 
+    // Test: Single ID allocation
     let single = raft_log.pre_allocate_id_range(1);
     assert_eq!(*single.start(), 1);
     assert_eq!(*single.end(), 1);
 
+    // Test: Allocation near u64::MAX boundary (successful)
     raft_log.next_id().store(u64::MAX - 5, Ordering::SeqCst);
     let range = raft_log.pre_allocate_id_range(5);
     assert_eq!(*range.start(), u64::MAX - 5);
     assert_eq!(*range.end(), u64::MAX - 1);
+}
+
+/// Test ID allocation overflow protection
+///
+/// # Scenario
+/// - Set next_id to u64::MAX - 5
+/// - Attempt to allocate 10 IDs (would overflow)
+/// - Expected: Panics with "ID overflow" message
+#[tokio::test]
+#[should_panic(expected = "ID overflow")]
+async fn test_id_allocation_overflow_panics() {
+    let raft_log = setup_memory();
+
+    // Arrange: Set next_id close to max value
+    raft_log.next_id().store(u64::MAX - 5, Ordering::SeqCst);
+
+    // Act: Try to allocate more IDs than available (10 > 5 remaining)
+    // Expected: Panics due to overflow protection
+    raft_log.pre_allocate_id_range(10);
 }

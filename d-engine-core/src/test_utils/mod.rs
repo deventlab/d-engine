@@ -1,5 +1,5 @@
-//! the test_utils folder here will share utils or test components betwee unit
-//! tests and integrations tests
+//! the test_utils folder here will share utils or test components between unit
+//! tests and integration tests
 mod buffered_raft_log_test_helpers;
 mod common;
 mod entry_builder;

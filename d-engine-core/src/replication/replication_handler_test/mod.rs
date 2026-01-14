@@ -14,7 +14,6 @@
 //! - `edge_cases_test`: Network partitions, timeouts, large batches
 //! - `log_retrieval_test`: Log synchronization and retrieval logic
 //! - `helper_functions_test`: Internal helper function unit tests
-//! - `batch_handling_test`: Batch request processing and aggregation
 
 #[cfg(test)]
 mod basic_scenarios_test;

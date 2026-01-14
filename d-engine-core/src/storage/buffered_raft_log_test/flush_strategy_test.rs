@@ -44,7 +44,7 @@ async fn test_disk_first_persists_entries_immediately() {
 /// Test DiskFirst concurrent writes remain consistent
 ///
 /// # Scenario
-/// - 10 concurrent goroutines each append 100 entries
+/// - 10 concurrent tasks each append 100 entries
 /// - Expected: All 1000 entries durable, no data loss
 #[tokio::test]
 async fn test_disk_first_concurrent_writes_remain_consistent() {

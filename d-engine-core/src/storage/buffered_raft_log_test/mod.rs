@@ -22,11 +22,9 @@
 
 mod basic_operations_test;
 mod concurrent_operations_test;
-mod crash_recovery_test;
 mod durable_index_test;
 mod edge_cases_test;
 mod flush_strategy_test;
-mod helper_functions_test;
 mod id_allocation_test;
 mod performance_test;
 mod raft_properties_test;

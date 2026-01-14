@@ -245,27 +245,27 @@ async fn test_last_entry_matches_buffer_length() {
     );
 }
 
-/// Test last_entry handles index wraparound edge case
+/// Test last_entry with large payload ID value
 ///
 /// # Scenario
-/// - Insert entry at u64::MAX-1
-/// - Expected: Correctly handles max index value
+/// - Insert entry with u64::MAX-1 as payload ID (not index)
+/// - Expected: Entry index is sequential (1), large payload ID handled correctly
 #[tokio::test]
-async fn test_last_entry_handles_wraparound() {
+async fn test_last_entry_with_large_payload_id() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             threshold: 1,
             interval_ms: 1,
         },
-        "test_last_entry_handles_wraparound",
+        "test_last_entry_with_large_payload_id",
     );
 
-    // Arrange: Insert at max index
+    // Arrange: Insert command with large payload ID (not affecting entry index)
     let max = u64::MAX;
     simulate_insert_command(&ctx.raft_log, vec![max - 1], 1).await;
 
-    // Act & Assert: Verify index
+    // Act & Assert: Entry index is sequential, not affected by payload ID
     let last = ctx.raft_log.last_entry().unwrap();
     assert_eq!(last.index, 1);
 }
