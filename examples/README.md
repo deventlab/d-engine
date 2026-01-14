@@ -34,7 +34,7 @@ Usage examples demonstrating different d-engine integration modes.
 | ------------------------------------------------------------- | --------------------------------------------- |
 | [quick-start-standalone](quick-start-standalone/)             | Go client + 3-node cluster                    |
 | [service-discovery-standalone](service-discovery-standalone/) | Service discovery with separate client/server |
-| [client_usage](client_usage/)                                 | Rust gRPC client examples                     |
+| [client-usage-standalone](client-usage-standalone/)           | Rust gRPC client examples                     |
 
 **Use case**: Language flexibility, separate services, microservices architecture
 

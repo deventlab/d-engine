@@ -632,8 +632,8 @@ impl<T: TypeConfig> CandidateState<T> {
         })
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn new(
+    #[cfg(test)]
+    pub(crate) fn new(
         node_id: u32,
         node_config: Arc<RaftNodeConfig>,
     ) -> Self {

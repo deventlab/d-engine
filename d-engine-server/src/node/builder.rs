@@ -629,7 +629,7 @@ where
     /// # Safety
     /// Bypasses normal configuration validation - use for testing only
     #[cfg(test)]
-    pub fn new_from_db_path(
+    pub(crate) fn new_from_db_path(
         db_path: &str,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {

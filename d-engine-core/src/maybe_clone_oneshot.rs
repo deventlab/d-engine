@@ -18,7 +18,7 @@ use std::task::Context;
 use std::task::Poll;
 
 use d_engine_proto::server::storage::SnapshotChunk;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 use tonic::Status;
@@ -36,7 +36,7 @@ pub struct MaybeCloneOneshotSender<T: Send> {
     #[allow(dead_code)]
     inner: oneshot::Sender<T>,
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(any(test, feature = "__test_support"))]
     test_inner: Option<broadcast::Sender<T>>, // None for non-cloneable types
 }
 
@@ -53,10 +53,10 @@ pub struct MaybeCloneOneshotReceiver<T: Send> {
     #[allow(dead_code)]
     inner: oneshot::Receiver<T>,
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(any(test, feature = "__test_support"))]
     test_inner: Option<broadcast::Receiver<T>>, // None for non-cloneable types
 }
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 impl<T: Send> MaybeCloneOneshotSender<T> {
     pub fn send(
         &self,
@@ -71,7 +71,7 @@ impl<T: Send> MaybeCloneOneshotSender<T> {
     }
 }
 
-#[cfg(not(any(test, feature = "test-utils")))]
+#[cfg(not(any(test, feature = "__test_support")))]
 impl<T: Send> MaybeCloneOneshotSender<T> {
     pub fn send(
         self,
@@ -82,7 +82,7 @@ impl<T: Send> MaybeCloneOneshotSender<T> {
 }
 
 impl<T: Send + Clone> MaybeCloneOneshotReceiver<T> {
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(any(test, feature = "__test_support"))]
     pub async fn recv(&mut self) -> Result<T, broadcast::error::RecvError> {
         if let Some(rx) = &mut self.test_inner {
             rx.recv().await
@@ -93,7 +93,7 @@ impl<T: Send + Clone> MaybeCloneOneshotReceiver<T> {
     }
 }
 
-#[cfg(not(any(test, feature = "test-utils")))]
+#[cfg(not(any(test, feature = "__test_support")))]
 impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
     type Output = Result<T, oneshot::error::RecvError>;
 
@@ -104,7 +104,7 @@ impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
         unsafe { self.map_unchecked_mut(|s| &mut s.inner) }.poll(cx)
     }
 }
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
     type Output = Result<T, broadcast::error::RecvError>;
 
@@ -137,7 +137,7 @@ impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 impl<T: Send + Clone> Clone for MaybeCloneOneshotSender<T> {
     fn clone(&self) -> Self {
         let (sender, _) = oneshot::channel();
@@ -147,7 +147,7 @@ impl<T: Send + Clone> Clone for MaybeCloneOneshotSender<T> {
         }
     }
 }
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 impl<T: Send + Clone> Clone for MaybeCloneOneshotReceiver<T> {
     fn clone(&self) -> Self {
         let (_, receiver) = oneshot::channel();
@@ -158,7 +158,7 @@ impl<T: Send + Clone> Clone for MaybeCloneOneshotReceiver<T> {
         }
     }
 }
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 impl<T: Send + Clone> RaftOneshot<T> for MaybeCloneOneshot {
     type Sender = MaybeCloneOneshotSender<T>;
     type Receiver = MaybeCloneOneshotReceiver<T>;
@@ -178,8 +178,7 @@ impl<T: Send + Clone> RaftOneshot<T> for MaybeCloneOneshot {
         )
     }
 }
-
-#[cfg(not(any(test, feature = "test-utils")))]
+#[cfg(not(any(test, feature = "__test_support")))]
 impl<T: Send> RaftOneshot<T> for MaybeCloneOneshot {
     type Sender = MaybeCloneOneshotSender<T>;
     type Receiver = MaybeCloneOneshotReceiver<T>;
@@ -189,12 +188,12 @@ impl<T: Send> RaftOneshot<T> for MaybeCloneOneshot {
         (
             MaybeCloneOneshotSender {
                 inner: tx,
-                #[cfg(any(test, feature = "test-utils"))]
+                #[cfg(any(test, feature = "__test_support"))]
                 test_inner: None,
             },
             MaybeCloneOneshotReceiver {
                 inner: rx,
-                #[cfg(any(test, feature = "test-utils"))]
+                #[cfg(any(test, feature = "__test_support"))]
                 test_inner: None,
             },
         )
@@ -205,7 +204,7 @@ impl<T: Send> RaftOneshot<T> for MaybeCloneOneshot {
 pub struct StreamResponseSender {
     inner: oneshot::Sender<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>,
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[cfg(any(test, feature = "__test_support"))]
     test_inner:
         Option<broadcast::Sender<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>>,
 }
@@ -219,7 +218,7 @@ impl StreamResponseSender {
         (
             Self {
                 inner: inner_tx,
-                #[cfg(any(test, feature = "test-utils"))]
+                #[cfg(any(test, feature = "__test_support"))]
                 test_inner: None,
             },
             inner_rx,
@@ -230,10 +229,10 @@ impl StreamResponseSender {
         self,
         value: std::result::Result<tonic::Streaming<SnapshotChunk>, Status>,
     ) -> Result<(), Box<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>> {
-        #[cfg(not(any(test, feature = "test-utils")))]
+        #[cfg(not(any(test, feature = "__test_support")))]
         return self.inner.send(value).map_err(Box::new);
 
-        #[cfg(any(test, feature = "test-utils"))]
+        #[cfg(any(test, feature = "__test_support"))]
         if let Some(tx) = self.test_inner {
             tx.send(value).map(|_| ()).map_err(|e| Box::new(e.0))
         } else {

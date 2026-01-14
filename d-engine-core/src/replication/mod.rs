@@ -13,6 +13,9 @@ pub use replication_handler::*;
 #[cfg(test)]
 mod batch_buffer_test;
 
+#[cfg(test)]
+pub mod replication_handler_test;
+
 // Client Request Extension Definition
 // -----------------------------------------------------------------------------
 use std::collections::HashMap;
@@ -26,7 +29,7 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
 use dashmap::DashMap;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 use tonic::Status;
 use tonic::async_trait;
@@ -56,7 +59,7 @@ pub struct AppendResponseWithUpdates {
 }
 
 /// Core replication protocol operations
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait ReplicationCore<T>: Send + Sync + 'static
 where

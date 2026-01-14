@@ -11,7 +11,7 @@ pub use default_executor::*;
 mod default_executor_test;
 
 use d_engine_proto::common::LogId;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 use tonic::async_trait;
 
@@ -24,7 +24,7 @@ use crate::Result;
 /// 1. All entries up to `last_included.index` are preserved in snapshots
 /// 2. No concurrent modifications during purge execution
 /// 3. Atomic persistence of purge metadata
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait PurgeExecutor: Send + Sync + 'static {
     /// Physically removes log entries up to specified index (inclusive)

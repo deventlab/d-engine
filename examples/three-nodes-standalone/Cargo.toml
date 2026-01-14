@@ -5,7 +5,7 @@ edition = "2024"
 
 
 [dependencies]
-d-engine = { path = "../../d-engine", features = ["rocksdb"] }
+d-engine = { path = "../../d-engine", features = ["rocksdb", "watch"] }
 # d-engine = "0.2"
 # d-engine = { git = "https://github.com/deventlab/d-engine.git", branch = "feature/79-snapshot" }
 

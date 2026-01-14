@@ -4,11 +4,12 @@ use std::time::Instant;
 use d_engine_core::ConnectionParams;
 use d_engine_core::ConnectionType;
 use d_engine_core::NetworkConfig;
-use d_engine_core::test_utils::MockRpcService;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
 use super::*;
+use crate::test_utils::MockNode;
+use crate::test_utils::MockRpcService;
 use crate::utils::net::address_str;
 
 // Helper to create test config
@@ -25,10 +26,7 @@ async fn mock_address() -> (String, oneshot::Sender<()>) {
     let (tx, rx) = oneshot::channel::<()>();
     let is_ready = true;
     let mock_service = MockRpcService::default();
-    let (_port, addr) =
-        d_engine_core::test_utils::MockNode::mock_listener(mock_service, rx, is_ready)
-            .await
-            .unwrap();
+    let (_port, addr) = MockNode::mock_listener(mock_service, rx, is_ready).await.unwrap();
 
     (address_str(&addr.to_string()), tx)
 }

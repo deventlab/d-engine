@@ -238,7 +238,8 @@ impl FileLogStore {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
+    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn reset_sync(&self) -> Result<(), Error> {
         {
             let mut file = self.file_handle.lock().unwrap();

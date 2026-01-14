@@ -20,10 +20,10 @@ mod log_size_test;
 #[cfg(test)]
 mod time_based_test;
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 
-#[cfg_attr(any(test, feature = "test-utils"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
 pub trait SnapshotPolicy: Send + Sync {
     fn should_trigger(
         &self,

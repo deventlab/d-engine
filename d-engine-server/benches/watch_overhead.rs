@@ -35,6 +35,24 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 //=============================================================================
+// Configuration
+//=============================================================================
+
+/// Get operation timeout from environment variable or use default
+///
+/// Set BENCH_OP_TIMEOUT_MS to adjust timeout for slower machines:
+/// ```bash
+/// BENCH_OP_TIMEOUT_MS=500 cargo bench
+/// ```
+fn get_op_timeout() -> Duration {
+    std::env::var("BENCH_OP_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(200)) // Default: 200ms (was 50ms)
+}
+
+//=============================================================================
 // Helper Functions
 //=============================================================================
 
@@ -178,7 +196,7 @@ fn bench_watch_notification_latency(c: &mut Criterion) {
             let mut watcher = engine.watch(key).expect("Failed to register watcher");
 
             // Give watcher time to register
-            sleep(Duration::from_millis(50)).await;
+            sleep(get_op_timeout()).await;
 
             // Spawn receiver task
             let recv_handle = tokio::spawn(async move {
@@ -230,7 +248,7 @@ fn bench_multiple_watchers_same_key(c: &mut Criterion) {
                 }
 
                 runtime.block_on(async {
-                    sleep(Duration::from_millis(50)).await;
+                    sleep(get_op_timeout()).await;
                 });
 
                 b.to_async(&runtime).iter(|| async {

@@ -19,7 +19,7 @@
 //!
 //! # Note
 //!
-//! This module is only available with the `test-utils` feature or during tests.
+//! This module is only available during tests.
 
 mod integration;
 mod mock;

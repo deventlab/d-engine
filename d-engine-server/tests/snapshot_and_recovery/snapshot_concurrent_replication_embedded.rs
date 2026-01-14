@@ -27,6 +27,7 @@
 use d_engine_server::EmbeddedEngine;
 use d_engine_server::RocksDBStateMachine;
 use d_engine_server::RocksDBStorageEngine;
+use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -56,6 +57,7 @@ use crate::common::get_available_ports;
 /// - No data loss or corruption during temporary DB replacement
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn test_learner_snapshot_concurrent_replication() -> Result<(), Box<dyn std::error::Error>> {
     const SNAPSHOT_THRESHOLD: u64 = 100;
     const RETAINED_LOGS: u64 = 50;

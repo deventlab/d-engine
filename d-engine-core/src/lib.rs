@@ -112,10 +112,12 @@ mod errors_test;
 #[cfg(test)]
 mod raft_oneshot_test;
 
-#[cfg(any(test, feature = "test-utils"))]
+/// Internal test utilities - not part of public API
+#[cfg(any(test, feature = "__test_support"))]
+#[doc(hidden)]
 pub mod test_utils;
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(any(test, feature = "__test_support"))]
 pub use test_utils::*;
 
 /// In raft, during any Leader to Peer communication,
