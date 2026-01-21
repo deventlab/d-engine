@@ -11,7 +11,7 @@
 - ✅ Rust-native applications requiring ultra-low latency
 - ✅ High-throughput systems (200K+ ops/sec)
 - ✅ Zero serialization overhead (direct memory access)
-- ✅ Single-machine vertical scaling
+- ✅ 3-node cluster on single machine (vertical scaling)
 
 **Embedded Mode Performance**:
 
@@ -32,7 +32,7 @@
 **Key Insight**: Code optimizations significantly improved linearizable read performance (20x vs previous), while maintaining sub-millisecond latencies across all consistency modes. Single-client write shows Raft consensus overhead, but high-concurrency write achieves 3.1x speedup.
 
 **Test Date**: January 8, 2026
-**Hardware**: Apple M2 Mac mini (8-core, 16GB RAM, single machine 3-node cluster)
+**Hardware**: Apple M2 Mac mini (8-core, 16GB RAM, 3-node cluster on localhost)
 
 ---
 
@@ -171,7 +171,7 @@ make test-hot-key NODE=n1
 - **Machine:** Apple Mac mini (M2 Chip)
   - 8-core CPU (4 performance + 4 efficiency cores)
   - 16GB Unified Memory
-  - Single machine deployment (all 3 nodes on same machine)
+  - 3-node cluster on localhost (all nodes on same machine)
 - **Software:** d-engine v0.2.2
 - **Storage:** RocksDB backend with MemFirst + Batch Flush (threshold=1024, interval=100ms)
 - **Cluster:** 3-node embedded configuration
@@ -312,7 +312,7 @@ make test-hot-key NODE=n1
 ### Best For Embedded Mode
 
 - **Rust-native applications** requiring ultra-low latency
-- **Single-machine deployments** with vertical scaling
+- **3-node cluster on single machine** with vertical scaling
 - **High-throughput systems** (500K+ ops/sec read workloads)
 - **Real-time services** with <2ms latency requirements
 
@@ -343,7 +343,7 @@ d-engine v0.2.2 embedded mode delivers **exceptional performance** for in-proces
 - Rust-native applications
 - Ultra-low latency requirements (<0.1ms)
 - High-throughput workloads (200K+ ops/sec)
-- Single-machine deployment acceptable
+- 3-node cluster on single machine acceptable
 - Zero-copy operations critical
 
 **Production Ready**: Robust hot-key handling (306K ops/sec under contention), predictable tail latencies, zero-copy operations.
@@ -352,5 +352,5 @@ d-engine v0.2.2 embedded mode delivers **exceptional performance** for in-proces
 
 **Version:** d-engine v0.2.2
 **Report Date:** January 8, 2026
-**Test Environment:** Apple M2 Mac mini (8-core, 16GB RAM, single machine 3-node embedded cluster)
+**Test Environment:** Apple M2 Mac mini (8-core, 16GB RAM, 3-node embedded cluster on localhost)
 **Benchmark Mode:** Batch execution (all tests in sequence)

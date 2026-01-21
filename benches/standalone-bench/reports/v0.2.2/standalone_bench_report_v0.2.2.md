@@ -28,7 +28,7 @@
 
 **Key Achievement**: Linearizable read latency reduced by **81.5%** (3.1ms vs 16.9ms), achieving production-grade performance for strong consistency reads.
 
-**Hardware Context**: d-engine on M2 Mac mini (single machine) vs etcd on GCE (3 dedicated machines)
+**Hardware Context**: d-engine 3-node cluster on M2 Mac localhost vs etcd on GCE (3 dedicated machines)
 
 **Test Date**: January 9, 2026
 
@@ -309,5 +309,5 @@ d-engine v0.2.2 Standalone mode demonstrates **significant performance improveme
 
 **Version:** d-engine v0.2.2
 **Report Date:** January 9, 2026
-**Test Environment:** Apple M2 Mac mini (8-core, 16GB RAM, single machine 3-node cluster)
+**Test Environment:** Apple M2 Mac mini (8-core, 16GB RAM, 3-node cluster on localhost)
 **Benchmark Runs:** Single run per configuration (same-day testing for v0.1.4 and v0.2.2)
