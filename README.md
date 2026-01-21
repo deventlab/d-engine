@@ -72,7 +72,7 @@ async fn main() {
 
 > **Note**: Release builds require explicit `db_root_dir` configuration. Set `CONFIG_PATH` env or use `EmbeddedEngine::with_config(...)`. See [Quick Start Guide](https://docs.rs/d-engine/latest/d_engine/docs/quick_start_5min/index.html).
 
-**→ Full example:** [examples/quick-start-embedded](examples/quick-start-embedded/README.md)
+**→ Full example:** [examples/quick-start-embedded](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-embedded)
 
 ---
 
@@ -87,12 +87,12 @@ d-engine = "0.2"
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
-> **Performance note**: Embedded mode delivers exceptional performance - **4.6x higher write throughput** and **2x faster linearizable reads** vs etcd 3.5 (M2 Mac single machine vs etcd on 3 GCE instances). Achieves 203K writes/sec and 279K linearizable reads/sec. See [benches/embedded-bench/reports/v0.2.2/](benches/embedded-bench/reports/v0.2.2/) for detailed benchmarks.
+> **Performance note**: Embedded mode delivers exceptional performance - **4.6x higher write throughput** and **2x faster linearizable reads** vs etcd 3.5 (3-node cluster on M2 Mac localhost vs etcd on 3 GCE instances). Achieves 203K writes/sec and 279K linearizable reads/sec. See [benches/embedded-bench/reports/v0.2.2/](https://github.com/deventlab/d-engine/tree/main/benches/embedded-bench/reports/v0.2.2) for detailed benchmarks.
 
 **→ Examples:**
 
-- [Quick Start Embedded](examples/quick-start-embedded/README.md) - Minimal setup
-- [Service Discovery Embedded](examples/service-discovery-embedded/README.md) - Watch API with sub-millisecond latency
+- [Quick Start Embedded](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-embedded) - Minimal setup
+- [Service Discovery Embedded](https://github.com/deventlab/d-engine/tree/main/examples/service-discovery-embedded) - Watch API with sub-millisecond latency
 
 ---
 
@@ -105,11 +105,11 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 **Use when**: Application and d-engine run as separate processes  
 **Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
 
-> **Performance note**: Standalone mode achieves 64K writes/sec and 12K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (3.1x faster writes, 23x faster reads). See [benches/standalone-bench/reports/v0.2.2/](benches/standalone-bench/reports/v0.2.2/) for benchmarks.
+> **Performance note**: Standalone mode achieves 64K writes/sec and 12K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (3.1x faster writes, 23x faster reads). See [benches/standalone-bench/reports/v0.2.2/](https://github.com/deventlab/d-engine/tree/main/benches/standalone-bench/reports/v0.2.2) for benchmarks.
 
 **Note**: Rust apps can use both modes - embedded for performance, standalone for operational flexibility
 
-**→ Example:** [Quick Start Standalone (Go client)](examples/quick-start-standalone/README.md)
+**→ Example:** [Quick Start Standalone (Go client)](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-standalone)
 
 ---
 
@@ -125,7 +125,7 @@ Implement custom storage engines and state machines by implementing the respecti
 
 - **Custom Storage Engines**: [Implementation Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
 - **Custom State Machines**: [Implementation Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
-- **Example**: [Sled Storage Backend](examples/sled-cluster)
+- **Example**: [Sled Storage Backend](https://github.com/deventlab/d-engine/tree/main/examples/sled-cluster)
 
 ---
 
@@ -182,7 +182,7 @@ This approach keeps d-engine focused and maintainable.
 ## Contribution Guide
 
 d-engine follows the 20/80 rule - solve real production problems, not experiments.
-Read [Contributing Guide](CONTRIBUTING.md) and open an issue before feature PRs.
+Read [Contributing Guide](https://github.com/deventlab/d-engine/blob/main/CONTRIBUTING.md) and open an issue before feature PRs.
 Bug fixes are always welcome.
 
 ### Prerequisites
@@ -217,7 +217,7 @@ Yes. Scale to 3 nodes later with zero downtime (see `examples/single-node-expans
 Implement `StorageEngine` and `StateMachine` traits (see Custom Storage Implementations section).
 
 **Production-ready?**  
-Core Raft engine is production-grade (1000+ tests, Jepsen validated). API is stabilizing toward v1.0. Pre-1.0 versions may introduce breaking changes (documented in [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md)).
+Core Raft engine is production-grade (1000+ tests, Jepsen validated). API is stabilizing toward v1.0. Pre-1.0 versions may introduce breaking changes (documented in [MIGRATION_GUIDE.md](https://github.com/deventlab/d-engine/blob/main/MIGRATION_GUIDE.md)).
 
 ## Supported Platforms
 

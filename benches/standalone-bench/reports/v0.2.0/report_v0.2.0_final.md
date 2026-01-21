@@ -14,7 +14,7 @@
 - ✅ **LeaseRead p99**: -44% latency (7.87ms vs 14.05ms) - biggest win
 - ✅ **No regressions detected**
 
-**Hardware Context**: d-engine on M2 Mac mini (single machine) vs etcd on GCE (3 dedicated machines)
+**Hardware Context**: d-engine 3-node cluster on M2 Mac localhost vs etcd on GCE (3 dedicated machines)
 
 **Test Date**: December 13, 2025 (both v0.1.4 and v0.2.0 tested same day for fair comparison)
 
@@ -258,5 +258,5 @@ d-engine v0.2.0 demonstrates **consistent performance improvements** across all 
 
 **Version:** d-engine v0.2.0  
 **Report Date:** December 13, 2025  
-**Test Environment:** Apple M2 Mac mini (8-core, 16GB RAM, single machine 3-node cluster)  
+**Test Environment:** Apple M2 Mac mini (8-core, 16GB RAM, 3-node cluster on localhost)
 **Benchmark Runs:** Single run per configuration (same-day testing for v0.1.4 and v0.2.0)
