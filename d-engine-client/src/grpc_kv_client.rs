@@ -23,9 +23,8 @@ use tracing::warn;
 use super::ClientInner;
 use crate::ClientApiError;
 use crate::ClientResponseExt;
-use crate::KvClient as CoreKvClient;
-use crate::KvResult;
 use crate::scoped_timer::ScopedTimer;
+use d_engine_core::client::{ClientApi, ClientApiResult};
 
 /// gRPC-based key-value store client
 ///
@@ -39,144 +38,6 @@ pub struct GrpcKvClient {
 impl GrpcKvClient {
     pub(crate) fn new(client_inner: Arc<ArcSwap<ClientInner>>) -> Self {
         Self { client_inner }
-    }
-
-    /// Stores a value with strong consistency
-    ///
-    /// # Errors
-    /// - [`crate::ClientApiError::Network`] on network failures
-    /// - [`crate::ClientApiError::Protocol`] for protocol errors
-    /// - [`crate::ClientApiError::Storage`] for server-side storage errors
-    pub async fn put(
-        &self,
-        key: impl AsRef<[u8]>,
-        value: impl AsRef<[u8]>,
-    ) -> std::result::Result<(), ClientApiError> {
-        let _timer = ScopedTimer::new("client::put");
-
-        let client_inner = self.client_inner.load();
-
-        // Build request
-        let mut commands = Vec::new();
-        let client_command_insert = WriteCommand::insert(
-            Bytes::copy_from_slice(key.as_ref()),
-            Bytes::copy_from_slice(value.as_ref()),
-        );
-        commands.push(client_command_insert);
-
-        let request = ClientWriteRequest {
-            client_id: client_inner.client_id,
-            commands,
-        };
-
-        let mut client = self.make_leader_client().await?;
-        // Send write request
-        match client.handle_client_write(request).await {
-            Ok(response) => {
-                debug!("[:KvClient:write] response: {:?}", response);
-                let client_response = response.get_ref();
-                client_response.validate_error()
-            }
-            Err(status) => {
-                error!("[:KvClient:write] status: {:?}", status);
-                Err(status.into())
-            }
-        }
-    }
-
-    /// Stores a value with TTL (time-to-live) and strong consistency
-    ///
-    /// Key will automatically expire and be deleted after ttl_secs seconds.
-    ///
-    /// # Arguments
-    /// * `key` - The key to store
-    /// * `value` - The value to store
-    /// * `ttl_secs` - Time-to-live in seconds
-    ///
-    /// # Errors
-    /// - [`crate::ClientApiError::Network`] on network failures
-    /// - [`crate::ClientApiError::Protocol`] for protocol errors
-    /// - [`crate::ClientApiError::Storage`] for server-side storage errors
-    pub async fn put_with_ttl(
-        &self,
-        key: impl AsRef<[u8]>,
-        value: impl AsRef<[u8]>,
-        ttl_secs: u64,
-    ) -> std::result::Result<(), ClientApiError> {
-        let _timer = ScopedTimer::new("client::put_with_ttl");
-
-        let client_inner = self.client_inner.load();
-
-        // Build request with TTL
-        let mut commands = Vec::new();
-        let client_command_insert = WriteCommand::insert_with_ttl(
-            Bytes::copy_from_slice(key.as_ref()),
-            Bytes::copy_from_slice(value.as_ref()),
-            ttl_secs,
-        );
-        commands.push(client_command_insert);
-
-        let request = ClientWriteRequest {
-            client_id: client_inner.client_id,
-            commands,
-        };
-
-        let mut client = self.make_leader_client().await?;
-        // Send write request
-        match client.handle_client_write(request).await {
-            Ok(response) => {
-                debug!("[:KvClient:put_with_ttl] response: {:?}", response);
-                let client_response = response.get_ref();
-                client_response.validate_error()
-            }
-            Err(status) => {
-                error!("[:KvClient:put_with_ttl] status: {:?}", status);
-                Err(status.into())
-            }
-        }
-    }
-
-    /// Deletes a key with strong consistency guarantees
-    ///
-    /// Permanently removes the specified key and its associated value from the store.
-    ///
-    /// # Parameters
-    /// - `key`: The byte-serialized key to delete. Supports any type implementing `AsRef<[u8]>`
-    ///   (e.g. `String`, `&str`, `Vec<u8>`)
-    ///
-    /// # Errors
-    /// - [`crate::ClientApiError::Network`] if unable to reach the leader node
-    /// - [`crate::ClientApiError::Protocol`] for protocol errors
-    /// - [`crate::ClientApiError::Storage`] for server-side storage errors
-    pub async fn delete(
-        &self,
-        key: impl AsRef<[u8]>,
-    ) -> std::result::Result<(), ClientApiError> {
-        let client_inner = self.client_inner.load();
-        // Build request
-        let mut commands = Vec::new();
-        let client_command_delete = WriteCommand::delete(Bytes::copy_from_slice(key.as_ref()));
-        commands.push(client_command_delete);
-
-        let request = ClientWriteRequest {
-            client_id: client_inner.client_id,
-            commands,
-        };
-
-        let mut client = self.make_leader_client().await?;
-
-        // Send delete request
-        match client.handle_client_write(request).await {
-            Ok(response) => {
-                debug!("[:KvClient:delete] response: {:?}", response);
-                let client_response = response.get_ref();
-                client_response.validate_error()
-            }
-            Err(status) => {
-                error!("[:KvClient:delete] status: {:?}", status);
-                Err(status.into())
-            }
-        }
     }
 
     // Convenience methods for explicit consistency levels
@@ -202,25 +63,6 @@ impl GrpcKvClient {
             .await
     }
 
-    /// Retrieves a single key's value using server's default consistency policy
-    ///
-    /// Uses the cluster's configured default consistency policy as defined in
-    /// the server's ReadConsistencyConfig.default_policy setting.
-    ///
-    /// # Parameters
-    /// * `key` - The key to retrieve, accepts any type implementing `AsRef<[u8]>`
-    ///
-    /// # Returns
-    /// * `Ok(Some(ClientResult))` - Key exists, returns key-value pair
-    /// * `Ok(None)` - Key does not exist in the store
-    /// * `Err(ClientApiError)` - Read failed due to network or consistency issues
-    pub async fn get(
-        &self,
-        key: impl AsRef<[u8]>,
-    ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
-        self.get_with_policy(key, None).await
-    }
-
     /// Retrieves a single key's value with explicit consistency policy
     ///
     /// Allows client to override server's default consistency policy for this specific request.
@@ -240,17 +82,6 @@ impl GrpcKvClient {
 
         // Extract single result (safe due to single-key input)
         Ok(results.pop().unwrap_or(None))
-    }
-
-    /// Fetches multiple keys using server's default consistency policy
-    ///
-    /// Uses the cluster's configured default consistency policy as defined in
-    /// the server's ReadConsistencyConfig.default_policy setting.
-    pub async fn get_multi(
-        &self,
-        keys: impl IntoIterator<Item = impl AsRef<[u8]>>,
-    ) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
-        self.get_multi_with_policy(keys, None).await
     }
 
     /// Fetches multiple keys with explicit consistency policy override
@@ -308,56 +139,6 @@ impl GrpcKvClient {
         }
     }
 
-    /// Watch for changes on a specific key
-    ///
-    /// Returns a stream of watch events whenever the specified key is modified (PUT or DELETE).
-    /// The stream will continue until the client drops the receiver or disconnects.
-    ///
-    /// # Arguments
-    /// * `key` - The exact key to watch (prefix/range watch not supported in v1)
-    ///
-    /// # Returns
-    /// * `Ok(Streaming<WatchResponse>)` - Stream of watch events
-    /// * `Err(ClientApiError)` - If watch feature is disabled or connection fails
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use futures::StreamExt;
-    ///
-    /// let mut stream = client.kv().watch("my_key").await?;
-    /// while let Some(event) = stream.next().await {
-    ///     match event {
-    ///         Ok(response) => println!("Key changed: {:?}", response),
-    ///         Err(e) => eprintln!("Watch error: {:?}", e),
-    ///     }
-    /// }
-    /// ```
-    pub async fn watch(
-        &self,
-        key: impl AsRef<[u8]>,
-    ) -> std::result::Result<tonic::Streaming<WatchResponse>, ClientApiError> {
-        let client_inner = self.client_inner.load();
-
-        let request = WatchRequest {
-            client_id: client_inner.client_id,
-            key: Bytes::copy_from_slice(key.as_ref()),
-        };
-
-        // Watch can connect to any node (leader or follower)
-        let mut client = self.make_client().await?;
-
-        match client.watch(request).await {
-            Ok(response) => {
-                debug!("Watch stream established");
-                Ok(response.into_inner())
-            }
-            Err(status) => {
-                error!("Watch request failed: {:?}", status);
-                Err(status.into())
-            }
-        }
-    }
-
     async fn make_leader_client(
         &self
     ) -> std::result::Result<RaftClientServiceClient<Channel>, ClientApiError> {
@@ -398,15 +179,45 @@ impl GrpcKvClient {
 
 // ==================== Core KvClient Trait Implementation ====================
 
-// Implement d_engine_core::KvClient trait for GrpcKvClient
+// Implement KvClient trait for GrpcKvClient
 #[async_trait::async_trait]
-impl CoreKvClient for GrpcKvClient {
+impl ClientApi for GrpcKvClient {
     async fn put(
         &self,
         key: impl AsRef<[u8]> + Send,
         value: impl AsRef<[u8]> + Send,
-    ) -> KvResult<()> {
-        GrpcKvClient::put(self, key, value).await.map_err(Into::into)
+    ) -> ClientApiResult<()> {
+        // Performance tracking for put operation
+        let _timer = ScopedTimer::new("client::put");
+
+        let client_inner = self.client_inner.load();
+
+        // Build write request with insert command
+        let mut commands = Vec::new();
+        let client_command_insert = WriteCommand::insert(
+            Bytes::copy_from_slice(key.as_ref()),
+            Bytes::copy_from_slice(value.as_ref()),
+        );
+        commands.push(client_command_insert);
+
+        let request = ClientWriteRequest {
+            client_id: client_inner.client_id,
+            commands,
+        };
+
+        // Send write request to leader node (strong consistency required)
+        let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
+        match client.handle_client_write(request).await {
+            Ok(response) => {
+                debug!("[:KvClient:write] response: {:?}", response);
+                let client_response = response.get_ref();
+                client_response.validate_error().map_err(Into::<ClientApiError>::into)
+            }
+            Err(status) => {
+                error!("[:KvClient:write] status: {:?}", status);
+                Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
+            }
+        }
     }
 
     async fn put_with_ttl(
@@ -414,35 +225,180 @@ impl CoreKvClient for GrpcKvClient {
         key: impl AsRef<[u8]> + Send,
         value: impl AsRef<[u8]> + Send,
         ttl_secs: u64,
-    ) -> KvResult<()> {
-        GrpcKvClient::put_with_ttl(self, key, value, ttl_secs).await.map_err(Into::into)
+    ) -> ClientApiResult<()> {
+        // Performance tracking for put_with_ttl operation
+        let _timer = ScopedTimer::new("client::put_with_ttl");
+
+        let client_inner = self.client_inner.load();
+
+        // Build write request with TTL-enabled insert command
+        let mut commands = Vec::new();
+        let client_command_insert = WriteCommand::insert_with_ttl(
+            Bytes::copy_from_slice(key.as_ref()),
+            Bytes::copy_from_slice(value.as_ref()),
+            ttl_secs,
+        );
+        commands.push(client_command_insert);
+
+        let request = ClientWriteRequest {
+            client_id: client_inner.client_id,
+            commands,
+        };
+
+        // Send write request to leader node (strong consistency required)
+        let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
+        match client.handle_client_write(request).await {
+            Ok(response) => {
+                debug!("[:KvClient:put_with_ttl] response: {:?}", response);
+                let client_response = response.get_ref();
+                client_response.validate_error().map_err(Into::<ClientApiError>::into)
+            }
+            Err(status) => {
+                error!("[:KvClient:put_with_ttl] status: {:?}", status);
+                Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
+            }
+        }
     }
 
     async fn get(
         &self,
         key: impl AsRef<[u8]> + Send,
-    ) -> KvResult<Option<Bytes>> {
-        match GrpcKvClient::get(self, key).await {
-            Ok(Some(result)) => Ok(Some(result.value)),
+    ) -> ClientApiResult<Option<Bytes>> {
+        // Delegate to get_with_policy with server's default consistency policy
+        let result = self.get_with_policy(key, None).await;
+
+        match result {
+            Ok(Some(client_result)) => Ok(Some(client_result.value)),
             Ok(None) => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(Into::<ClientApiError>::into(e)),
         }
     }
 
     async fn get_multi(
         &self,
         keys: &[Bytes],
-    ) -> KvResult<Vec<Option<Bytes>>> {
-        match GrpcKvClient::get_multi(self, keys.iter().cloned()).await {
-            Ok(results) => Ok(results.into_iter().map(|opt| opt.map(|r| r.value)).collect()),
-            Err(e) => Err(e.into()),
+    ) -> ClientApiResult<Vec<Option<Bytes>>> {
+        // Delegate to get_multi_with_policy with server's default consistency policy
+        let result = self.get_multi_with_policy(keys.iter().cloned(), None).await;
+
+        match result {
+            Ok(results) => {
+                // Extract values from ClientResult, preserving None for missing keys
+                Ok(results.into_iter().map(|opt| opt.map(|r| r.value)).collect())
+            }
+            Err(e) => Err(Into::<ClientApiError>::into(e)),
         }
     }
 
     async fn delete(
         &self,
         key: impl AsRef<[u8]> + Send,
-    ) -> KvResult<()> {
-        GrpcKvClient::delete(self, key).await.map_err(Into::into)
+    ) -> ClientApiResult<()> {
+        let client_inner = self.client_inner.load();
+
+        // Build delete request
+        let mut commands = Vec::new();
+        let client_command_delete = WriteCommand::delete(Bytes::copy_from_slice(key.as_ref()));
+        commands.push(client_command_delete);
+
+        let request = ClientWriteRequest {
+            client_id: client_inner.client_id,
+            commands,
+        };
+
+        // Send delete request to leader node (strong consistency required)
+        let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
+        match client.handle_client_write(request).await {
+            Ok(response) => {
+                debug!("[:KvClient:delete] response: {:?}", response);
+                let client_response = response.get_ref();
+                client_response.validate_error().map_err(Into::<ClientApiError>::into)
+            }
+            Err(status) => {
+                error!("[:KvClient:delete] status: {:?}", status);
+                Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
+            }
+        }
+    }
+
+    async fn compare_and_swap(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+        expected_value: Option<impl AsRef<[u8]> + Send>,
+        new_value: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<bool> {
+        let client_inner = self.client_inner.load();
+
+        // Build CAS request
+        let mut commands = Vec::new();
+        let expected = expected_value.map(|v| Bytes::copy_from_slice(v.as_ref()));
+        let client_command_cas = WriteCommand::compare_and_swap(
+            Bytes::copy_from_slice(key.as_ref()),
+            expected,
+            Bytes::copy_from_slice(new_value.as_ref()),
+        );
+        commands.push(client_command_cas);
+
+        let request = ClientWriteRequest {
+            client_id: client_inner.client_id,
+            commands,
+        };
+
+        // Send CAS request to leader node
+        let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
+        match client.handle_client_write(request).await {
+            Ok(response) => {
+                debug!("[:KvClient:compare_and_swap] response: {:?}", response);
+                let client_response = response.get_ref();
+
+                // Validate no error occurred
+                client_response.validate_error().map_err(Into::<ClientApiError>::into)?;
+
+                // Extract CAS result (true = succeeded, false = failed comparison)
+                Ok(client_response.succeeded())
+            }
+            Err(status) => {
+                error!("[:KvClient:compare_and_swap] status: {:?}", status);
+                Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
+            }
+        }
+    }
+
+    async fn watch(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<tonic::Streaming<WatchResponse>> {
+        let client_inner = self.client_inner.load();
+
+        let request = WatchRequest {
+            client_id: client_inner.client_id,
+            key: Bytes::copy_from_slice(key.as_ref()),
+        };
+
+        // Watch can connect to any node (leader or follower)
+        let mut client = self.make_client().await?;
+
+        match client.watch(request).await {
+            Ok(response) => {
+                debug!("Watch stream established");
+                Ok(response.into_inner())
+            }
+            Err(status) => {
+                error!("Watch request failed: {:?}", status);
+                Err(status.into())
+            }
+        }
+    }
+
+    async fn list_members(
+        &self
+    ) -> ClientApiResult<Vec<d_engine_proto::server::cluster::NodeMeta>> {
+        let client_inner = self.client_inner.load();
+        Ok(client_inner.pool.get_all_members())
+    }
+
+    async fn get_leader_id(&self) -> ClientApiResult<Option<u32>> {
+        let client_inner = self.client_inner.load();
+        Ok(client_inner.pool.get_leader_id())
     }
 }

@@ -29,7 +29,6 @@ watch = ["d-engine-core/watch"]
 [dependencies]
 d-engine-proto = { workspace = true }
 d-engine-core = { workspace = true }
-d-engine-client = { workspace = true }
 
 tokio = { workspace = true }
 tonic = { workspace = true }
@@ -63,6 +62,7 @@ metrics = { version = "0.24", features = [] }
 
 
 [dev-dependencies]
+d-engine-client = { workspace = true }
 d-engine-core = { workspace = true, features = ["__test_support"] }
 serial_test = "3.2.0"
 temp-env = "0.3.6"

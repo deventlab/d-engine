@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_client::ClientApiError;
+use d_engine_core::ClientApiError;
 use d_engine_core::convert::safe_kv;
 use d_engine_proto::common::NodeStatus;
 use d_engine_server::FileStateMachine;

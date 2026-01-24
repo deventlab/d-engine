@@ -8,7 +8,7 @@ use d_engine::{
     Result, SnapshotError, StateMachine, StorageError,
     client::{
         WriteCommand,
-        write_command::{Delete, Insert, Operation},
+        write_command::{CompareAndSwap, Delete, Insert, Operation},
     },
     common::{Entry, LogId, entry_payload::Payload},
     server_storage::SnapshotMetadata,
@@ -243,6 +243,41 @@ impl StateMachine for SledStateMachine {
                                     entry.index, key
                                 );
                                 batch.remove(key.as_ref());
+                            }
+                            Some(Operation::CompareAndSwap(CompareAndSwap {
+                                key,
+                                expected_value,
+                                new_value,
+                            })) => {
+                                // Apply pending batch before CAS (Batch doesn't support CAS)
+                                self.apply_batch(std::mem::take(&mut batch))?;
+
+                                // Sled has native CAS support - use it directly
+                                let tree = self.current_tree()?;
+                                let old = expected_value.as_ref().map(|v| v.as_ref());
+
+                                match tree.compare_and_swap(&key, old, Some(new_value.as_ref())) {
+                                    Ok(Ok(_)) => {
+                                        debug!(
+                                            "CAS succeeded at index {}: key={:?}",
+                                            entry.index,
+                                            String::from_utf8_lossy(&key)
+                                        );
+                                    }
+                                    Ok(Err(_)) => {
+                                        debug!(
+                                            "CAS failed at index {}: key={:?} (comparison mismatch)",
+                                            entry.index,
+                                            String::from_utf8_lossy(&key)
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!("CAS error at index {}: {:?}", entry.index, e);
+                                        return Err(StorageError::DbError(e.to_string()).into());
+                                    }
+                                }
+
+                                // TODO: Store CAS result for client response
                             }
                             None => {
                                 warn!("WriteCommand without operation at index {}", entry.index);

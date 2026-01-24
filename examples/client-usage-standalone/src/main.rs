@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 use d_engine::{
-    Client, ClientApiError, ClientBuilder,
+    Client, ClientApi, ClientApiError, ClientBuilder,
     protocol::{ClientResult, ReadConsistencyPolicy},
 };
 

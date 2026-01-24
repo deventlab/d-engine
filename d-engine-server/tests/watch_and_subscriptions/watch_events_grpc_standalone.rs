@@ -8,18 +8,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::common::TestContext;
+use crate::common::create_node_config;
+use crate::common::node_config;
+use crate::common::start_node;
 use d_engine_client::ClientBuilder;
+use d_engine_core::ClientApi;
 use d_engine_proto::client::WatchResponse;
 use d_engine_server::FileStateMachine;
 use d_engine_server::FileStorageEngine;
 use futures::StreamExt;
 use tempfile::TempDir;
 use tokio::time::sleep;
-
-use crate::common::TestContext;
-use crate::common::create_node_config;
-use crate::common::node_config;
-use crate::common::start_node;
 
 /// Helper function to create a 3-node standalone cluster with watch enabled
 async fn setup_standalone_cluster()

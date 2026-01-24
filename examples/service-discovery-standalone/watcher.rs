@@ -5,8 +5,9 @@
 
 use anyhow::Result;
 use clap::Parser;
-use d_engine_client::protocol::{WatchEventType, WatchResponse};
 use d_engine_client::Client;
+use d_engine_client::ClientApi;
+use d_engine_client::protocol::{WatchEventType, WatchResponse};
 use futures::StreamExt;
 use std::time::Duration;
 

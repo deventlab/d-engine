@@ -95,29 +95,63 @@ impl WriteCommand {
             operation: Some(write_command::Operation::Delete(cmd)),
         }
     }
+
+    /// Create compare-and-swap command
+    ///
+    /// # Parameters
+    /// - `key`: Key to operate on
+    /// - `expected_value`: Expected current value (None means key must not exist)
+    /// - `new_value`: New value to set if comparison succeeds
+    pub fn compare_and_swap(
+        key: impl Into<Bytes>,
+        expected_value: Option<impl Into<Bytes>>,
+        new_value: impl Into<Bytes>,
+    ) -> Self {
+        let cmd = write_command::CompareAndSwap {
+            key: key.into(),
+            expected_value: expected_value.map(|v| v.into()),
+            new_value: new_value.into(),
+        };
+        Self {
+            operation: Some(write_command::Operation::CompareAndSwap(cmd)),
+        }
+    }
 }
 
 impl ClientResponse {
     /// Build success response for write operations
     ///
     /// # Returns
-    /// Response with NoError code and write confirmation
+    /// Response with Success code and result=true
     pub fn write_success() -> Self {
         Self {
             error: ErrorCode::Success as i32,
-            success_result: Some(SuccessResult::WriteAck(true)),
+            success_result: Some(SuccessResult::Succeeded(true)),
             metadata: None,
         }
     }
 
-    /// Check if the write operation was successful
+    /// Check if operation completed without error
     ///
     /// # Returns
-    /// - `true` if the response indicates a successful write operation
-    /// - `false` if the response indicates a failed write operation or is not a write response
+    /// - `true` if no error occurred (operation executed)
+    /// - `false` if error occurred or invalid response
+    pub fn succeeded(&self) -> bool {
+        self.error == ErrorCode::Success as i32
+            && matches!(self.success_result, Some(SuccessResult::Succeeded(_)))
+    }
+
+    /// Check if write operation succeeded with true result
+    ///
+    /// Strict check for Put/Delete operations ensuring result is true.
+    /// For CAS, use pattern matching to distinguish true/false results.
+    ///
+    /// # Returns
+    /// - `true` for successful Put/Delete (result must be true)
+    /// - `false` otherwise
     pub fn is_write_success(&self) -> bool {
         self.error == ErrorCode::Success as i32
-            && matches!(self.success_result, Some(SuccessResult::WriteAck(true)))
+            && matches!(self.success_result, Some(SuccessResult::Succeeded(true)))
     }
 
     /// Build success response for read operations

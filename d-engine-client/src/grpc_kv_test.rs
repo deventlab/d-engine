@@ -3,6 +3,8 @@ use std::vec;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
+use d_engine_core::ClientApi;
+use d_engine_core::client::ClientApiResult;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ReadConsistencyPolicy;
@@ -727,14 +729,13 @@ async fn test_get_multi_success() {
         endpoints,
     })));
 
-    let result = client.get_multi(keys.clone()).await;
+    let result = client.get_multi(&keys).await;
     assert!(result.is_ok());
     let results = result.unwrap();
 
     assert_eq!(results.len(), keys.len());
-    for (i, key) in keys.iter().enumerate() {
-        assert_eq!(results[i].as_ref().map(|r| &r.key), Some(&key.clone()));
-        assert_eq!(results[i].as_ref().map(|r| &r.value), Some(&values[i]));
+    for (i, _key) in keys.iter().enumerate() {
+        assert_eq!(results[i].as_ref(), Some(&values[i]));
     }
 }
 
@@ -785,16 +786,21 @@ async fn test_get_multi_with_mixed_results() {
         endpoints,
     })));
 
-    let result = client.get_multi(keys.clone()).await;
+    let result = client.get_multi(&keys).await;
     assert!(result.is_ok());
     let results = result.unwrap();
 
+    // Server returns only the keys that exist (sparse results)
+    // In this case, only key1 and key3 exist (not key2)
     assert_eq!(results.len(), 2);
-    let found_keys: Vec<&Bytes> =
-        results.iter().filter_map(|r| r.as_ref().map(|r| &r.key)).collect();
-
-    assert!(found_keys.contains(&&keys[0]));
-    assert!(found_keys.contains(&&keys[2]));
+    assert_eq!(
+        results[0].as_ref(),
+        Some(&Bytes::from("value1".to_string()))
+    );
+    assert_eq!(
+        results[1].as_ref(),
+        Some(&Bytes::from("value3".to_string()))
+    );
 }
 
 #[tokio::test]
@@ -828,15 +834,16 @@ async fn test_get_consistency_methods_failure() {
     let key = "test_key".to_string().into_bytes();
 
     // Test all convenience methods with network failure
-    let methods = [
+    let methods: [(&str, ClientApiResult<Option<ClientResult>>); 3] = [
         (
             "get_linearizable",
             client.get_linearizable(key.clone()).await,
         ),
         ("get_lease", client.get_lease(key.clone()).await),
         ("get_eventual", client.get_eventual(key.clone()).await),
-        ("get", client.get(key.clone()).await),
     ];
+
+    let get_result: ClientApiResult<Option<Bytes>> = client.get(key.clone()).await;
 
     for (method_name, result) in methods {
         assert!(result.is_err(), "{method_name} should fail",);
@@ -846,6 +853,14 @@ async fn test_get_consistency_methods_failure() {
             "{method_name} should return ConnectionTimeout",
         );
     }
+
+    // Also check the get() method
+    assert!(get_result.is_err(), "get should fail");
+    assert_eq!(
+        get_result.unwrap_err().code(),
+        ErrorCode::ConnectionTimeout,
+        "get should return ConnectionTimeout",
+    );
 }
 
 #[tokio::test]

@@ -18,7 +18,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! async fn store_config<C: KvClient>(client: &C) -> Result<()> {
+//! async fn store_config<C: ClientApi>(client: &C) -> Result<()> {
 //!     client.put(b"config:timeout", b"30s").await?;
 //!     let value = client.get(b"config:timeout").await?;
 //!     Ok(())
@@ -27,7 +27,7 @@
 
 use bytes::Bytes;
 
-use crate::kv_error::KvResult;
+use crate::client::client_api_error::ClientApiResult;
 
 /// Unified key-value store interface.
 ///
@@ -49,7 +49,7 @@ use crate::kv_error::KvResult;
 /// - `GrpcKvClient`: 1-2ms latency (network + serialization)
 /// - `LocalKvClient`: <0.1ms latency (direct function call)
 #[async_trait::async_trait]
-pub trait KvClient: Send + Sync {
+pub trait ClientApi: Send + Sync {
     /// Stores a key-value pair with strong consistency.
     ///
     /// The write is replicated to a quorum of nodes before returning,
@@ -62,9 +62,9 @@ pub trait KvClient: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`crate::kv_error::KvClientError::ChannelClosed`] if node is shutting down
-    /// - [`crate::kv_error::KvClientError::Timeout`] if operation exceeds timeout
-    /// - [`crate::kv_error::KvClientError::ServerError`] for server-side errors (e.g., not leader)
+    /// - [`crate::client::kv_error::KvClientError::ChannelClosed`] if node is shutting down
+    /// - [`crate::client::kv_error::KvClientError::Timeout`] if operation exceeds timeout
+    /// - [`crate::client::kv_error::KvClientError::ServerError`] for server-side errors (e.g., not leader)
     ///
     /// # Example
     ///
@@ -75,7 +75,7 @@ pub trait KvClient: Send + Sync {
         &self,
         key: impl AsRef<[u8]> + Send,
         value: impl AsRef<[u8]> + Send,
-    ) -> KvResult<()>;
+    ) -> ClientApiResult<()>;
 
     /// Stores a key-value pair with time-to-live (TTL).
     ///
@@ -102,7 +102,7 @@ pub trait KvClient: Send + Sync {
         key: impl AsRef<[u8]> + Send,
         value: impl AsRef<[u8]> + Send,
         ttl_secs: u64,
-    ) -> KvResult<()>;
+    ) -> ClientApiResult<()>;
 
     /// Retrieves the value associated with a key.
     ///
@@ -121,9 +121,9 @@ pub trait KvClient: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`crate::kv_error::KvClientError::ChannelClosed`] if node is shutting down
-    /// - [`crate::kv_error::KvClientError::Timeout`] if operation exceeds timeout
-    /// - [`crate::kv_error::KvClientError::ServerError`] for server-side errors
+    /// - [`crate::client::kv_error::KvClientError::ChannelClosed`] if node is shutting down
+    /// - [`crate::client::kv_error::KvClientError::Timeout`] if operation exceeds timeout
+    /// - [`crate::client::kv_error::KvClientError::ServerError`] for server-side errors
     ///
     /// # Example
     ///
@@ -136,7 +136,7 @@ pub trait KvClient: Send + Sync {
     async fn get(
         &self,
         key: impl AsRef<[u8]> + Send,
-    ) -> KvResult<Option<Bytes>>;
+    ) -> ClientApiResult<Option<Bytes>>;
 
     /// Retrieves multiple keys in a single request.
     ///
@@ -168,7 +168,7 @@ pub trait KvClient: Send + Sync {
     async fn get_multi(
         &self,
         keys: &[Bytes],
-    ) -> KvResult<Vec<Option<Bytes>>>;
+    ) -> ClientApiResult<Vec<Option<Bytes>>>;
 
     /// Deletes a key-value pair with strong consistency.
     ///
@@ -181,9 +181,9 @@ pub trait KvClient: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`crate::kv_error::KvClientError::ChannelClosed`] if node is shutting down
-    /// - [`crate::kv_error::KvClientError::Timeout`] if operation exceeds timeout
-    /// - [`crate::kv_error::KvClientError::ServerError`] for server-side errors
+    /// - [`crate::client::kv_error::KvClientError::ChannelClosed`] if node is shutting down
+    /// - [`crate::client::kv_error::KvClientError::Timeout`] if operation exceeds timeout
+    /// - [`crate::client::kv_error::KvClientError::ServerError`] for server-side errors
     ///
     /// # Example
     ///
@@ -193,5 +193,66 @@ pub trait KvClient: Send + Sync {
     async fn delete(
         &self,
         key: impl AsRef<[u8]> + Send,
-    ) -> KvResult<()>;
+    ) -> ClientApiResult<()>;
+
+    /// Atomically compare and swap a key's value
+    ///
+    /// Returns:
+    /// - Ok(true): CAS succeeded, value was updated
+    /// - Ok(false): CAS failed, current value != expected_value
+    /// - Err(e): Operation error (timeout, cluster unavailable, etc.)
+    async fn compare_and_swap(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+        expected_value: Option<impl AsRef<[u8]> + Send>,
+        new_value: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<bool>;
+
+    // ==================== Watch Operations ====================
+
+    /// Watch for changes to a specific key
+    ///
+    /// Returns a stream of watch events when the key's value changes.
+    /// The stream will continue until explicitly closed or a connection error occurs.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to watch
+    ///
+    /// # Returns
+    ///
+    /// A streaming response that yields `WatchResponse` events
+    ///
+    /// # Errors
+    ///
+    /// Returns error if unable to establish watch connection
+    async fn watch(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<tonic::Streaming<d_engine_proto::client::WatchResponse>>;
+
+    // ==================== Cluster Management Operations ====================
+
+    /// Lists all cluster members with metadata
+    ///
+    /// Returns node information including:
+    /// - Node ID
+    /// - Address
+    /// - Role (Leader/Follower/Learner)
+    /// - Status
+    ///
+    /// # Errors
+    ///
+    /// Returns error if unable to retrieve cluster metadata
+    async fn list_members(&self)
+    -> ClientApiResult<Vec<d_engine_proto::server::cluster::NodeMeta>>;
+
+    /// Get the current leader ID
+    ///
+    /// Returns the leader node ID if known, or None if no leader is currently elected.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if unable to determine leader status
+    async fn get_leader_id(&self) -> ClientApiResult<Option<u32>>;
 }

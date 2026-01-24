@@ -29,11 +29,11 @@ fn test_into_read_results_success() {
 }
 
 #[test]
-fn test_into_read_results_wrong_variant_write_ack() {
+fn test_into_read_results_wrong_variant_succeeded() {
     let response = ClientResponse {
         error: ErrorCode::Success as i32,
         metadata: None,
-        success_result: Some(SuccessResult::WriteAck(true)),
+        success_result: Some(SuccessResult::Succeeded(true)),
     };
 
     let result = response.into_read_results();
@@ -42,7 +42,7 @@ fn test_into_read_results_wrong_variant_write_ack() {
     if let Err(ClientApiError::Protocol { code, message, .. }) = result {
         assert_eq!(code, ErrorCode::InvalidResponse);
         assert!(message.contains("expected ReadData"));
-        assert!(message.contains("found WriteAck"));
+        assert!(message.contains("found Succeeded"));
     } else {
         panic!("Expected Protocol error");
     }

@@ -91,6 +91,7 @@ use d_engine_core::Lease;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::CompareAndSwap;
 use d_engine_proto::client::write_command::Delete;
 use d_engine_proto::client::write_command::Insert;
 use d_engine_proto::client::write_command::Operation;
@@ -124,6 +125,7 @@ enum WalOpCode {
     Insert = 1,
     Delete = 2,
     Config = 3,
+    CompareAndSwap = 4,
 }
 
 impl WalOpCode {
@@ -132,6 +134,7 @@ impl WalOpCode {
             "INSERT" => Self::Insert,
             "DELETE" => Self::Delete,
             "CONFIG" => Self::Config,
+            "CAS" => Self::CompareAndSwap,
             _ => Self::Noop,
         }
     }
@@ -141,6 +144,7 @@ impl WalOpCode {
             1 => Self::Insert,
             2 => Self::Delete,
             3 => Self::Config,
+            4 => Self::CompareAndSwap,
             _ => Self::Noop,
         }
     }
@@ -590,6 +594,18 @@ impl FileStateMachine {
                         }
                         applied_count += 1;
                         debug!("Replayed DELETE: key={:?}", key);
+                    }
+                    WalOpCode::CompareAndSwap => {
+                        // CAS during replay: Just apply the new_value if present
+                        // The comparison was already done before crash, and succeeded
+                        // (otherwise this entry wouldn't be in WAL)
+                        if let Some(new_value) = value {
+                            data.insert(key.clone(), (new_value, term));
+                            applied_count += 1;
+                            debug!("Replayed CAS: key={:?}", key);
+                        } else {
+                            warn!("CAS operation without new_value in WAL");
+                        }
                     }
                     WalOpCode::Noop | WalOpCode::Config => {
                         // No data modification needed
@@ -1066,6 +1082,15 @@ impl StateMachine for FileStateMachine {
                             Some(Operation::Delete(Delete { key })) => {
                                 batch_operations.push((entry, "DELETE", key, None, 0));
                             }
+                            Some(Operation::CompareAndSwap(CompareAndSwap {
+                                key,
+                                expected_value: _,
+                                new_value,
+                            })) => {
+                                batch_operations.push((entry, "CAS", key, Some(new_value), 0));
+                                // Note: expected_value will be checked during PHASE 3
+                                // Store it temporarily in entry for later access
+                            }
                             None => {
                                 warn!("WriteCommand without operation at index {}", entry.index);
                                 batch_operations.push((entry, "NOOP", Bytes::new(), None, 0));
@@ -1138,6 +1163,45 @@ impl StateMachine for FileStateMachine {
                         data.remove(&key);
                         if let Some(ref lease) = self.lease {
                             lease.unregister(&key);
+                        }
+                    }
+                    "CAS" => {
+                        // Extract expected_value from original entry
+                        if let Some(Payload::Command(bytes)) =
+                            entry.payload.as_ref().unwrap().payload.as_ref()
+                        {
+                            if let Ok(write_cmd) = WriteCommand::decode(&bytes[..]) {
+                                if let Some(Operation::CompareAndSwap(CompareAndSwap {
+                                    expected_value,
+                                    ..
+                                })) = write_cmd.operation
+                                {
+                                    // Read-compare-write is safe due to sequential apply
+                                    let current_value = data.get(&key);
+
+                                    let cas_success = match (current_value, &expected_value) {
+                                        (Some((current, _)), Some(expected)) => {
+                                            current.as_ref() == expected.as_ref()
+                                        }
+                                        (None, None) => true,
+                                        _ => false,
+                                    };
+
+                                    // TODO: Store CAS result for client response
+                                    debug!(
+                                        "CAS at index {}: key={:?}, success={}",
+                                        entry.index,
+                                        String::from_utf8_lossy(&key),
+                                        cas_success
+                                    );
+
+                                    if cas_success {
+                                        if let Some(new_value) = value {
+                                            data.insert(key, (new_value, entry.term));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     "NOOP" | "CONFIG" => {

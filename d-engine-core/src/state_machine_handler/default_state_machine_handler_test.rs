@@ -39,6 +39,11 @@ use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_compressed_snapshot;
 use crate::test_utils::create_test_snapshot_stream;
 use crate::test_utils::snapshot_config;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::{CompareAndSwap, Delete, Insert, Operation};
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::entry_payload::Payload;
+use prost::Message as _;
 
 // Case 1: normal update
 #[test]
@@ -2017,5 +2022,165 @@ mod mmap_tests {
         let result = handler.load_chunk_via_mmap(temp_file.path(), 0, test_data.len());
 
         assert!(result.is_ok());
+    }
+}
+
+#[cfg(feature = "watch")]
+mod broadcast_watch_events_tests {
+    use super::*;
+
+    use d_engine_proto::client::WatchEventType;
+
+    fn create_entry(
+        index: u64,
+        operation: Operation,
+    ) -> Entry {
+        let write_cmd = WriteCommand {
+            operation: Some(operation),
+        };
+        let mut buf = Vec::new();
+        write_cmd.encode(&mut buf).unwrap();
+
+        Entry {
+            index,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Command(Bytes::from(buf))),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_insert_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entry = create_entry(
+            1,
+            Operation::Insert(Insert {
+                key: b"key1".to_vec().into(),
+                value: b"value1".to_vec().into(),
+                ttl_secs: 0,
+            }),
+        );
+
+        handler.broadcast_watch_events(&[entry], &tx);
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.key, Bytes::from(&b"key1"[..]));
+        assert_eq!(event.value, Bytes::from(&b"value1"[..]));
+        assert_eq!(event.event_type, WatchEventType::Put as i32);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_delete_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entry = create_entry(
+            1,
+            Operation::Delete(Delete {
+                key: b"key1".to_vec().into(),
+            }),
+        );
+
+        handler.broadcast_watch_events(&[entry], &tx);
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.key, Bytes::from(&b"key1"[..]));
+        assert_eq!(event.value, Bytes::new());
+        assert_eq!(event.event_type, WatchEventType::Delete as i32);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_cas_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entry = create_entry(
+            1,
+            Operation::CompareAndSwap(CompareAndSwap {
+                key: b"lock".to_vec().into(),
+                expected_value: Some(b"owner1".to_vec().into()),
+                new_value: b"owner2".to_vec().into(),
+            }),
+        );
+
+        handler.broadcast_watch_events(&[entry], &tx);
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.key, Bytes::from(&b"lock"[..]));
+        assert_eq!(event.value, Bytes::from(&b"owner2"[..]));
+        assert_eq!(event.event_type, WatchEventType::Put as i32);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_mixed_operations() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entries = vec![
+            create_entry(
+                1,
+                Operation::Insert(Insert {
+                    key: b"k1".to_vec().into(),
+                    value: b"v1".to_vec().into(),
+                    ttl_secs: 0,
+                }),
+            ),
+            create_entry(
+                2,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"k2".to_vec().into(),
+                    expected_value: None,
+                    new_value: b"v2".to_vec().into(),
+                }),
+            ),
+            create_entry(
+                3,
+                Operation::Delete(Delete {
+                    key: b"k3".to_vec().into(),
+                }),
+            ),
+        ];
+
+        handler.broadcast_watch_events(&entries, &tx);
+
+        // Verify Insert event
+        let event1 = rx.recv().await.unwrap();
+        assert_eq!(event1.key, Bytes::from(&b"k1"[..]));
+        assert_eq!(event1.event_type, WatchEventType::Put as i32);
+
+        // Verify CAS event
+        let event2 = rx.recv().await.unwrap();
+        assert_eq!(event2.key, Bytes::from(&b"k2"[..]));
+        assert_eq!(event2.event_type, WatchEventType::Put as i32);
+
+        // Verify Delete event
+        let event3 = rx.recv().await.unwrap();
+        assert_eq!(event3.key, Bytes::from(&b"k3"[..]));
+        assert_eq!(event3.event_type, WatchEventType::Delete as i32);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_ignores_invalid_entries() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        // Entry without operation
+        let entry = create_entry(
+            1,
+            Operation::Insert(Insert {
+                key: b"key1".to_vec().into(),
+                value: b"value1".to_vec().into(),
+                ttl_secs: 0,
+            }),
+        );
+
+        handler.broadcast_watch_events(&[entry], &tx);
+
+        // Should still receive valid event
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.key, Bytes::from(&b"key1"[..]));
     }
 }

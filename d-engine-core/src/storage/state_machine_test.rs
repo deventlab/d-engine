@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::CompareAndSwap;
 use d_engine_proto::client::write_command::Delete;
 use d_engine_proto::client::write_command::Insert;
 use d_engine_proto::client::write_command::Operation;
@@ -43,6 +44,7 @@ impl StateMachineTestSuite {
         Self::test_start_stop(builder.build().await?).await?;
         Self::test_basic_kv_operations(builder.build().await?).await?;
         Self::test_apply_chunk_functionality(builder.build().await?).await?;
+        Self::test_cas_operations(builder.build().await?).await?;
         Self::test_last_applied_detection(builder.build().await?).await?;
         Self::test_snapshot_operations(builder.build().await?).await?;
         Self::test_persistence(builder.build().await?).await?;
@@ -110,6 +112,39 @@ impl StateMachineTestSuite {
         // Verify the value was deleted
         assert!(state_machine.get(test_key)?.is_none());
 
+        Ok(())
+    }
+
+    /// Test CAS operations
+    pub async fn test_cas_operations(sm: Arc<dyn StateMachine>) -> Result<(), Error> {
+        sm.start().await?;
+
+        // Test 1: CAS on non-existent key (expected None)
+        let entry1 = create_cas_entry(1, b"lock".to_vec().into(), None, b"owner1".to_vec().into());
+        sm.apply_chunk(vec![entry1]).await?;
+        assert_eq!(sm.get(b"lock")?, Some(b"owner1".to_vec().into()));
+
+        // Test 2: CAS success (expected matches)
+        let entry2 = create_cas_entry(
+            2,
+            b"lock".to_vec().into(),
+            Some(b"owner1".to_vec().into()),
+            b"owner2".to_vec().into(),
+        );
+        sm.apply_chunk(vec![entry2]).await?;
+        assert_eq!(sm.get(b"lock")?, Some(b"owner2".to_vec().into()));
+
+        // Test 3: CAS failure (expected mismatch) - value should not change
+        let entry3 = create_cas_entry(
+            3,
+            b"lock".to_vec().into(),
+            Some(b"wrong".to_vec().into()),
+            b"owner3".to_vec().into(),
+        );
+        sm.apply_chunk(vec![entry3]).await?;
+        assert_eq!(sm.get(b"lock")?, Some(b"owner2".to_vec().into())); // Still owner2
+
+        sm.stop()?;
         Ok(())
     }
 
@@ -850,6 +885,36 @@ fn create_delete_entry(
 ) -> Entry {
     let delete = Delete { key };
     let operation = Operation::Delete(delete);
+    let write_cmd = WriteCommand {
+        operation: Some(operation),
+    };
+
+    let mut buf = Vec::new();
+    write_cmd.encode(&mut buf).expect("Failed to encode WriteCommand");
+    let cmd_bytes = Bytes::from(buf);
+
+    Entry {
+        index,
+        term: 1,
+        payload: Some(EntryPayload {
+            payload: Some(Payload::Command(cmd_bytes)),
+        }),
+    }
+}
+
+/// Helper function to create a CAS entry
+fn create_cas_entry(
+    index: u64,
+    key: Bytes,
+    expected_value: Option<Bytes>,
+    new_value: Bytes,
+) -> Entry {
+    let cas = CompareAndSwap {
+        key,
+        expected_value,
+        new_value,
+    };
+    let operation = Operation::CompareAndSwap(cas);
     let write_cmd = WriteCommand {
         operation: Some(operation),
     };

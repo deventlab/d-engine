@@ -6,6 +6,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use d_engine_client::Client;
+use d_engine_client::ClientApi;
 use std::time::Duration;
 
 #[derive(Parser)]
