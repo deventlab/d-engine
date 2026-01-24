@@ -65,7 +65,6 @@ async fn main() -> Result<()> {
     println!("\n=== Watching for Changes (Ctrl+C to exit) ===\n");
 
     let mut stream = client
-        .kv()
         .watch(&cli.key)
         .await
         .map_err(|e| anyhow::anyhow!("Watch failed: {e:?}"))?;

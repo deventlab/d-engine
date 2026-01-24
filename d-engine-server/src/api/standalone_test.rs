@@ -1,4 +1,4 @@
-//! Unit tests for StandaloneServer configuration validation
+//! Unit tests for StandaloneEngine configuration validation
 
 #[cfg(all(test, feature = "rocksdb"))]
 mod standalone_server_tests {
@@ -8,7 +8,7 @@ mod standalone_server_tests {
     use serial_test::serial;
     use tokio::sync::watch;
 
-    use crate::api::StandaloneServer;
+    use crate::api::StandaloneEngine;
 
     // Tests for run() method (reads CONFIG_PATH env var)
 
@@ -42,7 +42,7 @@ listen_addr = "127.0.0.1:0"
         }
 
         // Spawn server in background
-        let server_handle = tokio::spawn(async move { StandaloneServer::run(shutdown_rx).await });
+        let server_handle = tokio::spawn(async move { StandaloneEngine::run(shutdown_rx).await });
 
         // Give it time to start
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -78,7 +78,7 @@ listen_addr = "127.0.0.1:0"
             std::env::set_var("CONFIG_PATH", "/nonexistent/config.toml");
         }
 
-        let result = StandaloneServer::run(shutdown_rx).await;
+        let result = StandaloneEngine::run(shutdown_rx).await;
 
         unsafe {
             std::env::remove_var("CONFIG_PATH");
@@ -118,7 +118,7 @@ listen_addr = "127.0.0.1:0"
         }
 
         // Spawn server in background
-        let server_handle = tokio::spawn(async move { StandaloneServer::run(shutdown_rx).await });
+        let server_handle = tokio::spawn(async move { StandaloneEngine::run(shutdown_rx).await });
 
         // Give it time to start
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -171,7 +171,7 @@ listen_addr = "127.0.0.1:0"
         }
 
         // In release mode, should reject immediately
-        let result = StandaloneServer::run(shutdown_rx).await;
+        let result = StandaloneEngine::run(shutdown_rx).await;
 
         unsafe {
             std::env::remove_var("CONFIG_PATH");
@@ -203,7 +203,7 @@ listen_addr = "127.0.0.1:0"
         let (shutdown_tx, shutdown_rx) = watch::channel(());
 
         // Spawn server in background
-        let server_handle = tokio::spawn(async move { StandaloneServer::run(shutdown_rx).await });
+        let server_handle = tokio::spawn(async move { StandaloneEngine::run(shutdown_rx).await });
 
         // Give it time to start
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -238,7 +238,7 @@ listen_addr = "127.0.0.1:0"
         let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
         // In release mode, should reject immediately
-        let result = StandaloneServer::run(shutdown_rx).await;
+        let result = StandaloneEngine::run(shutdown_rx).await;
 
         assert!(
             result.is_err(),
@@ -277,7 +277,7 @@ listen_addr = "127.0.0.1:0"
 
         // Spawn server in background
         let server_handle = tokio::spawn(async move {
-            StandaloneServer::run_with(config_path.to_str().unwrap(), shutdown_rx).await
+            StandaloneEngine::run_with(config_path.to_str().unwrap(), shutdown_rx).await
         });
 
         // Give it time to start
@@ -322,7 +322,7 @@ listen_addr = "127.0.0.1:0"
         let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
         // In release mode, should reject /tmp/db immediately
-        let result = StandaloneServer::run_with(config_path.to_str().unwrap(), shutdown_rx).await;
+        let result = StandaloneEngine::run_with(config_path.to_str().unwrap(), shutdown_rx).await;
 
         assert!(
             result.is_err(),
@@ -365,7 +365,7 @@ election_timeout_max_ms = 3000
 
         // Spawn server in background
         let server_handle = tokio::spawn(async move {
-            StandaloneServer::run_with(config_path.to_str().unwrap(), shutdown_rx).await
+            StandaloneEngine::run_with(config_path.to_str().unwrap(), shutdown_rx).await
         });
 
         // Give it time to start
@@ -390,7 +390,7 @@ election_timeout_max_ms = 3000
     async fn test_run_with_nonexistent_config() {
         let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
-        let result = StandaloneServer::run_with("/nonexistent/config.toml", shutdown_rx).await;
+        let result = StandaloneEngine::run_with("/nonexistent/config.toml", shutdown_rx).await;
 
         assert!(
             result.is_err(),
@@ -423,7 +423,7 @@ listen_addr = "127.0.0.1:0"
 
         // Spawn server in background
         let server_handle = tokio::spawn(async move {
-            StandaloneServer::run_with(config_path.to_str().unwrap(), shutdown_rx).await
+            StandaloneEngine::run_with(config_path.to_str().unwrap(), shutdown_rx).await
         });
 
         // Give it time to start
@@ -469,7 +469,7 @@ listen_addr = "127.0.0.1:0"
         let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
         // In release mode, should reject immediately
-        let result = StandaloneServer::run_with(config_path.to_str().unwrap(), shutdown_rx).await;
+        let result = StandaloneEngine::run_with(config_path.to_str().unwrap(), shutdown_rx).await;
 
         assert!(
             result.is_err(),

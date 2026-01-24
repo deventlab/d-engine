@@ -152,10 +152,11 @@ fn bench_embedded_mode_with_watchers(c: &mut Criterion) {
                         create_embedded_engine().await.expect("Failed to create engine");
 
                     // Register watchers
+                    let client = engine.client();
                     let mut _watchers = Vec::new();
                     for i in 0..count {
                         let key = format!("watch_key_{i}").into_bytes();
-                        let watcher = engine.watch(&key).expect("Failed to register watcher");
+                        let watcher = client.watch(&key).expect("Failed to register watcher");
                         _watchers.push(watcher);
                     }
 
@@ -166,7 +167,7 @@ fn bench_embedded_mode_with_watchers(c: &mut Criterion) {
                     for i in 0..100 {
                         let key = format!("key_{i}").into_bytes();
                         let value = format!("value_{i}").into_bytes();
-                        engine.client().put(&key, &value).await.expect("PUT failed");
+                        client.put(&key, &value).await.expect("PUT failed");
                     }
 
                     // Cleanup
@@ -193,7 +194,7 @@ fn bench_watch_notification_latency(c: &mut Criterion) {
     c.bench_function("watch_notification_latency", |b| {
         b.to_async(&runtime).iter(|| async {
             let key = b"latency_test_key";
-            let mut watcher = engine.watch(key).expect("Failed to register watcher");
+            let mut watcher = engine.client().watch(key).expect("Failed to register watcher");
 
             // Give watcher time to register
             sleep(get_op_timeout()).await;
@@ -241,9 +242,10 @@ fn bench_multiple_watchers_same_key(c: &mut Criterion) {
             |b, &count| {
                 // Register watchers once per parameter
                 let key = b"shared_key";
+                let client = engine.client();
                 let mut _watchers = Vec::new();
                 for _ in 0..count {
-                    let watcher = engine.watch(key).expect("Failed to register watcher");
+                    let watcher = client.watch(key).expect("Failed to register watcher");
                     _watchers.push(watcher);
                 }
 
@@ -254,7 +256,7 @@ fn bench_multiple_watchers_same_key(c: &mut Criterion) {
                 b.to_async(&runtime).iter(|| async {
                     // Only measure PUT broadcast time
                     let start = std::time::Instant::now();
-                    engine.client().put(key, b"broadcast_value").await.expect("PUT failed");
+                    client.put(key, b"broadcast_value").await.expect("PUT failed");
                     let elapsed = start.elapsed();
 
                     black_box(elapsed);
@@ -292,10 +294,11 @@ fn bench_watcher_cleanup(c: &mut Criterion) {
                 b.iter_with_setup(
                     || {
                         // Setup: Register watchers (not measured)
+                        let client = engine.client();
                         let mut watchers = Vec::new();
                         for i in 0..count {
                             let key = format!("cleanup_key_{i}").into_bytes();
-                            let watcher = engine.watch(&key).expect("Failed to register watcher");
+                            let watcher = client.watch(&key).expect("Failed to register watcher");
                             watchers.push(watcher);
                         }
                         runtime.block_on(async {

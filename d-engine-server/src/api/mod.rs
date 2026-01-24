@@ -6,7 +6,7 @@ mod standalone;
 
 pub use embedded::EmbeddedEngine;
 pub use embedded_client::EmbeddedClient;
-pub use standalone::StandaloneServer;
+pub use standalone::StandaloneEngine;
 
 #[cfg(test)]
 mod embedded_client_test;
