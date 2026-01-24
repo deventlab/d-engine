@@ -175,6 +175,48 @@ impl GrpcClient {
 
         Ok(client)
     }
+
+    /// Watch for changes to a specific key
+    ///
+    /// Returns a stream of watch events when the key's value changes.
+    /// The stream will continue until explicitly closed or a connection error occurs.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to watch
+    ///
+    /// # Returns
+    ///
+    /// A streaming response that yields `WatchResponse` events
+    ///
+    /// # Errors
+    ///
+    /// Returns error if unable to establish watch connection
+    pub async fn watch(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> ClientApiResult<tonic::Streaming<WatchResponse>> {
+        let client_inner = self.client_inner.load();
+
+        let request = WatchRequest {
+            client_id: client_inner.client_id,
+            key: Bytes::copy_from_slice(key.as_ref()),
+        };
+
+        // Watch can connect to any node (leader or follower)
+        let mut client = self.make_client().await?;
+
+        match client.watch(request).await {
+            Ok(response) => {
+                debug!("Watch stream established");
+                Ok(response.into_inner())
+            }
+            Err(status) => {
+                error!("Watch request failed: {:?}", status);
+                Err(status.into())
+            }
+        }
+    }
 }
 
 // ==================== Core ClientApi Trait Implementation ====================
@@ -360,32 +402,6 @@ impl ClientApi for GrpcClient {
             Err(status) => {
                 error!("[:GrpcClient:compare_and_swap] status: {:?}", status);
                 Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
-            }
-        }
-    }
-
-    async fn watch(
-        &self,
-        key: impl AsRef<[u8]> + Send,
-    ) -> ClientApiResult<tonic::Streaming<WatchResponse>> {
-        let client_inner = self.client_inner.load();
-
-        let request = WatchRequest {
-            client_id: client_inner.client_id,
-            key: Bytes::copy_from_slice(key.as_ref()),
-        };
-
-        // Watch can connect to any node (leader or follower)
-        let mut client = self.make_client().await?;
-
-        match client.watch(request).await {
-            Ok(response) => {
-                debug!("Watch stream established");
-                Ok(response.into_inner())
-            }
-            Err(status) => {
-                error!("Watch request failed: {:?}", status);
-                Err(status.into())
             }
         }
     }

@@ -24,6 +24,11 @@ All notable changes to this project will be documented in this file.
   - Improves API extensibility (reserved fields for version tracking)
   - Better type safety for future features
 
+- **Simplified Error Handling** (#258): Removed `LocalClientError`, use `ClientApiError` directly
+  - Unified error type across embedded and standalone clients
+  - Less boilerplate (no intermediate error type conversion)
+  - Clearer error semantics for users
+
 ### Migration Notes
 
 - Replace `KvClient` with `ClientApi` in trait bounds

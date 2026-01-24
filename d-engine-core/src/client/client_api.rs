@@ -205,29 +205,6 @@ pub trait ClientApi: Send + Sync {
         new_value: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<bool>;
 
-    // ==================== Watch Operations ====================
-
-    /// Watch for changes to a specific key
-    ///
-    /// Returns a stream of watch events when the key's value changes.
-    /// The stream will continue until explicitly closed or a connection error occurs.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The key to watch
-    ///
-    /// # Returns
-    ///
-    /// A streaming response that yields `WatchResponse` events
-    ///
-    /// # Errors
-    ///
-    /// Returns error if unable to establish watch connection
-    async fn watch(
-        &self,
-        key: impl AsRef<[u8]> + Send,
-    ) -> ClientApiResult<tonic::Streaming<d_engine_proto::client::WatchResponse>>;
-
     // ==================== Cluster Management Operations ====================
 
     /// Lists all cluster members with metadata

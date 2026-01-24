@@ -41,7 +41,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use d_engine_core::Membership;
 use d_engine_core::Raft;
@@ -340,22 +339,20 @@ where
         self.node_id
     }
 
-    /// Creates a zero-overhead local KV client for embedded access.
+    /// Creates a local client for testing purposes only.
     ///
-    /// Returns a client that directly communicates with Raft core
-    /// without gRPC serialization or network traversal.
-    ///
-    /// # Performance
-    /// - 10-20x faster than gRPC client
-    /// - <0.1ms latency per operation
+    /// **Warning**: This method is only available in test builds.
+    /// Production code should use `EmbeddedEngine::client()` instead.
     ///
     /// # Example
     /// ```ignore
-    /// let node = NodeBuilder::new(config).start().await?;
+    /// #[cfg(test)]
     /// let client = node.local_client();
-    /// client.put(b"key", b"value").await?;
     /// ```
+    #[cfg(test)]
     pub fn local_client(&self) -> crate::api::EmbeddedClient {
+        use std::time::Duration;
+
         crate::api::EmbeddedClient::new_internal(
             self.event_tx.clone(),
             self.node_id,

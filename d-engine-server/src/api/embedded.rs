@@ -8,7 +8,7 @@
 //! ### Using Node (Low-level API)
 //! ```ignore
 //! let node = NodeBuilder::new(config).start().await?;
-//! let client = node.local_client();
+//! // Node does not provide client directly - use EmbeddedEngine instead
 //! tokio::spawn(async move { node.run().await });
 //! // Manual lifecycle management required
 //! ```
@@ -123,6 +123,7 @@
 //! For auto-forwarding with gRPC overhead, use standalone mode with `GrpcClient`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 #[cfg(feature = "watch")]
 use bytes::Bytes;
@@ -169,7 +170,7 @@ use crate::node::NodeBuilder;
 pub struct EmbeddedEngine {
     node_handle: Option<JoinHandle<Result<()>>>,
     shutdown_tx: watch::Sender<()>,
-    kv_client: EmbeddedClient,
+    client: EmbeddedClient,
     leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
     #[cfg(feature = "watch")]
     watch_registry: Option<Arc<WatchRegistry>>,
@@ -309,8 +310,27 @@ impl EmbeddedEngine {
         // Get leader change notifier before moving node
         let leader_elected_rx = node.leader_change_notifier();
 
-        // Create local KV client before spawning
-        let kv_client = node.local_client();
+        // Create client before spawning
+        #[cfg(not(feature = "watch"))]
+        let client = EmbeddedClient::new_internal(
+            node.event_tx.clone(),
+            node.node_id,
+            Duration::from_millis(node.node_config.raft.general_raft_timeout_duration_in_ms),
+        );
+
+        #[cfg(feature = "watch")]
+        let client = {
+            let watch_registry = node.watch_registry.clone();
+            let mut client = EmbeddedClient::new_internal(
+                node.event_tx.clone(),
+                node.node_id,
+                Duration::from_millis(node.node_config.raft.general_raft_timeout_duration_in_ms),
+            );
+            if let Some(registry) = &watch_registry {
+                client = client.with_watch_registry(registry.clone());
+            }
+            client
+        };
 
         // Capture watch registry (if enabled)
         #[cfg(feature = "watch")]
@@ -331,7 +351,7 @@ impl EmbeddedEngine {
         Ok(Self {
             node_handle: Some(node_handle),
             shutdown_tx,
-            kv_client,
+            client,
             leader_elected_rx,
             #[cfg(feature = "watch")]
             watch_registry,
@@ -463,7 +483,7 @@ impl EmbeddedEngine {
         self.leader_elected_rx
             .borrow()
             .as_ref()
-            .map(|info| info.leader_id == self.kv_client.node_id())
+            .map(|info| info.leader_id == self.client.node_id())
             .unwrap_or(false)
     }
 
@@ -503,41 +523,7 @@ impl EmbeddedEngine {
     /// client.put(b"key", b"value").await?;
     /// ```
     pub fn client(&self) -> &EmbeddedClient {
-        &self.kv_client
-    }
-
-    /// Register a watcher for a specific key.
-    ///
-    /// Returns a handle that receives watch events via an mpsc channel.
-    /// The watcher is automatically unregistered when the handle is dropped.
-    ///
-    /// # Arguments
-    /// * `key` - The exact key to watch
-    ///
-    /// # Returns
-    /// * `Result<WatcherHandle>` - Handle for receiving events
-    ///
-    /// # Example
-    /// ```ignore
-    /// let engine = EmbeddedEngine::start().await?;
-    /// let mut handle = engine.watch(b"mykey")?;
-    /// while let Some(event) = handle.receiver_mut().recv().await {
-    ///     println!("Key changed: {:?}", event);
-    /// }
-    /// ```
-    #[cfg(feature = "watch")]
-    pub fn watch(
-        &self,
-        key: impl AsRef<[u8]>,
-    ) -> Result<WatcherHandle> {
-        let registry = self.watch_registry.as_ref().ok_or_else(|| {
-            crate::Error::Fatal(
-                "Watch feature disabled (WatchRegistry not initialized)".to_string(),
-            )
-        })?;
-
-        let key_bytes = Bytes::copy_from_slice(key.as_ref());
-        Ok(registry.register(key_bytes))
+        &self.client
     }
 
     /// Gracefully stop the embedded engine.
@@ -582,7 +568,7 @@ impl EmbeddedEngine {
     /// Useful in integration tests that need to identify which node
     /// they're interacting with, especially in multi-node scenarios.
     pub fn node_id(&self) -> u32 {
-        self.kv_client.node_id()
+        self.client.node_id()
     }
 }
 
