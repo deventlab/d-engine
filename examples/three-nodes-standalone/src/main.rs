@@ -1,4 +1,4 @@
-use d_engine::StandaloneServer;
+use d_engine::StandaloneEngine;
 use std::env;
 use std::error::Error;
 use std::fs::OpenOptions;
@@ -95,9 +95,9 @@ async fn start_dengine_server(
     println!("║  Config: {config_path:<28} ║");
     println!("╚════════════════════════════════════════╝");
 
-    // StandaloneServer with explicit config path
+    // StandaloneEngine with explicit config path
     // Blocks until shutdown signal received
-    if let Err(e) = StandaloneServer::run_with(&config_path, graceful_rx).await {
+    if let Err(e) = StandaloneEngine::run_with(&config_path, graceful_rx).await {
         error!("Server stopped with error: {:?}", e);
     } else {
         info!("Server stopped gracefully");

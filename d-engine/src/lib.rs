@@ -17,8 +17,8 @@ pub use d_engine_client::*;
 pub mod prelude {
     #[cfg(feature = "server")]
     pub use d_engine_server::{
-        EmbeddedEngine, Error, FileStateMachine, FileStorageEngine, EmbeddedClient, Node,
-        NodeBuilder, Result, StandaloneServer, StateMachine, StorageEngine,
+        EmbeddedClient, EmbeddedEngine, Error, FileStateMachine, FileStorageEngine, Node,
+        NodeBuilder, Result, StandaloneEngine, StateMachine, StorageEngine,
     };
 
     #[cfg(feature = "rocksdb")]

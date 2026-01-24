@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Watching key: {service_key}");
 
     // Register watcher directly on the engine
-    let watcher = engine.watch(service_key)?;
+    let watcher = engine.client().watch(service_key)?;
 
     // Spawn a background task to process watch events
     // This simulates the "Watcher" component running inside the same process

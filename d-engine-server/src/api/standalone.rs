@@ -13,10 +13,10 @@ use crate::StateMachine;
 use crate::StorageEngine;
 use crate::node::NodeBuilder;
 
-/// Standalone d-engine server for independent deployment
-pub struct StandaloneServer;
+/// Standalone d-engine engine for independent deployment
+pub struct StandaloneEngine;
 
-impl StandaloneServer {
+impl StandaloneEngine {
     /// Run server with configuration from environment.
     ///
     /// Reads `CONFIG_PATH` environment variable or uses default configuration.
@@ -32,7 +32,7 @@ impl StandaloneServer {
     /// std::env::set_var("CONFIG_PATH", "/etc/d-engine/production.toml");
     ///
     /// let (shutdown_tx, shutdown_rx) = watch::channel(());
-    /// StandaloneServer::run(shutdown_rx).await?;
+    /// StandaloneEngine::run(shutdown_rx).await?;
     /// ```
     #[cfg(feature = "rocksdb")]
     pub async fn run(shutdown_rx: watch::Receiver<()>) -> Result<()> {
@@ -76,7 +76,7 @@ impl StandaloneServer {
     /// # Example
     /// ```ignore
     /// let (shutdown_tx, shutdown_rx) = watch::channel(());
-    /// StandaloneServer::run_with("config/node1.toml", shutdown_rx).await?;
+    /// StandaloneEngine::run_with("config/node1.toml", shutdown_rx).await?;
     /// ```
     #[cfg(feature = "rocksdb")]
     pub async fn run_with(
@@ -129,7 +129,7 @@ impl StandaloneServer {
     /// let sm = Arc::new(MyCustomStateMachine::new()?);
     ///
     /// let (shutdown_tx, shutdown_rx) = watch::channel(());
-    /// StandaloneServer::run_custom(storage, sm, shutdown_rx, Some("config.toml")).await?;
+    /// StandaloneEngine::run_custom(storage, sm, shutdown_rx, Some("config.toml")).await?;
     /// ```
     pub async fn run_custom<SE, SM>(
         storage_engine: Arc<SE>,

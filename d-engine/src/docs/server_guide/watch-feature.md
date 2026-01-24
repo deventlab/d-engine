@@ -51,16 +51,16 @@ while let Some(event) = stream.next().await {
 
 ### Embedded Usage
 
-For in-process usage (e.g., `EmbeddedEngine`), you can use the `watch()` method directly:
+For in-process usage (e.g., `EmbeddedEngine`), use the client's `watch()` method:
 
 ```rust,ignore
-use d_engine::d_engine_server::embedded::EmbeddedEngine;
+use d_engine::EmbeddedEngine;
 
 // Initialize engine with config enabling watch
 let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 
-// Start watching
-let mut watcher = engine.watch("my_key").await?;
+// Watch via client (unified API)
+let mut watcher = engine.client().watch("my_key")?;
 
 // Spawn a task to handle events
 tokio::spawn(async move {
@@ -242,7 +242,7 @@ When `EmbeddedEngine` is dropped or crashes:
 
 ```rust,ignore
 let engine = EmbeddedEngine::start_with(config).await?;
-let mut watcher = engine.watch(b"key").await?;
+let mut watcher = engine.client().watch(b"key")?;
 
 // If engine crashes or is dropped:
 // - All active watchers' channels are closed
