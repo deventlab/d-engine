@@ -10,8 +10,8 @@
 //!
 //! # Usage
 //! ```rust,ignore
-//! let node = NodeBuilder::new(config).start().await?;
-//! let client = node.local_client();
+//! let engine = EmbeddedEngine::start().await?;
+//! let client = engine.client();
 //! client.put(b"key", b"value").await?;
 //! ```
 
@@ -105,7 +105,7 @@ pub struct EmbeddedClient {
 }
 
 impl EmbeddedClient {
-    /// Internal constructor (used by Node::local_client())
+    /// Internal constructor (used by EmbeddedEngine)
     pub(crate) fn new_internal(
         event_tx: mpsc::Sender<RaftEvent>,
         client_id: u32,
@@ -200,7 +200,7 @@ impl EmbeddedClient {
     ///
     /// # Example
     /// ```ignore
-    /// let client = node.local_client();
+    /// let client = engine.client();
     /// let value = client.get_linearizable(b"critical-config").await?;
     /// ```
     pub async fn get_linearizable(
@@ -226,7 +226,7 @@ impl EmbeddedClient {
     ///
     /// # Example
     /// ```ignore
-    /// let client = node.local_client();
+    /// let client = engine.client();
     /// let cached_value = client.get_eventual(b"user-preference").await?;
     /// ```
     pub async fn get_eventual(
@@ -426,6 +426,47 @@ impl EmbeddedClient {
         self.client_id
     }
 
+    /// Watch for changes to a specific key
+    ///
+    /// Returns a `WatcherHandle` that yields watch events when the key's value changes.
+    /// The stream will continue until explicitly dropped or a connection error occurs.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to watch
+    ///
+    /// # Returns
+    ///
+    /// A `WatcherHandle` that can be used to receive watch events
+    ///
+    /// # Errors
+    ///
+    /// Returns error if watch feature is not enabled or WatchRegistry not initialized
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let client = engine.client();
+    /// let mut watcher = client.watch(b"config/timeout").await?;
+    /// while let Some(event) = watcher.next().await {
+    ///     println!("Value changed: {:?}", event);
+    /// }
+    /// ```
+    #[cfg(feature = "watch")]
+    pub fn watch(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> ClientApiResult<d_engine_core::watch::WatcherHandle> {
+        let registry = self.watch_registry.as_ref().ok_or_else(|| ClientApiError::Business {
+            code: ErrorCode::Uncategorized,
+            message: "Watch feature disabled (WatchRegistry not initialized)".to_string(),
+            required_action: None,
+        })?;
+
+        let key_bytes = Bytes::copy_from_slice(key.as_ref());
+        Ok(registry.register(key_bytes))
+    }
+
     /// Internal helper: Get cluster membership via ClusterConf event
     async fn get_cluster_membership(
         &self
@@ -572,43 +613,6 @@ impl ClientApi for EmbeddedClient {
                 Ok(result.succeeded)
             }
             _ => Err(server_error("Invalid CAS response".to_string())),
-        }
-    }
-
-    async fn watch(
-        &self,
-        key: impl AsRef<[u8]> + Send,
-    ) -> ClientApiResult<tonic::Streaming<d_engine_proto::client::WatchResponse>> {
-        #[cfg(feature = "watch")]
-        {
-            let registry =
-                self.watch_registry.as_ref().ok_or_else(|| ClientApiError::Business {
-                    code: ErrorCode::Uncategorized,
-                    message: "Watch feature disabled (WatchRegistry not initialized)".to_string(),
-                    required_action: None,
-                })?;
-
-            let key_bytes = Bytes::copy_from_slice(key.as_ref());
-            let watcher_handle = registry.register(key_bytes);
-
-            // Convert WatcherHandle stream to tonic::Streaming
-            // This requires creating a streaming response compatible with tonic
-            // For now, return an error indicating this needs implementation
-            Err(ClientApiError::Business {
-                code: ErrorCode::Uncategorized,
-                message: "Watch not yet implemented for EmbeddedClient - use EmbeddedEngine::watch() instead".to_string(),
-                required_action: Some("Use EmbeddedEngine::watch() for watch operations in embedded mode".to_string()),
-            })
-        }
-
-        #[cfg(not(feature = "watch"))]
-        {
-            let _ = key; // Suppress unused warning
-            Err(ClientApiError::Business {
-                code: ErrorCode::Uncategorized,
-                message: "Watch feature not enabled - compile with 'watch' feature".to_string(),
-                required_action: Some("Enable 'watch' feature flag".to_string()),
-            })
         }
     }
 
