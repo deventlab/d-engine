@@ -38,7 +38,7 @@ impl ClientResponseExt for ClientResponse {
     fn into_write_result(self) -> std::result::Result<bool, ClientApiError> {
         self.validate_error()?;
         Ok(match self.success_result {
-            Some(SuccessResult::Succeeded(result)) => result,
+            Some(SuccessResult::WriteResult(result)) => result.succeeded,
             _ => false,
         })
     }
@@ -63,7 +63,7 @@ impl ClientResponseExt for ClientResponse {
                 .collect(),
             _ => {
                 let found = match &self.success_result {
-                    Some(SuccessResult::Succeeded(_)) => "Succeeded",
+                    Some(SuccessResult::WriteResult(_)) => "WriteResult",
                     None => "None",
                     _ => "Unknown",
                 };

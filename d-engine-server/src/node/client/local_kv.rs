@@ -617,8 +617,8 @@ impl ClientApi for LocalKvClient {
         }
 
         match response.success_result {
-            Some(d_engine_proto::client::client_response::SuccessResult::Succeeded(result)) => {
-                Ok(result)
+            Some(d_engine_proto::client::client_response::SuccessResult::WriteResult(result)) => {
+                Ok(result.succeeded)
             }
             _ => Err(LocalClientError::ServerError("Invalid CAS response".to_string()).into()),
         }

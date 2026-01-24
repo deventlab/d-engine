@@ -145,10 +145,10 @@ fn test_client_response_write_success() {
     assert_eq!(response.metadata, None);
 
     match response.success_result {
-        Some(SuccessResult::Succeeded(true)) => {
+        Some(SuccessResult::WriteResult(ref r)) if r.succeeded => {
             // Success
         }
-        _ => panic!("Expected Succeeded(true)"),
+        _ => panic!("Expected WriteResult(succeeded=true)"),
     }
 }
 

@@ -30,10 +30,11 @@ fn test_into_read_results_success() {
 
 #[test]
 fn test_into_read_results_wrong_variant_succeeded() {
+    use d_engine_proto::client::WriteResult;
     let response = ClientResponse {
         error: ErrorCode::Success as i32,
         metadata: None,
-        success_result: Some(SuccessResult::Succeeded(true)),
+        success_result: Some(SuccessResult::WriteResult(WriteResult { succeeded: true })),
     };
 
     let result = response.into_read_results();
@@ -42,7 +43,7 @@ fn test_into_read_results_wrong_variant_succeeded() {
     if let Err(ClientApiError::Protocol { code, message, .. }) = result {
         assert_eq!(code, ErrorCode::InvalidResponse);
         assert!(message.contains("expected ReadData"));
-        assert!(message.contains("found Succeeded"));
+        assert!(message.contains("found WriteResult"));
     } else {
         panic!("Expected Protocol error");
     }

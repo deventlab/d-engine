@@ -11,6 +11,7 @@ use crate::client::ClientResult;
 use crate::client::ReadConsistencyPolicy;
 use crate::client::ReadResults;
 use crate::client::WriteCommand;
+use crate::client::WriteResult;
 use crate::client::client_response::SuccessResult;
 use crate::client::write_command;
 use crate::error::ErrorCode;
@@ -126,7 +127,7 @@ impl ClientResponse {
     pub fn write_success() -> Self {
         Self {
             error: ErrorCode::Success as i32,
-            success_result: Some(SuccessResult::Succeeded(true)),
+            success_result: Some(SuccessResult::WriteResult(WriteResult { succeeded: true })),
             metadata: None,
         }
     }
@@ -138,7 +139,7 @@ impl ClientResponse {
     /// - `false` if error occurred or invalid response
     pub fn succeeded(&self) -> bool {
         self.error == ErrorCode::Success as i32
-            && matches!(self.success_result, Some(SuccessResult::Succeeded(_)))
+            && matches!(self.success_result, Some(SuccessResult::WriteResult(_)))
     }
 
     /// Check if write operation succeeded with true result
@@ -151,7 +152,10 @@ impl ClientResponse {
     /// - `false` otherwise
     pub fn is_write_success(&self) -> bool {
         self.error == ErrorCode::Success as i32
-            && matches!(self.success_result, Some(SuccessResult::Succeeded(true)))
+            && matches!(
+                self.success_result,
+                Some(SuccessResult::WriteResult(WriteResult { succeeded: true }))
+            )
     }
 
     /// Build success response for read operations
