@@ -132,6 +132,30 @@ impl ClientResponse {
         }
     }
 
+    /// Build CAS success response (comparison succeeded, value updated)
+    ///
+    /// # Returns
+    /// Response with Success code and result=true (CAS succeeded)
+    pub fn cas_success() -> Self {
+        Self {
+            error: ErrorCode::Success as i32,
+            success_result: Some(SuccessResult::WriteResult(WriteResult { succeeded: true })),
+            metadata: None,
+        }
+    }
+
+    /// Build CAS failure response (comparison failed, value NOT updated)
+    ///
+    /// # Returns
+    /// Response with Success code and result=false (CAS failed due to mismatch)
+    pub fn cas_failure() -> Self {
+        Self {
+            error: ErrorCode::Success as i32,
+            success_result: Some(SuccessResult::WriteResult(WriteResult { succeeded: false })),
+            metadata: None,
+        }
+    }
+
     /// Check if operation completed without error
     ///
     /// # Returns

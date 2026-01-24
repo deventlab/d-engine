@@ -56,7 +56,7 @@ async fn test_embedded_watch_registration() -> Result<(), Box<dyn std::error::Er
 
     // Register a watcher
     let key = b"test-key";
-    let _watcher = engine.watch(key)?;
+    let _watcher = engine.client().watch(key)?;
 
     // Success - we got a WatcherHandle
     // This verifies basic registration functionality
@@ -73,7 +73,7 @@ async fn test_embedded_watch_receives_put_events() -> Result<(), Box<dyn std::er
 
     // Start watching a key
     let key = b"test-key";
-    let mut watcher = engine.watch(key)?;
+    let mut watcher = engine.client().watch(key)?;
 
     // Spawn task to collect events
     let handle = tokio::spawn(async move { watcher.receiver_mut().recv().await });
@@ -131,7 +131,7 @@ listen_address = "127.0.0.1:{port}"
 
     // Verify watch is available even without explicit config
     let key = b"test-key";
-    let _watcher = engine.watch(key)?;
+    let _watcher = engine.client().watch(key)?;
 
     // Cleanup
     engine.stop().await?;
@@ -161,7 +161,7 @@ async fn test_watch_node_crash_embedded_mode() -> Result<(), Box<dyn std::error:
     let (engine, _temp_dir) = setup_engine().await?;
 
     // Register watcher
-    let mut watcher = engine.watch(key)?;
+    let mut watcher = engine.client().watch(key)?;
 
     // Spawn task that tries to receive events
     let receiver_handle = tokio::spawn(async move {
@@ -214,7 +214,7 @@ async fn test_embedded_watch_receives_delete_events() -> Result<(), Box<dyn std:
     sleep(Duration::from_millis(50)).await;
 
     // Now register watcher
-    let mut watcher = engine.watch(key)?;
+    let mut watcher = engine.client().watch(key)?;
 
     // Spawn task to collect delete event
     let handle = tokio::spawn(async move { watcher.receiver_mut().recv().await });
@@ -248,7 +248,7 @@ async fn test_embedded_watch_handle_drop_cleanup() -> Result<(), Box<dyn std::er
 
     // Register watcher in a scope
     {
-        let _watcher = engine.watch(key)?;
+        let _watcher = engine.client().watch(key)?;
         // Watcher is alive here
     } // ← WatcherHandle drops here, should trigger unregister
 
@@ -261,7 +261,7 @@ async fn test_embedded_watch_handle_drop_cleanup() -> Result<(), Box<dyn std::er
 
     // We can't directly verify cleanup without accessing internal state
     // But we can verify that re-registering works (proves cleanup happened)
-    let mut watcher = engine.watch(key)?;
+    let mut watcher = engine.client().watch(key)?;
 
     // This PUT should trigger the new watcher
     engine.client().put(key, b"value2").await?;
@@ -288,9 +288,9 @@ async fn test_embedded_watch_multiple_watchers_same_key() -> Result<(), Box<dyn 
     let key = b"test-key";
 
     // Register 3 watchers for the same key
-    let mut watcher1 = engine.watch(key)?;
-    let mut watcher2 = engine.watch(key)?;
-    let mut watcher3 = engine.watch(key)?;
+    let mut watcher1 = engine.client().watch(key)?;
+    let mut watcher2 = engine.client().watch(key)?;
+    let mut watcher3 = engine.client().watch(key)?;
 
     // Spawn tasks to collect events from each watcher
     let handle1 = tokio::spawn(async move { watcher1.receiver_mut().recv().await });
@@ -359,7 +359,7 @@ watcher_buffer_size = 10
 
     // 2. Start Watcher
     let key = "test-key";
-    let mut watcher = engine.watch(key)?;
+    let mut watcher = engine.client().watch(key)?;
 
     // Spawn watcher task
     let handle = tokio::spawn(async move {

@@ -73,7 +73,7 @@ async fn measure_put_latency(watcher_count: usize) -> f64 {
     let mut _watchers = Vec::new();
     for i in 0..watcher_count {
         let key = format!("watch_key_{i}").into_bytes();
-        let watcher = engine.watch(&key).expect("Failed to register watcher");
+        let watcher = engine.client().watch(&key).expect("Failed to register watcher");
         _watchers.push(watcher);
     }
 

@@ -16,7 +16,7 @@ use tracing_test::traced_test;
 use crate::Client;
 use crate::ClientConfig;
 use crate::ClientInner;
-use crate::ClusterClient;
+
 use crate::ConnectionPool;
 use crate::GrpcClient;
 use crate::mock_rpc_service::MockNode;
@@ -895,14 +895,13 @@ async fn test_client_refresh_with_new_endpoints() {
         endpoints: initial_endpoints.clone(),
     }));
 
+    let grpc_client = GrpcClient::new(client_inner.clone());
     let mut client = Client {
-        kv: GrpcClient::new(client_inner.clone()),
-        cluster: ClusterClient::new(client_inner.clone()),
-        inner: client_inner,
+        inner: Arc::new(grpc_client),
     };
 
     // Verify initial state
-    let initial_inner = client.inner.load();
+    let initial_inner = client.inner.client_inner.load();
     assert_eq!(initial_inner.endpoints, initial_endpoints);
 
     // Create second mock server for refresh
@@ -927,7 +926,7 @@ async fn test_client_refresh_with_new_endpoints() {
     assert!(result.is_ok(), "Refresh should succeed");
 
     // Verify client was updated with new endpoints
-    let refreshed_inner = client.inner.load();
+    let refreshed_inner = client.inner.client_inner.load();
     assert_eq!(refreshed_inner.endpoints, new_endpoints);
     assert_eq!(refreshed_inner.client_id, 123); // Client ID should be preserved
     assert!(client.get("test_key").await.is_ok());
@@ -965,14 +964,13 @@ async fn test_client_refresh_with_none_endpoints() {
         endpoints: initial_endpoints.clone(),
     }));
 
+    let grpc_client = GrpcClient::new(client_inner.clone());
     let mut client = Client {
-        kv: GrpcClient::new(client_inner.clone()),
-        cluster: ClusterClient::new(client_inner.clone()),
-        inner: client_inner,
+        inner: Arc::new(grpc_client),
     };
 
     // Verify initial state
-    let initial_inner = client.inner.load();
+    let initial_inner = client.inner.client_inner.load();
     assert_eq!(initial_inner.endpoints, initial_endpoints);
 
     // Refresh client with None (should reuse existing endpoints)
@@ -980,7 +978,7 @@ async fn test_client_refresh_with_none_endpoints() {
     assert!(result.is_ok(), "Refresh with None should succeed");
 
     // Verify client still has original endpoints
-    let refreshed_inner = client.inner.load();
+    let refreshed_inner = client.inner.client_inner.load();
     assert_eq!(refreshed_inner.endpoints, initial_endpoints);
     assert_eq!(refreshed_inner.client_id, 456); // Client ID should be preserved
     assert!(client.get("test_key").await.is_ok());
@@ -1032,14 +1030,13 @@ async fn test_client_refresh_with_multiple_endpoints() {
         endpoints: initial_endpoints.clone(),
     }));
 
+    let grpc_client = GrpcClient::new(client_inner.clone());
     let mut client = Client {
-        kv: GrpcClient::new(client_inner.clone()),
-        cluster: ClusterClient::new(client_inner.clone()),
-        inner: client_inner,
+        inner: Arc::new(grpc_client),
     };
 
     // Verify initial state
-    let initial_inner = client.inner.load();
+    let initial_inner = client.inner.client_inner.load();
     assert_eq!(initial_inner.endpoints.len(), 1);
 
     // Refresh with multiple endpoints
@@ -1055,7 +1052,7 @@ async fn test_client_refresh_with_multiple_endpoints() {
     );
 
     // Verify client was updated with multiple endpoints
-    let refreshed_inner = client.inner.load();
+    let refreshed_inner = client.inner.client_inner.load();
     assert_eq!(refreshed_inner.endpoints, multiple_endpoints);
     assert_eq!(refreshed_inner.endpoints.len(), 2);
     assert_eq!(refreshed_inner.client_id, 789); // Client ID should be preserved
@@ -1093,14 +1090,13 @@ async fn test_client_refresh_failure_invalid_endpoints() {
         endpoints: initial_endpoints.clone(),
     }));
 
+    let grpc_client = GrpcClient::new(client_inner.clone());
     let mut client = Client {
-        kv: GrpcClient::new(client_inner.clone()),
-        cluster: ClusterClient::new(client_inner.clone()),
-        inner: client_inner,
+        inner: Arc::new(grpc_client),
     };
 
     // Verify initial state
-    let initial_inner = client.inner.load();
+    let initial_inner = client.inner.client_inner.load();
     assert_eq!(initial_inner.endpoints, initial_endpoints);
 
     // Try to refresh with invalid endpoints (should fail)
@@ -1114,7 +1110,7 @@ async fn test_client_refresh_failure_invalid_endpoints() {
     );
 
     // Verify client state remains unchanged after failed refresh
-    let unchanged_inner = client.inner.load();
+    let unchanged_inner = client.inner.client_inner.load();
     assert_eq!(unchanged_inner.endpoints, initial_endpoints);
     assert_eq!(unchanged_inner.client_id, 999);
 }
@@ -1151,10 +1147,9 @@ async fn test_client_refresh_preserves_kv_and_cluster_clients() {
         endpoints: initial_endpoints.clone(),
     }));
 
+    let grpc_client = GrpcClient::new(client_inner.clone());
     let mut client = Client {
-        kv: GrpcClient::new(client_inner.clone()),
-        cluster: ClusterClient::new(client_inner.clone()),
-        inner: client_inner,
+        inner: Arc::new(grpc_client),
     };
 
     // Create new mock server for refresh
@@ -1178,14 +1173,252 @@ async fn test_client_refresh_preserves_kv_and_cluster_clients() {
     let result = client.refresh(Some(new_endpoints)).await;
     assert!(result.is_ok(), "Refresh should succeed");
 
-    // Verify kv and cluster clients are still accessible and functional
+    // Verify client methods are still accessible and functional (via Deref)
     assert!(client.get("test_key").await.is_ok());
-    assert!(client.cluster().list_members().await.is_ok());
+    assert!(client.list_members().await.is_ok());
 
     let kv_result = client.get("test_key").await;
     assert!(kv_result.is_ok() || kv_result.is_err()); // Either result is fine as long as it doesn't panic
 
-    let cluster_result = client.cluster().list_members().await;
+    let cluster_result = client.list_members().await;
     assert!(cluster_result.is_ok() || cluster_result.is_err()); // Either result is fine as long as
     // it doesn't panic
+}
+
+// =============================================================================
+// CAS (Compare-And-Swap) Operations Tests
+// =============================================================================
+
+mod cas_operations {
+    use super::*;
+
+    /// Test CAS success scenario - acquiring a distributed lock
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cas_acquire_lock_success() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) = MockNode::simulate_cas_mock_server(rx, true).await.unwrap();
+
+        let endpoints = vec![format!("http://localhost:{}", port)];
+        let config = ClientConfig::default();
+
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+
+        let client = GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 123,
+            config,
+            endpoints,
+        })));
+
+        let lock_key = b"distributed_lock";
+        let owner = b"client_a";
+
+        // CAS: None -> "client_a" (acquire lock)
+        let result = client.compare_and_swap(lock_key, None::<&[u8]>, owner).await;
+        println!("CAS acquire lock result: {result:?}");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true, "CAS should succeed");
+    }
+
+    /// Test CAS conflict scenario - lock already held by another client
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cas_lock_conflict() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) = MockNode::simulate_cas_mock_server(rx, false).await.unwrap();
+
+        let endpoints = vec![format!("http://localhost:{}", port)];
+        let config = ClientConfig::default();
+
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+
+        let client = GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 123,
+            config,
+            endpoints,
+        })));
+
+        let lock_key = b"distributed_lock";
+        let owner_b = b"client_b";
+
+        // Assume lock is already held by client_a
+        // CAS: None -> "client_b" should fail because lock exists
+        let result = client.compare_and_swap(lock_key, None::<&[u8]>, owner_b).await;
+        println!("CAS conflict result: {result:?}");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false, "CAS should fail due to conflict");
+    }
+
+    /// Test CAS release lock - correct owner releases the lock
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cas_release_lock() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) = MockNode::simulate_cas_mock_server(rx, true).await.unwrap();
+
+        let endpoints = vec![format!("http://localhost:{}", port)];
+        let config = ClientConfig::default();
+
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+
+        let client = GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 123,
+            config,
+            endpoints,
+        })));
+
+        let lock_key = b"distributed_lock";
+        let owner = b"client_a";
+
+        // CAS: "client_a" -> delete (release lock by setting to empty or using delete)
+        // For this test, we simulate releasing by setting to a tombstone value
+        let result = client.compare_and_swap(lock_key, Some(owner), b"").await;
+        println!("CAS release lock result: {result:?}");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true, "CAS should succeed - correct owner");
+    }
+
+    /// Test CAS prevent wrong release - only correct owner can release
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cas_prevent_wrong_release() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) = MockNode::simulate_cas_mock_server(rx, false).await.unwrap();
+
+        let endpoints = vec![format!("http://localhost:{}", port)];
+        let config = ClientConfig::default();
+
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+
+        let client = GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 123,
+            config,
+            endpoints,
+        })));
+
+        let lock_key = b"distributed_lock";
+        let wrong_owner = b"client_b";
+
+        // Assume lock is held by client_a
+        // CAS: "client_b" -> "" should fail because expected value doesn't match
+        let result = client.compare_and_swap(lock_key, Some(wrong_owner), b"").await;
+        println!("CAS wrong release result: {result:?}");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false, "CAS should fail - wrong owner");
+    }
+
+    /// Test CAS edge cases - empty values and large values
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cas_edge_cases() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) = MockNode::simulate_cas_mock_server(rx, true).await.unwrap();
+
+        let endpoints = vec![format!("http://localhost:{}", port)];
+        let config = ClientConfig::default();
+
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+
+        let client = GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 123,
+            config,
+            endpoints,
+        })));
+
+        // Test 1: Empty value CAS
+        let result = client.compare_and_swap(b"empty_key", None::<&[u8]>, b"").await;
+        println!("CAS empty value result: {result:?}");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true, "CAS with empty value should succeed");
+
+        // Test 2: Large value CAS
+        let large_value = vec![b'x'; 1024 * 1024]; // 1MB
+        let result = client.compare_and_swap(b"large_key", None::<&[u8]>, &large_value).await;
+        println!("CAS large value result: {result:?}");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true, "CAS with large value should succeed");
+    }
+
+    /// Test CAS on non-existent key
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cas_nonexistent_key_success() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) = MockNode::simulate_cas_mock_server(rx, true).await.unwrap();
+
+        let endpoints = vec![format!("http://localhost:{}", port)];
+        let config = ClientConfig::default();
+
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+
+        let client = GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 123,
+            config,
+            endpoints,
+        })));
+
+        let nonexistent_key = b"does_not_exist";
+
+        // CAS: None -> "new_value" on non-existent key (should succeed)
+        let result = client.compare_and_swap(nonexistent_key, None::<&[u8]>, b"new_value").await;
+        println!("CAS nonexistent key result: {result:?}");
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            true,
+            "CAS on non-existent key with None should succeed"
+        );
+    }
+
+    /// Test CAS on non-existent key with wrong expected value
+    #[tokio::test]
+    #[traced_test]
+    async fn test_cas_nonexistent_key_failure() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) = MockNode::simulate_cas_mock_server(rx, false).await.unwrap();
+
+        let endpoints = vec![format!("http://localhost:{}", port)];
+        let config = ClientConfig::default();
+
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+
+        let client = GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 123,
+            config,
+            endpoints,
+        })));
+
+        let nonexistent_key = b"does_not_exist";
+
+        // CAS: Some(wrong) -> "value" on non-existent key (should fail)
+        let result = client.compare_and_swap(nonexistent_key, Some(b"wrong"), b"value").await;
+        println!("CAS nonexistent with wrong expected result: {result:?}");
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            false,
+            "CAS on non-existent key with Some(wrong) should fail"
+        );
+    }
 }

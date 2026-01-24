@@ -180,4 +180,47 @@ impl MockNode {
         let channel = Self::mock_channel_with_port(port).await;
         Ok((channel, port))
     }
+
+    /// Simulate CAS-aware mock server for testing compare-and-swap operations
+    ///
+    /// # Parameters
+    /// - `rx`: Shutdown signal receiver
+    /// - `cas_should_succeed`: true = CAS succeeds (comparison matched), false = CAS fails (mismatch)
+    ///
+    /// # Returns
+    /// - Channel and port for the mock server
+    #[allow(clippy::type_complexity)]
+    pub(crate) async fn simulate_cas_mock_server(
+        rx: oneshot::Receiver<()>,
+        cas_should_succeed: bool,
+    ) -> std::result::Result<(Channel, u16), tonic::Status> {
+        let response = if cas_should_succeed {
+            ClientResponse::cas_success()
+        } else {
+            ClientResponse::cas_failure()
+        };
+
+        let builder = Box::new(|port: u16| {
+            Ok(ClusterMembership {
+                version: 1,
+                nodes: vec![NodeMeta {
+                    id: 1,
+                    role: NodeRole::Leader as i32,
+                    address: format!("127.0.0.1:{port}"),
+                    status: NodeStatus::Active.into(),
+                }],
+                current_leader_id: Some(1),
+            })
+        });
+
+        let mock_service = MockRpcService {
+            expected_metadata_response: Some(Arc::new(builder)),
+            expected_client_propose_response: Some(Ok(response)),
+            ..Default::default()
+        };
+
+        let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
+        let channel = Self::mock_channel_with_port(port).await;
+        Ok((channel, port))
+    }
 }

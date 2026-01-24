@@ -547,7 +547,7 @@ listen_addr = "127.0.0.1:0"
                 .expect("Leader should be elected");
 
             // Register watcher
-            let result = engine.watch(b"test_key");
+            let result = engine.client().watch(b"test_key");
             assert!(
                 result.is_ok(),
                 "watch() should succeed when feature is enabled"
@@ -624,7 +624,7 @@ listen_addr = "127.0.0.1:0"
             println!("Engine started and leader elected");
 
             // Register watcher
-            let result = engine.watch(b"test_key");
+            let result = engine.client().watch(b"test_key");
             println!("Watch registration result: {:?}", result.is_ok());
             assert!(result.is_ok(), "watch() should succeed");
 
@@ -695,7 +695,7 @@ listen_addr = "127.0.0.1:0"
             println!("Engine started and leader elected");
 
             // Register watcher
-            let result = engine.watch(b"test_key");
+            let result = engine.client().watch(b"test_key");
             println!("Watch registration result: {:?}", result.is_ok());
             assert!(result.is_ok(), "watch() should succeed");
 

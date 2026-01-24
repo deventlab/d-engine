@@ -114,7 +114,7 @@ pub mod storage;
 
 // -------------------- Primary Entry Points --------------------
 pub use api::EmbeddedEngine;
-pub use api::StandaloneServer;
+pub use api::StandaloneEngine;
 // -------------------- Error Types --------------------
 /// Unified error type for all d-engine operations
 pub use d_engine_core::Error;

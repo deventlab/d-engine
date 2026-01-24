@@ -10,6 +10,7 @@
 use std::time::Duration;
 
 use d_engine_client::Client;
+use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
 use tracing::info;
 use tracing_test::traced_test;
@@ -87,7 +88,7 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
     );
 
     // Verify list_members also contains the same leader info
-    let members = client.cluster().list_members().await?;
+    let members = client.list_members().await?;
     assert_eq!(members.len(), 3, "Should have 3 members");
 
     info!("✅ Metadata API correctly returns current_leader_id after bootstrap");

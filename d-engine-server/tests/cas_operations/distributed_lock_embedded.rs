@@ -33,7 +33,7 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
 
     info!("Starting 3-node cluster for CAS lock test");
 
-    let mut engines = b"";
+    let mut engines = Vec::new();
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
@@ -95,7 +95,7 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
     let holder = leader_client.get(lock_key).await?;
     assert_eq!(
         holder,
-        Some(b"client_a".to_vec()),
+        Some(b"client_a".to_vec().into()),
         "Lock should be held by client_a"
     );
 
@@ -114,7 +114,7 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
     let new_holder = leader_client.get(lock_key).await?;
     assert_eq!(
         new_holder,
-        Some(b"client_b".to_vec()),
+        Some(b"client_b".to_vec().into()),
         "Lock should be held by client_b"
     );
 

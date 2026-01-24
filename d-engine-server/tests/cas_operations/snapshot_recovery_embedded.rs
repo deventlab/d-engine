@@ -33,9 +33,9 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
 
     info!("Starting 3-node cluster for CAS snapshot test");
 
-    let mut engines = b"";
-    let mut storage_paths = b"";
-    let mut sm_paths = b"";
+    let mut engines = Vec::new();
+    let mut storage_paths = Vec::new();
+    let mut sm_paths = Vec::new();
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
@@ -89,7 +89,7 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
 
     // Verify lock state
     let holder = leader_client.get(lock_key).await?;
-    assert_eq!(holder, Some(b"owner_before_snapshot".to_vec()));
+    assert_eq!(holder, Some(b"owner_before_snapshot".to_vec().into()));
     info!("Lock acquired and verified");
 
     // Step 2: Write additional data to trigger snapshot threshold
@@ -129,7 +129,7 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
     let recovered_holder = leader_client.get(lock_key).await?;
     assert_eq!(
         recovered_holder,
-        Some(b"owner_before_snapshot".to_vec()),
+        Some(b"owner_before_snapshot".to_vec().into()),
         "Lock should persist after snapshot recovery"
     );
 
@@ -144,7 +144,7 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
     assert!(reacquired, "Should re-acquire lock");
 
     let final_holder = leader_client.get(lock_key).await?;
-    assert_eq!(final_holder, Some(b"new_owner".to_vec()));
+    assert_eq!(final_holder, Some(b"new_owner".to_vec().into()));
 
     info!("CAS snapshot recovery test passed");
     Ok(())
