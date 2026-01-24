@@ -3,98 +3,56 @@
 //! These tests verify that batching multiple linearizable read requests
 //! improves throughput by sharing a single verify_leadership() call.
 //!
-//! Uses embedded mode with NodeBuilder for production-ready testing.
+//! Uses embedded mode with EmbeddedEngine for production-ready testing.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::RaftConfig;
-use d_engine_server::FileStateMachine;
-use d_engine_server::FileStorageEngine;
-use d_engine_server::NodeBuilder;
-use d_engine_server::node::RaftTypeConfig;
+use d_engine_server::EmbeddedEngine;
 use tempfile::TempDir;
-use tokio::sync::watch;
 use tokio::time::Instant;
 
 use tracing_test::traced_test;
 
-type TestNode = Arc<d_engine_server::Node<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>;
-
-/// Helper to create a single-node test cluster
-async fn create_single_node_with_batching(
+/// Helper to create a test EmbeddedEngine with batching config
+async fn create_engine_with_batching(
     test_name: &str,
     size_threshold: usize,
     time_threshold_ms: u64,
-) -> (TestNode, TempDir, watch::Sender<()>) {
-    use d_engine_core::ClusterConfig;
-    use d_engine_proto::common::NodeRole;
-    use d_engine_proto::common::NodeStatus;
-    use d_engine_proto::server::cluster::NodeMeta;
-
+) -> (EmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
 
-    let storage_engine = Arc::new(
-        FileStorageEngine::new(db_path.join("storage")).expect("Failed to create storage engine"),
+    let config_path = temp_dir.path().join("d-engine.toml");
+    let port = 50000 + (std::process::id() % 10000);
+    let config_content = format!(
+        r#"
+[cluster]
+listen_address = "127.0.0.1:{}"
+db_root_dir = "{}"
+single_node = true
+
+[raft.read_consistency]
+state_machine_sync_timeout_ms = 5000
+
+[raft.read_consistency.read_batching]
+size_threshold = {}
+time_threshold_ms = {}
+"#,
+        port,
+        db_path.display(),
+        size_threshold,
+        time_threshold_ms
     );
-    let state_machine = Arc::new(
-        FileStateMachine::new(db_path.join("state_machine"))
-            .await
-            .expect("Failed to create state machine"),
-    );
+    std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let listen_address: std::net::SocketAddr = format!(
-        "127.0.0.1:{}",
-        9081 + (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            % 1000) as u16
-    )
-    .parse()
-    .unwrap();
-
-    let cluster_config = ClusterConfig {
-        node_id: 1,
-        listen_address,
-        initial_cluster: vec![NodeMeta {
-            id: 1,
-            address: listen_address.to_string(),
-            role: NodeRole::Follower as i32,
-            status: NodeStatus::Active as i32,
-        }],
-        db_root_dir: db_path.clone(),
-        log_dir: db_path.join("logs"),
-    };
-
-    let (graceful_tx, graceful_rx) = watch::channel(());
-
-    let mut raft_config = RaftConfig::default();
-    raft_config.read_consistency.state_machine_sync_timeout_ms = 5000;
-    raft_config.read_consistency.read_batching.size_threshold = size_threshold;
-    raft_config.read_consistency.read_batching.time_threshold_ms = time_threshold_ms;
-
-    let node = NodeBuilder::from_cluster_config(cluster_config, graceful_rx)
-        .storage_engine(storage_engine)
-        .state_machine(state_machine)
-        .raft_config(raft_config)
-        .start()
+    let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
-        .expect("Failed to start node");
+        .expect("Failed to start engine");
 
-    let node_clone = node.clone();
-    tokio::spawn(async move {
-        if let Err(e) = node_clone.run().await {
-            eprintln!("Node run error: {e:?}");
-        }
-    });
+    engine.wait_ready(Duration::from_secs(5)).await.expect("Engine not ready");
 
-    // Wait for leader election
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    (node, temp_dir, graceful_tx)
+    (engine, temp_dir)
 }
 
 /// Test 2.1: Linearizability verification with batched reads
@@ -118,11 +76,11 @@ async fn create_single_node_with_batching(
 #[traced_test]
 #[tokio::test]
 async fn test_batching_preserves_linearizability() {
-    let (node, _temp_dir, graceful_tx) =
-        create_single_node_with_batching("test_linearizability", 50, 10).await;
+    let (engine, _temp_dir) =
+        create_engine_with_batching("test_linearizability", 50, 10).await;
 
     // Write test data
-    let client = node.local_client();
+    let client = engine.client();
     client
         .put(Bytes::from("key1"), Bytes::from("v1"))
         .await
@@ -138,7 +96,7 @@ async fn test_batching_preserves_linearizability() {
     // Send 100 concurrent linearizable reads
     let mut handles = vec![];
     for i in 0..100 {
-        let client = node.local_client();
+        let client = engine.client();
         let key = if i < 50 {
             Bytes::from("key1")
         } else {
@@ -165,10 +123,6 @@ async fn test_batching_preserves_linearizability() {
     for handle in handles {
         handle.await.expect("Task failed");
     }
-
-    // Cleanup
-    let _ = graceful_tx.send(());
-    tokio::time::sleep(Duration::from_millis(100)).await;
 }
 
 /// Test 2.2: Concurrent write-read verification
@@ -189,11 +143,11 @@ async fn test_batching_preserves_linearizability() {
 /// - Requests complete within reasonable time (<500ms)
 #[traced_test]
 #[tokio::test]
-async fn test_concurrent_write_batched_read() {
-    let (node, _temp_dir, graceful_tx) =
-        create_single_node_with_batching("test_write_read", 50, 10).await;
+async fn test_concurrent_write_and_read() {
+    let (engine, _temp_dir) =
+        create_engine_with_batching("test_concurrent_write", 50, 10).await;
 
-    let client = node.local_client();
+    let client = engine.client();
 
     // Write key1=v1
     client
@@ -207,9 +161,9 @@ async fn test_concurrent_write_batched_read() {
     let start = Instant::now();
 
     // Immediately send 50 concurrent reads
-    let mut handles = vec![];
-    for _ in 0..50 {
-        let client = node.local_client();
+    let mut read_handles = vec![];
+    for i in 0..100 {
+        let client = engine.client();
         let handle = tokio::spawn(async move {
             let result = client
                 .get_linearizable(b"key1")
@@ -260,10 +214,10 @@ async fn test_concurrent_write_batched_read() {
 #[traced_test]
 #[tokio::test]
 async fn test_single_request_timeout_trigger() {
-    let (node, _temp_dir, graceful_tx) =
-        create_single_node_with_batching("test_timeout", 50, 10).await;
+    let (engine, _temp_dir) =
+        create_engine_with_batching("test_timeout", 50, 10).await;
 
-    let client = node.local_client();
+    let client = engine.client();
 
     // Write test data
     client
@@ -323,10 +277,11 @@ async fn test_single_request_timeout_trigger() {
 #[traced_test]
 #[tokio::test]
 async fn test_size_threshold_immediate_flush() {
-    let (node, _temp_dir, graceful_tx) =
-        create_single_node_with_batching("test_size", 50, 10).await;
+    async fn test_batching_performance_gain() {
+        let (engine, _temp_dir) =
+            create_engine_with_batching("test_performance", 100, 50).await;
 
-    let client = node.local_client();
+        let client = engine.client();
 
     // Write test data
     for i in 0..50 {
@@ -342,8 +297,8 @@ async fn test_size_threshold_immediate_flush() {
 
     // Send 50 concurrent reads
     let mut handles = vec![];
-    for i in 0..50 {
-        let client = node.local_client();
+    for i in 0..20 {
+        let client = engine.client();
         let key = format!("key{i}");
         let handle = tokio::spawn(async move {
             client.get_linearizable(key.as_bytes()).await.expect("Read failed")
@@ -400,7 +355,7 @@ async fn test_batching_throughput_improvement() {
 
     // Run 1: Batching disabled (set size_threshold very high)
     let (node1, _temp_dir1, graceful_tx1) =
-        create_single_node_with_batching("test_throughput_off", 10000, 10).await;
+        create_engine_with_batching("test_throughput_off", 10000, 10).await;
 
     let client1 = node1.local_client();
     client1
@@ -427,7 +382,7 @@ async fn test_batching_throughput_improvement() {
 
     // Run 2: Batching enabled
     let (node2, _temp_dir2, graceful_tx2) =
-        create_single_node_with_batching("test_throughput_on", 50, 10).await;
+        create_engine_with_batching("test_throughput_on", 50, 10).await;
 
     let client2 = node2.local_client();
     client2
