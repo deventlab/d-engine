@@ -39,8 +39,8 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     let ports = port_guard.as_slice();
 
     let mut ctx = TestContext {
-        graceful_txs: b"",
-        node_handles: b"",
+        graceful_txs: Vec::new(),
+        node_handles: Vec::new(),
     };
 
     info!("Starting 3-node cluster for CAS snapshot recovery test");
@@ -77,7 +77,7 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
 
     // Verify lock state
     let holder = client.get(lock_key).await?;
-    assert_eq!(holder, Some(b"owner_before_snapshot".to_vec()));
+    assert_eq!(holder, Some(b"owner_before_snapshot".to_vec().into()));
     info!("Lock acquired and verified");
 
     // Step 2: Write data to trigger snapshot threshold
@@ -117,15 +117,13 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     let recovered_holder = client.get(lock_key).await?;
     assert_eq!(
         recovered_holder,
-        Some(b"owner_before_snapshot".to_vec()),
+        Some(b"owner_before_snapshot".to_vec().into()),
         "Lock should persist after snapshot recovery"
     );
 
     // Step 6: Release and re-acquire lock
     info!("Step 6: Release and re-acquire lock");
-    let released = client
-        .compare_and_swap(lock_key, Some(b"owner_before_snapshot"), b"")
-        .await?;
+    let released = client.compare_and_swap(lock_key, Some(b"owner_before_snapshot"), b"").await?;
     assert!(released, "Should release lock");
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
 
@@ -133,7 +131,7 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     assert!(reacquired, "Should re-acquire lock");
 
     let final_holder = client.get(lock_key).await?;
-    assert_eq!(final_holder, Some(b"new_owner".to_vec()));
+    assert_eq!(final_holder, Some(b"new_owner".to_vec().into()));
 
     info!("CAS snapshot recovery test (standalone) passed");
 

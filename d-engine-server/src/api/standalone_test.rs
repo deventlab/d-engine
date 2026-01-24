@@ -506,7 +506,7 @@ listen_addr = "127.0.0.1:0"
         let (shutdown_tx, shutdown_rx) = watch::channel(());
 
         let server_handle = tokio::spawn(async move {
-            StandaloneServer::run_with(config_path.to_str().unwrap(), shutdown_rx).await
+            StandaloneEngine::run_with(config_path.to_str().unwrap(), shutdown_rx).await
         });
 
         // Let server start

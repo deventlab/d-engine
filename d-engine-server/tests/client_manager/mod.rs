@@ -122,7 +122,7 @@ impl ClientManager {
                     }
                 },
                 ClientCommands::Read => {
-                    match self.client.kv().get_with_policy(safe_kv_bytes(key), None).await? {
+                    match self.client.get_with_policy(safe_kv_bytes(key), None).await? {
                         Some(r) => {
                             let v = safe_vk(&r.value).unwrap();
                             debug!("Success: {:?}", v);
@@ -136,7 +136,6 @@ impl ClientManager {
                 }
                 ClientCommands::Lread => match self
                     .client
-                    .kv()
                     .get_with_policy(
                         safe_kv_bytes(key),
                         Some(ReadConsistencyPolicy::LinearizableRead),
@@ -192,10 +191,10 @@ impl ClientManager {
     }
 
     pub async fn list_members(&self) -> Result<Vec<NodeMeta>, ClientApiError> {
-        self.client.cluster().list_members().await
+        self.client.list_members().await
     }
     pub async fn list_leader_id(&self) -> Result<Option<u32>, ClientApiError> {
-        self.client.cluster().get_leader_id().await
+        self.client.get_leader_id().await
     }
 
     /// Test-only: Read from specific node by creating direct gRPC connection

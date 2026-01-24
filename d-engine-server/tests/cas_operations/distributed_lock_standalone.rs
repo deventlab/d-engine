@@ -39,8 +39,8 @@ async fn test_distributed_lock_standalone() -> Result<(), ClientApiError> {
     let ports = port_guard.as_slice();
 
     let mut ctx = TestContext {
-        graceful_txs: b"",
-        node_handles: b"",
+        graceful_txs: Vec::new(),
+        node_handles: Vec::new(),
     };
 
     info!("Starting 3-node cluster for CAS lock test");
@@ -88,7 +88,7 @@ async fn test_distributed_lock_standalone() -> Result<(), ClientApiError> {
     let holder = client.get(lock_key).await?;
     assert_eq!(
         holder,
-        Some(b"client_a".to_vec()),
+        Some(b"client_a".to_vec().into()),
         "Lock should be held by client_a"
     );
 
@@ -108,7 +108,7 @@ async fn test_distributed_lock_standalone() -> Result<(), ClientApiError> {
     let new_holder = client.get(lock_key).await?;
     assert_eq!(
         new_holder,
-        Some(b"client_b".to_vec()),
+        Some(b"client_b".to_vec().into()),
         "Lock should be held by client_b"
     );
 
