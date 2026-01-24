@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased v0.2.3]
+
+### Added
+
+- **CompareAndSwap (CAS) Operation** (#258): Atomic compare-and-swap primitive for distributed coordination
+  - Use cases: Distributed locks, leader election, optimistic updates
+  - API: `client.compare_and_swap(key, expected_value, new_value)`
+  - Performance: Zero additional latency vs regular writes
+
+### Changed
+
+- **Unified Client API** (#258): Merged KV and cluster operations into single `ClientApi` trait
+  - **Breaking**: `KvClient` → `ClientApi`, `KvError` → `ClientApiError`
+  - Simplifies developer experience (single trait for all operations)
+  - Both `GrpcKvClient` and `LocalKvClient` implement unified interface
+
+- **WriteResult Message** (#258): Replaced `bool succeeded` with `WriteResult` message
+  - Improves API extensibility (reserved fields for version tracking)
+  - Better type safety for future features
+
+### Migration Notes
+
+- Replace `KvClient` with `ClientApi` in trait bounds
+- Replace `KvError` with `ClientApiError` in error handling
+- Update imports: `use d_engine::client::ClientApi;`
+
+---
+
 ## [v0.2.2] - 2026-01-12 [✅ Released]
 
 ### 🎯 Key Improvements
