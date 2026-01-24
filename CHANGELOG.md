@@ -104,7 +104,7 @@ while let Some(event) = watcher.next().await {
 
 **Performance**: Lock-free, <0.1ms notification latency
 
-#### StandaloneServer - One-Line Deployment
+#### StandaloneEngine - One-Line Deployment
 
 **Use Case**: Independent server process (production deployment)  
 **API**: `run(shutdown_rx)` uses env config, `run_with(config_path, shutdown_rx)` uses explicit config  
