@@ -7,6 +7,9 @@ use tokio::task::JoinError;
 use tonic::Code;
 use tonic::Status;
 
+/// Result type for KV operations
+pub type ClientApiResult<T> = std::result::Result<T, ClientApiError>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientApiError {
     /// Network layer error (retryable)

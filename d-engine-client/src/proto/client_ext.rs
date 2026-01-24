@@ -29,15 +29,16 @@ pub trait ClientResponseExt {
 }
 
 impl ClientResponseExt for ClientResponse {
-    /// Convert response to boolean write result
+    /// Convert response to boolean result
     ///
     /// # Returns
-    /// - `Ok(true)` on successful write
-    /// - `Err` with converted error code on failure
+    /// - `Ok(true)` for successful Put/Delete, or successful CAS
+    /// - `Ok(false)` for failed CAS
+    /// - `Err` with error code on failure
     fn into_write_result(self) -> std::result::Result<bool, ClientApiError> {
         self.validate_error()?;
         Ok(match self.success_result {
-            Some(SuccessResult::WriteAck(success)) => success,
+            Some(SuccessResult::Succeeded(result)) => result,
             _ => false,
         })
     }
@@ -62,7 +63,7 @@ impl ClientResponseExt for ClientResponse {
                 .collect(),
             _ => {
                 let found = match &self.success_result {
-                    Some(SuccessResult::WriteAck(_)) => "WriteAck",
+                    Some(SuccessResult::Succeeded(_)) => "Succeeded",
                     None => "None",
                     _ => "Unknown",
                 };

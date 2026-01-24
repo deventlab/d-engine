@@ -2,9 +2,12 @@
 
 use std::time::Duration;
 
+use crate::common::ClientCommands;
+use crate::common::{self};
 use d_engine_client::Client;
-use d_engine_client::ClientApiError;
 use d_engine_client::ClientBuilder;
+use d_engine_core::ClientApi;
+use d_engine_core::ClientApiError;
 use d_engine_core::convert::safe_kv_bytes;
 use d_engine_core::convert::safe_vk;
 use d_engine_proto::client::ReadConsistencyPolicy;
@@ -14,9 +17,6 @@ use tokio::time::sleep;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-
-use crate::common::ClientCommands;
-use crate::common::{self};
 
 const MAX_RETRIES: u32 = 10;
 const RETRY_DELAY_MS: u64 = 100;

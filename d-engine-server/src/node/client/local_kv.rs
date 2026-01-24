@@ -18,19 +18,23 @@
 use std::fmt;
 use std::time::Duration;
 
+#[cfg(feature = "watch")]
+use std::sync::Arc;
+
 use bytes::Bytes;
-use d_engine_client::KvClient;
-use d_engine_client::KvClientError;
-use d_engine_client::KvResult;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
+use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::ReadConsistencyPolicy;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::error::ErrorCode;
 use tokio::sync::mpsc;
+
+#[cfg(feature = "watch")]
+use d_engine_core::watch::WatchRegistry;
 
 /// Local client error types
 #[derive(Debug)]
@@ -82,26 +86,64 @@ impl std::error::Error for LocalClientError {}
 
 pub type Result<T> = std::result::Result<T, LocalClientError>;
 
-// Convert LocalClientError to KvClientError
-impl From<LocalClientError> for KvClientError {
+// Convert LocalClientError to ClientApiError
+impl From<LocalClientError> for ClientApiError {
     fn from(err: LocalClientError) -> Self {
+        use d_engine_proto::common::LeaderHint;
+        use d_engine_proto::error::ErrorCode;
+
         match err {
-            LocalClientError::ChannelClosed => KvClientError::ChannelClosed,
-            LocalClientError::Timeout(_) => KvClientError::Timeout,
+            LocalClientError::ChannelClosed => ClientApiError::Network {
+                code: ErrorCode::ConnectionTimeout,
+                message: "Channel closed".to_string(),
+                retry_after_ms: None,
+                leader_hint: None,
+            },
+            LocalClientError::Timeout(duration) => ClientApiError::Network {
+                code: ErrorCode::ConnectionTimeout,
+                message: format!("Operation timed out after {:?}", duration),
+                retry_after_ms: Some(1000),
+                leader_hint: None,
+            },
             LocalClientError::NotLeader {
                 leader_id,
                 leader_address,
             } => {
-                let msg = if let Some(addr) = leader_address {
+                let message = if let Some(addr) = &leader_address {
                     format!("Not leader, try leader at: {addr}")
-                } else if let Some(id) = leader_id {
+                } else if let Some(ref id) = leader_id {
                     format!("Not leader, leader_id: {id}")
                 } else {
                     "Not leader".to_string()
                 };
-                KvClientError::ServerError(msg)
+
+                let leader_hint = if let (Some(id_str), Some(addr)) = (&leader_id, &leader_address)
+                {
+                    // Try to parse leader_id string to u32
+                    if let Ok(id) = id_str.parse::<u32>() {
+                        Some(LeaderHint {
+                            leader_id: id,
+                            address: addr.clone(),
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                ClientApiError::Network {
+                    code: ErrorCode::NotLeader,
+                    message,
+                    retry_after_ms: Some(100),
+                    leader_hint,
+                }
             }
-            LocalClientError::ServerError(msg) => KvClientError::ServerError(msg),
+            LocalClientError::ServerError(msg) => ClientApiError::Business {
+                code: ErrorCode::Uncategorized,
+                message: msg,
+                required_action: None,
+            },
         }
     }
 }
@@ -114,6 +156,8 @@ pub struct LocalKvClient {
     event_tx: mpsc::Sender<RaftEvent>,
     client_id: u32,
     timeout: Duration,
+    #[cfg(feature = "watch")]
+    watch_registry: Option<Arc<WatchRegistry>>,
 }
 
 impl LocalKvClient {
@@ -127,7 +171,19 @@ impl LocalKvClient {
             event_tx,
             client_id,
             timeout,
+            #[cfg(feature = "watch")]
+            watch_registry: None,
         }
+    }
+
+    /// Set watch registry for watch operations
+    #[cfg(feature = "watch")]
+    pub(crate) fn with_watch_registry(
+        mut self,
+        registry: Arc<WatchRegistry>,
+    ) -> Self {
+        self.watch_registry = Some(registry);
+        self
     }
 
     /// Map ErrorCode and ErrorMetadata to LocalClientError
@@ -450,12 +506,12 @@ impl std::fmt::Debug for LocalKvClient {
 
 // Implement KvClient trait
 #[async_trait::async_trait]
-impl KvClient for LocalKvClient {
+impl ClientApi for LocalKvClient {
     async fn put(
         &self,
         key: impl AsRef<[u8]> + Send,
         value: impl AsRef<[u8]> + Send,
-    ) -> KvResult<()> {
+    ) -> ClientApiResult<()> {
         self.put(key, value).await.map_err(Into::into)
     }
 
@@ -464,7 +520,7 @@ impl KvClient for LocalKvClient {
         key: impl AsRef<[u8]> + Send,
         value: impl AsRef<[u8]> + Send,
         ttl_secs: u64,
-    ) -> KvResult<()> {
+    ) -> ClientApiResult<()> {
         // Create command with TTL
         let command = WriteCommand::insert_with_ttl(
             Bytes::copy_from_slice(key.as_ref()),
@@ -482,15 +538,15 @@ impl KvClient for LocalKvClient {
         self.event_tx
             .send(RaftEvent::ClientPropose(request, resp_tx))
             .await
-            .map_err(|_| KvClientError::ChannelClosed)?;
+            .map_err(|_| LocalClientError::ChannelClosed)?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
             .await
-            .map_err(|_| KvClientError::Timeout)?
-            .map_err(|_| KvClientError::ChannelClosed)?;
+            .map_err(|_| LocalClientError::Timeout(self.timeout))?
+            .map_err(|_| LocalClientError::ChannelClosed)?;
 
         let response = result.map_err(|status| {
-            KvClientError::ServerError(format!("RPC error: {}", status.message()))
+            LocalClientError::ServerError(format!("RPC error: {}", status.message()))
         })?;
 
         if response.error != ErrorCode::Success as i32 {
@@ -504,21 +560,134 @@ impl KvClient for LocalKvClient {
     async fn get(
         &self,
         key: impl AsRef<[u8]> + Send,
-    ) -> KvResult<Option<Bytes>> {
+    ) -> ClientApiResult<Option<Bytes>> {
         self.get_linearizable(key).await.map_err(Into::into)
     }
 
     async fn get_multi(
         &self,
         keys: &[Bytes],
-    ) -> KvResult<Vec<Option<Bytes>>> {
+    ) -> ClientApiResult<Vec<Option<Bytes>>> {
         self.get_multi_linearizable(keys).await.map_err(Into::into)
     }
 
     async fn delete(
         &self,
         key: impl AsRef<[u8]> + Send,
-    ) -> KvResult<()> {
+    ) -> ClientApiResult<()> {
         self.delete(key).await.map_err(Into::into)
+    }
+
+    async fn compare_and_swap(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+        expected_value: Option<impl AsRef<[u8]> + Send>,
+        new_value: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<bool> {
+        let command = WriteCommand::compare_and_swap(
+            Bytes::copy_from_slice(key.as_ref()),
+            expected_value.map(|v| Bytes::copy_from_slice(v.as_ref())),
+            Bytes::copy_from_slice(new_value.as_ref()),
+        );
+
+        let request = ClientWriteRequest {
+            client_id: self.client_id,
+            commands: vec![command],
+        };
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        self.event_tx
+            .send(RaftEvent::ClientPropose(request, resp_tx))
+            .await
+            .map_err(|_| LocalClientError::ChannelClosed)?;
+
+        let result = tokio::time::timeout(self.timeout, resp_rx)
+            .await
+            .map_err(|_| LocalClientError::Timeout(self.timeout))?
+            .map_err(|_| LocalClientError::ChannelClosed)?;
+
+        let response = result.map_err(|status| {
+            LocalClientError::ServerError(format!("RPC error: {}", status.message()))
+        })?;
+
+        if response.error != ErrorCode::Success as i32 {
+            let local_err = LocalKvClient::map_error_response(response.error, response.metadata);
+            return Err(local_err.into());
+        }
+
+        match response.success_result {
+            Some(d_engine_proto::client::client_response::SuccessResult::Succeeded(result)) => {
+                Ok(result)
+            }
+            _ => Err(LocalClientError::ServerError("Invalid CAS response".to_string()).into()),
+        }
+    }
+
+    async fn watch(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<tonic::Streaming<d_engine_proto::client::WatchResponse>> {
+        #[cfg(feature = "watch")]
+        {
+            let registry =
+                self.watch_registry.as_ref().ok_or_else(|| ClientApiError::Business {
+                    code: ErrorCode::Uncategorized,
+                    message: "Watch feature disabled (WatchRegistry not initialized)".to_string(),
+                    required_action: None,
+                })?;
+
+            let key_bytes = Bytes::copy_from_slice(key.as_ref());
+            let watcher_handle = registry.register(key_bytes);
+
+            // Convert WatcherHandle stream to tonic::Streaming
+            // This requires creating a streaming response compatible with tonic
+            // For now, return an error indicating this needs implementation
+            Err(ClientApiError::Business {
+                code: ErrorCode::Uncategorized,
+                message: "Watch not yet implemented for LocalKvClient - use EmbeddedEngine::watch() instead".to_string(),
+                required_action: Some("Use EmbeddedEngine::watch() for watch operations in embedded mode".to_string()),
+            })
+        }
+
+        #[cfg(not(feature = "watch"))]
+        {
+            let _ = key; // Suppress unused warning
+            Err(ClientApiError::Business {
+                code: ErrorCode::Uncategorized,
+                message: "Watch feature not enabled - compile with 'watch' feature".to_string(),
+                required_action: Some("Enable 'watch' feature flag".to_string()),
+            })
+        }
+    }
+
+    async fn list_members(
+        &self
+    ) -> ClientApiResult<Vec<d_engine_proto::server::cluster::NodeMeta>> {
+        // Local client doesn't have direct access to cluster membership
+        // This would require passing additional Arc references to Raft state
+        // For now, return error indicating limitation
+        Err(ClientApiError::Business {
+            code: ErrorCode::Uncategorized,
+            message: "Cluster operations not available in LocalKvClient - use Node methods instead"
+                .to_string(),
+            required_action: Some(
+                "Use Node::list_members() for cluster operations in embedded mode".to_string(),
+            ),
+        })
+    }
+
+    async fn get_leader_id(&self) -> ClientApiResult<Option<u32>> {
+        // Local client doesn't have direct access to Raft state
+        // This would require passing additional Arc references
+        // For now, return error indicating limitation
+        Err(ClientApiError::Business {
+            code: ErrorCode::Uncategorized,
+            message: "Cluster operations not available in LocalKvClient - use Node methods instead"
+                .to_string(),
+            required_action: Some(
+                "Use Node::get_leader_id() for cluster operations in embedded mode".to_string(),
+            ),
+        })
     }
 }

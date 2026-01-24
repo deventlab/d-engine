@@ -8,7 +8,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use bytes::BytesMut;
 use config::Config;
-use d_engine_client::ClientApiError;
+use d_engine_core::ClientApiError;
 use d_engine_core::alias::SMOF;
 use d_engine_core::alias::SOF;
 use d_engine_core::config::BackoffPolicy;

@@ -13,6 +13,7 @@ use d_engine_core::Lease;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::CompareAndSwap;
 use d_engine_proto::client::write_command::Delete;
 use d_engine_proto::client::write_command::Insert;
 use d_engine_proto::client::write_command::Operation;
@@ -536,6 +537,36 @@ impl StateMachine for RocksDBStateMachine {
                             if let Some(ref lease) = self.lease {
                                 lease.unregister(&key);
                             }
+                        }
+                        Some(Operation::CompareAndSwap(CompareAndSwap {
+                            key,
+                            expected_value,
+                            new_value,
+                        })) => {
+                            // RocksDB doesn't have native CAS, implement via read-compare-write
+                            // This is safe because apply_chunk is called sequentially per Raft log order
+                            let current_value = db.get_cf(&cf, &key).map_err(|e| {
+                                StorageError::DbError(format!("CAS read failed: {}", e))
+                            })?;
+
+                            let cas_success = match (current_value, &expected_value) {
+                                (Some(current), Some(expected)) => current == expected.as_ref(),
+                                (None, None) => true,
+                                _ => false,
+                            };
+
+                            if cas_success {
+                                batch.put_cf(&cf, &key, &new_value);
+                            }
+
+                            // TODO: Store CAS result for client response
+                            // Will be implemented in follow-up commit with response mechanism
+                            debug!(
+                                "CAS at index {}: key={:?}, success={}",
+                                entry.index,
+                                String::from_utf8_lossy(&key),
+                                cas_success
+                            );
                         }
                         None => {
                             warn!("WriteCommand without operation at index {}", entry.index);

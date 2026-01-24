@@ -53,6 +53,7 @@
 //! - [Customize Storage Engine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_storage_engine/index.html)
 //! - [Customize State Machine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_state_machine/index.html)
 
+pub mod client;
 mod commit_handler;
 pub mod config;
 mod election;
@@ -76,6 +77,7 @@ pub mod storage;
 #[cfg(feature = "watch")]
 pub mod watch;
 
+pub use client::*;
 pub use commit_handler::*;
 pub use config::*;
 pub use election::*;

@@ -15,7 +15,7 @@
 // use std::sync::Arc; // Not needed anymore
 use std::time::Duration;
 
-use d_engine_client::ClientApiError;
+use d_engine_core::ClientApiError;
 // use d_engine_server::StateMachine; // Not needed - we don't access state machine directly
 use tracing::debug;
 use tracing_test::traced_test;

@@ -145,22 +145,24 @@ fn test_client_response_write_success() {
     assert_eq!(response.metadata, None);
 
     match response.success_result {
-        Some(SuccessResult::WriteAck(true)) => {
+        Some(SuccessResult::Succeeded(true)) => {
             // Success
         }
-        _ => panic!("Expected WriteAck success"),
+        _ => panic!("Expected Succeeded(true)"),
     }
 }
 
 #[test]
-fn test_client_response_is_write_success() {
+fn test_client_response_succeeded() {
     let response = ClientResponse::write_success();
+    assert!(response.succeeded());
     assert!(response.is_write_success());
 }
 
 #[test]
-fn test_client_response_is_write_success_false() {
+fn test_client_response_succeeded_false() {
     let response = ClientResponse::client_error(ErrorCode::ProposeFailed);
+    assert!(!response.succeeded());
     assert!(!response.is_write_success());
 }
 

@@ -753,7 +753,7 @@ where
     /// Decoupled from WatchManager: only sends signal, doesn't care who listens.
     #[cfg(feature = "watch")]
     #[inline]
-    fn broadcast_watch_events(
+    pub(super) fn broadcast_watch_events(
         &self,
         chunk: &[Entry],
         tx: &tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
@@ -780,6 +780,12 @@ where
                                 key: delete.key,
                                 value: bytes::Bytes::new(),
                                 event_type: WatchEventType::Delete as i32,
+                                error: 0,
+                            }),
+                            Some(Operation::CompareAndSwap(cas)) => Some(WatchResponse {
+                                key: cas.key,
+                                value: cas.new_value,
+                                event_type: WatchEventType::Put as i32,
                                 error: 0,
                             }),
                             None => None,

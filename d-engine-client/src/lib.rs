@@ -55,7 +55,7 @@
 //! This crate provides:
 //! - [`Client`] - Main entry point with cluster access
 //! - [`ClientBuilder`] - Configurable client construction
-//! - [`KvClient`] - Key-value store operations trait
+//! - [`ClientApi`] - Client operations trait
 //! - [`ClusterClient`] - Cluster management operations
 //!
 //! ## Documentation
@@ -67,10 +67,7 @@
 mod builder;
 mod cluster;
 mod config;
-mod error;
 mod grpc_kv_client;
-pub mod kv_client;
-pub mod kv_error;
 mod pool;
 mod proto;
 mod scoped_timer;
@@ -79,10 +76,8 @@ mod utils;
 pub use builder::*;
 pub use cluster::*;
 pub use config::*;
-pub use error::*;
+pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
 pub use grpc_kv_client::*;
-pub use kv_client::*;
-pub use kv_error::*;
 pub use pool::*;
 pub use utils::*;
 
@@ -121,7 +116,7 @@ mod cluster_test;
 #[cfg(test)]
 mod error_test;
 #[cfg(test)]
-mod kv_test;
+mod grpc_kv_test;
 #[cfg(test)]
 mod mock_rpc;
 #[cfg(test)]

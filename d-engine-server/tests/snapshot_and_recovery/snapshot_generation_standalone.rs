@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_client::ClientApiError;
+use d_engine_core::ClientApiError;
 use d_engine_server::LogStore;
 use d_engine_server::StorageEngine;
 use tokio::time::sleep;

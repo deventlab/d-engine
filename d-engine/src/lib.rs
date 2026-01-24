@@ -25,7 +25,7 @@ pub mod prelude {
     pub use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 
     #[cfg(feature = "client")]
-    pub use d_engine_client::{Client, ClientBuilder, KvClient};
+    pub use d_engine_client::{Client, ClientApi, ClientBuilder};
 }
 
 /// Documentation modules

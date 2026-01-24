@@ -202,6 +202,7 @@ all-tests: build
 	$(BENCH_BIN) \
 		--mode local \
 		--batch \
+		--clients 1000 \
 		--key-size $(KEY_SIZE) \
 		--value-size $(VALUE_SIZE) \
 		$(SEQUENTIAL) \
