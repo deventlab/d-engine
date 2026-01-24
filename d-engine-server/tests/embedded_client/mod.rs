@@ -1,4 +1,4 @@
-//! # Local KV Client Tests
+//! # Embedded Client Tests
 //!
 //! This module verifies the EmbeddedClient functionality for embedded mode operations.
 //! EmbeddedClient provides a Rust-native, type-safe interface for KV operations
@@ -6,6 +6,6 @@
 //!
 //! ## Test Files
 //!
-//! - `local_kv_client_operations_embedded.rs` - EmbeddedClient API testing
+//! - `embedded_client_operations.rs` - EmbeddedClient API testing
 
-mod local_kv_client_operations_embedded;
+mod embedded_client_operations;
