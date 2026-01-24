@@ -152,13 +152,23 @@ pub struct ClientInner {
     endpoints: Vec<String>,
 }
 
+impl std::ops::Deref for Client {
+    type Target = GrpcKvClient;
+
+    fn deref(&self) -> &Self::Target {
+        &self.kv
+    }
+}
+
 impl Client {
     /// Access the key-value operations client
     ///
-    /// # Examples
-    /// ```rust,ignore
-    /// client.kv().put("key", "value").await?;
-    /// ```
+    /// # Deprecated
+    /// Use direct method calls instead: `client.put()` instead of `client.kv().put()`
+    #[deprecated(
+        since = "0.2.3",
+        note = "Use direct method calls: client.put() instead of client.kv().put()"
+    )]
     pub fn kv(&self) -> &GrpcKvClient {
         &self.kv
     }

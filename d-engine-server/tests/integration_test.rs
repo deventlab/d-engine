@@ -1,4 +1,5 @@
 // Integration tests organized by business domain
+mod cas_operations;
 mod cluster_lifecycle;
 mod cluster_membership;
 mod cluster_state_and_metadata;
