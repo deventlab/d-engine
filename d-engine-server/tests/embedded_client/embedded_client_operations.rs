@@ -1,97 +1,49 @@
 //! EmbeddedClient Integration Tests
 //!
 //! Tests for EmbeddedClient in embedded mode:
-//! - Basic CRUD operations with real Node
+//! - Basic CRUD operations with EmbeddedEngine
 //! - Error handling
 //! - Concurrent operations
 
-use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::RaftConfig;
-use d_engine_server::FileStateMachine;
-use d_engine_server::FileStorageEngine;
-use d_engine_server::NodeBuilder;
-use d_engine_server::node::RaftTypeConfig;
-use tokio::sync::watch;
+use d_engine_server::EmbeddedEngine;
+use tempfile::TempDir;
 
-/// Type alias for our test node
-type TestNode = Arc<d_engine_server::Node<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>;
+/// Helper to create a test EmbeddedEngine
+async fn create_test_engine(test_name: &str) -> (EmbeddedEngine, TempDir) {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let db_path = temp_dir.path().join(test_name);
 
-/// Helper to create a test node with EmbeddedClient
-async fn create_test_node(test_name: &str) -> (TestNode, tokio::sync::watch::Sender<()>) {
-    use d_engine_core::ClusterConfig;
-    use d_engine_proto::common::NodeRole;
-    use d_engine_proto::common::NodeStatus;
-    use d_engine_proto::server::cluster::NodeMeta;
-
-    let db_path = PathBuf::from(format!("/tmp/d-engine-test-local-client-{test_name}"));
-
-    // Clean up old test data
-    if db_path.exists() {
-        std::fs::remove_dir_all(&db_path).ok();
-    }
-
-    let storage_engine = Arc::new(
-        FileStorageEngine::new(db_path.join("storage")).expect("Failed to create storage engine"),
+    let config_path = temp_dir.path().join("d-engine.toml");
+    let port = 50000 + (std::process::id() % 10000);
+    let config_content = format!(
+        r#"
+[cluster]
+listen_address = "127.0.0.1:{}"
+db_root_dir = "{}"
+single_node = true
+"#,
+        port,
+        db_path.display()
     );
-    let state_machine = Arc::new(
-        FileStateMachine::new(db_path.join("state_machine"))
-            .await
-            .expect("Failed to create state machine"),
-    );
+    std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    // Create single-node cluster configuration
-    let cluster_config = ClusterConfig {
-        node_id: 1,
-        listen_address: "127.0.0.1:9081".parse().unwrap(),
-        initial_cluster: vec![NodeMeta {
-            id: 1,
-            address: "127.0.0.1:9081".to_string(),
-            role: NodeRole::Follower as i32,
-            status: NodeStatus::Active as i32,
-        }],
-        db_root_dir: db_path.clone(),
-        log_dir: db_path.join("logs"),
-    };
-
-    let (graceful_tx, graceful_rx) = watch::channel(());
-
-    // Increase timeout for test reliability (CI environments can be slow)
-    let mut raft_config = RaftConfig::default();
-    raft_config.read_consistency.state_machine_sync_timeout_ms = 1000; // 1000ms for tests
-
-    let node = NodeBuilder::from_cluster_config(cluster_config, graceful_rx)
-        .storage_engine(storage_engine)
-        .state_machine(state_machine)
-        .raft_config(raft_config)
-        .start()
+    let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
-        .expect("Failed to start node");
+        .expect("Failed to start engine");
 
-    // Clone node for background task
-    let node_clone = node.clone();
+    engine.wait_ready(Duration::from_secs(5)).await.expect("Engine not ready");
 
-    // Spawn node's run loop in background
-    tokio::spawn(async move {
-        if let Err(e) = node_clone.run().await {
-            eprintln!("Node run error: {e:?}");
-        }
-    });
-
-    // Give node time to initialize and become leader
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    (node, graceful_tx)
+    (engine, temp_dir)
 }
 
 /// Test: Basic PUT operation via EmbeddedClient
 #[tokio::test]
 async fn test_local_client_put() {
-    let (node, _shutdown) = create_test_node("put").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("put").await;
+    let client = engine.client();
 
     let key = b"test_key";
     let value = b"test_value";
@@ -105,8 +57,8 @@ async fn test_local_client_put() {
 /// Test: Basic GET operation via EmbeddedClient
 #[tokio::test]
 async fn test_local_client_get() {
-    let (node, _shutdown) = create_test_node("get").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("get").await;
+    let client = engine.client();
 
     let key = b"get_test_key";
     let value = b"get_test_value";
@@ -129,8 +81,8 @@ async fn test_local_client_get() {
 /// Test: GET non-existent key returns None
 #[tokio::test]
 async fn test_local_client_get_not_found() {
-    let (node, _shutdown) = create_test_node("not_found").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("not_found").await;
+    let client = engine.client();
 
     let key = b"non_existent_key";
 
@@ -143,8 +95,8 @@ async fn test_local_client_get_not_found() {
 /// Test: DELETE operation
 #[tokio::test]
 async fn test_local_client_delete() {
-    let (node, _shutdown) = create_test_node("delete").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("delete").await;
+    let client = engine.client();
 
     let key = b"delete_test_key";
     let value = b"delete_test_value";
@@ -168,8 +120,8 @@ async fn test_local_client_delete() {
 /// Test: Multiple sequential operations
 #[tokio::test]
 async fn test_local_client_sequential_ops() {
-    let (node, _shutdown) = create_test_node("sequential").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("sequential").await;
+    let client = engine.client();
 
     // PUT multiple keys
     for i in 0..5 {
@@ -213,37 +165,46 @@ async fn test_local_client_sequential_ops() {
 /// Test: Concurrent operations from multiple EmbeddedClient instances
 #[tokio::test]
 async fn test_local_client_concurrent_ops() {
-    let (node, _shutdown) = create_test_node("concurrent").await;
+    let (engine, _temp_dir) = create_test_engine("concurrent").await;
 
-    // Create multiple client instances
-    let client1 = node.local_client();
-    let client2 = node.local_client();
-    let client3 = node.local_client();
+    // Clone clients before moving into spawn
+    let client1 = engine.client();
+    let client2 = engine.client();
+    let client3 = engine.client();
 
     // Spawn concurrent PUT operations
-    let handle1 = tokio::spawn(async move {
-        for i in 0..10 {
-            let key = format!("concurrent_key_{i}");
-            let value = format!("value_from_client1_{i}");
-            client1.put(key.as_bytes(), value.as_bytes()).await.expect("Client1 PUT failed");
-        }
-    });
+    let handle1 = {
+        let client = client1.clone();
+        tokio::spawn(async move {
+            for i in 0..10 {
+                let key = format!("concurrent_key_{i}");
+                let value = format!("value_from_client1_{i}");
+                client.put(key.as_bytes(), value.as_bytes()).await.expect("Client1 PUT failed");
+            }
+        })
+    };
 
-    let handle2 = tokio::spawn(async move {
-        for i in 10..20 {
-            let key = format!("concurrent_key_{i}");
-            let value = format!("value_from_client2_{i}");
-            client2.put(key.as_bytes(), value.as_bytes()).await.expect("Client2 PUT failed");
-        }
-    });
+    let handle2 = {
+        let client = client2.clone();
+        tokio::spawn(async move {
+            for i in 10..20 {
+                let key = format!("concurrent_key_{i}");
+                let value = format!("value_from_client2_{i}");
+                client.put(key.as_bytes(), value.as_bytes()).await.expect("Client2 PUT failed");
+            }
+        })
+    };
 
-    let handle3 = tokio::spawn(async move {
-        for i in 20..30 {
-            let key = format!("concurrent_key_{i}");
-            let value = format!("value_from_client3_{i}");
-            client3.put(key.as_bytes(), value.as_bytes()).await.expect("Client3 PUT failed");
-        }
-    });
+    let handle3 = {
+        let client = client3.clone();
+        tokio::spawn(async move {
+            for i in 20..30 {
+                let key = format!("concurrent_key_{i}");
+                let value = format!("value_from_client3_{i}");
+                client.put(key.as_bytes(), value.as_bytes()).await.expect("Client3 PUT failed");
+            }
+        })
+    };
 
     // Wait for all to complete
     let (r1, r2, r3) = tokio::join!(handle1, handle2, handle3);
@@ -252,14 +213,18 @@ async fn test_local_client_concurrent_ops() {
         "All concurrent operations should succeed"
     );
 
+    // Keep engine alive until here
+    drop(engine);
+    drop(_temp_dir);
+
     println!("✅ EmbeddedClient concurrent operations succeeded");
 }
 
 /// Test: Large value handling
 #[tokio::test]
 async fn test_local_client_large_value() {
-    let (node, _shutdown) = create_test_node("large_value").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("delete_nonexist").await;
+    let client = engine.client();
 
     let key = b"large_value_key";
     let large_value = vec![b'X'; 512 * 1024]; // 512KB value
@@ -283,8 +248,8 @@ async fn test_local_client_large_value() {
 /// Test: Empty key and value handling
 #[tokio::test]
 async fn test_local_client_empty_key_value() {
-    let (node, _shutdown) = create_test_node("empty").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("empty").await;
+    let client = engine.client();
 
     // Empty key with value
     let result = client.put(b"", b"some_value").await;
@@ -309,8 +274,8 @@ async fn test_local_client_empty_key_value() {
 /// Test: Update existing key
 #[tokio::test]
 async fn test_local_client_update() {
-    let (node, _shutdown) = create_test_node("update").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("overwrite").await;
+    let client = engine.client();
 
     let key = b"update_key";
     let value1 = b"original_value";
@@ -340,8 +305,8 @@ async fn test_local_client_update() {
 /// Test: Client ID and timeout getters
 #[tokio::test]
 async fn test_local_client_getters() {
-    let (node, _shutdown) = create_test_node("getters").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("large").await;
+    let client = engine.client();
 
     let client_id = client.client_id();
     assert!(client_id > 0, "Client ID should be positive");
@@ -359,8 +324,8 @@ async fn test_local_client_getters() {
 /// Test: Clone functionality
 #[tokio::test]
 async fn test_local_client_clone() {
-    let (node, _shutdown) = create_test_node("clone").await;
-    let client1 = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("clone").await;
+    let client1 = engine.client();
     let client2 = client1.clone();
 
     // Both clients should work independently
@@ -405,8 +370,8 @@ async fn test_local_client_clone() {
 /// - This is correct behavior per Raft protocol
 #[tokio::test]
 async fn test_linearizable_read_after_write_no_sleep() {
-    let (node, _shutdown) = create_test_node("linearizable_read").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("special_chars").await;
+    let client = engine.client();
 
     let key = b"linearizable_key";
     let value = b"linearizable_value";
@@ -455,8 +420,8 @@ async fn test_linearizable_read_after_write_no_sleep() {
 /// - No stale reads, no None returns
 #[tokio::test]
 async fn test_linearizable_read_sees_latest_value() {
-    let (node, _shutdown) = create_test_node("sequential_writes").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("multiple_keys").await;
+    let client = engine.client();
 
     let key = b"seq_key";
 
@@ -496,8 +461,8 @@ async fn test_linearizable_read_sees_latest_value() {
 /// This stresses the wait_applied fast path and concurrent waiter handling.
 #[tokio::test]
 async fn test_concurrent_write_and_linearizable_read() {
-    let (node, _shutdown) = create_test_node("concurrent_rw").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("get_multi").await;
+    let client = engine.client();
 
     let mut tasks = vec![];
 
