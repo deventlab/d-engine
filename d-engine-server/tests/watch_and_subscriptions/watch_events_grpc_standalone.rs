@@ -111,7 +111,7 @@ async fn test_grpc_watch_returns_stream() -> Result<(), Box<dyn std::error::Erro
     let key = b"test-key";
 
     // Call watch() should return a gRPC stream
-    let stream = client.kv().watch(key).await?;
+    let stream = client.watch(key).await?;
 
     // Verify we got a stream (it should be a tonic::Streaming<WatchResponse>)
     // Just checking that we can create a stream without errors
@@ -130,13 +130,13 @@ async fn test_grpc_watch_receives_protobuf_events() -> Result<(), Box<dyn std::e
     let key = b"test-key";
 
     // Register watch via gRPC
-    let mut stream = client.kv().watch(key).await?;
+    let mut stream = client.watch(key).await?;
 
     // Give watcher time to register
     sleep(Duration::from_millis(200)).await;
 
     // Perform PUT operation
-    client.kv().put(key, b"grpc_value").await?;
+    client.put(key, b"grpc_value").await?;
 
     // Receive event from gRPC stream
     let response: WatchResponse = stream.next().await.expect("Stream should yield a message")?;
@@ -162,13 +162,13 @@ async fn test_grpc_watch_stream_type_conversion() -> Result<(), Box<dyn std::err
     let key = b"test-key";
 
     // Register watch
-    let mut stream = client.kv().watch(key).await?;
+    let mut stream = client.watch(key).await?;
 
     // Give watcher time to register
     sleep(Duration::from_millis(200)).await;
 
     // Test PUT event
-    client.kv().put(key, b"value1").await?;
+    client.put(key, b"value1").await?;
 
     let response: WatchResponse = stream.next().await.expect("Should receive PUT event")?;
 
@@ -179,7 +179,7 @@ async fn test_grpc_watch_stream_type_conversion() -> Result<(), Box<dyn std::err
     assert_eq!(&response.value[..], b"value1");
 
     // Test DELETE event
-    client.kv().delete(key).await?;
+    client.delete(key).await?;
 
     let response: WatchResponse = stream.next().await.expect("Should receive DELETE event")?;
 
@@ -193,7 +193,7 @@ async fn test_grpc_watch_stream_type_conversion() -> Result<(), Box<dyn std::err
     );
 
     // Verify stream continues to work after different event types
-    client.kv().put(key, b"value2").await?;
+    client.put(key, b"value2").await?;
 
     let response: WatchResponse = stream.next().await.expect("Should receive second PUT event")?;
 
@@ -217,7 +217,7 @@ async fn test_grpc_watch_client_disconnect_cleanup() -> Result<(), Box<dyn std::
 
     // Register watch and immediately drop (simulate client disconnect)
     {
-        let _stream = client.kv().watch(key).await?;
+        let _stream = client.watch(key).await?;
         // Stream is dropped here - gRPC connection closes
     }
 
@@ -225,16 +225,16 @@ async fn test_grpc_watch_client_disconnect_cleanup() -> Result<(), Box<dyn std::
     sleep(Duration::from_millis(300)).await;
 
     // Perform PUT - the dropped watcher should not receive it (no error should occur)
-    client.kv().put(key, b"value1").await?;
+    client.put(key, b"value1").await?;
     sleep(Duration::from_millis(100)).await;
 
     // Register a new watcher to verify cleanup was successful
-    let mut new_stream = client.kv().watch(key).await?;
+    let mut new_stream = client.watch(key).await?;
 
     sleep(Duration::from_millis(200)).await;
 
     // Perform another PUT
-    client.kv().put(key, b"value2").await?;
+    client.put(key, b"value2").await?;
 
     // New watcher should receive the event
     let response: WatchResponse = tokio::time::timeout(Duration::from_secs(3), new_stream.next())
@@ -273,7 +273,7 @@ async fn test_watch_node_crash_standalone_mode() -> Result<(), Box<dyn std::erro
     let key = b"test-key";
 
     // Register watcher
-    let stream = client.kv().watch(key).await?;
+    let stream = client.watch(key).await?;
 
     // Give watcher time to register
     sleep(Duration::from_millis(200)).await;
@@ -290,15 +290,15 @@ async fn test_watch_node_crash_standalone_mode() -> Result<(), Box<dyn std::erro
 
     // Server continues writing - this should not cause any issues
     // The broadcast.send() will handle the SendError gracefully
-    client.kv().put(key, b"value_after_disconnect").await?;
+    client.put(key, b"value_after_disconnect").await?;
     sleep(Duration::from_millis(100)).await;
 
     // Register a new watcher to verify cleanup was successful
-    let mut new_stream = client.kv().watch(key).await?;
+    let mut new_stream = client.watch(key).await?;
     sleep(Duration::from_millis(200)).await;
 
     // Perform another write
-    client.kv().put(key, b"value_for_new_watcher").await?;
+    client.put(key, b"value_for_new_watcher").await?;
 
     // New watcher should receive the event
     let response: WatchResponse = tokio::time::timeout(Duration::from_secs(3), new_stream.next())

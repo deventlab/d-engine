@@ -1,6 +1,6 @@
 //! Zero-overhead KV client for embedded d-engine.
 //!
-//! [`LocalKvClient`] provides direct access to Raft state machine
+//! [`EmbeddedClient`] provides direct access to Raft state machine
 //! without gRPC serialization or network traversal.
 //!
 //! # Performance
@@ -15,7 +15,6 @@
 //! client.put(b"key", b"value").await?;
 //! ```
 
-use std::fmt;
 use std::time::Duration;
 
 #[cfg(feature = "watch")]
@@ -30,121 +29,66 @@ use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::ReadConsistencyPolicy;
 use d_engine_proto::client::WriteCommand;
+use d_engine_proto::common::LeaderHint;
 use d_engine_proto::error::ErrorCode;
 use tokio::sync::mpsc;
 
 #[cfg(feature = "watch")]
 use d_engine_core::watch::WatchRegistry;
 
-/// Local client error types
-#[derive(Debug)]
-pub enum LocalClientError {
-    /// Event channel closed (node shutting down)
-    ChannelClosed,
-    /// Operation exceeded timeout duration
-    Timeout(Duration),
-    /// Not the leader - request should be forwarded
-    NotLeader {
-        /// Leader's node ID (if known)
-        leader_id: Option<String>,
-        /// Leader's address (if known)
-        leader_address: Option<String>,
-    },
-    /// Server-side error occurred
-    ServerError(String),
-}
+// ============================================================================
+// Error helpers - simplify ClientApiError construction for embedded client
+// ============================================================================
 
-impl fmt::Display for LocalClientError {
-    fn fmt(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        match self {
-            LocalClientError::ChannelClosed => {
-                write!(f, "Channel closed, node may be shutting down")
-            }
-            LocalClientError::Timeout(d) => write!(f, "Operation timeout after {d:?}"),
-            LocalClientError::NotLeader {
-                leader_id,
-                leader_address,
-            } => {
-                write!(f, "Not leader")?;
-                if let Some(id) = leader_id {
-                    write!(f, " (leader_id: {id})")?;
-                }
-                if let Some(addr) = leader_address {
-                    write!(f, " (leader_address: {addr})")?;
-                }
-                Ok(())
-            }
-            LocalClientError::ServerError(s) => write!(f, "Server error: {s}"),
-        }
+fn channel_closed_error() -> ClientApiError {
+    ClientApiError::Network {
+        code: ErrorCode::ConnectionTimeout,
+        message: "Channel closed, node may be shutting down".to_string(),
+        retry_after_ms: None,
+        leader_hint: None,
     }
 }
 
-impl std::error::Error for LocalClientError {}
+fn timeout_error(duration: Duration) -> ClientApiError {
+    ClientApiError::Network {
+        code: ErrorCode::ConnectionTimeout,
+        message: format!("Operation timed out after {:?}", duration),
+        retry_after_ms: Some(1000),
+        leader_hint: None,
+    }
+}
 
-pub type Result<T> = std::result::Result<T, LocalClientError>;
+fn not_leader_error(
+    leader_id: Option<String>,
+    leader_address: Option<String>,
+) -> ClientApiError {
+    let message = match (&leader_address, &leader_id) {
+        (Some(addr), _) => format!("Not leader, try leader at: {addr}"),
+        (None, Some(id)) => format!("Not leader, leader_id: {id}"),
+        (None, None) => "Not leader".to_string(),
+    };
 
-// Convert LocalClientError to ClientApiError
-impl From<LocalClientError> for ClientApiError {
-    fn from(err: LocalClientError) -> Self {
-        use d_engine_proto::common::LeaderHint;
-        use d_engine_proto::error::ErrorCode;
+    let leader_hint = match (&leader_id, &leader_address) {
+        (Some(id_str), Some(addr)) => id_str.parse::<u32>().ok().map(|id| LeaderHint {
+            leader_id: id,
+            address: addr.clone(),
+        }),
+        _ => None,
+    };
 
-        match err {
-            LocalClientError::ChannelClosed => ClientApiError::Network {
-                code: ErrorCode::ConnectionTimeout,
-                message: "Channel closed".to_string(),
-                retry_after_ms: None,
-                leader_hint: None,
-            },
-            LocalClientError::Timeout(duration) => ClientApiError::Network {
-                code: ErrorCode::ConnectionTimeout,
-                message: format!("Operation timed out after {:?}", duration),
-                retry_after_ms: Some(1000),
-                leader_hint: None,
-            },
-            LocalClientError::NotLeader {
-                leader_id,
-                leader_address,
-            } => {
-                let message = if let Some(addr) = &leader_address {
-                    format!("Not leader, try leader at: {addr}")
-                } else if let Some(ref id) = leader_id {
-                    format!("Not leader, leader_id: {id}")
-                } else {
-                    "Not leader".to_string()
-                };
+    ClientApiError::Network {
+        code: ErrorCode::NotLeader,
+        message,
+        retry_after_ms: Some(100),
+        leader_hint,
+    }
+}
 
-                let leader_hint = if let (Some(id_str), Some(addr)) = (&leader_id, &leader_address)
-                {
-                    // Try to parse leader_id string to u32
-                    if let Ok(id) = id_str.parse::<u32>() {
-                        Some(LeaderHint {
-                            leader_id: id,
-                            address: addr.clone(),
-                        })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                ClientApiError::Network {
-                    code: ErrorCode::NotLeader,
-                    message,
-                    retry_after_ms: Some(100),
-                    leader_hint,
-                }
-            }
-            LocalClientError::ServerError(msg) => ClientApiError::Business {
-                code: ErrorCode::Uncategorized,
-                message: msg,
-                required_action: None,
-            },
-        }
+fn server_error(msg: String) -> ClientApiError {
+    ClientApiError::Business {
+        code: ErrorCode::Uncategorized,
+        message: msg,
+        required_action: None,
     }
 }
 
@@ -152,7 +96,7 @@ impl From<LocalClientError> for ClientApiError {
 ///
 /// Directly calls Raft core without gRPC overhead.
 #[derive(Clone)]
-pub struct LocalKvClient {
+pub struct EmbeddedClient {
     event_tx: mpsc::Sender<RaftEvent>,
     client_id: u32,
     timeout: Duration,
@@ -160,7 +104,7 @@ pub struct LocalKvClient {
     watch_registry: Option<Arc<WatchRegistry>>,
 }
 
-impl LocalKvClient {
+impl EmbeddedClient {
     /// Internal constructor (used by Node::local_client())
     pub(crate) fn new_internal(
         event_tx: mpsc::Sender<RaftEvent>,
@@ -186,13 +130,11 @@ impl LocalKvClient {
         self
     }
 
-    /// Map ErrorCode and ErrorMetadata to LocalClientError
+    /// Map ErrorCode and ErrorMetadata to ClientApiError
     fn map_error_response(
         error_code: i32,
         metadata: Option<d_engine_proto::error::ErrorMetadata>,
-    ) -> LocalClientError {
-        use d_engine_proto::error::ErrorCode;
-
+    ) -> ClientApiError {
         match ErrorCode::try_from(error_code) {
             Ok(ErrorCode::NotLeader) => {
                 let (leader_id, leader_address) = if let Some(meta) = metadata {
@@ -200,12 +142,9 @@ impl LocalKvClient {
                 } else {
                     (None, None)
                 };
-                LocalClientError::NotLeader {
-                    leader_id,
-                    leader_address,
-                }
+                not_leader_error(leader_id, leader_address)
             }
-            _ => LocalClientError::ServerError(format!("Error code: {error_code}")),
+            _ => server_error(format!("Error code: {error_code}")),
         }
     }
 
@@ -214,7 +153,7 @@ impl LocalKvClient {
         &self,
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
-    ) -> Result<()> {
+    ) -> ClientApiResult<()> {
         let command = WriteCommand::insert(
             Bytes::copy_from_slice(key.as_ref()),
             Bytes::copy_from_slice(value.as_ref()),
@@ -230,16 +169,15 @@ impl LocalKvClient {
         self.event_tx
             .send(RaftEvent::ClientPropose(request, resp_tx))
             .await
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
             .await
-            .map_err(|_| LocalClientError::Timeout(self.timeout))?
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| timeout_error(self.timeout))?
+            .map_err(|_| channel_closed_error())?;
 
-        let response = result.map_err(|status| {
-            LocalClientError::ServerError(format!("RPC error: {}", status.message()))
-        })?;
+        let response =
+            result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success as i32 {
             return Err(Self::map_error_response(response.error, response.metadata));
@@ -268,7 +206,7 @@ impl LocalKvClient {
     pub async fn get_linearizable(
         &self,
         key: impl AsRef<[u8]>,
-    ) -> Result<Option<Bytes>> {
+    ) -> ClientApiResult<Option<Bytes>> {
         self.get_with_consistency(key, ReadConsistencyPolicy::LinearizableRead).await
     }
 
@@ -294,7 +232,7 @@ impl LocalKvClient {
     pub async fn get_eventual(
         &self,
         key: impl AsRef<[u8]>,
-    ) -> Result<Option<Bytes>> {
+    ) -> ClientApiResult<Option<Bytes>> {
         self.get_with_consistency(key, ReadConsistencyPolicy::EventualConsistency).await
     }
 
@@ -320,7 +258,7 @@ impl LocalKvClient {
         &self,
         key: impl AsRef<[u8]>,
         consistency: ReadConsistencyPolicy,
-    ) -> Result<Option<Bytes>> {
+    ) -> ClientApiResult<Option<Bytes>> {
         let request = ClientReadRequest {
             client_id: self.client_id,
             keys: vec![Bytes::copy_from_slice(key.as_ref())],
@@ -332,16 +270,15 @@ impl LocalKvClient {
         self.event_tx
             .send(RaftEvent::ClientReadRequest(request, resp_tx))
             .await
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
             .await
-            .map_err(|_| LocalClientError::Timeout(self.timeout))?
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| timeout_error(self.timeout))?
+            .map_err(|_| channel_closed_error())?;
 
-        let response = result.map_err(|status| {
-            LocalClientError::ServerError(format!("RPC error: {}", status.message()))
-        })?;
+        let response =
+            result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success as i32 {
             return Err(Self::map_error_response(response.error, response.metadata));
@@ -371,7 +308,7 @@ impl LocalKvClient {
     pub async fn get_multi_linearizable(
         &self,
         keys: &[Bytes],
-    ) -> Result<Vec<Option<Bytes>>> {
+    ) -> ClientApiResult<Vec<Option<Bytes>>> {
         self.get_multi_with_consistency(keys, ReadConsistencyPolicy::LinearizableRead)
             .await
     }
@@ -388,7 +325,7 @@ impl LocalKvClient {
     pub async fn get_multi_eventual(
         &self,
         keys: &[Bytes],
-    ) -> Result<Vec<Option<Bytes>>> {
+    ) -> ClientApiResult<Vec<Option<Bytes>>> {
         self.get_multi_with_consistency(keys, ReadConsistencyPolicy::EventualConsistency)
             .await
     }
@@ -398,7 +335,7 @@ impl LocalKvClient {
         &self,
         keys: &[Bytes],
         consistency: ReadConsistencyPolicy,
-    ) -> Result<Vec<Option<Bytes>>> {
+    ) -> ClientApiResult<Vec<Option<Bytes>>> {
         let request = ClientReadRequest {
             client_id: self.client_id,
             keys: keys.to_vec(),
@@ -410,16 +347,15 @@ impl LocalKvClient {
         self.event_tx
             .send(RaftEvent::ClientReadRequest(request, resp_tx))
             .await
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
             .await
-            .map_err(|_| LocalClientError::Timeout(self.timeout))?
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| timeout_error(self.timeout))?
+            .map_err(|_| channel_closed_error())?;
 
-        let response = result.map_err(|status| {
-            LocalClientError::ServerError(format!("RPC error: {}", status.message()))
-        })?;
+        let response =
+            result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success as i32 {
             return Err(Self::map_error_response(response.error, response.metadata));
@@ -445,7 +381,7 @@ impl LocalKvClient {
     pub async fn delete(
         &self,
         key: impl AsRef<[u8]>,
-    ) -> Result<()> {
+    ) -> ClientApiResult<()> {
         let command = WriteCommand::delete(Bytes::copy_from_slice(key.as_ref()));
 
         let request = ClientWriteRequest {
@@ -458,16 +394,15 @@ impl LocalKvClient {
         self.event_tx
             .send(RaftEvent::ClientPropose(request, resp_tx))
             .await
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
             .await
-            .map_err(|_| LocalClientError::Timeout(self.timeout))?
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| timeout_error(self.timeout))?
+            .map_err(|_| channel_closed_error())?;
 
-        let response = result.map_err(|status| {
-            LocalClientError::ServerError(format!("RPC error: {}", status.message()))
-        })?;
+        let response =
+            result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success as i32 {
             return Err(Self::map_error_response(response.error, response.metadata));
@@ -490,29 +425,50 @@ impl LocalKvClient {
     pub fn node_id(&self) -> u32 {
         self.client_id
     }
+
+    /// Internal helper: Get cluster membership via ClusterConf event
+    async fn get_cluster_membership(
+        &self
+    ) -> ClientApiResult<d_engine_proto::server::cluster::ClusterMembership> {
+        let request = d_engine_proto::server::cluster::MetadataRequest {};
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        self.event_tx
+            .send(RaftEvent::ClusterConf(request, resp_tx))
+            .await
+            .map_err(|_| channel_closed_error())?;
+
+        let result = tokio::time::timeout(self.timeout, resp_rx)
+            .await
+            .map_err(|_| timeout_error(self.timeout))?
+            .map_err(|_| channel_closed_error())?;
+
+        result.map_err(|status| server_error(format!("ClusterConf error: {}", status.message())))
+    }
 }
 
-impl std::fmt::Debug for LocalKvClient {
+impl std::fmt::Debug for EmbeddedClient {
     fn fmt(
         &self,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        f.debug_struct("LocalKvClient")
+        f.debug_struct("EmbeddedClient")
             .field("client_id", &self.client_id)
             .field("timeout", &self.timeout)
             .finish()
     }
 }
 
-// Implement KvClient trait
+// Implement ClientApi trait
 #[async_trait::async_trait]
-impl ClientApi for LocalKvClient {
+impl ClientApi for EmbeddedClient {
     async fn put(
         &self,
         key: impl AsRef<[u8]> + Send,
         value: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<()> {
-        self.put(key, value).await.map_err(Into::into)
+        self.put(key, value).await
     }
 
     async fn put_with_ttl(
@@ -521,7 +477,6 @@ impl ClientApi for LocalKvClient {
         value: impl AsRef<[u8]> + Send,
         ttl_secs: u64,
     ) -> ClientApiResult<()> {
-        // Create command with TTL
         let command = WriteCommand::insert_with_ttl(
             Bytes::copy_from_slice(key.as_ref()),
             Bytes::copy_from_slice(value.as_ref()),
@@ -538,20 +493,18 @@ impl ClientApi for LocalKvClient {
         self.event_tx
             .send(RaftEvent::ClientPropose(request, resp_tx))
             .await
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
             .await
-            .map_err(|_| LocalClientError::Timeout(self.timeout))?
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| timeout_error(self.timeout))?
+            .map_err(|_| channel_closed_error())?;
 
-        let response = result.map_err(|status| {
-            LocalClientError::ServerError(format!("RPC error: {}", status.message()))
-        })?;
+        let response =
+            result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success as i32 {
-            let local_err = LocalKvClient::map_error_response(response.error, response.metadata);
-            return Err(local_err.into());
+            return Err(Self::map_error_response(response.error, response.metadata));
         }
 
         Ok(())
@@ -561,21 +514,21 @@ impl ClientApi for LocalKvClient {
         &self,
         key: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<Option<Bytes>> {
-        self.get_linearizable(key).await.map_err(Into::into)
+        self.get_linearizable(key).await
     }
 
     async fn get_multi(
         &self,
         keys: &[Bytes],
     ) -> ClientApiResult<Vec<Option<Bytes>>> {
-        self.get_multi_linearizable(keys).await.map_err(Into::into)
+        self.get_multi_linearizable(keys).await
     }
 
     async fn delete(
         &self,
         key: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<()> {
-        self.delete(key).await.map_err(Into::into)
+        self.delete(key).await
     }
 
     async fn compare_and_swap(
@@ -600,27 +553,25 @@ impl ClientApi for LocalKvClient {
         self.event_tx
             .send(RaftEvent::ClientPropose(request, resp_tx))
             .await
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
             .await
-            .map_err(|_| LocalClientError::Timeout(self.timeout))?
-            .map_err(|_| LocalClientError::ChannelClosed)?;
+            .map_err(|_| timeout_error(self.timeout))?
+            .map_err(|_| channel_closed_error())?;
 
-        let response = result.map_err(|status| {
-            LocalClientError::ServerError(format!("RPC error: {}", status.message()))
-        })?;
+        let response =
+            result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
         if response.error != ErrorCode::Success as i32 {
-            let local_err = LocalKvClient::map_error_response(response.error, response.metadata);
-            return Err(local_err.into());
+            return Err(Self::map_error_response(response.error, response.metadata));
         }
 
         match response.success_result {
             Some(d_engine_proto::client::client_response::SuccessResult::WriteResult(result)) => {
                 Ok(result.succeeded)
             }
-            _ => Err(LocalClientError::ServerError("Invalid CAS response".to_string()).into()),
+            _ => Err(server_error("Invalid CAS response".to_string())),
         }
     }
 
@@ -645,7 +596,7 @@ impl ClientApi for LocalKvClient {
             // For now, return an error indicating this needs implementation
             Err(ClientApiError::Business {
                 code: ErrorCode::Uncategorized,
-                message: "Watch not yet implemented for LocalKvClient - use EmbeddedEngine::watch() instead".to_string(),
+                message: "Watch not yet implemented for EmbeddedClient - use EmbeddedEngine::watch() instead".to_string(),
                 required_action: Some("Use EmbeddedEngine::watch() for watch operations in embedded mode".to_string()),
             })
         }
@@ -664,30 +615,12 @@ impl ClientApi for LocalKvClient {
     async fn list_members(
         &self
     ) -> ClientApiResult<Vec<d_engine_proto::server::cluster::NodeMeta>> {
-        // Local client doesn't have direct access to cluster membership
-        // This would require passing additional Arc references to Raft state
-        // For now, return error indicating limitation
-        Err(ClientApiError::Business {
-            code: ErrorCode::Uncategorized,
-            message: "Cluster operations not available in LocalKvClient - use Node methods instead"
-                .to_string(),
-            required_action: Some(
-                "Use Node::list_members() for cluster operations in embedded mode".to_string(),
-            ),
-        })
+        let cluster_membership = self.get_cluster_membership().await?;
+        Ok(cluster_membership.nodes)
     }
 
     async fn get_leader_id(&self) -> ClientApiResult<Option<u32>> {
-        // Local client doesn't have direct access to Raft state
-        // This would require passing additional Arc references
-        // For now, return error indicating limitation
-        Err(ClientApiError::Business {
-            code: ErrorCode::Uncategorized,
-            message: "Cluster operations not available in LocalKvClient - use Node methods instead"
-                .to_string(),
-            required_action: Some(
-                "Use Node::get_leader_id() for cluster operations in embedded mode".to_string(),
-            ),
-        })
+        let cluster_membership = self.get_cluster_membership().await?;
+        Ok(cluster_membership.current_leader_id)
     }
 }

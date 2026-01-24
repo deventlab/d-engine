@@ -46,7 +46,7 @@ async fn main() -> std::result::Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-async fn run_demo(client: &LocalKvClient) -> std::result::Result<(), Box<dyn StdError>> {
+async fn run_demo(client: &EmbeddedClient) -> std::result::Result<(), Box<dyn StdError>> {
     println!("=== Quick Start Demo ===");
 
     // Store workflow state

@@ -5,8 +5,8 @@
 //!
 //! # Implementations
 //!
-//! - `GrpcKvClient` (d-engine-client): Remote access via gRPC protocol
-//! - `LocalKvClient` (d-engine-server): Zero-overhead embedded access
+//! - `GrpcClient` (d-engine-client): Remote access via gRPC protocol
+//! - `EmbeddedClient` (d-engine-server): Zero-overhead embedded access
 //!
 //! # Design Principles
 //!
@@ -46,8 +46,8 @@ use crate::client::client_api_error::ClientApiResult;
 ///
 /// # Performance Characteristics
 ///
-/// - `GrpcKvClient`: 1-2ms latency (network + serialization)
-/// - `LocalKvClient`: <0.1ms latency (direct function call)
+/// - `GrpcClient`: 1-2ms latency (network + serialization)
+/// - `EmbeddedClient`: <0.1ms latency (direct function call)
 #[async_trait::async_trait]
 pub trait ClientApi: Send + Sync {
     /// Stores a key-value pair with strong consistency.
@@ -62,9 +62,8 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`crate::client::kv_error::KvClientError::ChannelClosed`] if node is shutting down
-    /// - [`crate::client::kv_error::KvClientError::Timeout`] if operation exceeds timeout
-    /// - [`crate::client::kv_error::KvClientError::ServerError`] for server-side errors (e.g., not leader)
+    /// - [`ClientApiError::Network`] if node is shutting down or timeout occurs
+    /// - [`ClientApiError::Business`] for server-side errors (e.g., not leader)
     ///
     /// # Example
     ///
@@ -121,9 +120,8 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`crate::client::kv_error::KvClientError::ChannelClosed`] if node is shutting down
-    /// - [`crate::client::kv_error::KvClientError::Timeout`] if operation exceeds timeout
-    /// - [`crate::client::kv_error::KvClientError::ServerError`] for server-side errors
+    /// - [`ClientApiError::Network`] if node is shutting down or timeout occurs
+    /// - [`ClientApiError::Business`] for server-side errors
     ///
     /// # Example
     ///
@@ -181,9 +179,8 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`crate::client::kv_error::KvClientError::ChannelClosed`] if node is shutting down
-    /// - [`crate::client::kv_error::KvClientError::Timeout`] if operation exceeds timeout
-    /// - [`crate::client::kv_error::KvClientError::ServerError`] for server-side errors
+    /// - [`ClientApiError::Network`] if node is shutting down or timeout occurs
+    /// - [`ClientApiError::Business`] for server-side errors
     ///
     /// # Example
     ///

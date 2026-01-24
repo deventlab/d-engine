@@ -27,7 +27,7 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 ### New in v0.2 🎉
 
 - **EmbeddedEngine**: Single-node start, scale to 3-node cluster when needed
-- **LocalKvClient**: Zero-overhead in-process access (<0.1ms latency)
+- **EmbeddedClient**: Zero-overhead in-process access (<0.1ms latency)
 - **Watch API**: Real-time key change notifications (config updates, service discovery)
 - **TTL/Lease**: Automatic key expiration for distributed locks and session management
 - **Modular Workspace**: Feature flags (`client`/`server`) - depend only on what you need

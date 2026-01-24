@@ -138,7 +138,7 @@ Waits for leader election (combines node initialization + leader election):
 let client = engine.client();
 ```
 
-Returns `LocalKvClient` for zero-overhead KV operations.
+Returns `EmbeddedClient` for zero-overhead KV operations.
 
 ---
 
@@ -165,7 +165,7 @@ client.put(key, value).await?;
 
 No gRPC overhead - direct function calls to embedded Raft core.
 
-**For complete API reference, see** [LocalKvClient docs](https://docs.rs/d-engine/latest/d_engine/prelude/struct.LocalKvClient.html).
+**For complete API reference, see** [EmbeddedClient docs](https://docs.rs/d-engine/latest/d_engine/prelude/struct.EmbeddedClient.html).
 
 **Key methods**:
 
@@ -214,7 +214,7 @@ EmbeddedEngine::start_custom(
 engine.wait_ready(timeout: Duration) -> Result<LeaderInfo>
 
 // Get KV client
-engine.client() -> &LocalKvClient
+engine.client() -> &EmbeddedClient
 
 // Subscribe to leader changes (optional, for monitoring)
 engine.leader_change_notifier() -> watch::Receiver<Option<LeaderInfo>>
@@ -223,7 +223,7 @@ engine.leader_change_notifier() -> watch::Receiver<Option<LeaderInfo>>
 engine.stop().await -> Result<()>
 ```
 
-### LocalKvClient
+### EmbeddedClient
 
 ```rust,ignore
 // Write (replicates to majority)
@@ -236,7 +236,7 @@ client.get(key: Vec<u8>) -> Result<Option<Vec<u8>>>
 client.delete(key: Vec<u8>) -> Result<DeleteResponse>
 ```
 
-See [complete API documentation](https://docs.rs/d-engine/latest/d_engine/prelude/struct.LocalKvClient.html) for all available methods including TTL operations, multi-key reads, and consistency control.
+See [complete API documentation](https://docs.rs/d-engine/latest/d_engine/prelude/struct.EmbeddedClient.html) for all available methods including TTL operations, multi-key reads, and consistency control.
 
 ---
 

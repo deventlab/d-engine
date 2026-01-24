@@ -1,6 +1,6 @@
-//! LocalKvClient Integration Tests
+//! EmbeddedClient Integration Tests
 //!
-//! Tests for LocalKvClient in embedded mode:
+//! Tests for EmbeddedClient in embedded mode:
 //! - Basic CRUD operations with real Node
 //! - Error handling
 //! - Concurrent operations
@@ -20,7 +20,7 @@ use tokio::sync::watch;
 /// Type alias for our test node
 type TestNode = Arc<d_engine_server::Node<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>;
 
-/// Helper to create a test node with LocalKvClient
+/// Helper to create a test node with EmbeddedClient
 async fn create_test_node(test_name: &str) -> (TestNode, tokio::sync::watch::Sender<()>) {
     use d_engine_core::ClusterConfig;
     use d_engine_proto::common::NodeRole;
@@ -87,7 +87,7 @@ async fn create_test_node(test_name: &str) -> (TestNode, tokio::sync::watch::Sen
     (node, graceful_tx)
 }
 
-/// Test: Basic PUT operation via LocalKvClient
+/// Test: Basic PUT operation via EmbeddedClient
 #[tokio::test]
 async fn test_local_client_put() {
     let (node, _shutdown) = create_test_node("put").await;
@@ -99,10 +99,10 @@ async fn test_local_client_put() {
     let result = client.put(key, value).await;
     assert!(result.is_ok(), "PUT should succeed: {result:?}");
 
-    println!("✅ LocalKvClient PUT operation succeeded");
+    println!("✅ EmbeddedClient PUT operation succeeded");
 }
 
-/// Test: Basic GET operation via LocalKvClient
+/// Test: Basic GET operation via EmbeddedClient
 #[tokio::test]
 async fn test_local_client_get() {
     let (node, _shutdown) = create_test_node("get").await;
@@ -123,7 +123,7 @@ async fn test_local_client_get() {
     assert!(result.is_some(), "Value should exist");
     assert_eq!(result.unwrap(), Bytes::from_static(value), "Value mismatch");
 
-    println!("✅ LocalKvClient GET operation succeeded");
+    println!("✅ EmbeddedClient GET operation succeeded");
 }
 
 /// Test: GET non-existent key returns None
@@ -137,7 +137,7 @@ async fn test_local_client_get_not_found() {
     let result = client.get_eventual(key).await.expect("GET should not error");
     assert!(result.is_none(), "Non-existent key should return None");
 
-    println!("✅ LocalKvClient GET not found handled correctly");
+    println!("✅ EmbeddedClient GET not found handled correctly");
 }
 
 /// Test: DELETE operation
@@ -162,7 +162,7 @@ async fn test_local_client_delete() {
     let get_result = client.get_eventual(key).await.expect("Second GET failed");
     assert!(get_result.is_none(), "Value should not exist after delete");
 
-    println!("✅ LocalKvClient DELETE operation succeeded");
+    println!("✅ EmbeddedClient DELETE operation succeeded");
 }
 
 /// Test: Multiple sequential operations
@@ -207,10 +207,10 @@ async fn test_local_client_sequential_ops() {
         assert!(result.is_none(), "key_{i} should be deleted");
     }
 
-    println!("✅ LocalKvClient sequential operations succeeded");
+    println!("✅ EmbeddedClient sequential operations succeeded");
 }
 
-/// Test: Concurrent operations from multiple LocalKvClient instances
+/// Test: Concurrent operations from multiple EmbeddedClient instances
 #[tokio::test]
 async fn test_local_client_concurrent_ops() {
     let (node, _shutdown) = create_test_node("concurrent").await;
@@ -252,7 +252,7 @@ async fn test_local_client_concurrent_ops() {
         "All concurrent operations should succeed"
     );
 
-    println!("✅ LocalKvClient concurrent operations succeeded");
+    println!("✅ EmbeddedClient concurrent operations succeeded");
 }
 
 /// Test: Large value handling
@@ -277,7 +277,7 @@ async fn test_local_client_large_value() {
         "Large value size mismatch"
     );
 
-    println!("✅ LocalKvClient large value handling succeeded");
+    println!("✅ EmbeddedClient large value handling succeeded");
 }
 
 /// Test: Empty key and value handling
@@ -303,7 +303,7 @@ async fn test_local_client_empty_key_value() {
         "Empty value should be retrievable"
     );
 
-    println!("✅ LocalKvClient empty key/value handling succeeded");
+    println!("✅ EmbeddedClient empty key/value handling succeeded");
 }
 
 /// Test: Update existing key
@@ -334,7 +334,7 @@ async fn test_local_client_update() {
         "Value should be updated"
     );
 
-    println!("✅ LocalKvClient update operation succeeded");
+    println!("✅ EmbeddedClient update operation succeeded");
 }
 
 /// Test: Client ID and timeout getters
@@ -350,7 +350,7 @@ async fn test_local_client_getters() {
     assert!(timeout.as_millis() > 0, "Timeout should be positive");
 
     println!(
-        "✅ LocalKvClient getters work correctly (client_id={}, timeout={}ms)",
+        "✅ EmbeddedClient getters work correctly (client_id={}, timeout={}ms)",
         client_id,
         timeout.as_millis()
     );
@@ -377,7 +377,7 @@ async fn test_local_client_clone() {
         "Both clients should see all data"
     );
 
-    println!("✅ LocalKvClient clone works correctly");
+    println!("✅ EmbeddedClient clone works correctly");
 }
 
 /// Test: Linearizable read immediately after write (no sleep)

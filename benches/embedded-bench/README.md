@@ -32,7 +32,7 @@ make all-tests
 
 `embedded-bench` tests d-engine in embedded mode with three operation modes:
 
-- **`local`**: Direct in-process benchmark using `LocalKvClient` (zero-copy, baseline performance)
+- **`local`**: Direct in-process benchmark using `EmbeddedClient` (zero-copy, baseline performance)
 - **`server`**: HTTP server exposing KV operations via REST API
 - **`client`**: HTTP client for testing with load balancer (e.g., HAProxy)
 
@@ -60,7 +60,7 @@ This design mirrors how `standalone-bench` (Standalone) distributes requests via
 
 ### Test A: Embedded Pure Mode (Baseline)
 
-Direct in-process benchmark measuring `LocalKvClient` performance without network overhead.
+Direct in-process benchmark measuring `EmbeddedClient` performance without network overhead.
 
 ```
 
@@ -72,7 +72,7 @@ Direct in-process benchmark measuring `LocalKvClient` performance without networ
 │ │ embedded- │ │ embedded- │ │ embedded- │ │
 │ │ bench n1 │ │ bench n2 │ │ bench n3 │ │
 │ ├──────────────┤ ├──────────────┤ ├──────────────┤ │
-│ │ LocalKvClient│ │ LocalKvClient│ │ LocalKvClient│ │
+│ │EmbeddedClient│ │EmbeddedClient│ │EmbeddedClient│ │
 │ │ (internal │ │ (internal │ │ (internal │ │
 │ │ benchmark) │ │ benchmark) │ │ benchmark) │ │
 │ └──────────────┘ └──────────────┘ └──────────────┘ │
@@ -279,7 +279,7 @@ Expected performance comparison chain:
 
 ```
 Standalone < Embedded+HAProxy < Embedded Pure Mode
-   (gRPC)    (HTTP+HAProxy)      (LocalKvClient)
+   (gRPC)    (HTTP+HAProxy)      (EmbeddedClient)
 ```
 
 | Mode               | Overhead                     | Use Case                    |

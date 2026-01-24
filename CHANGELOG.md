@@ -18,7 +18,7 @@ All notable changes to this project will be documented in this file.
 - **Unified Client API** (#258): Merged KV and cluster operations into single `ClientApi` trait
   - **Breaking**: `KvClient` → `ClientApi`, `KvError` → `ClientApiError`
   - Simplifies developer experience (single trait for all operations)
-  - Both `GrpcKvClient` and `LocalKvClient` implement unified interface
+  - Both `GrpcClient` and `EmbeddedClient` implement unified interface
 
 - **WriteResult Message** (#258): Replaced `bool succeeded` with `WriteResult` message
   - Improves API extensibility (reserved fields for version tracking)
@@ -109,9 +109,9 @@ while let Some(event) = watcher.next().await {
 
 **Use Case**: Embed d-engine in your Rust application  
 **API**: `start()` uses env config, `start_with(config_path)` uses explicit config, `start_custom(...)` for advanced usage  
-**Benefit**: Zero gRPC overhead via LocalKvClient (<0.1ms latency)
+**Benefit**: Zero gRPC overhead via EmbeddedClient (<0.1ms latency)
 
-#### LocalKvClient - Zero-Overhead Embedded Access
+#### EmbeddedClient - Zero-Overhead Embedded Access
 
 **When**: Your app and d-engine in same process  
 **Benefit**: Skip gRPC serialization, direct memory access (<0.1ms)  
@@ -123,7 +123,7 @@ while let Some(event) = watcher.next().await {
 
 - `examples/quick-start/` - 5-minute single-node setup
 - `examples/single-node-expansion/` - Dynamic 1→3 node scaling
-- `examples/service-discovery-embedded/` - LocalKvClient zero-overhead access
+- `examples/service-discovery-embedded/` - EmbeddedClient zero-overhead access
 - `examples/service-discovery-standalone/` - Watch API pattern
 
 ---

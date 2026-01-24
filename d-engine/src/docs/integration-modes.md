@@ -195,7 +195,7 @@ client.put(b"key", b"value")
 │ Your Rust Application Process          │
 │                                         │
 │  ┌──────────────┐    ┌──────────────┐  │
-│  │ Business     │◄───┤ LocalKvClient│  │
+│  │ Business     │◄───┤EmbeddedClient│  │
 │  │ Logic        │    │ (memory)     │  │
 │  └──────────────┘    └───────┬──────┘  │
 │                              │          │

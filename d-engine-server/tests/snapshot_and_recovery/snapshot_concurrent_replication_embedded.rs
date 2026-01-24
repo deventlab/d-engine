@@ -301,7 +301,7 @@ snapshots_dir = '{}'
     );
 
     info!("Phase 5: Verifying data integrity on Leader...");
-    info!("Note: Verifying from Leader because Learner LocalKvClient returns NotLeader");
+    info!("Note: Verifying from Leader because Learner EmbeddedClient returns NotLeader");
 
     let mut verification_errors = Vec::new();
     for i in 0..TOTAL_ENTRIES {

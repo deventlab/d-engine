@@ -7,9 +7,8 @@ use super::Client;
 use super::ClientApiError;
 use super::ClientConfig;
 use super::ClientInner;
-use super::ClusterClient;
 use super::ConnectionPool;
-use super::GrpcKvClient;
+use super::GrpcClient;
 
 /// Configurable builder for [`Client`] instances
 ///
@@ -104,7 +103,7 @@ impl ClientBuilder {
     /// Build the client with current configuration
     pub async fn build(self) -> std::result::Result<Client, ClientApiError> {
         let pool = ConnectionPool::create(self.endpoints.clone(), self.config.clone()).await?;
-        let inner = Arc::new(ArcSwap::from_pointee(ClientInner {
+        let client_inner = Arc::new(ArcSwap::from_pointee(ClientInner {
             pool,
             client_id: self.config.id,
             config: self.config,
@@ -112,9 +111,7 @@ impl ClientBuilder {
         }));
 
         Ok(Client {
-            kv: GrpcKvClient::new(inner.clone()),
-            cluster: ClusterClient::new(inner.clone()),
-            inner,
+            inner: Arc::new(GrpcClient::new(client_inner)),
         })
     }
 }

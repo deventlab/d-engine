@@ -100,7 +100,7 @@ This crate provides:
 │  │ API Layer                       │   │
 │  │  - EmbeddedEngine               │   │
 │  │  - StandaloneServer             │   │
-│  │  - LocalKvClient                │   │
+│  │  - EmbeddedClient               │   │
 │  └──────────────┬──────────────────┘   │
 │                 │                       │
 │  ┌──────────────▼──────────────────┐   │
