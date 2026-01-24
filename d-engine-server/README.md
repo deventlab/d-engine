@@ -63,14 +63,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Standalone Mode (independent server)
 
 ```rust
-use d_engine_server::StandaloneServer;
+use d_engine_server::StandaloneEngine;
 use tokio::sync::watch;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("CONFIG_PATH", "config.toml");
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
-    StandaloneServer::run(shutdown_rx).await?;
+    StandaloneEngine::run(shutdown_rx).await?;
     Ok(())
 }
 ```
@@ -99,7 +99,7 @@ This crate provides:
 │  ┌─────────────────────────────────┐   │
 │  │ API Layer                       │   │
 │  │  - EmbeddedEngine               │   │
-│  │  - StandaloneServer             │   │
+│  │  - StandaloneEngine             │   │
 │  │  - EmbeddedClient               │   │
 │  └──────────────┬──────────────────┘   │
 │                 │                       │
