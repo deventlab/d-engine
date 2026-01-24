@@ -72,6 +72,15 @@ pub struct ClientReadRequest {
     #[prost(enumeration = "ReadConsistencyPolicy", optional, tag = "3")]
     pub consistency_policy: ::core::option::Option<i32>,
 }
+/// Write operation result
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct WriteResult {
+    /// Future: uint64 version = 2;
+    /// Future: bytes prev_value = 3;
+    #[prost(bool, tag = "1")]
+    pub succeeded: bool,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientResponse {
@@ -87,9 +96,8 @@ pub mod client_response {
     #[derive(serde::Serialize, serde::Deserialize)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum SuccessResult {
-        /// Operation result: Put/Delete always true, CAS true/false
-        #[prost(bool, tag = "2")]
-        Succeeded(bool),
+        #[prost(message, tag = "2")]
+        WriteResult(super::WriteResult),
         #[prost(message, tag = "3")]
         ReadData(super::ReadResults),
     }

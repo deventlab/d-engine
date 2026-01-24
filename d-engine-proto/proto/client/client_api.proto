@@ -73,11 +73,18 @@ message ClientReadRequest {
   optional ReadConsistencyPolicy consistency_policy = 3;
 }
 
+// Write operation result
+message WriteResult {
+  bool succeeded = 1;
+  // Future: uint64 version = 2;
+  // Future: bytes prev_value = 3;
+}
+
 message ClientResponse {
   d_engine.error.ErrorCode error = 1;
 
   oneof success_result {
-    bool succeeded = 2; // Operation result: Put/Delete always true, CAS true/false
+    WriteResult write_result = 2;
     ReadResults read_data = 3;
   }
 
