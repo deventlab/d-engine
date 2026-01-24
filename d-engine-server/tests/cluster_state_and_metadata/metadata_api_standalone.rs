@@ -144,7 +144,7 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
     for i in 0..10 {
         let client_clone = client.clone();
         tasks.push(tokio::spawn(async move {
-            let leader_id = client_clone.cluster().get_leader_id().await;
+            let leader_id = client_clone.get_leader_id().await;
             (i, leader_id)
         }));
     }
@@ -253,7 +253,7 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
     client.refresh(None).await?;
 
     // Verify metadata API returns new leader
-    let new_leader = client.cluster().get_leader_id().await?.expect("New leader should be elected");
+    let new_leader = client.get_leader_id().await?.expect("New leader should be elected");
 
     info!("New leader after failover: {}", new_leader);
 

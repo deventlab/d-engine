@@ -5,7 +5,7 @@ Minimal example of embedding d-engine in a Rust application.
 ## What is Embedded Mode?
 
 - **Zero gRPC overhead**: Runs in your application process
-- **Sub-millisecond latency**: Direct KV operations via `LocalKvClient`, no network serialization
+- **Sub-millisecond latency**: Direct KV operations via `EmbeddedClient`, no network serialization
 - **Single binary**: No external dependencies or services to manage
 - **Production-ready durability**: All writes persisted via Raft consensus and RocksDB
 
@@ -131,7 +131,7 @@ Copy this example and modify `src/main.rs`:
 Example:
 
 ```rust
-async fn my_app(client: &LocalKvClient) -> Result<(), Box<dyn Error>> {
+async fn my_app(client: &EmbeddedClient) -> Result<(), Box<dyn Error>> {
     // Your code here
     client.put("user:1:name".as_bytes().to_vec(), b"alice".to_vec()).await?;
     client.put("user:1:email".as_bytes().to_vec(), b"alice@example.com".to_vec()).await?;

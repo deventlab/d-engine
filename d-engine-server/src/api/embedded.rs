@@ -36,7 +36,7 @@
 //!
 //! - ✅ `is_leader()` - Check if current node is leader
 //! - ✅ `leader_info()` - Get leader ID and term
-//! - ✅ `LocalKvClient` returns `NotLeader` error on follower writes
+//! - ✅ `EmbeddedClient` returns `NotLeader` error on follower writes
 //! - ✅ Zero-overhead in-process communication (<0.1ms)
 //!
 //! ## What Applications Must Handle
@@ -120,7 +120,7 @@
 //! 3. **Flexible deployment** - Applications choose load balancer health checks, HTTP redirect, or other strategies
 //! 4. **Performance transparency** - Developers know exactly when network calls occur
 //!
-//! For auto-forwarding with gRPC overhead, use standalone mode with `GrpcKvClient`.
+//! For auto-forwarding with gRPC overhead, use standalone mode with `GrpcClient`.
 
 use std::sync::Arc;
 
@@ -142,7 +142,7 @@ use crate::RocksDBStateMachine;
 use crate::RocksDBStorageEngine;
 use crate::StateMachine;
 use crate::StorageEngine;
-use crate::node::LocalKvClient;
+use crate::api::EmbeddedClient;
 use crate::node::NodeBuilder;
 
 /// Embedded d-engine with automatic lifecycle management.
@@ -169,7 +169,7 @@ use crate::node::NodeBuilder;
 pub struct EmbeddedEngine {
     node_handle: Option<JoinHandle<Result<()>>>,
     shutdown_tx: watch::Sender<()>,
-    kv_client: LocalKvClient,
+    kv_client: EmbeddedClient,
     leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
     #[cfg(feature = "watch")]
     watch_registry: Option<Arc<WatchRegistry>>,
@@ -502,7 +502,7 @@ impl EmbeddedEngine {
     /// let client = engine.client();
     /// client.put(b"key", b"value").await?;
     /// ```
-    pub fn client(&self) -> &LocalKvClient {
+    pub fn client(&self) -> &EmbeddedClient {
         &self.kv_client
     }
 

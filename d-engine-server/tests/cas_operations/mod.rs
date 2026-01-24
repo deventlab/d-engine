@@ -22,23 +22,23 @@
 //! ## Developer API Coverage
 //!
 //! **Embedded Mode**:
-//! - `LocalKvClient::compare_and_swap(key, expected, new_value)` - Atomic CAS
-//! - `LocalKvClient::get(key)` - Read current value
-//! - `LocalKvClient::put(key, value)` - Initialize state
+//! - `EmbeddedClient::compare_and_swap(key, expected, new_value)` - Atomic CAS
+//! - `EmbeddedClient::get(key)` - Read current value
+//! - `EmbeddedClient::put(key, value)` - Initialize state
 //!
 //! **Standalone Mode (gRPC)**:
-//! - `GrpcKvClient::compare_and_swap(key, expected, new_value)` - Remote CAS
+//! - `GrpcClient::compare_and_swap(key, expected, new_value)` - Remote CAS
 //! - Retry logic on NOT_LEADER errors
 //! - Leader discovery and connection management
 //!
 //! ## Integration Modes
 //!
-//! - ✅ **Embedded Mode**: In-process LocalKvClient
+//! - ✅ **Embedded Mode**: In-process EmbeddedClient
 //!   - `distributed_lock_embedded.rs` - Multi-client lock competition
 //!   - `snapshot_recovery_embedded.rs` - CAS state persistence
 //!   - `leader_failover_cas_embedded.rs` - CAS during failover (optional)
 //!
-//! - ✅ **Standalone Mode**: gRPC GrpcKvClient
+//! - ✅ **Standalone Mode**: gRPC GrpcClient
 //!   - `distributed_lock_standalone.rs` - Remote lock competition
 //!   - `snapshot_recovery_standalone.rs` - Remote CAS persistence
 //!

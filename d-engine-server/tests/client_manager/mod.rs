@@ -75,7 +75,7 @@ impl ClientManager {
                     let value = value.unwrap();
 
                     info!("put {}:{}", key, value);
-                    match self.client.kv().put(safe_kv_bytes(key), safe_kv_bytes(value)).await {
+                    match self.client.put(safe_kv_bytes(key), safe_kv_bytes(value)).await {
                         Ok(res) => {
                             debug!("Put Success: {:?}", res);
                             return Ok(key);
@@ -100,7 +100,7 @@ impl ClientManager {
                         }
                     }
                 }
-                ClientCommands::Delete => match self.client.kv().delete(safe_kv_bytes(key)).await {
+                ClientCommands::Delete => match self.client.delete(safe_kv_bytes(key)).await {
                     Ok(res) => {
                         debug!("Delete Success: {:?}", res);
                         return Ok(key);

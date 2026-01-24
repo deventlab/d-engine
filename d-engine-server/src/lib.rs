@@ -133,12 +133,11 @@ pub use d_engine_core::SnapshotError;
 /// Storage-specific error type
 pub use d_engine_core::StorageError;
 // -------------------- Extension Traits --------------------
+pub use api::EmbeddedClient;
 /// Storage trait for implementing custom storage backends
 ///
 /// Implement this trait to create your own storage engine.
 pub use d_engine_core::{StateMachine, StorageEngine};
-pub use node::LocalClientError;
-pub use node::LocalKvClient;
 pub use node::Node;
 pub use node::NodeBuilder;
 // Re-export storage implementations

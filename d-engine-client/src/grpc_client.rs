@@ -31,11 +31,11 @@ use d_engine_core::client::{ClientApi, ClientApiResult};
 /// Implements remote CRUD operations via gRPC protocol.
 /// All write operations use strong consistency.
 #[derive(Clone)]
-pub struct GrpcKvClient {
+pub struct GrpcClient {
     pub(super) client_inner: Arc<ArcSwap<ClientInner>>,
 }
 
-impl GrpcKvClient {
+impl GrpcClient {
     pub(crate) fn new(client_inner: Arc<ArcSwap<ClientInner>>) -> Self {
         Self { client_inner }
     }
@@ -177,11 +177,11 @@ impl GrpcKvClient {
     }
 }
 
-// ==================== Core KvClient Trait Implementation ====================
+// ==================== Core ClientApi Trait Implementation ====================
 
-// Implement KvClient trait for GrpcKvClient
+// Implement ClientApi trait for GrpcClient
 #[async_trait::async_trait]
-impl ClientApi for GrpcKvClient {
+impl ClientApi for GrpcClient {
     async fn put(
         &self,
         key: impl AsRef<[u8]> + Send,
@@ -209,12 +209,12 @@ impl ClientApi for GrpcKvClient {
         let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
         match client.handle_client_write(request).await {
             Ok(response) => {
-                debug!("[:KvClient:write] response: {:?}", response);
+                debug!("[:GrpcClient:write] response: {:?}", response);
                 let client_response = response.get_ref();
                 client_response.validate_error().map_err(Into::<ClientApiError>::into)
             }
             Err(status) => {
-                error!("[:KvClient:write] status: {:?}", status);
+                error!("[:GrpcClient:write] status: {:?}", status);
                 Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
             }
         }
@@ -249,12 +249,12 @@ impl ClientApi for GrpcKvClient {
         let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
         match client.handle_client_write(request).await {
             Ok(response) => {
-                debug!("[:KvClient:put_with_ttl] response: {:?}", response);
+                debug!("[:GrpcClient:put_with_ttl] response: {:?}", response);
                 let client_response = response.get_ref();
                 client_response.validate_error().map_err(Into::<ClientApiError>::into)
             }
             Err(status) => {
-                error!("[:KvClient:put_with_ttl] status: {:?}", status);
+                error!("[:GrpcClient:put_with_ttl] status: {:?}", status);
                 Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
             }
         }
@@ -310,12 +310,12 @@ impl ClientApi for GrpcKvClient {
         let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
         match client.handle_client_write(request).await {
             Ok(response) => {
-                debug!("[:KvClient:delete] response: {:?}", response);
+                debug!("[:GrpcClient:delete] response: {:?}", response);
                 let client_response = response.get_ref();
                 client_response.validate_error().map_err(Into::<ClientApiError>::into)
             }
             Err(status) => {
-                error!("[:KvClient:delete] status: {:?}", status);
+                error!("[:GrpcClient:delete] status: {:?}", status);
                 Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
             }
         }
@@ -348,7 +348,7 @@ impl ClientApi for GrpcKvClient {
         let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
         match client.handle_client_write(request).await {
             Ok(response) => {
-                debug!("[:KvClient:compare_and_swap] response: {:?}", response);
+                debug!("[:GrpcClient:compare_and_swap] response: {:?}", response);
                 let client_response = response.get_ref();
 
                 // Validate no error occurred
@@ -358,7 +358,7 @@ impl ClientApi for GrpcKvClient {
                 Ok(client_response.succeeded())
             }
             Err(status) => {
-                error!("[:KvClient:compare_and_swap] status: {:?}", status);
+                error!("[:GrpcClient:compare_and_swap] status: {:?}", status);
                 Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
             }
         }

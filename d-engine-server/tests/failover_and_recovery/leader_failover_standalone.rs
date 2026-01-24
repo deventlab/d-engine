@@ -64,7 +64,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
         .await?;
 
     // Write test data before failover
-    client.kv().put("before-failover", "initial-value").await?;
+    client.put("before-failover", "initial-value").await?;
     // Wait for data to replicate to all nodes before reading
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
     // Use get_eventual() after sufficient wait time to ensure data is replicated
@@ -97,7 +97,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     // Retry put with multiple attempts in case new leader is still stabilizing
     let mut put_attempts = 0;
     loop {
-        match client.kv().put("after-failover", "still-works").await {
+        match client.put("after-failover", "still-works").await {
             Ok(_) => break,
             Err(_e) if put_attempts < 3 => {
                 put_attempts += 1;
@@ -197,7 +197,7 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
         .await?;
 
     // Write initial data
-    client.kv().put("test-key", "test-value").await?;
+    client.put("test-key", "test-value").await?;
 
     info!("Killing 2 nodes to lose majority");
 
@@ -217,7 +217,7 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
     client.refresh(None).await?;
     let write_result = tokio::time::timeout(
         Duration::from_secs(5),
-        client.kv().put("should-fail", "no-majority"),
+        client.put("should-fail", "no-majority"),
     )
     .await;
 

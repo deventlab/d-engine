@@ -17,7 +17,7 @@ pub use d_engine_client::*;
 pub mod prelude {
     #[cfg(feature = "server")]
     pub use d_engine_server::{
-        EmbeddedEngine, Error, FileStateMachine, FileStorageEngine, LocalKvClient, Node,
+        EmbeddedEngine, Error, FileStateMachine, FileStorageEngine, EmbeddedClient, Node,
         NodeBuilder, Result, StandaloneServer, StateMachine, StorageEngine,
     };
 

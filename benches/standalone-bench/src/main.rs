@@ -242,7 +242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Commands::Put => {
                         let key = generate_prefixed_key(cli.sequential_keys, cli.key_size, counter, cli.key_space);
                         let value = generate_value(cli.value_size);
-                        if let Err(e) = client.kv().put(&key, &value).await {
+                        if let Err(e) = client.put(&key, &value).await {
                             eprintln!("Put error: {e:?}");
                             continue;
                         }

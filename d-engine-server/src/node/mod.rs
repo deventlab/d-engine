@@ -20,9 +20,6 @@
 mod builder;
 pub use builder::*;
 
-mod client;
-pub use client::*;
-
 mod leader_notifier;
 pub(crate) use leader_notifier::*;
 
@@ -358,8 +355,8 @@ where
     /// let client = node.local_client();
     /// client.put(b"key", b"value").await?;
     /// ```
-    pub fn local_client(&self) -> LocalKvClient {
-        LocalKvClient::new_internal(
+    pub fn local_client(&self) -> crate::api::EmbeddedClient {
+        crate::api::EmbeddedClient::new_internal(
             self.event_tx.clone(),
             self.node_id,
             Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms),

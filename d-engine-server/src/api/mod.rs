@@ -1,10 +1,15 @@
 //! Public API layer for d-engine
 
 mod embedded;
+mod embedded_client;
 mod standalone;
 
 pub use embedded::EmbeddedEngine;
+pub use embedded_client::EmbeddedClient;
 pub use standalone::StandaloneServer;
+
+#[cfg(test)]
+mod embedded_client_test;
 
 #[cfg(test)]
 mod embedded_test;

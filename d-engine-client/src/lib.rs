@@ -65,19 +65,17 @@
 //! - [Error Handling](https://docs.rs/d-engine/latest/d_engine/docs/client_guide/error_handling/index.html)
 
 mod builder;
-mod cluster;
 mod config;
-mod grpc_kv_client;
+mod grpc_client;
 mod pool;
 mod proto;
 mod scoped_timer;
 mod utils;
 
 pub use builder::*;
-pub use cluster::*;
 pub use config::*;
 pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
-pub use grpc_kv_client::*;
+pub use grpc_client::*;
 pub use pool::*;
 pub use utils::*;
 
@@ -112,11 +110,9 @@ pub mod cluster_types {
 pub(crate) use proto::*;
 
 #[cfg(test)]
-mod cluster_test;
-#[cfg(test)]
 mod error_test;
 #[cfg(test)]
-mod grpc_kv_test;
+mod grpc_client_test;
 #[cfg(test)]
 mod mock_rpc;
 #[cfg(test)]
@@ -135,13 +131,7 @@ mod utils_test;
 /// Created through the [`builder()`](Client::builder) method
 #[derive(Clone)]
 pub struct Client {
-    /// Key-value store client interface
-    kv: GrpcKvClient,
-
-    /// Cluster management client interface
-    cluster: ClusterClient,
-
-    inner: std::sync::Arc<arc_swap::ArcSwap<ClientInner>>,
+    inner: std::sync::Arc<GrpcClient>,
 }
 
 #[derive(Clone)]
@@ -153,36 +143,14 @@ pub struct ClientInner {
 }
 
 impl std::ops::Deref for Client {
-    type Target = GrpcKvClient;
+    type Target = GrpcClient;
 
     fn deref(&self) -> &Self::Target {
-        &self.kv
+        &self.inner
     }
 }
 
 impl Client {
-    /// Access the key-value operations client
-    ///
-    /// # Deprecated
-    /// Use direct method calls instead: `client.put()` instead of `client.kv().put()`
-    #[deprecated(
-        since = "0.2.3",
-        note = "Use direct method calls: client.put() instead of client.kv().put()"
-    )]
-    pub fn kv(&self) -> &GrpcKvClient {
-        &self.kv
-    }
-
-    /// Access the cluster management client
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// client.cluster().add_node("node3:9083").await?;
-    /// ```
-    pub fn cluster(&self) -> &ClusterClient {
-        &self.cluster
-    }
-
     /// Create a configured client builder
     ///
     /// Starts client construction process with specified bootstrap endpoints.
@@ -203,8 +171,7 @@ impl Client {
         &mut self,
         new_endpoints: Option<Vec<String>>,
     ) -> std::result::Result<(), ClientApiError> {
-        // Get a writable lock
-        let old_inner = self.inner.load();
+        let old_inner = self.inner.client_inner.load();
         let config = old_inner.config.clone();
         let endpoints = new_endpoints.unwrap_or(old_inner.endpoints.clone());
 
@@ -217,7 +184,7 @@ impl Client {
             endpoints,
         });
 
-        self.inner.store(new_inner);
+        self.inner.client_inner.store(new_inner);
         Ok(())
     }
 }

@@ -3,7 +3,7 @@
 //! Demonstrates using d-engine in embedded mode for service discovery.
 //! Features:
 //! - In-process Watch API (zero network overhead)
-//! - LocalKvClient (zero serialization overhead)
+//! - EmbeddedClient (zero serialization overhead)
 //! - Automatic lifecycle management
 
 use d_engine::EmbeddedEngine;
