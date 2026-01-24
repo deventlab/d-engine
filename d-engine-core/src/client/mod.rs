@@ -8,3 +8,6 @@ pub mod client_api_error;
 
 pub use client_api::ClientApi;
 pub use client_api_error::{ClientApiError, ClientApiResult};
+
+#[cfg(test)]
+mod client_api_error_test;
