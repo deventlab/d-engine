@@ -3,91 +3,48 @@
 //! These tests verify that linearizable reads use a fixed read_index calculated
 //! at request arrival time, preventing unnecessary waiting for concurrent writes.
 //!
-//! Uses embedded mode with NodeBuilder for production-ready testing.
+//! Uses embedded mode with EmbeddedEngine for production-ready testing.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_core::RaftConfig;
-use d_engine_server::FileStateMachine;
-use d_engine_server::FileStorageEngine;
-use d_engine_server::NodeBuilder;
-use d_engine_server::node::RaftTypeConfig;
+use d_engine_server::EmbeddedEngine;
+use d_engine_server::RocksDBStateMachine;
+use d_engine_server::RocksDBStorageEngine;
 use tempfile::TempDir;
-use tokio::sync::watch;
 use tokio::time::Instant;
 
 use tracing_test::traced_test;
 
-type TestNode = Arc<d_engine_server::Node<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>;
-
-/// Helper to create a single-node test cluster
-async fn create_single_node(_test_name: &str) -> (TestNode, TempDir, watch::Sender<()>) {
-    use d_engine_core::ClusterConfig;
-    use d_engine_proto::common::NodeRole;
-    use d_engine_proto::common::NodeStatus;
-    use d_engine_proto::server::cluster::NodeMeta;
-
+/// Helper to create a test EmbeddedEngine
+async fn create_test_engine(test_name: &str) -> (EmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let db_path = temp_dir.path().to_path_buf();
+    let db_path = temp_dir.path().join(test_name);
 
-    let storage_engine = Arc::new(
-        FileStorageEngine::new(db_path.join("storage")).expect("Failed to create storage engine"),
+    let config_path = temp_dir.path().join("d-engine.toml");
+    let port = 50000 + (std::process::id() % 10000);
+    let config_content = format!(
+        r#"
+[cluster]
+listen_address = "127.0.0.1:{}"
+db_root_dir = "{}"
+single_node = true
+
+[raft.read_consistency]
+state_machine_sync_timeout_ms = 2000
+"#,
+        port,
+        db_path.display()
     );
-    let state_machine = Arc::new(
-        FileStateMachine::new(db_path.join("state_machine"))
-            .await
-            .expect("Failed to create state machine"),
-    );
+    std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let listen_address: std::net::SocketAddr = format!(
-        "127.0.0.1:{}",
-        9081 + (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            % 1000) as u16
-    )
-    .parse()
-    .unwrap();
-
-    let cluster_config = ClusterConfig {
-        node_id: 1,
-        listen_address,
-        initial_cluster: vec![NodeMeta {
-            id: 1,
-            address: listen_address.to_string(),
-            role: NodeRole::Follower as i32,
-            status: NodeStatus::Active as i32,
-        }],
-        db_root_dir: db_path.clone(),
-        log_dir: db_path.join("logs"),
-    };
-
-    let (graceful_tx, graceful_rx) = watch::channel(());
-
-    let mut raft_config = RaftConfig::default();
-    raft_config.read_consistency.state_machine_sync_timeout_ms = 2000;
-
-    let node = NodeBuilder::from_cluster_config(cluster_config, graceful_rx)
-        .storage_engine(storage_engine)
-        .state_machine(state_machine)
-        .raft_config(raft_config)
-        .start()
+    let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
-        .expect("Failed to start node");
+        .expect("Failed to start engine");
 
-    let node_clone = node.clone();
-    tokio::spawn(async move {
-        if let Err(e) = node_clone.run().await {
-            eprintln!("Node run error: {e:?}");
-        }
-    });
+    engine.wait_ready(Duration::from_secs(5)).await.expect("Engine not ready");
 
-    // Wait for leader election
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    (node, temp_dir, graceful_tx)
+    (engine, temp_dir)
 }
 
 /// Test linearizable read consistency with concurrent writes
@@ -115,8 +72,8 @@ async fn create_single_node(_test_name: &str) -> (TestNode, TempDir, watch::Send
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_consistency_with_writes() {
-    let (node, _temp_dir, _shutdown) = create_single_node("concurrent_writes").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("concurrent_writes").await;
+    let client = engine.client();
 
     // When: Sequential writes with linearizable reads
     let mut last_seen_value = 0;
@@ -179,8 +136,8 @@ async fn test_linearizable_read_consistency_with_writes() {
 #[tokio::test]
 #[traced_test]
 async fn test_read_index_with_noop_tracking() {
-    let (node, _temp_dir, _shutdown) = create_single_node("noop_tracking").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("fixed_index").await;
+    let client = engine.client();
 
     // When: Write data and perform linearizable read
     client.put(b"test_key", b"test_value").await.expect("PUT failed");
@@ -222,8 +179,8 @@ async fn test_read_index_with_noop_tracking() {
 #[tokio::test]
 #[traced_test]
 async fn test_eventual_consistency_reads_unaffected() {
-    let (node, _temp_dir, _shutdown) = create_single_node("ec_unaffected").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("high_load").await;
+    let client = engine.client();
 
     // Given: Write data
     client.put(b"ec_test", b"v1").await.expect("PUT failed");
@@ -280,8 +237,8 @@ async fn test_eventual_consistency_reads_unaffected() {
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_sequential_writes() {
-    let (node, _temp_dir, _shutdown) = create_single_node("sequential_writes").await;
-    let client = node.local_client();
+    let (engine, _temp_dir) = create_test_engine("slow_apply").await;
+    let client = engine.client();
 
     // When: Write v1 and read
     client.put(b"seq_key", b"v1").await.expect("First PUT failed");
