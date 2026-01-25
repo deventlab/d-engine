@@ -546,7 +546,7 @@ impl StateMachine for RocksDBStateMachine {
                             // RocksDB doesn't have native CAS, implement via read-compare-write
                             // This is safe because apply_chunk is called sequentially per Raft log order
                             let current_value = db.get_cf(&cf, &key).map_err(|e| {
-                                StorageError::DbError(format!("CAS read failed: {}", e))
+                                StorageError::DbError(format!("CAS read failed: {e}"))
                             })?;
 
                             let cas_success = match (current_value, &expected_value) {

@@ -1,5 +1,3 @@
-#![cfg(all(feature = "watch", feature = "rocksdb"))]
-
 //! gRPC Watch Standalone Mode Tests
 //!
 //! These tests verify the watch service implementation in standalone mode,

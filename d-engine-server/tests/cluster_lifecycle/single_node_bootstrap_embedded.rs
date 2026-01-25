@@ -1,6 +1,5 @@
-use std::time::Duration;
-
 use d_engine_server::EmbeddedEngine;
+use std::time::Duration;
 use tracing_test::traced_test;
 
 /// Test single-node EmbeddedEngine basic lifecycle

@@ -1,11 +1,10 @@
 #![cfg(feature = "rocksdb")]
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::watch::WatchEventType;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
 use d_engine_server::api::EmbeddedEngine;
 use tempfile::TempDir;
 use tokio::time::sleep;

@@ -6,7 +6,6 @@
 use anyhow::Result;
 use clap::Parser;
 use d_engine_client::Client;
-use d_engine_client::ClientApi;
 use d_engine_client::protocol::{WatchEventType, WatchResponse};
 use futures::StreamExt;
 use std::time::Duration;
@@ -51,7 +50,6 @@ async fn main() -> Result<()> {
     // 1. First, read current value (if any)
     println!("=== Current State ===");
     let current = client
-        .kv()
         .get_eventual(&cli.key)
         .await
         .map_err(|e| anyhow::anyhow!("Read failed: {e:?}"))?;

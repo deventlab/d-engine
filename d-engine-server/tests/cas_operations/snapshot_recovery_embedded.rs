@@ -1,10 +1,10 @@
-use std::sync::Arc;
-use std::time::Duration;
+#![cfg(feature = "rocksdb")]
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 
 use d_engine_core::ClientApi;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
 use d_engine_server::api::EmbeddedEngine;
+use std::sync::Arc;
+use std::time::Duration;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -79,23 +79,27 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
 
     let leader_idx = (leader_info.leader_id - 1) as usize;
     let leader_client = engines[leader_idx].client();
+    // Clone client to avoid borrow conflict when modifying engines Vec
+    let leader_client_clone = leader_client.clone();
 
     let lock_key = b"persistent_lock";
 
     // Step 1: Acquire lock via CAS
     info!("Step 1: Acquiring lock via CAS");
-    let acquired = leader_client.compare_and_swap(lock_key, None, b"owner_before_snapshot").await?;
+    let acquired = leader_client_clone
+        .compare_and_swap(lock_key, None::<&[u8]>, b"owner_before_snapshot")
+        .await?;
     assert!(acquired, "Should acquire lock");
 
     // Verify lock state
-    let holder = leader_client.get(lock_key).await?;
+    let holder = leader_client_clone.get(lock_key).await?;
     assert_eq!(holder, Some(b"owner_before_snapshot".to_vec().into()));
     info!("Lock acquired and verified");
 
     // Step 2: Write additional data to trigger snapshot threshold
     info!("Step 2: Writing data to trigger snapshot");
     for i in 0..100 {
-        leader_client
+        leader_client_clone
             .put(
                 format!("key_{i}").as_bytes(),
                 format!("value_{i}").as_bytes(),
@@ -126,7 +130,7 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
 
     // Step 4: Verify lock persists after restart
     info!("Step 4: Verifying lock persists after restart");
-    let recovered_holder = leader_client.get(lock_key).await?;
+    let recovered_holder = leader_client_clone.get(lock_key).await?;
     assert_eq!(
         recovered_holder,
         Some(b"owner_before_snapshot".to_vec().into()),

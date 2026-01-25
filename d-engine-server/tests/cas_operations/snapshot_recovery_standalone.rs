@@ -1,8 +1,7 @@
-use std::time::Duration;
-
 use d_engine_client::Client;
 use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
+use std::time::Duration;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -71,7 +70,9 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
 
     // Step 1: Acquire lock via CAS
     info!("Step 1: Acquiring lock via CAS");
-    let acquired = client.compare_and_swap(lock_key, None, b"owner_before_snapshot").await?;
+    let acquired = client
+        .compare_and_swap(lock_key, None::<&[u8]>, b"owner_before_snapshot")
+        .await?;
     assert!(acquired, "Should acquire lock");
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
 
@@ -95,7 +96,9 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     // Step 3: Stop follower node (node 2)
     info!("Step 3: Stopping follower node 2");
     ctx.graceful_txs[1].send(()).ok();
-    ctx.node_handles[1].await.ok();
+    if let Some(handle) = ctx.node_handles.get_mut(1) {
+        let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
+    }
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Step 4: Restart node 2

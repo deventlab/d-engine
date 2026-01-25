@@ -1,9 +1,10 @@
+#![cfg(feature = "rocksdb")]
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::ClientApi;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
 use d_engine_server::api::EmbeddedEngine;
 use tracing::info;
 use tracing_test::traced_test;
@@ -79,12 +80,12 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
 
     // Test 1: Client A acquires lock (CAS: None -> "client_a")
     info!("Test 1: Client A acquiring lock");
-    let acquired_a = leader_client.compare_and_swap(lock_key, None, b"client_a").await?;
+    let acquired_a = leader_client.compare_and_swap(lock_key, None::<&[u8]>, b"client_a").await?;
     assert!(acquired_a, "Client A should acquire lock");
 
     // Test 2: Client B tries to acquire (should fail, lock held)
     info!("Test 2: Client B competing for lock (should fail)");
-    let acquired_b = leader_client.compare_and_swap(lock_key, None, b"client_b").await?;
+    let acquired_b = leader_client.compare_and_swap(lock_key, None::<&[u8]>, b"client_b").await?;
     assert!(
         !acquired_b,
         "Client B should NOT acquire lock while A holds it"

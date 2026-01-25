@@ -853,7 +853,7 @@ pub struct PersistenceConfig {
 
 /// Default persistence strategy (optimized for balanced workloads)
 fn default_persistence_strategy() -> PersistenceStrategy {
-    PersistenceStrategy::MemFirst
+    PersistenceStrategy::DiskFirst
 }
 
 /// Default value for flush_workers

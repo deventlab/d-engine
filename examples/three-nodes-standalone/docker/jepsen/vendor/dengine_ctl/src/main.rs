@@ -51,7 +51,7 @@ async fn handle_write(
 ) -> Result<()> {
     println!("Writing key-value({}-{}) pair", key, value);
     client
-        .kv()
+        
         .put(safe_kv(key), safe_kv(value))
         .await
         .map(|_| println!("Success"))
@@ -64,7 +64,7 @@ async fn handle_delete(
 ) -> Result<()> {
     println!("Deleting key({})", key);
     client
-        .kv()
+        
         .delete(safe_kv(key))
         .await
         .map(|_| println!("Success"))
@@ -77,7 +77,7 @@ async fn handle_read(
     linearizable: bool,
 ) -> Result<()> {
     let result = client
-        .kv()
+        
         .get(safe_kv(key), linearizable)
         .await
         .map_err(|e: ClientApiError| anyhow::anyhow!("Read error: {:?}", e))?;

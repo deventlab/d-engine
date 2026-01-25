@@ -370,6 +370,16 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
                                         };
                                         let _ = broadcast_tx.send(event);
                                     }
+                                    Operation::CompareAndSwap(cas) => {
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: cas.key.clone(),
+                                            value: cas.new_value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
+                                    }
                                 }
                             }
                         }
@@ -427,6 +437,16 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
                                         };
                                         let _ = broadcast_tx.send(event);
                                     }
+                                    Operation::CompareAndSwap(cas) => {
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: cas.key.clone(),
+                                            value: cas.new_value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
+                                    }
                                 }
                             }
                         }
@@ -480,6 +500,16 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
                                             event_type:
                                                 d_engine_proto::client::WatchEventType::Delete
                                                     as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
+                                    }
+                                    Operation::CompareAndSwap(cas) => {
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: cas.key.clone(),
+                                            value: cas.new_value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
                                             error: 0,
                                         };
                                         let _ = broadcast_tx.send(event);

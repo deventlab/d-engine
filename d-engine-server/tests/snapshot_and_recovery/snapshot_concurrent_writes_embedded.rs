@@ -15,12 +15,13 @@
 //!    - Verifies PHASE 2.5 safety (temporary DB swap window)
 //!    - Ensures no data loss during concurrent AppendEntries
 
+#![cfg(feature = "rocksdb")]
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::EmbeddedEngine;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
 use tracing::info;
 use tracing_test::traced_test;
 

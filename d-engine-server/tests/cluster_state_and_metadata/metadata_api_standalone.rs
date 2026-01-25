@@ -74,11 +74,8 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
         .await?;
 
     // Verify current_leader_id is set
-    let leader_id = client
-        .cluster()
-        .get_leader_id()
-        .await?
-        .expect("Leader should be elected after bootstrap");
+    let leader_id =
+        client.get_leader_id().await?.expect("Leader should be elected after bootstrap");
 
     info!("Metadata API returned leader_id: {}", leader_id);
 
@@ -230,11 +227,8 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
         .await?;
 
     // Get initial leader
-    let initial_leader = client
-        .cluster()
-        .get_leader_id()
-        .await?
-        .expect("Leader should exist after bootstrap");
+    let initial_leader =
+        client.get_leader_id().await?.expect("Leader should exist after bootstrap");
 
     info!("Initial leader: {}", initial_leader);
 

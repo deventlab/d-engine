@@ -248,12 +248,12 @@ impl ClientApi for GrpcClient {
         };
 
         // Send write request to leader node (strong consistency required)
-        let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
+        let mut client = self.make_leader_client().await?;
         match client.handle_client_write(request).await {
             Ok(response) => {
                 debug!("[:GrpcClient:write] response: {:?}", response);
                 let client_response = response.get_ref();
-                client_response.validate_error().map_err(Into::<ClientApiError>::into)
+                client_response.validate_error()
             }
             Err(status) => {
                 error!("[:GrpcClient:write] status: {:?}", status);
@@ -288,12 +288,12 @@ impl ClientApi for GrpcClient {
         };
 
         // Send write request to leader node (strong consistency required)
-        let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
+        let mut client = self.make_leader_client().await?;
         match client.handle_client_write(request).await {
             Ok(response) => {
                 debug!("[:GrpcClient:put_with_ttl] response: {:?}", response);
                 let client_response = response.get_ref();
-                client_response.validate_error().map_err(Into::<ClientApiError>::into)
+                client_response.validate_error()
             }
             Err(status) => {
                 error!("[:GrpcClient:put_with_ttl] status: {:?}", status);
@@ -349,12 +349,12 @@ impl ClientApi for GrpcClient {
         };
 
         // Send delete request to leader node (strong consistency required)
-        let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
+        let mut client = self.make_leader_client().await?;
         match client.handle_client_write(request).await {
             Ok(response) => {
                 debug!("[:GrpcClient:delete] response: {:?}", response);
                 let client_response = response.get_ref();
-                client_response.validate_error().map_err(Into::<ClientApiError>::into)
+                client_response.validate_error()
             }
             Err(status) => {
                 error!("[:GrpcClient:delete] status: {:?}", status);
@@ -387,14 +387,14 @@ impl ClientApi for GrpcClient {
         };
 
         // Send CAS request to leader node
-        let mut client = self.make_leader_client().await.map_err(Into::<ClientApiError>::into)?;
+        let mut client = self.make_leader_client().await?;
         match client.handle_client_write(request).await {
             Ok(response) => {
                 debug!("[:GrpcClient:compare_and_swap] response: {:?}", response);
                 let client_response = response.get_ref();
 
                 // Validate no error occurred
-                client_response.validate_error().map_err(Into::<ClientApiError>::into)?;
+                client_response.validate_error()?;
 
                 // Extract CAS result (true = succeeded, false = failed comparison)
                 Ok(client_response.succeeded())

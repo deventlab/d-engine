@@ -76,8 +76,7 @@ time_threshold_ms = {}
 #[traced_test]
 #[tokio::test]
 async fn test_batching_preserves_linearizability() {
-    let (engine, _temp_dir) =
-        create_engine_with_batching("test_linearizability", 50, 10).await;
+    let (engine, _temp_dir) = create_engine_with_batching("test_linearizability", 50, 10).await;
 
     // Write test data
     let client = engine.client();
@@ -95,8 +94,9 @@ async fn test_batching_preserves_linearizability() {
 
     // Send 100 concurrent linearizable reads
     let mut handles = vec![];
+    let base_client = engine.client();
     for i in 0..100 {
-        let client = engine.client();
+        let client = base_client.clone();
         let key = if i < 50 {
             Bytes::from("key1")
         } else {
@@ -144,8 +144,7 @@ async fn test_batching_preserves_linearizability() {
 #[traced_test]
 #[tokio::test]
 async fn test_concurrent_write_and_read() {
-    let (engine, _temp_dir) =
-        create_engine_with_batching("test_concurrent_write", 50, 10).await;
+    let (engine, _temp_dir) = create_engine_with_batching("test_concurrent_write", 50, 10).await;
 
     let client = engine.client();
 
@@ -161,9 +160,10 @@ async fn test_concurrent_write_and_read() {
     let start = Instant::now();
 
     // Immediately send 50 concurrent reads
-    let mut read_handles = vec![];
-    for i in 0..100 {
-        let client = engine.client();
+    let mut handles = vec![];
+    let base_client = engine.client();
+    for _i in 0..100 {
+        let client = base_client.clone();
         let handle = tokio::spawn(async move {
             let result = client
                 .get_linearizable(b"key1")
@@ -191,8 +191,7 @@ async fn test_concurrent_write_and_read() {
     );
 
     // Cleanup
-    let _ = graceful_tx.send(());
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    engine.stop().await.expect("Failed to stop engine");
 }
 
 /// Test 2.3: Single request timeout trigger (CRITICAL BOUNDARY CASE)
@@ -214,8 +213,7 @@ async fn test_concurrent_write_and_read() {
 #[traced_test]
 #[tokio::test]
 async fn test_single_request_timeout_trigger() {
-    let (engine, _temp_dir) =
-        create_engine_with_batching("test_timeout", 50, 10).await;
+    let (engine, _temp_dir) = create_engine_with_batching("test_timeout", 50, 10).await;
 
     let client = engine.client();
 
@@ -254,8 +252,7 @@ async fn test_single_request_timeout_trigger() {
     println!("Single request completed in {elapsed:?} (timeout trigger verified)");
 
     // Cleanup
-    let _ = graceful_tx.send(());
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    engine.stop().await.expect("Failed to stop engine");
 }
 
 /// Test 2.4: Size threshold immediate flush (HIGH CONCURRENCY CASE)
@@ -277,11 +274,9 @@ async fn test_single_request_timeout_trigger() {
 #[traced_test]
 #[tokio::test]
 async fn test_size_threshold_immediate_flush() {
-    async fn test_batching_performance_gain() {
-        let (engine, _temp_dir) =
-            create_engine_with_batching("test_performance", 100, 50).await;
+    let (engine, _temp_dir) = create_engine_with_batching("test_performance", 100, 50).await;
 
-        let client = engine.client();
+    let client = engine.client();
 
     // Write test data
     for i in 0..50 {
@@ -297,8 +292,9 @@ async fn test_size_threshold_immediate_flush() {
 
     // Send 50 concurrent reads
     let mut handles = vec![];
+    let base_client = engine.client();
     for i in 0..20 {
-        let client = engine.client();
+        let client = base_client.clone();
         let key = format!("key{i}");
         let handle = tokio::spawn(async move {
             client.get_linearizable(key.as_bytes()).await.expect("Read failed")
@@ -321,10 +317,6 @@ async fn test_size_threshold_immediate_flush() {
     );
 
     println!("50 batched reads completed in {elapsed:?} (size threshold verified)");
-
-    // Cleanup
-    let _ = graceful_tx.send(());
-    tokio::time::sleep(Duration::from_millis(100)).await;
 }
 
 /// Test 2.8: Throughput regression test (batching doesn't degrade performance)
@@ -354,10 +346,9 @@ async fn test_batching_throughput_improvement() {
     const NUM_REQUESTS: usize = 1000;
 
     // Run 1: Batching disabled (set size_threshold very high)
-    let (node1, _temp_dir1, graceful_tx1) =
-        create_engine_with_batching("test_throughput_off", 10000, 10).await;
+    let (node1, _temp_dir1) = create_engine_with_batching("test_throughput_off", 10000, 10).await;
 
-    let client1 = node1.local_client();
+    let client1 = node1.client();
     client1
         .put(Bytes::from("bench_key"), Bytes::from("bench_value"))
         .await
@@ -366,8 +357,9 @@ async fn test_batching_throughput_improvement() {
 
     let start1 = Instant::now();
     let mut handles1 = vec![];
+    let base_client1 = node1.client();
     for _ in 0..NUM_REQUESTS {
-        let client = node1.local_client();
+        let client = base_client1.clone();
         let handle = tokio::spawn(async move { client.get_linearizable(b"bench_key").await });
         handles1.push(handle);
     }
@@ -377,14 +369,12 @@ async fn test_batching_throughput_improvement() {
     let elapsed1 = start1.elapsed();
     let throughput1 = NUM_REQUESTS as f64 / elapsed1.as_secs_f64();
 
-    let _ = graceful_tx1.send(());
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    node1.stop().await.expect("Failed to stop node1");
 
     // Run 2: Batching enabled
-    let (node2, _temp_dir2, graceful_tx2) =
-        create_engine_with_batching("test_throughput_on", 50, 10).await;
+    let (node2, _temp_dir2) = create_engine_with_batching("test_throughput_on", 50, 10).await;
 
-    let client2 = node2.local_client();
+    let client2 = node2.client();
     client2
         .put(Bytes::from("bench_key"), Bytes::from("bench_value"))
         .await
@@ -393,8 +383,9 @@ async fn test_batching_throughput_improvement() {
 
     let start2 = Instant::now();
     let mut handles2 = vec![];
+    let base_client2 = node2.client();
     for _ in 0..NUM_REQUESTS {
-        let client = node2.local_client();
+        let client = base_client2.clone();
         let handle = tokio::spawn(async move { client.get_linearizable(b"bench_key").await });
         handles2.push(handle);
     }
@@ -404,8 +395,7 @@ async fn test_batching_throughput_improvement() {
     let elapsed2 = start2.elapsed();
     let throughput2 = NUM_REQUESTS as f64 / elapsed2.as_secs_f64();
 
-    let _ = graceful_tx2.send(());
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    node2.stop().await.expect("Failed to stop node2");
 
     println!("\n=== Throughput Regression Test ===");
     println!("Baseline (batching OFF): {throughput1:.0} ops/sec (took {elapsed1:?})");

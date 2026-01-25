@@ -24,9 +24,11 @@
 //! 4. Verify Learner ends with all 2000 entries (1500 + 500)
 //! 5. Verify no data loss during PHASE 2.5 temporary DB window
 
+#![cfg(feature = "rocksdb")]
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+
 use d_engine_server::EmbeddedEngine;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
+
 use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;

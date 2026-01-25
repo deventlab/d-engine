@@ -9,8 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::EmbeddedEngine;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
 use tempfile::TempDir;
 use tokio::time::Instant;
 
