@@ -11,13 +11,12 @@
 //! - 1000 watchers: < 15% overhead on PUT operations
 
 #![cfg(all(feature = "watch", feature = "rocksdb"))]
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
 use d_engine_server::api::EmbeddedEngine;
 use tempfile::TempDir;
 

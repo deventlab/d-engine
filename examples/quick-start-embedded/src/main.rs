@@ -5,6 +5,7 @@
 
 use d_engine::prelude::*;
 use std::error::Error as StdError;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::main]
@@ -46,7 +47,7 @@ async fn main() -> std::result::Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-async fn run_demo(client: &EmbeddedClient) -> std::result::Result<(), Box<dyn StdError>> {
+async fn run_demo(client: Arc<EmbeddedClient>) -> std::result::Result<(), Box<dyn StdError>> {
     println!("=== Quick Start Demo ===");
 
     // Store workflow state

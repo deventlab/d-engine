@@ -54,12 +54,15 @@ mod client_api_error_tests {
         // Test Ok case
         let ok_result: ClientApiResult<String> = Ok("success".to_string());
         assert!(ok_result.is_ok());
-        assert_eq!(ok_result.unwrap(), "success");
+        assert_eq!(ok_result.as_ref().unwrap(), "success");
 
         // Test Err case
         let err_result: ClientApiResult<String> = Err(ErrorCode::ConnectionTimeout.into());
         assert!(err_result.is_err());
-        assert_eq!(err_result.unwrap_err().code(), ErrorCode::ConnectionTimeout);
+        assert_eq!(
+            err_result.as_ref().unwrap_err().code(),
+            ErrorCode::ConnectionTimeout
+        );
     }
 
     /// Test: Error message content

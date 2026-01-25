@@ -1,20 +1,19 @@
-/// Integration tests for EmbeddedEngine cluster state APIs (Ticket #234)
-///
-/// These tests verify is_leader() and leader_info() behavior in multi-node scenarios:
-/// - Multi-node leader election
-/// - Leader failover
-/// - Cluster view consistency
-use std::sync::Arc;
-use std::time::Duration;
-
-use d_engine_server::EmbeddedEngine;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
-use tracing::info;
-use tracing_test::traced_test;
+//! Integration tests for EmbeddedEngine cluster state APIs (Ticket #234)
+//!
+//! These tests verify is_leader() and leader_info() behavior in multi-node scenarios:
+//! - Multi-node leader election
+//! - Leader failover
+//! - Cluster view consistency
 
 use crate::common::get_available_ports;
 use crate::common::node_config;
+use d_engine_server::EmbeddedEngine;
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::info;
+use tracing_test::traced_test;
+
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 
 /// Test: 3-node cluster should elect exactly one leader
 ///

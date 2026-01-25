@@ -52,7 +52,7 @@ fn channel_closed_error() -> ClientApiError {
 fn timeout_error(duration: Duration) -> ClientApiError {
     ClientApiError::Network {
         code: ErrorCode::ConnectionTimeout,
-        message: format!("Operation timed out after {:?}", duration),
+        message: format!("Operation timed out after {duration:?}"),
         retry_after_ms: Some(1000),
         leader_hint: None,
     }

@@ -253,7 +253,7 @@ impl StateMachine for SledStateMachine {
                                 self.apply_batch(std::mem::take(&mut batch))?;
 
                                 // Sled has native CAS support - use it directly
-                                let tree = self.current_tree()?;
+                                let tree = self.current_tree();
                                 let old = expected_value.as_ref().map(|v| v.as_ref());
 
                                 match tree.compare_and_swap(&key, old, Some(new_value.as_ref())) {

@@ -71,13 +71,13 @@ async fn test_distributed_lock_standalone() -> Result<(), ClientApiError> {
 
     // Test 1: Client A acquires lock (CAS: None -> "client_a")
     info!("Test 1: Client A acquiring lock");
-    let acquired_a = client.compare_and_swap(lock_key, None, b"client_a").await?;
+    let acquired_a = client.compare_and_swap(lock_key, None::<&[u8]>, b"client_a").await?;
     assert!(acquired_a, "Client A should acquire lock");
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
 
     // Test 2: Client B tries to acquire (should fail, lock held)
     info!("Test 2: Client B competing for lock (should fail)");
-    let acquired_b = client.compare_and_swap(lock_key, None, b"client_b").await?;
+    let acquired_b = client.compare_and_swap(lock_key, None::<&[u8]>, b"client_b").await?;
     assert!(
         !acquired_b,
         "Client B should NOT acquire lock while A holds it"

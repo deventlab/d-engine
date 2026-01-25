@@ -1220,7 +1220,7 @@ mod cas_operations {
         let result = client.compare_and_swap(lock_key, None::<&[u8]>, owner).await;
         println!("CAS acquire lock result: {result:?}");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true, "CAS should succeed");
+        assert!(result.unwrap(), "CAS should succeed");
     }
 
     /// Test CAS conflict scenario - lock already held by another client
@@ -1252,7 +1252,7 @@ mod cas_operations {
         let result = client.compare_and_swap(lock_key, None::<&[u8]>, owner_b).await;
         println!("CAS conflict result: {result:?}");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), false, "CAS should fail due to conflict");
+        assert!(!result.unwrap(), "CAS should fail due to conflict");
     }
 
     /// Test CAS release lock - correct owner releases the lock
@@ -1284,7 +1284,7 @@ mod cas_operations {
         let result = client.compare_and_swap(lock_key, Some(owner), b"").await;
         println!("CAS release lock result: {result:?}");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true, "CAS should succeed - correct owner");
+        assert!(result.unwrap(), "CAS should succeed - correct owner");
     }
 
     /// Test CAS prevent wrong release - only correct owner can release
@@ -1316,7 +1316,7 @@ mod cas_operations {
         let result = client.compare_and_swap(lock_key, Some(wrong_owner), b"").await;
         println!("CAS wrong release result: {result:?}");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), false, "CAS should fail - wrong owner");
+        assert!(!result.unwrap(), "CAS should fail - wrong owner");
     }
 
     /// Test CAS edge cases - empty values and large values
@@ -1344,14 +1344,14 @@ mod cas_operations {
         let result = client.compare_and_swap(b"empty_key", None::<&[u8]>, b"").await;
         println!("CAS empty value result: {result:?}");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true, "CAS with empty value should succeed");
+        assert!(result.unwrap(), "CAS with empty value should succeed");
 
         // Test 2: Large value CAS
         let large_value = vec![b'x'; 1024 * 1024]; // 1MB
         let result = client.compare_and_swap(b"large_key", None::<&[u8]>, &large_value).await;
         println!("CAS large value result: {result:?}");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true, "CAS with large value should succeed");
+        assert!(result.unwrap(), "CAS with large value should succeed");
     }
 
     /// Test CAS on non-existent key
@@ -1381,9 +1381,8 @@ mod cas_operations {
         let result = client.compare_and_swap(nonexistent_key, None::<&[u8]>, b"new_value").await;
         println!("CAS nonexistent key result: {result:?}");
         assert!(result.is_ok());
-        assert_eq!(
+        assert!(
             result.unwrap(),
-            true,
             "CAS on non-existent key with None should succeed"
         );
     }
@@ -1415,9 +1414,8 @@ mod cas_operations {
         let result = client.compare_and_swap(nonexistent_key, Some(b"wrong"), b"value").await;
         println!("CAS nonexistent with wrong expected result: {result:?}");
         assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap(),
-            false,
+        assert!(
+            !result.unwrap(),
             "CAS on non-existent key with Some(wrong) should fail"
         );
     }

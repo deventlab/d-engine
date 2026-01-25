@@ -1,20 +1,20 @@
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::time::Duration;
-use std::time::Instant;
-
 use clap::Parser;
 use clap::Subcommand;
-use d_engine::protocol::ReadConsistencyPolicy;
 use d_engine::Client;
+use d_engine::ClientApi;
 use d_engine::ClientApiError;
 use d_engine::ClientBuilder;
+use d_engine::protocol::ReadConsistencyPolicy;
 use hdrhistogram::Histogram;
-use rand::distributions::Alphanumeric;
 use rand::Rng;
 use rand::SeedableRng;
+use rand::distributions::Alphanumeric;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug, Clone)]
@@ -257,7 +257,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             _ => ReadConsistencyPolicy::LinearizableRead, // Default to linearizable
                         };
 
-                        match client.kv().get_with_policy(key, Some(policy)).await {
+                        match client.get_with_policy(key, Some(policy)).await {
                             Err(e) => {
                                 eprintln!("Get error: {e:?}");
                                 continue;
@@ -325,10 +325,19 @@ mod tests {
     #[test]
     fn test_key_space_limit() {
         // Test key space cycling
-        assert_eq!(generate_prefixed_key(false, 8, 0, Some(10)), generate_prefixed_key(false, 8, 10, Some(10)));
-        assert_eq!(generate_prefixed_key(false, 8, 5, Some(10)), generate_prefixed_key(false, 8, 15, Some(10)));
+        assert_eq!(
+            generate_prefixed_key(false, 8, 0, Some(10)),
+            generate_prefixed_key(false, 8, 10, Some(10))
+        );
+        assert_eq!(
+            generate_prefixed_key(false, 8, 5, Some(10)),
+            generate_prefixed_key(false, 8, 15, Some(10))
+        );
 
         // Sequential keys with key space
-        assert_eq!(generate_prefixed_key(true, 6, 0, Some(100)), generate_prefixed_key(true, 6, 100, Some(100)));
+        assert_eq!(
+            generate_prefixed_key(true, 6, 0, Some(100)),
+            generate_prefixed_key(true, 6, 100, Some(100))
+        );
     }
 }

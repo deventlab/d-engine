@@ -158,7 +158,7 @@ single_node = true
             // CAS: None -> "client_a" (acquire lock)
             let result = client.compare_and_swap(lock_key, None::<&[u8]>, owner).await;
             assert!(result.is_ok(), "CAS should not error");
-            assert_eq!(result.unwrap(), true, "CAS should succeed");
+            assert!(result.unwrap(), "CAS should succeed");
 
             // Verify lock is set
             let value = client.get(lock_key).await.expect("get should succeed");
@@ -179,11 +179,11 @@ single_node = true
 
             // Client A acquires lock
             let result = client.compare_and_swap(lock_key, None::<&[u8]>, owner_a).await;
-            assert_eq!(result.unwrap(), true, "Client A should acquire lock");
+            assert!(result.unwrap(), "Client A should acquire lock");
 
             // Client B tries to acquire (should fail)
             let result = client.compare_and_swap(lock_key, None::<&[u8]>, owner_b).await;
-            assert_eq!(result.unwrap(), false, "Client B should fail - lock held");
+            assert!(!result.unwrap(), "Client B should fail - lock held");
 
             // Verify lock still held by client_a
             let value = client.get(lock_key).await.expect("get should succeed");
@@ -203,11 +203,11 @@ single_node = true
 
             // Acquire lock
             let result = client.compare_and_swap(lock_key, None::<&[u8]>, owner).await;
-            assert_eq!(result.unwrap(), true);
+            assert!(result.unwrap());
 
             // Release lock (CAS: "client_a" -> empty)
             let result = client.compare_and_swap(lock_key, Some(owner), b"").await;
-            assert_eq!(result.unwrap(), true, "Correct owner should release lock");
+            assert!(result.unwrap(), "Correct owner should release lock");
 
             // Verify lock is released (empty value)
             let value = client.get(lock_key).await.expect("get should succeed");
@@ -228,11 +228,11 @@ single_node = true
 
             // Client A acquires lock
             let result = client.compare_and_swap(lock_key, None::<&[u8]>, owner_a).await;
-            assert_eq!(result.unwrap(), true);
+            assert!(result.unwrap());
 
             // Client B tries to release (should fail - wrong owner)
             let result = client.compare_and_swap(lock_key, Some(wrong_owner), b"").await;
-            assert_eq!(result.unwrap(), false, "Wrong owner cannot release lock");
+            assert!(!result.unwrap(), "Wrong owner cannot release lock");
 
             // Verify lock still held by client_a
             let value = client.get(lock_key).await.expect("get should succeed");
@@ -249,7 +249,7 @@ single_node = true
 
             // Test 1: Empty value CAS
             let result = client.compare_and_swap(b"empty_key", None::<&[u8]>, b"").await;
-            assert_eq!(result.unwrap(), true, "CAS with empty value should succeed");
+            assert!(result.unwrap(), "CAS with empty value should succeed");
 
             let value = client.get(b"empty_key").await.expect("get should succeed");
             assert_eq!(value, Some(b"".to_vec().into()));
@@ -257,7 +257,7 @@ single_node = true
             // Test 2: Large value CAS
             let large_value = vec![b'x'; 1024 * 1024]; // 1MB
             let result = client.compare_and_swap(b"large_key", None::<&[u8]>, &large_value).await;
-            assert_eq!(result.unwrap(), true, "CAS with large value should succeed");
+            assert!(result.unwrap(), "CAS with large value should succeed");
 
             let value = client.get(b"large_key").await.expect("get should succeed");
             assert_eq!(value, Some(large_value.into()));
@@ -276,9 +276,8 @@ single_node = true
             // CAS: None -> "new_value" on non-existent key (should succeed)
             let result =
                 client.compare_and_swap(nonexistent_key, None::<&[u8]>, b"new_value").await;
-            assert_eq!(
+            assert!(
                 result.unwrap(),
-                true,
                 "CAS on non-existent key with None should succeed"
             );
 
@@ -298,9 +297,8 @@ single_node = true
 
             // CAS: Some(wrong) -> "value" on non-existent key (should fail)
             let result = client.compare_and_swap(nonexistent_key, Some(b"wrong"), b"value").await;
-            assert_eq!(
-                result.unwrap(),
-                false,
+            assert!(
+                !result.unwrap(),
                 "CAS on non-existent key with Some(wrong) should fail"
             );
 

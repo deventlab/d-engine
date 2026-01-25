@@ -9,7 +9,8 @@
 //! 2. **Distributed Lock (Standalone)**: Same scenario via gRPC for remote clients
 //! 3. **Snapshot Recovery (Embedded)**: CAS state survives snapshot and restart
 //! 4. **Snapshot Recovery (Standalone)**: CAS state persists across gRPC restarts
-//! 5. **Leader Failover + CAS (Embedded)**: CAS operations continue after leader change
+//! 5. **Leader Failover + CAS (Embedded)**: CAS atomicity during leader crash
+//! 6. **Leader Failover + CAS (Standalone)**: gRPC client retry after leader crash
 //!
 //! ## CAS Protocol Guarantees
 //!
@@ -36,11 +37,12 @@
 //! - ✅ **Embedded Mode**: In-process EmbeddedClient
 //!   - `distributed_lock_embedded.rs` - Multi-client lock competition
 //!   - `snapshot_recovery_embedded.rs` - CAS state persistence
-//!   - `leader_failover_cas_embedded.rs` - CAS during failover (optional)
+//!   - `leader_failover_cas_embedded.rs` - CAS atomicity during leader crash
 //!
 //! - ✅ **Standalone Mode**: gRPC GrpcClient
 //!   - `distributed_lock_standalone.rs` - Remote lock competition
 //!   - `snapshot_recovery_standalone.rs` - Remote CAS persistence
+//!   - `leader_failover_cas_standalone.rs` - gRPC retry logic during failover
 //!
 //! ## Test Files
 //!
@@ -81,5 +83,7 @@
 
 mod distributed_lock_embedded;
 mod distributed_lock_standalone;
+mod leader_failover_cas_embedded;
+mod leader_failover_cas_standalone;
 mod snapshot_recovery_embedded;
 mod snapshot_recovery_standalone;
