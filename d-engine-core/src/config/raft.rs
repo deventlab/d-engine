@@ -407,7 +407,7 @@ impl CommitHandlerConfig {
     }
 }
 fn default_batch_size_threshold() -> u64 {
-    100
+    1
 }
 fn default_process_interval_ms() -> u64 {
     10

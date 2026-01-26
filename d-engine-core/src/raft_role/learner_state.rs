@@ -498,6 +498,19 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 }
             }
 
+            RaftEvent::ApplyCompleted {
+                last_index,
+                results,
+            } => {
+                // Learners don't send responses to clients
+                // Only leaders track and respond to client requests
+                trace!(
+                    "Learner applied entries up to index {}, {} results (ignored)",
+                    last_index,
+                    results.len()
+                );
+            }
+
             RaftEvent::StepDownSelfRemoved => {
                 // Unreachable: handled at Raft level before reaching RoleState
                 unreachable!("StepDownSelfRemoved should be handled in Raft::run()");

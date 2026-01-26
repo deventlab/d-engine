@@ -180,7 +180,7 @@ mod apply_chunk_test {
                 .expect_apply_chunk()
                 .returning(|_| Err(Error::Fatal("Test error".to_string())));
         } else {
-            state_machine.expect_apply_chunk().returning(|_| Ok(()));
+            state_machine.expect_apply_chunk().returning(|_| Ok(vec![]));
         }
         DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,

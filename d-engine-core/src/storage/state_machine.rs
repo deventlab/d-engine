@@ -12,6 +12,41 @@ use tonic::async_trait;
 
 use crate::Error;
 
+/// Result of applying a single log entry to the state machine
+///
+/// Returned by `StateMachine::apply_chunk()` for each entry in the chunk.
+/// Enables operations like CAS to communicate their execution result back to clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyResult {
+    /// Log index of the applied entry
+    pub index: u64,
+
+    /// Whether the operation succeeded
+    ///
+    /// Semantics by operation type:
+    /// - CAS: `true` if compare succeeded and value was updated, `false` otherwise
+    /// - PUT/DELETE: always `true` (failures return `Err` from `apply_chunk`)
+    pub succeeded: bool,
+}
+
+impl ApplyResult {
+    /// Create a successful result for the given index
+    pub fn success(index: u64) -> Self {
+        Self {
+            index,
+            succeeded: true,
+        }
+    }
+
+    /// Create a failed result for the given index
+    pub fn failure(index: u64) -> Self {
+        Self {
+            index,
+            succeeded: false,
+        }
+    }
+}
+
 /// State machine trait for Raft consensus
 ///
 /// # Thread Safety Requirements
@@ -56,11 +91,17 @@ pub trait StateMachine: Send + Sync + 'static {
     ) -> Option<u64>;
 
     /// Applies a chunk of log entries to the state machine.
-    /// Async operation as it may involve disk I/O for persistence.
+    ///
+    /// Returns a result for each entry in the same order as the input chunk.
+    /// The returned vector MUST have the same length as the input chunk.
+    ///
+    /// # Performance Note
+    /// This is a hot path - implementations should minimize allocations.
+    /// Pre-allocate the result vector with `Vec::with_capacity(chunk.len())`.
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
-    ) -> Result<(), Error>;
+    ) -> Result<Vec<ApplyResult>, Error>;
 
     /// Returns the number of entries in the state machine.
     /// NOTE: This may be expensive for some implementations.

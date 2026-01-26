@@ -257,6 +257,13 @@ pub struct LeaderState<T: TypeConfig> {
     /// Timestamp when first request entered buffer (for metrics/debugging)
     pub(super) read_buffer_start_time: Option<Instant>,
 
+    // -- Client Request Tracking --
+    /// Maps log index to client response sender
+    /// Used to return apply results (e.g., CAS success/failure) to clients
+    /// Entries are removed after response is sent
+    pending_requests:
+        HashMap<u64, MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>>,
+
     // -- Type System Marker --
     /// Phantom data for type parameter anchoring
     _marker: PhantomData<T>,
@@ -512,6 +519,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 id: nanoid!(),
                 payloads,
                 sender: resp_tx,
+                wait_for_apply_event: false,
             },
             ctx,
             bypass_queue,
@@ -821,6 +829,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                                 client_write_request.commands,
                             ),
                             sender,
+                            wait_for_apply_event: true,
                         },
                         ctx,
                         false,
@@ -1297,6 +1306,50 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
             }
 
+            RaftEvent::ApplyCompleted {
+                last_index,
+                results,
+            } => {
+                let num_results = results.len();
+
+                // Match apply results to pending client requests and send responses
+                let responses: Vec<_> = results
+                    .into_iter()
+                    .filter_map(|r| {
+                        self.pending_requests.remove(&r.index).map(|sender| (r, sender))
+                    })
+                    .collect();
+
+                for (result, sender) in responses {
+                    let response = if result.succeeded {
+                        ClientResponse::write_success()
+                    } else {
+                        ClientResponse::cas_failure()
+                    };
+
+                    trace!(
+                        "[Leader-{}] Sending response to client for index {}: succeeded={}",
+                        self.node_id(),
+                        result.index,
+                        result.succeeded
+                    );
+
+                    if sender.send(Ok(response)).is_err() {
+                        trace!(
+                            "[Leader-{}] Client receiver dropped for index {}",
+                            self.node_id(),
+                            result.index
+                        );
+                    }
+                }
+
+                trace!(
+                    "[Leader-{}] TIMING: process_apply_completed({} results)",
+                    self.node_id(),
+                    num_results,
+                );
+            }
+
             RaftEvent::StepDownSelfRemoved => {
                 // Only Leader can propose configuration changes and remove itself
                 // Per Raft protocol: Leader steps down immediately after self-removal
@@ -1447,14 +1500,19 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        // 1. Prepare batch data
+        // 1. Get starting log index before append
+        let start_index = ctx.raft_log().last_entry_id() + 1;
+
+        // 2. Build entry payloads from batch (borrow only)
+        // Enforce 1 request = 1 command (proto migration in progress)
         let entry_payloads: Vec<EntryPayload> =
-            batch.iter().flat_map(|req| &req.payloads).cloned().collect();
+            batch.iter().filter_map(|req| req.payloads.first().cloned()).collect();
+
         if !entry_payloads.is_empty() {
             trace!(?entry_payloads, "[Node-{} process_batch..", ctx.node_id);
         }
 
-        // 2. Execute the copy
+        // 3. Replicate and wait for majority commit
         let cluster_size = self.cluster_metadata.total_voters;
         trace!(%cluster_size);
 
@@ -1514,9 +1572,18 @@ impl<T: TypeConfig> LeaderState<T> {
                     )?;
                 }
 
-                // 4. Notify all clients of success
-                for request in batch {
-                    let _ = request.sender.send(Ok(ClientResponse::write_success()));
+                // 4. Store senders in pending_requests - responses will be sent when ApplyCompleted event is received
+                // Use pre-computed wait_for_apply_event flag to determine response strategy
+                for (i, req) in batch.into_iter().enumerate() {
+                    let index = start_index + i as u64;
+
+                    if req.wait_for_apply_event {
+                        // Command payload: wait for ApplyCompleted event from state machine
+                        self.pending_requests.insert(index, req.sender);
+                    } else {
+                        // Noop/Config payload: respond immediately after successful commit
+                        let _ = req.sender.send(Ok(ClientResponse::write_success()));
+                    }
                 }
             }
 
@@ -1543,8 +1610,8 @@ impl<T: TypeConfig> LeaderState<T> {
                 };
 
                 // 4. Notify all clients of failure
-                for request in batch {
-                    let _ = request.sender.send(Ok(ClientResponse::client_error(error_code)));
+                for req in batch {
+                    let _ = req.sender.send(Ok(ClientResponse::client_error(error_code)));
                 }
             }
 
@@ -1556,11 +1623,10 @@ impl<T: TypeConfig> LeaderState<T> {
                 self.update_current_term(higher_term);
                 self.send_become_follower_event(None, role_tx)?;
 
-                // Notify client of term expiration
-                for request in batch {
-                    let _ = request
-                        .sender
-                        .send(Ok(ClientResponse::client_error(ErrorCode::TermOutdated)));
+                // Notify clients of term expiration
+                for req in batch {
+                    let _ =
+                        req.sender.send(Ok(ClientResponse::client_error(ErrorCode::TermOutdated)));
                 }
 
                 return Err(ReplicationError::HigherTerm(higher_term).into());
@@ -1571,10 +1637,9 @@ impl<T: TypeConfig> LeaderState<T> {
                 error!("Batch processing failed: {:?}", e);
 
                 // Notify all clients of failure
-                for request in batch {
-                    let _ = request
-                        .sender
-                        .send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)));
+                for req in batch {
+                    let _ =
+                        req.sender.send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)));
                 }
 
                 return Err(e);
@@ -2212,6 +2277,7 @@ impl<T: TypeConfig> LeaderState<T> {
             lease_timestamp: AtomicU64::new(0),
             read_buffer: Vec::new(),
             read_buffer_start_time: None,
+            pending_requests: HashMap::new(),
             _marker: PhantomData,
         }
     }
@@ -2782,6 +2848,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             lease_timestamp: AtomicU64::new(0),
             read_buffer: Vec::new(),
             read_buffer_start_time: None,
+            pending_requests: HashMap::new(),
             _marker: PhantomData,
         }
     }

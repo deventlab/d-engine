@@ -24,6 +24,7 @@ use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::SnapshotResponse;
 use tonic::Status;
 
+use crate::ApplyResult;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::StreamResponseSender;
@@ -135,6 +136,14 @@ pub enum RaftEvent {
     /// Signal to flush pending read requests
     /// Sent by timeout task when read buffer reaches time threshold
     FlushReadBuffer,
+
+    /// State machine apply completed
+    /// Sent by CommitHandler after applying entries to state machine
+    /// Contains results for each applied entry (e.g., CAS success/failure)
+    ApplyCompleted {
+        last_index: u64,
+        results: Vec<ApplyResult>,
+    },
 }
 
 #[cfg(test)]
@@ -163,7 +172,9 @@ pub enum TestEvent {
 
     DiscoverLeader(LeaderDiscoveryRequest),
 
-    TriggerSnapshotPush { peer_id: u32 },
+    TriggerSnapshotPush {
+        peer_id: u32,
+    },
 
     // None RPC event
     CreateSnapshotEvent,
@@ -175,6 +186,11 @@ pub enum TestEvent {
     PromoteReadyLearners,
 
     FlushReadBuffer,
+
+    ApplyCompleted {
+        last_index: u64,
+        results: Vec<ApplyResult>,
+    },
 }
 
 #[cfg(test)]
@@ -208,5 +224,12 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
             TestEvent::CreateSnapshotEvent // Placeholder
         }
         RaftEvent::FlushReadBuffer => TestEvent::FlushReadBuffer,
+        RaftEvent::ApplyCompleted {
+            last_index,
+            results,
+        } => TestEvent::ApplyCompleted {
+            last_index: *last_index,
+            results: results.clone(),
+        },
     }
 }

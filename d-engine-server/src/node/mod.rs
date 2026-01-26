@@ -338,25 +338,4 @@ where
     pub fn node_id(&self) -> u32 {
         self.node_id
     }
-
-    /// Creates a local client for testing purposes only.
-    ///
-    /// **Warning**: This method is only available in test builds.
-    /// Production code should use `EmbeddedEngine::client()` instead.
-    ///
-    /// # Example
-    /// ```ignore
-    /// #[cfg(test)]
-    /// let client = node.local_client();
-    /// ```
-    #[cfg(test)]
-    pub fn local_client(&self) -> crate::api::EmbeddedClient {
-        use std::time::Duration;
-
-        crate::api::EmbeddedClient::new_internal(
-            self.event_tx.clone(),
-            self.node_id,
-            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms),
-        )
-    }
 }

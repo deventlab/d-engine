@@ -163,6 +163,7 @@ async fn test_process_raft_request_immediate_execution() {
                 id: nanoid!(),
                 payloads: client_command_to_entry_payloads(request.commands),
                 sender: tx,
+                wait_for_apply_event: true,
             },
             &test_context.raft_context,
             false,
@@ -257,6 +258,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
                 id: nanoid!(),
                 payloads: client_command_to_entry_payloads(request.commands.clone()),
                 sender: tx1,
+                wait_for_apply_event: true,
             },
             &test_context.raft_context,
             true, // force_send=true
@@ -272,6 +274,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
                 id: nanoid!(),
                 payloads: client_command_to_entry_payloads(request.commands),
                 sender: tx2,
+                wait_for_apply_event: true,
             },
             &test_context.raft_context,
             true, // force_send=true
@@ -365,6 +368,7 @@ async fn test_process_raft_request_batching_enabled() {
                 id: nanoid!(),
                 payloads: client_command_to_entry_payloads(request.commands),
                 sender: tx,
+                wait_for_apply_event: true,
             },
             &test_context.raft_context,
             false, // force_send=false allows batching

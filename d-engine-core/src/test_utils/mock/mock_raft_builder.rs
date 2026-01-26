@@ -347,7 +347,7 @@ pub fn mock_state_machine() -> MockStateMachine {
 
     mock.expect_get().returning(|_| Ok(None));
     mock.expect_entry_term().returning(|_| None);
-    mock.expect_apply_chunk().returning(|_| Ok(()));
+    mock.expect_apply_chunk().returning(|_| Ok(vec![]));
     mock.expect_len().returning(|| 0);
 
     mock.expect_update_last_applied().returning(|_| ());

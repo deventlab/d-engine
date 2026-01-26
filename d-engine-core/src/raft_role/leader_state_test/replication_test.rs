@@ -102,6 +102,7 @@ fn mock_request(
         id: nanoid!(),
         payloads: vec![],
         sender,
+        wait_for_apply_event: false,
     }
 }
 

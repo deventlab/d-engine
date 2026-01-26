@@ -62,6 +62,7 @@ use mockall::automock;
 use tonic::async_trait;
 
 use super::NewCommitData;
+use crate::ApplyResult;
 use crate::Result;
 use crate::TypeConfig;
 use crate::alias::ROF;
@@ -93,10 +94,13 @@ where
     ) -> Result<()>;
 
     /// Applies a batch of committed log entries to the state machine
+    ///
+    /// Returns execution results for each entry in the same order as input.
+    /// The returned vector length MUST equal the input chunk length.
     async fn apply_chunk(
         &self,
         chunk: Vec<d_engine_proto::common::Entry>,
-    ) -> Result<()>;
+    ) -> Result<Vec<ApplyResult>>;
 
     /// Reads values from the state machine for given keys
     /// Returns None if any key doesn't exist

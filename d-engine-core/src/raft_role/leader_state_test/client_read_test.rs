@@ -611,6 +611,7 @@ async fn test_linearizable_read_quorum_success() {
     );
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 2);
     raft_log
         .expect_calculate_majority_matched_index()
         .returning(move |_, _, _| Some(expect_new_commit_index));

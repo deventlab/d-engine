@@ -257,7 +257,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
             }))
             .map_err(|e| {
                 let error_str = format!("{e:?}");
-                error!("Failed to send: {}", error_str);
+                error!("Failed to send NotifyNewCommitIndex: {}", error_str);
                 NetworkError::SingalSendFailed(error_str)
             })?;
 

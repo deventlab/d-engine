@@ -544,40 +544,6 @@ mod readiness_tests {
     }
 }
 
-/// Unit tests for Node local_client API
-#[cfg(test)]
-mod client_tests {
-    use crate::node::test_helpers::*;
-
-    #[tokio::test]
-    async fn test_local_client_creation() {
-        let (node, _shutdown_tx) = create_test_node();
-
-        let client = node.local_client();
-        assert_eq!(client.node_id(), node.node_id());
-    }
-
-    #[tokio::test]
-    async fn test_local_client_concurrent_creation() {
-        let (node, _shutdown_tx) = create_test_node_arc();
-
-        let mut handles = vec![];
-        for _ in 0..10 {
-            let node_clone = node.clone();
-            let handle = tokio::spawn(async move {
-                let client = node_clone.local_client();
-                client.node_id()
-            });
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            let node_id = handle.await.expect("Task should not panic");
-            assert_eq!(node_id, node.node_id());
-        }
-    }
-}
-
 /// Unit tests for Node node_id API
 #[cfg(test)]
 mod node_id_tests {

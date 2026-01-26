@@ -397,7 +397,7 @@ impl ClientApi for GrpcClient {
                 client_response.validate_error()?;
 
                 // Extract CAS result (true = succeeded, false = failed comparison)
-                Ok(client_response.succeeded())
+                Ok(client_response.is_write_success())
             }
             Err(status) => {
                 error!("[:GrpcClient:compare_and_swap] status: {:?}", status);
