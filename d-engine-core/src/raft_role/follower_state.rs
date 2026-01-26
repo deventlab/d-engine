@@ -614,6 +614,13 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 );
             }
 
+            RaftEvent::FatalError { source, error } => {
+                error!("[Follower] Fatal error from {}: {}", source, error);
+                return Err(crate::Error::Fatal(format!(
+                    "Fatal error from {source}: {error}"
+                )));
+            }
+
             RaftEvent::StepDownSelfRemoved => {
                 // Unreachable: handled at Raft level before reaching RoleState
                 unreachable!("StepDownSelfRemoved should be handled in Raft::run()");

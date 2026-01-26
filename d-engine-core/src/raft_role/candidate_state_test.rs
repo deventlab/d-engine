@@ -980,3 +980,70 @@ mod handle_client_read_request {
         assert_eq!(r.error, ErrorCode::Success as i32);
     }
 }
+
+/// Test: Candidate handles FatalError and returns error
+///
+/// Verifies that when Candidate receives FatalError from any component,
+/// it returns Error::Fatal and stops further processing.
+///
+/// # Test Scenario
+/// Candidate receives FatalError event from state machine while in candidate role (during election).
+/// Candidate should recognize the fatal error and return Error::Fatal.
+///
+/// # Given
+/// - Candidate in normal state (in election)
+/// - FatalError event from StateMachine component
+///
+/// # When
+/// - Candidate handles FatalError event via handle_raft_event()
+///
+/// # Then
+/// - handle_raft_event() returns Error::Fatal
+/// - Error message contains source and error details
+/// - No role transition events are sent (election is aborted)
+#[tokio::test]
+async fn test_candidate_handles_fatal_error_returns_error() {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    let context = crate::test_utils::mock::mock_raft_context(
+        "/tmp/test_candidate_handles_fatal_error_returns_error",
+        shutdown_rx,
+        None,
+    );
+
+    let mut candidate = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Create FatalError event
+    let fatal_error = RaftEvent::FatalError {
+        source: "StateMachine".to_string(),
+        error: "Network failure - cannot persist state".to_string(),
+    };
+
+    // Create role event channel
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    // Handle the FatalError event
+    let result = candidate.handle_raft_event(fatal_error, &context, role_tx).await;
+
+    // VERIFY 1: handle_raft_event() returns Error::Fatal
+    assert!(
+        result.is_err(),
+        "Expected handle_raft_event to return Err, got: {result:?}"
+    );
+
+    // VERIFY 2: Error is Fatal and contains source information
+    match result.unwrap_err() {
+        Error::Fatal(msg) => {
+            assert!(
+                msg.contains("StateMachine"),
+                "Error message should mention source, got: {msg}"
+            );
+        }
+        other => panic!("Expected Error::Fatal, got: {other:?}"),
+    }
+
+    // VERIFY 3: No role events sent (election is aborted)
+    assert!(
+        role_rx.try_recv().is_err(),
+        "No role transition events should be sent during FatalError handling"
+    );
+}

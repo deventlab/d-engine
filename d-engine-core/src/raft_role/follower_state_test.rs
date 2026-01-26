@@ -36,6 +36,7 @@ use crate::MockStateMachineHandler;
 use crate::NetworkError;
 use crate::NewCommitData;
 use crate::RaftEvent;
+use crate::RaftLog;
 use crate::RaftOneshot;
 use crate::RoleEvent;
 use crate::SnapshotError;
@@ -2326,4 +2327,73 @@ mod handle_client_read_request {
             "EventualConsistency read should succeed on follower"
         );
     }
+}
+
+/// Test: Follower handles FatalError and returns error
+///
+/// Verifies that when Follower receives FatalError from any component,
+/// it returns Error::Fatal and stops further processing.
+///
+/// # Test Scenario
+/// Follower receives FatalError event from state machine while in follower role.
+/// Follower should recognize the fatal error and return Error::Fatal.
+///
+/// # Given
+/// - Follower in normal state
+/// - FatalError event from StateMachine component
+///
+/// # When
+/// - Follower handles FatalError event via handle_raft_event()
+///
+/// # Then
+/// - handle_raft_event() returns Error::Fatal
+/// - Error message contains source and error details
+/// - No role transition events are sent
+#[tokio::test]
+async fn test_follower_handles_fatal_error_returns_error() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = mock_raft_context(
+        "/tmp/test_follower_handles_fatal_error_returns_error",
+        graceful_rx,
+        None,
+    );
+
+    let hard_state = context.storage.raft_log.load_hard_state().expect("Failed to load hard state");
+    let mut follower =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), hard_state, Some(0));
+
+    // Create FatalError event
+    let fatal_error = RaftEvent::FatalError {
+        source: "StateMachine".to_string(),
+        error: "Disk failure".to_string(),
+    };
+
+    // Create role event channel
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    // Handle the FatalError event
+    let result = follower.handle_raft_event(fatal_error, &context, role_tx).await;
+
+    // VERIFY 1: handle_raft_event() returns Error::Fatal
+    assert!(
+        result.is_err(),
+        "Expected handle_raft_event to return Err, got: {result:?}"
+    );
+
+    // VERIFY 2: Error is Fatal and contains source information
+    match result.unwrap_err() {
+        Error::Fatal(msg) => {
+            assert!(
+                msg.contains("StateMachine"),
+                "Error message should mention source, got: {msg}"
+            );
+        }
+        other => panic!("Expected Error::Fatal, got: {other:?}"),
+    }
+
+    // VERIFY 3: No role events sent
+    assert!(
+        role_rx.try_recv().is_err(),
+        "No role transition events should be sent during FatalError handling"
+    );
 }

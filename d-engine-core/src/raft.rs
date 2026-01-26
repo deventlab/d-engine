@@ -285,6 +285,8 @@ where
 
                     if let Err(e) = self.role.handle_raft_event(raft_event, &self.ctx, self.role_tx.clone()).await {
                         error!(%self.node_id, ?e, "handle_raft_event error");
+                        // Fatal errors from SM Worker will be caught here and propagated
+                        return Err(e);
                     }
 
                     #[cfg(test)]

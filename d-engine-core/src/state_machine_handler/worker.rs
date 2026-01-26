@@ -125,8 +125,32 @@ impl<T: TypeConfig> StateMachineWorker<T> {
             }
             Err(e) => {
                 error!("[Node-{}] SM apply failed: {:?}", node_id, e);
+
+                // Classify error and send FatalError event if needed
+                if Self::is_fatal_error(&e) {
+                    let error_msg = format!("{e:?}");
+                    if let Err(send_err) = event_tx
+                        .send(RaftEvent::FatalError {
+                            source: "StateMachine".to_string(),
+                            error: error_msg,
+                        })
+                        .await
+                    {
+                        error!(
+                            "[Node-{}] Failed to send FatalError event: {:?}",
+                            node_id, send_err
+                        );
+                    }
+                }
+
                 Err(e)
             }
         }
+    }
+
+    /// Check if error should trigger node shutdown.
+    /// Conservative: all SM errors treated as fatal (future: distinguish error types).
+    fn is_fatal_error(_error: &crate::Error) -> bool {
+        true // All errors are fatal - SM apply failures indicate unrecoverable state
     }
 }
