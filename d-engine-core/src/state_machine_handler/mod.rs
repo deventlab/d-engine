@@ -35,11 +35,13 @@ mod default_state_machine_handler;
 mod snapshot_assembler;
 mod snapshot_guard;
 mod snapshot_policy;
+mod worker;
 
 pub use default_state_machine_handler::*;
 pub(crate) use snapshot_assembler::*;
 pub(crate) use snapshot_guard::*;
 pub use snapshot_policy::*;
+pub use worker::*;
 
 #[cfg(test)]
 mod default_state_machine_handler_test;

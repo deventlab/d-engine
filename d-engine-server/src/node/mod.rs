@@ -101,6 +101,9 @@ where
     #[cfg(feature = "watch")]
     pub(crate) _watch_dispatcher_handle: Option<tokio::task::JoinHandle<()>>,
 
+    /// State machine worker task handle (background apply operations)
+    pub(crate) _sm_worker_handle: Option<tokio::task::JoinHandle<()>>,
+
     /// Commit handler task handle (background log application)
     pub(crate) _commit_handler_handle: Option<tokio::task::JoinHandle<()>>,
 
@@ -325,6 +328,7 @@ where
             watch_registry: None,
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
+            _sm_worker_handle: None,
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal,
