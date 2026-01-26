@@ -115,7 +115,7 @@ where
         if command_hook() {
             Err(Error::Fatal("Command execution failed".to_string()))
         } else {
-            Ok(())
+            Ok(vec![])
         }
     });
     mock_smh.expect_update_pending().returning(|_| {});
@@ -264,7 +264,7 @@ fn setup(
     mock_handler
         .expect_apply_chunk()
         .times(apply_batch_expected_execution_times)
-        .returning(|_| Ok(()));
+        .returning(|_| Ok(vec![]));
     mock_handler.expect_update_pending().returning(|_| {});
     mock_handler.expect_create_snapshot().returning(|| {
         Ok((

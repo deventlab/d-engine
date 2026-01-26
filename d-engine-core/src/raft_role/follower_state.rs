@@ -598,7 +598,20 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::MembershipApplied => {
                 // Followers don't maintain cluster metadata cache
                 // This event is only relevant for leaders
-                debug!("Follower ignoring MembershipApplied event");
+                trace!("Follower ignoring MembershipApplied event");
+            }
+
+            RaftEvent::ApplyCompleted {
+                last_index,
+                results,
+            } => {
+                // Followers don't send responses to clients
+                // Only leaders track and respond to client requests
+                trace!(
+                    "Follower applied entries up to index {}, {} results (ignored)",
+                    last_index,
+                    results.len()
+                );
             }
 
             RaftEvent::StepDownSelfRemoved => {

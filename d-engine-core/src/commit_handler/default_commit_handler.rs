@@ -1,8 +1,7 @@
-use std::sync::Arc;
-use std::time::Duration;
-
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::entry_payload::Payload;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::async_trait;
@@ -319,12 +318,32 @@ where
     ) -> Result<()> {
         if !batch.is_empty() {
             let entries = std::mem::take(batch);
+            let entry_count = entries.len();
             trace!(
                 "[Node-{}] Flushing command batch length: {}",
-                self.my_id,
-                entries.len()
+                self.my_id, entry_count
             );
-            self.state_machine_handler.apply_chunk(entries).await?;
+
+            // Apply entries to state machine and get results
+            let results = self.state_machine_handler.apply_chunk(entries).await?;
+
+            // Send apply results to Raft event loop (for Leader to respond to clients)
+            if let Some(last_result) = results.last() {
+                let last_index = last_result.index;
+                if let Err(e) = self
+                    .event_tx
+                    .send(RaftEvent::ApplyCompleted {
+                        last_index,
+                        results,
+                    })
+                    .await
+                {
+                    error!(
+                        "[Node-{}] Failed to send ApplyCompleted event: {:?}",
+                        self.my_id, e
+                    );
+                }
+            }
         }
         Ok(())
     }

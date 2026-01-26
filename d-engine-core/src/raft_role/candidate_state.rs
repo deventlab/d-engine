@@ -554,7 +554,20 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             RaftEvent::MembershipApplied => {
                 // Candidates don't maintain cluster metadata cache
                 // This event is only relevant for leaders
-                debug!("Candidate ignoring MembershipApplied event");
+                trace!("Candidate ignoring MembershipApplied event");
+            }
+
+            RaftEvent::ApplyCompleted {
+                last_index,
+                results,
+            } => {
+                // Candidates don't send responses to clients
+                // Only leaders track and respond to client requests
+                trace!(
+                    "Candidate applied entries up to index {}, {} results (ignored)",
+                    last_index,
+                    results.len()
+                );
             }
 
             RaftEvent::StepDownSelfRemoved => {

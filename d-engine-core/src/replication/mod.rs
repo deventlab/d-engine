@@ -49,6 +49,12 @@ pub struct RaftRequestWithSignal {
     pub id: String,
     pub payloads: Vec<EntryPayload>,
     pub sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+
+    /// Does this request need to wait for StateMachine's ApplyCompleted event?
+    ///
+    /// - `true`:  Command payload → must wait for state machine apply
+    /// - `false`: Noop/Config payload → respond immediately after commit
+    pub wait_for_apply_event: bool,
 }
 
 /// AppendEntries response with possible state changes

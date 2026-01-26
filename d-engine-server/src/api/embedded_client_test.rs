@@ -128,6 +128,17 @@ mod integration_tests {
 listen_address = "127.0.0.1:{}"
 db_root_dir = "{}"
 single_node = true
+
+[raft]
+general_raft_timeout_duration_in_ms = 100
+
+[raft.commit_handler]
+batch_size_threshold = 1
+process_interval_ms = 1
+
+[replication]
+rpc_append_entries_in_batch_threshold = 0
+
 "#,
             port,
             db_path.display()

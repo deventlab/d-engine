@@ -8,6 +8,7 @@ use std::time::SystemTime;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
+use d_engine_core::ApplyResult;
 use d_engine_core::Error;
 use d_engine_core::Lease;
 use d_engine_core::StateMachine;
@@ -477,7 +478,7 @@ impl StateMachine for RocksDBStateMachine {
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<ApplyResult>, Error> {
         let db = self.db.load();
         let cf = db
             .cf_handle(STATE_MACHINE_CF)
@@ -485,6 +486,7 @@ impl StateMachine for RocksDBStateMachine {
 
         let mut batch = WriteBatch::default();
         let mut highest_index_entry: Option<LogId> = None;
+        let mut results = Vec::with_capacity(chunk.len());
 
         for entry in chunk {
             assert!(entry.payload.is_some(), "Entry payload should not be None!");
@@ -505,6 +507,8 @@ impl StateMachine for RocksDBStateMachine {
             match entry.payload.unwrap().payload {
                 Some(Payload::Noop(_)) => {
                     debug!("Handling NOOP command at index {}", entry.index);
+                    // NOOP always succeeds
+                    results.push(ApplyResult::success(entry.index));
                 }
                 Some(Payload::Command(data)) => match WriteCommand::decode(&data[..]) {
                     Ok(write_cmd) => match write_cmd.operation {
@@ -529,6 +533,9 @@ impl StateMachine for RocksDBStateMachine {
                                 let lease = unsafe { self.lease.as_ref().unwrap_unchecked() };
                                 lease.register(key.clone(), ttl_secs);
                             }
+
+                            // PUT always succeeds (errors returned as Err)
+                            results.push(ApplyResult::success(entry.index));
                         }
                         Some(Operation::Delete(Delete { key })) => {
                             batch.delete_cf(&cf, &key);
@@ -537,6 +544,9 @@ impl StateMachine for RocksDBStateMachine {
                             if let Some(ref lease) = self.lease {
                                 lease.unregister(&key);
                             }
+
+                            // DELETE always succeeds (errors returned as Err)
+                            results.push(ApplyResult::success(entry.index));
                         }
                         Some(Operation::CompareAndSwap(CompareAndSwap {
                             key,
@@ -559,8 +569,13 @@ impl StateMachine for RocksDBStateMachine {
                                 batch.put_cf(&cf, &key, &new_value);
                             }
 
-                            // TODO: Store CAS result for client response
-                            // Will be implemented in follow-up commit with response mechanism
+                            // Store CAS result for client response
+                            results.push(if cas_success {
+                                ApplyResult::success(entry.index)
+                            } else {
+                                ApplyResult::failure(entry.index)
+                            });
+
                             debug!(
                                 "CAS at index {}: key={:?}, success={}",
                                 entry.index,
@@ -594,11 +609,12 @@ impl StateMachine for RocksDBStateMachine {
         // - Background strategy: dedicated async task
         // This avoids blocking the Raft apply hot path
 
-        if let Some(log_id) = highest_index_entry {
-            self.update_last_applied(log_id);
+        // Update last_applied after successful batch write
+        if let Some(highest) = highest_index_entry {
+            self.update_last_applied(highest);
         }
 
-        Ok(())
+        Ok(results)
     }
 
     fn len(&self) -> usize {

@@ -49,6 +49,7 @@ use super::SnapshotAssembler;
 use super::SnapshotContext;
 use super::SnapshotPolicy;
 use super::StateMachineHandler;
+use crate::ApplyResult;
 use crate::NewCommitData;
 use crate::RaftLog;
 use crate::Result;
@@ -201,7 +202,7 @@ where
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
-    ) -> Result<()> {
+    ) -> Result<Vec<ApplyResult>> {
         let _timer = ScopedTimer::new("apply_chunk");
 
         // Use a timer to measure latency and count chunks
@@ -278,6 +279,7 @@ where
             }
         }
 
+        // Propagate results to caller
         apply_result
     }
 

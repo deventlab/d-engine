@@ -86,6 +86,7 @@ use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
 use bytes::Bytes;
+use d_engine_core::ApplyResult;
 use d_engine_core::Error;
 use d_engine_core::Lease;
 use d_engine_core::StateMachine;
@@ -1032,9 +1033,10 @@ impl StateMachine for FileStateMachine {
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<ApplyResult>, Error> {
         let mut highest_index_entry: Option<LogId> = None;
         let mut batch_operations = Vec::new();
+        let mut results = Vec::with_capacity(chunk.len());
 
         // PHASE 1: Decode all operations and prepare WAL entries
         for entry in chunk {
@@ -1059,8 +1061,10 @@ impl StateMachine for FileStateMachine {
             // Decode operations without holding locks
             match entry.payload.as_ref().unwrap().payload.as_ref() {
                 Some(Payload::Noop(_)) => {
-                    debug!("Handling NOOP command at index {}", entry.index);
+                    let entry_index = entry.index;
+                    debug!("Handling NOOP command at index {}", entry_index);
                     batch_operations.push((entry, "NOOP", Bytes::new(), None, 0));
+                    results.push(ApplyResult::success(entry_index));
                 }
                 Some(Payload::Command(bytes)) => match WriteCommand::decode(&bytes[..]) {
                     Ok(write_cmd) => {
@@ -1071,6 +1075,7 @@ impl StateMachine for FileStateMachine {
                                 value,
                                 ttl_secs,
                             })) => {
+                                let entry_index = entry.index;
                                 batch_operations.push((
                                     entry,
                                     "INSERT",
@@ -1078,9 +1083,12 @@ impl StateMachine for FileStateMachine {
                                     Some(value),
                                     ttl_secs,
                                 ));
+                                results.push(ApplyResult::success(entry_index));
                             }
                             Some(Operation::Delete(Delete { key })) => {
+                                let entry_index = entry.index;
                                 batch_operations.push((entry, "DELETE", key, None, 0));
+                                results.push(ApplyResult::success(entry_index));
                             }
                             Some(Operation::CompareAndSwap(CompareAndSwap {
                                 key,
@@ -1088,8 +1096,7 @@ impl StateMachine for FileStateMachine {
                                 new_value,
                             })) => {
                                 batch_operations.push((entry, "CAS", key, Some(new_value), 0));
-                                // Note: expected_value will be checked during PHASE 3
-                                // Store it temporarily in entry for later access
+                                // Note: CAS result will be pushed in PHASE 3 after comparison
                             }
                             None => {
                                 warn!("WriteCommand without operation at index {}", entry.index);
@@ -1138,6 +1145,9 @@ impl StateMachine for FileStateMachine {
             // Process all operations without any awaits inside the lock
             for (entry, operation, key, value, ttl_secs) in batch_operations {
                 match operation {
+                    "NOOP" => {
+                        // NOOP result already pushed in PHASE 1
+                    }
                     "INSERT" => {
                         if let Some(value) = value {
                             // ZERO-COPY: Use existing Bytes without cloning if possible
@@ -1158,12 +1168,14 @@ impl StateMachine for FileStateMachine {
                                 lease.register(key, ttl_secs);
                             }
                         }
+                        // Result already pushed in PHASE 1
                     }
                     "DELETE" => {
                         data.remove(&key);
                         if let Some(ref lease) = self.lease {
                             lease.unregister(&key);
                         }
+                        // Result already pushed in PHASE 1
                     }
                     "CAS" => {
                         // Extract expected_value from original entry
@@ -1187,7 +1199,13 @@ impl StateMachine for FileStateMachine {
                                         _ => false,
                                     };
 
-                                    // TODO: Store CAS result for client response
+                                    // Store CAS result for client response
+                                    results.push(if cas_success {
+                                        ApplyResult::success(entry.index)
+                                    } else {
+                                        ApplyResult::failure(entry.index)
+                                    });
+
                                     debug!(
                                         "CAS at index {}: key={:?}, success={}",
                                         entry.index,
@@ -1228,7 +1246,7 @@ impl StateMachine for FileStateMachine {
         self.persist_metadata_async().await?;
         self.clear_wal_async().await?;
 
-        Ok(())
+        Ok(results)
     }
 
     fn len(&self) -> usize {
