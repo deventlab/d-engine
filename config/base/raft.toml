@@ -67,16 +67,6 @@ stale_learner_threshold = { secs = 300 }
 # Interval for checking stale learners (seconds)
 stale_check_interval = { secs = 30 }
 
-[raft.commit_handler]
-# Number of entries to accumulate before processing
-batch_size_threshold = 100
-
-# Maximum delay for processing batches (milliseconds)
-process_interval_ms = 10
-
-# Maximum entries per processing chunk
-max_entries_per_chunk = 100
-
 [raft.state_machine]
 # Lease (time-based expiration) configuration
 # Alias: can also be configured as "ttl" in TOML files

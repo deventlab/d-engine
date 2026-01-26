@@ -26,6 +26,7 @@
 //! ```
 
 use bytes::Bytes;
+use d_engine_proto::client::ReadConsistencyPolicy;
 
 use crate::client::client_api_error::ClientApiResult;
 
@@ -229,4 +230,138 @@ pub trait ClientApi: Send + Sync {
     ///
     /// Returns error if unable to determine leader status
     async fn get_leader_id(&self) -> ClientApiResult<Option<u32>>;
+
+    // ==================== Advanced Read Operations with Consistency Control ====================
+
+    /// Retrieves multiple keys with explicit consistency policy
+    ///
+    /// Batch retrieval with explicit consistency control.
+    /// More efficient than multiple individual calls when fetching multiple keys.
+    ///
+    /// # Arguments
+    ///
+    /// * `keys` - Slice of keys to retrieve
+    /// * `consistency_policy` - Explicit consistency policy for this batch request
+    ///
+    /// # Returns
+    ///
+    /// Vector of results in the same order as input keys.
+    /// `None` for keys that don't exist.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`get()`](Self::get)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use d_engine_proto::client::ReadConsistencyPolicy;
+    ///
+    /// let keys = vec![
+    ///     Bytes::from("key1"),
+    ///     Bytes::from("key2"),
+    /// ];
+    /// let values = client.get_multi_with_policy(
+    ///     &keys,
+    ///     Some(ReadConsistencyPolicy::EventualConsistency)
+    /// ).await?;
+    /// ```
+    async fn get_multi_with_policy(
+        &self,
+        keys: &[Bytes],
+        consistency_policy: Option<ReadConsistencyPolicy>,
+    ) -> ClientApiResult<Vec<Option<Bytes>>>;
+
+    /// Retrieves a key with linearizable (strong) consistency
+    ///
+    /// Convenience method for [`get_with_policy()`](Self::get_with_policy) with
+    /// `LinearizableRead` policy. Guarantees reading the latest committed value.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to retrieve
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(value))` if key exists
+    /// * `Ok(None)` if key does not exist or has expired
+    ///
+    /// # Errors
+    ///
+    /// Same as [`get()`](Self::get)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Guaranteed to read latest value
+    /// let value = client.get_linearizable(b"critical-config").await?;
+    /// ```
+    async fn get_linearizable(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<Option<Bytes>>;
+
+    /// Retrieves a key with lease-based consistency
+    ///
+    /// Convenience method for [`get_with_policy()`](Self::get_with_policy) with
+    /// `LeaseRead` policy. Optimized linearizable read using Leader lease mechanism.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to retrieve
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(value))` if key exists
+    /// * `Ok(None)` if key does not exist or has expired
+    ///
+    /// # Errors
+    ///
+    /// Same as [`get()`](Self::get)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Lease-based read (faster than linearizable, still strong consistency)
+    /// let value = client.get_lease(b"config").await?;
+    /// ```
+    async fn get_lease(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<Option<Bytes>>;
+
+    /// Retrieves a key with eventual consistency
+    ///
+    /// Convenience method for [`get_with_policy()`](Self::get_with_policy) with
+    /// `EventualConsistency` policy. Fast but may return stale data if replication is lagging.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to retrieve
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(value))` if key exists (may be stale)
+    /// * `Ok(None)` if key does not exist or has expired
+    ///
+    /// # Errors
+    ///
+    /// Same as [`get()`](Self::get)
+    ///
+    /// # Use Cases
+    ///
+    /// - Read-heavy workloads with acceptable staleness
+    /// - Analytics/reporting (staleness acceptable)
+    /// - Caching scenarios
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Fast stale read
+    /// let cached_value = client.get_eventual(b"user-preference").await?;
+    /// ```
+    async fn get_eventual(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<Option<Bytes>>;
 }

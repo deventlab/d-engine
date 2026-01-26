@@ -30,11 +30,6 @@ pub struct RaftConfig {
     #[serde(default)]
     pub membership: MembershipConfig,
 
-    /// Configuration settings for commit application handling
-    /// Controls how committed log entries are applied to the state machine
-    #[serde(default)]
-    pub commit_handler: CommitHandlerConfig,
-
     /// Configuration settings for state machine behavior
     /// Controls state machine operations like lease management, compaction, etc.
     /// For backward compatibility, can also be configured via `storage` in TOML files.
@@ -109,7 +104,6 @@ impl Default for RaftConfig {
             replication: ReplicationConfig::default(),
             election: ElectionConfig::default(),
             membership: MembershipConfig::default(),
-            commit_handler: CommitHandlerConfig::default(),
             state_machine: StateMachineConfig::default(),
             snapshot: SnapshotConfig::default(),
             persistence: PersistenceConfig::default(),
@@ -142,7 +136,6 @@ impl RaftConfig {
         self.replication.validate()?;
         self.election.validate()?;
         self.membership.validate()?;
-        self.commit_handler.validate()?;
         self.state_machine.validate()?;
         self.snapshot.validate()?;
         self.read_consistency.validate()?;
@@ -360,60 +353,6 @@ impl MembershipConfig {
         }
         Ok(())
     }
-}
-
-/// Submit processor-specific configuration
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CommitHandlerConfig {
-    #[serde(default = "default_batch_size_threshold")]
-    pub batch_size_threshold: u64,
-
-    #[serde(default = "default_process_interval_ms")]
-    pub process_interval_ms: u64,
-
-    #[serde(default = "default_max_entries_per_chunk")]
-    pub max_entries_per_chunk: usize,
-}
-impl Default for CommitHandlerConfig {
-    fn default() -> Self {
-        Self {
-            batch_size_threshold: default_batch_size_threshold(),
-            process_interval_ms: default_process_interval_ms(),
-            max_entries_per_chunk: default_max_entries_per_chunk(),
-        }
-    }
-}
-impl CommitHandlerConfig {
-    fn validate(&self) -> Result<()> {
-        if self.batch_size_threshold == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "batch_size_threshold must be > 0".into(),
-            )));
-        }
-
-        if self.process_interval_ms == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "process_interval_ms must be > 0".into(),
-            )));
-        }
-
-        if self.max_entries_per_chunk == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "max_entries_per_chunk must be > 0".into(),
-            )));
-        }
-
-        Ok(())
-    }
-}
-fn default_batch_size_threshold() -> u64 {
-    1
-}
-fn default_process_interval_ms() -> u64 {
-    10
-}
-fn default_max_entries_per_chunk() -> usize {
-    10
 }
 
 /// State machine behavior configuration

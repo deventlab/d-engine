@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use bytes::Bytes;
 use d_engine_client::Client;
 use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
@@ -88,7 +89,7 @@ async fn test_distributed_lock_standalone() -> Result<(), ClientApiError> {
     let holder = client.get(lock_key).await?;
     assert_eq!(
         holder,
-        Some(b"client_a".to_vec().into()),
+        Some(Bytes::from(b"client_a".to_vec())),
         "Lock should be held by client_a"
     );
 
@@ -105,10 +106,10 @@ async fn test_distributed_lock_standalone() -> Result<(), ClientApiError> {
 
     // Test 6: Verify new lock holder
     info!("Test 6: Verify new lock holder");
-    let new_holder = client.get(lock_key).await?;
+    let new_holder = client.get_linearizable(lock_key).await?;
     assert_eq!(
-        new_holder,
-        Some(b"client_b".to_vec().into()),
+        new_holder.map(|result| result.value),
+        Some(Bytes::from(b"client_b".to_vec())),
         "Lock should be held by client_b"
     );
 
