@@ -10,11 +10,6 @@
 //! - End-to-end Watch notification latency: < 100µs
 //! - Batch operations: Linear scaling
 
-#![cfg(feature = "watch")]
-
-use std::sync::Arc;
-use std::time::Duration;
-
 use bytes::Bytes;
 use criterion::BenchmarkId;
 use criterion::Criterion;
@@ -33,6 +28,8 @@ use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::entry_payload::Payload;
 use d_engine_server::storage::FileStateMachine;
 use prost::Message;
+use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;

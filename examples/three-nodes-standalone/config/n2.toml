@@ -14,8 +14,8 @@ log_dir = "./logs"
 general_raft_timeout_duration_in_ms = 100
 
 [raft.commit_handler]
-batch_size_threshold = 1
-process_interval_ms = 10
+batch_size_threshold = 1000
+process_interval_ms = 5
 max_entries_per_chunk = 100
 
 [raft.election]
@@ -33,8 +33,8 @@ rpc_append_entries_in_batch_threshold = 5000
 rpc_append_entries_batch_process_delay_in_ms = 0
 
 [raft.persistence]
-# strategy = "DiskFirst"
-strategy = "MemFirst"
+strategy = "DiskFirst"
+# strategy = "MemFirst"
 # flush_policy = "Immediate"
 flush_policy = { Batch = { threshold = 100, interval_ms = 20 } }
 # Upcoming feature(v0.1.4)

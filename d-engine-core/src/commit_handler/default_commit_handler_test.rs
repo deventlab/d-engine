@@ -1,18 +1,14 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::membership_change::Change;
-use d_engine_proto::server::storage::SnapshotMetadata;
 use tokio::sync::mpsc::{self};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
 use tokio::time::{self};
 
 use super::CommitHandler;
@@ -29,7 +25,6 @@ use crate::RaftConfig;
 use crate::RaftEvent;
 use crate::RaftNodeConfig;
 use crate::Result;
-use crate::test_utils::generate_insert_commands;
 
 const TEST_TERM: u64 = 1;
 
@@ -159,11 +154,14 @@ where
 
 impl TestHarness {
     async fn run_handler(&mut self) {
+        let (_sm_apply_tx, _sm_apply_rx) = tokio::sync::mpsc::unbounded_channel();
+
         let deps = CommitHandlerDependencies {
             state_machine_handler: self.mock_smh.clone(),
             raft_log: self.mock_log.clone(),
             membership: self.mock_membership.clone(),
             event_tx: self.event_tx.clone(),
+            sm_apply_tx: _sm_apply_tx,
             shutdown_signal: self.shutdown_rx.take().unwrap(),
         };
 
@@ -195,11 +193,14 @@ impl TestHarness {
     }
 
     async fn process_batch_handler(&mut self) -> Result<()> {
+        let (_sm_apply_tx, _sm_apply_rx) = tokio::sync::mpsc::unbounded_channel();
+
         let deps = CommitHandlerDependencies {
             state_machine_handler: self.mock_smh.clone(),
             raft_log: self.mock_log.clone(),
             membership: self.mock_membership.clone(),
             event_tx: self.event_tx.clone(),
+            sm_apply_tx: _sm_apply_tx,
             shutdown_signal: self.shutdown_rx.take().unwrap(),
         };
 
@@ -248,161 +249,6 @@ impl TestHarness {
             Err(_) => false,     // Timeout
         }
     }
-}
-
-fn setup(
-    batch_size_threshold: u64,
-    process_interval_ms: u64,
-    apply_batch_expected_execution_times: usize,
-    new_commit_rx: mpsc::UnboundedReceiver<NewCommitData>,
-    shutdown_signal: watch::Receiver<()>,
-) -> DefaultCommitHandler<MockTypeConfig> {
-    // prepare commit channel
-
-    // Mock Applier
-    let mut mock_handler = MockStateMachineHandler::<MockTypeConfig>::new();
-    mock_handler
-        .expect_apply_chunk()
-        .times(apply_batch_expected_execution_times)
-        .returning(|_| Ok(vec![]));
-    mock_handler.expect_update_pending().returning(|_| {});
-    mock_handler.expect_create_snapshot().returning(|| {
-        Ok((
-            SnapshotMetadata {
-                last_included: Some(LogId { index: 1, term: 1 }),
-                checksum: Bytes::new(),
-            },
-            PathBuf::from("/tmp/value"),
-        ))
-    });
-    mock_handler.expect_pending_range().returning(|| Some(1..=2));
-    mock_handler.expect_should_snapshot().returning(|_| true);
-
-    // Mock Raft Log
-    let mut mock_raft_log = MockRaftLog::new();
-    mock_raft_log.expect_purge_logs_up_to().returning(|_| Ok(()));
-    mock_raft_log.expect_get_entries_range().returning(|_| {
-        Ok(vec![Entry {
-            index: 1,
-            term: 1,
-            payload: Some(EntryPayload::command(generate_insert_commands(vec![1]))),
-        }])
-    });
-    let mock_membership = MockMembership::new();
-
-    // Init handler
-    let (event_tx, _event_rx) = mpsc::channel(1);
-    let deps = CommitHandlerDependencies {
-        state_machine_handler: Arc::new(mock_handler),
-        raft_log: Arc::new(mock_raft_log),
-        membership: Arc::new(mock_membership),
-        event_tx,
-        shutdown_signal,
-    };
-
-    let commit_handler_config = CommitHandlerConfig {
-        batch_size_threshold,
-        process_interval_ms,
-        max_entries_per_chunk: 1,
-    };
-
-    let config = RaftNodeConfig {
-        raft: RaftConfig {
-            commit_handler: commit_handler_config,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    DefaultCommitHandler::<MockTypeConfig>::new(
-        1,
-        Leader as i32,
-        1,
-        deps,
-        Arc::new(config),
-        new_commit_rx,
-    )
-}
-
-/// # Case 1: interval_uses_correct_duration
-#[tokio::test(start_paused = true)]
-async fn test_dynamic_interval_case1() {
-    // Prpeare interval
-    let interval_ms = 100;
-
-    // Setup handler
-    let (_new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<NewCommitData>();
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let batch_thresold = 0;
-    let apply_batch_expected_execution_times = 0; // we will not trigger `run`
-    let handler = setup(
-        batch_thresold,
-        interval_ms,
-        apply_batch_expected_execution_times,
-        new_commit_rx,
-        graceful_rx,
-    );
-    let mut interval = handler.dynamic_interval();
-
-    // First tick is immediate
-    interval.tick().await;
-
-    // Advance time by the interval duration
-    // tokio::time::advance(Duration::from_millis(interval_ms)).await;
-
-    // Second tick should be ready immediately after advancing
-    let start = Instant::now();
-    interval.tick().await;
-    let elapsed = start.elapsed();
-
-    // Allow a small margin for timing approximations
-    assert!(
-        elapsed >= Duration::from_millis(interval_ms),
-        "Expected interval to wait at least {}ms, but got {}ms",
-        interval_ms,
-        elapsed.as_millis()
-    );
-}
-
-/// # Case 2: missed_ticks_delay_to_next_interval
-#[tokio::test(start_paused = true)]
-async fn test_dynamic_interval_case2() {
-    // Prpeare interval
-    let interval_ms = 100;
-
-    // Setup handler
-    let (_new_commit_tx, new_commit_rx) = mpsc::unbounded_channel::<NewCommitData>();
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let batch_thresold = 0;
-    let apply_batch_expected_execution_times = 0; // we will not trigger `run`
-    let handler = setup(
-        batch_thresold,
-        interval_ms,
-        apply_batch_expected_execution_times,
-        new_commit_rx,
-        graceful_rx,
-    );
-    let mut interval = handler.dynamic_interval();
-
-    // First tick is immediate
-    interval.tick().await;
-
-    // Simulate a delay longer than one interval
-    let delay = interval_ms * 3;
-    tokio::time::advance(Duration::from_millis(delay)).await;
-
-    // Second tick should be ready immediately after advancing
-    let start = Instant::now();
-    interval.tick().await;
-    let elapsed = start.elapsed();
-
-    // Expect the tick to complete after remaining time to the next interval
-    let expected_wait = delay % interval_ms;
-    assert!(
-        elapsed <= Duration::from_millis(expected_wait),
-        "Expected to wait up to {}ms, but waited {}ms",
-        expected_wait,
-        elapsed.as_millis()
-    );
 }
 
 #[cfg(test)]

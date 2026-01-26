@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
 use d_engine::{
-    Result, SnapshotError, StateMachine, StorageError,
+    ApplyResult, Result, SnapshotError, StateMachine, StorageError,
     client::{
         WriteCommand,
         write_command::{CompareAndSwap, Delete, Insert, Operation},
@@ -191,39 +191,35 @@ impl StateMachine for SledStateMachine {
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
-    ) -> Result<()> {
-        trace!("Applying chunk: {:?}.", chunk);
+    ) -> Result<Vec<ApplyResult>> {
+        trace!("Applying chunk: {} entries", chunk.len());
 
         let mut highest_index_entry: Option<LogId> = None;
         let mut batch = Batch::default();
+        let mut results = Vec::with_capacity(chunk.len());
+
         for entry in chunk {
             assert!(entry.payload.is_some(), "Entry payload should not be None!");
 
-            if let Some(log_id) = highest_index_entry {
-                if entry.index > log_id.index {
-                    highest_index_entry = Some(LogId {
-                        index: entry.index,
-                        term: entry.term,
-                    });
-                } else {
-                    assert!(
-                        entry.index > log_id.index,
-                        "apply_chunk: received unordered entry at index {}",
-                        entry.index
-                    );
-                }
-            } else {
-                highest_index_entry = Some(LogId {
-                    index: entry.index,
-                    term: entry.term,
-                });
+            if let Some(prev) = highest_index_entry {
+                assert!(
+                    entry.index > prev.index,
+                    "apply_chunk: received unordered entry at index {} (prev={})",
+                    entry.index,
+                    prev.index
+                );
             }
+            highest_index_entry = Some(LogId {
+                index: entry.index,
+                term: entry.term,
+            });
+
             match entry.payload.unwrap().payload {
                 Some(Payload::Noop(_)) => {
-                    debug!("Handling NOOP command at index {}", entry.index);
+                    debug!("NOOP at index {}", entry.index);
+                    results.push(ApplyResult::success(entry.index));
                 }
                 Some(Payload::Command(data)) => {
-                    // Business write operation - deserialize and apply
                     match WriteCommand::decode(&data[..]) {
                         Ok(write_cmd) => match write_cmd.operation {
                             Some(Operation::Insert(Insert {
@@ -231,91 +227,77 @@ impl StateMachine for SledStateMachine {
                                 value,
                                 ttl_secs: _,
                             })) => {
-                                debug!(
-                                    "Applying INSERT command at index {}: {:?}",
-                                    entry.index, key
-                                );
                                 batch.insert(key.as_ref(), value.as_ref());
+                                results.push(ApplyResult::success(entry.index));
                             }
                             Some(Operation::Delete(Delete { key })) => {
-                                debug!(
-                                    "Applying DELETE command at index {}: {:?}",
-                                    entry.index, key
-                                );
                                 batch.remove(key.as_ref());
+                                results.push(ApplyResult::success(entry.index));
                             }
                             Some(Operation::CompareAndSwap(CompareAndSwap {
                                 key,
                                 expected_value,
                                 new_value,
                             })) => {
-                                // Apply pending batch before CAS (Batch doesn't support CAS)
+                                // Flush pending batch before CAS (Sled batch doesn't support atomic CAS)
                                 self.apply_batch(std::mem::take(&mut batch))?;
 
-                                // Sled has native CAS support - use it directly
+                                // Perform native Sled CAS
                                 let tree = self.current_tree();
                                 let old = expected_value.as_ref().map(|v| v.as_ref());
 
-                                match tree.compare_and_swap(&key, old, Some(new_value.as_ref())) {
-                                    Ok(Ok(_)) => {
-                                        debug!(
-                                            "CAS succeeded at index {}: key={:?}",
-                                            entry.index,
-                                            String::from_utf8_lossy(&key)
-                                        );
-                                    }
-                                    Ok(Err(_)) => {
-                                        debug!(
-                                            "CAS failed at index {}: key={:?} (comparison mismatch)",
-                                            entry.index,
-                                            String::from_utf8_lossy(&key)
-                                        );
-                                    }
+                                let cas_success = match tree.compare_and_swap(
+                                    &key,
+                                    old,
+                                    Some(new_value.as_ref()),
+                                ) {
+                                    Ok(Ok(_)) => true,
+                                    Ok(Err(_)) => false,
                                     Err(e) => {
                                         error!("CAS error at index {}: {:?}", entry.index, e);
                                         return Err(StorageError::DbError(e.to_string()).into());
                                     }
-                                }
+                                };
 
-                                // TODO: Store CAS result for client response
+                                results.push(if cas_success {
+                                    ApplyResult::success(entry.index)
+                                } else {
+                                    ApplyResult::failure(entry.index)
+                                });
+
+                                debug!(
+                                    "CAS at index {}: key={:?}, success={}",
+                                    entry.index,
+                                    String::from_utf8_lossy(&key),
+                                    cas_success
+                                );
                             }
                             None => {
                                 warn!("WriteCommand without operation at index {}", entry.index);
                             }
                         },
                         Err(e) => {
-                            error!(
-                                "Failed to decode WriteCommand at index {}: {:?}",
-                                entry.index, e
-                            );
+                            error!("Decode error at index {}: {}", entry.index, e);
                             return Err(StorageError::SerializationError(e.to_string()).into());
                         }
                     }
                 }
-                Some(Payload::Config(_config_change)) => {
-                    debug!(
-                        "Ignoring config change in state machine at index {}",
-                        entry.index
-                    );
-                    // Update only the configuration state of the Raft layer, without writing to the
-                    // state machine Example: raft.
-                    // update_cluster_config(config_change);
+                Some(Payload::Config(_)) => {
+                    debug!("Config change at index {} (ignored)", entry.index);
                 }
-                None => panic!("Entry payload variant should not be None!"),
+                None => panic!("Entry payload should not be None!"),
             }
         }
 
-        // Apply batch and update last applied index
+        // Apply final batch
         self.apply_batch(batch)?;
+
+        // Update last applied index
         if let Some(log_id) = highest_index_entry {
-            debug!(
-                "[Node-{}] State machine - updated last_applied: {:?}",
-                self.node_id, log_id
-            );
             self.update_last_applied(log_id);
         }
 
-        Ok(())
+        Ok(results)
     }
 
     fn save_hard_state(&self) -> Result<()> {

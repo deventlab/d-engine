@@ -1307,7 +1307,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ApplyCompleted {
-                last_index,
+                last_index: _,
                 results,
             } => {
                 let num_results = results.len();

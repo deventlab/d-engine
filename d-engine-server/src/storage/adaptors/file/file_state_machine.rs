@@ -1222,7 +1222,7 @@ impl StateMachine for FileStateMachine {
                             }
                         }
                     }
-                    "NOOP" | "CONFIG" => {
+                    "CONFIG" => {
                         // No data modification needed
                     }
                     _ => warn!("Unknown operation: {}", operation),

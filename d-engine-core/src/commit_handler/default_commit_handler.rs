@@ -1,7 +1,6 @@
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::entry_payload::Payload;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tonic::async_trait;
@@ -31,6 +30,7 @@ pub struct CommitHandlerDependencies<T: TypeConfig> {
     pub raft_log: Arc<ROF<T>>,
     pub membership: Arc<MOF<T>>,
     pub event_tx: mpsc::Sender<RaftEvent>,
+    pub sm_apply_tx: mpsc::UnboundedSender<Vec<Entry>>,
     pub shutdown_signal: watch::Receiver<()>,
 }
 
@@ -49,6 +49,7 @@ where
     membership: Arc<MOF<T>>,
 
     event_tx: mpsc::Sender<RaftEvent>, // Cloned from Raft
+    sm_apply_tx: mpsc::UnboundedSender<Vec<Entry>>, // Send entries to SM Worker
 
     // Shutdown signal
     shutdown_signal: watch::Receiver<()>,
@@ -62,9 +63,6 @@ where
     async fn run(&mut self) -> Result<()> {
         info!("[Node-{}] Commit handler started", self.my_id);
 
-        let mut batch_counter = 0;
-        // let mut interval = tokio::time::interval(Duration::from_millis(10));
-        let mut interval = self.dynamic_interval();
         let mut new_commit_rx =
             self.new_commit_rx.take().expect("Expected a commit recv but found None");
         let mut shutdown_signal = self.shutdown_signal.clone();
@@ -77,14 +75,6 @@ where
                         return Ok(());
                     }
 
-                    // Scheduled batch processing
-                    _ = interval.tick() => {
-                        trace!("[Node-{}] commit handler tick...", self.my_id);
-                        if let Err(e) = self.process_batch().await {
-                            error!("Failed to process batch: {}", e);
-                        }
-                    }
-
                     // Submit events in real time
                     Some(new_commit_data) = new_commit_rx.recv() => {
                         trace!("[Node-{}] new commit index = {:?} committed..", self.my_id, new_commit_data.new_commit_index);
@@ -94,15 +84,11 @@ where
                         self.my_current_term = new_commit_data.current_term;
                         self.my_role = new_commit_data.role;
 
-                        batch_counter += 1;
 
-                        if batch_counter >= self.config.raft.commit_handler.batch_size_threshold {
                             trace!("_ = self.check_batch_size");
                             if let Err(e) = self.process_batch().await {
                                 error!("Failed to process batch: {}", e);
                             }
-                            batch_counter = 0;
-                        }
                     }
             }
         }
@@ -131,6 +117,7 @@ where
             new_commit_rx: Some(new_commit_rx),
             config,
             event_tx: deps.event_tx,
+            sm_apply_tx: deps.sm_apply_tx,
             shutdown_signal: deps.shutdown_signal,
         }
     }
@@ -171,7 +158,7 @@ where
                     Some(Payload::Config(_)) => {
                         command_batch.push(entry.clone());
 
-                        self.flush_batch(&mut command_batch).await?;
+                        self.send_to_sm_worker(&mut command_batch).await?;
 
                         if last_error.is_none() {
                             if let Err(e) = self.apply_config_change(entry).await {
@@ -182,7 +169,7 @@ where
                     Some(Payload::Noop(_)) => {
                         command_batch.push(entry);
 
-                        self.flush_batch(&mut command_batch).await?;
+                        self.send_to_sm_worker(&mut command_batch).await?;
                     }
                     None => unreachable!(),
                 }
@@ -190,11 +177,11 @@ where
         }
 
         debug!(?last_error, "flush complete");
-        // Finally force the remaining commands to be refreshed
+        // Finally send remaining commands to SM Worker
         if let Some(e) = last_error {
             return Err(e);
         } else {
-            self.flush_batch(&mut command_batch).await?;
+            self.send_to_sm_worker(&mut command_batch).await?;
         }
 
         debug!("After processing all entries: validate if generate snapshot");
@@ -296,54 +283,24 @@ where
         Ok(())
     }
 
-    /// Dynamically adjusted timer
-    /// Behavior: If multiple ticks are missed, the timer will wait for the next
-    /// tick instead of firing immediately.
-    pub(crate) fn dynamic_interval(&self) -> tokio::time::Interval {
-        let mut interval = tokio::time::interval(Duration::from_millis(
-            self.config.raft.commit_handler.process_interval_ms,
-        ));
-        debug!(
-            "process_interval_ms: {}",
-            self.config.raft.commit_handler.process_interval_ms
-        );
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        interval
-    }
-
     // Define flush as an async function
-    async fn flush_batch(
+    async fn send_to_sm_worker(
         &self,
         batch: &mut Vec<Entry>,
     ) -> Result<()> {
         if !batch.is_empty() {
             let entries = std::mem::take(batch);
-            let entry_count = entries.len();
             trace!(
-                "[Node-{}] Flushing command batch length: {}",
-                self.my_id, entry_count
+                "[Node-{}] Sending batch to SM Worker: {} entries",
+                self.my_id,
+                entries.len()
             );
 
-            // Apply entries to state machine and get results
-            let results = self.state_machine_handler.apply_chunk(entries).await?;
-
-            // Send apply results to Raft event loop (for Leader to respond to clients)
-            if let Some(last_result) = results.last() {
-                let last_index = last_result.index;
-                if let Err(e) = self
-                    .event_tx
-                    .send(RaftEvent::ApplyCompleted {
-                        last_index,
-                        results,
-                    })
-                    .await
-                {
-                    error!(
-                        "[Node-{}] Failed to send ApplyCompleted event: {:?}",
-                        self.my_id, e
-                    );
-                }
-            }
+            // Send entries to SM Worker without waiting for apply
+            self.sm_apply_tx.send(entries).map_err(|e| {
+                error!("[Node-{}] SM Worker channel closed: {:?}", self.my_id, e);
+                crate::Error::Fatal(format!("SM Worker channel closed: {e:?}"))
+            })?;
         }
         Ok(())
     }
