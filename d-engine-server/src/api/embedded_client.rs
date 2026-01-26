@@ -627,4 +627,37 @@ impl ClientApi for EmbeddedClient {
         let cluster_membership = self.get_cluster_membership().await?;
         Ok(cluster_membership.current_leader_id)
     }
+
+    async fn get_multi_with_policy(
+        &self,
+        keys: &[Bytes],
+        consistency_policy: Option<ReadConsistencyPolicy>,
+    ) -> ClientApiResult<Vec<Option<Bytes>>> {
+        self.get_multi_with_consistency(
+            keys,
+            consistency_policy.unwrap_or(ReadConsistencyPolicy::LinearizableRead),
+        )
+        .await
+    }
+
+    async fn get_linearizable(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<Option<Bytes>> {
+        self.get_linearizable(key).await
+    }
+
+    async fn get_lease(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<Option<Bytes>> {
+        self.get_with_consistency(key, ReadConsistencyPolicy::LeaseRead).await
+    }
+
+    async fn get_eventual(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<Option<Bytes>> {
+        self.get_eventual(key).await
+    }
 }

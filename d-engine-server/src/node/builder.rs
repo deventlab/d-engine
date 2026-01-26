@@ -339,7 +339,6 @@ where
             Arc::new(DefaultStateMachineHandler::new(
                 node_id,
                 last_applied_index,
-                node_config.raft.commit_handler.max_entries_per_chunk,
                 state_machine.clone(),
                 node_config.raft.snapshot.clone(),
                 snapshot_policy,

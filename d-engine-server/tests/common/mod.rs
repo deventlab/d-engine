@@ -12,7 +12,6 @@ use d_engine_core::ClientApiError;
 use d_engine_core::alias::SMOF;
 use d_engine_core::alias::SOF;
 use d_engine_core::config::BackoffPolicy;
-use d_engine_core::config::CommitHandlerConfig;
 use d_engine_core::config::ElectionConfig;
 use d_engine_core::config::FlushPolicy;
 use d_engine_core::config::PersistenceConfig;
@@ -190,11 +189,6 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
         snapshot_rpc_timeout_ms: 300_000,
         replication: ReplicationConfig {
             rpc_append_entries_in_batch_threshold: 1,
-            ..Default::default()
-        },
-        commit_handler: CommitHandlerConfig {
-            batch_size_threshold: 1,
-            process_interval_ms: 100,
             ..Default::default()
         },
         snapshot: SnapshotConfig {

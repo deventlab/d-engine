@@ -417,4 +417,60 @@ impl ClientApi for GrpcClient {
         let client_inner = self.client_inner.load();
         Ok(client_inner.pool.get_leader_id())
     }
+
+    async fn get_multi_with_policy(
+        &self,
+        keys: &[Bytes],
+        consistency_policy: Option<ReadConsistencyPolicy>,
+    ) -> ClientApiResult<Vec<Option<Bytes>>> {
+        // Explicitly call the convenience method on impl block, not trait method
+        let result =
+            <Self>::get_multi_with_policy(self, keys.iter().cloned(), consistency_policy).await;
+
+        match result {
+            Ok(results) => Ok(results.into_iter().map(|opt| opt.map(|r| r.value)).collect()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_linearizable(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<Option<Bytes>> {
+        let result = self.get_with_policy(key, Some(ReadConsistencyPolicy::LinearizableRead)).await;
+
+        match result {
+            Ok(Some(client_result)) => Ok(Some(client_result.value)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_lease(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<Option<Bytes>> {
+        let result = self.get_with_policy(key, Some(ReadConsistencyPolicy::LeaseRead)).await;
+
+        match result {
+            Ok(Some(client_result)) => Ok(Some(client_result.value)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_eventual(
+        &self,
+        key: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<Option<Bytes>> {
+        let result = self
+            .get_with_policy(key, Some(ReadConsistencyPolicy::EventualConsistency))
+            .await;
+
+        match result {
+            Ok(Some(client_result)) => Ok(Some(client_result.value)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 }

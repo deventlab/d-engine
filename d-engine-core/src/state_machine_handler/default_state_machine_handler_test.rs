@@ -53,7 +53,6 @@ fn test_update_pending_case1() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_update_pending_case1")),
         MockSnapshotPolicy::new(),
@@ -72,7 +71,6 @@ fn test_update_pending_case2() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_update_pending_case2")),
         MockSnapshotPolicy::new(),
@@ -93,7 +91,6 @@ async fn test_update_pending_case3() {
         DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,
             0,
-            1,
             Arc::new(state_machine_mock),
             snapshot_config(PathBuf::from("/tmp/test_update_pending_case3")),
             MockSnapshotPolicy::new(),
@@ -119,7 +116,6 @@ fn test_pending_range_case1() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case1")),
         MockSnapshotPolicy::new(),
@@ -135,7 +131,6 @@ fn test_pending_range_case2() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case2")),
         MockSnapshotPolicy::new(),
@@ -153,7 +148,6 @@ fn test_pending_range_case3() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case3")),
         MockSnapshotPolicy::new(),
@@ -185,7 +179,6 @@ mod apply_chunk_test {
         DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,
             last_applied_index.unwrap_or(0),
-            1,
             Arc::new(state_machine),
             snapshot_config(PathBuf::from(path)),
             MockSnapshotPolicy::new(),
@@ -397,7 +390,6 @@ fn create_test_handler(
     DefaultStateMachineHandler::new_without_watch(
         1,
         0,
-        1,
         Arc::new(state_machine),
         config,
         MockSnapshotPolicy::new(),
@@ -419,7 +411,6 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(temp_path.to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -651,7 +642,6 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(temp_path.to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -753,7 +743,6 @@ mod create_snapshot_tests {
         let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,
             0,
-            1,
             Arc::new(sm),
             config.clone(),
             MockSnapshotPolicy::new(),
@@ -829,7 +818,6 @@ mod create_snapshot_tests {
             DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
                 1,
                 0,
-                1,
                 Arc::new(sm),
                 config.clone(),
                 snapshot_policy,
@@ -904,7 +892,6 @@ mod create_snapshot_tests {
         let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,
             3, // Current version
-            1,
             Arc::new(sm),
             config.clone(),
             MockSnapshotPolicy::new(),
@@ -948,7 +935,6 @@ mod create_snapshot_tests {
         let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,
             0,
-            1,
             Arc::new(sm),
             config.clone(),
             MockSnapshotPolicy::new(),
@@ -981,7 +967,6 @@ mod create_snapshot_tests {
             DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
                 1,
                 0,
-                1,
                 Arc::new(sm),
                 config,
                 MockSnapshotPolicy::new(),
@@ -1016,7 +1001,6 @@ mod create_snapshot_tests {
             DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
                 1,
                 0,
-                1,
                 Arc::new(sm),
                 config,
                 MockSnapshotPolicy::new(),
@@ -1097,7 +1081,6 @@ async fn test_cleanup_snapshot_case1() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(sm),
         config.clone(),
         MockSnapshotPolicy::new(),
@@ -1137,7 +1120,6 @@ async fn test_cleanup_snapshot_case2() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(sm),
         config.clone(),
         MockSnapshotPolicy::new(),
@@ -1175,7 +1157,6 @@ async fn test_cleanup_snapshot_case3() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(sm),
         config.clone(),
         MockSnapshotPolicy::new(),
@@ -1204,7 +1185,6 @@ async fn test_handle_purge_request_case1() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         5, // last_applied
-        100,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -1243,7 +1223,6 @@ async fn test_handle_purge_request_case2() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         5,
-        100,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -1283,7 +1262,6 @@ async fn test_handle_purge_request_case3() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         3,
-        100,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -1325,7 +1303,6 @@ async fn test_handle_purge_request_case4() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         5,
-        100,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -1368,7 +1345,6 @@ async fn test_handle_purge_request_case5() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         5,
-        100,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -1412,7 +1388,6 @@ async fn test_handle_purge_request_case6() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         5,
-        100,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -1451,7 +1426,6 @@ async fn test_handle_purge_request_case7() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         5,
-        100,
         Arc::new(sm),
         snapshot_config(temp_dir.path().to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -1856,7 +1830,6 @@ async fn test_snapshot_compression() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(sm),
         config,
         MockSnapshotPolicy::new(),
@@ -1901,7 +1874,6 @@ async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(temp_path.to_path_buf()),
         MockSnapshotPolicy::new(),

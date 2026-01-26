@@ -14,7 +14,6 @@ use tokio::time::{self};
 use super::CommitHandler;
 use super::CommitHandlerDependencies;
 use super::DefaultCommitHandler;
-use crate::CommitHandlerConfig;
 use crate::Error;
 use crate::MockMembership;
 use crate::MockRaftLog;
@@ -76,8 +75,6 @@ pub struct TestHarness {
     event_rx: mpsc::Receiver<RaftEvent>,
     shutdown_tx: watch::Sender<()>,
     shutdown_rx: Option<watch::Receiver<()>>,
-    batch_size_threshold: u64,
-    process_interval_ms: u64,
     handle: Option<JoinHandle<()>>,
 }
 #[allow(clippy::too_many_arguments)]
@@ -89,8 +86,6 @@ fn setup_harness<F, G>(
     config_hook: F,
     command_hook: G,
     snapshot_condition: Option<u64>,
-    batch_size_threshold: u64,
-    process_interval_ms: u64,
 ) -> TestHarness
 where
     F: Fn() -> bool + 'static + Send + Sync,
@@ -146,8 +141,6 @@ where
         event_rx,
         shutdown_tx,
         shutdown_rx: Some(shutdown_rx),
-        batch_size_threshold,
-        process_interval_ms,
         handle: None,
     }
 }
@@ -165,15 +158,8 @@ impl TestHarness {
             shutdown_signal: self.shutdown_rx.take().unwrap(),
         };
 
-        let commit_handler_config = CommitHandlerConfig {
-            batch_size_threshold: self.batch_size_threshold, // batch_threshold
-            process_interval_ms: self.process_interval_ms,   // process_interval
-            max_entries_per_chunk: 1,
-        };
-
         let config = RaftNodeConfig {
             raft: RaftConfig {
-                commit_handler: commit_handler_config,
                 ..Default::default()
             },
             ..Default::default()
@@ -204,15 +190,8 @@ impl TestHarness {
             shutdown_signal: self.shutdown_rx.take().unwrap(),
         };
 
-        let commit_handler_config = CommitHandlerConfig {
-            batch_size_threshold: self.batch_size_threshold, // batch_threshold
-            process_interval_ms: self.process_interval_ms,   // process_interval
-            max_entries_per_chunk: 1,
-        };
-
         let config = RaftNodeConfig {
             raft: RaftConfig {
-                commit_handler: commit_handler_config,
                 ..Default::default()
             },
             ..Default::default()
@@ -288,8 +267,6 @@ mod run_test {
             move || false,
             move || false,
             Some(4),
-            3,
-            1,
         );
         harness.run_handler().await;
 
@@ -325,8 +302,6 @@ mod run_test {
             move || false,
             move || false,
             None,
-            3,
-            1,
         );
 
         harness.run_handler().await;
@@ -358,8 +333,6 @@ mod run_test {
             move || false,
             move || false,
             Some(4),
-            3,
-            1,
         );
 
         harness.run_handler().await;
@@ -439,8 +412,6 @@ mod run_test {
             move || false,
             move || false,
             None,
-            3,
-            1,
         );
         harness.run_handler().await;
 
@@ -489,8 +460,6 @@ mod run_test {
             move || false,
             move || false,
             Some(4),
-            3,
-            1,
         );
         harness.run_handler().await;
 
@@ -542,8 +511,6 @@ mod run_test {
             move || false,
             move || false,
             None,
-            batch_thresold,
-            1000,
         );
         harness.run_handler().await;
 
@@ -595,8 +562,6 @@ mod run_test {
             move || false,
             move || false,
             None,
-            batch_thresold,
-            1000,
         );
         harness.run_handler().await;
 
@@ -648,8 +613,6 @@ mod run_test {
             move || false,
             move || false,
             None,
-            batch_thresold,
-            2,
         );
         harness.run_handler().await;
 
@@ -754,8 +717,6 @@ mod process_batch_test {
             move || false,
             move || false,
             None,
-            100,
-            100,
         );
         let result = harness.process_batch_handler().await;
         assert!(result.is_ok());
@@ -781,8 +742,6 @@ mod process_batch_test {
             move || false,
             move || false,
             None,
-            100,
-            100,
         );
 
         // Expect single apply_chunk call with all 3 commands
@@ -814,8 +773,6 @@ mod process_batch_test {
             move || false,
             move || false,
             None,
-            100,
-            100,
         );
 
         // Expect single apply_chunk call with all 3 commands
@@ -854,8 +811,6 @@ mod process_batch_test {
             move || false,
             move || false,
             None,
-            100,
-            100,
         );
 
         // Expect single apply_chunk call with all 3 commands
@@ -886,8 +841,6 @@ mod process_batch_test {
             move || true, // Config will fail
             move || false,
             None,
-            100,
-            100,
         );
         let result = harness.process_batch_handler().await;
         assert!(result.is_err());
@@ -914,8 +867,6 @@ mod process_batch_test {
             move || false,
             move || true,
             None,
-            100,
-            100,
         );
         let result = harness.process_batch_handler().await;
         assert!(result.is_err());
@@ -940,8 +891,6 @@ mod process_batch_test {
             move || false,
             move || false,
             Some(2), // Snapshot condition: last index >= 2
-            100,
-            100,
         );
         assert!(harness.process_batch_handler().await.is_ok());
 
@@ -962,8 +911,6 @@ mod process_batch_test {
             move || false,
             move || false,
             Some(2), // Requires index >=2
-            100,
-            100,
         );
         let result = harness.process_batch_handler().await;
         assert!(result.is_ok());
@@ -998,8 +945,6 @@ mod process_batch_test {
             move || false,
             move || false,
             None,
-            100,
-            100,
         );
         let result = harness.process_batch_handler().await;
         assert!(result.is_ok());
@@ -1024,8 +969,6 @@ mod process_batch_test {
             move || false,
             move || false,
             None,
-            100,
-            100,
         );
         let result = harness.process_batch_handler().await;
         assert!(result.is_ok());
@@ -1071,8 +1014,6 @@ mod process_batch_test {
                 }
             },
             None,
-            100,
-            100,
         );
         let result = harness.process_batch_handler().await;
         assert!(result.is_ok());
@@ -1122,8 +1063,6 @@ mod process_batch_test {
                 }
             },
             None,
-            100,
-            100,
         );
         let result = harness.process_batch_handler().await;
         assert!(result.is_err());
@@ -1161,8 +1100,6 @@ mod process_batch_test {
             || false, // Config succeeds
             || false,
             None,
-            100,
-            100,
         );
 
         let result = harness.process_batch_handler().await;
@@ -1218,8 +1155,6 @@ mod process_batch_test {
             },
             || false,
             None,
-            100,
-            100,
         );
 
         harness.process_batch_handler().await.unwrap();
@@ -1268,8 +1203,6 @@ mod process_batch_test {
             || true, // Config fails
             || false,
             None,
-            100,
-            100,
         );
 
         let result = harness.process_batch_handler().await;
@@ -1306,17 +1239,7 @@ mod process_batch_test {
             }))],
             1,
         );
-        let mut harness = setup_harness(
-            Leader as i32,
-            1,
-            entries,
-            1,
-            || false,
-            || false,
-            None,
-            100,
-            100,
-        );
+        let mut harness = setup_harness(Leader as i32, 1, entries, 1, || false, || false, None);
         harness.process_batch_handler().await.unwrap();
         assert!(
             matches!(
@@ -1333,17 +1256,7 @@ mod process_batch_test {
             }))],
             1,
         );
-        let mut harness = setup_harness(
-            Leader as i32,
-            1,
-            entries,
-            1,
-            || false,
-            || false,
-            None,
-            100,
-            100,
-        );
+        let mut harness = setup_harness(Leader as i32, 1, entries, 1, || false, || false, None);
         harness.process_batch_handler().await.unwrap();
         assert!(
             matches!(
@@ -1363,17 +1276,7 @@ mod process_batch_test {
             ))],
             1,
         );
-        let mut harness = setup_harness(
-            Leader as i32,
-            1,
-            entries,
-            1,
-            || false,
-            || false,
-            None,
-            100,
-            100,
-        );
+        let mut harness = setup_harness(Leader as i32, 1, entries, 1, || false, || false, None);
         harness.process_batch_handler().await.unwrap();
         assert!(
             matches!(
@@ -1411,8 +1314,6 @@ mod process_batch_test {
             || false,
             || false,
             None,
-            100,
-            100,
         );
 
         harness.process_batch_handler().await.unwrap();

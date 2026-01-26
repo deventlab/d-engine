@@ -89,8 +89,6 @@ where
     // Handler, as it manages the application process.
     last_applied: AtomicU64,   // The last applied log index
     pending_commit: AtomicU64, // The highest pending commit index
-    #[allow(unused)]
-    max_entries_per_chunk: usize,
     state_machine: Arc<SMOF<T>>,
 
     // current_snapshot_version: AtomicU64,
@@ -811,7 +809,6 @@ where
     pub fn new(
         node_id: u32,
         last_applied_index: u64,
-        max_entries_per_chunk: usize,
         state_machine: Arc<SMOF<T>>,
         snapshot_config: SnapshotConfig,
         snapshot_policy: SNP<T>,
@@ -826,7 +823,6 @@ where
             node_id,
             last_applied: AtomicU64::new(last_applied_index),
             pending_commit: AtomicU64::new(0),
-            max_entries_per_chunk,
             state_machine,
             snapshot_policy,
             path_mgr: Arc::new(SnapshotPathManager::new(
@@ -851,7 +847,6 @@ where
     pub(crate) fn new_without_watch(
         node_id: u32,
         last_applied_index: u64,
-        max_entries_per_chunk: usize,
         state_machine: Arc<SMOF<T>>,
         snapshot_config: SnapshotConfig,
         snapshot_policy: SNP<T>,
@@ -859,7 +854,6 @@ where
         Self::new(
             node_id,
             last_applied_index,
-            max_entries_per_chunk,
             state_machine,
             snapshot_config,
             snapshot_policy,
