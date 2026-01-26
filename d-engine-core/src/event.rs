@@ -133,6 +133,13 @@ pub enum RaftEvent {
     /// Leader should refresh cluster metadata cache
     MembershipApplied,
 
+    /// State machine apply failed - node must shutdown.
+    /// Conservative: treat all SM errors as fatal (future: distinguish fatal vs application errors).
+    FatalError {
+        source: String, // Error source
+        error: String,  // Error message
+    },
+
     /// Signal to flush pending read requests
     /// Sent by timeout task when read buffer reaches time threshold
     FlushReadBuffer,
@@ -185,6 +192,11 @@ pub enum TestEvent {
 
     PromoteReadyLearners,
 
+    FatalError {
+        source: String,
+        error: String,
+    },
+
     FlushReadBuffer,
 
     ApplyCompleted {
@@ -223,6 +235,10 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
             // MembershipApplied is internal event for cache refresh
             TestEvent::CreateSnapshotEvent // Placeholder
         }
+        RaftEvent::FatalError { source, error } => TestEvent::FatalError {
+            source: source.clone(),
+            error: error.clone(),
+        },
         RaftEvent::FlushReadBuffer => TestEvent::FlushReadBuffer,
         RaftEvent::ApplyCompleted {
             last_index,

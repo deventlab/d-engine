@@ -261,7 +261,7 @@ pub struct LeaderState<T: TypeConfig> {
     /// Maps log index to client response sender
     /// Used to return apply results (e.g., CAS success/failure) to clients
     /// Entries are removed after response is sent
-    pending_requests:
+    pub(super) pending_requests:
         HashMap<u64, MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>>,
 
     // -- Type System Marker --
@@ -1348,6 +1348,20 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     self.node_id(),
                     num_results,
                 );
+            }
+
+            RaftEvent::FatalError { source, error } => {
+                error!("[Leader] Fatal error from {}: {}", source, error);
+                // Notify all pending client requests with error before shutdown
+                let pending: Vec<_> = self.pending_requests.drain().collect();
+                for (_index, sender) in pending {
+                    let _ = sender.send(Err(tonic::Status::internal(format!(
+                        "Node fatal error: {error}"
+                    ))));
+                }
+                return Err(crate::Error::Fatal(format!(
+                    "Fatal error from {source}: {error}"
+                )));
             }
 
             RaftEvent::StepDownSelfRemoved => {

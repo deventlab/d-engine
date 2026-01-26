@@ -8,10 +8,13 @@ use d_engine_proto::server::cluster::cluster_conf_update_response;
 use d_engine_proto::server::election::VoteRequest;
 use tonic::Code;
 
+use crate::Error;
 use crate::MaybeCloneOneshot;
+use crate::MockBuilder;
 use crate::MockMembership;
 use crate::RaftEvent;
 use crate::RaftOneshot;
+use crate::RoleEvent;
 use crate::raft_role::learner_state::LearnerState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::mock::MockTypeConfig;
@@ -1332,4 +1335,69 @@ mod role_violation_tests {
             "LogPurgeCompleted should return RoleViolation"
         );
     }
+}
+
+/// Test: Learner handles FatalError and returns error
+///
+/// Verifies that when Learner receives FatalError from any component,
+/// it returns Error::Fatal and stops further processing.
+///
+/// # Test Scenario
+/// Learner receives FatalError event from state machine while in learner role.
+/// Learner should recognize the fatal error and return Error::Fatal.
+///
+/// # Given
+/// - Learner in normal state (catching up on logs)
+/// - FatalError event from StateMachine component
+///
+/// # When
+/// - Learner handles FatalError event via handle_raft_event()
+///
+/// # Then
+/// - handle_raft_event() returns Error::Fatal
+/// - Error message contains source and error details
+/// - No role transition events are sent (log replication is aborted)
+#[tokio::test]
+async fn test_learner_handles_fatal_error_returns_error() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_learner_handles_fatal_error_returns_error")
+        .build_context();
+
+    let mut learner = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Create FatalError event
+    let fatal_error = RaftEvent::FatalError {
+        source: "StateMachine".to_string(),
+        error: "Storage error - cannot apply snapshot".to_string(),
+    };
+
+    // Create role event channel
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    // Handle the FatalError event
+    let result = learner.handle_raft_event(fatal_error, &context, role_tx).await;
+
+    // VERIFY 1: handle_raft_event() returns Error::Fatal
+    assert!(
+        result.is_err(),
+        "Expected handle_raft_event to return Err, got: {result:?}"
+    );
+
+    // VERIFY 2: Error is Fatal and contains source information
+    match result.unwrap_err() {
+        Error::Fatal(msg) => {
+            assert!(
+                msg.contains("StateMachine"),
+                "Error message should mention source, got: {msg}"
+            );
+        }
+        other => panic!("Expected Error::Fatal, got: {other:?}"),
+    }
+
+    // VERIFY 3: No role events sent (log replication is aborted)
+    assert!(
+        role_rx.try_recv().is_err(),
+        "No role transition events should be sent during FatalError handling"
+    );
 }
