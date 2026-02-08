@@ -1,16 +1,5 @@
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
-use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::BatchPromote;
 use d_engine_proto::common::BatchRemove;
@@ -33,6 +22,15 @@ use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use nanoid::nanoid;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
@@ -56,6 +54,7 @@ use super::role_state::RaftRoleState;
 use crate::AppendResults;
 use crate::BackgroundSnapshotTransfer;
 use crate::BatchBuffer;
+use crate::BatchTriggerType;
 use crate::ConnectionType;
 use crate::ConsensusError;
 use crate::Error;
@@ -90,12 +89,10 @@ use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
-use crate::client_command_to_entry_payloads;
 use crate::cluster::is_majority;
 use crate::ensure_safe_join;
-use crate::scoped_timer::ScopedTimer;
+use crate::event::ClientCmd;
 use crate::stream::create_production_snapshot_stream;
-use crate::utils::cluster::error;
 
 // Supporting data structures
 #[derive(Debug, Clone)]
@@ -198,7 +195,7 @@ pub struct LeaderState<T: TypeConfig> {
     /// Accumulates requests until either:
     /// 1. Batch reaches configured size limit
     /// 2. Explicit flush is triggered
-    batch_buffer: Box<BatchBuffer<RaftRequestWithSignal>>,
+    pub(super) propose_buffer: Box<BatchBuffer<RaftRequestWithSignal>>,
 
     // -- Timing & Scheduling --
     /// Replication heartbeat timer manager
@@ -248,14 +245,28 @@ pub struct LeaderState<T: TypeConfig> {
     /// Avoids repeated async calls in hot paths
     pub(super) cluster_metadata: ClusterMetadata,
 
-    /// Buffered read requests awaiting batch processing
-    pub(super) read_buffer: Vec<(
+    /// Buffered linearizable read requests awaiting batch processing
+    /// Only LinearizableRead policy uses batching with size/timeout thresholds
+    pub(super) linearizable_read_buffer: Box<
+        BatchBuffer<(
+            ClientReadRequest,
+            MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+        )>,
+    >,
+
+    /// Lease-based read requests awaiting processing
+    /// Processed immediately in flush_cmd_buffers if lease is valid
+    pub(super) lease_read_queue: VecDeque<(
         ClientReadRequest,
         MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
     )>,
 
-    /// Timestamp when first request entered buffer (for metrics/debugging)
-    pub(super) read_buffer_start_time: Option<Instant>,
+    /// Eventual consistency read requests awaiting processing
+    /// Processed immediately in flush_cmd_buffers without any verification
+    pub(super) eventual_read_queue: VecDeque<(
+        ClientReadRequest,
+        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+    )>,
 
     // -- Client Request Tracking --
     /// Maps log index to client response sender
@@ -403,7 +414,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     async fn verify_leadership_persistent(
         &mut self,
         payloads: Vec<EntryPayload>,
-        bypass_queue: bool,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
@@ -416,12 +426,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         let start_time = Instant::now();
 
         loop {
-            match self.verify_internal_quorum(payloads.clone(), bypass_queue, ctx, role_tx).await {
+            match self.verify_internal_quorum(payloads.clone(), ctx, role_tx).await {
                 Ok(QuorumVerificationResult::Success) => {
-                    // Update lease timestamp after successful quorum verification.
-                    // This allows subsequent LeaseRead requests to benefit from this verification,
-                    // avoiding redundant quorum checks and improving read performance.
-                    self.update_lease_timestamp();
                     return Ok(true);
                 }
                 Ok(QuorumVerificationResult::LeadershipLost) => return Ok(false),
@@ -508,13 +514,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     async fn verify_internal_quorum(
         &mut self,
         payloads: Vec<EntryPayload>,
-        bypass_queue: bool,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<QuorumVerificationResult> {
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
 
-        self.process_raft_request(
+        self.execute_request_immediately(
             RaftRequestWithSignal {
                 id: nanoid!(),
                 payloads,
@@ -522,7 +527,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 wait_for_apply_event: false,
             },
             ctx,
-            bypass_queue,
             role_tx,
         )
         .await?;
@@ -613,7 +617,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
     /// Raft starts, we will check if we need reset all timer
     fn reset_timer(&mut self) {
-        self.timer.reset_batch();
         self.timer.reset_replication();
     }
 
@@ -637,29 +640,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             error!("Failed to run periodic maintenance: {}", e);
         }
 
-        // 3. Batch trigger check (should be prioritized before heartbeat check)
-        if now >= self.timer.batch_deadline() {
-            self.timer.reset_batch();
-
-            if self.batch_buffer.should_flush() {
-                debug!(?now, "tick::reset_batch batch timer");
-                self.timer.reset_replication();
-
-                // Take out the batched messages and send them immediately
-                // Do not move batch out of this block
-                let batch = self.batch_buffer.take();
-                self.process_batch(batch, role_tx, ctx).await?;
-            }
-        }
-
-        // 4. Heartbeat trigger check
+        // 2. Heartbeat trigger check
         // Send heartbeat if the replication timer expires
         if now >= self.timer.replication_deadline() {
             debug!(?now, "tick::reset_replication timer");
-            self.timer.reset_replication();
 
-            // Do not move batch out of this block
-            let batch = self.batch_buffer.take();
+            // Piggyback heartbeat
+            let batch = self.propose_buffer.take_with_trigger(BatchTriggerType::Heartbeat);
             self.process_batch(batch, role_tx, ctx).await?;
         }
 
@@ -667,15 +654,109 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     }
 
     fn drain_read_buffer(&mut self) -> Result<()> {
-        if !self.read_buffer.is_empty() {
+        // Drain linearizable read buffer
+        let batch = self.linearizable_read_buffer.take();
+        if !batch.is_empty() {
             warn!(
-                "Read batch: draining {} requests due to role change",
-                self.read_buffer.len()
+                "Read batch: draining {} linearizable read requests due to role change",
+                batch.len()
             );
-            for (_, sender) in std::mem::take(&mut self.read_buffer) {
+            for (_, sender) in batch {
                 let _ = sender.send(Err(tonic::Status::unavailable("Leader stepped down")));
             }
-            self.read_buffer_start_time = None;
+        }
+
+        // Drain lease read queue
+        if !self.lease_read_queue.is_empty() {
+            warn!(
+                "Read batch: draining {} lease read requests due to role change",
+                self.lease_read_queue.len()
+            );
+            for (_, sender) in self.lease_read_queue.drain(..) {
+                let _ = sender.send(Err(tonic::Status::unavailable("Leader stepped down")));
+            }
+        }
+
+        // Drain eventual read queue
+        if !self.eventual_read_queue.is_empty() {
+            warn!(
+                "Read batch: draining {} eventual read requests due to role change",
+                self.eventual_read_queue.len()
+            );
+            for (_, sender) in self.eventual_read_queue.drain(..) {
+                let _ = sender.send(Err(tonic::Status::unavailable("Leader stepped down")));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn push_client_cmd(
+        &mut self,
+        cmd: ClientCmd,
+        _ctx: &RaftContext<Self::T>,
+    ) {
+        use crate::client_command_to_entry_payloads;
+        use nanoid::nanoid;
+
+        match cmd {
+            ClientCmd::Propose(req, sender) => {
+                self.propose_buffer.push(RaftRequestWithSignal {
+                    id: nanoid!(),
+                    payloads: client_command_to_entry_payloads(req.commands),
+                    sender,
+                    wait_for_apply_event: true,
+                });
+            }
+            ClientCmd::Read(req, sender) => {
+                // Determine effective read consistency policy
+                let effective_policy = self.determine_read_policy(&req);
+
+                // Route to appropriate buffer based on policy
+                match effective_policy {
+                    ServerReadConsistencyPolicy::LinearizableRead => {
+                        self.linearizable_read_buffer.push((req, sender));
+                    }
+                    ServerReadConsistencyPolicy::LeaseRead => {
+                        self.lease_read_queue.push_back((req, sender));
+                    }
+                    ServerReadConsistencyPolicy::EventualConsistency => {
+                        self.eventual_read_queue.push_back((req, sender));
+                    }
+                }
+            }
+        }
+    }
+
+    async fn flush_cmd_buffers(
+        &mut self,
+        ctx: &RaftContext<Self::T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // Drain-based: unconditionally flush all buffered commands
+        // No timeout/size checks - drain from channel already collected the batch
+
+        // Process propose buffer
+        if !self.propose_buffer.is_empty() {
+            let batch = self.propose_buffer.take_all();
+            self.process_batch(batch, role_tx, ctx).await?;
+        }
+
+        // Process linearizable read buffer
+        if !self.linearizable_read_buffer.is_empty() {
+            self.process_linearizable_read_batch(ctx, role_tx).await?;
+        }
+
+        // Process lease reads (immediate, no batching)
+        while let Some((req, sender)) = self.lease_read_queue.pop_front() {
+            if let Err(e) = self.process_lease_read(req, sender, ctx, role_tx).await {
+                error!("process_lease_read failed: {:?}", e);
+            }
+        }
+
+        // Process eventual consistency reads (immediate, no batching)
+        while let Some((req, sender)) = self.eventual_read_queue.pop_front() {
+            self.process_eventual_read(req, sender, ctx);
         }
 
         Ok(())
@@ -820,159 +901,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
             }
 
-            RaftEvent::ClientPropose(client_write_request, sender) => {
-                if let Err(e) = self
-                    .process_raft_request(
-                        RaftRequestWithSignal {
-                            id: nanoid!(),
-                            payloads: client_command_to_entry_payloads(
-                                client_write_request.commands,
-                            ),
-                            sender,
-                            wait_for_apply_event: true,
-                        },
-                        ctx,
-                        false,
-                        &role_tx,
-                    )
-                    .await
-                {
-                    error("Leader::process_raft_request", &e);
-                    return Err(e);
-                }
-            }
-
-            RaftEvent::ClientReadRequest(client_read_request, sender) => {
-                let _timer = ScopedTimer::new("leader_linear_read");
-                debug!(
-                    "Leader::ClientReadRequest client_read_request:{:?}",
-                    &client_read_request
-                );
-
-                let keys = client_read_request.keys.clone();
-                let response: std::result::Result<ClientResponse, tonic::Status> = {
-                    let read_operation =
-                        || -> std::result::Result<ClientResponse, tonic::Status> {
-                            let results = ctx
-                                .handlers
-                                .state_machine_handler
-                                .read_from_state_machine(keys)
-                                .unwrap_or_default();
-                            debug!("handle_client_read results: {:?}", results);
-                            Ok(ClientResponse::read_results(results))
-                        };
-
-                    // Determine effective consistency policy using server configuration
-                    let effective_policy = if client_read_request.has_consistency_policy() {
-                        // Client explicitly specified policy
-                        if ctx.node_config().raft.read_consistency.allow_client_override {
-                            match client_read_request.consistency_policy() {
-                                ClientReadConsistencyPolicy::LeaseRead => {
-                                    ServerReadConsistencyPolicy::LeaseRead
-                                }
-                                ClientReadConsistencyPolicy::LinearizableRead => {
-                                    ServerReadConsistencyPolicy::LinearizableRead
-                                }
-                                ClientReadConsistencyPolicy::EventualConsistency => {
-                                    ServerReadConsistencyPolicy::EventualConsistency
-                                }
-                            }
-                        } else {
-                            // Client override not allowed - use server default
-                            ctx.node_config().raft.read_consistency.default_policy.clone()
-                        }
-                    } else {
-                        // No client policy specified - use server default
-                        ctx.node_config().raft.read_consistency.default_policy.clone()
-                    };
-
-                    // Apply consistency policy
-                    match effective_policy {
-                        ServerReadConsistencyPolicy::LinearizableRead => {
-                            // 1. Add to buffer
-                            self.read_buffer.push((client_read_request, sender));
-
-                            // 2. First request: spawn timeout task
-                            if self.read_buffer.len() == 1 {
-                                self.read_buffer_start_time = Some(Instant::now());
-
-                                let role_tx = role_tx.clone(); // Use role_tx (already available in signature)
-                                let timeout_ms = self
-                                    .node_config
-                                    .raft
-                                    .read_consistency
-                                    .read_batching
-                                    .time_threshold_ms;
-
-                                debug!(
-                                    "Read batch: first request, spawning {}ms timeout",
-                                    timeout_ms
-                                );
-
-                                tokio::spawn(async move {
-                                    tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
-                                    debug!(
-                                        "Read batch: timeout expired, sending flush signal via ReprocessEvent"
-                                    );
-                                    // Use RoleEvent::ReprocessEvent to re-inject FlushReadBuffer into event loop
-                                    let _ = role_tx.send(RoleEvent::ReprocessEvent(Box::new(
-                                        RaftEvent::FlushReadBuffer,
-                                    )));
-                                });
-                            }
-
-                            // 3. Size threshold: immediate flush
-                            let size_threshold =
-                                self.node_config.raft.read_consistency.read_batching.size_threshold;
-                            if self.read_buffer.len() >= size_threshold {
-                                debug!(
-                                    "Read batch: size threshold reached ({}), flushing",
-                                    size_threshold
-                                );
-                                self.process_linearizable_read_batch(ctx, &role_tx).await?;
-                            }
-                            // Early return: response will be sent via process_linearizable_read_batch
-                            return Ok(());
-                        }
-                        ServerReadConsistencyPolicy::LeaseRead => {
-                            // Lease-based read: verify only if lease expired
-                            if !self.is_lease_valid(ctx) {
-                                // Lease expired, refresh with quorum verification
-                                self.verify_leadership_and_refresh_lease(ctx, &role_tx).await?;
-                            }
-                            // Lease is valid, serve read locally
-                            read_operation()
-                        }
-                        ServerReadConsistencyPolicy::EventualConsistency => {
-                            // Eventual consistency: serve immediately without verification
-                            // Leader can always serve eventually consistent reads
-                            debug!("EventualConsistency: serving local read without verification");
-                            read_operation()
-                        }
-                    }
-                };
-
-                debug!(
-                    "Leader::ClientReadRequest is going to response: {:?}",
-                    &response
-                );
-                sender.send(response).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
-            }
-
             RaftEvent::FlushReadBuffer => {
-                if !self.read_buffer.is_empty() {
-                    debug!(
-                        "Read batch: flushing {} pending reads (timeout)",
-                        self.read_buffer.len()
-                    );
-                    self.process_linearizable_read_batch(ctx, &role_tx).await?;
-                } else {
-                    debug!("Read batch: flush signal received but buffer empty (already flushed)");
-                }
+
+                // Legacy event - now handled by flush_cmd_buffers in tick
+                // Keep for backward compatibility but it's a no-op
             }
 
             RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
@@ -1442,32 +1374,24 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// # Params
-    /// - `execute_now`: should this propose been executed immediatelly. e.g.
-    ///   enforce_quorum_consensus expected to be executed immediatelly
-    pub async fn process_raft_request(
+    /// Execute a Raft request immediately, bypassing the normal batching mechanism.
+    ///
+    /// This is used for quorum verification requests that must be sent immediately
+    /// without waiting for batching (e.g., config changes, leadership verification).
+    pub async fn execute_request_immediately(
         &mut self,
         raft_request_with_signal: RaftRequestWithSignal,
         ctx: &RaftContext<T>,
-        execute_now: bool,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         debug!(
-            "Leader::process_raft_request, request_id: {}",
+            "Leader::execute_request_immediately, request_id: {}",
             raft_request_with_signal.id
         );
 
-        let push_result = self.batch_buffer.push(raft_request_with_signal);
-        // only buffer exceeds the max, the size will return
-        if execute_now || push_result.is_some() {
-            let batch = self.batch_buffer.take();
-
-            trace!(
-                "replication_handler.handle_raft_request_in_batch: batch size:{:?}",
-                batch.len()
-            );
-
-            self.process_batch(batch, role_tx, ctx).await?;
-        }
+        // Always bypass buffer for immediate execution (quorum verification)
+        let batch = VecDeque::from([raft_request_with_signal]);
+        self.process_batch(batch, role_tx, ctx).await?;
 
         Ok(())
     }
@@ -1514,6 +1438,8 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
+        self.timer.reset_replication();
+
         // 1. Get starting log index before append
         let start_index = ctx.raft_log().last_entry_id() + 1;
 
@@ -1550,15 +1476,20 @@ impl<T: TypeConfig> LeaderState<T> {
                 peer_updates,
                 learner_progress,
             }) => {
-                // 1. Update all peer index
+                // 1. Update lease timestamp after successful quorum verification
+                // This allows subsequent LeaseRead requests to benefit from this write's
+                // quorum verification, avoiding redundant quorum checks and improving read performance.
+                self.update_lease_timestamp();
+
+                // 2. Update all peer index
                 self.update_peer_indexes(&peer_updates);
 
-                // 2. Check Learner's catch-up status
+                // 3. Check Learner's catch-up status
                 if let Err(e) = self.check_learner_progress(&learner_progress, ctx, role_tx).await {
                     error!(?e, "check_learner_progress failed");
                 };
 
-                // 3. Update commit index
+                // 4. Update commit index
                 // Single-voter cluster: commit index = last log index (quorum of 1)
                 // Multi-voter cluster: calculate commit index based on majority quorum
                 let new_commit_index = if self.cluster_metadata.single_voter {
@@ -1586,7 +1517,7 @@ impl<T: TypeConfig> LeaderState<T> {
                     )?;
                 }
 
-                // 4. Store senders in pending_requests - responses will be sent when ApplyCompleted event is received
+                // 5. Store senders in pending_requests - responses will be sent when ApplyCompleted event is received
                 // Use pre-computed wait_for_apply_event flag to determine response strategy
                 for (i, req) in batch.into_iter().enumerate() {
                     let index = start_index + i as u64;
@@ -1874,12 +1805,7 @@ impl<T: TypeConfig> LeaderState<T> {
         debug!("3. Submit single config change for all ready learners");
         // Use verify_leadership_persistent for config changes (must eventually succeed)
         match self
-            .verify_leadership_persistent(
-                vec![EntryPayload::config(config_change)],
-                true,
-                ctx,
-                role_tx,
-            )
+            .verify_leadership_persistent(vec![EntryPayload::config(config_change)], ctx, role_tx)
             .await
         {
             Ok(true) => {
@@ -2150,12 +2076,7 @@ impl<T: TypeConfig> LeaderState<T> {
         debug!("3. Wait for quorum confirmation");
         // Use verify_leadership_persistent for config changes (must eventually succeed)
         match self
-            .verify_leadership_persistent(
-                vec![EntryPayload::config(config_change)],
-                true,
-                ctx,
-                role_tx,
-            )
+            .verify_leadership_persistent(vec![EntryPayload::config(config_change)], ctx, role_tx)
             .await
         {
             Ok(true) => {
@@ -2255,10 +2176,14 @@ impl<T: TypeConfig> LeaderState<T> {
     ) -> Self {
         let ReplicationConfig {
             rpc_append_entries_in_batch_threshold,
-            rpc_append_entries_batch_process_delay_in_ms,
             rpc_append_entries_clock_in_ms,
             ..
         } = node_config.raft.replication;
+
+        // Extract read config before node_config is moved
+        let read_size_threshold = node_config.raft.read_consistency.read_batching.size_threshold;
+
+        let batch_metrics = Arc::new(crate::BatchMetrics::new(node_id));
 
         LeaderState {
             cluster_metadata: ClusterMetadata {
@@ -2267,18 +2192,14 @@ impl<T: TypeConfig> LeaderState<T> {
                 replication_targets: vec![],
             },
             shared_state: SharedState::new(node_id, None, None),
-            timer: Box::new(ReplicationTimer::new(
-                rpc_append_entries_clock_in_ms,
-                rpc_append_entries_batch_process_delay_in_ms,
-            )),
+            timer: Box::new(ReplicationTimer::new(rpc_append_entries_clock_in_ms)),
             next_index: HashMap::new(),
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            batch_buffer: Box::new(BatchBuffer::new(
-                rpc_append_entries_in_batch_threshold,
-                Duration::from_millis(rpc_append_entries_batch_process_delay_in_ms),
-            )),
+            propose_buffer: Box::new(
+                BatchBuffer::new(rpc_append_entries_in_batch_threshold).with_metrics(batch_metrics),
+            ),
 
             node_config,
             scheduled_purge_upto: None,
@@ -2289,8 +2210,9 @@ impl<T: TypeConfig> LeaderState<T> {
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
             lease_timestamp: AtomicU64::new(0),
-            read_buffer: Vec::new(),
-            read_buffer_start_time: None,
+            linearizable_read_buffer: Box::new(BatchBuffer::new(read_size_threshold)),
+            lease_read_queue: VecDeque::new(),
+            eventual_read_queue: VecDeque::new(),
             pending_requests: HashMap::new(),
             _marker: PhantomData,
         }
@@ -2486,7 +2408,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Submit batch activation
         // Use verify_leadership_persistent for config changes (must eventually succeed)
-        self.verify_leadership_persistent(vec![EntryPayload::config(change)], true, ctx, role_tx)
+        self.verify_leadership_persistent(vec![EntryPayload::config(change)], ctx, role_tx)
             .await?;
 
         Ok(())
@@ -2603,12 +2525,7 @@ impl<T: TypeConfig> LeaderState<T> {
             // Submit single config change for all nodes
             // Use verify_leadership_persistent for config changes (must eventually succeed)
             match self
-                .verify_leadership_persistent(
-                    vec![EntryPayload::config(change)],
-                    false,
-                    ctx,
-                    role_tx,
-                )
+                .verify_leadership_persistent(vec![EntryPayload::config(change)], ctx, role_tx)
                 .await
             {
                 Ok(true) => {
@@ -2654,7 +2571,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // Submit removal through membership change entry (requires quorum consensus)
         // Use verify_leadership_persistent for config changes (must eventually succeed)
         match self
-            .verify_leadership_persistent(vec![EntryPayload::config(change)], true, ctx, role_tx)
+            .verify_leadership_persistent(vec![EntryPayload::config(change)], ctx, role_tx)
             .await
         {
             Ok(true) => {
@@ -2721,11 +2638,8 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        match self.verify_internal_quorum(vec![], true, ctx, role_tx).await {
-            Ok(QuorumVerificationResult::Success) => {
-                self.update_lease_timestamp();
-                Ok(())
-            }
+        match self.verify_internal_quorum(vec![], ctx, role_tx).await {
+            Ok(QuorumVerificationResult::Success) => Ok(()),
             Ok(QuorumVerificationResult::LeadershipLost) => Err(ConsensusError::Replication(
                 ReplicationError::NotLeader { leader_id: None },
             )
@@ -2749,8 +2663,7 @@ impl<T: TypeConfig> LeaderState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         // Take buffer atomically
-        let batch = std::mem::take(&mut self.read_buffer);
-        self.read_buffer_start_time = None;
+        let batch = self.linearizable_read_buffer.take();
 
         if batch.is_empty() {
             return Ok(());
@@ -2812,8 +2725,87 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_update_lease_timestamp(&self) {
+    pub(crate) fn test_update_lease_timestamp(&mut self) {
         self.update_lease_timestamp();
+    }
+
+    /// Determine effective read consistency policy based on client request and server config
+    pub(super) fn determine_read_policy(
+        &self,
+        req: &ClientReadRequest,
+    ) -> ServerReadConsistencyPolicy {
+        use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
+
+        if req.has_consistency_policy() {
+            // Client explicitly specified policy
+            if self.node_config.raft.read_consistency.allow_client_override {
+                match req.consistency_policy() {
+                    ClientReadConsistencyPolicy::LeaseRead => {
+                        ServerReadConsistencyPolicy::LeaseRead
+                    }
+                    ClientReadConsistencyPolicy::LinearizableRead => {
+                        ServerReadConsistencyPolicy::LinearizableRead
+                    }
+                    ClientReadConsistencyPolicy::EventualConsistency => {
+                        ServerReadConsistencyPolicy::EventualConsistency
+                    }
+                }
+            } else {
+                // Client override not allowed - use server default
+                self.node_config.raft.read_consistency.default_policy.clone()
+            }
+        } else {
+            // No client policy specified - use server default
+            self.node_config.raft.read_consistency.default_policy.clone()
+        }
+    }
+
+    /// Process single lease-based read request
+    async fn process_lease_read(
+        &mut self,
+        req: ClientReadRequest,
+        sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        if self.is_lease_valid(ctx) {
+            // Lease valid - serve immediately
+            let results = ctx
+                .handlers
+                .state_machine_handler
+                .read_from_state_machine(req.keys)
+                .unwrap_or_default();
+            let response = ClientResponse::read_results(results);
+            let _ = sender.send(Ok(response));
+        } else {
+            // Lease expired - refresh and then serve
+            self.verify_leadership_and_refresh_lease(ctx, role_tx).await?;
+            let results = ctx
+                .handlers
+                .state_machine_handler
+                .read_from_state_machine(req.keys)
+                .unwrap_or_default();
+            let response = ClientResponse::read_results(results);
+            let _ = sender.send(Ok(response));
+        }
+        Ok(())
+    }
+
+    /// Process single eventual consistency read request
+    fn process_eventual_read(
+        &mut self,
+        req: ClientReadRequest,
+        sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+        ctx: &RaftContext<T>,
+    ) {
+        // Eventual consistency: serve immediately without any verification
+        let results = ctx
+            .handlers
+            .state_machine_handler
+            .read_from_state_machine(req.keys)
+            .unwrap_or_default();
+        let response = ClientResponse::read_results(results);
+        let _ = sender.send(Ok(response));
     }
 }
 
@@ -2821,7 +2813,6 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
     fn from(candidate: &CandidateState<T>) -> Self {
         let ReplicationConfig {
             rpc_append_entries_in_batch_threshold,
-            rpc_append_entries_batch_process_delay_in_ms,
             rpc_append_entries_clock_in_ms,
             ..
         } = candidate.node_config.raft.replication;
@@ -2830,20 +2821,18 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
         let shared_state = candidate.shared_state.clone();
         shared_state.set_current_leader(candidate.node_id());
 
+        let batch_metrics = Arc::new(crate::BatchMetrics::new(candidate.node_id()));
+
         Self {
             shared_state,
-            timer: Box::new(ReplicationTimer::new(
-                rpc_append_entries_clock_in_ms,
-                rpc_append_entries_batch_process_delay_in_ms,
-            )),
+            timer: Box::new(ReplicationTimer::new(rpc_append_entries_clock_in_ms)),
             next_index: HashMap::new(),
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            batch_buffer: Box::new(BatchBuffer::new(
-                rpc_append_entries_in_batch_threshold,
-                Duration::from_millis(rpc_append_entries_batch_process_delay_in_ms),
-            )),
+            propose_buffer: Box::new(
+                BatchBuffer::new(rpc_append_entries_in_batch_threshold).with_metrics(batch_metrics),
+            ),
 
             node_config: candidate.node_config.clone(),
 
@@ -2860,8 +2849,11 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
                 replication_targets: vec![],
             },
             lease_timestamp: AtomicU64::new(0),
-            read_buffer: Vec::new(),
-            read_buffer_start_time: None,
+            linearizable_read_buffer: Box::new(BatchBuffer::new(
+                candidate.node_config.raft.read_consistency.read_batching.size_threshold,
+            )),
+            lease_read_queue: VecDeque::new(),
+            eventual_read_queue: VecDeque::new(),
             pending_requests: HashMap::new(),
             _marker: PhantomData,
         }

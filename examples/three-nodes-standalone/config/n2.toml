@@ -23,9 +23,9 @@ lease_duration_ms = 500
 
 [raft.replication]
 # Process commands when this number is reached
-rpc_append_entries_in_batch_threshold = 5000
+rpc_append_entries_in_batch_threshold = 100
 # Ensure the batch is processed within a maximum delay (e.g., 10ms)
-rpc_append_entries_batch_process_delay_in_ms = 0
+rpc_append_entries_batch_process_delay_in_ms = 1
 
 [raft.persistence]
 strategy = "DiskFirst"
@@ -54,6 +54,7 @@ max_cleanup_duration_ms = 1
 
 # == Network Control Plane (voting, heartbeat, etc.) ==
 [network.control]
+request_timeout_in_ms = 100
 concurrency_limit = 50             # Increase to 50 to reduce lock contention
 max_concurrent_streams = 1024      # Increase significantly to reduce stream creation overhead
 connection_window_size = 4_194_304 # Increase to 4MB to reduce flow control blocking

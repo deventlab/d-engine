@@ -27,8 +27,10 @@ use crate::RaftLog;
 use crate::ReplicationCore;
 use crate::Result;
 use crate::RoleEvent;
+use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
+use crate::event::ClientCmd;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::error;
 
@@ -113,7 +115,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
     async fn verify_internal_quorum(
         &mut self,
         _payloads: Vec<EntryPayload>,
-        _bypass_queue: bool,
         _ctx: &RaftContext<Self::T>,
         _role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<QuorumVerificationResult> {
@@ -142,12 +143,10 @@ pub trait RaftRoleState: Send + Sync + 'static {
     async fn verify_leadership_persistent(
         &mut self,
         _payloads: Vec<EntryPayload>,
-        _bypass_queue: bool,
         _ctx: &RaftContext<Self::T>,
         _role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
-        warn!("verify_leadership NotLeader error");
-        Err(MembershipError::NotLeader.into())
+        Ok(false)
     }
 
     async fn join_cluster(
@@ -296,6 +295,96 @@ pub trait RaftRoleState: Send + Sync + 'static {
         ctx: &RaftContext<Self::T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()>;
+
+    /// Push single client command directly to role's internal buffer (zero-copy).
+    ///
+    /// For Leader: push to batch_buffer (writes) or read_buffer (reads)
+    /// For non-Leader:
+    ///   - Writes: immediately reject with NOT_LEADER error
+    ///   - Eventual reads: serve locally from state machine
+    ///   - Linear/Lease reads: immediately reject with NOT_LEADER error
+    fn push_client_cmd(
+        &mut self,
+        cmd: ClientCmd,
+        ctx: &RaftContext<Self::T>,
+    ) {
+        use crate::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
+        use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
+
+        match cmd {
+            ClientCmd::Propose(_, sender) => {
+                // Writes always require leader - reject immediately
+                let status = tonic::Status::failed_precondition("Not leader");
+                let _ = sender.send(Err(status));
+            }
+            ClientCmd::Read(req, sender) => {
+                // Determine effective read policy
+                let effective_policy = if req.has_consistency_policy() {
+                    match req.consistency_policy() {
+                        ClientReadConsistencyPolicy::EventualConsistency => {
+                            ServerReadConsistencyPolicy::EventualConsistency
+                        }
+                        _ => {
+                            // Linear/Lease requires leader
+                            let status = tonic::Status::failed_precondition("Not leader");
+                            let _ = sender.send(Err(status));
+                            return;
+                        }
+                    }
+                } else {
+                    // No explicit policy - need to check server default
+                    // For non-leader default implementation, reject non-eventual reads
+                    let status = tonic::Status::failed_precondition("Not leader");
+                    let _ = sender.send(Err(status));
+                    return;
+                };
+
+                // Handle EventualConsistency reads locally
+                if effective_policy == ServerReadConsistencyPolicy::EventualConsistency {
+                    self.process_eventual_read_local(req, sender, ctx);
+                }
+            }
+        }
+    }
+
+    /// Process eventual consistency read locally (available on all nodes)
+    ///
+    /// Eventual consistency reads can be served by any node (leader, follower, candidate, learner)
+    /// directly from the local state machine without additional consistency checks.
+    /// May return stale data but provides best read performance and availability.
+    fn process_eventual_read_local(
+        &self,
+        req: d_engine_proto::client::ClientReadRequest,
+        sender: crate::MaybeCloneOneshotSender<
+            std::result::Result<d_engine_proto::client::ClientResponse, tonic::Status>,
+        >,
+        ctx: &RaftContext<Self::T>,
+    ) {
+        use d_engine_proto::client::ClientResponse;
+
+        // Read directly from local state machine without any consistency checks
+        let results = ctx
+            .state_machine_handler()
+            .read_from_state_machine(req.keys)
+            .unwrap_or_default();
+
+        let response = ClientResponse::read_results(results);
+        let _ = sender.send(Ok(response));
+    }
+
+    /// Flush command buffers if size or timeout thresholds are reached.
+    ///
+    /// Checks both write and read buffers using BatchBuffer::should_flush().
+    /// For Leader: processes batches if FlushReason::SizeThreshold or FlushReason::Timeout
+    /// For non-Leader: no-op (buffers are empty)
+    async fn flush_cmd_buffers(
+        &mut self,
+        _ctx: &RaftContext<Self::T>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // Default implementation for non-leader: nothing to flush
+        Ok(())
+    }
 
     /// Create NOT_LEADER response with leader metadata for client redirection
     ///

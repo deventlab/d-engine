@@ -24,6 +24,7 @@ use tonic::Code;
 use tonic::Status;
 
 use crate::AppendResponseWithUpdates;
+use crate::ClientCmd;
 use crate::Error;
 use crate::HardState;
 use crate::MaybeCloneOneshot;
@@ -1138,7 +1139,7 @@ async fn test_handle_client_write_request_redirects_to_leader() {
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientPropose(
+    let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
             commands: vec![],
@@ -1146,13 +1147,8 @@ async fn test_handle_client_write_request_redirects_to_leader() {
         resp_tx,
     );
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
     // Action: Handle ClientWriteRequest
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
+    state.push_client_cmd(cmd, &context);
 
     // Verify: Response with NOT_LEADER error
     let response = resp_rx.recv().await.unwrap().unwrap();
@@ -1191,15 +1187,10 @@ async fn test_handle_client_read_request_linearizable_redirects_to_leader() {
         keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle ClientReadRequest with LinearizableRead
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
+    // Action: Handle ClientReadRequest
+    state.push_client_cmd(cmd, &context);
 
     // Verify: Response with NOT_LEADER error
     let response = resp_rx.recv().await.unwrap().expect("should get response");
@@ -1249,15 +1240,10 @@ async fn test_handle_client_read_request_eventual_consistency_succeeds() {
         keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle ClientReadRequest with EventualConsistency
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
+    // Action: Handle ClientReadRequest
+    state.push_client_cmd(cmd, &context);
 
     // Verify: Response with SUCCESS
     let response = resp_rx.recv().await.unwrap().unwrap();
@@ -2209,13 +2195,9 @@ mod handle_client_read_request {
         };
 
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-        state
-            .handle_raft_event(raft_event, &context, role_tx)
-            .await
-            .expect("should succeed");
+        state.push_client_cmd(cmd, &context);
 
         let response = resp_rx.recv().await.unwrap().expect("should get response");
         assert_eq!(
@@ -2260,13 +2242,9 @@ mod handle_client_read_request {
         };
 
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-        state
-            .handle_raft_event(raft_event, &context, role_tx)
-            .await
-            .expect("should succeed");
+        state.push_client_cmd(cmd, &context);
 
         let response = resp_rx.recv().await.unwrap().expect("should get response");
         assert_eq!(
@@ -2312,13 +2290,9 @@ mod handle_client_read_request {
         };
 
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-        state
-            .handle_raft_event(raft_event, &context, role_tx)
-            .await
-            .expect("should succeed");
+        state.push_client_cmd(cmd, &context);
 
         let response = resp_rx.recv().await.unwrap().unwrap();
         assert_eq!(

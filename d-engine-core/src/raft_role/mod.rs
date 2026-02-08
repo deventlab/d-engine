@@ -385,13 +385,10 @@ impl<T: TypeConfig> RaftRole<T> {
     pub(crate) async fn verify_leadership_persistent(
         &mut self,
         payloads: Vec<EntryPayload>,
-        bypass_queue: bool,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
-        self.state_mut()
-            .verify_leadership_persistent(payloads, bypass_queue, ctx, role_tx)
-            .await
+        self.state_mut().verify_leadership_persistent(payloads, ctx, role_tx).await
     }
 
     /// Notify role that no-op entry has been committed.
@@ -407,6 +404,28 @@ impl<T: TypeConfig> RaftRole<T> {
     /// Only Leader implements this; other roles are no-op.
     pub(crate) fn drain_read_buffer(&mut self) -> Result<()> {
         self.state_mut().drain_read_buffer()
+    }
+
+    /// Push client command directly to role's internal buffer (zero-copy).
+    /// For Leader: push to batch_buffer or read_buffer.
+    /// For non-Leader: immediately reject with NOT_LEADER error.
+    pub(crate) fn push_client_cmd(
+        &mut self,
+        cmd: crate::event::ClientCmd,
+        ctx: &crate::RaftContext<T>,
+    ) {
+        self.state_mut().push_client_cmd(cmd, ctx)
+    }
+
+    /// Flush command buffers if size or timeout thresholds are reached.
+    /// For Leader: processes batches if FlushReason indicates need.
+    /// For non-Leader: no-op (buffers are empty).
+    pub(crate) async fn flush_cmd_buffers(
+        &mut self,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        self.state_mut().flush_cmd_buffers(ctx, role_tx).await
     }
 }
 
@@ -459,6 +478,7 @@ use crate::config::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
 /// Checks if non-leader node can serve read request locally
 ///
 /// Returns Some(policy) if local read is allowed, None if leader access required
+#[allow(dead_code)]
 pub(crate) fn can_serve_read_locally<T>(
     client_request: &ClientReadRequest,
     ctx: &crate::RaftContext<T>,

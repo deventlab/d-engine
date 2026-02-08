@@ -39,11 +39,6 @@ use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_compressed_snapshot;
 use crate::test_utils::create_test_snapshot_stream;
 use crate::test_utils::snapshot_config;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::{CompareAndSwap, Delete, Insert, Operation};
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::entry_payload::Payload;
-use prost::Message as _;
 
 // Case 1: normal update
 #[test]
@@ -2001,7 +1996,14 @@ mod mmap_tests {
 mod broadcast_watch_events_tests {
     use super::*;
 
-    use d_engine_proto::client::WatchEventType;
+    use d_engine_proto::{
+        client::{
+            WatchEventType, WriteCommand,
+            write_command::{CompareAndSwap, Delete, Insert, Operation},
+        },
+        common::{EntryPayload, entry_payload::Payload},
+    };
+    use prost::Message;
 
     fn create_entry(
         index: u64,

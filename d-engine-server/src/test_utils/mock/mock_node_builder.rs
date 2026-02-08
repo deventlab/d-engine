@@ -211,6 +211,7 @@ impl MockBuilder {
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (
             id,
             raft_log,
@@ -291,7 +292,15 @@ impl MockBuilder {
                 purge_executor: Arc::new(purge_executor),
             },
             membership,
-            SignalParams::new(role_tx, role_rx, event_tx, event_rx, self.shutdown_signal),
+            SignalParams::new(
+                role_tx,
+                role_rx,
+                event_tx,
+                event_rx,
+                cmd_tx,
+                cmd_rx,
+                self.shutdown_signal,
+            ),
             arc_node_config.clone(),
         )
     }
@@ -307,12 +316,14 @@ impl MockBuilder {
         let membership = raft.ctx.membership.clone();
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
 
         Node::<MockTypeConfig> {
             node_id: raft.node_id,
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
+            cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,
@@ -352,12 +363,14 @@ impl MockBuilder {
         let node_config_arc = Arc::new(node_config);
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
 
         let node = Arc::new(Node::<MockTypeConfig> {
             node_id: raft.node_id,
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
+            cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,

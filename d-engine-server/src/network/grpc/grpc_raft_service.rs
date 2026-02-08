@@ -328,9 +328,11 @@ where
         }
 
         let remote_addr = request.remote_addr();
-        let event_tx = self.event_tx.clone();
         let timeout_duration =
             Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+
+        // Clone cmd_tx before async move to avoid capturing &self
+        let cmd_tx = self.cmd_tx.clone();
 
         let request_future = async move {
             let req: ClientWriteRequest = request.into_inner();
@@ -340,10 +342,9 @@ where
             }
 
             let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-            event_tx
-                .send(RaftEvent::ClientPropose(req, resp_tx))
-                .await
-                .map_err(|_| Status::internal("Event channel closed"))?;
+            cmd_tx
+                .send(d_engine_core::ClientCmd::Propose(req, resp_tx))
+                .map_err(|_| Status::internal("Command channel closed"))?;
 
             handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_write").await
         };
@@ -375,10 +376,12 @@ where
         }
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-        self.event_tx
-            .send(RaftEvent::ClientReadRequest(request.into_inner(), resp_tx))
-            .await
-            .map_err(|_| Status::internal("Event channel closed"))?;
+        self.cmd_tx
+            .send(d_engine_core::ClientCmd::Read(
+                request.into_inner(),
+                resp_tx,
+            ))
+            .map_err(|_| Status::internal("Command channel closed"))?;
 
         let timeout_duration =
             Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
