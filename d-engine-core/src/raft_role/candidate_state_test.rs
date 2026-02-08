@@ -21,6 +21,7 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::PurgeLogRequest;
 use tonic::Code;
 
+use crate::ClientCmd;
 use crate::ConsensusError;
 use crate::ElectionError;
 use crate::Error;
@@ -715,7 +716,7 @@ async fn test_handle_client_write_returns_not_leader() {
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientPropose(
+    let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
             commands: vec![],
@@ -723,8 +724,7 @@ async fn test_handle_client_write_returns_not_leader() {
         resp_tx,
     );
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+    state.push_client_cmd(cmd, &context);
 
     let r = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(r.error, ErrorCode::NotLeader as i32);
@@ -939,10 +939,9 @@ mod handle_client_read_request {
             keys: vec![],
         };
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+        state.push_client_cmd(cmd, &context);
 
         let response = resp_rx.recv().await.unwrap().expect("should get response");
         assert_eq!(response.error, ErrorCode::NotLeader as i32);
@@ -971,13 +970,12 @@ mod handle_client_read_request {
             keys: vec![],
         };
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+        state.push_client_cmd(cmd, &context);
 
-        let r = resp_rx.recv().await.unwrap().unwrap();
-        assert_eq!(r.error, ErrorCode::Success as i32);
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(response.error, ErrorCode::Success as i32);
     }
 }
 

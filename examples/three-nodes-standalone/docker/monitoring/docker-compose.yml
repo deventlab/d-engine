@@ -51,4 +51,4 @@ volumes:
 
 networks:
   docker_mynetwork:
-    external: true
+    driver: bridge

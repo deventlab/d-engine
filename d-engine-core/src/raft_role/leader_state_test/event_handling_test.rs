@@ -12,6 +12,7 @@ use tonic::Code;
 use tracing_test::traced_test;
 
 use crate::AppendResults;
+use crate::ClientCmd;
 use crate::ConsensusError;
 use crate::Error;
 use crate::MockRaftLog;
@@ -528,7 +529,7 @@ async fn test_handle_client_propose_success() {
     // Handle raft event
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let raft_event = RaftEvent::ClientPropose(
+    let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
             commands: vec![],
@@ -536,8 +537,8 @@ async fn test_handle_client_propose_success() {
         resp_tx,
     );
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+    // Push to buffer - will be batched
+    state.push_client_cmd(cmd, &context);
 }
 
 /// Test handling ClientReadRequest with linearizable read failure
@@ -589,14 +590,15 @@ async fn test_handle_client_read_linearizable_failure() {
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    // Event handling should succeed (error is sent to client via resp_rx)
-    state
-        .handle_raft_event(raft_event, &context, role_tx)
-        .await
-        .expect("Event should be handled successfully");
+
+    // Push to buffer
+    state.push_client_cmd(cmd, &context);
+
+    // Process the batch (this triggers leadership verification which will fail)
+    let _ = state.process_linearizable_read_batch(&context, &role_tx).await;
 
     // Client receives error via response channel
     let e = resp_rx.recv().await.unwrap().unwrap_err();
@@ -691,11 +693,16 @@ async fn test_handle_client_read_linearizable_success() {
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Push to buffer
+    state.push_client_cmd(cmd, &context);
+
+    // Process the batch
     state
-        .handle_raft_event(raft_event, &context, role_tx)
+        .process_linearizable_read_batch(&context, &role_tx)
         .await
         .expect("should succeed");
 
@@ -777,14 +784,18 @@ async fn test_handle_client_read_encounters_higher_term() {
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Push to buffer
+    state.push_client_cmd(cmd, &context);
     // Event handling should succeed (HigherTerm is handled, client gets error via resp_rx)
+    // Process the batch
     state
-        .handle_raft_event(raft_event, &context, role_tx)
+        .process_linearizable_read_batch(&context, &role_tx)
         .await
-        .expect("Event should be handled successfully");
+        .expect("Process should succeed");
 
     // Validation criteria 1: Leader commit should remain unchanged (HigherTerm aborted the operation)
     assert_eq!(state.shared_state().commit_index, 1);

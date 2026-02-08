@@ -976,7 +976,7 @@ async fn test_verify_internal_quorum_success() {
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::Success);
     assert!(matches!(
@@ -1030,7 +1030,7 @@ async fn test_verify_internal_quorum_verifiable_failure() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 }
@@ -1109,7 +1109,7 @@ async fn test_verify_internal_quorum_non_verifiable_failure() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::LeadershipLost);
 }
@@ -1159,7 +1159,7 @@ async fn test_verify_internal_quorum_partial_timeouts() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 }
@@ -1205,7 +1205,7 @@ async fn test_verify_internal_quorum_all_timeouts() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 }
@@ -1251,7 +1251,7 @@ async fn test_verify_internal_quorum_higher_term() {
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert!(result.is_err());
     assert!(matches!(
@@ -1302,7 +1302,7 @@ async fn test_verify_internal_quorum_critical_failure() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert!(result.is_err());
     assert!(matches!(

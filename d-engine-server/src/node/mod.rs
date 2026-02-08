@@ -81,6 +81,10 @@ where
     // Network & Storage events, (copied from Raft)
     // TODO: find a better solution
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
+
+    // Client commands (drain-driven)
+    pub(crate) cmd_tx: mpsc::UnboundedSender<d_engine_core::ClientCmd>,
+
     pub(crate) ready: AtomicBool,
 
     /// Notifies when RPC server is ready to accept requests
@@ -315,11 +319,15 @@ where
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
 
+        // Create dummy cmd_tx (this path is mainly for testing)
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+
         Node {
             node_id,
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
+            cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,

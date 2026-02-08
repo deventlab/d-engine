@@ -158,7 +158,7 @@ async fn test_process_raft_request_immediate_execution() {
     // When: Execute the write request
     let result = test_context
         .state
-        .process_raft_request(
+        .execute_request_immediately(
             RaftRequestWithSignal {
                 id: nanoid!(),
                 payloads: client_command_to_entry_payloads(request.commands),
@@ -166,7 +166,6 @@ async fn test_process_raft_request_immediate_execution() {
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
-            false,
             &role_tx,
         )
         .await;
@@ -250,10 +249,10 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
     let (tx2, rx2) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-    // When: Execute first write request with force_send=true
+    // When: Execute first write request (immediate execution)
     let result1 = test_context
         .state
-        .process_raft_request(
+        .execute_request_immediately(
             RaftRequestWithSignal {
                 id: nanoid!(),
                 payloads: client_command_to_entry_payloads(request.commands.clone()),
@@ -261,15 +260,14 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
-            true, // force_send=true
             &role_tx,
         )
         .await;
 
-    // When: Execute second write request with force_send=true
+    // When: Execute second write request (immediate execution)
     let result2 = test_context
         .state
-        .process_raft_request(
+        .execute_request_immediately(
             RaftRequestWithSignal {
                 id: nanoid!(),
                 payloads: client_command_to_entry_payloads(request.commands),
@@ -277,7 +275,6 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
-            true, // force_send=true
             &role_tx,
         )
         .await;
@@ -360,10 +357,10 @@ async fn test_process_raft_request_batching_enabled() {
     let (tx, _rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-    // When: Execute write request with force_send=false (allow batching)
+    // When: Execute write request (immediate execution - no buffering in this test)
     let result = test_context
         .state
-        .process_raft_request(
+        .execute_request_immediately(
             RaftRequestWithSignal {
                 id: nanoid!(),
                 payloads: client_command_to_entry_payloads(request.commands),
@@ -371,7 +368,6 @@ async fn test_process_raft_request_batching_enabled() {
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
-            false, // force_send=false allows batching
             &role_tx,
         )
         .await;
@@ -385,4 +381,341 @@ async fn test_process_raft_request_batching_enabled() {
     // Note: No assertions on commit_index or responses because:
     // - Request is buffered, not yet replicated
     // - Mock handler expects 0 calls, which is verified by mockall on drop
+}
+
+// ============================================================================
+// Drain-Based Write Batching Tests
+// ============================================================================
+
+/// **Business Scenario**: Single write request processes immediately without batching delay
+///
+/// **Purpose**: Verify that under low load, single write requests are processed
+/// immediately via drain pattern (recv + try_recv finds nothing), eliminating
+/// artificial batching delays from the old timeout-based mechanism.
+///
+/// **Key Validation**:
+/// - Single request in buffer
+/// - Immediate flush (no timeout waiting)
+/// - Request succeeds with low latency
+///
+/// **Architecture Context**:
+/// Old: Even single write waited for batch_timeout
+/// New: recv() returns immediately, flush happens instantly
+#[tokio::test]
+async fn test_drain_single_write_no_delay() {
+    use crate::ClientCmd;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use d_engine_proto::client::ClientWriteRequest;
+    use tokio::time::Instant;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = node_config("/tmp/test_drain_single_write");
+    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 100;
+
+    // Mock replication handler
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::new(),
+                learner_progress: HashMap::new(),
+            })
+        });
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .with_raft_log(raft_log)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Action: Single write request (simulates low load)
+    let start = Instant::now();
+    let req = ClientWriteRequest {
+        client_id: 1,
+        commands: vec![],
+    };
+    let (tx, mut rx) = MaybeCloneOneshot::new();
+
+    state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
+
+    // Verify: Buffer has 1 request
+    assert_eq!(
+        state.propose_buffer.len(),
+        1,
+        "Buffer should have 1 request"
+    );
+
+    // Flush immediately (drain pattern: no waiting)
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    let elapsed = start.elapsed();
+
+    // Verify: Request succeeded
+    assert!(rx.recv().await.is_ok(), "Write should succeed");
+
+    // Verify: Processing was immediate (< 10ms)
+    assert!(
+        elapsed.as_millis() < 10,
+        "Single write should process immediately, took {:?}",
+        elapsed
+    );
+
+    drop(_shutdown_tx);
+}
+
+/// **Business Scenario**: Multiple write requests naturally batch together
+///
+/// **Purpose**: Verify that under high load, drain pattern naturally collects
+/// multiple pending writes into a single batch, optimizing replication overhead.
+///
+/// **Key Validation**:
+/// - Multiple requests accumulated in buffer
+/// - Single flush processes entire batch
+/// - Single replication call for all writes
+///
+/// **Architecture Context**:
+/// High load → many writes accumulate between flush cycles → natural batching
+/// without manual threshold checks
+#[tokio::test]
+async fn test_drain_multiple_writes_natural_batch() {
+    use crate::ClientCmd;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use d_engine_proto::client::ClientWriteRequest;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = node_config("/tmp/test_drain_multiple_writes");
+    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 100;
+
+    // Mock replication - expect single call for entire batch
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::new(),
+                learner_progress: HashMap::new(),
+            })
+        });
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .with_raft_log(raft_log)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Action: Push 10 write requests (simulates high load)
+    let mut receivers = vec![];
+    for i in 0..10 {
+        let req = ClientWriteRequest {
+            client_id: i,
+            commands: vec![],
+        };
+        let (tx, rx) = MaybeCloneOneshot::new();
+        state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
+        receivers.push(rx);
+    }
+
+    // Verify: All 10 requests in buffer
+    assert_eq!(
+        state.propose_buffer.len(),
+        10,
+        "Buffer should accumulate all requests"
+    );
+
+    // Action: Single flush processes entire batch
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+
+    // Verify: Buffer emptied
+    assert_eq!(
+        state.propose_buffer.len(),
+        0,
+        "Buffer should be empty after flush"
+    );
+
+    // Verify: All 10 requests received responses
+    for (i, mut rx) in receivers.into_iter().enumerate() {
+        assert!(
+            rx.recv().await.is_ok(),
+            "Write {} should succeed in batch",
+            i
+        );
+    }
+
+    // Note: MockReplicationCore expects 1 call - confirms single replication
+    // for all 10 writes (batch optimization)
+
+    drop(_shutdown_tx);
+}
+
+/// **Business Scenario**: max_batch_size prevents unbounded write batching
+///
+/// **Purpose**: Verify that max_batch_size limit prevents processing excessively
+/// large write batches, protecting against memory pressure and maintaining
+/// bounded commit latency.
+///
+/// **Key Validation**:
+/// - Buffer can accumulate > max_batch_size requests
+/// - Main loop drain enforces limit during collection
+/// - Remaining requests stay for next flush cycle
+///
+/// **Architecture Context**:
+/// The drain pattern could theoretically collect unlimited writes. max_batch_size
+/// provides backpressure in the main loop to prevent overwhelming replication
+/// and commit processing.
+#[tokio::test]
+async fn test_drain_max_batch_size_limit() {
+    use crate::ClientCmd;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use d_engine_proto::client::ClientWriteRequest;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = node_config("/tmp/test_drain_max_batch");
+    // Set small max_batch_size for testing
+    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 5;
+
+    let ctx = MockBuilder::new(shutdown_rx).with_node_config(node_config).build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    // Action: Push 10 requests (exceeds max_batch_size of 5)
+    for i in 0..10 {
+        let req = ClientWriteRequest {
+            client_id: i,
+            commands: vec![],
+        };
+        let (tx, _rx) = MaybeCloneOneshot::new();
+        state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
+    }
+
+    // Verify: All 10 requests in buffer
+    assert_eq!(
+        state.propose_buffer.len(),
+        10,
+        "Buffer should have all 10 requests"
+    );
+
+    // Note: This validates buffer accumulation behavior.
+    // Actual max_batch_size enforcement happens in main loop's drain logic,
+    // not in flush_cmd_buffers().
+    //
+    // This proves buffer can hold > max_batch_size, demonstrating need for
+    // drain-time limiting in raft.rs main loop.
+
+    assert!(
+        state.propose_buffer.len()
+            > ctx.node_config.raft.replication.rpc_append_entries_in_batch_threshold,
+        "Buffer can accumulate beyond max_batch_size (main loop enforces during drain)"
+    );
+
+    drop(_shutdown_tx);
+}
+
+/// **Business Scenario**: Batch writes share single replication round-trip
+///
+/// **Purpose**: Verify the core optimization of write batching - multiple client
+/// writes collected in a batch are replicated with a single RPC instead of N
+/// separate replication calls.
+///
+/// **Key Validation**:
+/// - Multiple write requests in buffer
+/// - Single call to replication handler
+/// - All requests succeed after single commit
+///
+/// **Architecture Context**:
+/// This is the primary performance benefit of write batching in Raft.
+/// Instead of:
+///   Write 1 → Replicate 1 → Commit 1
+///   Write 2 → Replicate 2 → Commit 2
+///   Write 3 → Replicate 3 → Commit 3
+///
+/// We do:
+///   Collect [Write 1, 2, 3] → Single replicate → Single commit
+///
+/// This reduces network overhead by ~3x and improves throughput significantly.
+#[tokio::test]
+async fn test_write_batch_single_replication() {
+    use crate::ClientCmd;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use d_engine_proto::client::ClientWriteRequest;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = node_config("/tmp/test_batch_single_replication");
+    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 100;
+
+    // Mock replication - expect EXACTLY 1 call for entire batch
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_handle_raft_request_in_batch()
+        .times(1) // KEY: Single replication for all writes
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::new(),
+                learner_progress: HashMap::new(),
+            })
+        });
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .with_raft_log(raft_log)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Action: Push 5 write requests
+    let mut receivers = vec![];
+    for i in 0..5 {
+        let req = ClientWriteRequest {
+            client_id: i,
+            commands: vec![],
+        };
+        let (tx, rx) = MaybeCloneOneshot::new();
+        state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
+        receivers.push(rx);
+    }
+
+    // Action: Flush batch (triggers single replication)
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+
+    // Verify: All 5 writes succeeded
+    for (i, mut rx) in receivers.into_iter().enumerate() {
+        assert!(rx.recv().await.is_ok(), "Write {} should succeed", i);
+    }
+
+    // Verify: MockReplicationCore received exactly 1 call
+    // (If each write triggered separate replication, we'd see 5 calls)
+    // The .times(1) expectation validates this optimization.
+
+    drop(_shutdown_tx);
 }

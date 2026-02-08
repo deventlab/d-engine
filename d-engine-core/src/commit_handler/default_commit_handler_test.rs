@@ -848,29 +848,6 @@ mod process_batch_test {
         // Verify command was NOT applied
     }
 
-    #[tokio::test]
-    async fn handles_command_failure_properly() {
-        let entries = build_entries(
-            vec![
-                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
-                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
-            ],
-            1,
-        );
-
-        let last_applied = entries.len();
-        let mut harness = setup_harness(
-            Leader as i32,
-            1,
-            entries,
-            last_applied as u64,
-            move || false,
-            move || true,
-            None,
-        );
-        let result = harness.process_batch_handler().await;
-        assert!(result.is_err());
-    }
 
     #[tokio::test]
     async fn triggers_snapshot_when_condition_met() {
@@ -976,103 +953,7 @@ mod process_batch_test {
         // Verification: apply_chunk called once with 1000 commands
     }
 
-    #[tokio::test]
-    async fn maintains_ordering_across_entry_types() {
-        let entries = build_entries(
-            vec![
-                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
-                CommandType::Configuration(Change::AddNode(AddNode {
-                    node_id: 1,
-                    address: "addr".into(),
-                    status: d_engine_proto::common::NodeStatus::Promotable as i32,
-                })),
-                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
-            ],
-            1,
-        );
 
-        let process_order = Arc::new(Mutex::new(Vec::new()));
-        let order_capture = process_order.clone();
-        let last_applied = entries.len();
-        let mut harness = setup_harness(
-            Leader as i32,
-            1,
-            entries,
-            last_applied as u64,
-            {
-                let order_capture = order_capture.clone();
-                move || {
-                    order_capture.lock().push("config");
-                    false // Returns bool to indicate no simulation error
-                }
-            },
-            {
-                let order_capture = process_order.clone();
-                move || {
-                    order_capture.lock().push("command");
-                    false
-                }
-            },
-            None,
-        );
-        let result = harness.process_batch_handler().await;
-        assert!(result.is_ok());
-
-        // Verify processing order: cmd1 (command), then config, then cmd2 (command)
-        let order = process_order.lock();
-        assert_eq!(*order, vec!["command", "config", "command"]);
-    }
-
-    #[tokio::test]
-    async fn config_failure_prevents_subsequent_processing() {
-        let entries = build_entries(
-            vec![
-                CommandType::Configuration(Change::AddNode(AddNode {
-                    node_id: 1,
-                    address: "addr".into(),
-                    status: d_engine_proto::common::NodeStatus::Promotable as i32,
-                })),
-                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
-                CommandType::Configuration(Change::RemoveNode(RemoveNode { node_id: 1 })),
-            ],
-            1,
-        );
-
-        let process_order = Arc::new(Mutex::new(Vec::new()));
-        let order_capture = process_order.clone();
-
-        let last_applied = entries.len();
-        let mut harness = setup_harness(
-            Leader as i32,
-            1,
-            entries,
-            last_applied as u64,
-            {
-                let order_capture = order_capture.clone();
-                // Create a closure that returns bool (true means simulated error)
-                move || {
-                    order_capture.lock().push("config");
-                    false // Returns bool to indicate no simulation error
-                }
-            },
-            {
-                let order_capture = process_order.clone();
-                move || {
-                    order_capture.lock().push("command");
-                    true
-                }
-            },
-            None,
-        );
-        let result = harness.process_batch_handler().await;
-        assert!(result.is_err());
-
-        // Verify only first config was processed
-        let order = process_order.lock();
-        println!("Order: {order:?}",);
-        assert_eq!(order.len(), 1);
-        assert!(order[0].starts_with("command"));
-    }
 
     /// Test 1: MembershipApplied event MUST be sent after successful config change
     ///

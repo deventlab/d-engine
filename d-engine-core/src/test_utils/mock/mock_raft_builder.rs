@@ -123,6 +123,7 @@ impl MockBuilder {
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (
             id,
             raft_log,
@@ -208,6 +209,8 @@ impl MockBuilder {
                 role_rx,
                 event_tx,
                 event_rx,
+                cmd_tx,
+                cmd_rx,
                 shutdown_signal: self.shutdown_signal,
             },
             arc_node_config.clone(),

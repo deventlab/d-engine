@@ -14,11 +14,9 @@ fn create_test_request() -> TestRequest {
 #[test]
 fn test_new_initialization() {
     let max_size = 5;
-    let timeout = Duration::from_secs(1);
-    let buffer = BatchBuffer::<TestRequest>::new(max_size, timeout);
+    let buffer = BatchBuffer::<TestRequest>::new(max_size);
 
     assert_eq!(buffer.max_batch_size, max_size);
-    assert_eq!(buffer.batch_timeout, timeout);
     assert!(buffer.buffer.is_empty());
     assert!(buffer.buffer.capacity() >= max_size);
     assert!(buffer.last_flush.elapsed() < Duration::from_secs(1));
@@ -26,7 +24,7 @@ fn test_new_initialization() {
 
 #[test]
 fn test_push_below_max() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(3, Duration::from_secs(1));
+    let mut buffer = BatchBuffer::<TestRequest>::new(3);
     assert_eq!(buffer.push(create_test_request()), None);
     assert_eq!(buffer.push(create_test_request()), None);
     assert_eq!(buffer.buffer.len(), 2);
@@ -34,7 +32,7 @@ fn test_push_below_max() {
 
 #[test]
 fn test_push_exact_max() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(2, Duration::from_secs(1));
+    let mut buffer = BatchBuffer::<TestRequest>::new(2);
     assert_eq!(buffer.push(create_test_request()), None);
     assert_eq!(buffer.push(create_test_request()), Some(2));
     assert_eq!(buffer.buffer.len(), 2);
@@ -42,39 +40,42 @@ fn test_push_exact_max() {
 
 #[test]
 fn test_push_exceed_max() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(2, Duration::from_secs(1));
+    let mut buffer = BatchBuffer::<TestRequest>::new(2);
     buffer.push(create_test_request());
     buffer.push(create_test_request());
     assert_eq!(buffer.push(create_test_request()), Some(3));
     assert_eq!(buffer.buffer.len(), 3);
 }
 
+/// Test: is_empty returns correct state
 #[test]
-fn test_should_flush_timeout_reached() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(3, Duration::from_millis(100));
+fn test_is_empty() {
+    let mut buffer = BatchBuffer::<TestRequest>::new(3);
+    assert!(buffer.is_empty());
+
     buffer.push(create_test_request());
-    buffer.last_flush = Instant::now() - Duration::from_millis(150);
-    assert!(buffer.should_flush());
+    assert!(!buffer.is_empty());
+
+    buffer.take();
+    assert!(buffer.is_empty());
 }
 
+/// Test: take_all returns all items
 #[test]
-fn test_should_flush_timeout_not_reached() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(3, Duration::from_millis(100));
+fn test_take_all() {
+    let mut buffer = BatchBuffer::<TestRequest>::new(5);
     buffer.push(create_test_request());
-    buffer.last_flush = Instant::now() - Duration::from_millis(50);
-    assert!(!buffer.should_flush());
-}
+    buffer.push(create_test_request());
+    buffer.push(create_test_request());
 
-#[test]
-fn test_should_flush_empty_buffer() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(3, Duration::from_millis(100));
-    buffer.last_flush = Instant::now() - Duration::from_millis(150);
-    assert!(!buffer.should_flush());
+    let taken = buffer.take_all();
+    assert_eq!(taken.len(), 3);
+    assert!(buffer.is_empty());
 }
 
 #[test]
 fn test_take_resets_buffer() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(3, Duration::from_secs(1));
+    let mut buffer = BatchBuffer::<TestRequest>::new(3);
     buffer.push(create_test_request());
 
     let taken = buffer.take();
@@ -85,7 +86,7 @@ fn test_take_resets_buffer() {
 
 #[test]
 fn test_take_returns_correct_elements() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(3, Duration::from_secs(1));
+    let mut buffer = BatchBuffer::<TestRequest>::new(3);
     let req1 = create_test_request();
     let req2 = create_test_request();
 
@@ -100,7 +101,7 @@ fn test_take_returns_correct_elements() {
 
 #[test]
 fn test_consecutive_take_operations() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(2, Duration::from_secs(1));
+    let mut buffer = BatchBuffer::<TestRequest>::new(2);
     buffer.push(create_test_request());
 
     // 1st time take
@@ -117,11 +118,127 @@ fn test_consecutive_take_operations() {
 
 #[test]
 fn test_buffer_reuse_after_take() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(2, Duration::from_secs(1));
+    let mut buffer = BatchBuffer::<TestRequest>::new(2);
     buffer.push(create_test_request());
     buffer.take();
 
     buffer.push(create_test_request());
     assert_eq!(buffer.push(create_test_request()), Some(2));
     assert_eq!(buffer.buffer.len(), 2);
+}
+
+/// Test: take_with_trigger records Drain metric correctly
+#[test]
+fn test_take_with_trigger_drain() {
+    let metrics = Arc::new(BatchMetrics::new(1));
+    let mut buffer = BatchBuffer::<TestRequest>::new(2).with_metrics(metrics.clone());
+
+    buffer.push(create_test_request());
+    buffer.push(create_test_request());
+
+    let taken = buffer.take_with_trigger(BatchTriggerType::Drain);
+
+    assert_eq!(taken.len(), 2);
+    assert_eq!(
+        metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        metrics.total_batch_count.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        metrics.total_batch_size.load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+}
+
+/// Test: take_with_trigger records Heartbeat metric correctly
+#[test]
+fn test_take_with_trigger_heartbeat() {
+    let metrics = Arc::new(BatchMetrics::new(1));
+    let mut buffer = BatchBuffer::<TestRequest>::new(5).with_metrics(metrics.clone());
+
+    buffer.push(create_test_request());
+
+    let taken = buffer.take_with_trigger(BatchTriggerType::Heartbeat);
+
+    assert_eq!(taken.len(), 1);
+    assert_eq!(
+        metrics.heartbeat_triggered.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        metrics.total_batch_count.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        metrics.total_batch_size.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+/// Test: multiple triggers track cumulative metrics
+#[test]
+fn test_take_with_trigger_cumulative_metrics() {
+    let metrics = Arc::new(BatchMetrics::new(1));
+    let mut buffer = BatchBuffer::<TestRequest>::new(2).with_metrics(metrics.clone());
+
+    // First batch triggered by drain
+    buffer.push(create_test_request());
+    buffer.push(create_test_request());
+    buffer.take_with_trigger(BatchTriggerType::Drain);
+
+    // Second batch triggered by heartbeat
+    buffer.push(create_test_request());
+    buffer.take_with_trigger(BatchTriggerType::Heartbeat);
+
+    // Check cumulative counters
+    assert_eq!(
+        metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        metrics.heartbeat_triggered.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        metrics.total_batch_count.load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        metrics.total_batch_size.load(std::sync::atomic::Ordering::Relaxed),
+        3
+    );
+}
+
+/// Test: take resets last_flush timer
+#[test]
+fn test_take_resets_last_flush_timer() {
+    let mut buffer = BatchBuffer::<TestRequest>::new(2);
+    buffer.push(create_test_request());
+
+    let before_take = Instant::now();
+    buffer.take();
+    let after_take = Instant::now();
+
+    let elapsed = buffer.last_flush.elapsed();
+    // last_flush should be very recent (within 100ms)
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "last_flush not reset properly"
+    );
+
+    // Verify it's actually set to after before_take
+    assert!(buffer.last_flush >= before_take);
+    assert!(buffer.last_flush <= after_take + Duration::from_millis(10));
+}
+
+/// Test: freshly created buffer is empty
+#[test]
+fn test_fresh_buffer_is_empty() {
+    let buffer = BatchBuffer::<TestRequest>::new(5);
+
+    assert!(buffer.is_empty());
+    assert_eq!(buffer.buffer.len(), 0);
 }

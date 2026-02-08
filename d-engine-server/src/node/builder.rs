@@ -357,6 +357,7 @@ where
 
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10240);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let event_tx_clone = event_tx.clone(); // used in commit handler
 
         let node_config_arc = Arc::new(node_config);
@@ -409,6 +410,8 @@ where
                 role_rx,
                 event_tx,
                 event_rx,
+                cmd_tx.clone(),
+                cmd_rx,
                 shutdown_signal.clone(),
             ),
             node_config_arc.clone(),
@@ -465,6 +468,7 @@ where
             raft_core: Arc::new(Mutex::new(raft_core)),
             membership,
             event_tx: event_tx.clone(),
+            cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,

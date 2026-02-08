@@ -8,6 +8,7 @@ use d_engine_proto::server::cluster::cluster_conf_update_response;
 use d_engine_proto::server::election::VoteRequest;
 use tonic::Code;
 
+use crate::ClientCmd;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MockBuilder;
@@ -503,19 +504,16 @@ async fn test_learner_rejects_client_write_request() {
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientPropose(
+    let cmd = ClientCmd::Propose(
         d_engine_proto::client::ClientWriteRequest {
             client_id: 1,
             commands: vec![],
         },
         resp_tx,
     );
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
+    // Non-leader: push_client_cmd will immediately reject
+    state.push_client_cmd(cmd, &context);
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(
@@ -547,13 +545,10 @@ async fn test_learner_rejects_client_read_request() {
         keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
+    // Non-leader: push_client_cmd will immediately reject
+    state.push_client_cmd(cmd, &context);
 
     let response = resp_rx.recv().await.unwrap().expect("should get response");
     assert_eq!(

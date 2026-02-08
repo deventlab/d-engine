@@ -310,6 +310,7 @@ impl EmbeddedEngine {
         #[cfg(not(feature = "watch"))]
         let client = Arc::new(EmbeddedClient::new_internal(
             node.event_tx.clone(),
+            node.cmd_tx.clone(),
             node.node_id,
             Duration::from_millis(node.node_config.raft.general_raft_timeout_duration_in_ms),
         ));
@@ -319,6 +320,7 @@ impl EmbeddedEngine {
             let watch_registry = node.watch_registry.clone();
             let mut client = EmbeddedClient::new_internal(
                 node.event_tx.clone(),
+                node.cmd_tx.clone(),
                 node.node_id,
                 Duration::from_millis(node.node_config.raft.general_raft_timeout_duration_in_ms),
             );

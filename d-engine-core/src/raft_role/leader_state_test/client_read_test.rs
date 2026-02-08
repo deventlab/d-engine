@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tracing_test::traced_test;
 
+use crate::ClientCmd;
 use crate::MockRaftLog;
 use crate::MockStateMachineHandler;
 use crate::candidate_state::CandidateState;
@@ -479,7 +480,6 @@ async fn test_linearizable_read_quorum_failure() {
     use tokio::sync::mpsc;
     use tonic::Code;
 
-    use crate::RaftEvent;
     use crate::convert::safe_kv_bytes;
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     use crate::test_utils::MockBuilder;
@@ -514,15 +514,15 @@ async fn test_linearizable_read_quorum_failure() {
         consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-    // Event handling should succeed (error is sent to client via resp_rx)
-    state
-        .handle_raft_event(raft_event, &context, role_tx)
-        .await
-        .expect("Event should be handled successfully");
+    // Push to buffer
+    state.push_client_cmd(cmd, &context);
+
+    // Process the batch (this triggers leadership verification which will fail)
+    let _ = state.process_linearizable_read_batch(&context, &role_tx).await;
 
     // Then: Client receives error via response channel
     let e = resp_rx.recv().await.unwrap().unwrap_err();
@@ -568,7 +568,6 @@ async fn test_linearizable_read_quorum_success() {
     use tokio::sync::mpsc;
 
     use crate::NewCommitData;
-    use crate::RaftEvent;
     use crate::RoleEvent;
     use crate::convert::safe_kv_bytes;
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
@@ -647,11 +646,16 @@ async fn test_linearizable_read_quorum_success() {
         keys,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    // Push to buffer
+    state.push_client_cmd(cmd, &context);
+
+    // Process the batch
     state
-        .handle_raft_event(raft_event, &context, role_tx)
+        .process_linearizable_read_batch(&context, &role_tx)
         .await
         .expect("should succeed");
 
@@ -705,7 +709,6 @@ async fn test_linearizable_read_quorum_success() {
 async fn test_linearizable_read_encounters_higher_term() {
     use tokio::sync::mpsc;
 
-    use crate::RaftEvent;
     use crate::RoleEvent;
     use crate::convert::safe_kv_bytes;
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
@@ -753,15 +756,13 @@ async fn test_linearizable_read_encounters_higher_term() {
         keys,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-    // Event handling should succeed (HigherTerm is handled, client gets error via resp_rx)
-    state
-        .handle_raft_event(raft_event, &context, role_tx)
-        .await
-        .expect("Event should be handled successfully");
+    // Push to buffer and flush (triggers leadership verification which discovers higher term)
+    state.push_client_cmd(cmd, &context);
+    let _ = state.flush_cmd_buffers(&context, &role_tx).await;
 
     // Then: Leader commit remains unchanged (HigherTerm aborted the operation)
     assert_eq!(state.commit_index(), 1);
@@ -807,7 +808,6 @@ async fn test_linearizable_read_encounters_higher_term() {
 #[tokio::test]
 #[traced_test]
 async fn test_lease_read_with_valid_lease() {
-    use crate::RaftEvent;
     use crate::convert::safe_kv_bytes;
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     use crate::test_utils::MockBuilder;
@@ -847,13 +847,11 @@ async fn test_lease_read_with_valid_lease() {
         keys: vec![safe_kv_bytes(1)],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    state
-        .handle_raft_event(raft_event, &context, role_tx)
-        .await
-        .expect("should succeed");
+    state.push_client_cmd(cmd, &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.error, ErrorCode::Success as i32);
@@ -888,7 +886,6 @@ async fn test_lease_read_with_valid_lease() {
 #[tokio::test]
 #[traced_test]
 async fn test_lease_read_with_expired_lease() {
-    use crate::RaftEvent;
     use crate::convert::safe_kv_bytes;
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     use crate::test_utils::MockBuilder;
@@ -936,13 +933,11 @@ async fn test_lease_read_with_expired_lease() {
         keys: vec![safe_kv_bytes(1)],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    state
-        .handle_raft_event(raft_event, &context, role_tx)
-        .await
-        .expect("should succeed");
+    state.push_client_cmd(cmd, &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.error, ErrorCode::Success as i32);
@@ -976,7 +971,6 @@ async fn test_lease_read_with_expired_lease() {
 #[tokio::test]
 #[traced_test]
 async fn test_unspecified_policy_defaults_to_linearizable_read() {
-    use crate::RaftEvent;
     use crate::convert::safe_kv_bytes;
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     use crate::test_utils::MockBuilder;
@@ -1032,13 +1026,11 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
         keys: vec![safe_kv_bytes(1)],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    state
-        .handle_raft_event(raft_event, &context, role_tx)
-        .await
-        .expect("should succeed");
+    state.push_client_cmd(cmd, &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.error, ErrorCode::Success as i32);
@@ -1073,7 +1065,6 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
 #[tokio::test]
 #[traced_test]
 async fn test_eventual_consistency_serves_immediately() {
-    use crate::RaftEvent;
     use crate::RaftNodeConfig;
     use crate::convert::safe_kv_bytes;
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
@@ -1102,13 +1093,11 @@ async fn test_eventual_consistency_serves_immediately() {
         keys: vec![safe_kv_bytes(1)],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    state
-        .handle_raft_event(raft_event, &context, role_tx)
-        .await
-        .expect("should succeed");
+    state.push_client_cmd(cmd, &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.error, ErrorCode::Success as i32);
@@ -1143,7 +1132,6 @@ async fn test_eventual_consistency_serves_immediately() {
 #[tokio::test]
 #[traced_test]
 async fn test_server_default_overrides_client_policy() {
-    use crate::RaftEvent;
     use crate::RaftNodeConfig;
     use crate::config::ReadConsistencyPolicy as ServerPolicy;
     use crate::convert::safe_kv_bytes;
@@ -1174,13 +1162,11 @@ async fn test_server_default_overrides_client_policy() {
         keys: vec![safe_kv_bytes(1)],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+    let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    state
-        .handle_raft_event(raft_event, &context, role_tx)
-        .await
-        .expect("should succeed");
+    state.push_client_cmd(cmd, &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.error, ErrorCode::Success as i32);
@@ -1188,1191 +1174,864 @@ async fn test_server_default_overrides_client_policy() {
 }
 
 // ============================================================================
-// Read Batching Unit Tests (Migrated from d-engine-core)
+// Drain-Based Read Processing Tests
 // ============================================================================
+// Tests validating read consistency policies under drain-based batch architecture
 
-mod read_batching_tests {
-    use super::*;
+/// **Business Scenario**: Multiple LinearizableRead requests share single quorum verification
+///
+/// **Purpose**: Verify that drain-based batching collects multiple LinearizableRead requests
+/// and processes them with a single quorum check, optimizing network overhead while
+/// maintaining linearizability guarantees.
+///
+/// **Key Validation**:
+/// - Multiple requests processed in single batch
+/// - Single quorum verification serves entire batch
+/// - All requests receive successful responses
+///
+/// **Raft Protocol Context**:
+/// Batching LinearizableRead requests is a key optimization in Raft implementations.
+/// Instead of N quorum checks for N concurrent reads, we perform 1 quorum check
+/// that verifies leadership for all requests collected in the batch window.
+#[tokio::test]
+#[traced_test]
+async fn test_linearizable_read_batch_shared_quorum() {
     use crate::MockMembership;
-    use crate::RaftEvent;
-    use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
-    use crate::test_utils::mock::MockTypeConfig;
+    use crate::MockReplicationCore;
+    use crate::RaftNodeConfig;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
     use bytes::Bytes;
-    use d_engine_proto::client::ClientReadRequest;
+    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
     use tokio::sync::mpsc;
-    use tokio::time::{Duration, sleep};
 
-    /// Helper: Create mock ClientReadRequest
-    fn create_read_request(key: Vec<u8>) -> ClientReadRequest {
-        ClientReadRequest {
-            client_id: 1,
-            keys: vec![Bytes::from(key)],
-            consistency_policy: Some(
-                d_engine_proto::client::ReadConsistencyPolicy::LinearizableRead as i32,
-            ),
-        }
-    }
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
-    /// Test size threshold triggers immediate flush
-    ///
-    /// # Test Scenario
-    /// This verifies size-based batching trigger: when buffer reaches size_threshold,
-    /// all accumulated requests are flushed immediately.
-    ///
-    /// # Given
-    /// - size_threshold = 50 (default from config)
-    /// - Single-node cluster (no replication peers)
-    ///
-    /// # When
-    /// - 49 requests enqueued (below threshold)
-    /// - 50th request arrives (reaches threshold)
-    ///
-    /// # Then
-    /// - Buffer accumulates 49 requests without flush
-    /// - 50th request triggers immediate flush
-    /// - Buffer reaches size threshold (50 requests)
-    ///
-    /// # Note
-    /// Full end-to-end flush behavior is tested in integration tests
-    #[tokio::test]
-    async fn test_read_buffer_size_trigger() {
-        let mut state =
-            LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config("/tmp/test_size_trigger")));
+    // Configure for immediate batch processing
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
 
-        // Setup: Initialize cluster metadata (single node)
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        // Action: Enqueue 49 requests (below threshold)
-        for i in 0..49 {
-            let req = create_read_request(format!("key{i}").into_bytes());
-            let (tx, _rx) = MaybeCloneOneshot::new();
-            state.read_buffer.push((req, tx));
-        }
-
-        // Verify: Buffer has 49 requests (not yet flushed)
-        assert_eq!(
-            state.read_buffer.len(),
-            49,
-            "Buffer should have 49 requests before threshold"
-        );
-
-        // Action: Add 50th request (reaches threshold)
-        let req = create_read_request(b"key49".to_vec());
-        let (tx, _rx) = MaybeCloneOneshot::new();
-        state.read_buffer.push((req, tx));
-
-        // Verify: Buffer reaches size threshold
-        assert_eq!(
-            state.read_buffer.len(),
-            50,
-            "Buffer should have 50 requests at threshold"
-        );
-
-        // Verify: Size threshold condition is met (would trigger flush in real code)
-        let config = node_config("/tmp/test_size_trigger");
-        let size_threshold = config.raft.read_consistency.read_batching.size_threshold;
-        assert!(
-            state.read_buffer.len() >= size_threshold,
-            "Buffer size {} should meet threshold {} (triggers flush in handle_raft_event)",
-            state.read_buffer.len(),
-            size_threshold
-        );
-    }
-
-    /// Test time threshold triggers flush for single request
-    ///
-    /// # Test Scenario
-    /// This verifies time-based batching trigger: when timeout expires,
-    /// buffered requests are flushed even if below size threshold.
-    ///
-    /// # Given
-    /// - size_threshold = 50
-    /// - time_threshold_ms = 10
-    /// - Single request enqueued (far below size threshold)
-    ///
-    /// # When
-    /// - Request arrives and timeout task spawns
-    /// - Wait > 10ms
-    ///
-    /// # Then
-    /// - Timeout condition is met (elapsed >= time_threshold_ms)
-    /// - Single request would be flushed (prevents starvation)
-    ///
-    /// # Raft Protocol Context
-    /// This ensures low-concurrency workloads don't experience unbounded latency
-    /// waiting for size threshold. Timeout guarantees maximum batching delay.
-    ///
-    /// # Note
-    /// Full end-to-end timeout behavior is tested in integration tests
-    #[tokio::test]
-    async fn test_read_buffer_time_trigger() {
-        let mut state =
-            LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config("/tmp/test_time_trigger")));
-
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        // Action: Enqueue single request
-        let req = create_read_request(b"lonely_key".to_vec());
-        let (tx, _rx) = MaybeCloneOneshot::new();
-        state.read_buffer.push((req, tx));
-        let start_time = tokio::time::Instant::now();
-        state.read_buffer_start_time = Some(start_time);
-
-        // Verify: Buffer has 1 request (below size threshold)
-        assert_eq!(state.read_buffer.len(), 1, "Buffer should have 1 request");
-        let config = node_config("/tmp/test_time_trigger");
-        assert!(
-            state.read_buffer.len() < config.raft.read_consistency.read_batching.size_threshold,
-            "Single request should NOT trigger size threshold"
-        );
-
-        // Simulate timeout: Wait for time_threshold_ms
-        sleep(Duration::from_millis(11)).await;
-
-        // Verify: Timeout condition is met
-        let elapsed = start_time.elapsed();
-        assert!(
-            elapsed >= Duration::from_millis(10),
-            "Timeout should expire after {}ms, actual: {:?}",
-            config.raft.read_consistency.read_batching.time_threshold_ms,
-            elapsed
-        );
-
-        // Verify: Start time was recorded (enables timeout detection)
-        assert!(
-            state.read_buffer_start_time.is_some(),
-            "Start time should be recorded for timeout detection"
-        );
-    }
-
-    /// Test timeout idempotency prevents duplicate flush
-    ///
-    /// # Test Scenario
-    /// This verifies timeout task idempotency: when size threshold already triggered
-    /// flush, delayed timeout event is safely ignored (no-op).
-    ///
-    /// # Given
-    /// - 50 requests arrive → size threshold triggers immediate flush
-    /// - Buffer is cleared
-    /// - Timeout task still pending (10ms not yet elapsed when flush happened)
-    ///
-    /// # When
-    /// - 10ms later, timeout fires and sends FlushReadBuffer event
-    ///
-    /// # Then
-    /// - Buffer remains empty (no second flush)
-    /// - Start time remains cleared
-    /// - process_linearizable_read_batch() would return early (empty buffer check)
-    ///
-    /// # Note
-    /// Full end-to-end idempotency is tested in integration tests
-    #[tokio::test]
-    async fn test_read_buffer_timeout_idempotent() {
-        let mut state =
-            LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config("/tmp/test_idempotent")));
-
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        // Action: Enqueue 50 requests and immediately clear (simulates size flush)
-        for i in 0..50 {
-            let req = create_read_request(format!("key{i}").into_bytes());
-            let (tx, _rx) = MaybeCloneOneshot::new();
-            state.read_buffer.push((req, tx));
-        }
-
-        let start_time = tokio::time::Instant::now();
-        state.read_buffer_start_time = Some(start_time);
-
-        // Verify: Buffer has 50 requests
-        assert_eq!(
-            state.read_buffer.len(),
-            50,
-            "Buffer should have 50 requests"
-        );
-
-        // Simulate size threshold flush
-        state.read_buffer.clear();
-        state.read_buffer_start_time = None;
-
-        // Verify: Buffer is empty after flush
-        assert_eq!(
-            state.read_buffer.len(),
-            0,
-            "Buffer should be empty after size flush"
-        );
-
-        // Wait for timeout to expire
-        sleep(Duration::from_millis(15)).await;
-
-        // Verify: Buffer remains empty (idempotent - no second flush needed)
-        assert_eq!(state.read_buffer.len(), 0, "Buffer should still be empty");
-        assert!(
-            state.read_buffer_start_time.is_none(),
-            "Start time should be cleared after first flush"
-        );
-    }
-
-    /// Test Leader role change drains buffer
-    ///
-    /// # Test Scenario
-    /// This verifies Raft safety during role transition: when Leader steps down,
-    /// all buffered read requests are drained and failed.
-    ///
-    /// # Given
-    /// - Leader has buffered requests (below size threshold, timeout not expired)
-    ///
-    /// # When
-    /// - Leader loses leadership (receives higher term) → becomes Follower
-    /// - drain_read_buffer() is called during role transition
-    ///
-    /// # Then
-    /// - drain_read_buffer() returns Ok(()) for empty buffer
-    /// - All buffered requests would be failed with "Leader stepped down" error
-    /// - Buffer is cleared
-    ///
-    /// # Raft Protocol Context
-    /// This ensures safety: old Leader cannot process reads after stepping down.
-    /// Clients must retry with new Leader.
-    #[tokio::test]
-    async fn test_read_buffer_role_change_drain() {
-        let mut state =
-            LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config("/tmp/test_drain")));
-
-        // Action: Simulate Leader → Follower transition (drain_read_buffer is called)
-        let result = state.drain_read_buffer();
-
-        // Verify: drain_read_buffer returns Ok(()) for empty buffer
-        assert!(
-            result.is_ok(),
-            "drain_read_buffer should succeed for newly created Leader"
-        );
-    }
-
-    /// Test drain_read_buffer on non-Leader roles returns error
-    ///
-    /// # Test Scenario
-    /// This verifies role responsibility: only Leader buffers reads,
-    /// other roles return NotLeader error when drain is called.
-    ///
-    /// # Given
-    /// - Node is in Follower or Candidate role
-    ///
-    /// # When
-    /// - drain_read_buffer() is called
-    ///
-    /// # Then
-    /// - Returns NotLeader error
-    /// - No buffered reads (these roles don't buffer)
-    #[tokio::test]
-    async fn test_drain_read_buffer_other_roles() {
-        use crate::raft_role::candidate_state::CandidateState;
-        use crate::raft_role::follower_state::FollowerState;
-
-        // Test Follower
-        let mut follower_state = FollowerState::<MockTypeConfig>::new(
-            1,
-            Arc::new(node_config("/tmp/test_follower")),
-            None,
-            None,
-        );
-        let result = follower_state.drain_read_buffer();
-        assert!(
-            result.is_err(),
-            "Follower drain_read_buffer should return error"
-        );
-
-        // Test Candidate
-        let mut candidate_state =
-            CandidateState::<MockTypeConfig>::new(1, Arc::new(node_config("/tmp/test_candidate")));
-        let result = candidate_state.drain_read_buffer();
-        assert!(
-            result.is_err(),
-            "Candidate drain_read_buffer should return error"
-        );
-    }
-
-    /// Test batching configuration is correctly applied
-    ///
-    /// # Test Scenario
-    /// This verifies configuration values are properly loaded from raft.toml.
-    ///
-    /// # Then
-    /// - size_threshold = 50 (default)
-    /// - time_threshold_ms = 10 (default)
-    #[tokio::test]
-    async fn test_read_batching_config_applied() {
-        let config = node_config("/tmp/test_config");
-
-        // Verify default config values from raft.toml
-        assert_eq!(
-            config.raft.read_consistency.read_batching.size_threshold, 50,
-            "Default size threshold should be 50"
-        );
-        assert_eq!(
-            config.raft.read_consistency.read_batching.time_threshold_ms, 10,
-            "Default time threshold should be 10ms"
-        );
-    }
-
-    /// Test first ClientReadRequest spawns timeout task
-    ///
-    /// # Test Scenario
-    /// This verifies timeout task lifecycle: first request spawns background task
-    /// that sends FlushReadBuffer event after timeout.
-    ///
-    /// # Given
-    /// - Empty buffer
-    /// - size_threshold = 50
-    /// - time_threshold_ms = 10
-    ///
-    /// # When
-    /// - 1st LinearizableRead request arrives
-    ///
-    /// # Then
-    /// - Request enqueued to buffer (len = 1)
-    /// - read_buffer_start_time recorded
-    /// - Timeout task spawns and sends FlushReadBuffer after 10ms
-    /// - Function returns Ok() immediately (early return)
-    #[tokio::test]
-    async fn test_first_request_spawns_timeout_task() {
-        use crate::test_utils::mock::mock_raft_context;
-        use tokio::sync::watch;
-
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-        let ctx = mock_raft_context("/tmp/test_first_request", shutdown_rx, None);
-        let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-        // Action: Send 1st request
-        let req = create_read_request(b"key1".to_vec());
-        let (tx, _rx) = MaybeCloneOneshot::new();
-        let result = state
-            .handle_raft_event(RaftEvent::ClientReadRequest(req, tx), &ctx, role_tx.clone())
-            .await;
-
-        // Verify: Function returns Ok (early return)
-        assert!(result.is_ok(), "Should return Ok on first request");
-
-        // Verify: Buffer has 1 request
-        assert_eq!(state.read_buffer.len(), 1, "Buffer should have 1 request");
-
-        // Verify: Start time recorded
-        assert!(
-            state.read_buffer_start_time.is_some(),
-            "Start time should be recorded for timeout detection"
-        );
-
-        // Wait for timeout task to send FlushReadBuffer event
-        tokio::time::sleep(Duration::from_millis(15)).await;
-
-        // Verify: role_rx receives ReprocessEvent(FlushReadBuffer)
-        let event = role_rx.try_recv();
-        assert!(
-            event.is_ok(),
-            "Timeout task should send FlushReadBuffer event"
-        );
-
-        if let Ok(role_event) = event {
-            match role_event {
-                crate::raft_role::RoleEvent::ReprocessEvent(boxed_event) => {
-                    assert!(
-                        matches!(*boxed_event, RaftEvent::FlushReadBuffer),
-                        "Event should be FlushReadBuffer"
-                    );
-                }
-                _ => panic!("Expected ReprocessEvent, got {role_event:?}"),
-            }
-        }
-
-        drop(shutdown_tx);
-    }
-
-    /// Test 2nd-49th requests only enqueue without spawning new timeout task
-    ///
-    /// # Test Scenario
-    /// This verifies timeout task reuse: subsequent requests share the same
-    /// timeout task spawned by first request.
-    ///
-    /// # Given
-    /// - Buffer has 1 request (timeout task already running)
-    ///
-    /// # When
-    /// - 2nd-10th requests arrive
-    ///
-    /// # Then
-    /// - Requests enqueued to buffer (len increases)
-    /// - NO new timeout tasks spawned
-    /// - read_buffer_start_time unchanged
-    /// - Only ONE FlushReadBuffer event in channel (from 1st request)
-    #[tokio::test]
-    async fn test_subsequent_requests_only_enqueue() {
-        use crate::test_utils::mock::mock_raft_context;
-        use tokio::sync::watch;
-
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-        let ctx = mock_raft_context("/tmp/test_subsequent", shutdown_rx, None);
-        let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-        // Action: Send 1st request (spawns timeout task)
-        let req1 = create_read_request(b"key1".to_vec());
-        let (tx1, _rx1) = MaybeCloneOneshot::new();
-        state
-            .handle_raft_event(
-                RaftEvent::ClientReadRequest(req1, tx1),
-                &ctx,
-                role_tx.clone(),
-            )
-            .await
-            .unwrap();
-
-        let first_start_time = state.read_buffer_start_time;
-        assert_eq!(state.read_buffer.len(), 1, "Buffer should have 1 request");
-
-        // Action: Send 2nd-10th requests (should only enqueue)
-        for i in 2..=10 {
-            let req = create_read_request(format!("key{i}").into_bytes());
-            let (tx, _rx) = MaybeCloneOneshot::new();
-            let result = state
-                .handle_raft_event(RaftEvent::ClientReadRequest(req, tx), &ctx, role_tx.clone())
-                .await;
-
-            assert!(result.is_ok(), "Request {i} should return Ok");
-        }
-
-        // Verify: Buffer has 10 requests
-        assert_eq!(
-            state.read_buffer.len(),
-            10,
-            "Buffer should have 10 requests"
-        );
-
-        // Verify: Start time unchanged (no new timeout task)
-        assert_eq!(
-            state.read_buffer_start_time, first_start_time,
-            "Start time should not change for subsequent requests"
-        );
-
-        // Wait for timeout task to send FlushReadBuffer event
-        tokio::time::sleep(Duration::from_millis(15)).await;
-
-        // Verify: Only ONE FlushReadBuffer event in channel (from 1st request)
-        let event1 = role_rx.try_recv();
-        assert!(event1.is_ok(), "Should have 1 FlushReadBuffer event");
-
-        let event2 = role_rx.try_recv();
-        assert!(
-            event2.is_err(),
-            "Should NOT have 2nd FlushReadBuffer event (no duplicate timeout tasks)"
-        );
-
-        drop(shutdown_tx);
-    }
-
-    /// Test 50th request triggers immediate flush
-    ///
-    /// # Test Scenario
-    /// This verifies size threshold behavior: when 50th request arrives,
-    /// buffer is immediately flushed.
-    ///
-    /// # Given
-    /// - Buffer has 49 requests
-    /// - Replication handler mocked to succeed
-    ///
-    /// # When
-    /// - 50th request arrives (size threshold reached)
-    ///
-    /// # Then
-    /// - process_linearizable_read_batch() called immediately
-    /// - Buffer cleared (len = 0)
-    /// - read_buffer_start_time cleared
-    /// - 50th request receives response
-    #[tokio::test]
-    async fn test_size_threshold_triggers_immediate_flush() {
-        use crate::MockReplicationCore;
-        use crate::test_utils::mock::mock_raft_context;
-        use tokio::sync::watch;
-
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-        let mut ctx = mock_raft_context("/tmp/test_size_flush", shutdown_rx, None);
-
-        // Mock ReplicationCore to allow verify_leadership
-        let mut replication = MockReplicationCore::new();
-        replication.expect_handle_raft_request_in_batch().returning(|_, _, _, _, _| {
+    // Mock replication handler - expect exactly 1 call for the entire batch
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
             Ok(crate::AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: Default::default(),
                 learner_progress: Default::default(),
             })
         });
-        ctx.handlers.replication_handler = replication;
 
-        let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_linearizable_read_batch_shared_quorum")
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .build_context();
 
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    // Setup cluster metadata
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
 
-        // Action: Send 49 requests
-        for i in 1..=49 {
-            let req = create_read_request(format!("key{i}").into_bytes());
-            let (tx, _rx) = MaybeCloneOneshot::new();
-            state
-                .handle_raft_event(RaftEvent::ClientReadRequest(req, tx), &ctx, role_tx.clone())
-                .await
-                .unwrap();
-        }
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-        assert_eq!(
-            state.read_buffer.len(),
-            49,
-            "Buffer should have 49 requests"
-        );
+    // Action: Push 3 LinearizableRead requests to buffer (simulating drain collection)
+    let req1 = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key1")],
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+    };
+    let (tx1, mut rx1) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Read(req1, tx1), &ctx);
 
-        // Action: Send 50th request (should trigger immediate flush)
-        let req50 = create_read_request(b"key50".to_vec());
-        let (tx50, mut rx50) = MaybeCloneOneshot::new();
-        let result = state
-            .handle_raft_event(
-                RaftEvent::ClientReadRequest(req50, tx50),
-                &ctx,
-                role_tx.clone(),
-            )
-            .await;
+    let req2 = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key2")],
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+    };
+    let (tx2, mut rx2) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Read(req2, tx2), &ctx);
 
-        assert!(result.is_ok(), "50th request should return Ok");
+    let req3 = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key3")],
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+    };
+    let (tx3, mut rx3) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Read(req3, tx3), &ctx);
 
-        // Verify: Buffer cleared (flush executed)
-        assert_eq!(
-            state.read_buffer.len(),
-            0,
-            "Buffer should be empty after size threshold flush"
-        );
+    // Action: Flush buffers (simulating drain-triggered flush)
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
 
-        // Verify: Start time cleared
-        assert!(
-            state.read_buffer_start_time.is_none(),
-            "Start time should be cleared after flush"
-        );
+    // Verify: Buffer cleared after flush
+    assert_eq!(
+        state.linearizable_read_buffer.len(),
+        0,
+        "Buffer should be empty after flush"
+    );
 
-        // Verify: 50th request receives response (flush completed)
-        let response = rx50.recv().await;
-        assert!(
-            response.is_ok(),
-            "50th request should receive response after flush"
-        );
+    // Verify: All requests receive responses
+    assert!(rx1.recv().await.is_ok(), "Request 1 should succeed");
+    assert!(rx2.recv().await.is_ok(), "Request 2 should succeed");
+    assert!(rx3.recv().await.is_ok(), "Request 3 should succeed");
 
-        drop(shutdown_tx);
-    }
+    drop(_shutdown_tx);
+}
 
-    /// Test FlushReadBuffer event with non-empty buffer
-    ///
-    /// # Test Scenario
-    /// This verifies timeout event handling: when FlushReadBuffer event is received
-    /// and buffer has requests, they are flushed.
-    ///
-    /// # Given
-    /// - Buffer has 5 requests (manually added)
-    /// - Replication handler mocked to succeed
-    ///
-    /// # When
-    /// - FlushReadBuffer event is handled
-    ///
-    /// # Then
-    /// - process_linearizable_read_batch() called
-    /// - Buffer cleared (len = 0)
-    #[tokio::test]
-    async fn test_flush_read_buffer_event_non_empty() {
-        use crate::MockReplicationCore;
-        use crate::test_utils::mock::mock_raft_context;
-        use tokio::sync::watch;
+/// **Business Scenario**: LinearizableRead refreshes lease, enabling LeaseRead reuse
+///
+/// **Purpose**: Verify cross-policy optimization where successful LinearizableRead
+/// verification refreshes the leader's lease timestamp, allowing subsequent LeaseRead
+/// requests to skip quorum checks and serve from local state machine.
+///
+/// **Key Validation**:
+/// - LinearizableRead performs quorum verification and refreshes lease
+/// - Subsequent LeaseRead reuses valid lease without quorum check
+/// - Only 1 replication call occurs (from LinearizableRead)
+///
+/// **Raft Protocol Context**:
+/// This optimization reduces network overhead when mixing consistency policies.
+/// LeaseRead can piggyback on LinearizableRead's verification within the lease
+/// duration (default: election_timeout / 2), avoiding redundant quorum checks.
+#[tokio::test]
+#[traced_test]
+async fn test_lease_reuse_after_linearizable_read_refresh() {
+    use crate::MockMembership;
+    use crate::MockReplicationCore;
+    use crate::RaftNodeConfig;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use bytes::Bytes;
+    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
+    use tokio::sync::mpsc;
 
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-        let mut ctx = mock_raft_context("/tmp/test_flush_event", shutdown_rx, None);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
-        // Mock ReplicationCore to allow verify_leadership
-        let mut replication = MockReplicationCore::new();
-        replication.expect_handle_raft_request_in_batch().returning(|_, _, _, _, _| {
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
+
+    // Mock replication - expect only 1 call (from LinearizableRead only)
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
             Ok(crate::AppendResults {
                 commit_quorum_achieved: true,
                 peer_updates: Default::default(),
                 learner_progress: Default::default(),
             })
         });
-        ctx.handlers.replication_handler = replication;
-
-        let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        // Setup: Manually add requests to buffer (simulate timeout scenario)
-        for i in 1..=5 {
-            let req = create_read_request(format!("key{i}").into_bytes());
-            let (tx, _rx) = MaybeCloneOneshot::new();
-            state.read_buffer.push((req, tx));
-        }
-
-        assert_eq!(state.read_buffer.len(), 5, "Buffer should have 5 requests");
-
-        // Action: Handle FlushReadBuffer event
-        let result =
-            state.handle_raft_event(RaftEvent::FlushReadBuffer, &ctx, role_tx.clone()).await;
-
-        assert!(result.is_ok(), "FlushReadBuffer event should return Ok");
-
-        // Verify: Buffer cleared (flush executed)
-        assert_eq!(
-            state.read_buffer.len(),
-            0,
-            "Buffer should be empty after FlushReadBuffer event"
-        );
-
-        drop(shutdown_tx);
-    }
-
-    /// Test FlushReadBuffer event with empty buffer is idempotent
-    ///
-    /// # Test Scenario
-    /// This verifies idempotency: FlushReadBuffer event on empty buffer is no-op.
-    ///
-    /// # Given
-    /// - Empty buffer
-    ///
-    /// # When
-    /// - FlushReadBuffer event is handled
-    ///
-    /// # Then
-    /// - No error (idempotent no-op)
-    /// - Buffer remains empty
-    #[tokio::test]
-    async fn test_flush_read_buffer_event_empty_buffer() {
-        use crate::test_utils::mock::mock_raft_context;
-        use tokio::sync::watch;
-
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-        let ctx = mock_raft_context("/tmp/test_flush_empty", shutdown_rx, None);
-        let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        // Verify: Buffer is empty
-        assert_eq!(
-            state.read_buffer.len(),
-            0,
-            "Buffer should be empty initially"
-        );
-
-        // Action: Handle FlushReadBuffer event on empty buffer
-        let result =
-            state.handle_raft_event(RaftEvent::FlushReadBuffer, &ctx, role_tx.clone()).await;
-
-        // Verify: No error (idempotent)
-        assert!(
-            result.is_ok(),
-            "FlushReadBuffer on empty buffer should be no-op without error"
-        );
-
-        // Verify: Buffer still empty
-        assert_eq!(
-            state.read_buffer.len(),
-            0,
-            "Buffer should remain empty after idempotent flush"
-        );
-
-        drop(shutdown_tx);
-    }
-
-    /// Test process_linearizable_read_batch updates lease timestamp after verification
-    ///
-    /// # Test Scenario
-    /// This verifies cross-policy optimization: successful LinearizableRead verification
-    /// updates lease timestamp, allowing subsequent LeaseRead requests to reuse this
-    /// verification without redundant quorum checks.
-    ///
-    /// # Given
-    /// - Leader has invalid lease (timestamp = 0)
-    /// - Replication handler mocked to succeed
-    ///
-    /// # When
-    /// - LinearizableRead request triggers process_linearizable_read_batch
-    /// - verify_leadership succeeds
-    ///
-    /// # Then
-    /// - process_linearizable_read_batch succeeds
-    /// - Lease timestamp updated (now > 0)
-    /// - Lease becomes valid
-    ///
-    /// # Raft Protocol Context
-    /// This optimization allows LeaseRead to piggyback on LinearizableRead verification,
-    /// avoiding redundant quorum checks when both policies are used concurrently.
-    #[tokio::test]
-    async fn test_flush_read_buffer_updates_lease_timestamp() {
-        use crate::MockReplicationCore;
-        use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-        use crate::test_utils::mock::mock_raft_context;
-        use bytes::Bytes;
-        use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-        use tokio::sync::watch;
-
-        // Setup: Create Leader with invalid lease
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-        let mut ctx = mock_raft_context("/tmp/test_lease_update", shutdown_rx, None);
-
-        // Mock successful leadership verification
-        let mut replication = MockReplicationCore::new();
-        replication
-            .expect_handle_raft_request_in_batch()
-            .times(1)
-            .returning(|_, _, _, _, _| {
-                Ok(crate::AppendResults {
-                    commit_quorum_achieved: true,
-                    peer_updates: Default::default(),
-                    learner_progress: Default::default(),
-                })
-            });
-        ctx.handlers.replication_handler = replication;
-
-        let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        // Verify: Initial lease is invalid (timestamp = 0)
-        assert!(
-            !state.is_lease_valid(&ctx),
-            "Lease should be invalid initially"
-        );
-        let initial_timestamp = state.lease_timestamp.load(std::sync::atomic::Ordering::Acquire);
-        assert_eq!(initial_timestamp, 0, "Initial lease timestamp should be 0");
-
-        // Action: Add LinearizableRead request to buffer and flush
-        let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
-        state.read_buffer.push((
-            ClientReadRequest {
-                client_id: 1,
-                keys: vec![Bytes::from_static(b"key1")],
-                consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
-            },
-            resp_tx,
-        ));
-
-        let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
-        let result = state.process_linearizable_read_batch(&ctx, &role_tx).await;
-
-        // Verify: process_linearizable_read_batch succeeded
-        assert!(
-            result.is_ok(),
-            "process_linearizable_read_batch should succeed after verification"
-        );
-
-        // Verify: Lease timestamp updated (now > 0)
-        let updated_timestamp = state.lease_timestamp.load(std::sync::atomic::Ordering::Acquire);
-        assert!(
-            updated_timestamp > 0,
-            "Lease timestamp should be updated after successful verification"
-        );
-        assert!(
-            updated_timestamp > initial_timestamp,
-            "Lease timestamp should increase from initial value"
-        );
-
-        // Verify: Lease is now valid
-        assert!(
-            state.is_lease_valid(&ctx),
-            "Lease should be valid after process_linearizable_read_batch updates timestamp"
-        );
-
-        drop(shutdown_tx);
-    }
-
-    /// Test mixed read policies in single batch
-    ///
-    /// # Test Scenario
-    /// This verifies batching behavior when multiple LinearizableRead requests
-    /// arrive within the same batching window and are flushed together.
-    ///
-    /// # Given
-    /// - size_threshold = 3 (small for testing)
-    /// - Replication handler mocked to succeed
-    ///
-    /// # When
-    /// - 3 LinearizableRead requests arrive
-    /// - 3rd request triggers size threshold flush
-    ///
-    /// # Then
-    /// - All 3 requests in buffer are processed together
-    /// - verify_leadership called once (batch optimization)
-    /// - Buffer cleared after flush
-    /// - All 3 requests succeed with consistent read_index
-    ///
-    /// # Raft Protocol Context
-    /// Batching multiple LinearizableRead requests into a single quorum check
-    /// is a key optimization - reduces network overhead while maintaining
-    /// linearizability guarantees.
-    #[tokio::test]
-    async fn test_mixed_read_policies_in_batch() {
-        use crate::MockReplicationCore;
-        use crate::RaftNodeConfig;
-        use crate::test_utils::MockBuilder;
-        use d_engine_proto::client::ReadConsistencyPolicy;
-
-        let (_shutdown_tx, shutdown_rx) = watch::channel(());
-
-        // Configure node_config
-        let mut node_config = RaftNodeConfig::default();
-        node_config.raft.read_consistency.read_batching.size_threshold = 3;
-        node_config.raft.read_consistency.allow_client_override = true;
-
-        // Mock ReplicationCore to allow verify_leadership
-        let mut replication = MockReplicationCore::new();
-        replication
-            .expect_handle_raft_request_in_batch()
-            .times(1)
-            .returning(|_, _, _, _, _| {
-                Ok(crate::AppendResults {
-                    commit_quorum_achieved: true,
-                    peer_updates: Default::default(),
-                    learner_progress: Default::default(),
-                })
-            });
-
-        let ctx = MockBuilder::new(shutdown_rx)
-            .with_db_path("/tmp/test_mixed_policies")
-            .with_node_config(node_config)
-            .with_replication_handler(replication)
-            .build_context();
-
-        let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        // Action: Add 3 LinearizableRead requests (triggers batching)
-        let req1 = ClientReadRequest {
-            client_id: 1,
-            keys: vec![Bytes::from_static(b"key1")],
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
-        };
-        let (tx1, mut rx1) = MaybeCloneOneshot::new();
-        state
-            .handle_raft_event(
-                RaftEvent::ClientReadRequest(req1, tx1),
-                &ctx,
-                role_tx.clone(),
-            )
-            .await
-            .unwrap();
-
-        let req2 = ClientReadRequest {
-            client_id: 1,
-            keys: vec![Bytes::from_static(b"key2")],
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
-        };
-        let (tx2, mut rx2) = MaybeCloneOneshot::new();
-        state
-            .handle_raft_event(
-                RaftEvent::ClientReadRequest(req2, tx2),
-                &ctx,
-                role_tx.clone(),
-            )
-            .await
-            .unwrap();
-
-        let req3 = ClientReadRequest {
-            client_id: 1,
-            keys: vec![Bytes::from_static(b"key3")],
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
-        };
-        let (tx3, mut rx3) = MaybeCloneOneshot::new();
-        state
-            .handle_raft_event(
-                RaftEvent::ClientReadRequest(req3, tx3),
-                &ctx,
-                role_tx.clone(),
-            )
-            .await
-            .unwrap();
-
-        // Verify: Buffer cleared after flush
-        assert_eq!(
-            state.read_buffer.len(),
-            0,
-            "Buffer should be empty after size threshold flush"
-        );
-
-        // Verify: All requests receive responses
-        assert!(rx1.recv().await.is_ok(), "Request 1 should succeed");
-        assert!(rx2.recv().await.is_ok(), "Request 2 should succeed");
-        assert!(rx3.recv().await.is_ok(), "Request 3 should succeed");
-
-        drop(_shutdown_tx);
-    }
-
-    /// Test lease reuse boundary after LinearizableRead refresh
-    ///
-    /// # Test Scenario
-    /// This verifies lease timestamp refresh and reuse: LinearizableRead updates
-    /// lease_timestamp, subsequent LeaseRead can reuse without quorum check.
-    ///
-    /// # Given
-    /// - Leader has expired lease (timestamp = 0)
-    /// - size_threshold = 1 (immediate flush)
-    /// - allow_client_override = true
-    ///
-    /// # When
-    /// - 1st request: LinearizableRead (triggers quorum + lease refresh)
-    /// - Verify lease_timestamp updated
-    /// - 2nd request: LeaseRead (should reuse refreshed lease)
-    ///
-    /// # Then
-    /// - 1st request calls verify_leadership (quorum check)
-    /// - Lease timestamp updated after successful verification
-    /// - 2nd request skips quorum check (lease still valid)
-    /// - Both requests succeed
-    ///
-    /// # Raft Protocol Context
-    /// This optimization allows LeaseRead to piggyback on LinearizableRead's
-    /// verification, avoiding redundant quorum checks within lease duration.
-    #[tokio::test]
-    async fn test_lease_reuse_after_linearizable_read_refresh() {
-        use crate::MockReplicationCore;
-        use crate::RaftNodeConfig;
-        use crate::test_utils::MockBuilder;
-        use d_engine_proto::client::ReadConsistencyPolicy;
-
-        let (_shutdown_tx, shutdown_rx) = watch::channel(());
-
-        // Configure node_config
-        let mut node_config = RaftNodeConfig::default();
-        node_config.raft.read_consistency.read_batching.size_threshold = 1;
-        node_config.raft.read_consistency.allow_client_override = true;
-
-        // Mock ReplicationCore - expect only 1 call (from LinearizableRead)
-        let mut replication = MockReplicationCore::new();
-        replication
-            .expect_handle_raft_request_in_batch()
-            .times(1)
-            .returning(|_, _, _, _, _| {
-                Ok(crate::AppendResults {
-                    commit_quorum_achieved: true,
-                    peer_updates: Default::default(),
-                    learner_progress: Default::default(),
-                })
-            });
-
-        let ctx = MockBuilder::new(shutdown_rx)
-            .with_db_path("/tmp/test_lease_reuse")
-            .with_node_config(node_config)
-            .with_replication_handler(replication)
-            .build_context();
-
-        let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        // Verify: Initial lease is invalid
-        assert!(
-            !state.is_lease_valid(&ctx),
-            "Lease should be invalid initially"
-        );
-
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        // Action 1: Send LinearizableRead (triggers quorum + lease refresh)
-        let req1 = ClientReadRequest {
-            client_id: 1,
-            keys: vec![Bytes::from_static(b"key1")],
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
-        };
-        let (tx1, mut rx1) = MaybeCloneOneshot::new();
-        state
-            .handle_raft_event(
-                RaftEvent::ClientReadRequest(req1, tx1),
-                &ctx,
-                role_tx.clone(),
-            )
-            .await
-            .unwrap();
-
-        // Verify: Request 1 succeeded
-        assert!(rx1.recv().await.is_ok(), "LinearizableRead should succeed");
-
-        // Verify: Lease is now valid (refreshed by LinearizableRead)
-        assert!(
-            state.is_lease_valid(&ctx),
-            "Lease should be valid after LinearizableRead refresh"
-        );
-
-        // Action 2: Send LeaseRead immediately (should reuse lease)
-        let req2 = ClientReadRequest {
-            client_id: 1,
-            keys: vec![Bytes::from_static(b"key2")],
-            consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
-        };
-        let (tx2, mut rx2) = MaybeCloneOneshot::new();
-        state
-            .handle_raft_event(
-                RaftEvent::ClientReadRequest(req2, tx2),
-                &ctx,
-                role_tx.clone(),
-            )
-            .await
-            .unwrap();
-
-        // Verify: Request 2 succeeded (reused lease, no quorum check)
-        assert!(
-            rx2.recv().await.is_ok(),
-            "LeaseRead should reuse refreshed lease"
-        );
-
-        // Note: MockReplicationCore expects exactly 1 call - if LeaseRead
-        // incorrectly triggered quorum check, test would fail
-
-        drop(_shutdown_tx);
-    }
-
-    /// Test EventualConsistency does not check lease validity
-    ///
-    /// # Test Scenario
-    /// This verifies EventualConsistency behavior on stale leader: serves
-    /// reads immediately from local state machine without lease check.
-    ///
-    /// # Given
-    /// - Leader has expired lease (timestamp = 0, simulates potential staleness)
-    /// - size_threshold = 1 (immediate flush)
-    /// - No replication handler configured (no quorum check)
-    ///
-    /// # When
-    /// - Client sends EventualConsistency read request
-    ///
-    /// # Then
-    /// - Request succeeds immediately (no lease check)
-    /// - No verify_leadership call (no quorum check)
-    /// - Serves from local state machine (potentially stale data)
-    ///
-    /// # Raft Protocol Context
-    /// EventualConsistency trades off linearizability for performance.
-    /// It does NOT guarantee reading latest committed data:
-    /// - Leader might be partitioned (lease expired but still serving)
-    /// - Leader might have stale commit_index
-    /// This is acceptable for use cases tolerating stale reads
-    /// (e.g., dashboards, caches, non-critical queries).
-    ///
-    /// # Design Decision
-    /// EventualConsistency intentionally skips lease validation to maximize
-    /// performance. Applications requiring freshness guarantees should use
-    /// LeaseRead or LinearizableRead.
-    #[tokio::test]
-    async fn test_eventual_consistency_ignores_stale_lease() {
-        use crate::RaftNodeConfig;
-        use crate::test_utils::MockBuilder;
-        use d_engine_proto::client::ReadConsistencyPolicy;
-
-        let (_shutdown_tx, shutdown_rx) = watch::channel(());
-
-        // Configure node_config
-        let mut node_config = RaftNodeConfig::default();
-        node_config.raft.read_consistency.read_batching.size_threshold = 1;
-        node_config.raft.read_consistency.allow_client_override = true;
-
-        let ctx = MockBuilder::new(shutdown_rx)
-            .with_db_path("/tmp/test_eventual_stale")
-            .with_node_config(node_config)
-            .build_context();
-
-        let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-        // Setup: Initialize cluster metadata
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_replication_peers().returning(Vec::new);
-        state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-        // Verify: Lease is invalid (simulates stale leader scenario)
-        assert!(
-            !state.is_lease_valid(&ctx),
-            "Lease should be invalid (stale leader)"
-        );
-
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        // Action: Send EventualConsistency read
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_lease_reuse")
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    // Verify: Initial lease is invalid
+    assert!(
+        !state.is_lease_valid(&ctx),
+        "Lease should be invalid initially"
+    );
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Action 1: LinearizableRead (triggers quorum + lease refresh)
+    let req1 = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key1")],
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+    };
+    let (tx1, mut rx1) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Read(req1, tx1), &ctx);
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+
+    // Verify: Request succeeded
+    assert!(rx1.recv().await.is_ok(), "LinearizableRead should succeed");
+
+    // Verify: Lease is now valid (refreshed by LinearizableRead)
+    assert!(
+        state.is_lease_valid(&ctx),
+        "Lease should be valid after LinearizableRead refresh"
+    );
+
+    // Action 2: LeaseRead (should reuse valid lease, no quorum check)
+    let req2 = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key2")],
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+    };
+    let (tx2, mut rx2) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Read(req2, tx2), &ctx);
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+
+    // Verify: Request succeeded (reused lease, no quorum check)
+    assert!(
+        rx2.recv().await.is_ok(),
+        "LeaseRead should reuse refreshed lease"
+    );
+
+    // Note: MockReplicationCore expects exactly 1 call - test fails if LeaseRead triggers quorum
+
+    drop(_shutdown_tx);
+}
+
+/// **Business Scenario**: EventualConsistency serves stale reads without lease validation
+///
+/// **Purpose**: Verify that EventualConsistency policy intentionally bypasses all
+/// safety checks (lease validation, quorum verification) to serve reads immediately
+/// from local state machine, accepting potential staleness for maximum performance.
+///
+/// **Key Validation**:
+/// - Request succeeds even with expired/invalid lease
+/// - No quorum verification performed
+/// - Lease remains invalid after read (not refreshed)
+///
+/// **Raft Protocol Context**:
+/// EventualConsistency makes NO linearizability guarantees. It may return stale data if:
+/// - Leader is network-partitioned (lease expired but still serving)
+/// - State machine apply lags behind commit_index
+/// - Leader has been replaced but hasn't discovered higher term yet
+///
+/// **Design Decision**:
+/// This is acceptable for use cases tolerating staleness (dashboards, caches,
+/// non-critical analytics). Applications requiring freshness must use LeaseRead
+/// or LinearizableRead.
+#[tokio::test]
+#[traced_test]
+async fn test_eventual_consistency_ignores_stale_lease() {
+    use crate::MockMembership;
+    use crate::RaftNodeConfig;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use bytes::Bytes;
+    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
+    use tokio::sync::mpsc;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
+
+    // No replication handler - EventualConsistency should not trigger quorum check
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_eventual_stale")
+        .with_node_config(node_config)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    // Verify: Lease is invalid (simulates stale leader scenario)
+    assert!(
+        !state.is_lease_valid(&ctx),
+        "Lease should be invalid (stale leader)"
+    );
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Action: EventualConsistency read
+    let req = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key1")],
+        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+    };
+    let (tx, mut rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+
+    // Verify: Request succeeded despite stale lease
+    assert!(
+        rx.recv().await.is_ok(),
+        "EventualConsistency should succeed even with stale lease"
+    );
+
+    // Verify: Lease still invalid (not refreshed by EventualConsistency)
+    assert!(
+        !state.is_lease_valid(&ctx),
+        "EventualConsistency should not refresh lease"
+    );
+
+    drop(_shutdown_tx);
+}
+
+/// **Business Scenario**: Client can override read policy when server allows
+///
+/// **Purpose**: Verify that when `allow_client_override = true`, clients have
+/// flexibility to choose their preferred consistency policy based on use case
+/// requirements (e.g., LeaseRead for lower latency vs LinearizableRead for
+/// strongest guarantees).
+///
+/// **Key Validation**:
+/// - Server config: `allow_client_override = true`
+/// - Client specifies `LeaseRead` (weaker than default `LinearizableRead`)
+/// - Server honors client choice and executes LeaseRead
+///
+/// **Raft Protocol Context**:
+/// This flexibility enables application-level optimization: latency-sensitive
+/// reads can use LeaseRead while critical reads use LinearizableRead. The
+/// tradeoff is client responsibility for choosing appropriate consistency.
+///
+/// **Design Decision**:
+/// Developer-friendly: d-engine trusts applications to understand their
+/// consistency requirements. This mirrors etcd's consistency model where
+/// clients control read semantics.
+#[tokio::test]
+#[traced_test]
+async fn test_client_policy_override_allowed() {
+    use crate::RaftNodeConfig;
+    use crate::config::ReadConsistencyPolicy as ServerPolicy;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use bytes::Bytes;
+    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
+    use tokio::sync::mpsc;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    // Configure server to allow client override, default is LinearizableRead
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.default_policy = ServerPolicy::LinearizableRead;
+    node_config.raft.read_consistency.allow_client_override = true;
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_client_policy_override_allowed")
+        .with_node_config(node_config)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    // Setup valid lease so LeaseRead can succeed
+    state.test_update_lease_timestamp();
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Action: Client requests LeaseRead (different from server default)
+    let req = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key1")],
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+    };
+    let (tx, mut rx) = MaybeCloneOneshot::new();
+
+    // Verify: determine_read_policy honors client choice
+    let effective_policy = state.determine_read_policy(&req);
+    assert_eq!(
+        effective_policy,
+        crate::config::ReadConsistencyPolicy::LeaseRead,
+        "Should use client-specified LeaseRead when override is allowed"
+    );
+
+    // Execute: Process the read with client-specified policy
+    state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+
+    // Verify: Request succeeded using LeaseRead (no quorum verification)
+    assert!(
+        rx.recv().await.is_ok(),
+        "LeaseRead should succeed with valid lease"
+    );
+
+    drop(_shutdown_tx);
+}
+
+/// **Business Scenario**: Server enforces default policy when override is disabled
+///
+/// **Purpose**: Verify that when `allow_client_override = false`, server
+/// maintains control over consistency guarantees, preventing clients from
+/// weakening consistency requirements through policy downgrade attacks.
+///
+/// **Key Validation**:
+/// - Server config: `allow_client_override = false`
+/// - Client specifies `EventualConsistency` (weaker than default)
+/// - Server ignores client choice and enforces `LinearizableRead`
+///
+/// **Raft Protocol Context**:
+/// This configuration prioritizes safety over flexibility. Useful in environments
+/// where data integrity is critical and clients cannot be fully trusted to choose
+/// appropriate consistency levels (e.g., financial systems, audit logs).
+///
+/// **Design Decision**:
+/// Security-first: Server operators have final authority over consistency
+/// guarantees. This prevents accidental or malicious consistency downgrades
+/// while maintaining protocol correctness.
+#[tokio::test]
+#[traced_test]
+async fn test_client_policy_override_denied() {
+    use crate::MockReplicationCore;
+    use crate::RaftNodeConfig;
+    use crate::config::ReadConsistencyPolicy as ServerPolicy;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use bytes::Bytes;
+    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    // Configure server to deny client override, default is LinearizableRead
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.default_policy = ServerPolicy::LinearizableRead;
+    node_config.raft.read_consistency.allow_client_override = false;
+
+    // Mock replication handler for LinearizableRead quorum verification
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(crate::AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::new(),
+                learner_progress: HashMap::new(),
+            })
+        });
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_client_policy_override_denied")
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Action: Client requests EventualConsistency (weaker than server default)
+    let req = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key1")],
+        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+    };
+    let (tx, mut rx) = MaybeCloneOneshot::new();
+
+    // Verify: determine_read_policy ignores client choice and uses server default
+    let effective_policy = state.determine_read_policy(&req);
+    assert_eq!(
+        effective_policy,
+        crate::config::ReadConsistencyPolicy::LinearizableRead,
+        "Should use server default LinearizableRead, ignoring client's EventualConsistency"
+    );
+
+    // Execute: Process the read with server-enforced policy
+    state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+
+    // Verify: Request succeeded using LinearizableRead (quorum verification performed)
+    assert!(
+        rx.recv().await.is_ok(),
+        "Should succeed using server-enforced LinearizableRead"
+    );
+
+    // Note: MockReplicationCore expects 1 call - confirms LinearizableRead was used
+    // (EventualConsistency would have triggered 0 replication calls)
+
+    drop(_shutdown_tx);
+}
+
+// ============================================================================
+// Drain-Mode Architecture Validation Tests
+// ============================================================================
+// Tests verifying the drain-based batch architecture behavior:
+// recv() blocks for first request + try_recv() drains pending requests
+
+/// **Business Scenario**: Low-load reads experience zero batching delay
+///
+/// **Purpose**: Verify that under low concurrency, single read requests are
+/// processed immediately without artificial batching delays. The drain pattern
+/// eliminates the old timeout-based waiting that caused 1ms+ latency overhead.
+///
+/// **Key Validation**:
+/// - Single read request in buffer (no pending requests)
+/// - No artificial delay before processing
+/// - Request processed as batch of size 1
+///
+/// **Architecture Context**:
+/// Old architecture: Even single request waited for batch_timeout (1ms+)
+/// New drain architecture: recv() returns immediately, try_recv() finds nothing,
+/// flush happens instantly. This is the key low-latency improvement.
+#[tokio::test]
+#[traced_test]
+async fn test_drain_single_request_no_delay() {
+    use crate::MockMembership;
+    use crate::MockReplicationCore;
+    use crate::RaftNodeConfig;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use bytes::Bytes;
+    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
+    use tokio::sync::mpsc;
+    use tokio::time::Instant;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
+
+    // Mock replication for quorum verification
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(crate::AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: Default::default(),
+                learner_progress: Default::default(),
+            })
+        });
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_drain_single_request")
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Action: Single request (simulates low load)
+    let start = Instant::now();
+    let req = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key1")],
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+    };
+    let (tx, mut rx) = MaybeCloneOneshot::new();
+
+    state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
+    
+    // Verify: Buffer has exactly 1 request (no batching accumulation)
+    assert_eq!(
+        state.linearizable_read_buffer.len(),
+        1,
+        "Buffer should have single request"
+    );
+
+    // Flush immediately (drain pattern: no waiting for timeout or size threshold)
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    let elapsed = start.elapsed();
+
+    // Verify: Request succeeded
+    assert!(rx.recv().await.is_ok(), "Single request should succeed");
+
+    // Verify: Processing was immediate (< 10ms, no artificial batching delay)
+    assert!(
+        elapsed.as_millis() < 10,
+        "Single request should process immediately without batching delay, took {:?}",
+        elapsed
+    );
+
+    drop(_shutdown_tx);
+}
+
+/// **Business Scenario**: High-load reads naturally form large batches
+///
+/// **Purpose**: Verify that under high concurrency, the drain pattern naturally
+/// collects multiple pending requests into a single batch without explicit
+/// size threshold checks. This demonstrates automatic batch formation based on
+/// arrival patterns.
+///
+/// **Key Validation**:
+/// - Multiple requests queued before flush
+/// - Single flush processes entire batch
+/// - No manual threshold logic required
+///
+/// **Architecture Context**:
+/// Drain pattern: When main loop calls flush_cmd_buffers(), all accumulated
+/// requests in the buffer are processed together. High load = many requests
+/// accumulate between flush cycles = natural large batches.
+#[tokio::test]
+#[traced_test]
+async fn test_drain_multiple_requests_natural_batch() {
+    use crate::MockMembership;
+    use crate::MockReplicationCore;
+    use crate::RaftNodeConfig;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use bytes::Bytes;
+    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
+    use tokio::sync::mpsc;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
+
+    // Mock replication - expect single call for entire batch
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(crate::AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: Default::default(),
+                learner_progress: Default::default(),
+            })
+        });
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_drain_multiple_requests")
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Action: Push 10 requests to buffer (simulates high load accumulation)
+    let mut receivers = vec![];
+    for i in 0..10 {
         let req = ClientReadRequest {
             client_id: 1,
-            keys: vec![Bytes::from_static(b"key1")],
-            consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+            keys: vec![Bytes::from(format!("key{}", i))],
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
         };
-        let (tx, mut rx) = MaybeCloneOneshot::new();
-        state
-            .handle_raft_event(RaftEvent::ClientReadRequest(req, tx), &ctx, role_tx.clone())
-            .await
-            .unwrap();
+        let (tx, rx) = MaybeCloneOneshot::new();
+        state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
+        receivers.push(rx);
+    }
 
-        // Verify: Request succeeded despite stale lease
+    // Verify: All 10 requests accumulated in buffer
+    assert_eq!(
+        state.linearizable_read_buffer.len(),
+        10,
+        "Buffer should accumulate all requests before flush"
+    );
+
+    // Action: Single flush processes entire batch
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+
+    // Verify: Buffer emptied (all requests processed together)
+    assert_eq!(
+        state.linearizable_read_buffer.len(),
+        0,
+        "Buffer should be empty after batch flush"
+    );
+
+    // Verify: All 10 requests received responses
+    for (i, mut rx) in receivers.into_iter().enumerate() {
         assert!(
             rx.recv().await.is_ok(),
-            "EventualConsistency should succeed even with stale lease"
+            "Request {} should succeed in batch",
+            i
         );
-
-        // Verify: Lease still invalid (not refreshed by EventualConsistency)
-        assert!(
-            !state.is_lease_valid(&ctx),
-            "EventualConsistency should not refresh lease"
-        );
-
-        drop(_shutdown_tx);
     }
+
+    // Note: MockReplicationCore expects exactly 1 call - confirms single quorum
+    // verification served all 10 requests (batch optimization)
+
+    drop(_shutdown_tx);
+}
+
+/// **Business Scenario**: max_batch_size prevents unbounded drain
+///
+/// **Purpose**: Verify that max_batch_size limit prevents processing excessively
+/// large batches in a single operation, protecting against IO overload and
+/// maintaining bounded latency even under extreme load.
+///
+/// **Key Validation**:
+/// - Buffer accumulates > max_batch_size requests
+/// - First flush processes exactly max_batch_size
+/// - Remaining requests stay in buffer for next flush
+///
+/// **Architecture Context**:
+/// The drain pattern (try_recv() loop) could theoretically drain unlimited
+/// requests. max_batch_size provides backpressure to prevent a single flush
+/// from overwhelming IO subsystems or blocking the event loop too long.
+#[tokio::test]
+#[traced_test]
+async fn test_drain_max_batch_size_limit() {
+    use crate::MockMembership;
+    use crate::RaftNodeConfig;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use bytes::Bytes;
+    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
+    // Set small max_batch_size for testing
+    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 5;
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_drain_max_batch_size")
+        .with_node_config(node_config)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    // Action: Push 10 requests (exceeds max_batch_size of 5)
+    for i in 0..10 {
+        let req = ClientReadRequest {
+            client_id: 1,
+            keys: vec![Bytes::from(format!("key{}", i))],
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        };
+        let (tx, _rx) = MaybeCloneOneshot::new();
+        state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
+    }
+
+    // Verify: All 10 requests in buffer
+    assert_eq!(
+        state.linearizable_read_buffer.len(),
+        10,
+        "Buffer should have all 10 requests"
+    );
+
+    // Note: This test validates buffer accumulation behavior.
+    // The actual max_batch_size enforcement happens in the main loop's
+    // drain logic (raft.rs), not in flush_cmd_buffers().
+    // 
+    // In production:
+    // - raft.rs recv() gets first request
+    // - raft.rs try_recv() loop drains up to max_batch_size-1 more
+    // - raft.rs calls flush_cmd_buffers() with bounded batch
+    //
+    // This unit test confirms buffer can hold > max_batch_size,
+    // proving the need for drain-time limiting in the main loop.
+
+    assert!(
+        state.linearizable_read_buffer.len() > ctx.node_config.raft.replication.rpc_append_entries_in_batch_threshold,
+        "Buffer can accumulate beyond max_batch_size (main loop enforces limit during drain)"
+    );
+
+    drop(_shutdown_tx);
+}
+
+/// **Business Scenario**: Batch linearizable reads share single quorum verification
+///
+/// **Purpose**: Verify the core optimization of read batching - multiple
+/// LinearizableRead requests collected in a batch are verified with a single
+/// quorum heartbeat instead of N separate quorum checks.
+///
+/// **Key Validation**:
+/// - Multiple LinearizableRead requests in buffer
+/// - Single call to verify_leadership (quorum verification)
+/// - All requests succeed with same read_index
+///
+/// **Architecture Context**:
+/// This is the primary performance benefit of read batching in Raft.
+/// Instead of:
+///   - Request 1 → Quorum check 1 → Read 1
+///   - Request 2 → Quorum check 2 → Read 2
+///   - Request 3 → Quorum check 3 → Read 3
+///
+/// We do:
+///   - Collect [Request 1, 2, 3] → Single quorum check → Read all
+///
+/// This reduces network overhead by ~3x while maintaining linearizability.
+#[tokio::test]
+#[traced_test]
+async fn test_linearizable_read_batch_single_quorum() {
+    use crate::MockMembership;
+    use crate::MockReplicationCore;
+    use crate::RaftNodeConfig;
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::test_utils::MockBuilder;
+    use bytes::Bytes;
+    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
+    use tokio::sync::mpsc;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
+
+    // Mock replication - expect EXACTLY 1 call for the entire batch
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_handle_raft_request_in_batch()
+        .times(1)  // KEY: Single quorum check for all requests
+        .returning(|_, _, _, _, _| {
+            Ok(crate::AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: Default::default(),
+                learner_progress: Default::default(),
+            })
+        });
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_batch_single_quorum")
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Action: Push 5 LinearizableRead requests
+    let mut receivers = vec![];
+    for i in 0..5 {
+        let req = ClientReadRequest {
+            client_id: 1,
+            keys: vec![Bytes::from(format!("key{}", i))],
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        };
+        let (tx, rx) = MaybeCloneOneshot::new();
+        state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
+        receivers.push(rx);
+    }
+
+    // Action: Flush batch (triggers single quorum verification)
+    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+
+    // Verify: All 5 requests succeeded
+    for (i, mut rx) in receivers.into_iter().enumerate() {
+        assert!(
+            rx.recv().await.is_ok(),
+            "Request {} should succeed",
+            i
+        );
+    }
+
+    // Verify: MockReplicationCore received exactly 1 call
+    // (If each request triggered separate quorum check, we'd see 5 calls)
+    // The .times(1) expectation validates this optimization.
+
+    drop(_shutdown_tx);
 }

@@ -36,6 +36,20 @@ pub struct NewCommitData {
     pub current_term: u64,
 }
 
+/// Client commands that require batching for performance
+/// Separated from internal RaftEvent for drain-driven processing
+#[derive(Debug)]
+pub enum ClientCmd {
+    Propose(
+        ClientWriteRequest,
+        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+    ),
+    Read(
+        ClientReadRequest,
+        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+    ),
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum RoleEvent {
@@ -74,16 +88,6 @@ pub enum RaftEvent {
     AppendEntries(
         AppendEntriesRequest,
         MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>,
-    ),
-
-    ClientPropose(
-        ClientWriteRequest,
-        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
-    ),
-
-    ClientReadRequest(
-        ClientReadRequest,
-        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
     ),
 
     // Response snapshot stream from Leader
@@ -212,8 +216,6 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::ClusterConf(req, _) => TestEvent::ClusterConf(*req),
         RaftEvent::ClusterConfUpdate(req, _) => TestEvent::ClusterConfUpdate(req.clone()),
         RaftEvent::AppendEntries(req, _) => TestEvent::AppendEntries(req.clone()),
-        RaftEvent::ClientPropose(req, _) => TestEvent::ClientPropose(req.clone()),
-        RaftEvent::ClientReadRequest(req, _) => TestEvent::ClientReadRequest(req.clone()),
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
         RaftEvent::StreamSnapshot(_, _) => TestEvent::StreamSnapshot,
         RaftEvent::RaftLogCleanUp(req, _) => TestEvent::RaftLogCleanUp(req.clone()),

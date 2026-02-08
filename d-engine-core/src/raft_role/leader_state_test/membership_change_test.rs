@@ -1478,7 +1478,7 @@ mod pending_promotion_tests {
             let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
             let result =
-                state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+                state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
             assert_eq!(result.unwrap(), QuorumVerificationResult::Success);
             assert!(matches!(
@@ -1517,7 +1517,7 @@ mod pending_promotion_tests {
             let (role_tx, _) = mpsc::unbounded_channel();
 
             let result =
-                state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+                state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
             assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 

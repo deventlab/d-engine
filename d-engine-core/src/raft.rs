@@ -43,6 +43,9 @@ where
     event_tx: mpsc::Sender<RaftEvent>,
     event_rx: mpsc::Receiver<RaftEvent>,
 
+    // Client commands (drain-driven)
+    cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
+
     // Timer
     role_tx: mpsc::UnboundedSender<RoleEvent>,
     role_rx: mpsc::UnboundedReceiver<RoleEvent>,
@@ -70,6 +73,9 @@ pub struct SignalParams {
     pub(crate) role_rx: mpsc::UnboundedReceiver<RoleEvent>,
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
     pub(crate) event_rx: mpsc::Receiver<RaftEvent>,
+    #[allow(dead_code)]
+    pub(crate) cmd_tx: mpsc::UnboundedSender<super::ClientCmd>,
+    pub(crate) cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
     pub(crate) shutdown_signal: watch::Receiver<()>,
 }
 
@@ -83,6 +89,8 @@ impl SignalParams {
         role_rx: mpsc::UnboundedReceiver<RoleEvent>,
         event_tx: mpsc::Sender<RaftEvent>,
         event_rx: mpsc::Receiver<RaftEvent>,
+        cmd_tx: mpsc::UnboundedSender<super::ClientCmd>,
+        cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
         Self {
@@ -90,6 +98,8 @@ impl SignalParams {
             role_rx,
             event_tx,
             event_rx,
+            cmd_tx,
+            cmd_rx,
             shutdown_signal,
         }
     }
@@ -126,6 +136,8 @@ where
 
             event_tx: signal_params.event_tx,
             event_rx: signal_params.event_rx,
+
+            cmd_rx: signal_params.cmd_rx,
 
             role_tx: signal_params.role_tx,
             role_rx: signal_params.role_rx,
@@ -276,7 +288,37 @@ where
                     }
                 }
 
-                // P3: Other events
+                // P3: Client commands (drain-driven batch)
+                Some(first_cmd) = self.cmd_rx.recv() => {
+                    trace!(%self.node_id, "receive first client command");
+
+                    // Push first command directly to role's buffer (zero-copy)
+                    self.role.push_client_cmd(first_cmd, &self.ctx);
+
+                    // Drain all pending commands from channel
+                    let max_batch = self.ctx.node_config.raft.replication.rpc_append_entries_in_batch_threshold;
+                    let mut count = 1;
+
+                    while count < max_batch {
+                        match self.cmd_rx.try_recv() {
+                            Ok(cmd) => {
+                                self.role.push_client_cmd(cmd, &self.ctx);
+                                count += 1;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+
+                    trace!("Drained {} client commands", count);
+
+                    // Flush buffers if thresholds reached
+                    if let Err(e) = self.role.flush_cmd_buffers(&self.ctx, &self.role_tx).await {
+                        error!(%self.node_id, ?e, "flush_cmd_buffers error");
+                        return Err(e);
+                    }
+                }
+
+                // P4: Other events
                 Some(raft_event) = self.event_rx.recv() => {
                     trace!(%self.node_id, ?raft_event, "receive raft event");
 
@@ -373,7 +415,6 @@ where
                     .role
                     .verify_leadership_persistent(
                         vec![EntryPayload::noop()],
-                        true,
                         &self.ctx,
                         &self.role_tx,
                     )
