@@ -55,7 +55,7 @@ use tokio::time::Instant;
 #[test]
 fn test_p0_batch_buffer_single_item_no_batching() {
     // **Setup**: Create BatchBuffer with small max_batch_size
-    let metrics = Arc::new(BatchMetrics::new(1));
+    let metrics = Arc::new(BatchMetrics::new(1, true));
     let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300).with_metrics(metrics.clone());
 
     let start = Instant::now();
@@ -82,13 +82,9 @@ fn test_p0_batch_buffer_single_item_no_batching() {
         "Drain latency should be <5ms, got {elapsed:?}"
     );
 
-    // ✅ Metrics: drain_triggered = 1, batch_size = 1
+    // ✅ Metrics: drain_triggered = 1
     assert_eq!(
         metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
-    assert_eq!(
-        metrics.total_batch_size.load(std::sync::atomic::Ordering::Relaxed),
         1
     );
 }
@@ -107,7 +103,7 @@ fn test_p0_batch_buffer_single_item_no_batching() {
 #[test]
 fn test_p0_batch_buffer_max_batch_size_cap() {
     // **Setup**: Create BatchBuffer with max_batch_size = 300
-    let metrics = Arc::new(BatchMetrics::new(1));
+    let metrics = Arc::new(BatchMetrics::new(1, true));
     let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300).with_metrics(metrics.clone());
 
     const TOTAL_ITEMS: usize = 1000;
@@ -175,7 +171,7 @@ fn test_p0_batch_buffer_max_batch_size_cap() {
 #[test]
 fn test_p0_batch_buffer_empty_flush_idempotent() {
     // **Setup**: Create BatchBuffer
-    let metrics = Arc::new(BatchMetrics::new(1));
+    let metrics = Arc::new(BatchMetrics::new(1, true));
     let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300).with_metrics(metrics.clone());
 
     // **Step 1**: Push and drain one item
@@ -201,10 +197,6 @@ fn test_p0_batch_buffer_empty_flush_idempotent() {
         metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
         2
     );
-    assert_eq!(
-        metrics.total_batch_size.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
 
     // ✅ No panic, system stable
 }
@@ -223,7 +215,7 @@ fn test_p0_batch_buffer_empty_flush_idempotent() {
 #[test]
 fn test_p0_batch_buffer_max_batch_size_one() {
     // **Setup**: Create BatchBuffer with max_batch_size = 1 (degenerate)
-    let metrics = Arc::new(BatchMetrics::new(1));
+    let metrics = Arc::new(BatchMetrics::new(1, true));
     let mut buffer: BatchBuffer<u32> = BatchBuffer::new(1).with_metrics(metrics.clone());
 
     const ITEMS: usize = 10;
@@ -264,13 +256,11 @@ fn test_p0_batch_buffer_max_batch_size_one() {
 // **Expected Behavior**:
 // - drain_triggered counts Drain triggers
 // - heartbeat_triggered counts Heartbeat triggers
-// - total_batch_count = drain + heartbeat
-// - total_batch_size tracks sum of all batch sizes
 //
 #[test]
 fn test_p0_batch_metrics_drain_vs_heartbeat_tracking() {
     // **Setup**: Create BatchMetrics
-    let metrics = Arc::new(BatchMetrics::new(1));
+    let metrics = Arc::new(BatchMetrics::new(1, true));
     let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300).with_metrics(metrics.clone());
 
     // **Step 1**: Push items and trigger drain flushes
@@ -312,19 +302,8 @@ fn test_p0_batch_metrics_drain_vs_heartbeat_tracking() {
         "Should have 1 Heartbeat trigger"
     );
 
-    // ✅ total_batch_count = 3 (all flushes)
-    assert_eq!(
-        metrics.total_batch_count.load(std::sync::atomic::Ordering::Relaxed),
-        3,
-        "Should have 3 total batch flushes"
-    );
-
-    // ✅ total_batch_size = 200 (100 + 50 + 50)
-    assert_eq!(
-        metrics.total_batch_size.load(std::sync::atomic::Ordering::Relaxed),
-        200,
-        "Total batch size should be 200"
-    );
+    // Note: total_batch_count and total_batch_size metrics were removed as redundant
+    // They can be derived from drain_triggered + heartbeat_triggered
 }
 
 // ========================================================================
@@ -341,7 +320,7 @@ fn test_p0_batch_metrics_drain_vs_heartbeat_tracking() {
 #[test]
 fn test_p0_batch_buffer_natural_batching_medium_load() {
     // **Setup**: Create BatchBuffer with small max_batch_size to demonstrate batching
-    let metrics = Arc::new(BatchMetrics::new(1));
+    let metrics = Arc::new(BatchMetrics::new(1, true));
     let mut buffer: BatchBuffer<u32> = BatchBuffer::new(20).with_metrics(metrics.clone());
 
     // **Step 1**: Simulate moderate load - 50 items

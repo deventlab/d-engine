@@ -504,7 +504,7 @@ async fn test_handle_cluster_conf_update_success() {
 /// when it doesn't hear from leader within election timeout.
 ///
 /// Original: test_tick
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_tick_triggers_election_on_timeout() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
@@ -513,6 +513,9 @@ async fn test_tick_triggers_election_on_timeout() {
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
+
+    let election_timeout_max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(election_timeout_max + 1)).await;
 
     assert!(
         state.tick(&role_tx, &event_tx, &context).await.is_ok(),
