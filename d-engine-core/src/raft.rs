@@ -295,8 +295,8 @@ where
                     // Push first command directly to role's buffer (zero-copy)
                     self.role.push_client_cmd(first_cmd, &self.ctx);
 
-                    // Drain all pending commands from channel
-                    let max_batch = self.ctx.node_config.raft.replication.rpc_append_entries_in_batch_threshold;
+                    // Drain all pending commands from channel (max_batch_size limit)
+                    let max_batch = self.ctx.node_config.raft.replication.max_batch_size;
                     let mut count = 1;
 
                     while count < max_batch {

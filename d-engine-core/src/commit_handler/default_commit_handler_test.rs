@@ -848,7 +848,6 @@ mod process_batch_test {
         // Verify command was NOT applied
     }
 
-
     #[tokio::test]
     async fn triggers_snapshot_when_condition_met() {
         let entries = build_entries(
@@ -952,8 +951,6 @@ mod process_batch_test {
 
         // Verification: apply_chunk called once with 1000 commands
     }
-
-
 
     /// Test 1: MembershipApplied event MUST be sent after successful config change
     ///

@@ -137,7 +137,7 @@ batch_size_threshold = 1
 process_interval_ms = 1
 
 [replication]
-rpc_append_entries_in_batch_threshold = 0
+max_batch_size = 1
 
 "#,
             port,
