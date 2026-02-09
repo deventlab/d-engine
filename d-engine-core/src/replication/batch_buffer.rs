@@ -130,12 +130,22 @@ impl<E> BatchBuffer<E> {
         &mut self,
         trigger_type: BatchTriggerType,
     ) -> VecDeque<E> {
-        let batch_size = self.buffer.len();
+        let batch_size = std::cmp::min(self.buffer.len(), self.max_batch_size);
+
+        let batch = if batch_size == self.buffer.len() {
+            // Full take: O(1)
+            std::mem::take(&mut self.buffer)
+        } else {
+            // Partial take: split and swap
+            let remaining = self.buffer.split_off(batch_size);
+            std::mem::replace(&mut self.buffer, remaining)
+        };
+
         if let Some(ref metrics) = self.metrics {
-            metrics.record_batch(batch_size, trigger_type);
+            metrics.record_batch(batch.len(), trigger_type);
         }
         self.last_flush = Instant::now();
-        std::mem::take(&mut self.buffer)
+        batch
     }
 
     /// Check if buffer is empty (used in drain-based architecture)
