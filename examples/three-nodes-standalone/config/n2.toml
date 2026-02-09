@@ -23,7 +23,14 @@ lease_duration_ms = 500
 
 [raft.replication]
 # Maximum number of commands to accumulate in a single batch during drain operations
-max_batch_size = 100
+max_batch_size = 200
+
+[raft.metrics]
+enable_backpressure = false
+
+[raft.backpressure]
+max_pending_writes = 1000
+max_pending_reads = 500
 
 [raft.persistence]
 strategy = "DiskFirst"

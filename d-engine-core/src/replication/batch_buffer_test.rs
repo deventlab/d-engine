@@ -130,7 +130,7 @@ fn test_buffer_reuse_after_take() {
 /// Test: take_with_trigger records Drain metric correctly
 #[test]
 fn test_take_with_trigger_drain() {
-    let metrics = Arc::new(BatchMetrics::new(1));
+    let metrics = Arc::new(BatchMetrics::new(1, true));
     let mut buffer = BatchBuffer::<TestRequest>::new(2).with_metrics(metrics.clone());
 
     buffer.push(create_test_request());
@@ -143,20 +143,12 @@ fn test_take_with_trigger_drain() {
         metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
         1
     );
-    assert_eq!(
-        metrics.total_batch_count.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
-    assert_eq!(
-        metrics.total_batch_size.load(std::sync::atomic::Ordering::Relaxed),
-        2
-    );
 }
 
 /// Test: take_with_trigger records Heartbeat metric correctly
 #[test]
 fn test_take_with_trigger_heartbeat() {
-    let metrics = Arc::new(BatchMetrics::new(1));
+    let metrics = Arc::new(BatchMetrics::new(1, true));
     let mut buffer = BatchBuffer::<TestRequest>::new(5).with_metrics(metrics.clone());
 
     buffer.push(create_test_request());
@@ -168,20 +160,12 @@ fn test_take_with_trigger_heartbeat() {
         metrics.heartbeat_triggered.load(std::sync::atomic::Ordering::Relaxed),
         1
     );
-    assert_eq!(
-        metrics.total_batch_count.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
-    assert_eq!(
-        metrics.total_batch_size.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
 }
 
 /// Test: multiple triggers track cumulative metrics
 #[test]
 fn test_take_with_trigger_cumulative_metrics() {
-    let metrics = Arc::new(BatchMetrics::new(1));
+    let metrics = Arc::new(BatchMetrics::new(1, true));
     let mut buffer = BatchBuffer::<TestRequest>::new(2).with_metrics(metrics.clone());
 
     // First batch triggered by drain
@@ -201,14 +185,6 @@ fn test_take_with_trigger_cumulative_metrics() {
     assert_eq!(
         metrics.heartbeat_triggered.load(std::sync::atomic::Ordering::Relaxed),
         1
-    );
-    assert_eq!(
-        metrics.total_batch_count.load(std::sync::atomic::Ordering::Relaxed),
-        2
-    );
-    assert_eq!(
-        metrics.total_batch_size.load(std::sync::atomic::Ordering::Relaxed),
-        3
     );
 }
 

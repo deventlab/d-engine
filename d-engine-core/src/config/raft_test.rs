@@ -1,3 +1,4 @@
+use crate::BackpressureConfig;
 use crate::ElectionConfig;
 use crate::RaftConfig;
 use crate::RpcCompressionConfig;
@@ -70,4 +71,99 @@ fn test_custom_compression_config() {
     assert!(config.snapshot_response);
     assert!(config.cluster_response);
     assert!(config.client_response);
+}
+
+#[test]
+fn test_backpressure_default_config() {
+    let config = BackpressureConfig::default();
+
+    assert_eq!(config.max_pending_writes, 10_000);
+    assert_eq!(config.max_pending_reads, 50_000);
+}
+
+#[test]
+fn test_backpressure_unlimited_when_zero() {
+    let config = BackpressureConfig {
+        max_pending_writes: 0,
+        max_pending_reads: 0,
+    };
+
+    // 0 = unlimited, should never reject
+    assert!(!config.should_reject_write(1_000_000));
+    assert!(!config.should_reject_read(1_000_000));
+}
+
+#[test]
+fn test_backpressure_write_limit_enforcement() {
+    let config = BackpressureConfig {
+        max_pending_writes: 100,
+        max_pending_reads: 200,
+    };
+
+    // Below limit - allow
+    assert!(!config.should_reject_write(50));
+    assert!(!config.should_reject_write(99));
+
+    // At limit - reject
+    assert!(config.should_reject_write(100));
+
+    // Above limit - reject
+    assert!(config.should_reject_write(101));
+    assert!(config.should_reject_write(10000));
+}
+
+#[test]
+fn test_backpressure_read_limit_enforcement() {
+    let config = BackpressureConfig {
+        max_pending_writes: 100,
+        max_pending_reads: 200,
+    };
+
+    // Below limit - allow
+    assert!(!config.should_reject_read(100));
+    assert!(!config.should_reject_read(199));
+
+    // At limit - reject
+    assert!(config.should_reject_read(200));
+
+    // Above limit - reject
+    assert!(config.should_reject_read(201));
+    assert!(config.should_reject_read(50000));
+}
+
+#[test]
+fn test_backpressure_write_and_read_independent() {
+    let config = BackpressureConfig {
+        max_pending_writes: 100,
+        max_pending_reads: 200,
+    };
+
+    // Write limit doesn't affect read checks
+    assert!(config.should_reject_write(100));
+    assert!(!config.should_reject_read(100));
+
+    // Read limit doesn't affect write checks
+    assert!(config.should_reject_read(200));
+    assert!(!config.should_reject_write(200));
+}
+
+#[test]
+fn test_backpressure_zero_vs_nonzero() {
+    let config_unlimited_writes = BackpressureConfig {
+        max_pending_writes: 0,
+        max_pending_reads: 100,
+    };
+
+    let config_limited_writes = BackpressureConfig {
+        max_pending_writes: 100,
+        max_pending_reads: 0,
+    };
+
+    // Unlimited writes, limited reads
+    assert!(!config_unlimited_writes.should_reject_write(1_000_000));
+    assert!(config_unlimited_writes.should_reject_read(100));
+
+    // Limited writes, unlimited reads
+    assert!(config_limited_writes.should_reject_write(100));
+    assert!(!config_limited_writes.should_reject_read(1_000_000));
 }

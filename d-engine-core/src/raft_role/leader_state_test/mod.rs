@@ -24,3 +24,6 @@ mod cluster_metadata_test;
 
 #[cfg(test)]
 mod fatal_error_test;
+
+#[cfg(test)]
+mod backpressure_test;

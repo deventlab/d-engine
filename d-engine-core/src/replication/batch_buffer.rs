@@ -18,62 +18,68 @@ pub enum BatchTriggerType {
     Heartbeat,
 }
 
+/// Batch performance metrics (simplified)
+///
+/// Tracks batch trigger patterns and size distribution for tuning max_batch_size.
+/// Use drain_triggered ratio to validate drain-based architecture efficiency.
 #[derive(Debug, Clone)]
 pub struct BatchMetrics {
     pub node_id: u32,
     pub drain_triggered: Arc<AtomicU64>,
     pub heartbeat_triggered: Arc<AtomicU64>,
-    pub total_batch_count: Arc<AtomicU64>,
-    pub total_batch_size: Arc<AtomicU64>,
+    /// Pre-allocated metric labels for zero-allocation hot path
+    metrics_labels: Arc<[(String, String)]>,
+    /// Runtime switch for batch metrics
+    enabled: bool,
 }
 
 impl BatchMetrics {
-    pub fn new(node_id: u32) -> Self {
+    pub fn new(
+        node_id: u32,
+        enabled: bool,
+    ) -> Self {
+        let node_id_str = node_id.to_string();
+        let metrics_labels = Arc::new([("node_id".to_string(), node_id_str)]);
+
         Self {
             node_id,
             drain_triggered: Arc::new(AtomicU64::new(0)),
             heartbeat_triggered: Arc::new(AtomicU64::new(0)),
-            total_batch_count: Arc::new(AtomicU64::new(0)),
-            total_batch_size: Arc::new(AtomicU64::new(0)),
+            metrics_labels,
+            enabled,
         }
     }
 
+    /// Record batch processing event
+    ///
+    /// Emits:
+    /// - Counter: batch.{drain|heartbeat}_triggered - trigger type frequency
+    /// - Histogram: batch.size - batch size distribution (P50/P99 analysis)
     pub fn record_batch(
         &self,
         size: usize,
         trigger_type: BatchTriggerType,
     ) {
+        if !self.enabled {
+            return;
+        }
+
+        // Trigger type counter
         match trigger_type {
             BatchTriggerType::Drain => {
                 self.drain_triggered.fetch_add(1, Ordering::Relaxed);
-                metrics::counter!(
-                    "batch.drain_triggered",
-                    &[("node_id", self.node_id.to_string())]
-                )
-                .increment(1);
+                metrics::counter!("batch.drain_triggered", self.metrics_labels.as_ref())
+                    .increment(1);
             }
             BatchTriggerType::Heartbeat => {
                 self.heartbeat_triggered.fetch_add(1, Ordering::Relaxed);
-                metrics::counter!(
-                    "batch.heartbeat_triggered",
-                    &[("node_id", self.node_id.to_string())]
-                )
-                .increment(1);
+                metrics::counter!("batch.heartbeat_triggered", self.metrics_labels.as_ref())
+                    .increment(1);
             }
         }
-        self.total_batch_count.fetch_add(1, Ordering::Relaxed);
-        self.total_batch_size.fetch_add(size as u64, Ordering::Relaxed);
-        metrics::counter!(
-            "batch.total_count",
-            &[("node_id", self.node_id.to_string())]
-        )
-        .increment(1);
-        metrics::gauge!("batch.total_size", &[("node_id", self.node_id.to_string())])
-            .set(self.total_batch_size.load(Ordering::Relaxed) as f64);
 
-        // Record batch size histogram for distribution analysis
-        metrics::histogram!("batch.size", &[("node_id", self.node_id.to_string())])
-            .record(size as f64);
+        // Batch size distribution (most important metric)
+        metrics::histogram!("batch.size", self.metrics_labels.as_ref()).record(size as f64);
     }
 }
 
@@ -109,13 +115,23 @@ impl<E> BatchBuffer<E> {
         request: E,
     ) -> Option<usize> {
         self.buffer.push_back(request);
+        let len = self.buffer.len();
+
         trace!(
-            "BatchBuffer::push, self.max_batch_size={}, self.buffer.len()={}",
-            self.max_batch_size,
-            self.buffer.len()
+            "BatchBuffer::push, max={}, len={}",
+            self.max_batch_size, len
         );
-        if self.buffer.len() >= self.max_batch_size {
-            Some(self.buffer.len())
+
+        // Emit buffer length gauge for backpressure monitoring (with zero-allocation labels)
+        if let Some(ref metrics) = self.metrics {
+            if metrics.enabled {
+                metrics::gauge!("batch.buffer_length", metrics.metrics_labels.as_ref())
+                    .set(len as f64);
+            }
+        }
+
+        if len >= self.max_batch_size {
+            Some(len)
         } else {
             None
         }
@@ -163,8 +179,9 @@ impl<E> BatchBuffer<E> {
         std::mem::take(&mut self.buffer)
     }
 
-    // Test helper methods
-    #[cfg(test)]
+    /// Returns the number of buffered items
+    ///
+    /// Used for backpressure enforcement and monitoring.
     pub fn len(&self) -> usize {
         self.buffer.len()
     }

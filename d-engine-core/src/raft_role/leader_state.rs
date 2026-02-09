@@ -28,6 +28,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -131,6 +132,87 @@ pub struct ClusterMetadata {
     pub total_voters: usize,
     /// Cached replication targets (voters + learners, excluding self)
     pub replication_targets: Vec<NodeMeta>,
+}
+
+/// Metrics context for backpressure monitoring (zero-allocation hot path)
+///
+/// Encapsulates all metrics-related state to avoid polluting the core LeaderState structure.
+/// Pre-allocated labels ensure zero allocations in the request hot path.
+pub struct BackpressureMetrics {
+    /// Pre-allocated labels for write rejections: [("node_id", "<id>"), ("type", "write")]
+    labels_write: Arc<[(String, String)]>,
+    /// Pre-allocated labels for read rejections: [("node_id", "<id>"), ("type", "read")]
+    labels_read: Arc<[(String, String)]>,
+    /// Runtime switch (branch prediction optimized, ~0ns overhead when false)
+    enabled: bool,
+    /// Sample counter for gauge metrics (reduces overhead at high QPS)
+    sample_counter: AtomicU32,
+    /// Sampling rate (1 = no sampling, 10 = sample 1 in 10)
+    sample_rate: u32,
+}
+
+impl BackpressureMetrics {
+    /// Create new metrics context with pre-allocated labels
+    pub fn new(
+        node_id: u32,
+        enabled: bool,
+        sample_rate: u32,
+    ) -> Self {
+        let node_id_str = node_id.to_string();
+        let labels_write = Arc::new([
+            ("node_id".to_string(), node_id_str.clone()),
+            ("type".to_string(), "write".to_string()),
+        ]);
+        let labels_read = Arc::new([
+            ("node_id".to_string(), node_id_str),
+            ("type".to_string(), "read".to_string()),
+        ]);
+
+        Self {
+            labels_write,
+            labels_read,
+            enabled,
+            sample_counter: AtomicU32::new(0),
+            sample_rate,
+        }
+    }
+
+    /// Record rejection metric (always counted, not sampled)
+    #[inline]
+    pub fn record_rejection(
+        &self,
+        is_write: bool,
+    ) {
+        if self.enabled {
+            let labels = if is_write {
+                &self.labels_write
+            } else {
+                &self.labels_read
+            };
+            metrics::counter!("backpressure.rejections", labels.as_ref()).increment(1);
+        }
+    }
+
+    /// Record buffer utilization gauge (with sampling)
+    #[inline]
+    pub fn record_buffer_utilization(
+        &self,
+        utilization: f64,
+        is_write: bool,
+    ) {
+        if self.enabled {
+            let counter = self.sample_counter.fetch_add(1, Ordering::Relaxed);
+            if counter % self.sample_rate == 0 {
+                let labels = if is_write {
+                    &self.labels_write
+                } else {
+                    &self.labels_read
+                };
+                metrics::gauge!("backpressure.buffer_utilization", labels.as_ref())
+                    .set(utilization);
+            }
+        }
+    }
 }
 
 /// Leader node's state in Raft consensus algorithm.
@@ -275,6 +357,10 @@ pub struct LeaderState<T: TypeConfig> {
     /// Entries are removed after response is sent
     pub(super) pending_requests:
         HashMap<u64, MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>>,
+
+    // -- Metrics (optional, encapsulated) --
+    /// Backpressure metrics context (None when metrics disabled)
+    backpressure_metrics: Option<Arc<BackpressureMetrics>>,
 
     // -- Type System Marker --
     /// Phantom data for type parameter anchoring
@@ -695,13 +781,40 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     fn push_client_cmd(
         &mut self,
         cmd: ClientCmd,
-        _ctx: &RaftContext<Self::T>,
+        ctx: &RaftContext<Self::T>,
     ) {
         use crate::client_command_to_entry_payloads;
         use nanoid::nanoid;
 
+        let backpressure = &ctx.node_config.raft.backpressure;
+
         match cmd {
             ClientCmd::Propose(req, sender) => {
+                let current_pending = self.propose_buffer.len();
+
+                // Record buffer utilization metric (with sampling)
+                if let Some(ref metrics) = self.backpressure_metrics {
+                    if backpressure.max_pending_writes > 0 {
+                        let utilization = (current_pending as f64
+                            / backpressure.max_pending_writes as f64)
+                            * 100.0;
+                        metrics.record_buffer_utilization(utilization, true);
+                    }
+                }
+
+                // Check write backpressure limit
+                if backpressure.should_reject_write(current_pending) {
+                    // Record rejection metric
+                    if let Some(ref metrics) = self.backpressure_metrics {
+                        metrics.record_rejection(true);
+                    }
+
+                    let _ = sender.send(Err(Status::resource_exhausted(
+                        "Too many pending write requests",
+                    )));
+                    return;
+                }
+
                 self.propose_buffer.push(RaftRequestWithSignal {
                     id: nanoid!(),
                     payloads: client_command_to_entry_payloads(req.commands),
@@ -716,12 +829,87 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 // Route to appropriate buffer based on policy
                 match effective_policy {
                     ServerReadConsistencyPolicy::LinearizableRead => {
+                        let current_pending = self.linearizable_read_buffer.len();
+
+                        // Record buffer utilization metric (with sampling)
+                        if let Some(ref metrics) = self.backpressure_metrics {
+                            if backpressure.max_pending_reads > 0 {
+                                let utilization = (current_pending as f64
+                                    / backpressure.max_pending_reads as f64)
+                                    * 100.0;
+                                metrics.record_buffer_utilization(utilization, false);
+                            }
+                        }
+
+                        // Check read backpressure limit
+                        if backpressure.should_reject_read(current_pending) {
+                            // Record rejection metric
+                            if let Some(ref metrics) = self.backpressure_metrics {
+                                metrics.record_rejection(false);
+                            }
+
+                            let _ = sender.send(Err(Status::resource_exhausted(
+                                "Too many pending read requests",
+                            )));
+                            return;
+                        }
+
                         self.linearizable_read_buffer.push((req, sender));
                     }
                     ServerReadConsistencyPolicy::LeaseRead => {
+                        let current_pending = self.lease_read_queue.len();
+
+                        // Record buffer utilization metric (with sampling)
+                        if let Some(ref metrics) = self.backpressure_metrics {
+                            if backpressure.max_pending_reads > 0 {
+                                let utilization = (current_pending as f64
+                                    / backpressure.max_pending_reads as f64)
+                                    * 100.0;
+                                metrics.record_buffer_utilization(utilization, false);
+                            }
+                        }
+
+                        // Check read backpressure limit
+                        if backpressure.should_reject_read(current_pending) {
+                            // Record rejection metric
+                            if let Some(ref metrics) = self.backpressure_metrics {
+                                metrics.record_rejection(false);
+                            }
+
+                            let _ = sender.send(Err(Status::resource_exhausted(
+                                "Too many pending read requests",
+                            )));
+                            return;
+                        }
+
                         self.lease_read_queue.push_back((req, sender));
                     }
                     ServerReadConsistencyPolicy::EventualConsistency => {
+                        let current_pending = self.eventual_read_queue.len();
+
+                        // Record buffer utilization metric (with sampling)
+                        if let Some(ref metrics) = self.backpressure_metrics {
+                            if backpressure.max_pending_reads > 0 {
+                                let utilization = (current_pending as f64
+                                    / backpressure.max_pending_reads as f64)
+                                    * 100.0;
+                                metrics.record_buffer_utilization(utilization, false);
+                            }
+                        }
+
+                        // Check read backpressure limit
+                        if backpressure.should_reject_read(current_pending) {
+                            // Record rejection metric
+                            if let Some(ref metrics) = self.backpressure_metrics {
+                                metrics.record_rejection(false);
+                            }
+
+                            let _ = sender.send(Err(Status::resource_exhausted(
+                                "Too many pending read requests",
+                            )));
+                            return;
+                        }
+
                         self.eventual_read_queue.push_back((req, sender));
                     }
                 }
@@ -2184,7 +2372,21 @@ impl<T: TypeConfig> LeaderState<T> {
         // Extract read config before node_config is moved
         let read_size_threshold = node_config.raft.read_consistency.read_batching.size_threshold;
 
-        let batch_metrics = Arc::new(crate::BatchMetrics::new(node_id));
+        let batch_metrics = Arc::new(crate::BatchMetrics::new(
+            node_id,
+            node_config.raft.metrics.enable_batch,
+        ));
+
+        // Initialize backpressure metrics (None if disabled)
+        let backpressure_metrics = if node_config.raft.metrics.enable_backpressure {
+            Some(Arc::new(BackpressureMetrics::new(
+                node_id,
+                true,
+                node_config.raft.metrics.sample_rate,
+            )))
+        } else {
+            None
+        };
 
         LeaderState {
             cluster_metadata: ClusterMetadata {
@@ -2198,7 +2400,9 @@ impl<T: TypeConfig> LeaderState<T> {
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            propose_buffer: Box::new(BatchBuffer::new(max_batch_size).with_metrics(batch_metrics)),
+            propose_buffer: Box::new(
+                BatchBuffer::new(max_batch_size).with_metrics(batch_metrics.clone()),
+            ),
 
             node_config,
             scheduled_purge_upto: None,
@@ -2209,10 +2413,13 @@ impl<T: TypeConfig> LeaderState<T> {
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
             lease_timestamp: AtomicU64::new(0),
-            linearizable_read_buffer: Box::new(BatchBuffer::new(read_size_threshold)),
+            linearizable_read_buffer: Box::new(
+                BatchBuffer::new(read_size_threshold).with_metrics(batch_metrics),
+            ),
             lease_read_queue: VecDeque::new(),
             eventual_read_queue: VecDeque::new(),
             pending_requests: HashMap::new(),
+            backpressure_metrics,
             _marker: PhantomData,
         }
     }
@@ -2820,7 +3027,21 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
         let shared_state = candidate.shared_state.clone();
         shared_state.set_current_leader(candidate.node_id());
 
-        let batch_metrics = Arc::new(crate::BatchMetrics::new(candidate.node_id()));
+        let batch_metrics = Arc::new(crate::BatchMetrics::new(
+            candidate.node_id(),
+            candidate.node_config.raft.metrics.enable_batch,
+        ));
+
+        // Initialize backpressure metrics (None if disabled)
+        let backpressure_metrics = if candidate.node_config.raft.metrics.enable_backpressure {
+            Some(Arc::new(BackpressureMetrics::new(
+                candidate.node_id(),
+                true,
+                candidate.node_config.raft.metrics.sample_rate,
+            )))
+        } else {
+            None
+        };
 
         Self {
             shared_state,
@@ -2829,7 +3050,9 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            propose_buffer: Box::new(BatchBuffer::new(max_batch_size).with_metrics(batch_metrics)),
+            propose_buffer: Box::new(
+                BatchBuffer::new(max_batch_size).with_metrics(batch_metrics.clone()),
+            ),
 
             node_config: candidate.node_config.clone(),
 
@@ -2846,12 +3069,16 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
                 replication_targets: vec![],
             },
             lease_timestamp: AtomicU64::new(0),
-            linearizable_read_buffer: Box::new(BatchBuffer::new(
-                candidate.node_config.raft.read_consistency.read_batching.size_threshold,
-            )),
+            linearizable_read_buffer: Box::new(
+                BatchBuffer::new(
+                    candidate.node_config.raft.read_consistency.read_batching.size_threshold,
+                )
+                .with_metrics(batch_metrics),
+            ),
             lease_read_queue: VecDeque::new(),
             eventual_read_queue: VecDeque::new(),
             pending_requests: HashMap::new(),
+            backpressure_metrics,
             _marker: PhantomData,
         }
     }
