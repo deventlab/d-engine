@@ -24,3 +24,5 @@ mod watch_and_subscriptions;
 
 // Support modules
 mod client_manager;
+
+mod leader_tick_heartbeat;

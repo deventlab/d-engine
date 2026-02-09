@@ -74,19 +74,12 @@ pub fn mock_node(
 /// let (tx, rx) = watch::channel(());
 /// let raft = mock_raft("/tmp/test_db", rx, None);
 /// ```
-///
-/// # Note
-///
-/// This sets `rpc_append_entries_in_batch_threshold=0` to ensure
-/// replication happens immediately (useful for testing).
 pub fn mock_raft(
     db_path: &str,
     shutdown_signal: watch::Receiver<()>,
     peers_meta_option: Option<Vec<NodeMeta>>,
 ) -> Raft<MockTypeConfig> {
     let mut node_config = node_config(db_path);
-    // Set batch_threshold=0, means the replication will be triggered immediatelly.
-    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 0;
     if let Some(peers_meta) = peers_meta_option {
         node_config.cluster.initial_cluster = peers_meta;
     }

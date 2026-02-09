@@ -18,7 +18,6 @@ use d_engine_core::config::PersistenceConfig;
 use d_engine_core::config::PersistenceStrategy;
 use d_engine_core::config::RaftConfig;
 use d_engine_core::config::RaftNodeConfig;
-use d_engine_core::config::ReplicationConfig;
 use d_engine_core::config::SnapshotConfig;
 use d_engine_core::convert::safe_kv_bytes;
 use d_engine_proto::client::WriteCommand;
@@ -187,10 +186,6 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
     let raft = RaftConfig {
         general_raft_timeout_duration_in_ms: 10000,
         snapshot_rpc_timeout_ms: 300_000,
-        replication: ReplicationConfig {
-            rpc_append_entries_in_batch_threshold: 1,
-            ..Default::default()
-        },
         snapshot: SnapshotConfig {
             max_log_entries_before_snapshot: 1,
             cleanup_retain_count: 2,

@@ -176,11 +176,26 @@ pub struct ReplicationConfig {
     #[serde(default = "default_append_interval")]
     pub rpc_append_entries_clock_in_ms: u64,
 
-    #[serde(default = "default_batch_threshold")]
-    pub rpc_append_entries_in_batch_threshold: usize,
-
-    #[serde(default = "default_batch_delay")]
-    pub rpc_append_entries_batch_process_delay_in_ms: u64,
+    /// Maximum number of commands to accumulate in a single batch during drain operations
+    ///
+    /// # How It Works
+    /// In the drain-based batch architecture:
+    /// 1. recv() blocks until first command arrives
+    /// 2. try_recv() drains up to `max_batch_size` pending commands
+    /// 3. Entire batch is flushed to followers immediately
+    ///
+    /// # Example
+    /// With max_batch_size = 1000:
+    /// - If 500 commands arrive: drain triggers immediately with 500 commands
+    /// - If 1500 commands arrive: two batches (1000 + 500)
+    /// - Heartbeat (100ms) acts as safety net for incomplete batches
+    ///
+    /// # Tuning Guidelines
+    /// - Low latency (< 1ms): 100-200 (drain faster, less batching)
+    /// - Balanced: 1000 (default, good throughput/latency trade-off)
+    /// - High throughput (> 10K ops/sec): 2000-5000 (batch more for efficiency)
+    #[serde(default = "default_max_batch_size")]
+    pub max_batch_size: usize,
 
     #[serde(default = "default_entries_per_replication")]
     pub append_entries_max_entries_per_replication: u64,
@@ -190,8 +205,7 @@ impl Default for ReplicationConfig {
     fn default() -> Self {
         Self {
             rpc_append_entries_clock_in_ms: default_append_interval(),
-            rpc_append_entries_in_batch_threshold: default_batch_threshold(),
-            rpc_append_entries_batch_process_delay_in_ms: default_batch_delay(),
+            max_batch_size: default_max_batch_size(),
             append_entries_max_entries_per_replication: default_entries_per_replication(),
         }
     }
@@ -204,9 +218,9 @@ impl ReplicationConfig {
             )));
         }
 
-        if self.rpc_append_entries_in_batch_threshold == 0 {
+        if self.max_batch_size == 0 {
             return Err(Error::Config(ConfigError::Message(
-                "rpc_append_entries_in_batch_threshold must be > 0".into(),
+                "max_batch_size must be > 0. This sets the maximum number of commands to batch together in drain operations (e.g., 1000 means drain up to 1000 commands at once)".into(),
             )));
         }
 
@@ -216,26 +230,14 @@ impl ReplicationConfig {
             )));
         }
 
-        if self.rpc_append_entries_batch_process_delay_in_ms >= self.rpc_append_entries_clock_in_ms
-        {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "batch_delay {}ms should be less than append_interval {}ms",
-                self.rpc_append_entries_batch_process_delay_in_ms,
-                self.rpc_append_entries_clock_in_ms
-            ))));
-        }
-
         Ok(())
     }
 }
 fn default_append_interval() -> u64 {
     100
 }
-fn default_batch_threshold() -> usize {
+fn default_max_batch_size() -> usize {
     100
-}
-fn default_batch_delay() -> u64 {
-    1
 }
 fn default_entries_per_replication() -> u64 {
     100

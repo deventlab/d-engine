@@ -22,10 +22,8 @@ default_policy = "LeaseRead"
 lease_duration_ms = 500
 
 [raft.replication]
-# Process commands when this number is reached
-rpc_append_entries_in_batch_threshold = 100
-# Ensure the batch is processed within a maximum delay (e.g., 10ms)
-rpc_append_entries_batch_process_delay_in_ms = 1
+# Maximum number of commands to accumulate in a single batch during drain operations
+max_batch_size = 100
 
 [raft.persistence]
 strategy = "DiskFirst"

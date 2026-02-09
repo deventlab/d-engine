@@ -1724,7 +1724,7 @@ async fn test_drain_single_request_no_delay() {
     let (tx, mut rx) = MaybeCloneOneshot::new();
 
     state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
-    
+
     // Verify: Buffer has exactly 1 request (no batching accumulation)
     assert_eq!(
         state.linearizable_read_buffer.len(),
@@ -1742,8 +1742,7 @@ async fn test_drain_single_request_no_delay() {
     // Verify: Processing was immediate (< 10ms, no artificial batching delay)
     assert!(
         elapsed.as_millis() < 10,
-        "Single request should process immediately without batching delay, took {:?}",
-        elapsed
+        "Single request should process immediately without batching delay, took {elapsed:?}"
     );
 
     drop(_shutdown_tx);
@@ -1815,7 +1814,7 @@ async fn test_drain_multiple_requests_natural_batch() {
     for i in 0..10 {
         let req = ClientReadRequest {
             client_id: 1,
-            keys: vec![Bytes::from(format!("key{}", i))],
+            keys: vec![Bytes::from(format!("key{i}"))],
             consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
         };
         let (tx, rx) = MaybeCloneOneshot::new();
@@ -1844,8 +1843,7 @@ async fn test_drain_multiple_requests_natural_batch() {
     for (i, mut rx) in receivers.into_iter().enumerate() {
         assert!(
             rx.recv().await.is_ok(),
-            "Request {} should succeed in batch",
-            i
+            "Request {i} should succeed in batch"
         );
     }
 
@@ -1885,7 +1883,7 @@ async fn test_drain_max_batch_size_limit() {
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.read_consistency.allow_client_override = true;
     // Set small max_batch_size for testing
-    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 5;
+    node_config.raft.replication.max_batch_size = 5;
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_drain_max_batch_size")
@@ -1903,7 +1901,7 @@ async fn test_drain_max_batch_size_limit() {
     for i in 0..10 {
         let req = ClientReadRequest {
             client_id: 1,
-            keys: vec![Bytes::from(format!("key{}", i))],
+            keys: vec![Bytes::from(format!("key{i}"))],
             consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
         };
         let (tx, _rx) = MaybeCloneOneshot::new();
@@ -1920,7 +1918,7 @@ async fn test_drain_max_batch_size_limit() {
     // Note: This test validates buffer accumulation behavior.
     // The actual max_batch_size enforcement happens in the main loop's
     // drain logic (raft.rs), not in flush_cmd_buffers().
-    // 
+    //
     // In production:
     // - raft.rs recv() gets first request
     // - raft.rs try_recv() loop drains up to max_batch_size-1 more
@@ -1930,7 +1928,7 @@ async fn test_drain_max_batch_size_limit() {
     // proving the need for drain-time limiting in the main loop.
 
     assert!(
-        state.linearizable_read_buffer.len() > ctx.node_config.raft.replication.rpc_append_entries_in_batch_threshold,
+        state.linearizable_read_buffer.len() > ctx.node_config.raft.replication.max_batch_size,
         "Buffer can accumulate beyond max_batch_size (main loop enforces limit during drain)"
     );
 
@@ -1980,7 +1978,7 @@ async fn test_linearizable_read_batch_single_quorum() {
     let mut replication = MockReplicationCore::new();
     replication
         .expect_handle_raft_request_in_batch()
-        .times(1)  // KEY: Single quorum check for all requests
+        .times(1) // KEY: Single quorum check for all requests
         .returning(|_, _, _, _, _| {
             Ok(crate::AppendResults {
                 commit_quorum_achieved: true,
@@ -2009,7 +2007,7 @@ async fn test_linearizable_read_batch_single_quorum() {
     for i in 0..5 {
         let req = ClientReadRequest {
             client_id: 1,
-            keys: vec![Bytes::from(format!("key{}", i))],
+            keys: vec![Bytes::from(format!("key{i}"))],
             consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
         };
         let (tx, rx) = MaybeCloneOneshot::new();
@@ -2022,11 +2020,7 @@ async fn test_linearizable_read_batch_single_quorum() {
 
     // Verify: All 5 requests succeeded
     for (i, mut rx) in receivers.into_iter().enumerate() {
-        assert!(
-            rx.recv().await.is_ok(),
-            "Request {} should succeed",
-            i
-        );
+        assert!(rx.recv().await.is_ok(), "Request {i} should succeed");
     }
 
     // Verify: MockReplicationCore received exactly 1 call

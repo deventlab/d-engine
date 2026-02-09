@@ -59,7 +59,7 @@ async fn setup_process_raft_request_test_context(
     shutdown_signal: watch::Receiver<()>,
 ) -> ProcessRaftRequestTestContext {
     let mut node_config = node_config(&format!("/tmp/{test_name}"));
-    node_config.raft.replication.rpc_append_entries_in_batch_threshold = batch_threshold;
+    node_config.raft.replication.max_batch_size = batch_threshold;
     let mut raft_context =
         MockBuilder::new(shutdown_signal).with_node_config(node_config).build_context();
 
@@ -412,7 +412,7 @@ async fn test_drain_single_write_no_delay() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_drain_single_write");
-    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 100;
+    node_config.raft.replication.max_batch_size = 100;
 
     // Mock replication handler
     let mut replication = MockReplicationCore::new();
@@ -467,8 +467,7 @@ async fn test_drain_single_write_no_delay() {
     // Verify: Processing was immediate (< 10ms)
     assert!(
         elapsed.as_millis() < 10,
-        "Single write should process immediately, took {:?}",
-        elapsed
+        "Single write should process immediately, took {elapsed:?}"
     );
 
     drop(_shutdown_tx);
@@ -497,7 +496,7 @@ async fn test_drain_multiple_writes_natural_batch() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_drain_multiple_writes");
-    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 100;
+    node_config.raft.replication.max_batch_size = 100;
 
     // Mock replication - expect single call for entire batch
     let mut replication = MockReplicationCore::new();
@@ -556,11 +555,7 @@ async fn test_drain_multiple_writes_natural_batch() {
 
     // Verify: All 10 requests received responses
     for (i, mut rx) in receivers.into_iter().enumerate() {
-        assert!(
-            rx.recv().await.is_ok(),
-            "Write {} should succeed in batch",
-            i
-        );
+        assert!(rx.recv().await.is_ok(), "Write {i} should succeed in batch");
     }
 
     // Note: MockReplicationCore expects 1 call - confirms single replication
@@ -594,7 +589,7 @@ async fn test_drain_max_batch_size_limit() {
 
     let mut node_config = node_config("/tmp/test_drain_max_batch");
     // Set small max_batch_size for testing
-    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 5;
+    node_config.raft.replication.max_batch_size = 5;
 
     let ctx = MockBuilder::new(shutdown_rx).with_node_config(node_config).build_context();
 
@@ -625,8 +620,7 @@ async fn test_drain_max_batch_size_limit() {
     // drain-time limiting in raft.rs main loop.
 
     assert!(
-        state.propose_buffer.len()
-            > ctx.node_config.raft.replication.rpc_append_entries_in_batch_threshold,
+        state.propose_buffer.len() > ctx.node_config.raft.replication.max_batch_size,
         "Buffer can accumulate beyond max_batch_size (main loop enforces during drain)"
     );
 
@@ -665,7 +659,7 @@ async fn test_write_batch_single_replication() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_batch_single_replication");
-    node_config.raft.replication.rpc_append_entries_in_batch_threshold = 100;
+    node_config.raft.replication.max_batch_size = 100;
 
     // Mock replication - expect EXACTLY 1 call for entire batch
     let mut replication = MockReplicationCore::new();
@@ -710,7 +704,7 @@ async fn test_write_batch_single_replication() {
 
     // Verify: All 5 writes succeeded
     for (i, mut rx) in receivers.into_iter().enumerate() {
-        assert!(rx.recv().await.is_ok(), "Write {} should succeed", i);
+        assert!(rx.recv().await.is_ok(), "Write {i} should succeed");
     }
 
     // Verify: MockReplicationCore received exactly 1 call

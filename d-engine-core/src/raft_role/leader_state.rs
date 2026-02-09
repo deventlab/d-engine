@@ -94,6 +94,12 @@ use crate::ensure_safe_join;
 use crate::event::ClientCmd;
 use crate::stream::create_production_snapshot_stream;
 
+// Type aliases for improved readability
+type LinearizableReadRequest = (
+    ClientReadRequest,
+    MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+);
+
 // Supporting data structures
 #[derive(Debug, Clone)]
 pub struct PendingPromotion {
@@ -247,12 +253,7 @@ pub struct LeaderState<T: TypeConfig> {
 
     /// Buffered linearizable read requests awaiting batch processing
     /// Only LinearizableRead policy uses batching with size/timeout thresholds
-    pub(super) linearizable_read_buffer: Box<
-        BatchBuffer<(
-            ClientReadRequest,
-            MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
-        )>,
-    >,
+    pub(super) linearizable_read_buffer: Box<BatchBuffer<LinearizableReadRequest>>,
 
     /// Lease-based read requests awaiting processing
     /// Processed immediately in flush_cmd_buffers if lease is valid
@@ -2175,7 +2176,7 @@ impl<T: TypeConfig> LeaderState<T> {
         node_config: Arc<RaftNodeConfig>,
     ) -> Self {
         let ReplicationConfig {
-            rpc_append_entries_in_batch_threshold,
+            max_batch_size,
             rpc_append_entries_clock_in_ms,
             ..
         } = node_config.raft.replication;
@@ -2197,9 +2198,7 @@ impl<T: TypeConfig> LeaderState<T> {
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            propose_buffer: Box::new(
-                BatchBuffer::new(rpc_append_entries_in_batch_threshold).with_metrics(batch_metrics),
-            ),
+            propose_buffer: Box::new(BatchBuffer::new(max_batch_size).with_metrics(batch_metrics)),
 
             node_config,
             scheduled_purge_upto: None,
@@ -2812,7 +2811,7 @@ impl<T: TypeConfig> LeaderState<T> {
 impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
     fn from(candidate: &CandidateState<T>) -> Self {
         let ReplicationConfig {
-            rpc_append_entries_in_batch_threshold,
+            max_batch_size,
             rpc_append_entries_clock_in_ms,
             ..
         } = candidate.node_config.raft.replication;
@@ -2830,9 +2829,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            propose_buffer: Box::new(
-                BatchBuffer::new(rpc_append_entries_in_batch_threshold).with_metrics(batch_metrics),
-            ),
+            propose_buffer: Box::new(BatchBuffer::new(max_batch_size).with_metrics(batch_metrics)),
 
             node_config: candidate.node_config.clone(),
 

@@ -1431,7 +1431,7 @@ mod pending_promotion_tests {
 
             let (role_tx, role_rx) = mpsc::unbounded_channel();
             let mut node_config = node_config(&format!("/tmp/{test_name}"));
-            node_config.raft.replication.rpc_append_entries_in_batch_threshold = 1;
+            node_config.raft.replication.max_batch_size = 1;
             node_config.raft.membership.verify_leadership_persistent_timeout =
                 Duration::from_millis(200);
 
@@ -1477,8 +1477,7 @@ mod pending_promotion_tests {
 
             let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-            let result =
-                state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
+            let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
             assert_eq!(result.unwrap(), QuorumVerificationResult::Success);
             assert!(matches!(
@@ -1516,8 +1515,7 @@ mod pending_promotion_tests {
 
             let (role_tx, _) = mpsc::unbounded_channel();
 
-            let result =
-                state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
+            let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
             assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 
