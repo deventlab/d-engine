@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -507,7 +508,7 @@ async fn test_learner_rejects_client_write_request() {
     let cmd = ClientCmd::Propose(
         d_engine_proto::client::ClientWriteRequest {
             client_id: 1,
-            commands: vec![],
+            command: Some(WriteCommand::default()),
         },
         resp_tx,
     );

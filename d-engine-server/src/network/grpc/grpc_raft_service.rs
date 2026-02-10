@@ -337,8 +337,8 @@ where
         let request_future = async move {
             let req: ClientWriteRequest = request.into_inner();
             // Extract request and validate
-            if req.commands.is_empty() {
-                return Err(Status::invalid_argument("Commands cannot be empty"));
+            if req.command.is_none() {
+                return Err(Status::invalid_argument("Command cannot be empty"));
             }
 
             let (resp_tx, resp_rx) = MaybeCloneOneshot::new();

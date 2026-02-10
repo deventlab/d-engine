@@ -40,7 +40,7 @@ async fn test_backpressure_write_limit_enforcement() {
         let cmd = ClientCmd::Propose(
             ClientWriteRequest {
                 client_id: i,
-                commands: vec![WriteCommand::default()],
+                command: Some(WriteCommand::default()),
             },
             resp_tx,
         );
@@ -58,7 +58,7 @@ async fn test_backpressure_write_limit_enforcement() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 3,
-            commands: vec![WriteCommand::default()],
+            command: Some(WriteCommand::default()),
         },
         resp_tx,
     );
@@ -163,7 +163,7 @@ async fn test_backpressure_unlimited_when_zero() {
         let cmd = ClientCmd::Propose(
             ClientWriteRequest {
                 client_id: i,
-                commands: vec![WriteCommand::default()],
+                command: Some(WriteCommand::default()),
             },
             resp_tx,
         );
@@ -204,7 +204,7 @@ async fn test_backpressure_write_and_read_independent() {
         let cmd = ClientCmd::Propose(
             ClientWriteRequest {
                 client_id: i,
-                commands: vec![WriteCommand::default()],
+                command: Some(WriteCommand::default()),
             },
             resp_tx,
         );
@@ -216,7 +216,7 @@ async fn test_backpressure_write_and_read_independent() {
     let write_cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 99,
-            commands: vec![WriteCommand::default()],
+            command: Some(WriteCommand::default()),
         },
         write_tx,
     );

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
 use tokio::sync::{mpsc, watch};
 use tonic::Code;
 use tracing_test::traced_test;
@@ -532,7 +533,7 @@ async fn test_handle_client_propose_success() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
-            commands: vec![],
+            command: Some(WriteCommand::default()),
         },
         resp_tx,
     );

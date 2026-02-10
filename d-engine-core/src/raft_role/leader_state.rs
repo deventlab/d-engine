@@ -283,7 +283,13 @@ pub struct LeaderState<T: TypeConfig> {
     /// Accumulates requests until either:
     /// 1. Batch reaches configured size limit
     /// 2. Explicit flush is triggered
-    pub(super) propose_buffer: Box<BatchBuffer<RaftRequestWithSignal>>,
+    /// Stores raw (payload, sender) tuples for zero-copy, converted to RaftRequestWithSignal only at flush
+    pub(super) propose_buffer: Box<
+        BatchBuffer<(
+            EntryPayload,
+            MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+        )>,
+    >,
 
     // -- Timing & Scheduling --
     /// Replication heartbeat timer manager
@@ -610,7 +616,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             RaftRequestWithSignal {
                 id: nanoid!(),
                 payloads,
-                sender: resp_tx,
+                senders: vec![resp_tx],
                 wait_for_apply_event: false,
             },
             ctx,
@@ -733,8 +739,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             debug!(?now, "tick::reset_replication timer");
 
             // Piggyback heartbeat
-            let batch = self.propose_buffer.take_with_trigger(BatchTriggerType::Heartbeat);
-            self.process_batch(batch, role_tx, ctx).await?;
+            let tuples = self.propose_buffer.take_with_trigger(BatchTriggerType::Heartbeat);
+            if let Some(request) = Self::convert_tuples_to_request(tuples) {
+                self.process_batch(std::iter::once(request), role_tx, ctx).await?;
+            } else {
+                self.process_batch(vec![], role_tx, ctx).await?;
+            }
         }
 
         Ok(())
@@ -784,7 +794,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         ctx: &RaftContext<Self::T>,
     ) {
         use crate::client_command_to_entry_payloads;
-        use nanoid::nanoid;
 
         let backpressure = &ctx.node_config.raft.backpressure;
 
@@ -815,12 +824,19 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     return;
                 }
 
-                self.propose_buffer.push(RaftRequestWithSignal {
-                    id: nanoid!(),
-                    payloads: client_command_to_entry_payloads(req.commands),
-                    sender,
-                    wait_for_apply_event: true,
-                });
+                // Convert command to payload (will be merged in drain_batch)
+                if let Some(cmd) = req.command {
+                    let payload = client_command_to_entry_payloads(vec![cmd])
+                        .into_iter()
+                        .next()
+                        .expect("client_command_to_entry_payloads should return 1 element");
+
+                    // Push lightweight tuple directly (zero-copy, no Vec allocation)
+                    self.propose_buffer.push((payload, sender));
+                } else {
+                    // Empty command: reject
+                    let _ = sender.send(Err(Status::invalid_argument("Command is empty")));
+                }
             }
             ClientCmd::Read(req, sender) => {
                 // Determine effective read consistency policy
@@ -927,8 +943,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
         // Process propose buffer
         if !self.propose_buffer.is_empty() {
-            let batch = self.propose_buffer.take_all();
-            self.process_batch(batch, role_tx, ctx).await?;
+            let tuples = self.propose_buffer.take_all();
+            if let Some(request) = Self::convert_tuples_to_request(tuples) {
+                self.process_batch(std::iter::once(request), role_tx, ctx).await?;
+            }
         }
 
         // Process linearizable read buffer
@@ -1623,19 +1641,29 @@ impl<T: TypeConfig> LeaderState<T> {
     ///    - Return: original error
     pub async fn process_batch(
         &mut self,
-        batch: VecDeque<RaftRequestWithSignal>,
+        batch: impl IntoIterator<Item = RaftRequestWithSignal>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         self.timer.reset_replication();
 
+        // Convert to VecDeque for processing (single allocation, supports all iterators)
+        let batch: VecDeque<_> = batch.into_iter().collect();
+
         // 1. Get starting log index before append
         let start_index = ctx.raft_log().last_entry_id() + 1;
 
-        // 2. Build entry payloads from batch (borrow only)
-        // Enforce 1 request = 1 command (proto migration in progress)
-        let entry_payloads: Vec<EntryPayload> =
-            batch.iter().filter_map(|req| req.payloads.first().cloned()).collect();
+        // 2. Build entry payloads from batch - merge all payloads into single vector (zero-copy via move)
+        // This reduces RPC overhead by sending multiple commands in one append_entries call
+        // Pre-calculate total capacity to avoid reallocations
+        let total_payloads: usize = batch.iter().map(|req| req.payloads.len()).sum();
+        let mut entry_payloads = Vec::with_capacity(total_payloads);
+
+        // Move payloads out of batch
+        let mut batch = batch;
+        for req in batch.iter_mut() {
+            entry_payloads.extend(std::mem::take(&mut req.payloads));
+        }
 
         if !entry_payloads.is_empty() {
             trace!(?entry_payloads, "[Node-{} process_batch..", ctx.node_id);
@@ -1708,15 +1736,22 @@ impl<T: TypeConfig> LeaderState<T> {
 
                 // 5. Store senders in pending_requests - responses will be sent when ApplyCompleted event is received
                 // Use pre-computed wait_for_apply_event flag to determine response strategy
-                for (i, req) in batch.into_iter().enumerate() {
-                    let index = start_index + i as u64;
-
+                // Now each request can have multiple payloads and senders (merged)
+                let mut payload_index = 0u64;
+                for req in batch.into_iter() {
+                    // Optimize: condition check outside inner loop (reduce branch misprediction)
                     if req.wait_for_apply_event {
                         // Command payload: wait for ApplyCompleted event from state machine
-                        self.pending_requests.insert(index, req.sender);
+                        for sender in req.senders {
+                            self.pending_requests.insert(start_index + payload_index, sender);
+                            payload_index += 1;
+                        }
                     } else {
                         // Noop/Config payload: respond immediately after successful commit
-                        let _ = req.sender.send(Ok(ClientResponse::write_success()));
+                        for sender in req.senders {
+                            let _ = sender.send(Ok(ClientResponse::write_success()));
+                            payload_index += 1;
+                        }
                     }
                 }
             }
@@ -1743,10 +1778,10 @@ impl<T: TypeConfig> LeaderState<T> {
                     ErrorCode::ProposeFailed
                 };
 
-                // 4. Notify all clients of failure
-                for req in batch {
-                    let _ = req.sender.send(Ok(ClientResponse::client_error(error_code)));
-                }
+                // 4. Notify all clients of failure (flat_map for cleaner iteration)
+                batch.into_iter().flat_map(|req| req.senders).for_each(|sender| {
+                    let _ = sender.send(Ok(ClientResponse::client_error(error_code)));
+                });
             }
 
             // Case 3: High term found
@@ -1758,10 +1793,9 @@ impl<T: TypeConfig> LeaderState<T> {
                 self.send_become_follower_event(None, role_tx)?;
 
                 // Notify clients of term expiration
-                for req in batch {
-                    let _ =
-                        req.sender.send(Ok(ClientResponse::client_error(ErrorCode::TermOutdated)));
-                }
+                batch.into_iter().flat_map(|req| req.senders).for_each(|sender| {
+                    let _ = sender.send(Ok(ClientResponse::client_error(ErrorCode::TermOutdated)));
+                });
 
                 return Err(ReplicationError::HigherTerm(higher_term).into());
             }
@@ -1771,10 +1805,9 @@ impl<T: TypeConfig> LeaderState<T> {
                 error!("Batch processing failed: {:?}", e);
 
                 // Notify all clients of failure
-                for req in batch {
-                    let _ =
-                        req.sender.send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)));
-                }
+                batch.into_iter().flat_map(|req| req.senders).for_each(|sender| {
+                    let _ = sender.send(Ok(ClientResponse::client_error(ErrorCode::ProposeFailed)));
+                });
 
                 return Err(e);
             }
@@ -2599,6 +2632,28 @@ impl<T: TypeConfig> LeaderState<T> {
             }
         }
         batch
+    }
+
+    /// Convert tuple batch to single merged RaftRequestWithSignal (optimal: zero-copy + stdlib unzip)
+    fn convert_tuples_to_request(
+        tuples: VecDeque<(
+            EntryPayload,
+            MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+        )>
+    ) -> Option<RaftRequestWithSignal> {
+        if tuples.is_empty() {
+            return None;
+        }
+
+        // Use stdlib's optimized unzip (better than manual loop)
+        let (payloads, senders): (Vec<_>, Vec<_>) = tuples.into_iter().unzip();
+
+        Some(RaftRequestWithSignal {
+            id: nanoid!(),
+            payloads,
+            senders,
+            wait_for_apply_event: true,
+        })
     }
 
     async fn safe_batch_promote(
