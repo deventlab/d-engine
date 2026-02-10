@@ -84,7 +84,7 @@ async fn test_handle_service_timeout() {
     // Client Propose request
     assert!(
         node.handle_client_write(Request::new(ClientWriteRequest {
-            commands: vec![],
+            command: Some(WriteCommand::default()),
             client_id: 1,
         }))
         .await
@@ -157,7 +157,7 @@ async fn test_server_is_not_ready() {
     let result = node
         .handle_client_write(Request::new(ClientWriteRequest {
             client_id: 1,
-            commands: vec![],
+            command: Some(WriteCommand::default()),
         }))
         .await;
     assert!(result.is_err());
@@ -300,7 +300,7 @@ async fn test_handle_rpc_services_successfully() {
         assert!(
             node.handle_client_write(Request::new(ClientWriteRequest {
                 client_id: 1,
-                commands: vec![WriteCommand::delete(safe_kv_bytes(1))],
+                command: Some(WriteCommand::delete(safe_kv_bytes(1))),
             }))
             .await
             .is_ok()

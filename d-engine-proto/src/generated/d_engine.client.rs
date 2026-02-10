@@ -54,8 +54,9 @@ pub mod write_command {
 pub struct ClientWriteRequest {
     #[prost(uint32, tag = "1")]
     pub client_id: u32,
-    #[prost(message, repeated, tag = "2")]
-    pub commands: ::prost::alloc::vec::Vec<WriteCommand>,
+    /// Changed from 'repeated commands' to singular 'command' (1 request = 1 command)
+    #[prost(message, optional, tag = "2")]
+    pub command: ::core::option::Option<WriteCommand>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]

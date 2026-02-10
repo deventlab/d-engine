@@ -164,7 +164,7 @@ impl EmbeddedClient {
 
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            commands: vec![command],
+            command: Some(command),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -386,7 +386,7 @@ impl EmbeddedClient {
 
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            commands: vec![command],
+            command: Some(command),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -525,7 +525,7 @@ impl ClientApi for EmbeddedClient {
 
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            commands: vec![command],
+            command: Some(command),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -584,7 +584,7 @@ impl ClientApi for EmbeddedClient {
 
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            commands: vec![command],
+            command: Some(command),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();

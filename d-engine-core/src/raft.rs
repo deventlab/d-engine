@@ -288,11 +288,11 @@ where
                     }
                 }
 
-                // P3: Client commands (drain-driven batch)
+                // P3: Client commands (drain-driven batch with RPC merge)
                 Some(first_cmd) = self.cmd_rx.recv() => {
                     trace!(%self.node_id, "receive first client command");
 
-                    // Push first command directly to role's buffer (zero-copy)
+                    // Push first command and drain rest (direct push for zero-copy)
                     self.role.push_client_cmd(first_cmd, &self.ctx);
 
                     // Drain all pending commands from channel (max_batch_size limit)

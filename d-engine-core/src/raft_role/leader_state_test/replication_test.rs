@@ -101,7 +101,7 @@ fn mock_request(
     RaftRequestWithSignal {
         id: nanoid!(),
         payloads: vec![],
-        sender,
+        senders: vec![sender],
         wait_for_apply_event: false,
     }
 }

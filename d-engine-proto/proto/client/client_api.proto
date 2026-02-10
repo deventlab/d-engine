@@ -31,7 +31,7 @@ message WriteCommand {
 
 message ClientWriteRequest {
   uint32 client_id = 1;
-  repeated WriteCommand commands = 2;
+  WriteCommand command = 2; // Changed from 'repeated commands' to singular 'command' (1 request = 1 command)
 }
 
 // Read consistency policy for controlling read operation guarantees

@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use d_engine_proto::client::WriteCommand;
 use nanoid::nanoid;
 use tokio::sync::{mpsc, watch};
 
@@ -99,6 +100,7 @@ async fn setup_process_raft_request_test_context(
             })
         });
 
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
 
     raft_context.handlers.replication_handler = replication_handler;
@@ -149,7 +151,7 @@ async fn test_process_raft_request_immediate_execution() {
     // Prepare test request
     let request = ClientWriteRequest {
         client_id: 0,
-        commands: vec![],
+        command: Some(WriteCommand::default()),
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx, rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
@@ -161,8 +163,8 @@ async fn test_process_raft_request_immediate_execution() {
         .execute_request_immediately(
             RaftRequestWithSignal {
                 id: nanoid!(),
-                payloads: client_command_to_entry_payloads(request.commands),
-                sender: tx,
+                payloads: client_command_to_entry_payloads(request.command.into_iter().collect()),
+                senders: vec![tx],
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
@@ -242,7 +244,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
     // Prepare test requests
     let request = ClientWriteRequest {
         client_id: 0,
-        commands: vec![],
+        command: Some(WriteCommand::default()),
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
@@ -255,8 +257,10 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
         .execute_request_immediately(
             RaftRequestWithSignal {
                 id: nanoid!(),
-                payloads: client_command_to_entry_payloads(request.commands.clone()),
-                sender: tx1,
+                payloads: client_command_to_entry_payloads(
+                    request.command.clone().into_iter().collect(),
+                ),
+                senders: vec![tx1],
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
@@ -270,8 +274,8 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
         .execute_request_immediately(
             RaftRequestWithSignal {
                 id: nanoid!(),
-                payloads: client_command_to_entry_payloads(request.commands),
-                sender: tx2,
+                payloads: client_command_to_entry_payloads(request.command.into_iter().collect()),
+                senders: vec![tx2],
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
@@ -351,7 +355,7 @@ async fn test_process_raft_request_batching_enabled() {
     // Prepare test request
     let request = ClientWriteRequest {
         client_id: 0,
-        commands: vec![],
+        command: Some(WriteCommand::default()),
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx, _rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
@@ -363,8 +367,8 @@ async fn test_process_raft_request_batching_enabled() {
         .execute_request_immediately(
             RaftRequestWithSignal {
                 id: nanoid!(),
-                payloads: client_command_to_entry_payloads(request.commands),
-                sender: tx,
+                payloads: client_command_to_entry_payloads(request.command.into_iter().collect()),
+                senders: vec![tx],
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
@@ -428,6 +432,7 @@ async fn test_drain_single_write_no_delay() {
         });
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
 
     let ctx = MockBuilder::new(shutdown_rx)
@@ -444,7 +449,7 @@ async fn test_drain_single_write_no_delay() {
     let start = Instant::now();
     let req = ClientWriteRequest {
         client_id: 1,
-        commands: vec![],
+        command: Some(WriteCommand::default()),
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();
 
@@ -512,6 +517,7 @@ async fn test_drain_multiple_writes_natural_batch() {
         });
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
 
     let ctx = MockBuilder::new(shutdown_rx)
@@ -529,7 +535,7 @@ async fn test_drain_multiple_writes_natural_batch() {
     for i in 0..10 {
         let req = ClientWriteRequest {
             client_id: i,
-            commands: vec![],
+            command: Some(WriteCommand::default()),
         };
         let (tx, rx) = MaybeCloneOneshot::new();
         state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
@@ -599,7 +605,7 @@ async fn test_drain_max_batch_size_limit() {
     for i in 0..10 {
         let req = ClientWriteRequest {
             client_id: i,
-            commands: vec![],
+            command: Some(WriteCommand::default()),
         };
         let (tx, _rx) = MaybeCloneOneshot::new();
         state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
@@ -676,6 +682,7 @@ async fn test_write_batch_single_replication() {
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
+    raft_log.expect_last_entry_id().returning(|| 4);
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_node_config(node_config)
@@ -692,7 +699,7 @@ async fn test_write_batch_single_replication() {
     for i in 0..5 {
         let req = ClientWriteRequest {
             client_id: i,
-            commands: vec![],
+            command: Some(WriteCommand::default()),
         };
         let (tx, rx) = MaybeCloneOneshot::new();
         state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);

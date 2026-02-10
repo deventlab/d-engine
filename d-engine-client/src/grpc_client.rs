@@ -235,16 +235,14 @@ impl ClientApi for GrpcClient {
         let client_inner = self.client_inner.load();
 
         // Build write request with insert command
-        let mut commands = Vec::new();
-        let client_command_insert = WriteCommand::insert(
+        let command = WriteCommand::insert(
             Bytes::copy_from_slice(key.as_ref()),
             Bytes::copy_from_slice(value.as_ref()),
         );
-        commands.push(client_command_insert);
 
         let request = ClientWriteRequest {
             client_id: client_inner.client_id,
-            commands,
+            command: Some(command),
         };
 
         // Send write request to leader node (strong consistency required)
@@ -274,17 +272,15 @@ impl ClientApi for GrpcClient {
         let client_inner = self.client_inner.load();
 
         // Build write request with TTL-enabled insert command
-        let mut commands = Vec::new();
-        let client_command_insert = WriteCommand::insert_with_ttl(
+        let command = WriteCommand::insert_with_ttl(
             Bytes::copy_from_slice(key.as_ref()),
             Bytes::copy_from_slice(value.as_ref()),
             ttl_secs,
         );
-        commands.push(client_command_insert);
 
         let request = ClientWriteRequest {
             client_id: client_inner.client_id,
-            commands,
+            command: Some(command),
         };
 
         // Send write request to leader node (strong consistency required)
@@ -339,13 +335,11 @@ impl ClientApi for GrpcClient {
         let client_inner = self.client_inner.load();
 
         // Build delete request
-        let mut commands = Vec::new();
-        let client_command_delete = WriteCommand::delete(Bytes::copy_from_slice(key.as_ref()));
-        commands.push(client_command_delete);
+        let command = WriteCommand::delete(Bytes::copy_from_slice(key.as_ref()));
 
         let request = ClientWriteRequest {
             client_id: client_inner.client_id,
-            commands,
+            command: Some(command),
         };
 
         // Send delete request to leader node (strong consistency required)
@@ -372,18 +366,16 @@ impl ClientApi for GrpcClient {
         let client_inner = self.client_inner.load();
 
         // Build CAS request
-        let mut commands = Vec::new();
         let expected = expected_value.map(|v| Bytes::copy_from_slice(v.as_ref()));
-        let client_command_cas = WriteCommand::compare_and_swap(
+        let command = WriteCommand::compare_and_swap(
             Bytes::copy_from_slice(key.as_ref()),
             expected,
             Bytes::copy_from_slice(new_value.as_ref()),
         );
-        commands.push(client_command_cas);
 
         let request = ClientWriteRequest {
             client_id: client_inner.client_id,
-            commands,
+            command: Some(command),
         };
 
         // Send CAS request to leader node

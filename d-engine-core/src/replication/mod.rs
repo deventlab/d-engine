@@ -48,7 +48,9 @@ pub struct RaftRequestWithSignal {
     #[allow(unused)]
     pub id: String,
     pub payloads: Vec<EntryPayload>,
-    pub sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+    /// Multiple senders for merged requests (1 sender per payload, matched by index)
+    /// Invariant: senders.len() == payloads.len()
+    pub senders: Vec<MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>>,
 
     /// Does this request need to wait for StateMachine's ApplyCompleted event?
     ///

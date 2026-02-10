@@ -440,7 +440,7 @@ async fn test_p0_leader_single_command_drain_immediately() {
     };
     let write_req = ClientWriteRequest {
         client_id: 1,
-        commands: vec![write_cmd],
+        command: Some(write_cmd),
     };
 
     // Access leader state to push command
@@ -530,7 +530,7 @@ async fn test_p0_leader_high_load_max_batch_cap() {
             };
             let write_req = ClientWriteRequest {
                 client_id: 1,
-                commands: vec![write_cmd],
+                command: Some(write_cmd),
             };
             let cmd = crate::ClientCmd::Propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);
@@ -661,7 +661,7 @@ async fn test_p0_follower_write_request_rejection() {
     };
     let write_req = ClientWriteRequest {
         client_id: 1,
-        commands: vec![write_cmd],
+        command: Some(write_cmd),
     };
 
     let start = tokio::time::Instant::now();
@@ -760,7 +760,7 @@ async fn test_p0_candidate_commands_handling() {
         };
         let write_req = ClientWriteRequest {
             client_id: 1,
-            commands: vec![write_cmd],
+            command: Some(write_cmd),
         };
 
         if let RaftRole::Candidate(ref mut candidate) = raft.role {
@@ -932,7 +932,7 @@ async fn test_p1_medium_load_natural_batching() {
             };
             let write_req = ClientWriteRequest {
                 client_id: 1,
-                commands: vec![write_cmd],
+                command: Some(write_cmd),
             };
             let cmd = crate::ClientCmd::Propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);
@@ -1027,7 +1027,7 @@ async fn test_p1_mixed_workload_read_write_coexistence() {
             };
             let write_req = ClientWriteRequest {
                 client_id: 1,
-                commands: vec![write_cmd],
+                command: Some(write_cmd),
             };
             let cmd = crate::ClientCmd::Propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);
@@ -1137,7 +1137,7 @@ async fn test_p1_burst_load_recovery_after_spike() {
             };
             let write_req = ClientWriteRequest {
                 client_id: 1,
-                commands: vec![write_cmd],
+                command: Some(write_cmd),
             };
             let cmd = crate::ClientCmd::Propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);
@@ -1170,7 +1170,7 @@ async fn test_p1_burst_load_recovery_after_spike() {
             };
             let write_req = ClientWriteRequest {
                 client_id: 1,
-                commands: vec![write_cmd],
+                command: Some(write_cmd),
             };
             let cmd = crate::ClientCmd::Propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);

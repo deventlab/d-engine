@@ -4,6 +4,7 @@ use bytes::Bytes;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
 use d_engine_proto::error::ErrorCode;
@@ -1145,7 +1146,7 @@ async fn test_handle_client_write_request_redirects_to_leader() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
-            commands: vec![],
+            command: Some(WriteCommand::default()),
         },
         resp_tx,
     );
