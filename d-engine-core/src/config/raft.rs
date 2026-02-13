@@ -1315,11 +1315,6 @@ const fn default_enable_watch_metrics() -> bool {
 /// Controls emission of observability metrics. Disabling metrics reduces overhead
 /// in hot paths but decreases system visibility.
 ///
-/// # Performance Impact
-/// - Backpressure metrics: ~5ns per request (enabled) vs 0ns (disabled)
-/// - Batch metrics: ~30ns per batch (enabled) vs 0ns (disabled)
-/// - Sampling reduces overhead proportionally (sample_rate=100 → 1% overhead)
-///
 /// # Example
 /// ```toml
 /// [raft.metrics]
@@ -1334,16 +1329,16 @@ pub struct MetricsConfig {
     /// Tracks client request backpressure for capacity planning.
     /// Disable for absolute maximum performance in trusted environments.
     ///
-    /// **Default**: true
+    /// **Default**: false
     #[serde(default = "default_enable_backpressure_metrics")]
     pub enable_backpressure: bool,
 
-    /// Enable batch metrics (drain/heartbeat triggers, batch size distribution)
+    /// Enable buffer length gauge (batch.buffer_length for propose and linearizable buffers)
     ///
-    /// Tracks batching efficiency for tuning max_batch_size.
-    /// Disable if batching is already optimized and stable.
+    /// Tracks buffer utilization for capacity planning.
+    /// Disable for absolute maximum performance in trusted environments.
     ///
-    /// **Default**: true
+    /// **Default**: false
     #[serde(default = "default_enable_batch_metrics")]
     pub enable_batch: bool,
 
@@ -1376,7 +1371,7 @@ fn default_enable_backpressure_metrics() -> bool {
 }
 
 fn default_enable_batch_metrics() -> bool {
-    true
+    false
 }
 
 fn default_metrics_sample_rate() -> u32 {

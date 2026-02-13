@@ -29,7 +29,7 @@ use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::{
     MockBuilder,
     raft_role::{RaftRole, role_state::RaftRoleState},
-    replication::{BatchBuffer, BatchMetrics, BatchTriggerType},
+    replication::BatchBuffer,
 };
 use bytes::Bytes;
 use d_engine_proto::client::write_command::Operation;
@@ -55,8 +55,7 @@ use tokio::time::Instant;
 #[test]
 fn test_p0_batch_buffer_single_item_no_batching() {
     // **Setup**: Create BatchBuffer with small max_batch_size
-    let metrics = Arc::new(BatchMetrics::new(1, true));
-    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300).with_metrics(metrics.clone());
+    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300);
 
     let start = Instant::now();
 
@@ -65,7 +64,7 @@ fn test_p0_batch_buffer_single_item_no_batching() {
     assert_eq!(buffer.len(), 1);
 
     // **Step 2**: Drain (take_all) without timeout
-    let drained = buffer.take_with_trigger(BatchTriggerType::Drain);
+    let drained = buffer.take_all();
     let elapsed = start.elapsed();
 
     // **Assertions**:
@@ -80,12 +79,6 @@ fn test_p0_batch_buffer_single_item_no_batching() {
     assert!(
         elapsed < Duration::from_millis(5),
         "Drain latency should be <5ms, got {elapsed:?}"
-    );
-
-    // ✅ Metrics: drain_triggered = 1
-    assert_eq!(
-        metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        1
     );
 }
 
@@ -103,8 +96,7 @@ fn test_p0_batch_buffer_single_item_no_batching() {
 #[test]
 fn test_p0_batch_buffer_max_batch_size_cap() {
     // **Setup**: Create BatchBuffer with max_batch_size = 300
-    let metrics = Arc::new(BatchMetrics::new(1, true));
-    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300).with_metrics(metrics.clone());
+    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300);
 
     const TOTAL_ITEMS: usize = 1000;
 
@@ -115,7 +107,7 @@ fn test_p0_batch_buffer_max_batch_size_cap() {
     assert_eq!(buffer.len(), TOTAL_ITEMS);
 
     // **Step 2**: First drain cycle - should cap at max_batch_size
-    let batch1 = buffer.take_with_trigger(BatchTriggerType::Drain);
+    let batch1 = buffer.take_all();
     assert_eq!(
         batch1.len(),
         300,
@@ -128,7 +120,7 @@ fn test_p0_batch_buffer_max_batch_size_cap() {
     let mut drain_cycles = 1;
 
     while !buffer.is_empty() {
-        let batch = buffer.take_with_trigger(BatchTriggerType::Drain);
+        let batch = buffer.take_all();
         assert!(
             batch.len() <= 300,
             "Batch size should never exceed max_batch_size"
@@ -149,12 +141,6 @@ fn test_p0_batch_buffer_max_batch_size_cap() {
 
     // ✅ Each batch ≤ max_batch_size (IO overload prevention)
     // (verified in step 3 loop)
-
-    // ✅ Metrics: drain_triggered = number of cycles
-    assert_eq!(
-        metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        drain_cycles as u64
-    );
 }
 
 // ========================================================================
@@ -171,19 +157,18 @@ fn test_p0_batch_buffer_max_batch_size_cap() {
 #[test]
 fn test_p0_batch_buffer_empty_flush_idempotent() {
     // **Setup**: Create BatchBuffer
-    let metrics = Arc::new(BatchMetrics::new(1, true));
-    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300).with_metrics(metrics.clone());
+    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300);
 
     // **Step 1**: Push and drain one item
     buffer.push(42);
-    let drained1 = buffer.take_with_trigger(BatchTriggerType::Drain);
+    let drained1 = buffer.take_all();
     assert_eq!(drained1.len(), 1);
 
     // **Step 2**: Verify buffer is empty
     assert!(buffer.is_empty());
 
     // **Step 3**: Try to drain empty buffer (should be no-op)
-    let drained2 = buffer.take_with_trigger(BatchTriggerType::Drain);
+    let drained2 = buffer.take_all();
 
     // **Assertions**:
     // ✅ is_empty() returns true
@@ -191,12 +176,6 @@ fn test_p0_batch_buffer_empty_flush_idempotent() {
 
     // ✅ Second drain returns empty VecDeque
     assert_eq!(drained2.len(), 0);
-
-    // ✅ Metrics recorded both flushes (even though second is empty)
-    assert_eq!(
-        metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        2
-    );
 
     // ✅ No panic, system stable
 }
@@ -215,8 +194,7 @@ fn test_p0_batch_buffer_empty_flush_idempotent() {
 #[test]
 fn test_p0_batch_buffer_max_batch_size_one() {
     // **Setup**: Create BatchBuffer with max_batch_size = 1 (degenerate)
-    let metrics = Arc::new(BatchMetrics::new(1, true));
-    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(1).with_metrics(metrics.clone());
+    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(1);
 
     const ITEMS: usize = 10;
 
@@ -228,7 +206,7 @@ fn test_p0_batch_buffer_max_batch_size_one() {
     // **Step 2**: Drain one by one
     let mut drain_count = 0;
     while !buffer.is_empty() {
-        let batch = buffer.take_with_trigger(BatchTriggerType::Drain);
+        let batch = buffer.take_all();
         assert_eq!(batch.len(), 1, "Each drain should process exactly 1 item");
         drain_count += 1;
     }
@@ -239,71 +217,6 @@ fn test_p0_batch_buffer_max_batch_size_one() {
 
     // ✅ All items processed
     assert!(buffer.is_empty());
-
-    // ✅ Graceful degradation (no panic, system works)
-    assert_eq!(
-        metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        ITEMS as u64
-    );
-}
-
-// ========================================================================
-// P0-5: BATCH METRICS - TRIGGER TYPE TRACKING
-// ========================================================================
-//
-// **Objective**: Verify metrics correctly track drain vs heartbeat triggers
-//
-// **Expected Behavior**:
-// - drain_triggered counts Drain triggers
-// - heartbeat_triggered counts Heartbeat triggers
-//
-#[test]
-fn test_p0_batch_metrics_drain_vs_heartbeat_tracking() {
-    // **Setup**: Create BatchMetrics
-    let metrics = Arc::new(BatchMetrics::new(1, true));
-    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300).with_metrics(metrics.clone());
-
-    // **Step 1**: Push items and trigger drain flushes
-    for i in 0..100 {
-        buffer.push(i as u32);
-    }
-
-    let batch1 = buffer.take_with_trigger(BatchTriggerType::Drain);
-    assert_eq!(batch1.len(), 100);
-
-    // **Step 2**: Push more items and trigger heartbeat flush
-    for i in 100..150 {
-        buffer.push(i as u32);
-    }
-
-    let batch2 = buffer.take_with_trigger(BatchTriggerType::Heartbeat);
-    assert_eq!(batch2.len(), 50);
-
-    // **Step 3**: One more drain
-    for i in 150..200 {
-        buffer.push(i as u32);
-    }
-
-    let batch3 = buffer.take_with_trigger(BatchTriggerType::Drain);
-    assert_eq!(batch3.len(), 50);
-
-    // **Assertions**:
-    // ✅ drain_triggered = 2 (batch1 and batch3)
-    assert_eq!(
-        metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        2,
-        "Should have 2 Drain triggers"
-    );
-
-    // ✅ heartbeat_triggered = 1 (batch2)
-    assert_eq!(
-        metrics.heartbeat_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        1,
-        "Should have 1 Heartbeat trigger"
-    );
-
-    // Note: total_batch_count and total_batch_size metrics were removed as redundant
-    // They can be derived from drain_triggered + heartbeat_triggered
 }
 
 // ========================================================================
@@ -320,8 +233,7 @@ fn test_p0_batch_metrics_drain_vs_heartbeat_tracking() {
 #[test]
 fn test_p0_batch_buffer_natural_batching_medium_load() {
     // **Setup**: Create BatchBuffer with small max_batch_size to demonstrate batching
-    let metrics = Arc::new(BatchMetrics::new(1, true));
-    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(20).with_metrics(metrics.clone());
+    let mut buffer: BatchBuffer<u32> = BatchBuffer::new(20);
 
     // **Step 1**: Simulate moderate load - 50 items
     // With max_batch_size=20, should require multiple drain cycles
@@ -330,7 +242,7 @@ fn test_p0_batch_buffer_natural_batching_medium_load() {
     }
 
     // **Step 2**: First drain - should be capped at max_batch_size
-    let batch1 = buffer.take_with_trigger(BatchTriggerType::Drain);
+    let batch1 = buffer.take_all();
     let first_batch_size = batch1.len();
 
     // First batch should respect max_batch_size limit
@@ -344,7 +256,7 @@ fn test_p0_batch_buffer_natural_batching_medium_load() {
     let mut drain_cycles = 1;
 
     while !buffer.is_empty() {
-        let batch = buffer.take_with_trigger(BatchTriggerType::Drain);
+        let batch = buffer.take_all();
         assert!(
             batch.len() <= 20,
             "Each batch should respect max_batch_size"

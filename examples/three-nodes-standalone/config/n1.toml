@@ -27,6 +27,7 @@ max_batch_size = 200
 
 [raft.metrics]
 enable_backpressure = false
+enable_batch = false
 
 [raft.backpressure]
 max_pending_writes = 1000

@@ -127,67 +127,6 @@ fn test_buffer_reuse_after_take() {
     assert_eq!(buffer.buffer.len(), 2);
 }
 
-/// Test: take_with_trigger records Drain metric correctly
-#[test]
-fn test_take_with_trigger_drain() {
-    let metrics = Arc::new(BatchMetrics::new(1, true));
-    let mut buffer = BatchBuffer::<TestRequest>::new(2).with_metrics(metrics.clone());
-
-    buffer.push(create_test_request());
-    buffer.push(create_test_request());
-
-    let taken = buffer.take_with_trigger(BatchTriggerType::Drain);
-
-    assert_eq!(taken.len(), 2);
-    assert_eq!(
-        metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
-}
-
-/// Test: take_with_trigger records Heartbeat metric correctly
-#[test]
-fn test_take_with_trigger_heartbeat() {
-    let metrics = Arc::new(BatchMetrics::new(1, true));
-    let mut buffer = BatchBuffer::<TestRequest>::new(5).with_metrics(metrics.clone());
-
-    buffer.push(create_test_request());
-
-    let taken = buffer.take_with_trigger(BatchTriggerType::Heartbeat);
-
-    assert_eq!(taken.len(), 1);
-    assert_eq!(
-        metrics.heartbeat_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
-}
-
-/// Test: multiple triggers track cumulative metrics
-#[test]
-fn test_take_with_trigger_cumulative_metrics() {
-    let metrics = Arc::new(BatchMetrics::new(1, true));
-    let mut buffer = BatchBuffer::<TestRequest>::new(2).with_metrics(metrics.clone());
-
-    // First batch triggered by drain
-    buffer.push(create_test_request());
-    buffer.push(create_test_request());
-    buffer.take_with_trigger(BatchTriggerType::Drain);
-
-    // Second batch triggered by heartbeat
-    buffer.push(create_test_request());
-    buffer.take_with_trigger(BatchTriggerType::Heartbeat);
-
-    // Check cumulative counters
-    assert_eq!(
-        metrics.drain_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
-    assert_eq!(
-        metrics.heartbeat_triggered.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
-}
-
 /// Test: take resets last_flush timer
 #[test]
 fn test_take_resets_last_flush_timer() {
