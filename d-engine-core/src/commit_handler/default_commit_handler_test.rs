@@ -147,14 +147,14 @@ where
 
 impl TestHarness {
     async fn run_handler(&mut self) {
-        let (_sm_apply_tx, _sm_apply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sm_apply_tx, mut sm_apply_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let deps = CommitHandlerDependencies {
             state_machine_handler: self.mock_smh.clone(),
             raft_log: self.mock_log.clone(),
             membership: self.mock_membership.clone(),
             event_tx: self.event_tx.clone(),
-            sm_apply_tx: _sm_apply_tx,
+            sm_apply_tx,
             shutdown_signal: self.shutdown_rx.take().unwrap(),
         };
 
@@ -173,20 +173,30 @@ impl TestHarness {
             Arc::new(config),
             self.commit_rx.take().unwrap(),
         );
+
+        // Spawn SM Worker to process entries
+        let _sm_worker_handle = tokio::spawn(async move {
+            while let Some(_entries) = sm_apply_rx.recv().await {
+                // SM Worker simply consumes entries from the channel
+                // In a real system, this would apply them to the state machine
+                // For testing, we just drain the channel to keep it open
+            }
+        });
+
         self.handle = Some(tokio::spawn(async move {
             let _ = handler.run().await;
         }));
     }
 
     async fn process_batch_handler(&mut self) -> Result<()> {
-        let (_sm_apply_tx, _sm_apply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sm_apply_tx, mut sm_apply_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let deps = CommitHandlerDependencies {
             state_machine_handler: self.mock_smh.clone(),
             raft_log: self.mock_log.clone(),
             membership: self.mock_membership.clone(),
             event_tx: self.event_tx.clone(),
-            sm_apply_tx: _sm_apply_tx,
+            sm_apply_tx,
             shutdown_signal: self.shutdown_rx.take().unwrap(),
         };
 
@@ -204,6 +214,14 @@ impl TestHarness {
             Arc::new(config),
             self.commit_rx.take().unwrap(),
         );
+
+        // Spawn SM Worker to process entries
+        let _sm_worker_handle = tokio::spawn(async move {
+            while let Some(_entries) = sm_apply_rx.recv().await {
+                // SM Worker simply consumes entries from the channel
+            }
+        });
+
         handler.process_batch().await
     }
 

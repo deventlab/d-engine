@@ -730,6 +730,7 @@ async fn test_linearizable_read_encounters_higher_term() {
 
     let expect_new_commit_index = 3;
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 2);
     raft_log
         .expect_calculate_majority_matched_index()
         .returning(move |_, _, _| Some(expect_new_commit_index));
@@ -975,7 +976,8 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     use crate::test_utils::MockBuilder;
     use crate::{
-        AppendResults, MockRaftLog, MockReplicationCore, MockStateMachineHandler, RaftNodeConfig,
+        AppendResults, MockRaftLog, MockReplicationCore, MockStateMachineHandler, PeerUpdate,
+        RaftNodeConfig,
     };
     use d_engine_proto::client::ClientReadRequest;
     use d_engine_proto::error::ErrorCode;
@@ -987,7 +989,24 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
         |_, _, _, _, _| {
             Ok(AppendResults {
                 commit_quorum_achieved: true,
-                peer_updates: HashMap::new(),
+                peer_updates: HashMap::from([
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: Some(4),
+                            next_index: 5,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: Some(5),
+                            next_index: 6,
+                            success: true,
+                        },
+                    ),
+                ]),
                 learner_progress: HashMap::new(),
             })
         },

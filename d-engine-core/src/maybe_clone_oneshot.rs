@@ -91,6 +91,15 @@ impl<T: Send + Clone> MaybeCloneOneshotReceiver<T> {
             panic!("Cannot broadcast non-cloneable type in tests");
         }
     }
+
+    #[cfg(any(test, feature = "__test_support"))]
+    pub fn try_recv(&mut self) -> Result<T, broadcast::error::TryRecvError> {
+        if let Some(rx) = &mut self.test_inner {
+            rx.try_recv()
+        } else {
+            panic!("Cannot try_recv non-cloneable type in tests");
+        }
+    }
 }
 
 #[cfg(not(any(test, feature = "__test_support")))]

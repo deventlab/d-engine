@@ -521,6 +521,7 @@ async fn test_handle_client_propose_success() {
             })
         });
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     context.storage.raft_log = Arc::new(raft_log);
 
@@ -538,8 +539,11 @@ async fn test_handle_client_propose_success() {
         resp_tx,
     );
 
-    // Push to buffer - will be batched
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Push to buffer then flush to trigger replication
     state.push_client_cmd(cmd, &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush should succeed");
 }
 
 /// Test handling ClientReadRequest with linearizable read failure
@@ -657,6 +661,7 @@ async fn test_handle_client_read_linearizable_success() {
     );
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 2);
     raft_log
         .expect_calculate_majority_matched_index()
         .returning(move |_, _, _| Some(expect_new_commit_index));
@@ -757,6 +762,7 @@ async fn test_handle_client_read_encounters_higher_term() {
 
     let expect_new_commit_index = 3;
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 2);
     raft_log
         .expect_calculate_majority_matched_index()
         .returning(move |_, _, _| Some(expect_new_commit_index));
