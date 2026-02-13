@@ -15,6 +15,7 @@ max_batch_size = 500
 
 [raft.metrics]
 enable_backpressure = false
+enable_batch = false
 
 [raft.snapshot]
 enable = false
