@@ -121,6 +121,7 @@ async fn test_handle_join_cluster_success() {
         });
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     raft_context.storage.raft_log = Arc::new(raft_log);
     let mut state_machine = MockStateMachine::new();
@@ -446,6 +447,7 @@ async fn test_handle_join_cluster_snapshot_triggered() {
     context.transport = Arc::new(transport);
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     context.storage.raft_log = Arc::new(raft_log);
     let mut state_machine = MockStateMachine::new();
@@ -1470,6 +1472,7 @@ mod pending_promotion_tests {
                 });
 
             let mut raft_log = MockRaftLog::new();
+            raft_log.expect_last_entry_id().returning(|| 4);
             raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
             raft_context.storage.raft_log = Arc::new(raft_log);
 

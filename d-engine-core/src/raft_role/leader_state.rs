@@ -2530,7 +2530,7 @@ impl<T: TypeConfig> LeaderState<T> {
             any_wait_for_apply |= req.wait_for_apply_event;
         }
 
-        if all_payloads.is_empty() {
+        if all_payloads.is_empty() && all_senders.is_empty() {
             return (all_payloads, None);
         }
 
@@ -2588,10 +2588,8 @@ impl<T: TypeConfig> LeaderState<T> {
                     } else {
                         None
                     }
-                } else if !peer_updates.is_empty() {
-                    self.calculate_new_commit_index(ctx.raft_log(), &peer_updates)
                 } else {
-                    None
+                    self.calculate_new_commit_index(ctx.raft_log(), &peer_updates)
                 };
 
                 if let Some(new_commit_index) = new_commit_index {
