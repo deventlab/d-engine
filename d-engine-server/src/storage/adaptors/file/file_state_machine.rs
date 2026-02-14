@@ -1548,10 +1548,8 @@ impl StateMachine for FileStateMachine {
             }
         }
 
-        // Persist to disk after batch deletion
-        if let Err(e) = self.persist_data_async().await {
-            error!("Failed to persist after background cleanup: {:?}", e);
-        }
+        // Persist to disk after batch deletion; propagate error so caller can retry
+        self.persist_data_async().await?;
 
         info!(
             "Lease background cleanup: deleted {} expired keys",
