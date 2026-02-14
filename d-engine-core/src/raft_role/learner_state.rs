@@ -465,13 +465,8 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 last_index,
                 results,
             } => {
-                // Learners don't send responses to clients
-                // Only leaders track and respond to client requests
-                trace!(
-                    "Learner applied entries up to index {}, {} results (ignored)",
-                    last_index,
-                    results.len()
-                );
+                // Learners don't create snapshots; leader drives snapshot via purge/install.
+                let _ = (last_index, results);
             }
 
             RaftEvent::FatalError { source, error } => {

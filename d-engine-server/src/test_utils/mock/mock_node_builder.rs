@@ -585,6 +585,7 @@ pub(crate) fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeCo
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().returning(|_| {});
     state_machine_handler.expect_read_from_state_machine().returning(|_| None);
+    state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
 }
 

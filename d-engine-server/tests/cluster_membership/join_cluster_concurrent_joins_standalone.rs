@@ -190,12 +190,33 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
 
     println!("Initial cluster started. Running tests...");
 
-    // Wait for snapshot generation on the leader
-    sleep(Duration::from_secs(3)).await;
-
-    // Verify snapshot file exists on the leader (node 3)
+    // Poll every second for up to 15 seconds to see when/if snapshot appears
     let snapshot_path = format!("{SNAPSHOT_DIR}/3");
-    assert!(check_path_contents(&snapshot_path).unwrap_or(false));
+    let cwd = std::env::current_dir().unwrap();
+    println!("[DEBUG snapshot] cwd={}", cwd.display());
+    let abs_snapshot_path = cwd.join(&snapshot_path);
+
+    let mut snapshot_found = false;
+    for sec in 1..=15u64 {
+        sleep(Duration::from_secs(1)).await;
+        let exists = abs_snapshot_path.exists();
+        println!("[DEBUG snapshot] t={sec}s exists={exists}");
+        if exists {
+            let entries: Vec<_> =
+                std::fs::read_dir(&abs_snapshot_path).unwrap().filter_map(|e| e.ok()).collect();
+            println!("[DEBUG snapshot] entries count={}", entries.len());
+            for e in &entries {
+                println!("[DEBUG snapshot]   - {}", e.file_name().to_string_lossy());
+            }
+            snapshot_found = true;
+            break;
+        }
+    }
+
+    assert!(
+        snapshot_found,
+        "Snapshot was not generated within 15 seconds"
+    );
 
     // MODIFICATION: Create cluster definition including the first new node
     let cluster_with_first_new_node: Vec<(u16, u8, u8)> = initial_ports

@@ -63,6 +63,7 @@ use crate::MaybeCloneOneshotSender;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
+use crate::NewCommitData;
 use crate::PeerUpdate;
 use crate::PurgeExecutor;
 use crate::QuorumVerificationResult;
@@ -1458,7 +1459,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ApplyCompleted {
-                last_index: _,
+                last_index,
                 results,
             } => {
                 let num_results = results.len();
@@ -1492,6 +1493,17 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             result.index
                         );
                     }
+                }
+
+                // Check snapshot after SM apply — last_applied is now accurate.
+                if ctx.node_config.raft.snapshot.enable
+                    && ctx.state_machine_handler().should_snapshot(NewCommitData {
+                        new_commit_index: last_index,
+                        role: Leader as i32,
+                        current_term: self.current_term(),
+                    })
+                {
+                    send_replay_raft_event(&role_tx, RaftEvent::CreateSnapshotEvent)?;
                 }
 
                 trace!(

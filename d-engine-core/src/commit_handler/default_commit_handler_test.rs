@@ -20,9 +20,7 @@ use crate::MockRaftLog;
 use crate::MockStateMachineHandler;
 use crate::MockTypeConfig;
 use crate::NewCommitData;
-use crate::RaftConfig;
 use crate::RaftEvent;
-use crate::RaftNodeConfig;
 use crate::Result;
 
 const TEST_TERM: u64 = 1;
@@ -158,19 +156,11 @@ impl TestHarness {
             shutdown_signal: self.shutdown_rx.take().unwrap(),
         };
 
-        let config = RaftNodeConfig {
-            raft: RaftConfig {
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
         let mut handler = DefaultCommitHandler::<MockTypeConfig>::new(
             1,
             self.role,
             self.term,
             deps,
-            Arc::new(config),
             self.commit_rx.take().unwrap(),
         );
 
@@ -200,18 +190,11 @@ impl TestHarness {
             shutdown_signal: self.shutdown_rx.take().unwrap(),
         };
 
-        let config = RaftNodeConfig {
-            raft: RaftConfig {
-                ..Default::default()
-            },
-            ..Default::default()
-        };
         let handler = DefaultCommitHandler::<MockTypeConfig>::new(
             1,
             self.role,
             self.term,
             deps,
-            Arc::new(config),
             self.commit_rx.take().unwrap(),
         );
 
