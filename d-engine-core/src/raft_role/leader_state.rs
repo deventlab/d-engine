@@ -1036,12 +1036,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     .retrieve_cluster_membership_config(self.shared_state().current_leader())
                     .await;
                 debug!("Leader receive ClusterConf: {:?}", &cluster_conf);
-
-                sender.send(Ok(cluster_conf)).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
+                if let Err(e) = sender.send(Ok(cluster_conf)) {
+                    // Receiver timed out and dropped — this is normal, do not crash the node
+                    error!(
+                        "Failed to send ClusterConf response (receiver dropped): {:?}",
+                        e
+                    );
+                }
             }
 
             RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
