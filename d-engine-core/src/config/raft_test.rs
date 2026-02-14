@@ -143,8 +143,10 @@ fn test_backpressure_write_and_read_independent() {
     assert!(!config.should_reject_read(100));
 
     // Read limit doesn't affect write checks
+    // pending=200 triggers read limit (200 >= max_pending_reads=200)
+    // but write check uses its own limit (50 < max_pending_writes=100)
     assert!(config.should_reject_read(200));
-    assert!(!config.should_reject_write(200));
+    assert!(!config.should_reject_write(50));
 }
 
 #[test]

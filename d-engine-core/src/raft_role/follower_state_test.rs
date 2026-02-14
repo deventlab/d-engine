@@ -1155,12 +1155,11 @@ async fn test_handle_client_write_request_redirects_to_leader() {
     state.push_client_cmd(cmd, &context);
 
     // Verify: Response with NOT_LEADER error
-    let response = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(
-        response.error,
-        ErrorCode::NotLeader as i32,
-        "Should return NOT_LEADER error"
-    );
+    let result = resp_rx.recv().await.expect("channel should not be closed");
+    assert!(result.is_err(), "Should return NOT_LEADER error");
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(err.message().contains("Not leader"));
 }
 
 /// Test: FollowerState rejects ClientReadRequest with LinearizableRead policy
@@ -1190,6 +1189,7 @@ async fn test_handle_client_read_request_linearizable_redirects_to_leader() {
         consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
         keys: vec![],
     };
+
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
@@ -1197,12 +1197,11 @@ async fn test_handle_client_read_request_linearizable_redirects_to_leader() {
     state.push_client_cmd(cmd, &context);
 
     // Verify: Response with NOT_LEADER error
-    let response = resp_rx.recv().await.unwrap().expect("should get response");
-    assert_eq!(
-        response.error,
-        ErrorCode::NotLeader as i32,
-        "LinearizableRead should redirect to leader"
-    );
+    let result = resp_rx.recv().await.expect("channel should not be closed");
+    assert!(result.is_err(), "Should return NOT_LEADER error");
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(err.message().contains("Not leader"));
 }
 
 /// Test: FollowerState handles ClientReadRequest with EventualConsistency policy
@@ -2203,12 +2202,11 @@ mod handle_client_read_request {
 
         state.push_client_cmd(cmd, &context);
 
-        let response = resp_rx.recv().await.unwrap().expect("should get response");
-        assert_eq!(
-            response.error,
-            ErrorCode::NotLeader as i32,
-            "LeaseRead should be rejected by follower"
-        );
+        let result = resp_rx.recv().await.expect("channel should not be closed");
+        assert!(result.is_err(), "LeaseRead should be rejected by follower");
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("Not leader"));
     }
 
     /// Test: Follower uses server default policy (LinearizableRead)
@@ -2250,12 +2248,14 @@ mod handle_client_read_request {
 
         state.push_client_cmd(cmd, &context);
 
-        let response = resp_rx.recv().await.unwrap().expect("should get response");
-        assert_eq!(
-            response.error,
-            ErrorCode::NotLeader as i32,
+        let result = resp_rx.recv().await.expect("channel should not be closed");
+        assert!(
+            result.is_err(),
             "Default LinearizableRead should be rejected by follower"
         );
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("Not leader"));
     }
 
     /// Test: Follower serves EventualConsistency reads
@@ -2304,6 +2304,110 @@ mod handle_client_read_request {
             ErrorCode::Success as i32,
             "EventualConsistency read should succeed on follower"
         );
+    }
+
+    /// Test: Follower ignores client-specified LinearizableRead when override is disabled,
+    /// falls back to server default EventualConsistency, and serves the read locally.
+    ///
+    /// Scenario:
+    /// - Server default policy = EventualConsistency
+    /// - allow_client_override = false (server enforces its own policy)
+    /// - Client explicitly specifies LinearizableRead (should be ignored)
+    ///
+    /// Expected:
+    /// - Follower falls back to server default (EventualConsistency)
+    /// - Read is served locally from state machine
+    /// - Returns response with error_code = SUCCESS
+    ///
+    /// This validates that when allow_client_override=false, the server default
+    /// always wins regardless of what the client requests. A client requesting
+    /// stronger consistency than the server default is silently downgraded.
+    #[tokio::test]
+    async fn test_follower_client_override_disabled_falls_back_to_server_eventual() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        // Server enforces EventualConsistency; client override is forbidden
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.default_policy = ServerPolicy::EventualConsistency;
+        node_config.raft.read_consistency.allow_client_override = false;
+
+        let context = MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
+
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+        // Client requests LinearizableRead but server will ignore it
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ClientPolicy::LinearizableRead as i32),
+            keys: vec![safe_kv_bytes(1)],
+        };
+
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let cmd = ClientCmd::Read(client_read_request, resp_tx);
+
+        state.push_client_cmd(cmd, &context);
+
+        // Follower must serve successfully using server default (EventualConsistency)
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(
+            response.error,
+            ErrorCode::Success as i32,
+            "Follower should serve read using server default EventualConsistency, ignoring client LinearizableRead"
+        );
+    }
+
+    /// Test: Follower ignores client-specified EventualConsistency when override is disabled,
+    /// falls back to server default LinearizableRead, and rejects the request (not a leader).
+    ///
+    /// Scenario:
+    /// - Server default policy = LinearizableRead
+    /// - allow_client_override = false (server enforces its own policy)
+    /// - Client explicitly specifies EventualConsistency (should be ignored)
+    ///
+    /// Expected:
+    /// - Follower falls back to server default (LinearizableRead)
+    /// - LinearizableRead requires leader — follower rejects with NOT_LEADER
+    /// - Returns FailedPrecondition status
+    ///
+    /// This validates that allow_client_override=false prevents clients from
+    /// downgrading consistency requirements (a potential security/correctness concern).
+    /// The server must enforce its minimum consistency guarantee.
+    #[tokio::test]
+    async fn test_follower_client_override_disabled_falls_back_to_server_linear_rejects() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+
+        // Server enforces LinearizableRead; client override is forbidden
+        let mut node_config = RaftNodeConfig::default();
+        node_config.raft.read_consistency.default_policy = ServerPolicy::LinearizableRead;
+        node_config.raft.read_consistency.allow_client_override = false;
+
+        let context = MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
+
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+        // Client requests EventualConsistency but server will ignore it
+        let client_read_request = ClientReadRequest {
+            client_id: 1,
+            consistency_policy: Some(ClientPolicy::EventualConsistency as i32),
+            keys: vec![safe_kv_bytes(1)],
+        };
+
+        let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+        let cmd = ClientCmd::Read(client_read_request, resp_tx);
+
+        state.push_client_cmd(cmd, &context);
+
+        // Follower must reject: server default is LinearizableRead which requires leader
+        let result = resp_rx.recv().await.expect("channel should not be closed");
+        assert!(
+            result.is_err(),
+            "Follower must reject LinearizableRead (requires leader)"
+        );
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("Not leader"));
     }
 }
 

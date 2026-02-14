@@ -44,6 +44,7 @@ where
     event_rx: mpsc::Receiver<RaftEvent>,
 
     // Client commands (drain-driven)
+    cmd_tx: mpsc::UnboundedSender<super::ClientCmd>,
     cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
 
     // Timer
@@ -73,7 +74,6 @@ pub struct SignalParams {
     pub(crate) role_rx: mpsc::UnboundedReceiver<RoleEvent>,
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
     pub(crate) event_rx: mpsc::Receiver<RaftEvent>,
-    #[allow(dead_code)]
     pub(crate) cmd_tx: mpsc::UnboundedSender<super::ClientCmd>,
     pub(crate) cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
     pub(crate) shutdown_signal: watch::Receiver<()>,
@@ -137,6 +137,7 @@ where
             event_tx: signal_params.event_tx,
             event_rx: signal_params.event_rx,
 
+            cmd_tx: signal_params.cmd_tx,
             cmd_rx: signal_params.cmd_rx,
 
             role_tx: signal_params.role_tx,
@@ -562,6 +563,10 @@ where
     /// performs necessary checks based on current term, role, and state.
     pub fn event_sender(&self) -> mpsc::Sender<RaftEvent> {
         self.event_tx.clone()
+    }
+
+    pub fn cmd_sender(&self) -> mpsc::UnboundedSender<super::ClientCmd> {
+        self.cmd_tx.clone()
     }
 
     /// Returns a cloned role event sender for internal use.

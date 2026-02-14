@@ -312,11 +312,11 @@ impl MockBuilder {
         let shutdown_signal = self.shutdown_signal.clone();
         let raft = self.build_raft();
         let event_tx = raft.event_sender();
+        let cmd_tx = raft.cmd_sender();
         let node_config = raft.ctx.node_config.clone();
         let membership = raft.ctx.membership.clone();
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
 
         Node::<MockTypeConfig> {
             node_id: raft.node_id,
@@ -349,6 +349,7 @@ impl MockBuilder {
 
         let raft = self.build_raft();
         let event_tx = raft.event_sender();
+        let cmd_tx = raft.cmd_sender();
         let node_config = node_config_option.unwrap_or_else(|| {
             RaftNodeConfig::new()
                 .expect("Should succeed to init RaftNodeConfig")
@@ -363,7 +364,6 @@ impl MockBuilder {
         let node_config_arc = Arc::new(node_config);
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
 
         let node = Arc::new(Node::<MockTypeConfig> {
             node_id: raft.node_id,

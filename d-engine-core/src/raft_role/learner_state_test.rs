@@ -516,11 +516,11 @@ async fn test_learner_rejects_client_write_request() {
     // Non-leader: push_client_cmd will immediately reject
     state.push_client_cmd(cmd, &context);
 
-    let response = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(
-        response.error,
-        d_engine_proto::error::ErrorCode::NotLeader as i32
-    );
+    let result = resp_rx.recv().await.expect("channel should not be closed");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(err.message().contains("Not leader"));
 }
 
 /// Test: LearnerState rejects ClientReadRequest
@@ -545,17 +545,18 @@ async fn test_learner_rejects_client_read_request() {
         consistency_policy: None,
         keys: vec![],
     };
+
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
     // Non-leader: push_client_cmd will immediately reject
     state.push_client_cmd(cmd, &context);
 
-    let response = resp_rx.recv().await.unwrap().expect("should get response");
-    assert_eq!(
-        response.error,
-        d_engine_proto::error::ErrorCode::NotLeader as i32
-    );
+    let result = resp_rx.recv().await.expect("channel should not be closed");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(err.message().contains("Not leader"));
 }
 
 /// Test: LearnerState rejects RaftLogCleanUp
