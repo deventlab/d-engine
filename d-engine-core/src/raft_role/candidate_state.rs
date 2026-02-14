@@ -527,13 +527,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 last_index,
                 results,
             } => {
-                // Candidates don't send responses to clients
-                // Only leaders track and respond to client requests
-                trace!(
-                    "Candidate applied entries up to index {}, {} results (ignored)",
-                    last_index,
-                    results.len()
-                );
+                // Candidate is a transient state; snapshot will be triggered after role transition.
+                let _ = (last_index, results);
             }
 
             RaftEvent::FatalError { source, error } => {

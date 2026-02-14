@@ -573,13 +573,8 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 last_index,
                 results,
             } => {
-                // Followers don't send responses to clients
-                // Only leaders track and respond to client requests
-                trace!(
-                    "Follower applied entries up to index {}, {} results (ignored)",
-                    last_index,
-                    results.len()
-                );
+                // Followers don't create snapshots; leader drives snapshot via purge/install.
+                let _ = (last_index, results);
             }
 
             RaftEvent::FatalError { source, error } => {

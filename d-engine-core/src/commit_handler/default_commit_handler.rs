@@ -15,7 +15,6 @@ use crate::Membership;
 use crate::NewCommitData;
 use crate::RaftEvent;
 use crate::RaftLog;
-use crate::RaftNodeConfig;
 use crate::Result;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
@@ -45,7 +44,6 @@ where
     state_machine_handler: Arc<SMHOF<T>>,
     raft_log: Arc<ROF<T>>,
     new_commit_rx: Option<mpsc::UnboundedReceiver<NewCommitData>>,
-    config: Arc<RaftNodeConfig>,
     membership: Arc<MOF<T>>,
 
     event_tx: mpsc::Sender<RaftEvent>, // Cloned from Raft
@@ -104,7 +102,6 @@ where
         my_role: i32,
         my_current_term: u64,
         deps: CommitHandlerDependencies<T>,
-        config: Arc<RaftNodeConfig>,
         new_commit_rx: mpsc::UnboundedReceiver<NewCommitData>,
     ) -> Self {
         Self {
@@ -115,7 +112,6 @@ where
             raft_log: deps.raft_log,
             membership: deps.membership,
             new_commit_rx: Some(new_commit_rx),
-            config,
             event_tx: deps.event_tx,
             sm_apply_tx: deps.sm_apply_tx,
             shutdown_signal: deps.shutdown_signal,
@@ -184,28 +180,8 @@ where
             self.send_to_sm_worker(&mut command_batch).await?;
         }
 
-        debug!("After processing all entries: validate if generate snapshot");
-        // After processing all entries:
-        let last_applied = self.state_machine_handler.last_applied();
-        debug!(
-            "[Node-{}] Commit handler process batch - updated last_applied: {}",
-            self.my_id, last_applied
-        );
-
-        // Generate snapshot if needed
-        if self.config.raft.snapshot.enable
-            && self.state_machine_handler.should_snapshot(NewCommitData {
-                new_commit_index: last_applied,
-                role: self.my_role,
-                current_term: self.my_current_term,
-            })
-        {
-            info!("Listened a new commit and should generate snapshot now");
-
-            if let Err(e) = self.event_tx.send(RaftEvent::CreateSnapshotEvent).await {
-                error!(?e, "send RaftEvent::CreateSnapshotEvent failed");
-            }
-        }
+        // Snapshot check moved to ApplyCompleted handler in Raft event loop.
+        // SM Worker applies entries asynchronously, so last_applied is stale here.
 
         Ok(())
     }

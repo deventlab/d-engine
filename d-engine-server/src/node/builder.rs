@@ -452,7 +452,6 @@ where
             my_role_i32,
             my_current_term,
             deps,
-            node_config_arc.clone(),
             new_commit_event_rx,
         );
         // Spawn commit listener via Builder method

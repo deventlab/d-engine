@@ -552,7 +552,8 @@ election_timeout_max = 6000
 
     // Restart Node 1 (it was crashed at end of Phase 4)
     // Node 1 will rejoin as a follower since it already had membership
-    let node1_db_root = db_root_dir.clone().join("node1");
+    // Must use db_root (with _failover suffix), NOT db_root_dir — all nodes use db_root
+    let node1_db_root = std::path::PathBuf::from(&db_root).join("node1");
     let node1_storage_path = node1_db_root.join("storage");
     let node1_sm_path = node1_db_root.join("state_machine");
 
@@ -577,11 +578,7 @@ db_root_dir = '{}'
 election_timeout_ms = 150
 heartbeat_interval_ms = 50
 "#,
-        ports[0],
-        ports[0],
-        ports[1],
-        ports[2],
-        db_root_dir.display()
+        ports[0], ports[0], ports[1], ports[2], db_root
     );
 
     let node1_config_path = "/tmp/d-engine-test-node1-phase6.toml".to_string();
@@ -605,32 +602,63 @@ heartbeat_interval_ms = 50
         "Node 1 should recognize current leader"
     );
 
-    // Phase 6a: Verify linearizable read on rejoined node
-    // All three data values should be readable with linearizable consistency
-    info!("Phase 6a: Testing linearizable reads on rejoined Node 1");
+    // Phase 6a: Verify data is synced to rejoined Node 1
+    // Node 1 rejoins as follower — wait_ready only guarantees leader recognition,
+    // not that log replication has caught up. Retry until data is visible locally.
+    info!("Phase 6a: Waiting for Node 1 to sync data after rejoin");
 
-    let phase1_val = engine1.client().get_eventual(b"phase1-key".to_vec()).await?;
+    let phase1_val = {
+        let mut val = None;
+        for _ in 0..20 {
+            val = engine1.client().get_eventual(b"phase1-key".to_vec()).await?;
+            if val.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        val
+    };
     assert_eq!(
         phase1_val.as_deref(),
         Some(b"phase1-value".as_ref()),
-        "Node 1 should have phase1 data via linearizable read"
+        "Node 1 should have phase1 data after sync"
     );
 
-    let phase2_val = engine1.client().get_eventual(b"phase2-key".to_vec()).await?;
+    let phase2_val = {
+        let mut val = None;
+        for _ in 0..20 {
+            val = engine1.client().get_eventual(b"phase2-key".to_vec()).await?;
+            if val.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        val
+    };
     assert_eq!(
         phase2_val.as_deref(),
         Some(b"phase2-value".as_ref()),
-        "Node 1 should have phase2 data via linearizable read"
+        "Node 1 should have phase2 data after sync"
     );
 
-    let phase3_val = engine1.client().get_eventual(b"phase3-key".to_vec()).await?;
+    let phase3_val = {
+        let mut val = None;
+        for _ in 0..20 {
+            val = engine1.client().get_eventual(b"phase3-key".to_vec()).await?;
+            if val.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        val
+    };
     assert_eq!(
         phase3_val.as_deref(),
         Some(b"phase3-value".as_ref()),
-        "Node 1 should have phase3 data via linearizable read"
+        "Node 1 should have phase3 data after sync"
     );
 
-    info!("Phase 6a Complete: All data readable via linearizable read on Node 1");
+    info!("Phase 6a Complete: All data synced to Node 1 after rejoin");
 
     // Phase 6b: Verify cluster consistency with all 3 nodes active
     info!("Phase 6b: Verifying 3-node cluster consistency");
