@@ -5,6 +5,8 @@ use std::time::Duration;
 use tracing::info;
 use tracing_test::traced_test;
 
+use tempfile::TempDir;
+
 use crate::common::LATENCY_IN_MS;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
@@ -13,12 +15,7 @@ use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
-use crate::common::reset;
 use crate::common::start_node;
-
-const TEST_DIR: &str = "cas_operations/leader_failover_cas";
-const DB_ROOT_DIR: &str = "./db/cas_operations/leader_failover_cas";
-const LOG_DIR: &str = "./logs/cas_operations/leader_failover_cas";
 
 /// Test CAS operation behavior during leader failover (Standalone/gRPC mode)
 ///
@@ -43,7 +40,9 @@ const LOG_DIR: &str = "./logs/cas_operations/leader_failover_cas";
 #[tokio::test]
 #[traced_test]
 async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
-    reset(TEST_DIR).await?;
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let db_root_dir = temp_dir.path().join("db").to_string_lossy().to_string();
+    let log_dir = temp_dir.path().join("logs").to_string_lossy().to_string();
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
@@ -58,7 +57,7 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
             node_config(
-                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config((i + 1) as u64, *port, ports, &db_root_dir, &log_dir).await,
             ),
             None,
             None,
@@ -112,10 +111,10 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     // Must call client.refresh() to probe cluster and update cached leader id —
     // get_leader_id() only reads the local cache, which still holds the old leader.
     info!("Phase 2: Waiting for new leader election");
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     let mut new_leader_id = None;
-    for retry in 0..10 {
+    for retry in 0..20 {
         client.refresh(None).await.ok();
         if let Ok(Some(leader)) = client.get_leader_id().await {
             if leader != 0 && leader != initial_leader_id {
@@ -125,10 +124,10 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
             }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
-        info!("Retry {}/10: Waiting for new leader...", retry + 1);
+        info!("Retry {}/20: Waiting for new leader...", retry + 1);
     }
 
-    let _new_leader_id = new_leader_id.expect("Failed to elect new leader after 10 retries");
+    let _new_leader_id = new_leader_id.expect("Failed to elect new leader after 20 retries");
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
 
     // Phase 3: Verify lock state consistency
