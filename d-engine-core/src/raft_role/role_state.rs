@@ -318,30 +318,36 @@ pub trait RaftRoleState: Send + Sync + 'static {
                 let _ = sender.send(Err(status));
             }
             ClientCmd::Read(req, sender) => {
-                // Determine effective read policy
-                let effective_policy = if req.has_consistency_policy() {
+                // Determine effective read policy, mirroring leader_state logic:
+                // 1. If client specified a policy AND server allows override, use client policy.
+                // 2. Otherwise (no policy, or override disabled), use server default.
+                let effective_policy = if req.has_consistency_policy()
+                    && ctx.node_config().raft.read_consistency.allow_client_override
+                {
                     match req.consistency_policy() {
                         ClientReadConsistencyPolicy::EventualConsistency => {
                             ServerReadConsistencyPolicy::EventualConsistency
                         }
                         _ => {
                             // Linear/Lease requires leader
-                            let status = tonic::Status::failed_precondition("Not leader");
-                            let _ = sender.send(Err(status));
+                            let _ =
+                                sender.send(Err(tonic::Status::failed_precondition("Not leader")));
                             return;
                         }
                     }
                 } else {
-                    // No explicit policy - need to check server default
-                    // For non-leader default implementation, reject non-eventual reads
-                    let status = tonic::Status::failed_precondition("Not leader");
-                    let _ = sender.send(Err(status));
-                    return;
+                    // No client policy, or client override not allowed — use server default
+                    ctx.node_config().raft.read_consistency.default_policy.clone()
                 };
 
-                // Handle EventualConsistency reads locally
-                if effective_policy == ServerReadConsistencyPolicy::EventualConsistency {
-                    self.process_eventual_read_local(req, sender, ctx);
+                match effective_policy {
+                    ServerReadConsistencyPolicy::EventualConsistency => {
+                        self.process_eventual_read_local(req, sender, ctx);
+                    }
+                    _ => {
+                        // Linear/Lease requires leader
+                        let _ = sender.send(Err(tonic::Status::failed_precondition("Not leader")));
+                    }
                 }
             }
         }

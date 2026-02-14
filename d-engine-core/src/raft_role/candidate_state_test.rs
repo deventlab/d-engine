@@ -206,7 +206,7 @@ async fn test_candidate_drain_read_buffer_returns_error() {
 ///
 /// Original test location:
 /// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_tick_case1`
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_tick_triggers_new_election_round_on_success() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_tick_success", graceful_rx, None);
@@ -223,6 +223,10 @@ async fn test_tick_triggers_new_election_round_on_success() {
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
+
+    // Advance time to expire the election timer
+    let election_timeout_max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(election_timeout_max + 1)).await;
 
     // Execute tick
     assert!(
@@ -262,7 +266,7 @@ async fn test_tick_triggers_new_election_round_on_success() {
 ///
 /// Original test location:
 /// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_tick_case2`
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_tick_discovers_higher_term_and_steps_down() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_tick_higher_term", graceful_rx, None);
@@ -283,6 +287,10 @@ async fn test_tick_discovers_higher_term_and_steps_down() {
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
+
+    // Advance time to expire the election timer
+    let election_timeout_max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(election_timeout_max + 1)).await;
 
     // Execute tick
     assert!(
@@ -727,8 +735,11 @@ async fn test_handle_client_write_returns_not_leader() {
 
     state.push_client_cmd(cmd, &context);
 
-    let r = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(r.error, ErrorCode::NotLeader as i32);
+    let result = resp_rx.recv().await.expect("channel should not be closed");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(err.message().contains("Not leader"));
 }
 
 /// Test: send_replay_raft_event sends correct events
@@ -944,8 +955,13 @@ mod handle_client_read_request {
 
         state.push_client_cmd(cmd, &context);
 
-        let response = resp_rx.recv().await.unwrap().expect("should get response");
-        assert_eq!(response.error, ErrorCode::NotLeader as i32);
+        // MaybeCloneOneshot in test mode sends values through broadcast channel
+        // The Status error is sent as a value, not as channel error
+        let result = resp_rx.recv().await.expect("channel should not be closed");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("Not leader"));
     }
 
     /// Test: ClientReadRequest with EventualConsistency succeeds

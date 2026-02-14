@@ -581,15 +581,20 @@ listen_addr = "127.0.0.1:0"
     mod watch_tempdir_tests {
         use super::*;
 
-        /// Test to verify Watch fails when TempDir is dropped before engine usage
+        /// Test to verify engine behavior when underlying storage is removed at runtime.
         ///
-        /// This test directly demonstrates the root cause of watch test failures:
-        /// When TempDir is dropped, watch events cannot be delivered even though
-        /// basic operations like PUT still work.
+        /// When TempDir is dropped, the file system paths become invalid. Raft requires
+        /// HardState to be durably persisted before proceeding (protocol correctness).
+        /// When File::create() fails on the deleted path, the error propagates as a
+        /// fatal I/O error, causing node.run() to exit and closing all channels.
+        ///
+        /// Expected behavior:
+        /// - Engine starts (storage initialized before TempDir drop)
+        /// - wait_ready() may succeed or fail depending on timing
+        /// - PUT fails with channel-closed error (engine crashed due to storage failure)
+        /// - Watch receives no events
         #[tokio::test]
         async fn test_watch_with_tempdir_dropped() {
-            println!("\n=== Testing Watch with TempDir DROPPED ===");
-
             let (storage, sm) = {
                 let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
                 let storage_path = temp_dir.path().join("storage");
@@ -605,62 +610,44 @@ listen_addr = "127.0.0.1:0"
                     FileStateMachine::new(sm_path).await.expect("Failed to create state machine"),
                 );
 
-                println!("Created storage and SM, TempDir about to be dropped...");
                 (storage, sm)
-                // temp_dir dropped here!
+                // temp_dir dropped here — underlying paths are now invalid
             };
-
-            println!("TempDir dropped, starting engine...");
 
             let engine = EmbeddedEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
-            engine
-                .wait_ready(Duration::from_secs(5))
-                .await
-                .expect("Leader should be elected");
+            // wait_ready may fail due to storage I/O error — that is acceptable
+            let _ = engine.wait_ready(Duration::from_secs(5)).await;
 
-            println!("Engine started and leader elected");
+            // Register watcher before engine crashes
+            let watch_result = engine.client().watch(b"test_key");
 
-            // Register watcher
-            let result = engine.client().watch(b"test_key");
-            println!("Watch registration result: {:?}", result.is_ok());
-            assert!(result.is_ok(), "watch() should succeed");
+            // Give engine time to encounter the fatal I/O error and shut down
+            tokio::time::sleep(Duration::from_millis(500)).await;
 
-            if let Ok(mut handle) = result {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            // PUT must fail — engine crashed due to storage path being removed,
+            // which violates Raft's HardState durability requirement
+            let put_result = engine.client().put(b"test_key".to_vec(), b"value1".to_vec()).await;
+            assert!(
+                put_result.is_err(),
+                "PUT should fail after storage path is removed: engine must crash on HardState I/O failure"
+            );
 
-                // Trigger a change
-                println!("Performing PUT operation...");
-                let client = engine.client();
-                client
-                    .put(b"test_key".to_vec(), b"value1".to_vec())
-                    .await
-                    .expect("Put should succeed");
-
-                println!("PUT succeeded, waiting for watch event...");
-
-                // Try to receive watch event with timeout
+            // Watch must not receive any events — engine is down
+            if let Ok(mut handle) = watch_result {
                 let event_result =
-                    tokio::time::timeout(Duration::from_secs(2), handle.receiver_mut().recv())
+                    tokio::time::timeout(Duration::from_secs(1), handle.receiver_mut().recv())
                         .await;
-
-                match event_result {
-                    Ok(Some(_)) => {
-                        println!("✅ Watch event RECEIVED (unexpected!)");
-                        panic!("Watch should have failed with dropped TempDir");
-                    }
-                    Ok(None) => {
-                        println!("❌ Watch channel closed");
-                    }
-                    Err(_) => {
-                        println!("❌ Watch event TIMEOUT (expected - this is the bug!)");
-                    }
-                }
+                assert!(
+                    event_result.is_err() || event_result.unwrap().is_none(),
+                    "Watch should not receive events after engine crash"
+                );
             }
 
-            engine.stop().await.expect("Failed to stop engine");
+            // stop() may fail — acceptable, engine may already be down
+            let _ = engine.stop().await;
         }
 
         /// Test to verify Watch works when TempDir is kept alive

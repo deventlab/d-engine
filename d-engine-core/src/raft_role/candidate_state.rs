@@ -625,7 +625,10 @@ impl<T: TypeConfig> CandidateState<T> {
     ) -> Self {
         Self {
             shared_state: SharedState::new(node_id, None, None),
-            timer: ElectionTimer::new((1, 2)),
+            timer: ElectionTimer::new((
+                node_config.raft.election.election_timeout_min,
+                node_config.raft.election.election_timeout_max,
+            )),
             node_config,
             _marker: PhantomData,
             last_purged_index: None, //TODO
