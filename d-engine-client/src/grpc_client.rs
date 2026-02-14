@@ -114,13 +114,16 @@ impl GrpcClient {
         };
 
         // Select client based on policy (if specified)
+        // None means "use server default" — server default may be Linearizable,
+        // so we must send to leader to avoid rejection from followers.
         let mut client = match consistency_policy {
             Some(ReadConsistencyPolicy::LinearizableRead)
-            | Some(ReadConsistencyPolicy::LeaseRead) => {
+            | Some(ReadConsistencyPolicy::LeaseRead)
+            | None => {
                 debug!("Using leader client for explicit consistency policy");
                 self.make_leader_client().await?
             }
-            Some(ReadConsistencyPolicy::EventualConsistency) | None => {
+            Some(ReadConsistencyPolicy::EventualConsistency) => {
                 debug!("Using load-balanced client for cluster default policy");
                 self.make_client().await?
             }

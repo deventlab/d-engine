@@ -76,7 +76,7 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     info!("Cluster ready. Testing CAS with leader failover");
 
     let urls = create_bootstrap_urls(ports);
-    let client = Client::builder(urls).connect_timeout(Duration::from_secs(5)).build().await?;
+    let mut client = Client::builder(urls).connect_timeout(Duration::from_secs(5)).build().await?;
 
     let lock_key = b"failover_lock";
 
@@ -109,12 +109,14 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     // Expected: timeout, NOT_LEADER, or UNAVAILABLE error
 
     // Phase 2: Wait for new leader election
+    // Must call client.refresh() to probe cluster and update cached leader id —
+    // get_leader_id() only reads the local cache, which still holds the old leader.
     info!("Phase 2: Waiting for new leader election");
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // Client should auto-discover new leader
     let mut new_leader_id = None;
     for retry in 0..10 {
+        client.refresh(None).await.ok();
         if let Ok(Some(leader)) = client.get_leader_id().await {
             if leader != 0 && leader != initial_leader_id {
                 new_leader_id = Some(leader);

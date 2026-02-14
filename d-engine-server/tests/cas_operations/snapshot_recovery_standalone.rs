@@ -13,12 +13,8 @@ use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
-use crate::common::reset;
 use crate::common::start_node;
-
-const TEST_DIR: &str = "cas_operations/snapshot_recovery";
-const DB_ROOT_DIR: &str = "./db/cas_operations/snapshot_recovery";
-const LOG_DIR: &str = "./logs/cas_operations/snapshot_recovery";
+use tempfile::TempDir;
 
 /// Test CAS state survives snapshot and recovery (standalone mode)
 ///
@@ -31,7 +27,9 @@ const LOG_DIR: &str = "./logs/cas_operations/snapshot_recovery";
 #[tokio::test]
 #[traced_test]
 async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
-    reset(TEST_DIR).await?;
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let db_root_dir = temp_dir.path().join("db").to_string_lossy().to_string();
+    let log_dir = temp_dir.path().join("logs").to_string_lossy().to_string();
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
@@ -46,7 +44,7 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
             node_config(
-                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config((i + 1) as u64, *port, ports, &db_root_dir, &log_dir).await,
             ),
             None,
             None,
@@ -64,15 +62,27 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     info!("Cluster ready. Testing CAS snapshot recovery");
 
     let urls = create_bootstrap_urls(ports);
-    let client = Client::builder(urls).connect_timeout(Duration::from_secs(5)).build().await?;
+    let mut client = Client::builder(urls).connect_timeout(Duration::from_secs(5)).build().await?;
 
     let lock_key = b"persistent_lock";
 
     // Step 1: Acquire lock via CAS
+    // Retry with refresh: leader election may still be stabilizing after cluster start
     info!("Step 1: Acquiring lock via CAS");
-    let acquired = client
-        .compare_and_swap(lock_key, None::<&[u8]>, b"owner_before_snapshot")
-        .await?;
+    let mut acquired = false;
+    for attempt in 0..5 {
+        match client.compare_and_swap(lock_key, None::<&[u8]>, b"owner_before_snapshot").await {
+            Ok(result) => {
+                acquired = result;
+                break;
+            }
+            Err(_) if attempt < 4 => {
+                client.refresh(None).await.ok();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
     assert!(acquired, "Should acquire lock");
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
 
@@ -104,7 +114,7 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     // Step 4: Restart node 2
     info!("Step 4: Restarting node 2");
     let (graceful_tx, node_handle) = start_node(
-        node_config(&create_node_config(2, ports[1], ports, DB_ROOT_DIR, LOG_DIR).await),
+        node_config(&create_node_config(2, ports[1], ports, &db_root_dir, &log_dir).await),
         None,
         None,
     )
@@ -115,22 +125,53 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
     check_cluster_is_ready(&format!("127.0.0.1:{}", ports[1]), 10).await?;
 
+    // Refresh client so it rediscovers the current leader after node restart
+    client.refresh(None).await.ok();
+
     // Step 5: Verify lock persists after restart
+    // Use eventual read — goal is to verify data persistence, not consistency
     info!("Step 5: Verifying lock persists after recovery");
-    let recovered_holder = client.get(lock_key).await?;
+    let recovered_holder = client.get_eventual(lock_key).await?;
     assert_eq!(
-        recovered_holder,
-        Some(b"owner_before_snapshot".to_vec().into()),
+        recovered_holder.expect("Lock key should exist").value.as_ref(),
+        b"owner_before_snapshot",
         "Lock should persist after snapshot recovery"
     );
 
     // Step 6: Release and re-acquire lock
+    // Retry with refresh in case node 2 rejoining triggered a leader change
     info!("Step 6: Release and re-acquire lock");
-    let released = client.compare_and_swap(lock_key, Some(b"owner_before_snapshot"), b"").await?;
+    let mut released = false;
+    for attempt in 0..3 {
+        match client.compare_and_swap(lock_key, Some(b"owner_before_snapshot"), b"").await {
+            Ok(result) => {
+                released = result;
+                break;
+            }
+            Err(_) if attempt < 2 => {
+                client.refresh(None).await.ok();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
     assert!(released, "Should release lock");
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
 
-    let reacquired = client.compare_and_swap(lock_key, Some(b""), b"new_owner").await?;
+    let mut reacquired = false;
+    for attempt in 0..3 {
+        match client.compare_and_swap(lock_key, Some(b""), b"new_owner").await {
+            Ok(result) => {
+                reacquired = result;
+                break;
+            }
+            Err(_) if attempt < 2 => {
+                client.refresh(None).await.ok();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
     assert!(reacquired, "Should re-acquire lock");
 
     let final_holder = client.get(lock_key).await?;

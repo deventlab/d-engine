@@ -107,28 +107,30 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
     info!("CAS result during leader stop: {:?}", cas_result);
     // Expected: timeout or error (uncommitted request fails)
 
-    // Phase 2: Wait for new leader election
+    // Phase 2: Wait for new leader election via wait_ready on a surviving node
     info!("Phase 2: Waiting for new leader election");
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // Find new leader (from remaining nodes)
-    let mut new_leader_idx = None;
-    for (idx, engine) in engines.iter().enumerate() {
-        if idx == leader_idx {
-            continue; // Skip stopped node
-        }
-        if let Some(leader_info) = engine.leader_info() {
-            let leader_id = leader_info.leader_id;
-            if leader_id != 0 && leader_id != initial_leader_id {
-                new_leader_idx = Some(idx);
-                info!("New leader elected: node {} (idx {})", leader_id, idx);
-                break;
+    let surviving_idx = if leader_idx == 0 { 1 } else { 0 };
+    let new_leader_info = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Ok(info) = engines[surviving_idx].wait_ready(Duration::from_secs(1)).await {
+                if info.leader_id != 0 && info.leader_id != initial_leader_id {
+                    return info;
+                }
             }
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
-    }
+    })
+    .await
+    .expect("Timeout waiting for new leader election");
 
-    let new_leader_idx = new_leader_idx.expect("Failed to elect new leader");
-    let new_leader_client = engines[new_leader_idx].client();
+    info!("New leader elected: node {}", new_leader_info.leader_id);
+
+    // Find the engine whose node_id matches the new leader
+    let new_leader_client = engines
+        .iter()
+        .find(|e| e.node_id() == new_leader_info.leader_id)
+        .expect("New leader engine not found")
+        .client();
 
     // Phase 3: Verify lock state consistency
     info!("Phase 3: Verify lock state consistency");
