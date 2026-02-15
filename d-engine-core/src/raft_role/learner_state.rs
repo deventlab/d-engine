@@ -31,6 +31,7 @@ use super::StateSnapshot;
 use super::candidate_state::CandidateState;
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
+use super::role_state::check_and_trigger_snapshot;
 use crate::ConsensusError;
 use crate::Membership;
 use crate::MembershipError;
@@ -463,10 +464,16 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
             RaftEvent::ApplyCompleted {
                 last_index,
-                results,
+                results: _,
             } => {
-                // Learners don't create snapshots; leader drives snapshot via purge/install.
-                let _ = (last_index, results);
+                // Per Raft §7: each server takes snapshots independently.
+                check_and_trigger_snapshot(
+                    last_index,
+                    Learner as i32,
+                    self.current_term(),
+                    ctx,
+                    &role_tx,
+                )?;
             }
 
             RaftEvent::FatalError { source, error } => {

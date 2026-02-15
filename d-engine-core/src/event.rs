@@ -29,7 +29,7 @@ use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::StreamResponseSender;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NewCommitData {
     pub new_commit_index: u64,
     pub role: i32,
