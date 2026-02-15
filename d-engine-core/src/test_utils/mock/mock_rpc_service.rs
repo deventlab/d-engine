@@ -13,7 +13,6 @@ use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::raft_election_service_server::RaftElectionServiceServer;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationServiceServer;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotServiceServer;
 use tokio::net::TcpListener;
@@ -133,21 +132,6 @@ impl MockNode {
         //prepare learner's channel address inside membership config
         let mock_service = MockRpcService {
             expected_vote_response: Some(Ok(response)),
-            ..Default::default()
-        };
-        let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
-        let channel = Self::mock_channel_with_port(port).await;
-        Ok((channel, port))
-    }
-
-    pub async fn simulate_purge_mock_server(
-        response: PurgeLogResponse,
-        rx: oneshot::Receiver<()>,
-    ) -> Result<(Channel, u16)> {
-        // Return channel + port
-        //prepare learner's channel address inside membership config
-        let mock_service = MockRpcService {
-            expected_purge_log_response: Some(Ok(response)),
             ..Default::default()
         };
         let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;

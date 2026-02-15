@@ -14,8 +14,6 @@ use bytes::Bytes;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -51,7 +49,6 @@ use super::SnapshotPolicy;
 use super::StateMachineHandler;
 use crate::ApplyResult;
 use crate::NewCommitData;
-use crate::RaftLog;
 use crate::Result;
 use crate::SnapshotConfig;
 use crate::SnapshotError;
@@ -60,7 +57,6 @@ use crate::SnapshotPathManager;
 use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
-use crate::alias::ROF;
 use crate::alias::SMOF;
 use crate::alias::SNP;
 use crate::convert::classify_error;
@@ -513,123 +509,6 @@ where
             }
         }
         Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn validate_purge_request(
-        &self,
-        current_term: u64,
-        leader_id: Option<u32>,
-        req: &PurgeLogRequest,
-    ) -> Result<bool> {
-        // Verification 1: Leader identity legitimacy
-        if req.term < current_term || leader_id != Some(req.leader_id) {
-            return Ok(false);
-        }
-
-        // Verification 2: Locally applied log index >= requested up_to_index
-        if req.last_included.is_none() {
-            return Ok(false);
-        }
-
-        if let Some(last_included) = req.last_included {
-            if self.state_machine.last_applied().index < last_included.index {
-                return Ok(false);
-            }
-        }
-
-        // Verification 3: Verify snapshot consistency (to prevent snapshot data corruption)
-        if let Some(last_snapshot_metadata) = self.state_machine.snapshot_metadata() {
-            if req.snapshot_checksum != last_snapshot_metadata.checksum {
-                return Ok(false);
-            }
-        } else {
-            // There is no corresponding snapshot locally, snapshot synchronization needs to be
-            // triggered
-            return Ok(false);
-        }
-
-        Ok(true)
-    }
-
-    async fn handle_purge_request(
-        &self,
-        current_term: u64,
-        leader_id: Option<u32>,
-        last_purged: Option<LogId>,
-        req: &PurgeLogRequest,
-        raft_log: &Arc<ROF<T>>,
-    ) -> Result<PurgeLogResponse> {
-        // Verification 1: Leader identity legitimacy
-        if req.term < current_term || leader_id != Some(req.leader_id) {
-            return Ok(PurgeLogResponse {
-                node_id: self.node_id,
-                term: current_term,
-                success: false,
-                last_purged,
-            });
-        }
-
-        // Verification 2: Locally applied log index >= requested up_to_index
-        if req.last_included.is_none() {
-            return Ok(PurgeLogResponse {
-                node_id: self.node_id,
-                term: current_term,
-                success: false,
-                last_purged,
-            });
-        }
-
-        if let Some(last_included) = req.last_included {
-            if self.state_machine.last_applied().index < last_included.index {
-                return Ok(PurgeLogResponse {
-                    node_id: self.node_id,
-                    term: current_term,
-                    success: false,
-                    last_purged,
-                });
-            }
-        }
-
-        // Verification 3: Verify snapshot consistency (to prevent snapshot data corruption)
-        if let Some(last_snapshot_metadata) = self.state_machine.snapshot_metadata() {
-            if req.snapshot_checksum != last_snapshot_metadata.checksum {
-                return Ok(PurgeLogResponse {
-                    node_id: self.node_id,
-                    term: current_term,
-                    success: false,
-                    last_purged,
-                });
-            }
-        } else {
-            // There is no corresponding snapshot locally, snapshot synchronization needs to be
-            // triggered
-            return Ok(PurgeLogResponse {
-                node_id: self.node_id,
-                term: current_term,
-                success: false,
-                last_purged,
-            });
-        }
-
-        // Perform physical deletion
-        match raft_log.purge_logs_up_to(req.last_included.unwrap()).await {
-            Ok(_) => Ok(PurgeLogResponse {
-                node_id: self.node_id,
-                term: current_term,
-                success: true,
-                last_purged,
-            }),
-            Err(e) => {
-                error!(?e, "raft_log.purge_logs_up_to");
-                Ok(PurgeLogResponse {
-                    node_id: self.node_id,
-                    term: current_term,
-                    success: false,
-                    last_purged,
-                })
-            }
-        }
     }
 
     fn get_latest_snapshot_metadata(&self) -> Option<SnapshotMetadata> {

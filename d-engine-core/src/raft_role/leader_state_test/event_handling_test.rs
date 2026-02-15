@@ -3,11 +3,9 @@
 //! This module tests the `handle_raft_event` method for various Raft events
 //! including vote requests, append entries, client operations, and more.
 
+use d_engine_proto::client::WriteCommand;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-use bytes::Bytes;
-use d_engine_proto::client::WriteCommand;
 use tokio::sync::{mpsc, watch};
 use tonic::Code;
 use tracing_test::traced_test;
@@ -38,7 +36,6 @@ use d_engine_proto::server::cluster::{
 };
 use d_engine_proto::server::election::{VoteRequest, VoteResponse};
 use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::storage::PurgeLogRequest;
 use tonic::Status;
 
 // ============================================================================
@@ -856,61 +853,6 @@ async fn test_handle_install_snapshot_returns_permission_denied() {
 
     // Validation criteria 1: The response should return an error
     // Assert that resp_rx receives permission_denied
-    let e = resp_rx.recv().await.unwrap().unwrap_err();
-    assert!(matches!(e.code(), Code::PermissionDenied));
-
-    // Validation criteria 2: No role event should be triggered
-    assert!(role_rx.try_recv().is_err());
-}
-
-// ============================================================================
-// Log Cleanup Event Tests
-// ============================================================================
-
-/// Test rejecting RaftLogCleanUp event (leader should not receive this)
-///
-/// # Test Scenario
-/// Leader receives RaftLogCleanUp event, which is invalid for leader role.
-///
-/// # Given
-/// - Leader state
-/// - RaftLogCleanUp (PurgeLogRequest) event
-///
-/// # When
-/// - Leader handles RaftLogCleanUp event
-///
-/// # Then
-/// - Event handling returns error
-/// - Client receives PermissionDenied error
-/// - No role transition events sent
-#[tokio::test]
-#[traced_test]
-async fn test_handle_raft_log_cleanup_returns_permission_denied() {
-    // Initializing Shutdown Signal
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = MockBuilder::new(graceful_rx)
-        .with_db_path("/tmp/test_handle_raft_log_cleanup_returns_permission_denied")
-        .build_context();
-
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-
-    let raft_event = RaftEvent::RaftLogCleanUp(
-        PurgeLogRequest {
-            term: 1,
-            leader_id: 1,
-            leader_commit: 1,
-            last_included: None,
-            snapshot_checksum: Bytes::new(),
-        },
-        resp_tx,
-    );
-
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());
-
-    // Validation criteria 1: The response should return an error
     let e = resp_rx.recv().await.unwrap().unwrap_err();
     assert!(matches!(e.code(), Code::PermissionDenied));
 

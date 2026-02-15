@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use bytes::Bytes;
 use d_engine_core::ConnectionType;
 use d_engine_core::Error;
 use d_engine_core::MockMembership;
@@ -14,7 +13,6 @@ use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Candidate;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeRole::Leader;
-use d_engine_proto::common::NodeRole::Learner;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterMembership;
@@ -23,8 +21,6 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
 use futures::StreamExt;
 use futures::stream;
@@ -847,243 +843,6 @@ async fn test_send_vote_requests_case5() {
 //
 // ## Criteria:
 // 1. Should return EmptyPeerList error
-#[tokio::test]
-#[traced_test]
-async fn test_purge_requests_case1_empty_peers() {
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(1);
-    let req = PurgeLogRequest {
-        term: 1,
-        leader_id: 1,
-        last_included: Some(LogId { index: 5, term: 2 }),
-        snapshot_checksum: Bytes::new(),
-        leader_commit: 5,
-    };
-
-    let membership = mock_membership(vec![], HashMap::new());
-    let node_config = RaftNodeConfig::new().unwrap().validate().unwrap();
-    match client.send_purge_requests(req, &node_config.retry, membership).await {
-        Ok(_) => panic!("Should reject empty peer list"),
-        Err(e) => assert!(
-            matches!(
-                e,
-                Error::System(SystemError::Network(NetworkError::EmptyPeerList { .. }))
-            ),
-            "Unexpected error: {e:?}"
-        ),
-    }
-}
-
-// # Case 2: self-reference in peer list
-//
-// ## Criteria:
-// 1. Should filter out self node
-// 2. Return empty response collection
-#[tokio::test]
-#[traced_test]
-async fn test_purge_requests_case2_self_reference() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new().unwrap().validate().unwrap();
-    let req = PurgeLogRequest {
-        term: 1,
-        leader_id: my_id,
-        last_included: Some(LogId { index: 5, term: 2 }),
-        snapshot_checksum: Bytes::new(),
-        leader_commit: 5,
-    };
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let purge_response = PurgeLogResponse {
-        node_id: 2,
-        term: 1,
-        success: true,
-        last_purged: Some(LogId { term: 1, index: 5 }),
-    };
-
-    let (channel, _port) =
-        MockNode::simulate_purge_mock_server(purge_response, shutdown_rx).await.unwrap();
-
-    let mut channels = HashMap::new();
-    channels.insert((my_id, ConnectionType::Data), channel.clone());
-    let membership = mock_membership(vec![(my_id, Follower as i32)], channels);
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    let result = client.send_purge_requests(req, &node_config.retry, membership).await;
-
-    shutdown_tx.send(()).unwrap();
-
-    match result {
-        Ok(res) => {
-            assert!(res.is_empty(), "Should filter self-reference");
-            assert!(res.is_empty(), "Should have no responses");
-        }
-        Err(e) => panic!("Unexpected error: {e:?}"),
-    }
-}
-
-// # Case 3: duplicate peer entries
-//
-// ## Criteria:
-// 1. Should deduplicate peer list
-// 2. Process unique peers only
-#[tokio::test]
-#[traced_test]
-async fn test_purge_requests_case3_duplicate_peers() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new().unwrap().validate().unwrap();
-    let req = PurgeLogRequest {
-        term: 1,
-        leader_id: my_id,
-        last_included: Some(LogId { index: 5, term: 2 }),
-        snapshot_checksum: Bytes::new(),
-        leader_commit: 5,
-    };
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let purge_response = PurgeLogResponse {
-        node_id: 1,
-        term: 1,
-        success: true,
-        last_purged: Some(LogId { term: 1, index: 5 }),
-    };
-
-    let (channel, _port) =
-        MockNode::simulate_purge_mock_server(purge_response, shutdown_rx).await.unwrap();
-
-    let mut channels = HashMap::new();
-    channels.insert((2, ConnectionType::Data), channel.clone());
-    channels.insert((3, ConnectionType::Data), channel.clone());
-    let membership = mock_membership(vec![(2, Learner as i32), (3, Follower as i32)], channels);
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    let result = client.send_purge_requests(req, &node_config.retry, membership).await;
-
-    shutdown_tx.send(()).unwrap();
-
-    match result {
-        Ok(res) => {
-            assert_eq!(res.len(), 2, "Should deduplicate peers");
-        }
-        Err(e) => panic!("Unexpected error: {e:?}"),
-    }
-}
-
-// # Case 4: mixed success and failure responses
-//
-// ## Criteria:
-// 1. Should aggregate partial failures
-// 2. Maintain response ordering
-#[tokio::test]
-#[traced_test]
-async fn test_purge_requests_case4_mixed_responses() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new().unwrap().validate().unwrap();
-    let req = PurgeLogRequest {
-        term: 1,
-        leader_id: my_id,
-        last_included: Some(LogId { index: 5, term: 2 }),
-        snapshot_checksum: Bytes::new(),
-        leader_commit: 5,
-    };
-
-    // Setup success responder
-    let (success_tx, success_rx) = oneshot::channel();
-    let (success_channel, _port) = MockNode::simulate_purge_mock_server(
-        PurgeLogResponse {
-            node_id: 2,
-            term: 1,
-            success: true,
-            last_purged: Some(LogId { term: 1, index: 5 }),
-        },
-        success_rx,
-    )
-    .await
-    .unwrap();
-
-    // Setup failure responder
-    let (failure_tx, failure_rx) = oneshot::channel();
-    let (failure_channel, _port) = MockNode::simulate_purge_mock_server(
-        PurgeLogResponse {
-            node_id: 2,
-            term: 1,
-            success: false,
-            last_purged: Some(LogId { term: 1, index: 0 }),
-        },
-        failure_rx,
-    )
-    .await
-    .unwrap();
-
-    let mut channels = HashMap::new();
-    channels.insert((2, ConnectionType::Data), success_channel.clone());
-    channels.insert((3, ConnectionType::Data), failure_channel.clone());
-    let membership = mock_membership(vec![(2, Follower as i32), (3, Learner as i32)], channels);
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    let result = client.send_purge_requests(req, &node_config.retry, membership).await;
-
-    success_tx.send(()).unwrap();
-    failure_tx.send(()).unwrap();
-
-    match result {
-        Ok(res) => {
-            assert_eq!(res.len(), 2, "Should collect all responses");
-            let successes =
-                res.iter().filter_map(|r| r.as_ref().ok()).filter(|resp| resp.success).count();
-            assert_eq!(successes, 1, "Should handle partial success");
-        }
-        Err(e) => panic!("Unexpected error: {e:?}"),
-    }
-}
-
-// # Case 5: full successful propagation
-//
-// ## Criteria:
-// 1. Should process all peers
-// 2. Return aggregated successes
-#[tokio::test]
-#[traced_test]
-async fn test_purge_requests_case5_full_success() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new().unwrap().validate().unwrap();
-    let req = PurgeLogRequest {
-        term: 1,
-        leader_id: my_id,
-        last_included: Some(LogId { index: 5, term: 2 }),
-        snapshot_checksum: Bytes::new(),
-        leader_commit: 5,
-    };
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let (channel, _port) = MockNode::simulate_purge_mock_server(
-        PurgeLogResponse {
-            node_id: 2,
-            term: 1,
-            success: true,
-            last_purged: Some(LogId { term: 1, index: 5 }),
-        },
-        shutdown_rx,
-    )
-    .await
-    .unwrap();
-
-    let mut channels = HashMap::new();
-    channels.insert((2, ConnectionType::Data), channel.clone());
-    channels.insert((3, ConnectionType::Data), channel.clone());
-    let membership = mock_membership(vec![(2, Follower as i32), (3, Learner as i32)], channels);
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    let result = client.send_purge_requests(req, &node_config.retry, membership).await;
-
-    shutdown_tx.send(()).unwrap();
-
-    match result {
-        Ok(res) => {
-            assert_eq!(res.len(), 2, "Should process all peers");
-            assert!(
-                res.iter().all(|r| r.is_ok()),
-                "All responses should succeed"
-            );
-        }
-        Err(e) => panic!("Unexpected error: {e:?}"),
-    }
-}
-
 /// Helper to create a failing stream
 #[allow(unused)]
 fn create_failing_stream(fail_at: usize) -> BoxStream<'static, Result<SnapshotChunk>> {

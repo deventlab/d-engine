@@ -1,6 +1,3 @@
-use std::sync::Arc;
-
-use bytes::Bytes;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::ReadConsistencyPolicy;
@@ -20,7 +17,7 @@ use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::PurgeLogRequest;
+use std::sync::Arc;
 use tonic::Code;
 use tonic::Status;
 
@@ -32,7 +29,6 @@ use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotSender;
 use crate::MockElectionCore;
 use crate::MockMembership;
-use crate::MockPurgeExecutor;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
 use crate::NetworkError;
@@ -41,7 +37,6 @@ use crate::RaftEvent;
 use crate::RaftLog;
 use crate::RaftOneshot;
 use crate::RoleEvent;
-use crate::SnapshotError;
 use crate::StateUpdate;
 use crate::SystemError;
 use crate::raft_role::follower_state::FollowerState;
@@ -1258,530 +1253,6 @@ async fn test_handle_client_read_request_eventual_consistency_succeeds() {
     );
 }
 
-// ============================================================================
-// RaftLogCleanUp (Log Purge) Tests
-// ============================================================================
-
-/// Test: FollowerState handles RaftLogCleanUp validation failure
-///
-/// Scenario:
-/// - Follower receives PurgeLogRequest from leader
-/// - StateMachine validation returns false (purge not allowed)
-///
-/// Expected:
-/// - Returns response with success=false
-/// - No purge executed
-/// - last_purged_index unchanged
-/// - handle_raft_event returns Ok(())
-///
-/// This validates that purge safety checks prevent unsafe log truncation.
-///
-/// Original: test_handle_raft_event_case8_1
-#[tokio::test]
-async fn test_handle_raft_log_cleanup_validation_fails() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
-
-    // Mock state machine to reject purge validation
-    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
-    state_machine_handler
-        .expect_validate_purge_request()
-        .returning(|_, _, _| Ok(false));
-    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
-
-    let membership = MockMembership::new();
-    context.membership = Arc::new(membership);
-
-    let mut state =
-        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-
-    let purge_request = PurgeLogRequest {
-        term: 3,
-        leader_id: 2,
-        leader_commit: 100,
-        last_included: Some(LogId { term: 3, index: 80 }),
-        snapshot_checksum: Bytes::new(),
-    };
-
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle RaftLogCleanUp event
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
-
-    // Verify: Response indicates failure
-    let response = resp_rx.recv().await.unwrap().unwrap();
-    assert!(!response.success, "Purge should be rejected");
-
-    // Verify: No role change
-    assert!(role_rx.try_recv().is_err(), "No role change expected");
-}
-
-/// Test: FollowerState successfully executes RaftLogCleanUp
-///
-/// Scenario:
-/// - Follower receives valid PurgeLogRequest from leader
-/// - StateMachine validation succeeds
-/// - PurgeExecutor successfully executes purge
-/// - commit_index > purge_index (safety requirement)
-///
-/// Expected:
-/// - Returns response with success=true
-/// - last_purged_index updated to purge index
-/// - Purge executor called once
-/// - handle_raft_event returns Ok(())
-///
-/// This validates successful log purge after snapshot creation.
-///
-/// Original: test_handle_raft_event_case8_2
-#[tokio::test]
-async fn test_handle_raft_log_cleanup_succeeds() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
-
-    // Mock state machine to accept purge validation
-    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
-    state_machine_handler
-        .expect_validate_purge_request()
-        .returning(|_, _, _| Ok(true));
-    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
-
-    // Mock purge executor to succeed
-    let mut purge_executor = MockPurgeExecutor::new();
-    purge_executor.expect_execute_purge().times(1).returning(|_| Ok(()));
-    context.handlers.purge_executor = Arc::new(purge_executor);
-
-    let membership = MockMembership::new();
-    context.membership = Arc::new(membership);
-
-    // Prepare follower state with sufficient commit_index
-    let mut state = FollowerState::<MockTypeConfig>::new(
-        1,
-        context.node_config.clone(),
-        None,
-        Some(100), // last_applied_index
-    );
-    state.update_current_term(3);
-    state.shared_state.commit_index = 150; // commit_index > purge_index (100)
-
-    let purge_request = PurgeLogRequest {
-        term: 3,
-        leader_id: 2,
-        leader_commit: 150,
-        last_included: Some(LogId {
-            term: 3,
-            index: 100,
-        }),
-        snapshot_checksum: Bytes::from(vec![1, 2, 3]),
-    };
-
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle RaftLogCleanUp event
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
-
-    // Verify: Response indicates success
-    let response = resp_rx.recv().await.unwrap().unwrap();
-    assert!(response.success, "Purge should succeed");
-    assert_eq!(
-        response.last_purged,
-        Some(LogId {
-            term: 3,
-            index: 100
-        }),
-        "Should return purged index"
-    );
-
-    // Verify: State updated
-    assert_eq!(
-        state.last_purged_index,
-        Some(LogId {
-            term: 3,
-            index: 100
-        }),
-        "last_purged_index should be updated"
-    );
-
-    // Verify: No role change
-    assert!(role_rx.try_recv().is_err(), "No role change expected");
-}
-
-/// Test: FollowerState handles RaftLogCleanUp validation error
-///
-/// Scenario:
-/// - Follower receives PurgeLogRequest from leader
-/// - StateMachine validation returns Error (e.g., snapshot corruption)
-///
-/// Expected:
-/// - Returns response with success=false
-/// - No purge executed
-/// - last_purged_index unchanged
-/// - handle_raft_event returns Ok(())
-///
-/// This validates error handling when snapshot validation fails.
-///
-/// Original: test_handle_raft_event_case8_3
-#[tokio::test]
-async fn test_handle_raft_log_cleanup_validation_error() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
-
-    // Mock state machine to return validation error
-    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
-    state_machine_handler
-        .expect_validate_purge_request()
-        .returning(|_, _, _| Err(SnapshotError::OperationFailed("test".to_string()).into()));
-    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
-
-    let membership = MockMembership::new();
-    context.membership = Arc::new(membership);
-
-    let mut state =
-        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(3);
-
-    let purge_request = PurgeLogRequest {
-        term: 3,
-        leader_id: 2,
-        leader_commit: 100,
-        last_included: Some(LogId { term: 3, index: 80 }),
-        snapshot_checksum: Bytes::new(),
-    };
-
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle RaftLogCleanUp event
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
-
-    // Verify: Response indicates failure
-    let response = resp_rx.recv().await.unwrap().unwrap();
-    assert!(!response.success, "Purge should fail on validation error");
-    assert_eq!(state.last_purged_index, None, "last_purged_index unchanged");
-
-    // Verify: No role change
-    assert!(role_rx.try_recv().is_err(), "No role change expected");
-}
-
-/// Test: FollowerState rejects RaftLogCleanUp with stale term
-///
-/// Scenario:
-/// - Follower (term=3) receives PurgeLogRequest with lower term (term=2)
-/// - Request term is outdated
-///
-/// Expected:
-/// - Returns response with success=false
-/// - No purge executed
-/// - last_purged_index unchanged
-/// - handle_raft_event returns Ok(())
-///
-/// This validates term checking prevents purge from stale leader.
-///
-/// Original: test_handle_raft_event_case8_4
-#[tokio::test]
-async fn test_handle_raft_log_cleanup_rejects_stale_term() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
-
-    // Mock state machine to validate based on term
-    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
-    state_machine_handler
-        .expect_validate_purge_request()
-        .returning(|current_term, _, req| {
-            // Leader term (2) is lower than current term (3)
-            if req.term < current_term {
-                Ok(false)
-            } else {
-                Ok(true)
-            }
-        });
-    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
-
-    let membership = MockMembership::new();
-    context.membership = Arc::new(membership);
-
-    let mut state =
-        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(3); // Current term > leader term
-
-    let purge_request = PurgeLogRequest {
-        term: 2, // Lower than follower's term
-        leader_id: 2,
-        leader_commit: 100,
-        last_included: Some(LogId { term: 2, index: 80 }),
-        snapshot_checksum: Bytes::new(),
-    };
-
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle RaftLogCleanUp event
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
-
-    // Verify: Response indicates failure
-    let response = resp_rx.recv().await.unwrap().unwrap();
-    assert!(!response.success, "Should reject stale term");
-    assert_eq!(state.last_purged_index, None, "last_purged_index unchanged");
-
-    // Verify: No role change
-    assert!(role_rx.try_recv().is_err(), "No role change expected");
-}
-
-/// Test: FollowerState rejects RaftLogCleanUp when commit_index insufficient
-///
-/// Scenario:
-/// - Follower receives PurgeLogRequest with purge_index=100
-/// - Follower's commit_index=90 (< purge_index)
-/// - Safety check fails: can't purge uncommitted logs
-///
-/// Expected:
-/// - Returns response with success=false
-/// - No purge executed
-/// - last_purged_index unchanged
-/// - handle_raft_event returns Ok(())
-///
-/// This validates safety: never purge logs beyond commit_index.
-///
-/// Original: test_handle_raft_event_case8_5
-#[tokio::test]
-async fn test_handle_raft_log_cleanup_safety_check_fails() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
-
-    // Mock state machine to accept validation
-    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
-    state_machine_handler
-        .expect_validate_purge_request()
-        .returning(|_, _, _| Ok(true));
-    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
-
-    let membership = MockMembership::new();
-    context.membership = Arc::new(membership);
-
-    // Prepare follower state where commit_index < purge_index
-    let mut state =
-        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(3);
-    state.shared_state.commit_index = 90; // commit_index < purge_index (100)
-    state.last_purged_index = Some(LogId { term: 2, index: 80 });
-
-    let purge_request = PurgeLogRequest {
-        term: 3,
-        leader_id: 2,
-        leader_commit: 100,
-        last_included: Some(LogId {
-            term: 3,
-            index: 100,
-        }),
-        snapshot_checksum: Bytes::new(),
-    };
-
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle RaftLogCleanUp event
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
-
-    // Verify: Response indicates failure
-    let response = resp_rx.recv().await.unwrap().unwrap();
-    assert!(!response.success, "Should fail safety check");
-    assert_eq!(
-        state.last_purged_index,
-        Some(LogId { term: 2, index: 80 }),
-        "last_purged_index unchanged"
-    );
-
-    // Verify: No role change
-    assert!(role_rx.try_recv().is_err(), "No role change expected");
-}
-
-/// Test: FollowerState rejects RaftLogCleanUp with non-monotonic purge index
-///
-/// Scenario:
-/// - Follower has last_purged_index=90
-/// - Receives PurgeLogRequest with purge_index=80 (< last_purged_index)
-/// - Request tries to purge already purged logs
-///
-/// Expected:
-/// - Returns response with success=false
-/// - No purge executed
-/// - last_purged_index unchanged
-/// - handle_raft_event returns Ok(())
-///
-/// This validates monotonicity: purge index must always advance.
-///
-/// Original: test_handle_raft_event_case8_6
-#[tokio::test]
-async fn test_handle_raft_log_cleanup_rejects_non_monotonic_purge() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
-
-    // Mock state machine to accept validation
-    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
-    state_machine_handler
-        .expect_validate_purge_request()
-        .returning(|_, _, _| Ok(true));
-    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
-
-    let membership = MockMembership::new();
-    context.membership = Arc::new(membership);
-
-    // Prepare follower state where last_purged_index > requested purge index
-    let mut state =
-        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(3);
-    state.shared_state.commit_index = 150;
-    state.last_purged_index = Some(LogId { term: 3, index: 90 }); // Higher than requested
-
-    let purge_request = PurgeLogRequest {
-        term: 3,
-        leader_id: 2,
-        leader_commit: 150,
-        last_included: Some(LogId { term: 3, index: 80 }), // Lower than current
-        snapshot_checksum: Bytes::new(),
-    };
-
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle RaftLogCleanUp event
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
-
-    // Verify: Response indicates failure
-    let response = resp_rx.recv().await.unwrap().unwrap();
-    assert!(!response.success, "Should reject non-monotonic purge");
-    assert_eq!(
-        state.last_purged_index,
-        Some(LogId { term: 3, index: 90 }),
-        "last_purged_index unchanged"
-    );
-
-    // Verify: No role change
-    assert!(role_rx.try_recv().is_err(), "No role change expected");
-}
-
-/// Test: FollowerState handles RaftLogCleanUp execution failure
-///
-/// Scenario:
-/// - Follower receives valid PurgeLogRequest
-/// - Validation succeeds
-/// - PurgeExecutor fails during execution (e.g., disk error)
-///
-/// Expected:
-/// - Returns response with success=false
-/// - last_purged_index unchanged
-/// - handle_raft_event returns Ok(())
-///
-/// This validates error handling when purge execution fails.
-///
-/// Original: test_handle_raft_event_case8_7
-#[tokio::test]
-async fn test_handle_raft_log_cleanup_execution_fails() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
-
-    // Mock state machine to accept validation
-    let mut state_machine_handler = MockStateMachineHandler::<MockTypeConfig>::new();
-    state_machine_handler
-        .expect_validate_purge_request()
-        .returning(|_, _, _| Ok(true));
-    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
-
-    // Mock purge executor to fail
-    let mut purge_executor = MockPurgeExecutor::new();
-    purge_executor
-        .expect_execute_purge()
-        .times(1)
-        .returning(|_| Err(SnapshotError::OperationFailed("test".to_string()).into()));
-    context.handlers.purge_executor = Arc::new(purge_executor);
-
-    let membership = MockMembership::new();
-    context.membership = Arc::new(membership);
-
-    // Prepare follower state
-    let mut state =
-        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(3);
-    state.shared_state.commit_index = 150;
-    state.last_purged_index = Some(LogId { term: 2, index: 80 });
-
-    let purge_request = PurgeLogRequest {
-        term: 3,
-        leader_id: 2,
-        leader_commit: 150,
-        last_included: Some(LogId {
-            term: 3,
-            index: 100,
-        }),
-        snapshot_checksum: Bytes::new(),
-    };
-
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::RaftLogCleanUp(purge_request, resp_tx);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle RaftLogCleanUp event
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
-
-    // Verify: Response indicates failure
-    let response = resp_rx.recv().await.unwrap().unwrap();
-    assert!(!response.success, "Should fail on execution error");
-    assert_eq!(
-        state.last_purged_index,
-        Some(LogId { term: 2, index: 80 }),
-        "last_purged_index unchanged"
-    );
-
-    // Verify: No role change
-    assert!(role_rx.try_recv().is_err(), "No role change expected");
-}
-
-// ============================================================================
-// Cluster Management Tests
-// ============================================================================
-
-/// Test: FollowerState rejects JoinCluster request
-///
-/// Scenario:
-/// - Follower receives JoinCluster request (new node wants to join)
-/// - Only leader can handle cluster membership changes
-///
-/// Expected:
-/// - Returns Status error with Code::PermissionDenied
-/// - handle_raft_event returns Err()
-/// - No state changes
-///
-/// This validates that only leader can accept new cluster members.
-///
-/// Original: test_handle_raft_event_case10
 #[tokio::test]
 async fn test_handle_join_cluster_rejects_on_follower() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2124,27 +1595,9 @@ mod role_violation_tests {
         let mut state =
             FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
-        // [Test CreateSnapshotEvent]
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        let raft_event = RaftEvent::CreateSnapshotEvent;
-        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
-
-        assert!(
-            matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })),
-            "CreateSnapshotEvent should return RoleViolation"
-        );
-
-        // [Test SnapshotCreated]
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        let raft_event = RaftEvent::SnapshotCreated(Err(Error::Fatal("test".to_string())));
-        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
-
-        assert!(
-            matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })),
-            "SnapshotCreated should return RoleViolation"
-        );
-
         // [Test LogPurgeCompleted]
+        // Follower now handles CreateSnapshotEvent and SnapshotCreated independently (Raft §7)
+        // but should NOT receive LogPurgeCompleted from external sources
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         let raft_event = RaftEvent::LogPurgeCompleted(LogId { term: 1, index: 1 });
         let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
@@ -2152,6 +1605,159 @@ mod role_violation_tests {
         assert!(
             matches!(e, Error::Consensus(ConsensusError::RoleViolation { .. })),
             "LogPurgeCompleted should return RoleViolation"
+        );
+    }
+
+    /// Test: Follower ignores duplicate CreateSnapshotEvent while snapshot is in progress
+    ///
+    /// Purpose:
+    /// Validates that the snapshot_in_progress flag prevents concurrent snapshot creation,
+    /// ensuring snapshot consistency and avoiding resource waste from duplicate operations.
+    ///
+    /// Scenario:
+    /// - First CreateSnapshotEvent is received and sets snapshot_in_progress=true
+    /// - Second CreateSnapshotEvent arrives before first completes
+    ///
+    /// Expected:
+    /// - First event: Returns Ok(), starts async snapshot creation
+    /// - Second event: Returns Ok() immediately without starting new snapshot (logged as skipped)
+    /// - snapshot_in_progress flag protects against concurrent creation
+    #[tokio::test]
+    async fn test_follower_ignores_duplicate_create_snapshot_event() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+        // First CreateSnapshotEvent - should succeed
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let result1 = state
+            .handle_raft_event(RaftEvent::CreateSnapshotEvent, &context, role_tx.clone())
+            .await;
+        assert!(result1.is_ok(), "First CreateSnapshotEvent should succeed");
+
+        // Verify flag is set
+        assert!(
+            state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot_in_progress should be true after first event"
+        );
+
+        // Second CreateSnapshotEvent - should be ignored
+        let result2 =
+            state.handle_raft_event(RaftEvent::CreateSnapshotEvent, &context, role_tx).await;
+        assert!(
+            result2.is_ok(),
+            "Second CreateSnapshotEvent should return Ok (ignored)"
+        );
+
+        // Flag should still be true (first snapshot still in progress)
+        assert!(
+            state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot_in_progress should remain true"
+        );
+    }
+
+    /// Test: Follower resets snapshot_in_progress flag after SnapshotCreated (success case)
+    ///
+    /// Purpose:
+    /// Validates that the snapshot_in_progress flag is correctly reset after snapshot completion,
+    /// allowing subsequent snapshots to be created when needed.
+    ///
+    /// Scenario:
+    /// - snapshot_in_progress is manually set to true (simulating ongoing snapshot)
+    /// - SnapshotCreated event with successful result is received
+    ///
+    /// Expected:
+    /// - Event handler returns Ok()
+    /// - snapshot_in_progress flag is reset to false
+    /// - System is ready to accept new CreateSnapshotEvent
+    ///
+    /// This ensures the flag lifecycle is: false → true (on create) → false (on complete)
+    #[tokio::test]
+    async fn test_follower_resets_snapshot_flag_on_success() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+        // Simulate snapshot in progress
+        state.snapshot_in_progress.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Create successful snapshot result
+        let metadata = d_engine_proto::server::storage::SnapshotMetadata {
+            last_included: Some(LogId { term: 1, index: 50 }),
+            checksum: bytes::Bytes::new(),
+        };
+        let snapshot_result = Ok((metadata, std::path::PathBuf::from("/tmp/test_snapshot.bin")));
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let result = state
+            .handle_raft_event(
+                RaftEvent::SnapshotCreated(snapshot_result),
+                &context,
+                role_tx,
+            )
+            .await;
+
+        assert!(result.is_ok(), "SnapshotCreated should succeed");
+
+        // Verify flag is reset
+        assert!(
+            !state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot_in_progress should be false after SnapshotCreated"
+        );
+    }
+
+    /// Test: Follower resets snapshot_in_progress flag after SnapshotCreated (failure case)
+    ///
+    /// Purpose:
+    /// Validates that the snapshot_in_progress flag is reset even when snapshot creation fails,
+    /// allowing the system to retry snapshot creation later without being permanently blocked.
+    ///
+    /// Scenario:
+    /// - snapshot_in_progress is set to true
+    /// - SnapshotCreated event with error result is received
+    ///
+    /// Expected:
+    /// - Event handler returns Ok() (error is logged but not propagated)
+    /// - snapshot_in_progress flag is reset to false
+    /// - System can retry snapshot creation on next ApplyCompleted trigger
+    ///
+    /// This ensures failure recovery: the flag doesn't stay locked after an error
+    #[tokio::test]
+    async fn test_follower_resets_snapshot_flag_on_failure() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+        // Simulate snapshot in progress
+        state.snapshot_in_progress.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Create failed snapshot result
+        let snapshot_result = Err(Error::Fatal("Snapshot creation failed".to_string()));
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let result = state
+            .handle_raft_event(
+                RaftEvent::SnapshotCreated(snapshot_result),
+                &context,
+                role_tx,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "SnapshotCreated with error should return Ok"
+        );
+
+        // Verify flag is reset even on failure
+        assert!(
+            !state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot_in_progress should be false after failed SnapshotCreated"
         );
     }
 }

@@ -52,12 +52,7 @@ mod wait_applied_test;
 #[cfg(test)]
 mod worker_test;
 
-use std::sync::Arc;
-
 use d_engine_proto::client::ClientResult;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use futures::stream::BoxStream;
@@ -69,7 +64,6 @@ use super::NewCommitData;
 use crate::ApplyResult;
 use crate::Result;
 use crate::TypeConfig;
-use crate::alias::ROF;
 
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
@@ -149,25 +143,6 @@ where
         snapshot_dir: &std::path::Path,
         snapshot_dir_prefix: &str,
     ) -> crate::Result<()>;
-
-    /// Validates if a log purge request from leader is authorized
-    async fn validate_purge_request(
-        &self,
-        current_term: u64,
-        leader_id: Option<u32>,
-        req: &PurgeLogRequest,
-    ) -> Result<bool>;
-
-    /// Processes log purge requests (for non-leader nodes)
-    #[allow(unused)]
-    async fn handle_purge_request(
-        &self,
-        current_term: u64,
-        leader_id: Option<u32>,
-        last_purged: Option<LogId>,
-        req: &PurgeLogRequest,
-        raft_log: &Arc<ROF<T>>,
-    ) -> Result<PurgeLogResponse>;
 
     /// Retrieves metadata of the latest valid snapshot
     fn get_latest_snapshot_metadata(&self) -> Option<SnapshotMetadata>;

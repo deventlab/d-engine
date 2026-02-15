@@ -560,55 +560,6 @@ async fn test_learner_rejects_client_read_request() {
     assert_eq!(err.code(), tonic::Code::FailedPrecondition);
     assert!(err.message().contains("Not leader"));
 }
-
-/// Test: LearnerState rejects RaftLogCleanUp
-///
-/// Scenario:
-/// - Learner receives RaftLogCleanUp request
-/// - Only Follower/Leader can handle log cleanup
-///
-/// Expected:
-/// - Returns Status error with Code::PermissionDenied
-///
-/// Original: test_handle_raft_event_case8
-#[tokio::test]
-async fn test_learner_rejects_raft_log_cleanup() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
-
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
-
-    let request = d_engine_proto::server::storage::PurgeLogRequest {
-        term: 1,
-        leader_id: 1,
-        leader_commit: 1,
-        last_included: Some(LogId { term: 1, index: 1 }),
-        snapshot_checksum: bytes::Bytes::from(vec![1, 2, 3]),
-    };
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::RaftLogCleanUp(request, resp_tx);
-
-    assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
-    );
-
-    let response = resp_rx.recv().await.unwrap();
-    assert!(response.is_err(), "Should return error");
-    let err = response.unwrap_err();
-    assert_eq!(err.code(), Code::PermissionDenied);
-}
-
-/// Test: LearnerState rejects JoinCluster
-///
-/// Scenario:
-/// - Learner receives JoinCluster request
-/// - Only leader can accept new members
-///
-/// Expected:
-/// - Returns Status error with Code::PermissionDenied
-/// - handle_raft_event returns Err()
 ///
 /// Original: test_handle_raft_event_case10
 #[tokio::test]
@@ -1295,33 +1246,9 @@ mod role_violation_tests {
 
         let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
-        // [Test CreateSnapshotEvent]
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        let raft_event = RaftEvent::CreateSnapshotEvent;
-        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
-
-        assert!(
-            matches!(
-                e,
-                crate::Error::Consensus(crate::ConsensusError::RoleViolation { .. })
-            ),
-            "CreateSnapshotEvent should return RoleViolation"
-        );
-
-        // [Test SnapshotCreated]
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        let raft_event = RaftEvent::SnapshotCreated(Err(crate::Error::Fatal("test".to_string())));
-        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
-
-        assert!(
-            matches!(
-                e,
-                crate::Error::Consensus(crate::ConsensusError::RoleViolation { .. })
-            ),
-            "SnapshotCreated should return RoleViolation"
-        );
-
         // [Test LogPurgeCompleted]
+        // Learner now handles CreateSnapshotEvent and SnapshotCreated independently (Raft §7)
+        // but should NOT receive LogPurgeCompleted from external sources
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
         let raft_event = RaftEvent::LogPurgeCompleted(LogId { term: 1, index: 1 });
         let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
@@ -1332,6 +1259,156 @@ mod role_violation_tests {
                 crate::Error::Consensus(crate::ConsensusError::RoleViolation { .. })
             ),
             "LogPurgeCompleted should return RoleViolation"
+        );
+    }
+
+    /// Test: Learner ignores duplicate CreateSnapshotEvent while snapshot is in progress
+    ///
+    /// Purpose:
+    /// Validates that the snapshot_in_progress flag prevents concurrent snapshot creation,
+    /// ensuring snapshot consistency and avoiding resource waste from duplicate operations.
+    ///
+    /// Scenario:
+    /// - First CreateSnapshotEvent is received and sets snapshot_in_progress=true
+    /// - Second CreateSnapshotEvent arrives before first completes
+    ///
+    /// Expected:
+    /// - First event: Returns Ok(), starts async snapshot creation
+    /// - Second event: Returns Ok() immediately without starting new snapshot (logged as skipped)
+    /// - snapshot_in_progress flag protects against concurrent creation
+    #[tokio::test]
+    async fn test_learner_ignores_duplicate_create_snapshot_event() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+        let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        // First CreateSnapshotEvent - should succeed
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let result1 = state
+            .handle_raft_event(RaftEvent::CreateSnapshotEvent, &context, role_tx.clone())
+            .await;
+        assert!(result1.is_ok(), "First CreateSnapshotEvent should succeed");
+
+        // Verify flag is set
+        assert!(
+            state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot_in_progress should be true after first event"
+        );
+
+        // Second CreateSnapshotEvent - should be ignored
+        let result2 =
+            state.handle_raft_event(RaftEvent::CreateSnapshotEvent, &context, role_tx).await;
+        assert!(
+            result2.is_ok(),
+            "Second CreateSnapshotEvent should return Ok (ignored)"
+        );
+
+        // Flag should still be true (first snapshot still in progress)
+        assert!(
+            state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot_in_progress should remain true"
+        );
+    }
+
+    /// Test: Learner resets snapshot_in_progress flag after SnapshotCreated (success case)
+    ///
+    /// Purpose:
+    /// Validates that the snapshot_in_progress flag is correctly reset after snapshot completion,
+    /// allowing subsequent snapshots to be created when needed.
+    ///
+    /// Scenario:
+    /// - snapshot_in_progress is manually set to true (simulating ongoing snapshot)
+    /// - SnapshotCreated event with successful result is received
+    ///
+    /// Expected:
+    /// - Event handler returns Ok()
+    /// - snapshot_in_progress flag is reset to false
+    /// - System is ready to accept new CreateSnapshotEvent
+    ///
+    /// This ensures the flag lifecycle is: false → true (on create) → false (on complete)
+    #[tokio::test]
+    async fn test_learner_resets_snapshot_flag_on_success() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+        let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        // Simulate snapshot in progress
+        state.snapshot_in_progress.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Create successful snapshot result
+        let metadata = d_engine_proto::server::storage::SnapshotMetadata {
+            last_included: Some(LogId { term: 1, index: 50 }),
+            checksum: bytes::Bytes::new(),
+        };
+        let snapshot_result = Ok((metadata, std::path::PathBuf::from("/tmp/test_snapshot.bin")));
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let result = state
+            .handle_raft_event(
+                RaftEvent::SnapshotCreated(snapshot_result),
+                &context,
+                role_tx,
+            )
+            .await;
+
+        assert!(result.is_ok(), "SnapshotCreated should succeed");
+
+        // Verify flag is reset
+        assert!(
+            !state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot_in_progress should be false after SnapshotCreated"
+        );
+    }
+
+    /// Test: Learner resets snapshot_in_progress flag after SnapshotCreated (failure case)
+    ///
+    /// Purpose:
+    /// Validates that the snapshot_in_progress flag is reset even when snapshot creation fails,
+    /// allowing the system to retry snapshot creation later without being permanently blocked.
+    ///
+    /// Scenario:
+    /// - snapshot_in_progress is set to true
+    /// - SnapshotCreated event with error result is received
+    ///
+    /// Expected:
+    /// - Event handler returns Ok() (error is logged but not propagated)
+    /// - snapshot_in_progress flag is reset to false
+    /// - System can retry snapshot creation on next ApplyCompleted trigger
+    ///
+    /// This ensures failure recovery: the flag doesn't stay locked after an error
+    #[tokio::test]
+    async fn test_learner_resets_snapshot_flag_on_failure() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+        let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        // Simulate snapshot in progress
+        state.snapshot_in_progress.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Create failed snapshot result
+        let snapshot_result = Err(crate::Error::Fatal("Snapshot creation failed".to_string()));
+
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let result = state
+            .handle_raft_event(
+                RaftEvent::SnapshotCreated(snapshot_result),
+                &context,
+                role_tx,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "SnapshotCreated with error should return Ok"
+        );
+
+        // Verify flag is reset even on failure
+        assert!(
+            !state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst),
+            "snapshot_in_progress should be false after failed SnapshotCreated"
         );
     }
 }

@@ -95,10 +95,6 @@ pub struct RetryPolicies {
     #[serde(default)]
     pub install_snapshot: InstallSnapshotBackoffPolicy,
 
-    /// Retry policy for purge log requests
-    #[serde(default)]
-    pub purge_log: BackoffPolicy,
-
     /// Retry policy for node health checks
     /// Optimized for frequent liveness detection with lower overhead
     #[serde(default)]
@@ -187,12 +183,6 @@ impl Default for RetryPolicies {
                 between_chunk_timeout_ms: default_between_chunk_timeout_ms(),
             },
 
-            purge_log: BackoffPolicy {
-                max_retries: 1,
-                timeout_ms: 100,
-                base_delay_ms: 50,
-                max_delay_ms: 1000,
-            },
             internal_quorum: BackoffPolicy {
                 // Minimum must be 3: the first quorum check may fail if the leader is newly elected
                 // and followers haven't yet advanced their next_index
@@ -374,7 +364,6 @@ impl RetryPolicies {
         self.validate_auto_discovery()?;
         self.validate_join_cluster()?;
         self.validate_install_snapshot()?;
-        self.validate_purge_log()?;
         self.validate_internal_quorum()?;
         Ok(())
     }
@@ -399,12 +388,6 @@ impl RetryPolicies {
 
     fn validate_healthcheck(&self) -> Result<()> {
         self.healthcheck.validate("healthcheck")?;
-
-        Ok(())
-    }
-
-    fn validate_purge_log(&self) -> Result<()> {
-        self.purge_log.validate("purge_log")?;
 
         Ok(())
     }

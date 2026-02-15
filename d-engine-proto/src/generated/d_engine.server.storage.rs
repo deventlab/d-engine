@@ -48,37 +48,6 @@ pub struct SnapshotResponse {
     pub next_chunk: u32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PurgeLogRequest {
-    #[prost(uint64, tag = "1")]
-    pub term: u64,
-    #[prost(uint32, tag = "2")]
-    pub leader_id: u32,
-    /// Leader's commit_index (for Peer verification)
-    #[prost(uint64, tag = "3")]
-    pub leader_commit: u64,
-    /// Maximum log index that can be deleted
-    #[prost(message, optional, tag = "4")]
-    pub last_included: ::core::option::Option<super::super::common::LogId>,
-    #[prost(bytes = "bytes", tag = "5")]
-    pub snapshot_checksum: ::prost::bytes::Bytes,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct PurgeLogResponse {
-    #[prost(uint32, tag = "1")]
-    pub node_id: u32,
-    /// Peer's current term (for Leader abdication)
-    #[prost(uint64, tag = "2")]
-    pub term: u64,
-    /// Whether to accept the request (non-asynchronous operation result)
-    #[prost(bool, tag = "3")]
-    pub success: bool,
-    /// Peer's current purged position (for Leader update progress)
-    #[prost(message, optional, tag = "4")]
-    pub last_purged: ::core::option::Option<super::super::common::LogId>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SnapshotAck {
     /// Received chunk sequence number
@@ -291,36 +260,6 @@ pub mod snapshot_service_client {
                 );
             self.inner.streaming(req, path, codec).await
         }
-        /// Log compaction request
-        pub async fn purge_log(
-            &mut self,
-            request: impl tonic::IntoRequest<super::PurgeLogRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::PurgeLogResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/d_engine.server.storage.SnapshotService/PurgeLog",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "d_engine.server.storage.SnapshotService",
-                        "PurgeLog",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
     }
 }
 /// Generated server implementations.
@@ -356,14 +295,6 @@ pub mod snapshot_service_server {
             request: tonic::Request<tonic::Streaming<super::SnapshotAck>>,
         ) -> std::result::Result<
             tonic::Response<Self::StreamSnapshotStream>,
-            tonic::Status,
-        >;
-        /// Log compaction request
-        async fn purge_log(
-            &self,
-            request: tonic::Request<super::PurgeLogRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::PurgeLogResponse>,
             tonic::Status,
         >;
     }
@@ -534,51 +465,6 @@ pub mod snapshot_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.streaming(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/d_engine.server.storage.SnapshotService/PurgeLog" => {
-                    #[allow(non_camel_case_types)]
-                    struct PurgeLogSvc<T: SnapshotService>(pub Arc<T>);
-                    impl<
-                        T: SnapshotService,
-                    > tonic::server::UnaryService<super::PurgeLogRequest>
-                    for PurgeLogSvc<T> {
-                        type Response = super::PurgeLogResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::PurgeLogRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SnapshotService>::purge_log(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = PurgeLogSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

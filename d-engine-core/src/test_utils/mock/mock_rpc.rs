@@ -21,8 +21,6 @@ use d_engine_proto::server::election::raft_election_service_server::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
@@ -50,7 +48,6 @@ pub struct MockRpcService {
 
     pub expected_snapshot_response: Option<Result<SnapshotResponse, tonic::Status>>,
     pub expected_stream_snapshot_response: Option<Result<SnapshotChunk, tonic::Status>>,
-    pub expected_purge_log_response: Option<Result<PurgeLogResponse, tonic::Status>>,
     pub expected_join_cluster_response: Option<Result<JoinResponse, tonic::Status>>,
     pub expected_discover_leader_response: Option<Result<LeaderDiscoveryResponse, tonic::Status>>,
 }
@@ -233,17 +230,6 @@ impl SnapshotService for MockRpcService {
                     "No mock install_snapshot response set",
                 ));
             }
-        }
-    }
-
-    async fn purge_log(
-        &self,
-        _request: tonic::Request<PurgeLogRequest>,
-    ) -> std::result::Result<tonic::Response<PurgeLogResponse>, tonic::Status> {
-        match &self.expected_purge_log_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(*response)),
-            Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown("No mock purge_log response set")),
         }
     }
 }

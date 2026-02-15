@@ -31,8 +31,6 @@ use d_engine_proto::server::election::raft_election_service_client::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_client::RaftReplicationServiceClient;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::snapshot_service_client::SnapshotServiceClient;
@@ -358,95 +356,6 @@ where
             peer_ids,
             responses,
         })
-    }
-
-    async fn send_purge_requests(
-        &self,
-        req: PurgeLogRequest,
-        retry: &RetryPolicies,
-        membership: Arc<MOF<T>>,
-    ) -> Result<Vec<Result<PurgeLogResponse>>> {
-        debug!("Sending log purge requests");
-
-        // Get all members (data operation)
-        let peers = membership.voters().await;
-
-        if peers.is_empty() {
-            warn!("No peers available for purge requests");
-            return Err(NetworkError::EmptyPeerList {
-                request_type: "send_purge_requests",
-            }
-            .into());
-        }
-
-        let mut tasks = FuturesUnordered::new();
-        let mut peer_ids = HashSet::new();
-
-        for peer in peers {
-            let peer_id = peer.id;
-            if peer_id == self.my_id || peer_ids.contains(&peer_id) {
-                continue; // Skip self and duplicates
-            }
-            peer_ids.insert(peer_id);
-
-            // Real-time connection fetch for data operations
-            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Data).await {
-                Some(chan) => chan,
-                None => {
-                    error!("Failed to get data channel for peer {}", peer_id);
-                    continue;
-                }
-            };
-
-            let req_clone = req.clone();
-            let closure = move || {
-                let channel = channel.clone();
-                let mut client = SnapshotServiceClient::new(channel)
-                    .send_compressed(CompressionEncoding::Gzip)
-                    .accept_compressed(CompressionEncoding::Gzip);
-                let req = req_clone.clone();
-                async move { client.purge_log(tonic::Request::new(req)).await }
-            };
-
-            let policy = retry.purge_log;
-            let addr = peer.address;
-            let my_id = self.my_id;
-            let task_handle = task::spawn(async move {
-                match grpc_task_with_timeout_and_exponential_backoff("purge_log", closure, policy)
-                    .await
-                {
-                    Ok(response) => {
-                        debug!(
-                            "[send_purge_requests | {my_id}->{peer_id}]resquest [peer({:?})] vote response: {:?}",
-                            &addr, response
-                        );
-                        let res = response.into_inner();
-                        Ok(res)
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[send_purge_requests | {my_id}->{peer_id}]Received RPC error: {}",
-                            e
-                        );
-                        Err(e)
-                    }
-                }
-            });
-            tasks.push(task_handle.boxed());
-        }
-
-        let mut responses = Vec::new();
-        while let Some(result) = tasks.next().await {
-            match result {
-                Ok(r) => responses.push(r),
-                Err(e) => {
-                    error!("Task failed with error: {:?}", &e);
-                    responses.push(Err(Error::from(NetworkError::TaskFailed(e))));
-                }
-            }
-        }
-
-        Ok(responses)
     }
 
     async fn join_cluster(
