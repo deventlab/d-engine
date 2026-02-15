@@ -52,6 +52,8 @@ use super::SharedState;
 use super::StateSnapshot;
 use super::candidate_state::CandidateState;
 use super::role_state::RaftRoleState;
+use super::role_state::check_and_trigger_snapshot;
+use super::role_state::send_replay_raft_event;
 use crate::AppendResults;
 use crate::BackgroundSnapshotTransfer;
 use crate::BatchBuffer;
@@ -63,7 +65,7 @@ use crate::MaybeCloneOneshotSender;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
-use crate::NewCommitData;
+
 use crate::PeerUpdate;
 use crate::PurgeExecutor;
 use crate::QuorumVerificationResult;
@@ -1496,15 +1498,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
 
                 // Check snapshot after SM apply — last_applied is now accurate.
-                if ctx.node_config.raft.snapshot.enable
-                    && ctx.state_machine_handler().should_snapshot(NewCommitData {
-                        new_commit_index: last_index,
-                        role: Leader as i32,
-                        current_term: self.current_term(),
-                    })
-                {
-                    send_replay_raft_event(&role_tx, RaftEvent::CreateSnapshotEvent)?;
-                }
+                check_and_trigger_snapshot(
+                    last_index,
+                    Leader as i32,
+                    self.current_term(),
+                    ctx,
+                    &role_tx,
+                )?;
 
                 trace!(
                     "[Leader-{}] TIMING: process_apply_completed({} results)",
@@ -3293,15 +3293,4 @@ pub fn calculate_safe_batch_size(
         // But if available - 1 == 0, then we cannot promote any?
         available.saturating_sub(1)
     }
-}
-
-pub(super) fn send_replay_raft_event(
-    role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    raft_event: RaftEvent,
-) -> Result<()> {
-    role_tx.send(RoleEvent::ReprocessEvent(Box::new(raft_event))).map_err(|e| {
-        let error_str = format!("{e:?}");
-        error!("Failed to send: {}", error_str);
-        NetworkError::SingalSendFailed(error_str).into()
-    })
 }

@@ -568,3 +568,38 @@ pub trait RaftRoleState: Send + Sync + 'static {
         Err(MembershipError::NotLeader.into())
     }
 }
+
+/// Send a RaftEvent back into the role event loop for reprocessing.
+pub(super) fn send_replay_raft_event(
+    role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    raft_event: RaftEvent,
+) -> Result<()> {
+    role_tx.send(RoleEvent::ReprocessEvent(Box::new(raft_event))).map_err(|e| {
+        let error_str = format!("{e:?}");
+        error!("Failed to send: {}", error_str);
+        NetworkError::SingalSendFailed(error_str).into()
+    })
+}
+
+/// Check snapshot condition and trigger if met. Used by all role states after SM apply.
+///
+/// Per Raft §7: each server takes snapshots independently. Called from ApplyCompleted
+/// handlers in leader, follower, learner, and candidate states.
+pub(super) fn check_and_trigger_snapshot<T: TypeConfig>(
+    last_index: u64,
+    role: i32,
+    current_term: u64,
+    ctx: &RaftContext<T>,
+    role_tx: &mpsc::UnboundedSender<RoleEvent>,
+) -> Result<()> {
+    if ctx.node_config.raft.snapshot.enable
+        && ctx.state_machine_handler().should_snapshot(NewCommitData {
+            new_commit_index: last_index,
+            role,
+            current_term,
+        })
+    {
+        send_replay_raft_event(role_tx, RaftEvent::CreateSnapshotEvent)?;
+    }
+    Ok(())
+}

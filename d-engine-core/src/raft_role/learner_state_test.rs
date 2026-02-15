@@ -1,19 +1,10 @@
-use std::sync::Arc;
-
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::cluster::ClusterConfChangeRequest;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::MetadataRequest;
-use d_engine_proto::server::cluster::cluster_conf_update_response;
-use d_engine_proto::server::election::VoteRequest;
-use tonic::Code;
-
 use crate::ClientCmd;
 use crate::Error;
 use crate::MaybeCloneOneshot;
 use crate::MockBuilder;
 use crate::MockMembership;
+use crate::MockStateMachineHandler;
+use crate::NewCommitData;
 use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RoleEvent;
@@ -23,7 +14,18 @@ use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::mock_raft_context_with_temp;
 use crate::test_utils::node_config;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::server::cluster::ClusterConfChangeRequest;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::MetadataRequest;
+use d_engine_proto::server::cluster::cluster_conf_update_response;
+use d_engine_proto::server::election::VoteRequest;
+use mockall::predicate::eq;
+use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
+use tonic::Code;
 
 /// Test: LearnerState rejects FlushReadBuffer event
 ///
@@ -1357,16 +1359,18 @@ mod role_violation_tests {
 #[tokio::test]
 async fn test_learner_handles_fatal_error_returns_error() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = MockBuilder::new(graceful_rx)
-        .with_db_path("/tmp/test_learner_handles_fatal_error_returns_error")
-        .build_context();
+    let context = mock_raft_context(
+        "/tmp/test_learner_handles_fatal_error_returns_error",
+        graceful_rx,
+        None,
+    );
 
     let mut learner = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Create FatalError event
     let fatal_error = RaftEvent::FatalError {
         source: "StateMachine".to_string(),
-        error: "Storage error - cannot apply snapshot".to_string(),
+        error: "Disk failure".to_string(),
     };
 
     // Create role event channel
@@ -1392,9 +1396,194 @@ async fn test_learner_handles_fatal_error_returns_error() {
         other => panic!("Expected Error::Fatal, got: {other:?}"),
     }
 
-    // VERIFY 3: No role events sent (log replication is aborted)
+    // VERIFY 3: No role events sent
     assert!(
         role_rx.try_recv().is_err(),
         "No role transition events should be sent during FatalError handling"
+    );
+}
+
+/// Test: Learner ApplyCompleted triggers snapshot when condition is met
+///
+/// Purpose: Verify that learners independently create snapshots per Raft §7.
+/// This ensures learner snapshot progress allows leader to advance its purge_safe_index
+/// and prevent unbounded log growth.
+///
+/// Scenario:
+/// - Learner receives ApplyCompleted event after state machine apply
+/// - Snapshot is enabled in config
+/// - State machine handler indicates snapshot should be taken
+///
+/// Expected:
+/// - CreateSnapshotEvent is sent back to role event loop for processing
+/// - Event is reprocessed as RoleEvent::ReprocessEvent
+#[tokio::test]
+async fn test_apply_completed_triggers_snapshot_when_condition_met() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Create a mock state machine handler that returns true for should_snapshot
+    let mut mock_sm_handler = MockStateMachineHandler::new();
+    mock_sm_handler
+        .expect_should_snapshot()
+        .with(eq(NewCommitData {
+            new_commit_index: 100,
+            role: NodeRole::Learner as i32,
+            current_term: 1,
+        }))
+        .times(1)
+        .returning(|_| true);
+
+    // Build context with mock state machine handler before context creation
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine_handler(mock_sm_handler)
+        .build_context();
+
+    let mut learner = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    // ACTION: Handle ApplyCompleted event
+    let apply_completed_event = RaftEvent::ApplyCompleted {
+        last_index: 100,
+        results: vec![],
+    };
+
+    let result = learner.handle_raft_event(apply_completed_event, &context, role_tx).await;
+
+    // VERIFY 1: Event handling succeeds
+    assert!(
+        result.is_ok(),
+        "ApplyCompleted should be handled successfully, got: {result:?}"
+    );
+
+    // VERIFY 2: CreateSnapshotEvent is sent as RoleEvent::ReprocessEvent
+    let event = role_rx.try_recv().expect("Should receive snapshot event");
+    match event {
+        RoleEvent::ReprocessEvent(boxed_event) => {
+            match *boxed_event {
+                RaftEvent::CreateSnapshotEvent => {
+                    // Success! Event is correctly wrapped
+                }
+                other => panic!("Expected CreateSnapshotEvent, got: {other:?}"),
+            }
+        }
+        other => panic!("Expected RoleEvent::ReprocessEvent, got: {other:?}"),
+    }
+
+    // VERIFY 3: No additional events queued
+    assert!(
+        role_rx.try_recv().is_err(),
+        "Should only send one snapshot event"
+    );
+}
+
+/// Test: Learner ApplyCompleted does NOT trigger snapshot when condition is not met
+///
+/// Purpose: Verify that learners respect snapshot conditions and don't create unnecessary snapshots.
+///
+/// Scenario:
+/// - Learner receives ApplyCompleted event
+/// - Snapshot is enabled in config
+/// - State machine handler indicates snapshot should NOT be taken (returns false)
+///
+/// Expected:
+/// - No CreateSnapshotEvent is sent
+/// - ApplyCompleted is processed normally without side effects
+#[tokio::test]
+async fn test_apply_completed_does_not_trigger_snapshot_when_condition_not_met() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Create a mock state machine handler that returns false for should_snapshot
+    let mut mock_sm_handler = MockStateMachineHandler::new();
+    mock_sm_handler
+        .expect_should_snapshot()
+        .with(eq(NewCommitData {
+            new_commit_index: 50,
+            role: NodeRole::Learner as i32,
+            current_term: 1,
+        }))
+        .times(1)
+        .returning(|_| false);
+
+    // Build context with mock state machine handler before context creation
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine_handler(mock_sm_handler)
+        .build_context();
+
+    let mut learner = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    // ACTION: Handle ApplyCompleted event
+    let apply_completed_event = RaftEvent::ApplyCompleted {
+        last_index: 50,
+        results: vec![],
+    };
+
+    let result = learner.handle_raft_event(apply_completed_event, &context, role_tx).await;
+
+    // VERIFY 1: Event handling succeeds
+    assert!(
+        result.is_ok(),
+        "ApplyCompleted should be handled successfully"
+    );
+
+    // VERIFY 2: No snapshot event is sent
+    assert!(
+        role_rx.try_recv().is_err(),
+        "Should not send snapshot event when condition is not met"
+    );
+}
+
+/// Test: Learner ApplyCompleted respects snapshot config disabled state
+///
+/// Purpose: Verify that snapshots are not triggered when snapshot feature is disabled.
+///
+/// Scenario:
+/// - Learner receives ApplyCompleted event
+/// - Snapshot is DISABLED in config (enable = false)
+/// - State machine handler would indicate snapshot (returns true)
+///
+/// Expected:
+/// - No CreateSnapshotEvent is sent (config takes precedence)
+/// - ApplyCompleted is processed without attempting snapshot
+#[tokio::test]
+async fn test_apply_completed_respects_snapshot_disabled_config() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Create a mock state machine handler
+    let mock_sm_handler = MockStateMachineHandler::new();
+
+    // Build context with snapshot disabled and mock handler
+    let mut node_config = node_config("/tmp/test_learner_snapshot_disabled");
+    node_config.raft.snapshot.enable = false;
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine_handler(mock_sm_handler)
+        .with_node_config(node_config)
+        .build_context();
+
+    let mut learner = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    // ACTION: Handle ApplyCompleted event
+    let apply_completed_event = RaftEvent::ApplyCompleted {
+        last_index: 100,
+        results: vec![],
+    };
+
+    let result = learner.handle_raft_event(apply_completed_event, &context, role_tx).await;
+
+    // VERIFY 1: Event handling succeeds
+    assert!(
+        result.is_ok(),
+        "ApplyCompleted should be handled successfully"
+    );
+
+    // VERIFY 2: No snapshot event is sent (snapshot disabled in config)
+    assert!(
+        role_rx.try_recv().is_err(),
+        "Should not send snapshot event when snapshot is disabled in config"
     );
 }

@@ -51,6 +51,7 @@ use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::mock_raft_context_with_temp;
 use crate::test_utils::node_config;
+use mockall::predicate::eq;
 use tokio::sync::{mpsc, watch};
 
 // ============================================================================
@@ -2477,5 +2478,196 @@ async fn test_follower_handles_fatal_error_returns_error() {
     assert!(
         role_rx.try_recv().is_err(),
         "No role transition events should be sent during FatalError handling"
+    );
+}
+
+/// Test: Follower ApplyCompleted triggers snapshot when condition is met
+///
+/// Purpose: Verify that followers independently create snapshots per Raft §7.
+/// This ensures follower snapshot progress allows leader to advance its purge_safe_index
+/// and prevent unbounded log growth.
+///
+/// Scenario:
+/// - Follower receives ApplyCompleted event after state machine apply
+/// - Snapshot is enabled in config
+/// - State machine handler indicates snapshot should be taken
+///
+/// Expected:
+/// - CreateSnapshotEvent is sent back to role event loop for processing
+/// - Event is reprocessed as RoleEvent::ReprocessEvent
+#[tokio::test]
+async fn test_apply_completed_triggers_snapshot_when_condition_met() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Create a mock state machine handler that returns true for should_snapshot
+    let mut mock_sm_handler = crate::MockStateMachineHandler::new();
+    mock_sm_handler
+        .expect_should_snapshot()
+        .with(eq(NewCommitData {
+            new_commit_index: 100,
+            role: NodeRole::Follower as i32,
+            current_term: 1,
+        }))
+        .times(1)
+        .returning(|_| true);
+
+    // Build context with mock state machine handler before context creation
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine_handler(mock_sm_handler)
+        .build_context();
+
+    let hard_state = context.storage.raft_log.load_hard_state().expect("Failed to load hard state");
+    let mut follower =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), hard_state, Some(0));
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    // ACTION: Handle ApplyCompleted event
+    let apply_completed_event = RaftEvent::ApplyCompleted {
+        last_index: 100,
+        results: vec![],
+    };
+
+    let result = follower.handle_raft_event(apply_completed_event, &context, role_tx).await;
+
+    // VERIFY 1: Event handling succeeds
+    assert!(
+        result.is_ok(),
+        "ApplyCompleted should be handled successfully, got: {result:?}"
+    );
+
+    // VERIFY 2: CreateSnapshotEvent is sent as RoleEvent::ReprocessEvent
+    let event = role_rx.try_recv().expect("Should receive snapshot event");
+    match event {
+        RoleEvent::ReprocessEvent(boxed_event) => {
+            match *boxed_event {
+                RaftEvent::CreateSnapshotEvent => {
+                    // Success! Event is correctly wrapped
+                }
+                other => panic!("Expected CreateSnapshotEvent, got: {other:?}"),
+            }
+        }
+        other => panic!("Expected RoleEvent::ReprocessEvent, got: {other:?}"),
+    }
+
+    // VERIFY 3: No additional events queued
+    assert!(
+        role_rx.try_recv().is_err(),
+        "Should only send one snapshot event"
+    );
+}
+
+/// Test: Follower ApplyCompleted does NOT trigger snapshot when condition is not met
+///
+/// Purpose: Verify that followers respect snapshot conditions and don't create unnecessary snapshots.
+///
+/// Scenario:
+/// - Follower receives ApplyCompleted event
+/// - Snapshot is enabled in config
+/// - State machine handler indicates snapshot should NOT be taken (returns false)
+///
+/// Expected:
+/// - No CreateSnapshotEvent is sent
+/// - ApplyCompleted is processed normally without side effects
+#[tokio::test]
+async fn test_apply_completed_does_not_trigger_snapshot_when_condition_not_met() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Create a mock state machine handler that returns false for should_snapshot
+    let mut mock_sm_handler = crate::MockStateMachineHandler::new();
+    mock_sm_handler
+        .expect_should_snapshot()
+        .with(eq(NewCommitData {
+            new_commit_index: 50,
+            role: NodeRole::Follower as i32,
+            current_term: 1,
+        }))
+        .times(1)
+        .returning(|_| false);
+
+    // Build context with mock state machine handler before context creation
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine_handler(mock_sm_handler)
+        .build_context();
+
+    let hard_state = context.storage.raft_log.load_hard_state().expect("Failed to load hard state");
+    let mut follower =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), hard_state, Some(0));
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    // ACTION: Handle ApplyCompleted event
+    let apply_completed_event = RaftEvent::ApplyCompleted {
+        last_index: 50,
+        results: vec![],
+    };
+
+    let result = follower.handle_raft_event(apply_completed_event, &context, role_tx).await;
+
+    // VERIFY 1: Event handling succeeds
+    assert!(
+        result.is_ok(),
+        "ApplyCompleted should be handled successfully"
+    );
+
+    // VERIFY 2: No snapshot event is sent
+    assert!(
+        role_rx.try_recv().is_err(),
+        "Should not send snapshot event when condition is not met"
+    );
+}
+
+/// Test: Follower ApplyCompleted respects snapshot config disabled state
+///
+/// Purpose: Verify that snapshots are not triggered when snapshot feature is disabled.
+///
+/// Scenario:
+/// - Follower receives ApplyCompleted event
+/// - Snapshot is DISABLED in config (enable = false)
+/// - State machine handler would indicate snapshot (returns true)
+///
+/// Expected:
+/// - No CreateSnapshotEvent is sent (config takes precedence)
+/// - ApplyCompleted is processed without attempting snapshot
+#[tokio::test]
+async fn test_apply_completed_respects_snapshot_disabled_config() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Create a mock state machine handler
+    let mock_sm_handler = crate::MockStateMachineHandler::new();
+
+    // Build context with snapshot disabled and mock handler
+    let mut node_config = node_config("/tmp/test_follower_snapshot_disabled");
+    node_config.raft.snapshot.enable = false;
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine_handler(mock_sm_handler)
+        .with_node_config(node_config)
+        .build_context();
+
+    let hard_state = context.storage.raft_log.load_hard_state().expect("Failed to load hard state");
+    let mut follower =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), hard_state, Some(0));
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    // ACTION: Handle ApplyCompleted event
+    let apply_completed_event = RaftEvent::ApplyCompleted {
+        last_index: 100,
+        results: vec![],
+    };
+
+    let result = follower.handle_raft_event(apply_completed_event, &context, role_tx).await;
+
+    // VERIFY 1: Event handling succeeds
+    assert!(
+        result.is_ok(),
+        "ApplyCompleted should be handled successfully"
+    );
+
+    // VERIFY 2: No snapshot event is sent (snapshot disabled in config)
+    assert!(
+        role_rx.try_recv().is_err(),
+        "Should not send snapshot event when snapshot is disabled in config"
     );
 }

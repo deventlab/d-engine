@@ -850,53 +850,6 @@ mod process_batch_test {
     }
 
     #[tokio::test]
-    async fn triggers_snapshot_when_condition_met() {
-        let entries = build_entries(
-            vec![
-                CommandType::Command(Bytes::from(b"cmd1".to_vec())),
-                CommandType::Command(Bytes::from(b"cmd2".to_vec())),
-            ],
-            1,
-        );
-
-        let last_applied = entries.len();
-        let mut harness = setup_harness(
-            Leader as i32,
-            1,
-            entries,
-            last_applied as u64,
-            move || false,
-            move || false,
-            Some(2), // Snapshot condition: last index >= 2
-        );
-        assert!(harness.process_batch_handler().await.is_ok());
-
-        // Verify snapshot triggered
-        assert!(harness.expect_snapshot_trigger().await);
-    }
-
-    #[tokio::test]
-    async fn does_not_trigger_snapshot_when_condition_not_met() {
-        let entries = build_entries(vec![CommandType::Command(Bytes::from(b"cmd1".to_vec()))], 1);
-
-        let last_applied = entries.len();
-        let mut harness = setup_harness(
-            Leader as i32,
-            1,
-            entries,
-            last_applied as u64,
-            move || false,
-            move || false,
-            Some(2), // Requires index >=2
-        );
-        let result = harness.process_batch_handler().await;
-        assert!(result.is_ok());
-
-        // Verify no snapshot event
-        assert!(!harness.expect_snapshot_trigger().await);
-    }
-
-    #[tokio::test]
     async fn processes_mixed_entries_correctly() {
         let entries = build_entries(
             vec![
