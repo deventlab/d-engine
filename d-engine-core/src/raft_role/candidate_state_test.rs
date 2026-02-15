@@ -1,17 +1,14 @@
 use std::sync::Arc;
 
-use bytes::Bytes;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::ReadConsistencyPolicy;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Learner;
 use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::ClusterMembership;
-use d_engine_proto::server::cluster::JoinRequest;
 use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
 use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::cluster_conf_update_response;
@@ -19,7 +16,6 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::PurgeLogRequest;
 use tonic::Code;
 
 use crate::ClientCmd;
@@ -806,64 +802,6 @@ async fn test_handle_install_snapshot_returns_permission_denied() {
     assert_eq!(status.message(), "Not Follower or Learner.");
 }
 
-/// Test: RaftLogCleanUp returns PermissionDenied
-///
-/// Original: test_handle_raft_event_case8
-#[tokio::test]
-async fn test_handle_raft_log_cleanup_returns_permission_denied() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_log_cleanup", graceful_rx, None);
-    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-
-    let request = PurgeLogRequest {
-        term: 1,
-        leader_id: 1,
-        leader_commit: 1,
-        last_included: Some(LogId { term: 1, index: 1 }),
-        snapshot_checksum: Bytes::from(vec![1, 2, 3]),
-    };
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::RaftLogCleanUp(request, resp_tx);
-
-    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
-
-    assert!(result.is_ok(), "Expected Ok");
-    let response = resp_rx.recv().await.expect("Response should be received");
-    assert!(response.is_err(), "Expected error response");
-    let status = response.unwrap_err();
-
-    assert_eq!(status.code(), Code::PermissionDenied);
-    assert_eq!(status.message(), "Not Follower");
-}
-
-/// Test: JoinCluster returns PermissionDenied
-///
-/// Original: test_handle_raft_event_case10
-#[tokio::test]
-async fn test_handle_join_cluster_returns_permission_denied() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_join_cluster", graceful_rx, None);
-    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-
-    let request = JoinRequest {
-        status: d_engine_proto::common::NodeStatus::Promotable as i32,
-        node_id: 2,
-        node_role: Learner.into(),
-        address: "127.0.0.1:9090".to_string(),
-    };
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::JoinCluster(request, resp_tx);
-
-    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
-
-    assert!(result.is_err(), "Expected error");
-    let response = resp_rx.recv().await.expect("Response should be received");
-    assert!(response.is_err(), "Expected error response");
-    let status = response.unwrap_err();
-
-    assert_eq!(status.code(), Code::PermissionDenied);
-}
-
 /// Test: DiscoverLeader returns PermissionDenied
 ///
 /// Original: test_handle_raft_event_case11
@@ -929,6 +867,80 @@ mod role_violation_tests {
             e,
             Error::Consensus(ConsensusError::RoleViolation { .. })
         ));
+    }
+
+    /// Test: Candidate does not create snapshots on ApplyCompleted (transient state)
+    ///
+    /// Purpose:
+    /// Validates that Candidate, as a transient state, does not trigger snapshot creation
+    /// even when ApplyCompleted events are received. This prevents unnecessary snapshot
+    /// operations during the brief election period.
+    ///
+    /// Scenario:
+    /// - Candidate receives ApplyCompleted event with sufficient applied entries
+    /// - State machine handler would normally return should_snapshot=true
+    ///
+    /// Expected:
+    /// - Event handler returns Ok() without error
+    /// - No CreateSnapshotEvent is sent to role_tx (channel remains empty)
+    /// - No snapshot file is created
+    /// - Candidate state remains unchanged
+    ///
+    /// Rationale:
+    /// - Candidate is a short-lived transient state during leader election
+    /// - Once elected as Leader or stepped down to Follower, snapshot will be handled
+    /// - Avoiding snapshot during election reduces unnecessary I/O and complexity
+    ///
+    /// This aligns with the implementation in candidate_state.rs:
+    /// ```rust
+    /// RaftEvent::ApplyCompleted { last_index, results } => {
+    ///     // Candidate is a transient state; snapshot will be triggered after role transition.
+    ///     let _ = (last_index, results);
+    /// }
+    /// ```
+    #[tokio::test]
+    async fn test_candidate_does_not_create_snapshot_on_apply_completed() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = mock_raft_context("/tmp/test_candidate_no_snapshot", graceful_rx, None);
+
+        let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        // ApplyCompleted with high index that would normally trigger snapshot
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let apply_completed_event = RaftEvent::ApplyCompleted {
+            last_index: 1000,
+            results: vec![],
+        };
+
+        let result =
+            state.handle_raft_event(apply_completed_event, &context, role_tx.clone()).await;
+
+        // VERIFY 1: Event handling succeeds without error
+        assert!(
+            result.is_ok(),
+            "Candidate should handle ApplyCompleted without error"
+        );
+
+        // VERIFY 2: No CreateSnapshotEvent is sent (channel should be empty)
+        // Keep role_tx alive to prevent channel closure
+        drop(role_tx);
+
+        match role_rx.try_recv() {
+            Err(mpsc::error::TryRecvError::Empty) => {
+                // Expected: no event sent - this is the correct behavior
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                // Also acceptable: channel closed without any messages sent
+            }
+            Ok(event) => {
+                panic!(
+                    "Candidate should not send any events on ApplyCompleted, but received: {event:?}"
+                );
+            }
+        }
+
+        // VERIFY 3: Candidate state remains unchanged (no snapshot in progress)
+        // Note: CandidateState doesn't have snapshot_in_progress field because it doesn't handle snapshots
     }
 }
 

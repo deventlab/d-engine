@@ -17,8 +17,7 @@ use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
+
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use nanoid::nanoid;
@@ -87,7 +86,7 @@ use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::SystemError;
-use crate::Transport;
+
 use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::ROF;
@@ -281,13 +280,6 @@ pub struct LeaderState<T: TypeConfig> {
     /// Any log entry with index ≤ `last_purged_index` is guaranteed to be
     /// reflected in the latest snapshot.
     pub last_purged_index: Option<LogId>,
-
-    /// === Volatile State ===
-    /// Peer purge progress tracking for flow control
-    ///
-    /// Key: Peer node ID
-    /// Value: Last confirmed purge index from peer
-    pub peer_purge_progress: HashMap<u32, u64>,
 
     /// Record if there is on-going snapshot creation activity
     pub snapshot_in_progress: AtomicBool,
@@ -1149,28 +1141,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 .into());
             }
 
-            RaftEvent::RaftLogCleanUp(_purchase_log_request, sender) => {
-                sender
-                    .send(Err(Status::permission_denied(
-                        "Leader should not receive RaftLogCleanUp event.",
-                    )))
-                    .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
-
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Leader",
-                    required_role: "None Leader",
-                    context: format!(
-                        "Leader node {} receives RaftEvent::RaftLogCleanUp",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
-
             RaftEvent::CreateSnapshotEvent => {
                 // Prevent duplicate snapshot creation
                 if self.snapshot_in_progress.load(std::sync::atomic::Ordering::Acquire) {
@@ -1195,8 +1165,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             RaftEvent::SnapshotCreated(result) => {
                 self.snapshot_in_progress.store(false, Ordering::SeqCst);
-                let my_id = self.shared_state.node_id;
-                let my_term = self.current_term();
 
                 match result {
                     Err(e) => {
@@ -1205,7 +1173,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     Ok((
                         SnapshotMetadata {
                             last_included: last_included_option,
-                            checksum,
+                            checksum: _,
                         },
                         _final_path,
                     )) => {
@@ -1222,71 +1190,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             }
 
                             // ----------------------
-                            // Phase 2: Send Purge request (multi-node only)
+                            // Phase 2: Execute local purge
                             // ----------------------
-                            // Check replication_targets to support:
-                            // 1. True single-node (no peers) - skip this phase
-                            // 2. Single-voter + Learner - send to Learner
-                            // 3. Multi-voter cluster - send to all peers
-                            if !self.cluster_metadata.replication_targets.is_empty() {
-                                trace!("Phase 2: Send Purge request to replication targets");
-
-                                // Defensive check: verify cluster_metadata is initialized
-                                // This should never happen in production (init_cluster_metadata is called
-                                // automatically after leader election), but if it does, it indicates a
-                                // critical bug in state management
-                                if self.cluster_metadata.total_voters == 0 {
-                                    error!(
-                                        "BUG: cluster_metadata not initialized! Leader must call init_cluster_metadata() after election"
-                                    );
-                                    return Err(
-                                        MembershipError::ClusterMetadataNotInitialized.into()
-                                    );
-                                }
-
-                                let membership = ctx.membership();
-                                let transport = ctx.transport();
-                                match transport
-                                    .send_purge_requests(
-                                        PurgeLogRequest {
-                                            term: my_term,
-                                            leader_id: my_id,
-                                            last_included: Some(last_included),
-                                            snapshot_checksum: checksum.clone(),
-                                            leader_commit: self.commit_index(),
-                                        },
-                                        &self.node_config.retry,
-                                        membership,
-                                    )
-                                    .await
-                                {
-                                    Ok(result) => {
-                                        info!(?result, "receive PurgeLogResult");
-                                        // Process peer purge responses and check for higher term
-                                        // If a peer reports a higher term, this leader must step down
-                                        // immediately and skip local purge execution (Phase 3)
-                                        let should_step_down =
-                                            self.peer_purge_progress(result, &role_tx)?;
-                                        if should_step_down {
-                                            return Ok(()); // Early return, skip Phase 3
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!(?e, "RaftEvent::CreateSnapshotEvent");
-                                        return Err(e);
-                                    }
-                                }
-                            } else {
-                                debug!(
-                                    "Standalone node (leader={}): no replication targets, skip PurgeRequest",
-                                    my_id
-                                );
-                            }
-
-                            // ----------------------
-                            // Phase 3: Execute local purge (all nodes)
-                            // ----------------------
-                            trace!("Phase 3: Execute scheduled purge task");
+                            // Per Raft §7: Leader purges independently without peer coordination
+                            trace!("Phase 2: Execute scheduled purge task");
                             debug!(?last_included, "Execute scheduled purge task");
                             if let Some(scheduled) = self.scheduled_purge_upto {
                                 let purge_executor = ctx.purge_executor();
@@ -2012,51 +1919,6 @@ impl<T: TypeConfig> LeaderState<T> {
         self.scheduled_purge_upto = Some(received_last_included);
     }
 
-    /// Process peer purge responses and handle higher term detection.
-    ///
-    /// # Returns
-    /// - `Ok(true)` if a higher term was detected and leader should step down
-    /// - `Ok(false)` if processing completed normally
-    ///
-    /// # Higher Term Handling
-    /// According to Raft §5.1: "If a server receives a request with a stale term number,
-    /// it rejects the request." Conversely, if we receive a response with a higher term,
-    /// we must immediately:
-    /// 1. Update our term to the higher value
-    /// 2. Step down to Follower role
-    /// 3. Signal caller to abort ongoing operations (e.g., skip Phase 3 local purge)
-    ///
-    /// # Safety
-    /// This function sends `BecomeFollower` event which triggers role transition.
-    /// Caller MUST check return value and skip subsequent leader-only operations.
-    pub(crate) fn peer_purge_progress(
-        &mut self,
-        responses: Vec<Result<PurgeLogResponse>>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<bool> {
-        if responses.is_empty() {
-            return Ok(false);
-        }
-        for r in responses.iter().flatten() {
-            // Higher term detection: peer has advanced to a newer term
-            // This violates our leadership validity (Raft §5.1)
-            if r.term > self.current_term() {
-                self.update_current_term(r.term);
-                self.send_become_follower_event(None, role_tx)?;
-                return Ok(true); // Signal step-down, caller must abort leader operations
-            }
-
-            if let Some(last_purged) = r.last_purged {
-                self.peer_purge_progress
-                    .entry(r.node_id)
-                    .and_modify(|v| *v = last_purged.index)
-                    .or_insert(last_purged.index);
-            }
-        }
-
-        Ok(false)
-    }
-
     fn send_become_follower_event(
         &self,
         new_leader_id: Option<u32>,
@@ -2091,20 +1953,15 @@ impl<T: TypeConfig> LeaderState<T> {
     ///    - Enforces snapshot indices strictly increase (prevents rollback attacks)
     ///    - Maintains sequential purge ordering (FSM safety requirement)
     ///
-    /// 3. **Cluster-wide Progress Validation**   `peer_purge_progress.values().all(≥
-    ///    snapshot.index)`
-    ///    - Ensures ALL followers have confirmed ability to reach this snapshot
-    ///    - Prevents leadership changes from causing log inconsistencies
-    ///
-    /// 4. **Operation Atomicity**   `pending_purge.is_none()`
+    /// 3. **Operation Atomicity**   `pending_purge.is_none()`
     ///    - Ensures only one concurrent purge operation
     ///    - Critical for linearizable state machine semantics
     ///
     /// # Implementation Notes
-    /// - Leader must maintain `peer_purge_progress` through AppendEntries responses
+    /// - Per Raft §7: "Each server compacts its log independently"
+    /// - Leader purges immediately after snapshot without waiting for followers
+    /// - Lagging followers recover via InstallSnapshot RPC
     /// - Actual log discard should be deferred until storage confirms snapshot persistence
-    /// - Design differs from followers by requiring full cluster confirmation (Raft extension for
-    ///   enhanced durability)
     #[instrument(skip(self))]
     pub fn can_purge_logs(
         &self,
@@ -2112,15 +1969,20 @@ impl<T: TypeConfig> LeaderState<T> {
         last_included_in_snapshot: LogId,
     ) -> bool {
         let commit_index = self.commit_index();
-        debug!(?self
-                    .peer_purge_progress, ?commit_index, ?last_purge_index, ?last_included_in_snapshot, "can_purge_logs");
+        debug!(
+            ?commit_index,
+            ?last_purge_index,
+            ?last_included_in_snapshot,
+            "can_purge_logs"
+        );
+
         let monotonic_check = last_purge_index
             .map(|lid| lid.index < last_included_in_snapshot.index)
             .unwrap_or(true);
 
-        last_included_in_snapshot.index < commit_index
-            && monotonic_check
-            && self.peer_purge_progress.values().all(|&v| v >= last_included_in_snapshot.index)
+        // Per Raft §7: Leader purges independently after snapshot
+        // No peer coordination required - lagging followers get InstallSnapshot
+        last_included_in_snapshot.index < commit_index && monotonic_check
     }
 
     pub async fn handle_join_cluster(
@@ -2305,7 +2167,6 @@ impl<T: TypeConfig> LeaderState<T> {
             scheduled_purge_upto: None,
             last_purged_index: None, //TODO
             last_learner_check: Instant::now(),
-            peer_purge_progress: HashMap::new(),
             snapshot_in_progress: AtomicBool::new(false),
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
@@ -3232,7 +3093,6 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             last_purged_index: candidate.last_purged_index,
             last_learner_check: Instant::now(),
             snapshot_in_progress: AtomicBool::new(false),
-            peer_purge_progress: HashMap::new(),
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
             cluster_metadata: ClusterMetadata {

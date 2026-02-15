@@ -31,8 +31,6 @@ use d_engine_proto::server::election::raft_election_service_server::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
@@ -178,27 +176,6 @@ where
 
         let timeout_duration = Duration::from_millis(self.node_config.raft.snapshot_rpc_timeout_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "install_snapshot").await
-    }
-
-    async fn purge_log(
-        &self,
-        request: tonic::Request<PurgeLogRequest>,
-    ) -> std::result::Result<tonic::Response<PurgeLogResponse>, Status> {
-        if !self.is_rpc_ready() {
-            warn!("purge_log: Node-{} is not ready!", self.node_id);
-            return Err(Status::unavailable("Service is not ready"));
-        }
-
-        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-
-        self.event_tx
-            .send(RaftEvent::RaftLogCleanUp(request.into_inner(), resp_tx))
-            .await
-            .map_err(|_| Status::internal("Event channel closed"))?;
-
-        let timeout_duration =
-            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
-        handle_rpc_timeout(resp_rx, timeout_duration, "purge_log").await
     }
 }
 

@@ -16,8 +16,6 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -99,11 +97,6 @@ pub enum RaftEvent {
     // Request snapshot stream from Leader
     StreamSnapshot(Box<tonic::Streaming<SnapshotAck>>, StreamResponseSender),
 
-    RaftLogCleanUp(
-        PurgeLogRequest,
-        MaybeCloneOneshotSender<std::result::Result<PurgeLogResponse, Status>>,
-    ),
-
     JoinCluster(
         JoinRequest,
         MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
@@ -177,8 +170,6 @@ pub enum TestEvent {
 
     StreamSnapshot,
 
-    RaftLogCleanUp(PurgeLogRequest),
-
     JoinCluster(JoinRequest),
 
     DiscoverLeader(LeaderDiscoveryRequest),
@@ -218,7 +209,6 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::AppendEntries(req, _) => TestEvent::AppendEntries(req.clone()),
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
         RaftEvent::StreamSnapshot(_, _) => TestEvent::StreamSnapshot,
-        RaftEvent::RaftLogCleanUp(req, _) => TestEvent::RaftLogCleanUp(req.clone()),
         RaftEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
         RaftEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,

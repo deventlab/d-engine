@@ -394,17 +394,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 .into());
             }
 
-            RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
-                debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
-
-                warn!(%self.shared_state.node_id, "Candidate should not receive RaftEvent::RaftLogCleanUp request from Leader");
-                sender.send(Err(Status::permission_denied("Not Follower"))).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
-            }
-
             RaftEvent::CreateSnapshotEvent => {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Candidate",

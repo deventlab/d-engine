@@ -17,8 +17,6 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
@@ -192,29 +190,6 @@ where
     ///
     /// # Protocol
     /// - Implements log truncation from Raft §7
-    /// - Leader-exclusive operation
-    /// - Requires valid snapshot checksum
-    ///
-    /// # Parameters
-    /// - `req`: Snapshot metadata with truncation index
-    /// - `retry`: Purge-specific retry configuration
-    /// - `membership`: Cluster membership for channel resolution
-    ///
-    /// # Errors
-    /// - `NetworkError::EmptyPeerList` for empty peer list
-    /// - `NetworkError::TaskFailed` for background execution errors
-    ///
-    /// # Guarantees
-    /// - At-least-once delivery
-    /// - Automatic progress tracking
-    /// - Crash-safe persistence requirements
-    async fn send_purge_requests(
-        &self,
-        req: PurgeLogRequest,
-        retry: &RetryPolicies,
-        membership: std::sync::Arc<crate::alias::MOF<T>>,
-    ) -> Result<Vec<Result<PurgeLogResponse>>>;
-
     /// Initiates cluster join process for a learner node
     ///
     /// # Protocol

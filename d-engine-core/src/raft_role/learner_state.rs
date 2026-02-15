@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use d_engine_proto::common::LogId;
@@ -36,6 +37,7 @@ use crate::ConsensusError;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
+use crate::PurgeExecutor;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
@@ -63,6 +65,27 @@ pub struct LearnerState<T: TypeConfig> {
     // -- Core State --
     /// Shared cluster state with concurrency control
     pub shared_state: SharedState,
+
+    /// === Persistent State (MUST be on disk) ===
+    /// The last log position that has been **physically removed** from stable storage.
+    ///
+    /// This value is atomically updated when:
+    /// 1. A new snapshot is persisted (marking logs up to `last_included_index` as purgeable)
+    /// 2. The background purge task completes successfully
+    ///
+    /// Raft safety invariant:
+    /// Any log entry with index ≤ `last_purged_index` is guaranteed to be
+    /// reflected in the latest snapshot.
+    pub last_purged_index: Option<LogId>,
+
+    // -- Snapshot Management --
+    /// Prevents concurrent snapshot creation
+    ///
+    /// Per industry best practices :
+    /// - Protects against concurrent snapshot requests
+    /// - Ensures snapshot consistency at Raft layer
+    /// - Reduces unnecessary tokio::spawn overhead
+    pub(crate) snapshot_in_progress: AtomicBool,
 
     // -- Cluster Configuration --
     /// Cached Raft node configuration (immutable shared reference)
@@ -308,36 +331,61 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 }
             }
 
-            RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
-                debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
-
-                warn!(%self.shared_state.node_id, "Learner should not receive RaftEvent::RaftLogCleanUp request from Leader");
-                sender.send(Err(Status::permission_denied("Not Follower"))).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
-            }
-
             RaftEvent::CreateSnapshotEvent => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Learner",
-                    required_role: "Leader",
-                    context: format!("Learner node {} attempted to create snapshot.", ctx.node_id),
+                // Prevent duplicate snapshot creation
+                if self.snapshot_in_progress.load(Ordering::Acquire) {
+                    info!(
+                        "Learner snapshot creation already in progress. Skipping duplicate request."
+                    );
+                    return Ok(());
                 }
-                .into());
+
+                self.snapshot_in_progress.store(true, Ordering::Release);
+                let state_machine_handler = ctx.state_machine_handler().clone();
+
+                // Use spawn to perform snapshot creation in the background
+                tokio::spawn(async move {
+                    let result = state_machine_handler.create_snapshot().await;
+                    info!(
+                        "Learner SnapshotCreated event will be processed in another event thread"
+                    );
+                    if let Err(e) = super::role_state::send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::SnapshotCreated(result),
+                    ) {
+                        error!("Learner failed to send snapshot creation result: {}", e);
+                    }
+                });
             }
 
-            RaftEvent::SnapshotCreated(_result) => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Learner",
-                    required_role: "Leader",
-                    context: format!(
-                        "Learner node {} attempted to handle created snapshot.",
-                        ctx.node_id
-                    ),
+            RaftEvent::SnapshotCreated(result) => {
+                // Reset snapshot_in_progress flag
+                self.snapshot_in_progress.store(false, Ordering::SeqCst);
+
+                // Per Raft §7: Learner independently purges logs after snapshot generation
+                match result {
+                    Ok((metadata, _path)) => {
+                        if let Some(last_included) = metadata.last_included {
+                            info!(?last_included, "Learner snapshot created, purging logs");
+
+                            // Learner independently decides to purge after snapshot
+                            if self.can_purge_logs(self.last_purged_index, last_included) {
+                                match ctx.purge_executor().execute_purge(last_included).await {
+                                    Ok(_) => {
+                                        self.last_purged_index = Some(last_included);
+                                        info!(?last_included, "Learner logs purged successfully");
+                                    }
+                                    Err(e) => {
+                                        error!(?e, "Failed to purge logs after snapshot");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!(?e, "Learner snapshot creation failed");
+                    }
                 }
-                .into());
             }
 
             RaftEvent::LogPurgeCompleted(_purged_id) => {
@@ -610,9 +658,32 @@ impl<T: TypeConfig> LearnerState<T> {
     ) -> Self {
         LearnerState {
             shared_state: SharedState::new(node_id, None, None),
+            last_purged_index: None,
+            snapshot_in_progress: AtomicBool::new(false),
             node_config,
             _marker: PhantomData,
         }
+    }
+
+    /// Determines if logs can be safely purged up to the given index
+    ///
+    /// Per Raft §7: Learner independently purges logs after snapshot generation
+    ///
+    /// # Safety Checks
+    /// 1. Committed Entry Guarantee: last_included < commit_index
+    /// 2. Monotonic Purge: last_purged_index < last_included
+    pub fn can_purge_logs(
+        &self,
+        last_purge_index: Option<LogId>,
+        last_included_in_request: LogId,
+    ) -> bool {
+        let commit_check = last_included_in_request.index < self.commit_index();
+
+        let monotonic_check = last_purge_index
+            .map(|lid| lid.index < last_included_in_request.index)
+            .unwrap_or(true);
+
+        commit_check && monotonic_check
     }
 
     pub async fn broadcast_discovery(
@@ -717,8 +788,8 @@ impl<T: TypeConfig> From<&FollowerState<T>> for LearnerState<T> {
         Self {
             shared_state: follower_state.shared_state.clone(),
             node_config: follower_state.node_config.clone(),
-            // last_purged_index: follower_state.last_purged_index,
-            // scheduled_purge_upto: follower_state.scheduled_purge_upto,
+            snapshot_in_progress: AtomicBool::new(false),
+            last_purged_index: None, //TODO
             _marker: PhantomData,
         }
     }
@@ -728,8 +799,8 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LearnerState<T> {
         Self {
             shared_state: candidate_state.shared_state.clone(),
             node_config: candidate_state.node_config.clone(),
-            // last_purged_index: candidate_state.last_purged_index,
-            // scheduled_purge_upto: None,
+            snapshot_in_progress: AtomicBool::new(false),
+            last_purged_index: candidate_state.last_purged_index,
             _marker: PhantomData,
         }
     }
