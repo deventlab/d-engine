@@ -5,13 +5,14 @@
 //!
 //! Uses embedded mode with EmbeddedEngine for production-ready testing.
 
+use crate::common::{create_node_config, get_available_ports, node_config};
+use d_engine_server::EmbeddedEngine;
+use d_engine_server::RocksDBStateMachine;
+use d_engine_server::RocksDBStorageEngine;
 use std::sync::Arc;
 use std::time::Duration;
-
-use d_engine_server::EmbeddedEngine;
 use tempfile::TempDir;
 use tokio::time::Instant;
-
 use tracing_test::traced_test;
 
 /// Helper to create a test EmbeddedEngine
@@ -293,132 +294,53 @@ async fn test_linearizable_read_sequential_writes() {
 #[cfg(feature = "rocksdb")]
 async fn test_read_index_fixed_with_concurrent_writes_multi_node()
 -> Result<(), Box<dyn std::error::Error>> {
-    use d_engine_server::EmbeddedEngine;
-    use d_engine_server::RocksDBStateMachine;
-    use d_engine_server::RocksDBStorageEngine;
-
     let temp_dir = tempfile::tempdir()?;
-    let db_root = temp_dir.path().join("db");
+    let db_root_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
 
-    let ports = [
-        19091
-            + (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() % 50)
-                as u16,
-        19191
-            + (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() % 50)
-                as u16,
-        19291
-            + (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() % 50)
-                as u16,
-    ];
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
 
-    // Create cluster config TOML
-    let cluster_config = format!(
-        r#"
-initial_cluster = [
-    {{ id = 1, address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 2, address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 3, address = '127.0.0.1:{}', role = 2, status = 2 }}
-]
-db_root_dir = '{}'
-log_dir = '{}'
+    let mut engines = Vec::new();
 
-[raft]
-general_raft_timeout_duration_in_ms = 3000
-"#,
-        ports[0],
-        ports[1],
-        ports[2],
-        db_root.display(),
-        log_dir.display()
-    );
+    for i in 0..3 {
+        let node_id = (i + 1) as u64;
+        let base_config_str = create_node_config(
+            node_id,
+            ports[i],
+            ports,
+            db_root_dir.to_str().unwrap(),
+            log_dir.to_str().unwrap(),
+        )
+        .await;
+        let config_str = format!(
+            "{base_config_str}\n[raft.read_consistency]\nstate_machine_sync_timeout_ms = 5000\n",
+        );
+        let config = node_config(&config_str);
 
-    // Create TempDir for config files
-    let config_temp_dir = tempfile::tempdir()?;
+        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let storage_path = node_db_root.join("storage");
+        let sm_path = node_db_root.join("state_machine");
 
-    // Node 1 config
-    let node1_config = format!(
-        r#"
-[cluster]
-node_id = 1
-listen_address = '127.0.0.1:{}'
-{}
-"#,
-        ports[0], cluster_config
-    );
-    let node1_config_path = config_temp_dir.path().join("linear_read_n1.toml");
-    tokio::fs::write(&node1_config_path, &node1_config).await?;
+        tokio::fs::create_dir_all(&storage_path).await?;
+        tokio::fs::create_dir_all(&sm_path).await?;
 
-    // Node 2 config
-    let node2_config = format!(
-        r#"
-[cluster]
-node_id = 2
-listen_address = '127.0.0.1:{}'
-{}
-"#,
-        ports[1], cluster_config
-    );
-    let node2_config_path = config_temp_dir.path().join("linear_read_n2.toml");
-    tokio::fs::write(&node2_config_path, &node2_config).await?;
+        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
+        let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
 
-    // Node 3 config
-    let node3_config = format!(
-        r#"
-[cluster]
-node_id = 3
-listen_address = '127.0.0.1:{}'
-{}
-"#,
-        ports[2], cluster_config
-    );
-    let node3_config_path = config_temp_dir.path().join("linear_read_n3.toml");
-    tokio::fs::write(&node3_config_path, &node3_config).await?;
+        let config_path = format!("/tmp/d-engine-test-linear-read-node{node_id}.toml");
+        tokio::fs::write(&config_path, &config_str).await?;
 
-    // Start nodes
-    tokio::fs::create_dir_all(db_root.join("node1")).await?;
-    let storage1 = Arc::new(RocksDBStorageEngine::new(db_root.join("node1/storage"))?);
-    let sm1 = Arc::new(RocksDBStateMachine::new(
-        db_root.join("node1/state_machine"),
-    )?);
-    let engine1 =
-        EmbeddedEngine::start_custom(storage1, sm1, Some(node1_config_path.to_str().unwrap()))
-            .await?;
+        let engine =
+            EmbeddedEngine::start_custom(storage, state_machine, Some(&config_path)).await?;
+        engines.push(engine);
+    }
 
-    tokio::fs::create_dir_all(db_root.join("node2")).await?;
-    let storage2 = Arc::new(RocksDBStorageEngine::new(db_root.join("node2/storage"))?);
-    let sm2 = Arc::new(RocksDBStateMachine::new(
-        db_root.join("node2/state_machine"),
-    )?);
-    let engine2 =
-        EmbeddedEngine::start_custom(storage2, sm2, Some(node2_config_path.to_str().unwrap()))
-            .await?;
-
-    tokio::fs::create_dir_all(db_root.join("node3")).await?;
-    let storage3 = Arc::new(RocksDBStorageEngine::new(db_root.join("node3/storage"))?);
-    let sm3 = Arc::new(RocksDBStateMachine::new(
-        db_root.join("node3/state_machine"),
-    )?);
-    let engine3 =
-        EmbeddedEngine::start_custom(storage3, sm3, Some(node3_config_path.to_str().unwrap()))
-            .await?;
-
-    // Wait for cluster ready
-    engine1.wait_ready(Duration::from_secs(10)).await?;
-    engine2.wait_ready(Duration::from_secs(10)).await?;
-    engine3.wait_ready(Duration::from_secs(10)).await?;
-
-    // Find leader
-    let leader_engine = if engine1.is_leader() {
-        &engine1
-    } else if engine2.is_leader() {
-        &engine2
-    } else {
-        &engine3
-    };
-
-    let leader_client = leader_engine.client();
+    // Wait for leader election
+    let leader_info = engines[0].wait_ready(Duration::from_secs(10)).await?;
+    let leader_idx = (leader_info.leader_id - 1) as usize;
+    let leader_client = engines[leader_idx].client();
 
     // Given: Write initial value
     leader_client.put(b"counter", b"v0").await?;
@@ -440,15 +362,16 @@ listen_address = '127.0.0.1:{}'
 
     // Then: Read should succeed despite concurrent writes
     let result = read_task.await?;
+
     assert!(
         result.is_ok(),
         "Linearizable read should succeed with concurrent writes: {result:?}"
     );
 
     // Cleanup
-    engine1.stop().await?;
-    engine2.stop().await?;
-    engine3.stop().await?;
+    for engine in engines {
+        engine.stop().await?;
+    }
 
     println!("✅ Multi-node read_index optimization verified");
     Ok(())

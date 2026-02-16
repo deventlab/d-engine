@@ -1,14 +1,3 @@
-use std::io::Write;
-use std::os::fd::AsRawFd;
-
-use nix::libc::LOCK_EX;
-use nix::libc::flock;
-use sha2::Digest;
-use sha2::Sha256;
-use tempfile::NamedTempFile;
-use tempfile::tempdir;
-use tracing_test::traced_test;
-
 use crate::Error;
 use crate::FileError;
 use crate::StorageError;
@@ -17,6 +6,17 @@ use crate::file_io;
 use crate::file_io::convert_vec_checksum;
 use crate::file_io::create_parent_dir_if_not_exist;
 use crate::file_io::delete_file;
+use nix::libc::LOCK_EX;
+use nix::libc::flock;
+use sha2::Digest;
+use sha2::Sha256;
+use std::io::Write;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
+use tempfile::NamedTempFile;
+use tempfile::tempdir;
+use tokio::fs;
+use tracing_test::traced_test;
 
 /// Passed: "/tmp/files/data.txt"
 /// Expected: "/tmp/files" created
@@ -186,10 +186,6 @@ async fn test_delete_busy_file() {
 #[tokio::test]
 #[cfg(unix)] // Unix-like systems have clearer permission semantics
 async fn test_delete_permission_denied() {
-    use std::os::unix::fs::PermissionsExt;
-
-    use tokio::fs;
-
     // Create temp file
     let temp_dir = tempfile::tempdir().unwrap();
     let temp_path = temp_dir.path().join("test_delete_permission_denied");

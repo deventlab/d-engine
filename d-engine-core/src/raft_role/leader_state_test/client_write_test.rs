@@ -3,17 +3,9 @@
 //! This module tests the `process_raft_request` method and related client write
 //! operations in the leader state.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-
-use d_engine_proto::client::WriteCommand;
-use nanoid::nanoid;
-use tokio::sync::{mpsc, watch};
-
 use crate::AppendResults;
 use crate::ApplyResult;
+use crate::ClientCmd;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::PeerUpdate;
@@ -21,13 +13,28 @@ use crate::RaftEvent;
 use crate::RaftRequestWithSignal;
 use crate::client_command_to_entry_payloads;
 use crate::event::{NewCommitData, RoleEvent};
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_context::RaftContext;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
-use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
+use crate::test_utils::MockBuilder;
+use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::node_config;
 use d_engine_proto::client::ClientWriteRequest;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::common::AddNode;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::common::membership_change::Change;
+use d_engine_proto::error::ErrorCode;
+use nanoid::nanoid;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use tokio::sync::{mpsc, watch};
+use tokio::time::Instant;
 
 // ============================================================================
 // Test Helper Structures and Functions
@@ -44,7 +51,6 @@ async fn assert_client_response(
         std::result::Result<d_engine_proto::client::ClientResponse, tonic::Status>,
     >
 ) {
-    use d_engine_proto::error::ErrorCode;
     match rx.recv().await {
         Ok(Ok(response)) => assert_eq!(
             ErrorCode::try_from(response.error).unwrap(),
@@ -482,12 +488,6 @@ async fn test_process_raft_request_batching_enabled() {
 /// New: recv() returns immediately, flush happens instantly
 #[tokio::test]
 async fn test_drain_single_write_no_delay() {
-    use crate::ClientCmd;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use d_engine_proto::client::ClientWriteRequest;
-    use tokio::time::Instant;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_drain_single_write");
@@ -587,11 +587,6 @@ async fn test_drain_single_write_no_delay() {
 /// without manual threshold checks
 #[tokio::test]
 async fn test_drain_multiple_writes_natural_batch() {
-    use crate::ClientCmd;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use d_engine_proto::client::ClientWriteRequest;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_drain_multiple_writes");
@@ -702,10 +697,6 @@ async fn test_drain_multiple_writes_natural_batch() {
 /// and commit processing.
 #[tokio::test]
 async fn test_drain_max_batch_size_limit() {
-    use crate::ClientCmd;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use d_engine_proto::client::ClientWriteRequest;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_drain_max_batch");
@@ -772,11 +763,6 @@ async fn test_drain_max_batch_size_limit() {
 /// This reduces network overhead by ~3x and improves throughput significantly.
 #[tokio::test]
 async fn test_write_batch_single_replication() {
-    use crate::ClientCmd;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use d_engine_proto::client::ClientWriteRequest;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_batch_single_replication");
@@ -905,13 +891,6 @@ async fn test_write_batch_single_replication() {
 /// - recv() returns Ok(write_success)
 #[tokio::test]
 async fn test_client_write_deferred_until_sm_apply() {
-    use crate::ApplyResult;
-    use crate::ClientCmd;
-    use crate::RaftEvent;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::raft_role::role_state::RaftRoleState;
-    use d_engine_proto::client::ClientWriteRequest;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let mut node_config = node_config("/tmp/test_client_write_deferred_until_sm_apply");
     node_config.raft.replication.max_batch_size = 100;
@@ -1000,8 +979,6 @@ async fn test_client_write_deferred_until_sm_apply() {
 /// - verify_internal_quorum returns Ok(Success) immediately (no hang)
 #[tokio::test]
 async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
-    use d_engine_proto::common::EntryPayload;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let mut node_config = node_config("/tmp/test_noop_quorum_check_responds_immediately");
     node_config.raft.replication.max_batch_size = 100;
@@ -1084,11 +1061,6 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
 /// - verify_internal_quorum returns Ok(Success) immediately (no hang)
 #[tokio::test]
 async fn test_config_change_quorum_check_responds_immediately_without_sm_apply() {
-    use d_engine_proto::common::AddNode;
-    use d_engine_proto::common::EntryPayload;
-    use d_engine_proto::common::NodeStatus;
-    use d_engine_proto::common::membership_change::Change;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let mut node_config = node_config("/tmp/test_config_change_quorum_check_responds_immediately");
     node_config.raft.replication.max_batch_size = 100;

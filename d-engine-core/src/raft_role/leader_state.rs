@@ -21,6 +21,7 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use nanoid::nanoid;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -365,6 +366,12 @@ pub struct LeaderState<T: TypeConfig> {
     /// Entries are removed after response is sent
     pub(super) pending_requests:
         HashMap<u64, MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>>,
+
+    /// Pending linearizable reads waiting for SM to apply up to read_index.
+    /// Key: read_index (SM must reach this index before reads can be served)
+    /// Value: batch of (request, sender) pairs registered at that read_index
+    /// Drained on role change; processed in ApplyCompleted handler.
+    pub(super) pending_reads: BTreeMap<u64, VecDeque<LinearizableReadRequest>>,
 
     // -- Metrics (optional, encapsulated) --
     /// Backpressure metrics context (None when metrics disabled)
@@ -784,6 +791,20 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             );
             for (_, sender) in self.eventual_read_queue.drain(..) {
                 let _ = sender.send(Err(tonic::Status::unavailable("Leader stepped down")));
+            }
+        }
+
+        // Drain pending linearizable reads awaiting ApplyCompleted
+        if !self.pending_reads.is_empty() {
+            let count: usize = self.pending_reads.values().map(|b| b.len()).sum();
+            warn!(
+                "Read batch: draining {} pending linearizable reads due to role change",
+                count
+            );
+            for (_, batch) in std::mem::take(&mut self.pending_reads) {
+                for (_, sender) in batch {
+                    let _ = sender.send(Err(tonic::Status::unavailable("Leader stepped down")));
+                }
             }
         }
 
@@ -1401,6 +1422,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             self.node_id(),
                             result.index
                         );
+                    }
+                }
+
+                // Serve pending linearizable reads whose read_index <= last_index.
+                while let Some((&key, _)) = self.pending_reads.range(..=last_index).next() {
+                    if let Some(batch) = self.pending_reads.remove(&key) {
+                        self.execute_pending_reads(batch, ctx);
                     }
                 }
 
@@ -2181,6 +2209,7 @@ impl<T: TypeConfig> LeaderState<T> {
             lease_read_queue: VecDeque::new(),
             eventual_read_queue: VecDeque::new(),
             pending_requests: HashMap::new(),
+            pending_reads: BTreeMap::new(),
             backpressure_metrics,
             _marker: PhantomData,
         }
@@ -2441,6 +2470,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 ctx,
             )
             .await;
+
         debug!(?result, "execute_and_process_raft_rpc");
 
         match result {
@@ -2494,7 +2524,14 @@ impl<T: TypeConfig> LeaderState<T> {
 
                 if let Some(read_batch) = read_batch {
                     let read_index = self.calculate_read_index();
-                    self.handle_linear_read_success(read_batch, read_index, ctx, role_tx).await?;
+                    let last_applied = ctx.state_machine().last_applied().index;
+                    if last_applied >= read_index {
+                        // Fast path: SM already caught up, serve immediately
+                        self.execute_pending_reads(read_batch, ctx);
+                    } else {
+                        // Slow path: register for ApplyCompleted callback
+                        self.pending_reads.entry(read_index).or_default().extend(read_batch);
+                    }
                 }
 
                 Ok(())
@@ -2834,65 +2871,6 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    /// Read-only linearizable batch processing (test-only).
-    ///
-    /// Uses independent quorum verification via verify_leadership_and_refresh_lease,
-    /// distinct from the unified write+read path. Preserves original test semantics.
-    #[cfg(test)]
-    pub(super) async fn process_linearizable_read_batch(
-        &mut self,
-        ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        let batch = self.linearizable_read_buffer.take();
-        if batch.is_empty() {
-            return Ok(());
-        }
-
-        let batch_size = batch.len();
-        debug!("Read batch: flushing {} requests", batch_size);
-
-        if let Err(e) = self.verify_leadership_and_refresh_lease(ctx, role_tx).await {
-            error!(
-                "Read batch: verification failed - draining {} requests: {}",
-                batch_size, e
-            );
-            let status = tonic::Status::failed_precondition(format!(
-                "Leadership verification failed: {e:?}"
-            ));
-            for (_, sender) in batch {
-                let _ = sender.send(Err(status.clone()));
-            }
-            return Ok(());
-        }
-
-        let read_index = self.calculate_read_index();
-        let last_applied = ctx.state_machine().last_applied().index;
-        if last_applied < read_index {
-            ctx.handlers.state_machine_handler.update_pending(read_index);
-            let timeout_ms = self.node_config.raft.read_consistency.state_machine_sync_timeout_ms;
-            ctx.handlers
-                .state_machine_handler
-                .wait_applied(read_index, Duration::from_millis(timeout_ms))
-                .await
-                .map_err(|e| {
-                    error!("Read batch: wait_applied failed: {}", e);
-                    e
-                })?;
-        }
-
-        for (req, sender) in batch {
-            let results = ctx
-                .handlers
-                .state_machine_handler
-                .read_from_state_machine(req.keys)
-                .unwrap_or_default();
-            let _ = sender.send(Ok(ClientResponse::read_results(results)));
-        }
-
-        Ok(())
-    }
-
     /// Unified write + linearizable read: single RPC for both (2*RTT → 1*RTT).
     ///
     /// Safety: write quorum verification also confirms leadership for reads (Raft §6.4).
@@ -2928,32 +2906,13 @@ impl<T: TypeConfig> LeaderState<T> {
             .await
     }
 
-    /// Handle linearizable read success after quorum achieved
-    /// Waits for state machine to apply up to read_index, then executes all reads
-    async fn handle_linear_read_success(
-        &mut self,
+    /// Execute a batch of reads against the state machine and respond to clients.
+    /// Caller must ensure SM has already applied up to the required read_index.
+    fn execute_pending_reads(
+        &self,
         read_batch: VecDeque<LinearizableReadRequest>,
-        read_index: u64,
         ctx: &RaftContext<T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        // Wait for state machine to catch up to read_index
-        let last_applied = ctx.state_machine().last_applied().index;
-
-        if last_applied < read_index {
-            ctx.handlers.state_machine_handler.update_pending(read_index);
-            let timeout_ms = self.node_config.raft.read_consistency.state_machine_sync_timeout_ms;
-            ctx.handlers
-                .state_machine_handler
-                .wait_applied(read_index, Duration::from_millis(timeout_ms))
-                .await
-                .map_err(|e| {
-                    error!("Linear read: wait_applied failed: {}", e);
-                    e
-                })?;
-        }
-
-        // Execute all reads and respond
+    ) {
         for (req, sender) in read_batch {
             let results = ctx
                 .handlers
@@ -2962,8 +2921,6 @@ impl<T: TypeConfig> LeaderState<T> {
                 .unwrap_or_default();
             let _ = sender.send(Ok(ClientResponse::read_results(results)));
         }
-
-        Ok(())
     }
 
     #[cfg(test)]
@@ -3114,6 +3071,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             lease_read_queue: VecDeque::new(),
             eventual_read_queue: VecDeque::new(),
             pending_requests: HashMap::new(),
+            pending_reads: BTreeMap::new(),
             backpressure_metrics,
             _marker: PhantomData,
         }

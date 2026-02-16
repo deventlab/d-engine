@@ -2,6 +2,7 @@ use bytes::Bytes;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ReadResults;
+use d_engine_proto::client::WriteResult;
 use d_engine_proto::client::client_response::SuccessResult;
 use d_engine_proto::error::ErrorCode;
 
@@ -30,7 +31,6 @@ fn test_into_read_results_success() {
 
 #[test]
 fn test_into_read_results_wrong_variant_succeeded() {
-    use d_engine_proto::client::WriteResult;
     let response = ClientResponse {
         error: ErrorCode::Success as i32,
         metadata: None,

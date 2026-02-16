@@ -154,6 +154,7 @@ impl TestHarness {
             event_tx: self.event_tx.clone(),
             sm_apply_tx,
             shutdown_signal: self.shutdown_rx.take().unwrap(),
+            max_batch_size: 10,
         };
 
         let mut handler = DefaultCommitHandler::<MockTypeConfig>::new(
@@ -188,6 +189,7 @@ impl TestHarness {
             event_tx: self.event_tx.clone(),
             sm_apply_tx,
             shutdown_signal: self.shutdown_rx.take().unwrap(),
+            max_batch_size: 10,
         };
 
         let handler = DefaultCommitHandler::<MockTypeConfig>::new(
