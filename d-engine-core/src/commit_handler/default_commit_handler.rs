@@ -31,6 +31,7 @@ pub struct CommitHandlerDependencies<T: TypeConfig> {
     pub event_tx: mpsc::Sender<RaftEvent>,
     pub sm_apply_tx: mpsc::UnboundedSender<Vec<Entry>>,
     pub shutdown_signal: watch::Receiver<()>,
+    pub max_batch_size: usize,
 }
 
 #[derive(Debug)]
@@ -51,6 +52,9 @@ where
 
     // Shutdown signal
     shutdown_signal: watch::Receiver<()>,
+
+    // Batch size for draining commit notifications
+    max_batch_size: usize,
 }
 
 #[async_trait]
@@ -82,11 +86,25 @@ where
                         self.my_current_term = new_commit_data.current_term;
                         self.my_role = new_commit_data.role;
 
-
-                            trace!("_ = self.check_batch_size");
-                            if let Err(e) = self.process_batch().await {
-                                error!("Failed to process batch: {}", e);
+                        // Drain all pending commit notifications (max_batch_size limit)
+                        // This batches multiple committed entries into a single process_batch() call
+                        let mut count = 1;
+                        while count < self.max_batch_size {
+                            match new_commit_rx.try_recv() {
+                                Ok(next_data) => {
+                                    self.state_machine_handler.update_pending(next_data.new_commit_index);
+                                    self.my_current_term = next_data.current_term;
+                                    self.my_role = next_data.role;
+                                    count += 1;
+                                }
+                                Err(_) => break,
                             }
+                        }
+
+                        trace!("[Node-{}] Processing batch with {} commit notifications", self.my_id, count);
+                        if let Err(e) = self.process_batch().await {
+                            error!("Failed to process batch: {}", e);
+                        }
                     }
             }
         }
@@ -115,6 +133,7 @@ where
             event_tx: deps.event_tx,
             sm_apply_tx: deps.sm_apply_tx,
             shutdown_signal: deps.shutdown_signal,
+            max_batch_size: deps.max_batch_size,
         }
     }
 
@@ -128,7 +147,6 @@ where
     /// Consider this sequence in a single batch: [ConfigRemove(A), ConfigAdd(B), EntryNormal(X)]
     pub(crate) async fn process_batch(&self) -> Result<()> {
         let _timer = ScopedTimer::new("CommitHandler::process_batch");
-
         let pending_range = self.state_machine_handler.pending_range();
         trace!("[Node-{}] Pending range: {:?}", self.my_id, pending_range);
 

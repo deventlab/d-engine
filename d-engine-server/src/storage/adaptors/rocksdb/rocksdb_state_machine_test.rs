@@ -1,10 +1,15 @@
+use super::RocksDBStateMachine;
 use crate::{Error, StateMachine};
+use bytes::Bytes;
 use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::{Insert, Operation};
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::entry_payload::Payload;
+use prost::Message;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tonic::async_trait;
-
-use super::RocksDBStateMachine;
 
 struct RocksDBStateMachineBuilder {
     temp_dir: TempDir,
@@ -63,14 +68,6 @@ async fn test_rocksdb_state_machine_performance() {
 /// 6. Verify read succeeds
 #[tokio::test]
 async fn test_get_rejected_when_not_serving() {
-    use crate::StateMachine;
-    use bytes::Bytes;
-    use d_engine_proto::client::WriteCommand;
-    use d_engine_proto::client::write_command::{Insert, Operation};
-    use d_engine_proto::common::Entry;
-    use d_engine_proto::common::entry_payload::Payload;
-    use prost::Message;
-
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join("test_not_serving");
     let state_machine = RocksDBStateMachine::new(db_path).expect("Failed to create state machine");

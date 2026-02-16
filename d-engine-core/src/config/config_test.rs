@@ -1,7 +1,7 @@
-use serial_test::serial;
-use temp_env::with_vars;
-
 use super::*;
+use serial_test::serial;
+use std::io::Write;
+use temp_env::with_vars;
 
 fn cleanup_all_raft_env_vars() {
     for (key, _) in std::env::vars() {
@@ -386,8 +386,6 @@ fn test_invalid_config_fails_on_validate() {
 
 #[test]
 fn test_override_then_validate_succeeds() {
-    use std::io::Write;
-
     let temp_dir = tempfile::tempdir().unwrap();
     let config_path = temp_dir.path().join("valid.toml");
     let mut file = std::fs::File::create(&config_path).unwrap();
@@ -426,8 +424,6 @@ status = 2
 #[test]
 #[serial]
 fn test_config_path_env_loads_and_validates() {
-    use std::io::Write;
-
     cleanup_all_raft_env_vars();
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -470,8 +466,6 @@ status = 2
 #[test]
 #[serial]
 fn test_config_path_env_with_env_override() {
-    use std::io::Write;
-
     cleanup_all_raft_env_vars();
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -522,8 +516,6 @@ status = 2
 
 #[test]
 fn test_explicit_override_config_file() {
-    use std::io::Write;
-
     cleanup_all_raft_env_vars();
 
     let temp_dir = tempfile::tempdir().unwrap();

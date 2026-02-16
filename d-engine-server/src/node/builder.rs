@@ -445,6 +445,7 @@ where
             event_tx: event_tx_clone,
             sm_apply_tx,
             shutdown_signal,
+            max_batch_size: raft_core.ctx.node_config.raft.replication.max_batch_size,
         };
 
         let commit_handler = DefaultCommitHandler::<RaftTypeConfig<SE, SM>>::new(

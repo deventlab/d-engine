@@ -459,11 +459,38 @@ where
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            RoleEvent::NotifyNewCommitIndex(new_commit_data) => {
+            RoleEvent::NotifyNewCommitIndex(mut new_commit_data) => {
+                // Drain all pending NotifyNewCommitIndex events (max_batch_size limit)
+                // This batches multiple committed entries into a single notification
+                let max_batch = self.ctx.node_config.raft.replication.max_batch_size;
+                let mut count = 1;
+
+                while count < max_batch {
+                    match self.role_rx.try_recv() {
+                        Ok(RoleEvent::NotifyNewCommitIndex(next)) => {
+                            // Only keep the largest commit_index
+                            if next.new_commit_index > new_commit_data.new_commit_index {
+                                new_commit_data = next;
+                            }
+                            count += 1;
+                        }
+                        Ok(other) => {
+                            self.role_tx.send(other).map_err(|e| {
+                                let error_str = format!("{e:?}");
+                                error!("Failed to resend role event: {}", error_str);
+                                crate::Error::Fatal(error_str)
+                            })?;
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+
                 debug!(
-                    ?new_commit_data,
-                    "[{}] RoleEvent::NotifyNewCommitIndex.", self.node_id,
+                    "[{}] NotifyNewCommitIndex drained: {} events, max_commit_index={}",
+                    self.node_id, count, new_commit_data.new_commit_index
                 );
+
                 self.notify_new_commit(new_commit_data);
             }
 

@@ -17,9 +17,11 @@ use crate::test_utils::node_config;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::MetadataRequest;
+use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::cluster::cluster_conf_update_response;
 use d_engine_proto::server::election::VoteRequest;
 use mockall::predicate::eq;
@@ -1076,11 +1078,6 @@ async fn test_join_cluster_succeeds_large_cluster() {
 /// Original: test_learner_promotion_on_membership_applied
 #[tokio::test]
 async fn test_learner_promotion_on_membership_applied() {
-    use d_engine_proto::common::NodeRole;
-    use d_engine_proto::common::NodeStatus;
-    use d_engine_proto::server::cluster::NodeMeta;
-    use mockall::predicate::eq;
-
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
@@ -1134,11 +1131,6 @@ async fn test_learner_promotion_on_membership_applied() {
 /// Original: test_learner_stays_learner_on_membership_applied
 #[tokio::test]
 async fn test_learner_stays_learner_on_membership_applied() {
-    use d_engine_proto::common::NodeRole;
-    use d_engine_proto::common::NodeStatus;
-    use d_engine_proto::server::cluster::NodeMeta;
-    use mockall::predicate::eq;
-
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
@@ -1187,8 +1179,6 @@ async fn test_learner_stays_learner_on_membership_applied() {
 /// Original: test_learner_node_not_found_on_membership_applied
 #[tokio::test]
 async fn test_learner_node_not_found_on_membership_applied() {
-    use mockall::predicate::eq;
-
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 

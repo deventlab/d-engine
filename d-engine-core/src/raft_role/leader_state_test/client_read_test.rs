@@ -1,19 +1,31 @@
-use std::sync::Arc;
-
-use tokio::sync::watch;
-use tracing_test::traced_test;
-
 use crate::ClientCmd;
-use crate::MockRaftLog;
 use crate::MockStateMachineHandler;
+use crate::ReadConsistencyPolicy;
 use crate::candidate_state::CandidateState;
+use crate::convert::safe_kv_bytes;
 use crate::follower_state::FollowerState;
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
+use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::node_config;
+use crate::{AppendResults, MockMembership, NewCommitData, PeerUpdate, RaftEvent, RoleEvent};
+use crate::{
+    ConsensusError, Error, MockRaftLog, MockReplicationCore, RaftNodeConfig, ReplicationError,
+};
+use bytes::Bytes;
+use d_engine_proto::client::ClientReadRequest;
+use d_engine_proto::error::ErrorCode;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::Instant;
+use tonic::Code;
+use tracing_test::traced_test;
 
 // ============================================================================
 // Unit Tests for LinearizableRead Core Functions
@@ -477,15 +489,6 @@ async fn test_optimization_skip_wait_when_commit_satisfies_read() {
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_quorum_failure() {
-    use tokio::sync::mpsc;
-    use tonic::Code;
-
-    use crate::convert::safe_kv_bytes;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use crate::{Error, MockReplicationCore, RaftNodeConfig};
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-
     // Given: Leader with replication handler that fails
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
@@ -521,8 +524,8 @@ async fn test_linearizable_read_quorum_failure() {
     // Push to buffer
     state.push_client_cmd(cmd, &context);
 
-    // Process the batch (this triggers leadership verification which will fail)
-    let _ = state.process_linearizable_read_batch(&context, &role_tx).await;
+    // Flush: triggers quorum verification which will fail
+    state.flush_cmd_buffers(&context, &role_tx).await.ok();
 
     // Then: Client receives error via response channel
     let e = resp_rx.recv().await.unwrap().unwrap_err();
@@ -564,20 +567,6 @@ async fn test_linearizable_read_quorum_failure() {
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_quorum_success() {
-    use std::collections::HashMap;
-    use tokio::sync::mpsc;
-
-    use crate::NewCommitData;
-    use crate::RoleEvent;
-    use crate::convert::safe_kv_bytes;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use crate::{
-        AppendResults, MockRaftLog, MockReplicationCore, MockStateMachineHandler, PeerUpdate,
-        RaftNodeConfig,
-    };
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-
     let expect_new_commit_index = 3;
 
     // Given: Leader with successful replication
@@ -615,10 +604,10 @@ async fn test_linearizable_read_quorum_success() {
         .expect_calculate_majority_matched_index()
         .returning(move |_, _, _| Some(expect_new_commit_index));
 
-    // Mock state machine handler for linearizable read
+    // Mock state machine handler: no wait_applied/update_pending in event-driven path.
+    // read_from_state_machine is called by execute_pending_reads when ApplyCompleted fires.
     let mut state_machine_handler = MockStateMachineHandler::new();
-    state_machine_handler.expect_update_pending().times(1).returning(|_| ());
-    state_machine_handler.expect_wait_applied().times(1).returning(|_, _| Ok(()));
+    state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
         .expect_read_from_state_machine()
         .returning(|_| Some(vec![]));
@@ -653,19 +642,29 @@ async fn test_linearizable_read_quorum_success() {
     // Push to buffer
     state.push_client_cmd(cmd, &context);
 
-    // Process the batch
-    state
-        .process_linearizable_read_batch(&context, &role_tx)
-        .await
-        .expect("should succeed");
+    // Flush: quorum succeeds, read registered in pending_reads[read_index=3]
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
     // Then: Leader commit_index updated
     assert_eq!(state.commit_index(), expect_new_commit_index);
 
-    // Then: Client receives successful response
+    // Simulate SM apply: ApplyCompleted fires pending_reads for read_index <= 3
+    state
+        .handle_raft_event(
+            RaftEvent::ApplyCompleted {
+                last_index: expect_new_commit_index,
+                results: vec![],
+            },
+            &context,
+            role_tx.clone(),
+        )
+        .await
+        .expect("ApplyCompleted should succeed");
+
+    // Then: Client receives successful response (released by ApplyCompleted)
     assert!(resp_rx.recv().await.unwrap().is_ok());
 
-    // Then: NotifyNewCommitIndex event sent
+    // Then: NotifyNewCommitIndex event sent (by flush_cmd_buffers)
     let event = role_rx.try_recv().unwrap();
     assert!(matches!(
         event,
@@ -707,17 +706,6 @@ async fn test_linearizable_read_quorum_success() {
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_encounters_higher_term() {
-    use tokio::sync::mpsc;
-
-    use crate::RoleEvent;
-    use crate::convert::safe_kv_bytes;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use crate::{
-        ConsensusError, Error, MockRaftLog, MockReplicationCore, RaftNodeConfig, ReplicationError,
-    };
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-
     // Given: Leader with higher term response from peers
     let mut replication_handler = MockReplicationCore::new();
     replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
@@ -809,14 +797,6 @@ async fn test_linearizable_read_encounters_higher_term() {
 #[tokio::test]
 #[traced_test]
 async fn test_lease_read_with_valid_lease() {
-    use crate::convert::safe_kv_bytes;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use crate::{MockRaftLog, MockReplicationCore, RaftNodeConfig};
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use d_engine_proto::error::ErrorCode;
-    use tokio::sync::mpsc;
-
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     // Given: Valid lease doesn't need replication verification
@@ -887,15 +867,6 @@ async fn test_lease_read_with_valid_lease() {
 #[tokio::test]
 #[traced_test]
 async fn test_lease_read_with_expired_lease() {
-    use crate::convert::safe_kv_bytes;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use crate::{AppendResults, MockRaftLog, MockReplicationCore, RaftNodeConfig};
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use d_engine_proto::error::ErrorCode;
-    use std::collections::HashMap;
-    use tokio::sync::mpsc;
-
     let mut replication_handler = MockReplicationCore::new();
     replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
         |_, _, _, _, _| {
@@ -938,7 +909,22 @@ async fn test_lease_read_with_expired_lease() {
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(cmd, &context);
+    // Flush: quorum succeeds, LeaseRead (expired) falls back to linearizable,
+    // read registered in pending_reads[read_index=5]
     state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
+
+    // Simulate SM apply: releases pending linearizable read
+    state
+        .handle_raft_event(
+            RaftEvent::ApplyCompleted {
+                last_index: 5,
+                results: vec![],
+            },
+            &context,
+            role_tx.clone(),
+        )
+        .await
+        .expect("ApplyCompleted should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.error, ErrorCode::Success as i32);
@@ -972,18 +958,6 @@ async fn test_lease_read_with_expired_lease() {
 #[tokio::test]
 #[traced_test]
 async fn test_unspecified_policy_defaults_to_linearizable_read() {
-    use crate::convert::safe_kv_bytes;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use crate::{
-        AppendResults, MockRaftLog, MockReplicationCore, MockStateMachineHandler, PeerUpdate,
-        RaftNodeConfig,
-    };
-    use d_engine_proto::client::ClientReadRequest;
-    use d_engine_proto::error::ErrorCode;
-    use std::collections::HashMap;
-    use tokio::sync::mpsc;
-
     let mut replication_handler = MockReplicationCore::new();
     replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
         |_, _, _, _, _| {
@@ -1016,13 +990,13 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
     raft_log.expect_last_entry_id().returning(|| 10);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
 
-    // Mock state machine handler for linearizable read
+    // Mock state machine handler: no wait_applied/update_pending in event-driven path.
+    // read_from_state_machine called by execute_pending_reads when ApplyCompleted fires.
     let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
         .expect_read_from_state_machine()
         .returning(|_| Some(vec![]));
-    state_machine_handler.expect_update_pending().times(1).returning(|_| ());
-    state_machine_handler.expect_wait_applied().times(1).returning(|_, _| Ok(()));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
@@ -1049,7 +1023,21 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(cmd, &context);
+    // Flush: quorum succeeds, read registered in pending_reads[read_index=5]
     state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
+
+    // Simulate SM apply: releases pending linearizable read
+    state
+        .handle_raft_event(
+            RaftEvent::ApplyCompleted {
+                last_index: 5,
+                results: vec![],
+            },
+            &context,
+            role_tx.clone(),
+        )
+        .await
+        .expect("ApplyCompleted should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.error, ErrorCode::Success as i32);
@@ -1084,14 +1072,6 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
 #[tokio::test]
 #[traced_test]
 async fn test_eventual_consistency_serves_immediately() {
-    use crate::RaftNodeConfig;
-    use crate::convert::safe_kv_bytes;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use d_engine_proto::error::ErrorCode;
-    use tokio::sync::mpsc;
-
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     // Configure server to allow client override
@@ -1151,20 +1131,11 @@ async fn test_eventual_consistency_serves_immediately() {
 #[tokio::test]
 #[traced_test]
 async fn test_server_default_overrides_client_policy() {
-    use crate::RaftNodeConfig;
-    use crate::config::ReadConsistencyPolicy as ServerPolicy;
-    use crate::convert::safe_kv_bytes;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use d_engine_proto::error::ErrorCode;
-    use tokio::sync::mpsc;
-
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     // Configure server with EventualConsistency as default, client override disabled
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.default_policy = ServerPolicy::EventualConsistency;
+    node_config.raft.read_consistency.default_policy = ReadConsistencyPolicy::EventualConsistency;
     node_config.raft.read_consistency.allow_client_override = false;
     node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
 
@@ -1215,15 +1186,6 @@ async fn test_server_default_overrides_client_policy() {
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_batch_shared_quorum() {
-    use crate::MockMembership;
-    use crate::MockReplicationCore;
-    use crate::RaftNodeConfig;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use bytes::Bytes;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use tokio::sync::mpsc;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     // Configure for immediate batch processing
@@ -1320,15 +1282,6 @@ async fn test_linearizable_read_batch_shared_quorum() {
 #[tokio::test]
 #[traced_test]
 async fn test_lease_reuse_after_linearizable_read_refresh() {
-    use crate::MockMembership;
-    use crate::MockReplicationCore;
-    use crate::RaftNodeConfig;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use bytes::Bytes;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use tokio::sync::mpsc;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
@@ -1432,14 +1385,6 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
 #[tokio::test]
 #[traced_test]
 async fn test_eventual_consistency_ignores_stale_lease() {
-    use crate::MockMembership;
-    use crate::RaftNodeConfig;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use bytes::Bytes;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use tokio::sync::mpsc;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
@@ -1515,19 +1460,11 @@ async fn test_eventual_consistency_ignores_stale_lease() {
 #[tokio::test]
 #[traced_test]
 async fn test_client_policy_override_allowed() {
-    use crate::RaftNodeConfig;
-    use crate::config::ReadConsistencyPolicy as ServerPolicy;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use bytes::Bytes;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use tokio::sync::mpsc;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     // Configure server to allow client override, default is LinearizableRead
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.default_policy = ServerPolicy::LinearizableRead;
+    node_config.raft.read_consistency.default_policy = ReadConsistencyPolicy::LinearizableRead;
     node_config.raft.read_consistency.allow_client_override = true;
 
     let ctx = MockBuilder::new(shutdown_rx)
@@ -1594,21 +1531,11 @@ async fn test_client_policy_override_allowed() {
 #[tokio::test]
 #[traced_test]
 async fn test_client_policy_override_denied() {
-    use crate::MockReplicationCore;
-    use crate::RaftNodeConfig;
-    use crate::config::ReadConsistencyPolicy as ServerPolicy;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use bytes::Bytes;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use std::collections::HashMap;
-    use tokio::sync::mpsc;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     // Configure server to deny client override, default is LinearizableRead
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.default_policy = ServerPolicy::LinearizableRead;
+    node_config.raft.read_consistency.default_policy = ReadConsistencyPolicy::LinearizableRead;
     node_config.raft.read_consistency.allow_client_override = false;
 
     // Mock replication handler for LinearizableRead quorum verification
@@ -1690,16 +1617,6 @@ async fn test_client_policy_override_denied() {
 #[tokio::test]
 #[traced_test]
 async fn test_drain_single_request_no_delay() {
-    use crate::MockMembership;
-    use crate::MockReplicationCore;
-    use crate::RaftNodeConfig;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use bytes::Bytes;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use tokio::sync::mpsc;
-    use tokio::time::Instant;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
@@ -1786,15 +1703,6 @@ async fn test_drain_single_request_no_delay() {
 #[tokio::test]
 #[traced_test]
 async fn test_drain_multiple_requests_natural_batch() {
-    use crate::MockMembership;
-    use crate::MockReplicationCore;
-    use crate::RaftNodeConfig;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use bytes::Bytes;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use tokio::sync::mpsc;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
@@ -1890,13 +1798,6 @@ async fn test_drain_multiple_requests_natural_batch() {
 #[tokio::test]
 #[traced_test]
 async fn test_drain_max_batch_size_limit() {
-    use crate::MockMembership;
-    use crate::RaftNodeConfig;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use bytes::Bytes;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
@@ -1979,15 +1880,6 @@ async fn test_drain_max_batch_size_limit() {
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_batch_single_quorum() {
-    use crate::MockMembership;
-    use crate::MockReplicationCore;
-    use crate::RaftNodeConfig;
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    use crate::test_utils::MockBuilder;
-    use bytes::Bytes;
-    use d_engine_proto::client::{ClientReadRequest, ReadConsistencyPolicy};
-    use tokio::sync::mpsc;
-
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();

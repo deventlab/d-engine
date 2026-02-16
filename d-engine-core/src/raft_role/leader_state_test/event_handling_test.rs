@@ -599,8 +599,8 @@ async fn test_handle_client_read_linearizable_failure() {
     // Push to buffer
     state.push_client_cmd(cmd, &context);
 
-    // Process the batch (this triggers leadership verification which will fail)
-    let _ = state.process_linearizable_read_batch(&context, &role_tx).await;
+    // Flush: triggers quorum verification which will fail
+    state.flush_cmd_buffers(&context, &role_tx).await.ok();
 
     // Client receives error via response channel
     let e = resp_rx.recv().await.unwrap().unwrap_err();
@@ -663,10 +663,10 @@ async fn test_handle_client_read_linearizable_success() {
         .expect_calculate_majority_matched_index()
         .returning(move |_, _, _| Some(expect_new_commit_index));
 
-    // Mock state machine handler for linearizable read
+    // Mock state machine handler: no wait_applied/update_pending in event-driven path.
+    // read_from_state_machine is called by execute_pending_reads when ApplyCompleted fires.
     let mut state_machine_handler = MockStateMachineHandler::new();
-    state_machine_handler.expect_update_pending().times(1).returning(|_| ());
-    state_machine_handler.expect_wait_applied().times(1).returning(|_, _| Ok(()));
+    state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
         .expect_read_from_state_machine()
         .returning(|_| Some(vec![]));
@@ -703,19 +703,29 @@ async fn test_handle_client_read_linearizable_success() {
     // Push to buffer
     state.push_client_cmd(cmd, &context);
 
-    // Process the batch
-    state
-        .process_linearizable_read_batch(&context, &role_tx)
-        .await
-        .expect("should succeed");
+    // Flush: quorum succeeds, read registered in pending_reads[read_index=3]
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
     // Validation criteria 1: Leader commit should be updated to: 3(new commit index)
     assert_eq!(state.shared_state().commit_index, expect_new_commit_index);
 
-    // Validation criteria 2: resp_rx receives Ok()
+    // Simulate SM apply: ApplyCompleted fires pending_reads for read_index <= 3
+    state
+        .handle_raft_event(
+            RaftEvent::ApplyCompleted {
+                last_index: expect_new_commit_index,
+                results: vec![],
+            },
+            &context,
+            role_tx.clone(),
+        )
+        .await
+        .expect("ApplyCompleted should succeed");
+
+    // Validation criteria 2: resp_rx receives Ok() (released by ApplyCompleted)
     assert!(resp_rx.recv().await.unwrap().is_ok());
 
-    // Validation criteria 3: event "RoleEvent::NotifyNewCommitIndex" should be received
+    // Validation criteria 3: event "RoleEvent::NotifyNewCommitIndex" should be received (from flush)
     let event = role_rx.try_recv().unwrap();
     assert!(matches!(
         event,
@@ -794,12 +804,9 @@ async fn test_handle_client_read_encounters_higher_term() {
 
     // Push to buffer
     state.push_client_cmd(cmd, &context);
-    // Event handling should succeed (HigherTerm is handled, client gets error via resp_rx)
-    // Process the batch
-    state
-        .process_linearizable_read_batch(&context, &role_tx)
-        .await
-        .expect("Process should succeed");
+
+    // Flush: discovers HigherTerm, steps down, client receives error
+    state.flush_cmd_buffers(&context, &role_tx).await.ok();
 
     // Validation criteria 1: Leader commit should remain unchanged (HigherTerm aborted the operation)
     assert_eq!(state.shared_state().commit_index, 1);
@@ -858,4 +865,123 @@ async fn test_handle_install_snapshot_returns_permission_denied() {
 
     // Validation criteria 2: No role event should be triggered
     assert!(role_rx.try_recv().is_err());
+}
+
+// ============================================================================
+// Role Transition Drain Tests (T3)
+// ============================================================================
+
+/// Test that pending_reads are drained with Unavailable on leader stepdown
+///
+/// # Test Scenario
+/// Leader has linearizable reads registered in pending_reads (slow path, awaiting
+/// ApplyCompleted). When the leader steps down, drain_read_buffer must release all
+/// pending reads with an Unavailable error to prevent clients from hanging forever.
+///
+/// # Given
+/// - Leader with a linearizable read in pending_reads (quorum succeeded, SM not yet applied)
+/// - No ApplyCompleted event arrives (simulates stepdown before SM catches up)
+///
+/// # When
+/// - drain_read_buffer() is called (triggered by BecomeFollower / BecomeCandidate)
+///
+/// # Then
+/// - pending_reads is empty after drain
+/// - Client receives Unavailable error (not a hang)
+#[tokio::test]
+#[traced_test]
+async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
+    use std::collections::HashMap;
+    use tonic::Code;
+
+    // Given: Leader with quorum success (commit_index advances to 3, read_index = 3)
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
+        |_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::from([
+                    (
+                        2,
+                        PeerUpdate {
+                            match_index: Some(3),
+                            next_index: 4,
+                            success: true,
+                        },
+                    ),
+                    (
+                        3,
+                        PeerUpdate {
+                            match_index: Some(4),
+                            next_index: 5,
+                            success: true,
+                        },
+                    ),
+                ]),
+                learner_progress: HashMap::new(),
+            })
+        },
+    );
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 2);
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(3));
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.read_batching.size_threshold = 1;
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_drain_read_buffer_clears_pending_reads_on_stepdown")
+        .with_replication_handler(replication_handler)
+        .with_raft_log(raft_log)
+        .with_node_config(node_config)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Push a linearizable read and flush: quorum succeeds, last_applied(0) < read_index(3)
+    // → read enters pending_reads (slow path), no ApplyCompleted will arrive
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let cmd = ClientCmd::Read(
+        d_engine_proto::client::ClientReadRequest {
+            client_id: 1,
+            keys: vec![safe_kv_bytes(1)],
+            consistency_policy: Some(
+                d_engine_proto::client::ReadConsistencyPolicy::LinearizableRead as i32,
+            ),
+        },
+        resp_tx,
+    );
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    state.push_client_cmd(cmd, &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush should succeed");
+
+    // Verify: read is now in pending_reads, not yet served
+    assert!(
+        !state.pending_reads.is_empty(),
+        "read should be in pending_reads before stepdown"
+    );
+    assert!(
+        resp_rx.try_recv().is_err(),
+        "response should not be ready before ApplyCompleted"
+    );
+
+    // When: leader steps down → drain_read_buffer clears pending_reads
+    state.drain_read_buffer().expect("drain should succeed");
+
+    // Then: pending_reads is empty
+    assert!(
+        state.pending_reads.is_empty(),
+        "pending_reads must be empty after drain"
+    );
+
+    // Then: client receives Unavailable (not a hang)
+    let err = resp_rx.recv().await.unwrap().unwrap_err();
+    assert_eq!(
+        err.code(),
+        Code::Unavailable,
+        "drained reads must get Unavailable error"
+    );
 }
