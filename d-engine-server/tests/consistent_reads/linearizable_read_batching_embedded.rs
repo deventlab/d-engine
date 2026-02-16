@@ -18,7 +18,6 @@ use tracing_test::traced_test;
 async fn create_engine_with_batching(
     test_name: &str,
     size_threshold: usize,
-    time_threshold_ms: u64,
 ) -> (EmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
@@ -37,12 +36,10 @@ state_machine_sync_timeout_ms = 5000
 
 [raft.read_consistency.read_batching]
 size_threshold = {}
-time_threshold_ms = {}
 "#,
         port,
         db_path.display(),
         size_threshold,
-        time_threshold_ms
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
@@ -76,7 +73,7 @@ time_threshold_ms = {}
 #[traced_test]
 #[tokio::test]
 async fn test_batching_preserves_linearizability() {
-    let (engine, _temp_dir) = create_engine_with_batching("test_linearizability", 50, 10).await;
+    let (engine, _temp_dir) = create_engine_with_batching("test_linearizability", 50).await;
 
     // Write test data
     let client = engine.client();
@@ -144,7 +141,7 @@ async fn test_batching_preserves_linearizability() {
 #[traced_test]
 #[tokio::test]
 async fn test_concurrent_write_and_read() {
-    let (engine, _temp_dir) = create_engine_with_batching("test_concurrent_write", 50, 10).await;
+    let (engine, _temp_dir) = create_engine_with_batching("test_concurrent_write", 50).await;
 
     let client = engine.client();
 
@@ -217,7 +214,7 @@ async fn test_concurrent_write_and_read() {
 #[traced_test]
 #[tokio::test]
 async fn test_single_request_timeout_trigger() {
-    let (engine, _temp_dir) = create_engine_with_batching("test_timeout", 50, 10).await;
+    let (engine, _temp_dir) = create_engine_with_batching("test_timeout", 50).await;
 
     let client = engine.client();
 
@@ -275,7 +272,7 @@ async fn test_single_request_timeout_trigger() {
 #[traced_test]
 #[tokio::test]
 async fn test_size_threshold_immediate_flush() {
-    let (engine, _temp_dir) = create_engine_with_batching("test_performance", 100, 50).await;
+    let (engine, _temp_dir) = create_engine_with_batching("test_performance", 100).await;
 
     let client = engine.client();
 
@@ -347,7 +344,7 @@ async fn test_batching_throughput_improvement() {
     const NUM_REQUESTS: usize = 1000;
 
     // Run 1: Batching disabled (set size_threshold very high)
-    let (node1, _temp_dir1) = create_engine_with_batching("test_throughput_off", 10000, 10).await;
+    let (node1, _temp_dir1) = create_engine_with_batching("test_throughput_off", 10000).await;
 
     let client1 = node1.client();
     client1
@@ -373,7 +370,7 @@ async fn test_batching_throughput_improvement() {
     node1.stop().await.expect("Failed to stop node1");
 
     // Run 2: Batching enabled
-    let (node2, _temp_dir2) = create_engine_with_batching("test_throughput_on", 50, 10).await;
+    let (node2, _temp_dir2) = create_engine_with_batching("test_throughput_on", 50).await;
 
     let client2 = node2.client();
     client2
