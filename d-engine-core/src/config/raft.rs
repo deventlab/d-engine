@@ -1006,17 +1006,11 @@ pub struct ReadConsistencyConfig {
 pub struct ReadBatchingConfig {
     /// Flush when buffer reaches this size
     pub size_threshold: usize,
-
-    /// Flush when first request ages beyond this (milliseconds)
-    pub time_threshold_ms: u64,
 }
 
 impl Default for ReadBatchingConfig {
     fn default() -> Self {
-        Self {
-            size_threshold: 50,
-            time_threshold_ms: 10,
-        }
+        Self { size_threshold: 50 }
     }
 }
 
