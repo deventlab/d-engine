@@ -71,7 +71,7 @@ jobs:
           fetch-depth: 0
 
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v1.3.1
         with:
           tool-cache: false
           android: true
@@ -95,18 +95,18 @@ jobs:
 
       - name: Install cargo tools
         run: |
-          cargo install cargo-llvm-cov --locked
-          cargo install cargo-nextest --version 0.9.114 --locked
+          cargo install cargo-llvm-cov --version 0.6.21 --locked
+          cargo install cargo-nextest --version 0.9.127 --locked
 
       - name: Run tests with nextest and generate coverage
         run: |
           cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex "src/generated/.*|src/errors.rs"
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          file: lcov.info
+          files: lcov.info
           flags: unittests
           name: codecov-umbrella
           verbose: true
