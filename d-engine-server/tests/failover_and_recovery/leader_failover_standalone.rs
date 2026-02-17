@@ -3,6 +3,7 @@ use std::time::Duration;
 use d_engine_client::Client;
 use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
+use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -153,6 +154,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 /// Test minority failure: kill 2 nodes, verify cluster cannot serve writes
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn test_minority_failure() -> Result<(), ClientApiError> {
     reset(&format!("{TEST_DIR}_minority")).await?;
 

@@ -97,10 +97,12 @@ fn handles_concurrent_checks_with_cooldown() {
 }
 
 #[test]
-fn non_leader_never_triggers() {
+fn follower_triggers_when_threshold_exceeded() {
+    // Per Raft §7: each server takes snapshots independently.
+    // Fix #270: LogSizePolicy must not block Follower/Learner snapshot triggers.
     let policy = LogSizePolicy::new(100, Duration::ZERO);
     let ctx = test_context(200, 100, Follower as i32);
-    assert!(!policy.should_trigger(&ctx));
+    assert!(policy.should_trigger(&ctx));
 }
 
 #[test]
