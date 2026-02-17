@@ -10,7 +10,6 @@ use tracing::trace;
 
 use super::SnapshotContext;
 use super::SnapshotPolicy;
-use crate::cluster::is_leader;
 use crate::time::timestamp_millis;
 
 #[derive(Debug)]
@@ -27,10 +26,6 @@ impl SnapshotPolicy for LogSizePolicy {
         &self,
         ctx: &SnapshotContext,
     ) -> bool {
-        if !is_leader(ctx.role) {
-            return false; // Only the Leader actively triggers
-        }
-
         if ctx.current_term < ctx.last_included.term {
             return false;
         }

@@ -588,6 +588,34 @@ impl std::ops::Deref for PortGuard {
     }
 }
 
+/// Poll snapshot directory until a .tar.gz file appears or timeout expires.
+/// Replaces blind sleep() calls when waiting for snapshot generation.
+pub async fn wait_for_snapshot(
+    snapshots_dir: &Path,
+    node_id: u64,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let dir = snapshots_dir.join(format!("node{node_id}"));
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            return false;
+        }
+        let has_snapshot = std::fs::read_dir(&dir)
+            .ok()
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("gz"))
+            })
+            .unwrap_or(false);
+        if has_snapshot {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// Allocate available ports and hold them until PortGuard is dropped.
 /// This prevents port conflicts in parallel test execution.
 pub async fn get_available_ports(count: usize) -> PortGuard {

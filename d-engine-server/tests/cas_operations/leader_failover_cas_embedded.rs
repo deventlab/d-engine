@@ -3,6 +3,7 @@ use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 
 use d_engine_core::ClientApi;
 use d_engine_server::api::EmbeddedEngine;
+use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -32,6 +33,7 @@ use crate::common::node_config;
 /// - Clients can retry and succeed after new leader elected
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let db_root_dir = temp_dir.path().join("db");

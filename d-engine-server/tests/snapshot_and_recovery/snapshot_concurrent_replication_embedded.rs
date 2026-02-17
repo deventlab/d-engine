@@ -163,8 +163,17 @@ snapshots_dir = '{}'
 
     info!("Phase 1 complete: {} entries written", BASELINE_ENTRIES);
 
-    info!("Waiting for snapshot to be generated on all nodes...");
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    info!("Waiting for snapshot to be generated on Leader...");
+    let leader_id = engines
+        .iter()
+        .find(|e| e.is_leader())
+        .map(|e| e.node_id())
+        .expect("Should have a leader");
+    assert!(
+        crate::common::wait_for_snapshot(&snapshots_dir, leader_id as u64, Duration::from_secs(10))
+            .await,
+        "Leader (Node {leader_id}) failed to generate snapshot within 10s"
+    );
 
     info!("Phase 2: Adding Learner (Node 4)...");
 
