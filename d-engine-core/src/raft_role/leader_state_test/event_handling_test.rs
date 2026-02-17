@@ -572,7 +572,7 @@ async fn test_handle_client_read_linearizable_failure() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_client_read_linearizable_failure")
@@ -675,7 +675,7 @@ async fn test_handle_client_read_linearizable_success() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_client_read_linearizable_success")
@@ -778,7 +778,7 @@ async fn test_handle_client_read_encounters_higher_term() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_client_read_encounters_higher_term")
@@ -929,7 +929,7 @@ async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.read_batching.size_threshold = 1;
+    node_config.raft.batching.max_batch_size = 1;
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_drain_read_buffer_clears_pending_reads_on_stepdown")

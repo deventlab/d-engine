@@ -70,7 +70,7 @@ async fn setup_process_raft_request_test_context(
     shutdown_signal: watch::Receiver<()>,
 ) -> ProcessRaftRequestTestContext {
     let mut node_config = node_config(&format!("/tmp/{test_name}"));
-    node_config.raft.replication.max_batch_size = batch_threshold;
+    node_config.raft.batching.max_batch_size = batch_threshold;
     let mut raft_context =
         MockBuilder::new(shutdown_signal).with_node_config(node_config).build_context();
 
@@ -262,7 +262,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     let mut node_config = node_config("test_process_raft_request_two_consecutive_forced_sends");
-    node_config.raft.replication.max_batch_size = 0;
+    node_config.raft.batching.max_batch_size = 0;
     let mut raft_context =
         MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
 
@@ -491,7 +491,7 @@ async fn test_drain_single_write_no_delay() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_drain_single_write");
-    node_config.raft.replication.max_batch_size = 100;
+    node_config.raft.batching.max_batch_size = 100;
 
     // Mock replication handler
     let mut replication = MockReplicationCore::new();
@@ -590,7 +590,7 @@ async fn test_drain_multiple_writes_natural_batch() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_drain_multiple_writes");
-    node_config.raft.replication.max_batch_size = 100;
+    node_config.raft.batching.max_batch_size = 100;
 
     // Mock replication - expect single call for entire batch
     let mut replication = MockReplicationCore::new();
@@ -680,19 +680,19 @@ async fn test_drain_multiple_writes_natural_batch() {
     drop(_shutdown_tx);
 }
 
-/// **Business Scenario**: max_batch_size prevents unbounded write batching
+/// **Business Scenario**: propose_batch_size prevents unbounded write batching
 ///
-/// **Purpose**: Verify that max_batch_size limit prevents processing excessively
+/// **Purpose**: Verify that propose_batch_size limit prevents processing excessively
 /// large write batches, protecting against memory pressure and maintaining
 /// bounded commit latency.
 ///
 /// **Key Validation**:
-/// - Buffer can accumulate > max_batch_size requests
+/// - Buffer can accumulate > propose_batch_size requests
 /// - Main loop drain enforces limit during collection
 /// - Remaining requests stay for next flush cycle
 ///
 /// **Architecture Context**:
-/// The drain pattern could theoretically collect unlimited writes. max_batch_size
+/// The drain pattern could theoretically collect unlimited writes. propose_batch_size
 /// provides backpressure in the main loop to prevent overwhelming replication
 /// and commit processing.
 #[tokio::test]
@@ -700,8 +700,8 @@ async fn test_drain_max_batch_size_limit() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_drain_max_batch");
-    // Set small max_batch_size for testing
-    node_config.raft.replication.max_batch_size = 5;
+    // Set small propose_batch_size for testing
+    node_config.raft.batching.max_batch_size = 5;
 
     let ctx = MockBuilder::new(shutdown_rx).with_node_config(node_config).build_context();
 
@@ -728,12 +728,12 @@ async fn test_drain_max_batch_size_limit() {
     // Actual max_batch_size enforcement happens in main loop's drain logic,
     // not in flush_cmd_buffers().
     //
-    // This proves buffer can hold > max_batch_size, demonstrating need for
+    // This proves buffer can hold > batch_size, demonstrating need for
     // drain-time limiting in raft.rs main loop.
 
     assert!(
-        state.propose_buffer.len() > ctx.node_config.raft.replication.max_batch_size,
-        "Buffer can accumulate beyond max_batch_size (main loop enforces during drain)"
+        state.propose_buffer.len() > ctx.node_config.raft.batching.max_batch_size,
+        "Buffer can accumulate beyond propose_batch_size (main loop enforces during drain)"
     );
 
     drop(_shutdown_tx);
@@ -766,7 +766,7 @@ async fn test_write_batch_single_replication() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let mut node_config = node_config("/tmp/test_batch_single_replication");
-    node_config.raft.replication.max_batch_size = 100;
+    node_config.raft.batching.max_batch_size = 100;
 
     // Mock replication - expect EXACTLY 1 call for entire batch
     let mut replication = MockReplicationCore::new();
@@ -893,7 +893,7 @@ async fn test_write_batch_single_replication() {
 async fn test_client_write_deferred_until_sm_apply() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let mut node_config = node_config("/tmp/test_client_write_deferred_until_sm_apply");
-    node_config.raft.replication.max_batch_size = 100;
+    node_config.raft.batching.max_batch_size = 100;
 
     let mut replication = MockReplicationCore::new();
     replication
@@ -981,7 +981,7 @@ async fn test_client_write_deferred_until_sm_apply() {
 async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let mut node_config = node_config("/tmp/test_noop_quorum_check_responds_immediately");
-    node_config.raft.replication.max_batch_size = 100;
+    node_config.raft.batching.max_batch_size = 100;
 
     let mut replication = MockReplicationCore::new();
     replication
@@ -1063,7 +1063,7 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
 async fn test_config_change_quorum_check_responds_immediately_without_sm_apply() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let mut node_config = node_config("/tmp/test_config_change_quorum_check_responds_immediately");
-    node_config.raft.replication.max_batch_size = 100;
+    node_config.raft.batching.max_batch_size = 100;
 
     let mut replication = MockReplicationCore::new();
     replication

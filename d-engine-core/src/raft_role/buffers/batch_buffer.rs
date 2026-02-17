@@ -1,13 +1,13 @@
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 use tokio::time::Instant;
-use tracing::trace;
 
+/// Generic single-type batch buffer for accumulating items until flush.
+///
+/// Uses a contiguous `Vec<E>` for cache-friendly sequential access.
+/// For propose (SoA two-field), see `propose_batch_buffer`.
 pub struct BatchBuffer<E> {
-    /// Maximum number of items to drain in one batch
-    pub(super) max_batch_size: usize,
-    pub(super) buffer: VecDeque<E>,
+    pub(super) buffer: Vec<E>,
     /// Last flush timestamp (used for monitoring only)
     pub(super) last_flush: Instant,
     /// Pre-allocated metric labels for zero-allocation hot path
@@ -17,10 +17,9 @@ pub struct BatchBuffer<E> {
 }
 
 impl<E> BatchBuffer<E> {
-    pub fn new(max_batch_size: usize) -> Self {
+    pub fn new(initial_capacity: usize) -> Self {
         Self {
-            max_batch_size,
-            buffer: VecDeque::with_capacity(max_batch_size),
+            buffer: Vec::with_capacity(initial_capacity),
             last_flush: Instant::now(),
             metrics_labels: None,
             metrics_enabled: false,
@@ -44,48 +43,35 @@ impl<E> BatchBuffer<E> {
         self
     }
 
+    /// Hot path: O(1) push to the end of the contiguous buffer.
+    ///
+    /// Flush is driven externally by the drain loop in `raft.rs` main event loop
+    /// (recv() blocks for first item, try_recv() drains up to max_batch_size, then flush).
+    /// No signal returned.
     pub fn push(
         &mut self,
         request: E,
-    ) -> Option<usize> {
-        self.buffer.push_back(request);
-        let len = self.buffer.len();
-
-        trace!(
-            "BatchBuffer::push, max={}, len={}",
-            self.max_batch_size, len
-        );
+    ) {
+        self.buffer.push(request);
 
         if self.metrics_enabled {
             if let Some(ref labels) = self.metrics_labels {
-                metrics::gauge!("batch.buffer_length", labels.as_ref()).set(len as f64);
+                metrics::gauge!("batch.buffer_length", labels.as_ref())
+                    .set(self.buffer.len() as f64);
             }
-        }
-
-        if len >= self.max_batch_size {
-            Some(len)
-        } else {
-            None
         }
     }
 
-    pub fn take(&mut self) -> VecDeque<E> {
+    /// Take all buffered items via `mem::take` — O(1), no copy.
+    pub fn take_all(&mut self) -> Vec<E> {
         self.last_flush = Instant::now();
         std::mem::take(&mut self.buffer)
     }
 
-    /// Check if buffer is empty
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 
-    /// Take all items unconditionally (drain-based architecture).
-    pub fn take_all(&mut self) -> VecDeque<E> {
-        self.last_flush = Instant::now();
-        std::mem::take(&mut self.buffer)
-    }
-
-    /// Returns the number of buffered items
     pub fn len(&self) -> usize {
         self.buffer.len()
     }

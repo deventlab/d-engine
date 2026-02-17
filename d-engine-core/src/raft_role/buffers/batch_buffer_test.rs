@@ -1,8 +1,7 @@
-use std::time::Duration;
-
-use tokio::time::Instant;
-
 use super::*;
+use batch_buffer::BatchBuffer;
+use std::time::Duration;
+use tokio::time::Instant;
 
 #[derive(Debug, Clone, PartialEq)]
 struct TestRequest;
@@ -13,41 +12,35 @@ fn create_test_request() -> TestRequest {
 
 #[test]
 fn test_new_initialization() {
-    let max_size = 5;
-    let buffer = BatchBuffer::<TestRequest>::new(max_size);
+    let initial_capacity = 5;
+    let buffer = BatchBuffer::<TestRequest>::new(initial_capacity);
 
-    assert_eq!(buffer.max_batch_size, max_size);
     assert!(buffer.buffer.is_empty());
-    assert!(buffer.buffer.capacity() >= max_size);
+    assert!(buffer.buffer.capacity() >= initial_capacity);
     assert!(buffer.last_flush.elapsed() < Duration::from_secs(1));
 }
 
+/// push() accumulates items; len() reflects the count.
 #[test]
-fn test_push_below_max() {
+fn test_push_increments_len() {
     let mut buffer = BatchBuffer::<TestRequest>::new(3);
-    assert_eq!(buffer.push(create_test_request()), None);
-    assert_eq!(buffer.push(create_test_request()), None);
-    assert_eq!(buffer.buffer.len(), 2);
+    buffer.push(create_test_request());
+    assert_eq!(buffer.len(), 1);
+    buffer.push(create_test_request());
+    assert_eq!(buffer.len(), 2);
 }
 
+/// push() beyond the initial capacity continues to work — buffer does not auto-flush.
 #[test]
-fn test_push_exact_max() {
-    let mut buffer = BatchBuffer::<TestRequest>::new(2);
-    assert_eq!(buffer.push(create_test_request()), None);
-    assert_eq!(buffer.push(create_test_request()), Some(2));
-    assert_eq!(buffer.buffer.len(), 2);
-}
-
-#[test]
-fn test_push_exceed_max() {
+fn test_push_beyond_max_does_not_overflow() {
     let mut buffer = BatchBuffer::<TestRequest>::new(2);
     buffer.push(create_test_request());
     buffer.push(create_test_request());
-    assert_eq!(buffer.push(create_test_request()), Some(3));
-    assert_eq!(buffer.buffer.len(), 3);
+    buffer.push(create_test_request()); // exceeds threshold, no panic
+    assert_eq!(buffer.len(), 3);
 }
 
-/// Test: is_empty returns correct state
+/// take_all() drains all items and leaves the buffer empty.
 #[test]
 fn test_is_empty() {
     let mut buffer = BatchBuffer::<TestRequest>::new(3);
@@ -56,11 +49,11 @@ fn test_is_empty() {
     buffer.push(create_test_request());
     assert!(!buffer.is_empty());
 
-    buffer.take();
+    buffer.take_all();
     assert!(buffer.is_empty());
 }
 
-/// Test: take_all returns all items
+/// take_all() returns all buffered items.
 #[test]
 fn test_take_all() {
     let mut buffer = BatchBuffer::<TestRequest>::new(5);
@@ -73,26 +66,28 @@ fn test_take_all() {
     assert!(buffer.is_empty());
 }
 
+/// take_all() resets the buffer and updates last_flush.
 #[test]
-fn test_take_resets_buffer() {
+fn test_take_all_resets_buffer() {
     let mut buffer = BatchBuffer::<TestRequest>::new(3);
     buffer.push(create_test_request());
 
-    let taken = buffer.take();
+    let taken = buffer.take_all();
     assert!(!taken.is_empty());
     assert!(buffer.buffer.is_empty());
     assert!(buffer.last_flush.elapsed() < Duration::from_millis(50));
 }
 
+/// take_all() returns elements in insertion order (Vec semantics).
 #[test]
-fn test_take_returns_correct_elements() {
+fn test_take_all_returns_correct_elements() {
     let mut buffer = BatchBuffer::<TestRequest>::new(3);
     let req1 = create_test_request();
     let req2 = create_test_request();
 
     buffer.push(req1.clone());
     buffer.push(req2.clone());
-    let taken = buffer.take();
+    let taken = buffer.take_all();
 
     assert_eq!(taken.len(), 2);
     assert_eq!(taken[0], req1);
@@ -100,56 +95,55 @@ fn test_take_returns_correct_elements() {
 }
 
 #[test]
-fn test_consecutive_take_operations() {
+fn test_consecutive_take_all_operations() {
     let mut buffer = BatchBuffer::<TestRequest>::new(2);
     buffer.push(create_test_request());
 
-    // 1st time take
-    let taken1 = buffer.take();
+    // 1st take_all
+    let taken1 = buffer.take_all();
     assert_eq!(taken1.len(), 1);
     assert!(buffer.buffer.is_empty());
 
-    // 2nd time take
+    // 2nd take_all after new pushes
     buffer.push(create_test_request());
     buffer.push(create_test_request());
-    let taken2 = buffer.take();
+    let taken2 = buffer.take_all();
     assert_eq!(taken2.len(), 2);
 }
 
+/// Buffer can be reused across multiple take_all cycles.
 #[test]
-fn test_buffer_reuse_after_take() {
+fn test_buffer_reuse_after_take_all() {
     let mut buffer = BatchBuffer::<TestRequest>::new(2);
     buffer.push(create_test_request());
-    buffer.take();
+    buffer.take_all();
 
     buffer.push(create_test_request());
-    assert_eq!(buffer.push(create_test_request()), Some(2));
-    assert_eq!(buffer.buffer.len(), 2);
+    buffer.push(create_test_request());
+    assert_eq!(buffer.len(), 2);
 }
 
-/// Test: take resets last_flush timer
+/// take_all() resets last_flush to approximately now.
 #[test]
-fn test_take_resets_last_flush_timer() {
+fn test_take_all_resets_last_flush_timer() {
     let mut buffer = BatchBuffer::<TestRequest>::new(2);
     buffer.push(create_test_request());
 
     let before_take = Instant::now();
-    buffer.take();
+    buffer.take_all();
     let after_take = Instant::now();
 
     let elapsed = buffer.last_flush.elapsed();
-    // last_flush should be very recent (within 100ms)
     assert!(
         elapsed < Duration::from_millis(100),
         "last_flush not reset properly"
     );
 
-    // Verify it's actually set to after before_take
     assert!(buffer.last_flush >= before_take);
     assert!(buffer.last_flush <= after_take + Duration::from_millis(10));
 }
 
-/// Test: freshly created buffer is empty
+/// Freshly created buffer is empty.
 #[test]
 fn test_fresh_buffer_is_empty() {
     let buffer = BatchBuffer::<TestRequest>::new(5);

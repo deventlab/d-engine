@@ -4,14 +4,8 @@
 //! - Leader log propagation
 //! - Follower log consistency checks
 //! - Conflict resolution algorithms
-mod batch_buffer;
 mod replication_handler;
-
-pub use batch_buffer::*;
 pub use replication_handler::*;
-
-#[cfg(test)]
-mod batch_buffer_test;
 
 #[cfg(test)]
 pub mod replication_handler_test;

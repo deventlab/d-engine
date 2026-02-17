@@ -191,7 +191,7 @@ async fn test_handle_rpc_services_successfully() {
         .validate()
         .expect("Validate RaftNodeConfig successfully");
     settings.raft.general_raft_timeout_duration_in_ms = 200;
-    settings.raft.replication.max_batch_size = 1;
+    settings.raft.batching.max_batch_size = 1;
     settings.cluster.db_root_dir = PathBuf::from(
         "/tmp/
     test_handle_rpc_services_successfully",
