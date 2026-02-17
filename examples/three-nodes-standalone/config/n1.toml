@@ -21,7 +21,7 @@ election_timeout_max = 2000
 default_policy = "LeaseRead"
 lease_duration_ms = 500
 
-[raft.replication]
+[raft.batching]
 # Maximum number of commands to accumulate in a single batch during drain operations
 max_batch_size = 200
 

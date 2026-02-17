@@ -297,7 +297,7 @@ where
                     self.role.push_client_cmd(first_cmd, &self.ctx);
 
                     // Drain all pending commands from channel (max_batch_size limit)
-                    let max_batch = self.ctx.node_config.raft.replication.max_batch_size;
+                    let max_batch = self.ctx.node_config.raft.batching.max_batch_size;
                     let mut count = 1;
 
                     while count < max_batch {
@@ -462,7 +462,7 @@ where
             RoleEvent::NotifyNewCommitIndex(mut new_commit_data) => {
                 // Drain all pending NotifyNewCommitIndex events (max_batch_size limit)
                 // This batches multiple committed entries into a single notification
-                let max_batch = self.ctx.node_config.raft.replication.max_batch_size;
+                let max_batch = self.ctx.node_config.raft.batching.max_batch_size;
                 let mut count = 1;
 
                 while count < max_batch {

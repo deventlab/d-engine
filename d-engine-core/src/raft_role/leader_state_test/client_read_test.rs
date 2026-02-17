@@ -469,7 +469,7 @@ async fn test_optimization_skip_wait_when_commit_satisfies_read() {
 /// # Given
 /// - Leader has commit_index = 1
 /// - Replication handler returns Error (simulates quorum failure)
-/// - read_batching.size_threshold = 1 (immediate flush)
+/// - batching.max_batch_size = 1 (immediate flush)
 ///
 /// # When
 /// - Client sends LinearizableRead request
@@ -499,7 +499,7 @@ async fn test_linearizable_read_quorum_failure() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_linearizable_read_quorum_failure")
@@ -543,7 +543,7 @@ async fn test_linearizable_read_quorum_failure() {
 /// - Replication handler returns success (quorum reached)
 /// - calculate_majority_matched_index returns 3 (new commit index)
 /// - State machine is ready to serve reads
-/// - read_batching.size_threshold = 1 (immediate flush)
+/// - batching.max_batch_size = 1 (immediate flush)
 ///
 /// # When
 /// - Client sends LinearizableRead request
@@ -615,7 +615,7 @@ async fn test_linearizable_read_quorum_success() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_linearizable_read_quorum_success")
@@ -685,7 +685,7 @@ async fn test_linearizable_read_quorum_success() {
 /// # Given
 /// - Leader has commit_index = 1, current_term = 1
 /// - Replication handler returns HigherTermFoundError (term 2 discovered)
-/// - read_batching.size_threshold = 1 (immediate flush)
+/// - batching.max_batch_size = 1 (immediate flush)
 ///
 /// # When
 /// - Client sends LinearizableRead request
@@ -726,7 +726,7 @@ async fn test_linearizable_read_encounters_higher_term() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_linearizable_read_encounters_higher_term")
@@ -778,7 +778,7 @@ async fn test_linearizable_read_encounters_higher_term() {
 /// - Leader has valid lease (updated recently)
 /// - Server allows client override (allow_client_override = true)
 /// - Client specifies LeaseRead policy
-/// - read_batching.size_threshold = 1 (immediate flush)
+/// - batching.max_batch_size = 1 (immediate flush)
 ///
 /// # When
 /// - Client sends read request with LeaseRead policy
@@ -809,7 +809,7 @@ async fn test_lease_read_with_valid_lease() {
     // Configure server to allow client override
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.read_consistency.allow_client_override = true;
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_lease_read_with_valid_lease")
@@ -848,7 +848,7 @@ async fn test_lease_read_with_valid_lease() {
 /// - Leader has expired lease (timestamp not updated)
 /// - Server allows client override
 /// - Replication handler configured to succeed
-/// - read_batching.size_threshold = 1 (immediate flush)
+/// - batching.max_batch_size = 1 (immediate flush)
 ///
 /// # When
 /// - Client sends read request with LeaseRead policy
@@ -887,7 +887,7 @@ async fn test_lease_read_with_expired_lease() {
     // Configure server to allow client override
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.read_consistency.allow_client_override = true;
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_lease_read_with_expired_lease")
@@ -941,7 +941,7 @@ async fn test_lease_read_with_expired_lease() {
 /// - Server default is LinearizableRead
 /// - Replication handler configured to succeed
 /// - State machine ready to serve reads
-/// - read_batching.size_threshold = 1 (immediate flush)
+/// - batching.max_batch_size = 1 (immediate flush)
 ///
 /// # When
 /// - Client sends read request without specifying policy
@@ -1001,7 +1001,7 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_unspecified_policy_defaults_to_linearizable_read")
@@ -1053,7 +1053,7 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
 /// - Client specifies EventualConsistency policy
 /// - Server allows client override
 /// - No replication handler setup (should not be called)
-/// - read_batching.size_threshold = 1 (immediate flush)
+/// - batching.max_batch_size = 1 (immediate flush)
 ///
 /// # When
 /// - Client sends read request with EventualConsistency policy
@@ -1077,7 +1077,7 @@ async fn test_eventual_consistency_serves_immediately() {
     // Configure server to allow client override
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.read_consistency.allow_client_override = true;
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_eventual_consistency_serves_immediately")
@@ -1113,7 +1113,7 @@ async fn test_eventual_consistency_serves_immediately() {
 /// - Server default policy = EventualConsistency
 /// - allow_client_override = false (strict server control)
 /// - Client specifies LinearizableRead policy (should be ignored)
-/// - read_batching.size_threshold = 1 (immediate flush)
+/// - batching.max_batch_size = 1 (immediate flush)
 ///
 /// # When
 /// - Client sends read request with LinearizableRead policy
@@ -1137,7 +1137,7 @@ async fn test_server_default_overrides_client_policy() {
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.read_consistency.default_policy = ReadConsistencyPolicy::EventualConsistency;
     node_config.raft.read_consistency.allow_client_override = false;
-    node_config.raft.read_consistency.read_batching.size_threshold = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_server_default_overrides_client_policy")
@@ -1780,20 +1780,20 @@ async fn test_drain_multiple_requests_natural_batch() {
     drop(_shutdown_tx);
 }
 
-/// **Business Scenario**: max_batch_size prevents unbounded drain
+/// **Business Scenario**: read_batch_size prevents unbounded drain
 ///
-/// **Purpose**: Verify that max_batch_size limit prevents processing excessively
+/// **Purpose**: Verify that read_batch_size limit prevents processing excessively
 /// large batches in a single operation, protecting against IO overload and
 /// maintaining bounded latency even under extreme load.
 ///
 /// **Key Validation**:
-/// - Buffer accumulates > max_batch_size requests
-/// - First flush processes exactly max_batch_size
+/// - Buffer accumulates > read_batch_size requests
+/// - First flush processes exactly read_batch_size
 /// - Remaining requests stay in buffer for next flush
 ///
 /// **Architecture Context**:
 /// The drain pattern (try_recv() loop) could theoretically drain unlimited
-/// requests. max_batch_size provides backpressure to prevent a single flush
+/// requests. read_batch_size provides backpressure to prevent a single flush
 /// from overwhelming IO subsystems or blocking the event loop too long.
 #[tokio::test]
 #[traced_test]
@@ -1802,8 +1802,8 @@ async fn test_drain_max_batch_size_limit() {
 
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.read_consistency.allow_client_override = true;
-    // Set small max_batch_size for testing
-    node_config.raft.replication.max_batch_size = 5;
+    // Set small read_batch_size for testing
+    node_config.raft.batching.max_batch_size = 5;
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_drain_max_batch_size")
@@ -1836,20 +1836,20 @@ async fn test_drain_max_batch_size_limit() {
     );
 
     // Note: This test validates buffer accumulation behavior.
-    // The actual max_batch_size enforcement happens in the main loop's
+    // The actual read_batch_size enforcement happens in the main loop's
     // drain logic (raft.rs), not in flush_cmd_buffers().
     //
     // In production:
     // - raft.rs recv() gets first request
-    // - raft.rs try_recv() loop drains up to max_batch_size-1 more
+    // - raft.rs try_recv() loop drains up to read_batch_size-1 more
     // - raft.rs calls flush_cmd_buffers() with bounded batch
     //
-    // This unit test confirms buffer can hold > max_batch_size,
+    // This unit test confirms buffer can hold > read_batch_size,
     // proving the need for drain-time limiting in the main loop.
 
     assert!(
-        state.linearizable_read_buffer.len() > ctx.node_config.raft.replication.max_batch_size,
-        "Buffer can accumulate beyond max_batch_size (main loop enforces limit during drain)"
+        state.linearizable_read_buffer.len() > ctx.node_config.raft.batching.max_batch_size,
+        "Buffer can accumulate beyond read_batch_size (main loop enforces limit during drain)"
     );
 
     drop(_shutdown_tx);

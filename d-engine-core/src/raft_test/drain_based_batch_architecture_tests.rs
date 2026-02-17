@@ -28,8 +28,8 @@ use crate::RaftOneshot;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::{
     MockBuilder,
+    buffers::BatchBuffer,
     raft_role::{RaftRole, role_state::RaftRoleState},
-    replication::BatchBuffer,
 };
 use bytes::Bytes;
 use d_engine_proto::client::write_command::Operation;
@@ -54,7 +54,7 @@ use tokio::time::Instant;
 //
 #[test]
 fn test_p0_batch_buffer_single_item_no_batching() {
-    // **Setup**: Create BatchBuffer with small max_batch_size
+    // **Setup**: Create BatchBuffer with small initial capacity
     let mut buffer: BatchBuffer<u32> = BatchBuffer::new(300);
 
     let start = Instant::now();
@@ -83,8 +83,8 @@ fn test_p0_batch_buffer_single_item_no_batching() {
 }
 
 // NOTE: Removed test_p0_batch_buffer_max_batch_size_cap
-// Reason: This test incorrectly assumes take_all() respects max_batch_size.
-// In the drain-based architecture, max_batch_size limits are enforced in the
+// Reason: This test incorrectly assumes take_all() respects batch_size.
+// In the drain-based architecture, batch_size limits are enforced in the
 // drain loop (raft.rs), not in BatchBuffer.take_all(). The take_all() method
 // unconditionally returns all buffered items for flush operations.
 
@@ -126,14 +126,14 @@ fn test_p0_batch_buffer_empty_flush_idempotent() {
 }
 
 // NOTE: Removed test_p0_batch_buffer_max_batch_size_one
-// Reason: This test incorrectly assumes take_all() respects max_batch_size.
-// In the drain-based architecture, max_batch_size limits are enforced in the
+// Reason: This test incorrectly assumes take_all() respects batch_size.
+// In the drain-based architecture, batch_size limits are enforced in the
 // drain loop (raft.rs), not in BatchBuffer.take_all(). The take_all() method
 // unconditionally returns all buffered items for flush operations.
 
 // NOTE: Removed test_p0_batch_buffer_natural_batching_medium_load
-// Reason: This test incorrectly assumes take_all() respects max_batch_size.
-// In the drain-based architecture, max_batch_size limits are enforced in the
+// Reason: This test incorrectly assumes take_all() respects batch_size.
+// In the drain-based architecture, batch_size limits are enforced in the
 // drain loop (raft.rs), not in BatchBuffer.take_all(). The take_all() method
 // unconditionally returns all buffered items for flush operations.
 
@@ -238,7 +238,7 @@ async fn test_p0_leader_single_command_drain_immediately() {
 // P0-2: LEADER - HIGH LOAD MAX BATCH CAP
 // ========================================================================
 //
-// **Objective**: Verify Leader respects max_batch_size=300 under high load
+// **Objective**: Verify Leader respects batch_size=300 under high load
 //
 // **Expected Behavior**:
 // - Push 1000 commands to propose_buffer
@@ -247,7 +247,7 @@ async fn test_p0_leader_single_command_drain_immediately() {
 //
 #[tokio::test]
 async fn test_p0_leader_high_load_max_batch_cap() {
-    // **Setup**: Create Leader with max_batch_size monitoring
+    // **Setup**: Create Leader with batch_size monitoring
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
@@ -849,7 +849,7 @@ async fn test_p1_mixed_workload_read_write_coexistence() {
 // **Objective**: Verify system recovers gracefully after traffic burst
 //
 // **Expected Behavior**:
-// - Burst: Multiple drain cycles with max_batch_size
+// - Burst: Multiple drain cycles with batch_size
 // - All burst requests processed
 // - Trickle requests: each batch=1, no residual delay
 // - System remains stable

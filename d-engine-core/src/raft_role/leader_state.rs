@@ -1,3 +1,52 @@
+use super::LeaderStateSnapshot;
+use super::RaftRole;
+use super::SharedState;
+use super::StateSnapshot;
+use super::buffers::BatchBuffer;
+use super::buffers::ProposeBatchBuffer;
+use super::candidate_state::CandidateState;
+use super::role_state::RaftRoleState;
+use super::role_state::check_and_trigger_snapshot;
+use super::role_state::send_replay_raft_event;
+use crate::AppendResults;
+use crate::BackgroundSnapshotTransfer;
+use crate::ConnectionType;
+use crate::ConsensusError;
+use crate::Error;
+use crate::MaybeCloneOneshot;
+use crate::MaybeCloneOneshotSender;
+use crate::Membership;
+use crate::MembershipError;
+use crate::NetworkError;
+use crate::PeerUpdate;
+use crate::PurgeExecutor;
+use crate::QuorumVerificationResult;
+use crate::RaftContext;
+use crate::RaftEvent;
+use crate::RaftLog;
+use crate::RaftNodeConfig;
+use crate::RaftOneshot;
+use crate::RaftRequestWithSignal;
+use crate::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
+use crate::ReplicationConfig;
+use crate::ReplicationCore;
+use crate::ReplicationError;
+use crate::ReplicationTimer;
+use crate::Result;
+use crate::RoleEvent;
+use crate::SnapshotConfig;
+use crate::StateMachine;
+use crate::StateMachineHandler;
+use crate::StateTransitionError;
+use crate::SystemError;
+use crate::TypeConfig;
+use crate::alias::MOF;
+use crate::alias::ROF;
+use crate::alias::SMHOF;
+use crate::cluster::is_majority;
+use crate::ensure_safe_join;
+use crate::event::ClientCmd;
+use crate::stream::create_production_snapshot_stream;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::common::AddNode;
@@ -17,7 +66,6 @@ use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use nanoid::nanoid;
@@ -46,57 +94,6 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 
-use super::LeaderStateSnapshot;
-use super::RaftRole;
-use super::SharedState;
-use super::StateSnapshot;
-use super::candidate_state::CandidateState;
-use super::role_state::RaftRoleState;
-use super::role_state::check_and_trigger_snapshot;
-use super::role_state::send_replay_raft_event;
-use crate::AppendResults;
-use crate::BackgroundSnapshotTransfer;
-use crate::BatchBuffer;
-use crate::ConnectionType;
-use crate::ConsensusError;
-use crate::Error;
-use crate::MaybeCloneOneshot;
-use crate::MaybeCloneOneshotSender;
-use crate::Membership;
-use crate::MembershipError;
-use crate::NetworkError;
-
-use crate::PeerUpdate;
-use crate::PurgeExecutor;
-use crate::QuorumVerificationResult;
-use crate::RaftContext;
-use crate::RaftEvent;
-use crate::RaftLog;
-use crate::RaftNodeConfig;
-use crate::RaftOneshot;
-use crate::RaftRequestWithSignal;
-use crate::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
-use crate::ReplicationConfig;
-use crate::ReplicationCore;
-use crate::ReplicationError;
-use crate::ReplicationTimer;
-use crate::Result;
-use crate::RoleEvent;
-use crate::SnapshotConfig;
-use crate::StateMachine;
-use crate::StateMachineHandler;
-use crate::StateTransitionError;
-use crate::SystemError;
-
-use crate::TypeConfig;
-use crate::alias::MOF;
-use crate::alias::ROF;
-use crate::alias::SMHOF;
-use crate::cluster::is_majority;
-use crate::ensure_safe_join;
-use crate::event::ClientCmd;
-use crate::stream::create_production_snapshot_stream;
-
 // Type aliases for improved readability
 type LinearizableReadRequest = (
     ClientReadRequest,
@@ -108,12 +105,6 @@ type WriteMetadata = (
     u64,
     Vec<MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>>,
     bool,
-);
-
-/// Propose buffer tuple: (payload, response_sender)
-type ProposeTuple = (
-    EntryPayload,
-    MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
 );
 
 // Supporting data structures
@@ -291,8 +282,9 @@ pub struct LeaderState<T: TypeConfig> {
     /// Accumulates requests until either:
     /// 1. Batch reaches configured size limit
     /// 2. Explicit flush is triggered
-    ///    Stores raw (payload, sender) tuples for zero-copy, converted to RaftRequestWithSignal only at flush
-    pub(super) propose_buffer: Box<BatchBuffer<ProposeTuple>>,
+    ///    SoA layout: payloads and senders stored in separate contiguous Vecs.
+    ///    flush() builds one RaftRequestWithSignal via mem::take — true O(1), no unzip scan.
+    pub(super) propose_buffer: Box<ProposeBatchBuffer>,
 
     // -- Timing & Scheduling --
     /// Replication heartbeat timer manager
@@ -747,13 +739,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         if now >= self.timer.replication_deadline() {
             debug!(?now, "tick::reset_replication timer");
 
-            // Piggyback heartbeat
-            let tuples = self.propose_buffer.take_all();
-            if let Some(request) = Self::convert_tuples_to_request(tuples) {
-                self.process_batch(std::iter::once(request), role_tx, ctx).await?;
-            } else {
-                self.process_batch(vec![], role_tx, ctx).await?;
-            }
+            // Piggyback pending writes onto heartbeat; if nothing to write,
+            // send an empty AppendEntries to maintain leadership and reset timer.
+            let request = self.propose_buffer.flush();
+            self.send_heartbeat_or_batch(request, role_tx, ctx).await?;
         }
 
         Ok(())
@@ -761,7 +750,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
     fn drain_read_buffer(&mut self) -> Result<()> {
         // Drain linearizable read buffer
-        let batch = self.linearizable_read_buffer.take();
+        let batch = self.linearizable_read_buffer.take_all();
         if !batch.is_empty() {
             warn!(
                 "Read batch: draining {} linearizable read requests due to role change",
@@ -855,7 +844,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         .expect("client_command_to_entry_payloads should return 1 element");
 
                     // Push lightweight tuple directly (zero-copy, no Vec allocation)
-                    self.propose_buffer.push((payload, sender));
+                    self.propose_buffer.push(payload, sender);
                 } else {
                     // Empty command: reject
                     let _ = sender.send(Err(Status::invalid_argument("Command is empty")));
@@ -970,8 +959,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         // Fast path: pure write workload (most common case, ~95%)
         // Preserves original high-performance code path for write-heavy workloads
         if has_writes && !has_reads {
-            let tuples = self.propose_buffer.take_all();
-            if let Some(request) = Self::convert_tuples_to_request(tuples) {
+            if let Some(request) = self.propose_buffer.flush() {
                 self.process_batch(std::iter::once(request), role_tx, ctx).await?;
             }
         }
@@ -1617,6 +1605,32 @@ impl<T: TypeConfig> LeaderState<T> {
             .await
     }
 
+    /// Heartbeat dispatch: piggyback a write batch if available, otherwise send
+    /// an empty AppendEntries to maintain leadership. Always resets the replication
+    /// timer — the intent is explicit here rather than hidden inside `process_batch`.
+    async fn send_heartbeat_or_batch(
+        &mut self,
+        request: Option<RaftRequestWithSignal>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        self.timer.reset_replication();
+        match request {
+            Some(req) => {
+                // Has pending writes — process as a real batch.
+                let start_index = ctx.raft_log().last_entry_id() + 1;
+                let (payloads, write_metadata) =
+                    Self::merge_batch_to_write_metadata(std::iter::once(req), start_index);
+                self.execute_and_process_raft_rpc(payloads, write_metadata, None, ctx, role_tx)
+                    .await
+            }
+            None => {
+                // No pending writes — send empty AppendEntries as heartbeat.
+                self.execute_and_process_raft_rpc(vec![], None, None, ctx, role_tx).await
+            }
+        }
+    }
+
     /// Update peer node index
     #[instrument(skip(self))]
     fn update_peer_indexes(
@@ -2153,13 +2167,11 @@ impl<T: TypeConfig> LeaderState<T> {
         node_config: Arc<RaftNodeConfig>,
     ) -> Self {
         let ReplicationConfig {
-            max_batch_size,
             rpc_append_entries_clock_in_ms,
             ..
         } = node_config.raft.replication;
 
-        // Extract read config before node_config is moved
-        let read_size_threshold = node_config.raft.read_consistency.read_batching.size_threshold;
+        let batch_size = node_config.raft.batching.max_batch_size;
 
         let enable_batch = node_config.raft.metrics.enable_batch;
         // Initialize backpressure metrics (None if disabled)
@@ -2185,7 +2197,7 @@ impl<T: TypeConfig> LeaderState<T> {
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            propose_buffer: Box::new(BatchBuffer::new(max_batch_size).with_length_gauge(
+            propose_buffer: Box::new(ProposeBatchBuffer::new(batch_size).with_length_gauge(
                 node_id,
                 "propose",
                 enable_batch,
@@ -2199,13 +2211,11 @@ impl<T: TypeConfig> LeaderState<T> {
             next_membership_maintenance_check: Instant::now(),
             pending_promotions: VecDeque::new(),
             lease_timestamp: AtomicU64::new(0),
-            linearizable_read_buffer: Box::new(
-                BatchBuffer::new(read_size_threshold).with_length_gauge(
-                    node_id,
-                    "linearizable",
-                    enable_batch,
-                ),
-            ),
+            linearizable_read_buffer: Box::new(BatchBuffer::new(batch_size).with_length_gauge(
+                node_id,
+                "linearizable",
+                enable_batch,
+            )),
             lease_read_queue: VecDeque::new(),
             eventual_read_queue: VecDeque::new(),
             pending_requests: HashMap::new(),
@@ -2391,29 +2401,6 @@ impl<T: TypeConfig> LeaderState<T> {
         }
         batch
     }
-
-    /// Convert tuple batch to single merged RaftRequestWithSignal (optimal: zero-copy + stdlib unzip)
-    fn convert_tuples_to_request(
-        tuples: VecDeque<(
-            EntryPayload,
-            MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
-        )>
-    ) -> Option<RaftRequestWithSignal> {
-        if tuples.is_empty() {
-            return None;
-        }
-
-        // Use stdlib's optimized unzip (better than manual loop)
-        let (payloads, senders): (Vec<_>, Vec<_>) = tuples.into_iter().unzip();
-
-        Some(RaftRequestWithSignal {
-            id: nanoid!(),
-            payloads,
-            senders,
-            wait_for_apply_event: true,
-        })
-    }
-
     /// Merge a batch of requests into unified write metadata for RPC processing.
     ///
     /// OR-combines wait_for_apply flags: if any request needs apply confirmation, all wait.
@@ -2451,7 +2438,7 @@ impl<T: TypeConfig> LeaderState<T> {
         &mut self,
         payloads: Vec<EntryPayload>,
         write_metadata: Option<WriteMetadata>,
-        read_batch: Option<VecDeque<LinearizableReadRequest>>,
+        read_batch: Option<Vec<LinearizableReadRequest>>,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
@@ -2881,8 +2868,7 @@ impl<T: TypeConfig> LeaderState<T> {
     ) -> Result<()> {
         // Extract write metadata
         let (payloads, write_metadata) = if !self.propose_buffer.is_empty() {
-            let tuples = self.propose_buffer.take_all();
-            if let Some(req) = Self::convert_tuples_to_request(tuples) {
+            if let Some(req) = self.propose_buffer.flush() {
                 let start_idx = ctx.raft_log().last_entry_id() + 1;
                 (
                     req.payloads,
@@ -2897,7 +2883,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Extract read batch
         let read_batch = if !self.linearizable_read_buffer.is_empty() {
-            Some(self.linearizable_read_buffer.take())
+            Some(self.linearizable_read_buffer.take_all())
         } else {
             None
         };
@@ -2910,7 +2896,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Caller must ensure SM has already applied up to the required read_index.
     fn execute_pending_reads(
         &self,
-        read_batch: VecDeque<LinearizableReadRequest>,
+        read_batch: impl IntoIterator<Item = LinearizableReadRequest>,
         ctx: &RaftContext<T>,
     ) {
         for (req, sender) in read_batch {
@@ -3011,7 +2997,6 @@ impl<T: TypeConfig> LeaderState<T> {
 impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
     fn from(candidate: &CandidateState<T>) -> Self {
         let ReplicationConfig {
-            max_batch_size,
             rpc_append_entries_clock_in_ms,
             ..
         } = candidate.node_config.raft.replication;
@@ -3038,11 +3023,14 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            propose_buffer: Box::new(BatchBuffer::new(max_batch_size).with_length_gauge(
-                candidate.node_id(),
-                "propose",
-                candidate.node_config.raft.metrics.enable_batch,
-            )),
+            propose_buffer: Box::new(
+                ProposeBatchBuffer::new(candidate.node_config.raft.batching.max_batch_size)
+                    .with_length_gauge(
+                        candidate.node_id(),
+                        "propose",
+                        candidate.node_config.raft.metrics.enable_batch,
+                    ),
+            ),
 
             node_config: candidate.node_config.clone(),
 
@@ -3059,14 +3047,12 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             },
             lease_timestamp: AtomicU64::new(0),
             linearizable_read_buffer: Box::new(
-                BatchBuffer::new(
-                    candidate.node_config.raft.read_consistency.read_batching.size_threshold,
-                )
-                .with_length_gauge(
-                    candidate.node_id(),
-                    "linearizable",
-                    candidate.node_config.raft.metrics.enable_batch,
-                ),
+                BatchBuffer::new(candidate.node_config.raft.batching.max_batch_size)
+                    .with_length_gauge(
+                        candidate.node_id(),
+                        "linearizable",
+                        candidate.node_config.raft.metrics.enable_batch,
+                    ),
             ),
             lease_read_queue: VecDeque::new(),
             eventual_read_queue: VecDeque::new(),

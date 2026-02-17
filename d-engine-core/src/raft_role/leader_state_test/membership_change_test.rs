@@ -1433,7 +1433,7 @@ mod pending_promotion_tests {
 
             let (role_tx, role_rx) = mpsc::unbounded_channel();
             let mut node_config = node_config(&format!("/tmp/{test_name}"));
-            node_config.raft.replication.max_batch_size = 1;
+            node_config.raft.batching.max_batch_size = 1;
             node_config.raft.membership.verify_leadership_persistent_timeout =
                 Duration::from_millis(200);
 

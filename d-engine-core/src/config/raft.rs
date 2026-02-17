@@ -16,9 +16,17 @@ use crate::Result;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RaftConfig {
     /// Configuration settings related to log replication
-    /// Includes parameters like replication batch size and network retry behavior
+    /// Includes parameters like heartbeat interval and AppendEntries entry count limit
     #[serde(default)]
     pub replication: ReplicationConfig,
+
+    /// Client request batching configuration
+    ///
+    /// Controls flush thresholds for the leader's propose and linearizable-read buffers.
+    /// Separate from replication config — this governs the client ingestion layer, not
+    /// the Leader→Follower replication path.
+    #[serde(default)]
+    pub batching: BatchingConfig,
 
     /// Configuration settings for leader election mechanism
     /// Controls timeouts and randomization factors for election timing
@@ -112,6 +120,7 @@ impl Default for RaftConfig {
     fn default() -> Self {
         Self {
             replication: ReplicationConfig::default(),
+            batching: BatchingConfig::default(),
             election: ElectionConfig::default(),
             membership: MembershipConfig::default(),
             state_machine: StateMachineConfig::default(),
@@ -146,6 +155,7 @@ impl RaftConfig {
         }
 
         self.replication.validate()?;
+        self.batching.validate()?;
         self.election.validate()?;
         self.membership.validate()?;
         self.state_machine.validate()?;
@@ -185,30 +195,11 @@ fn default_snapshot_rpc_timeout_ms() -> u64 {
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReplicationConfig {
+    /// Heartbeat interval (milliseconds): how often the leader sends AppendEntries RPCs.
     #[serde(default = "default_append_interval")]
     pub rpc_append_entries_clock_in_ms: u64,
 
-    /// Maximum number of commands to accumulate in a single batch during drain operations
-    ///
-    /// # How It Works
-    /// In the drain-based batch architecture:
-    /// 1. recv() blocks until first command arrives
-    /// 2. try_recv() drains up to `max_batch_size` pending commands
-    /// 3. Entire batch is flushed to followers immediately
-    ///
-    /// # Example
-    /// With max_batch_size = 1000:
-    /// - If 500 commands arrive: drain triggers immediately with 500 commands
-    /// - If 1500 commands arrive: two batches (1000 + 500)
-    /// - Heartbeat (100ms) acts as safety net for incomplete batches
-    ///
-    /// # Tuning Guidelines
-    /// - Low latency (< 1ms): 100-200 (drain faster, less batching)
-    /// - Balanced: 1000 (default, good throughput/latency trade-off)
-    /// - High throughput (> 10K ops/sec): 2000-5000 (batch more for efficiency)
-    #[serde(default = "default_max_batch_size")]
-    pub max_batch_size: usize,
-
+    /// Maximum log entries per single AppendEntries RPC to a follower.
     #[serde(default = "default_entries_per_replication")]
     pub append_entries_max_entries_per_replication: u64,
 }
@@ -217,7 +208,6 @@ impl Default for ReplicationConfig {
     fn default() -> Self {
         Self {
             rpc_append_entries_clock_in_ms: default_append_interval(),
-            max_batch_size: default_max_batch_size(),
             append_entries_max_entries_per_replication: default_entries_per_replication(),
         }
     }
@@ -230,12 +220,6 @@ impl ReplicationConfig {
             )));
         }
 
-        if self.max_batch_size == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "max_batch_size must be > 0. This sets the maximum number of commands to batch together in drain operations (e.g., 1000 means drain up to 1000 commands at once)".into(),
-            )));
-        }
-
         if self.append_entries_max_entries_per_replication == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "append_entries_max_entries_per_replication must be > 0".into(),
@@ -245,6 +229,50 @@ impl ReplicationConfig {
         Ok(())
     }
 }
+
+/// Batching configuration for leader-side drain loops and buffer allocation.
+///
+/// A single value intentionally covers all drain loops because they all operate
+/// within the same heartbeat period and share the same order-of-magnitude concurrency:
+/// - `raft.rs` cmd_rx drain (client propose ingestion)
+/// - `raft.rs` role_rx drain (commit index event coalescing)
+/// - `DefaultCommitHandler` new_commit_rx drain (state machine apply batching)
+///
+/// Also used as the initial Vec capacity for propose and linearizable-read buffers
+/// (construction-time hint only; the propose buffer retains capacity across flushes
+/// via `mem::swap`, while the read buffer resets each flush via `mem::take`).
+///
+/// # Tuning Guidelines
+/// - Low latency priority: lower values → smaller batches, faster flush
+/// - Throughput priority: higher values → larger batches, fewer RPCs
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BatchingConfig {
+    /// Maximum items to drain per heartbeat period across all drain loops.
+    ///
+    /// **Default**: 100
+    #[serde(default = "default_max_batch_size")]
+    pub max_batch_size: usize,
+}
+
+impl Default for BatchingConfig {
+    fn default() -> Self {
+        Self {
+            max_batch_size: default_max_batch_size(),
+        }
+    }
+}
+
+impl BatchingConfig {
+    fn validate(&self) -> Result<()> {
+        if self.max_batch_size == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "batching.max_batch_size must be > 0".into(),
+            )));
+        }
+        Ok(())
+    }
+}
+
 fn default_append_interval() -> u64 {
     100
 }
@@ -995,23 +1023,6 @@ pub struct ReadConsistencyConfig {
     /// Default: 10ms (safe buffer for single-node local deployments)
     #[serde(default = "default_state_machine_sync_timeout_ms")]
     pub state_machine_sync_timeout_ms: u64,
-
-    /// ReadIndex batching configuration
-    #[serde(default)]
-    pub read_batching: ReadBatchingConfig,
-}
-
-/// Read batching configuration
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReadBatchingConfig {
-    /// Flush when buffer reaches this size
-    pub size_threshold: usize,
-}
-
-impl Default for ReadBatchingConfig {
-    fn default() -> Self {
-        Self { size_threshold: 50 }
-    }
 }
 
 impl Default for ReadConsistencyConfig {
@@ -1021,7 +1032,6 @@ impl Default for ReadConsistencyConfig {
             lease_duration_ms: default_lease_duration_ms(),
             allow_client_override: default_allow_client_override(),
             state_machine_sync_timeout_ms: default_state_machine_sync_timeout_ms(),
-            read_batching: ReadBatchingConfig::default(),
         }
     }
 }

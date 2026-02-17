@@ -9,7 +9,7 @@ initial_cluster = [
 db_root_dir = "./data/n2"
 log_dir = "./logs"
 
-[raft.replication]
+[raft.batching]
 # Maximum number of commands to accumulate in a single batch during drain operations
 max_batch_size = 500
 

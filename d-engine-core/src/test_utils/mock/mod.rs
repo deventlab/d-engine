@@ -63,7 +63,7 @@ pub fn mock_raft_context(
     if let Some(peers_meta) = peers_meta_option {
         node_config.cluster.initial_cluster = peers_meta;
     }
-    node_config.raft.replication.max_batch_size = 1;
+    node_config.raft.batching.max_batch_size = 1;
     // Reduce timeout for test
     node_config.retry.auto_discovery.timeout_ms = 10;
 

@@ -13,11 +13,10 @@ general_raft_timeout_duration_in_ms = 100
 # Default: 1 hour for large snapshot transfers
 snapshot_rpc_timeout_ms = 3_600_000
 
-[raft.replication]
-# Leader's append entries tick interval (milliseconds)
-rpc_append_entries_clock_in_ms = 100
-
-# Maximum number of commands to accumulate in a single batch during drain operations
+[raft.batching]
+# Maximum number of commands to accumulate in a single batch during drain operations.
+# A single value covers all drain loops (cmd_rx, role_rx, new_commit_rx) because
+# they all operate within the same heartbeat period.
 #
 # How it works in drain-based architecture:
 # 1. recv() blocks until first command arrives
@@ -34,6 +33,10 @@ rpc_append_entries_clock_in_ms = 100
 # - Balanced: 1000 (default, good throughput/latency trade-off)
 # - High throughput (> 10K ops/sec): 2000-5000 (batch more for efficiency)
 max_batch_size = 100
+
+[raft.replication]
+# Leader's append entries tick interval (milliseconds)
+rpc_append_entries_clock_in_ms = 100
 
 # Maximum entries per replication request to slow followers
 # Prevents overwhelming slow followers with too many entries at once
