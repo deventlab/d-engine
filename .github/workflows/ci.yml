@@ -12,6 +12,25 @@ env:
   RUST_BACKTRACE: full
 
 jobs:
+  msrv:
+    name: MSRV Check (Rust 1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust 1.85.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.85.0
+
+      - name: cargo check (MSRV)
+        run: cargo check --all-features --workspace
+
   lint:
     name: Lint and Format Check
     runs-on: ubuntu-latest

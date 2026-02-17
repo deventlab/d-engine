@@ -7,6 +7,7 @@ description = "Pure Raft consensus algorithm - for building custom Raft-based sy
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
+rust-version.workspace = true
 keywords = ["raft", "consensus", "algorithm"]
 categories = ["algorithms", "concurrency"]
 publish = true

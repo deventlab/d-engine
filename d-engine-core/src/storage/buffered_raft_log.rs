@@ -868,10 +868,10 @@ where
             v.sort_unstable();
             v.dedup();
             for idx in v {
-                if idx == cur + 1 {
-                    cur = idx;
-                } else if idx > cur + 1 {
-                    break;
+                match idx.cmp(&(cur + 1)) {
+                    std::cmp::Ordering::Equal => cur = idx,
+                    std::cmp::Ordering::Greater => break,
+                    std::cmp::Ordering::Less => {}
                 }
             }
             if cur > self.durable_index.load(Ordering::Acquire) {

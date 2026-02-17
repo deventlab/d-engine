@@ -187,7 +187,7 @@ Bug fixes are always welcome.
 
 ### Prerequisites
 
-- Rust 1.88+
+- Rust 1.85+
 - Tokio runtime
 - Protobuf compiler
 
