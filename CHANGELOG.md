@@ -32,7 +32,8 @@ All notable changes to this project will be documented in this file.
 - **Drain-based batch architecture** (#266): Replaced timeout-driven batching with drain-on-arrival pattern
   - Low load: near-zero wait (eliminated ~1ms timeout penalty)
   - High load: natural batching, significant throughput improvement
-  - Performance report: TBD
+  - Embedded: linearizable read +92%, lease/eventual read +62% vs v0.2.2
+  - See [bench report v0.2.3](benches/reports/v0.2.3/bench_report_v0.2.3.md)
 
 - **Default PersistenceStrategy changed: `MemFirst` → `DiskFirst`** (#268): Raft protocol compliance
   - **Breaking**: Add `persistence_strategy = "MemFirst"` to `[raft.persistence]` config to restore prior behavior
