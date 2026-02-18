@@ -423,7 +423,7 @@ impl StateMachineTestSuite {
 
         // Relax threshold in CI environment (resource-constrained)
         let threshold = if std::env::var("CI").is_ok() {
-            500.0 // CI: Allow up to 500x (shared runner disk I/O can spike unpredictably)
+            100.0 // CI: Allow up to 100x (disk I/O can be slow)
         } else {
             20.0 // Local: Expect near-linear scalability
         };

@@ -45,7 +45,11 @@ async fn test_rocksdb_state_machine_suite() {
         .expect("RocksDBStateMachine should pass all tests");
 }
 
+// TODO: test_apply_chunk_scalability uses wall-clock I/O time ratio to detect O(N²) complexity,
+// which is unreliable in CI due to disk I/O spikes. Needs redesign (e.g., measure pure in-memory
+// ops separately from WAL writes) before re-enabling.
 #[tokio::test]
+#[ignore]
 async fn test_rocksdb_state_machine_performance() {
     let builder = RocksDBStateMachineBuilder::new();
     StateMachineTestSuite::run_performance_tests(builder)
