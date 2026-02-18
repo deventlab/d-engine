@@ -94,7 +94,6 @@ allow = [
     "ISC",          # Add ISC license
     "Unicode-3.0",  # Add Unicode license
     "Zlib",         # Add Zlib license if needed
-    "OpenSSL",      # Add OpenSSL if needed
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
