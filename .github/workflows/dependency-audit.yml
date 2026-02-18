@@ -12,6 +12,8 @@ on:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v4
 
