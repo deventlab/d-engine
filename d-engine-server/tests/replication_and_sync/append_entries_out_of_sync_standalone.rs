@@ -102,7 +102,19 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     debug!("[test_out_of_sync_peer_scenario] Cluster started. Running tests...");
 
     // 3. Verify leader election
+    // Wait for a stable leader before building client — under parallel test load,
+    // election may take longer than WAIT_FOR_NODE_READY_IN_SEC allows.
     let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(Some(_)) = client_manager.list_leader_id().await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for stable leader after cluster start");
     assert_eq!(client_manager.list_leader_id().await.unwrap(), Some(3));
 
     // 4. Test client request

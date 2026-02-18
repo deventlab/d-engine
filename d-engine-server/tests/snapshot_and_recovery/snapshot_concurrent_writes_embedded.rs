@@ -159,8 +159,20 @@ snapshots_dir = '{}'
         for i in 95..145 {
             let key = format!("key-{i:04}").into_bytes();
             let value = format!("value-{i:04}").into_bytes();
-            let result = leader_client.put(key, value).await;
-            results.push((i, result));
+
+            // Retry on PROPOSE_FAILED (4006): snapshot generation may briefly cause
+            // propose to fail; this is transient and expected to succeed on retry.
+            let mut last_result = leader_client.put(key.clone(), value.clone()).await;
+            for _ in 0..3 {
+                match &last_result {
+                    Err(e) if format!("{e:?}").contains("4006") => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        last_result = leader_client.put(key.clone(), value.clone()).await;
+                    }
+                    _ => break,
+                }
+            }
+            results.push((i, last_result));
 
             // Small delay to make concurrent writes more realistic
             if i % 10 == 0 {

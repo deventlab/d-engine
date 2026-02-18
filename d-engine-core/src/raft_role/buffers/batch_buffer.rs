@@ -65,7 +65,15 @@ impl<E> BatchBuffer<E> {
     /// Take all buffered items via `mem::take` — O(1), no copy.
     pub fn take_all(&mut self) -> Vec<E> {
         self.last_flush = Instant::now();
-        std::mem::take(&mut self.buffer)
+        let items = std::mem::take(&mut self.buffer);
+
+        if self.metrics_enabled {
+            if let Some(ref labels) = self.metrics_labels {
+                metrics::gauge!("batch.buffer_length", labels.as_ref()).set(0.0);
+            }
+        }
+
+        items
     }
 
     pub fn is_empty(&self) -> bool {

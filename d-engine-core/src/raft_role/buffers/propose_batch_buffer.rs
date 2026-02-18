@@ -124,6 +124,12 @@ impl ProposeBatchBuffer {
         std::mem::swap(&mut self.payloads, &mut payloads);
         std::mem::swap(&mut self.senders, &mut senders);
 
+        if self.metrics_enabled {
+            if let Some(ref labels) = self.metrics_labels {
+                metrics::gauge!("batch.buffer_length", labels.as_ref()).set(0.0);
+            }
+        }
+
         Some(RaftRequestWithSignal {
             id: nanoid!(),
             payloads,

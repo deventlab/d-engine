@@ -274,7 +274,7 @@ pub trait ClientApi: Send + Sync {
 
     /// Retrieves a key with linearizable (strong) consistency
     ///
-    /// Convenience method for [`get_with_policy()`](Self::get_with_policy) with
+    /// Convenience method for [`get_multi_with_policy()`](Self::get_multi_with_policy) with
     /// `LinearizableRead` policy. Guarantees reading the latest committed value.
     ///
     /// # Arguments
@@ -303,7 +303,7 @@ pub trait ClientApi: Send + Sync {
 
     /// Retrieves a key with lease-based consistency
     ///
-    /// Convenience method for [`get_with_policy()`](Self::get_with_policy) with
+    /// Convenience method for [`get_multi_with_policy()`](Self::get_multi_with_policy) with
     /// `LeaseRead` policy. Optimized linearizable read using Leader lease mechanism.
     ///
     /// # Arguments
@@ -332,7 +332,7 @@ pub trait ClientApi: Send + Sync {
 
     /// Retrieves a key with eventual consistency
     ///
-    /// Convenience method for [`get_with_policy()`](Self::get_with_policy) with
+    /// Convenience method for [`get_multi_with_policy()`](Self::get_multi_with_policy) with
     /// `EventualConsistency` policy. Fast but may return stale data if replication is lagging.
     ///
     /// # Arguments
