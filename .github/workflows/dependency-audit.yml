@@ -32,7 +32,7 @@ jobs:
 
       - name: Audit dependencies
         run: |
-          cargo install cargo-deny --version 0.18.3 --locked
+          cargo install cargo-deny --locked
           cargo deny check all
 
       - name: Update dependencies
