@@ -483,7 +483,9 @@ async fn run_local_benchmark(cli: Cli) {
         if engine.is_leader() {
             run_batch_tests(&engine, &cli).await;
             // Signal followers to auto-shutdown
-            let _ = std::fs::write(done_signal_path, "done");
+            if let Err(e) = std::fs::write(done_signal_path, "done") {
+                eprintln!("Failed to write done signal: {e}");
+            }
         } else {
             println!(
                 "This node is Follower, keeping cluster membership alive during batch tests..."
