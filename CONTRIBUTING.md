@@ -75,7 +75,17 @@ make test  # Run all tests with nextest (fast, parallel)
 
 - Features: `feature/<ticket-number>_<short-description>`
 - Bug fixes: `bug/<ticket-number>_<short-description>`
-- Target `develop` branch for all PRs
+- Target `main` branch for all PRs
+
+### Keeping Your PR Up-to-Date
+
+If `main` has moved forward since you created your branch, rebase before requesting review:
+
+```bash
+git fetch upstream
+git rebase upstream/main
+git push --force-with-lease
+```
 
 ### Code Quality
 
