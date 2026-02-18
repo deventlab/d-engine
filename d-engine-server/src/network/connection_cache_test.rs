@@ -13,11 +13,22 @@ use crate::test_utils::MockRpcService;
 use crate::utils::net::address_str;
 
 // Helper to create test config
+// Use generous connect_timeout to avoid flaky failures when mock server
+// hasn't finished starting under parallel test load.
 fn test_config() -> NetworkConfig {
     NetworkConfig {
-        control: ConnectionParams::default(),
-        data: ConnectionParams::default(),
-        bulk: ConnectionParams::default(),
+        control: ConnectionParams {
+            connect_timeout_in_ms: 5000,
+            ..Default::default()
+        },
+        data: ConnectionParams {
+            connect_timeout_in_ms: 5000,
+            ..Default::default()
+        },
+        bulk: ConnectionParams {
+            connect_timeout_in_ms: 5000,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

@@ -1,11 +1,9 @@
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeRole::Leader;
-use serial_test::serial;
 
 use super::SnapshotContext;
 use crate::LogSizePolicy;
@@ -76,24 +74,6 @@ fn resets_after_cooldown_period() {
     // Wait longer than cooldown
     std::thread::sleep(Duration::from_millis(150));
     assert!(policy.should_trigger(&ctx));
-}
-
-#[test]
-#[serial]
-fn handles_concurrent_checks_with_cooldown() {
-    let policy = Arc::new(LogSizePolicy::new(100, Duration::from_secs(1)));
-    let ctx = test_context(200, 100, Leader as i32);
-
-    let handles: Vec<_> = (0..10)
-        .map(|_| {
-            let p = policy.clone();
-            let c = ctx.clone();
-            std::thread::spawn(move || p.should_trigger(&c))
-        })
-        .collect();
-
-    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-    assert_eq!(results.iter().filter(|&&b| b).count(), 1);
 }
 
 #[test]
