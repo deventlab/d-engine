@@ -648,14 +648,6 @@ where
         use d_engine_proto::common::entry_payload::Payload;
         use prost::Message;
 
-        debug_assert_eq!(
-            results.len(),
-            chunk.len(),
-            "broadcast_watch_events: results and chunk length mismatch (results={}, chunk={})",
-            results.len(),
-            chunk.len()
-        );
-
         for (i, entry) in chunk.iter().enumerate() {
             if let Some(ref payload) = entry.payload {
                 if let Some(Payload::Command(bytes)) = &payload.payload {
