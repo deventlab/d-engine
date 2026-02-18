@@ -260,7 +260,8 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
     info!("2 nodes killed. Verifying cluster cannot serve writes");
 
     // Attempt write should fail (no majority)
-    client.refresh(None).await?;
+    // refresh may fail when no leader is available — that is expected, ignore the error.
+    let _ = client.refresh(None).await;
     let write_result = tokio::time::timeout(
         Duration::from_secs(5),
         client.put("should-fail", "no-majority"),
