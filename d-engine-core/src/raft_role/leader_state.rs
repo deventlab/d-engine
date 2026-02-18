@@ -1414,8 +1414,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
 
                 // Serve pending linearizable reads whose read_index <= last_index.
-                while let Some((&key, _)) = self.pending_reads.range(..=last_index).next() {
-                    if let Some(batch) = self.pending_reads.remove(&key) {
+                let reads_to_serve: Vec<_> =
+                    self.pending_reads.range(..=last_index).map(|(k, _)| *k).collect();
+
+                for read_index in reads_to_serve {
+                    if let Some(batch) = self.pending_reads.remove(&read_index) {
                         self.execute_pending_reads(batch, ctx);
                     }
                 }
