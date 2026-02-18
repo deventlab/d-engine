@@ -109,14 +109,17 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
     info!("CAS result during leader stop: {:?}", cas_result);
     // Expected: timeout or error (uncommitted request fails)
 
-    // Phase 2: Wait for new leader election via wait_ready on a surviving node
+    // Phase 2: Wait for new leader election via wait_ready on surviving nodes
+    // Poll all surviving nodes: under parallel test load any of them may win election.
     info!("Phase 2: Waiting for new leader election");
-    let surviving_idx = if leader_idx == 0 { 1 } else { 0 };
+    let surviving_indices: Vec<usize> = (0..engines.len()).filter(|&i| i != leader_idx).collect();
     let new_leader_info = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            if let Ok(info) = engines[surviving_idx].wait_ready(Duration::from_secs(1)).await {
-                if info.leader_id != 0 && info.leader_id != initial_leader_id {
-                    return info;
+            for &idx in &surviving_indices {
+                if let Ok(info) = engines[idx].wait_ready(Duration::from_secs(1)).await {
+                    if info.leader_id != 0 && info.leader_id != initial_leader_id {
+                        return info;
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_millis(200)).await;

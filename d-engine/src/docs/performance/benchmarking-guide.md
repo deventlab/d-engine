@@ -50,7 +50,7 @@ The other two follower tabs will auto-shutdown once the benchmark completes.
 
 The leader node prints a full benchmark report:
 
-```
+```text
 ╔════════════════════════════════════════╗
 ║  Running Batch Benchmark Tests        ║
 ╚════════════════════════════════════════╝
@@ -119,7 +119,7 @@ make start-cluster
 
 Wait until leader election completes. You will see log lines similar to:
 
-```
+```text
 [Node1] Follower → Candidate (term 1)
 [Node3] [Cluster] All 2 peer(s) health check passed
 [Node1] Candidate → Leader (term 3)
@@ -181,7 +181,7 @@ make clean && make build
 
 Each command prints a result summary:
 
-```
+```text
 Initializing client connection with: ["http://127.0.0.1:9081", ...]
 Summary:
 Total time:     1.58 s
