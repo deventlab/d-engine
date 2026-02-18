@@ -921,16 +921,14 @@ mod role_violation_tests {
             "Candidate should handle ApplyCompleted without error"
         );
 
-        // VERIFY 2: No CreateSnapshotEvent is sent (channel should be empty)
-        // Keep role_tx alive to prevent channel closure
-        drop(role_tx);
-
+        // VERIFY 2: No CreateSnapshotEvent is sent (channel should be empty).
+        // role_tx is kept alive so that Disconnected cannot be confused with "no event sent".
         match role_rx.try_recv() {
             Err(mpsc::error::TryRecvError::Empty) => {
-                // Expected: no event sent - this is the correct behavior
+                // Expected: no event sent — correct behavior
             }
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                // Also acceptable: channel closed without any messages sent
+                panic!("role event channel disconnected unexpectedly");
             }
             Ok(event) => {
                 panic!(
@@ -938,6 +936,7 @@ mod role_violation_tests {
                 );
             }
         }
+        drop(role_tx);
 
         // VERIFY 3: Candidate state remains unchanged (no snapshot in progress)
         // Note: CandidateState doesn't have snapshot_in_progress field because it doesn't handle snapshots

@@ -8,6 +8,8 @@ use d_engine_core::client::ClientApiResult;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_proto::client::WatchEventType;
+use d_engine_proto::client::WatchResponse;
 use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterMembership;
 use tokio::sync::oneshot;
@@ -790,16 +792,23 @@ async fn test_get_multi_with_mixed_results() {
     assert!(result.is_ok());
     let results = result.unwrap();
 
-    // Server returns only the keys that exist (sparse results)
-    // In this case, only key1 and key3 exist (not key2)
-    assert_eq!(results.len(), 2);
+    // Result vector must be aligned to input key order.
+    // key1 exists → Some("value1"), key2 missing → None, key3 exists → Some("value3").
     assert_eq!(
-        results[0].as_ref(),
-        Some(&Bytes::from("value1".to_string()))
+        results.len(),
+        keys.len(),
+        "Result count must match input key count"
     );
     assert_eq!(
-        results[1].as_ref(),
-        Some(&Bytes::from("value3".to_string()))
+        results[0],
+        Some(Bytes::from("value1")),
+        "key1 should have value1"
+    );
+    assert_eq!(results[1], None, "key2 is missing, must be None");
+    assert_eq!(
+        results[2],
+        Some(Bytes::from("value3")),
+        "key3 should have value3"
     );
 }
 
@@ -1417,6 +1426,111 @@ mod cas_operations {
         assert!(
             !result.unwrap(),
             "CAS on non-existent key with Some(wrong) should fail"
+        );
+    }
+}
+
+// =============================================================================
+// Watch Tests
+// =============================================================================
+
+mod watch_tests {
+    use super::*;
+    use tokio_stream::StreamExt;
+
+    async fn make_client(port: u16) -> GrpcClient {
+        let endpoints = vec![format!("http://localhost:{}", port)];
+        let config = ClientConfig::default();
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+        GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 42,
+            config,
+            endpoints,
+        })))
+    }
+
+    /// Verifies that GrpcClient::watch returns Err when the server rejects the
+    /// watch request (e.g. permission denied, feature disabled).
+    #[tokio::test]
+    #[traced_test]
+    async fn test_watch_server_error() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) = MockNode::simulate_watch_error_mock_server(
+            rx,
+            tonic::Status::permission_denied("watch not allowed"),
+        )
+        .await
+        .unwrap();
+
+        let client = make_client(port).await;
+        let result = client.watch(b"my-key").await;
+
+        assert!(result.is_err(), "Expected error when server rejects watch");
+    }
+
+    /// Verifies that GrpcClient::watch returns a stream and that all events
+    /// emitted by the server are received by the client in order.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_watch_success_receives_events() {
+        let events = vec![
+            WatchResponse {
+                key: Bytes::from("lock"),
+                value: Bytes::from("owner-a"),
+                event_type: WatchEventType::Put as i32,
+                error: 0,
+            },
+            WatchResponse {
+                key: Bytes::from("lock"),
+                value: Bytes::new(),
+                event_type: WatchEventType::Delete as i32,
+                error: 0,
+            },
+        ];
+
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) =
+            MockNode::simulate_watch_mock_server(rx, events.clone()).await.unwrap();
+
+        let client = make_client(port).await;
+        let mut stream = client.watch(b"lock").await.expect("watch should succeed");
+
+        // Receive first event: Put
+        let ev1 = stream.next().await.expect("expected first event").expect("no error");
+        assert_eq!(ev1.key, Bytes::from("lock"));
+        assert_eq!(ev1.value, Bytes::from("owner-a"));
+        assert_eq!(ev1.event_type, WatchEventType::Put as i32);
+
+        // Receive second event: Delete
+        let ev2 = stream.next().await.expect("expected second event").expect("no error");
+        assert_eq!(ev2.key, Bytes::from("lock"));
+        assert_eq!(ev2.event_type, WatchEventType::Delete as i32);
+
+        // Stream should be exhausted
+        assert!(
+            stream.next().await.is_none(),
+            "stream should be closed after all events"
+        );
+    }
+
+    /// Verifies that a watch stream with zero events closes immediately
+    /// without error — represents a key that has no pending changes.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_watch_empty_stream() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) = MockNode::simulate_watch_mock_server(rx, vec![]).await.unwrap();
+
+        let client = make_client(port).await;
+        let mut stream = client.watch(b"no-changes").await.expect("watch should succeed");
+
+        // Stream should be immediately exhausted
+        assert!(
+            stream.next().await.is_none(),
+            "empty event stream should close immediately"
         );
     }
 }

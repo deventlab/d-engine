@@ -32,6 +32,9 @@ pub struct MockRpcService {
         Option<Arc<dyn Fn(u16) -> Result<ClusterMembership, tonic::Status> + Send + Sync>>,
 
     pub expected_discover_leader_response: Option<Result<LeaderDiscoveryResponse, tonic::Status>>,
+
+    /// Watch stream events to emit, in order. None means return an error.
+    pub expected_watch_events: Option<Result<Vec<WatchResponse>, tonic::Status>>,
 }
 impl MockRpcService {
     pub fn with_metadata_response(
@@ -133,9 +136,16 @@ impl RaftClientService for MockRpcService {
         &self,
         _request: tonic::Request<WatchRequest>,
     ) -> std::result::Result<tonic::Response<Self::WatchStream>, tonic::Status> {
-        // Mock implementation - return empty stream
-        Err(tonic::Status::unimplemented(
-            "Watch not implemented in mock",
-        ))
+        match &self.expected_watch_events {
+            Some(Ok(events)) => {
+                // Return a finite stream of pre-configured watch events.
+                let items: Vec<Result<WatchResponse, tonic::Status>> =
+                    events.iter().cloned().map(Ok).collect();
+                let stream = futures::stream::iter(items);
+                Ok(tonic::Response::new(Box::pin(stream)))
+            }
+            Some(Err(status)) => Err(status.clone()),
+            None => Err(tonic::Status::unimplemented("Watch not configured in mock")),
+        }
     }
 }

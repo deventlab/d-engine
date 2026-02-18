@@ -53,10 +53,9 @@
 //! ## Features
 //!
 //! This crate provides:
-//! - [`Client`] - Main entry point with cluster access
+//! - [`Client`] - Main entry point; derefs to [`GrpcClient`]
 //! - [`ClientBuilder`] - Configurable client construction
-//! - [`ClientApi`] - Client operations trait
-//! - [`ClusterClient`] - Cluster management operations
+//! - [`ClientApi`] - Unified client operations trait (put/get/delete/CAS/watch)
 //!
 //! ## Documentation
 //!
@@ -122,13 +121,10 @@ mod pool_test;
 #[cfg(test)]
 mod utils_test;
 
-/// Main entry point for interacting with the d_engine cluster
+/// Main entry point for interacting with the d-engine cluster.
 ///
-/// Manages connections and provides access to specialized clients:
-/// - Use [`kv()`](Client::kv) for data operations
-/// - Use [`cluster()`](Client::cluster) for cluster administration
-///
-/// Created through the [`builder()`](Client::builder) method
+/// Derefs to [`GrpcClient`], which implements [`ClientApi`] for all KV operations.
+/// Created through [`ClientBuilder`].
 #[derive(Clone)]
 pub struct Client {
     inner: std::sync::Arc<GrpcClient>,

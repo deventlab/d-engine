@@ -6,6 +6,8 @@
 //!
 //! ## Test Files
 //!
-//! - `embedded_client_operations.rs` - EmbeddedClient API testing
+//! - `embedded_client_operations.rs` - EmbeddedClient API testing:
+//!   put, put_with_ttl, get (eventual/linearizable/lease), get_multi alignment,
+//!   delete, concurrent ops, watch (put/delete events, key isolation)
 
 mod embedded_client_operations;

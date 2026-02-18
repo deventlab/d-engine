@@ -222,9 +222,9 @@ where
 
         // Fire-and-forget watch events on success (non-blocking)
         #[cfg(feature = "watch")]
-        if apply_result.is_ok() {
+        if let Ok(ref results) = apply_result {
             if let Some(ref tx) = self.watch_event_tx {
-                self.broadcast_watch_events(&chunk, tx);
+                self.broadcast_watch_events(&chunk, results, tx);
             }
         }
 
@@ -630,11 +630,15 @@ where
     /// Parses chunk entries and broadcasts WatchEvent via tokio::broadcast channel.
     /// Non-blocking: if channel is full, oldest events are dropped (lagging receivers).
     /// Decoupled from WatchManager: only sends signal, doesn't care who listens.
+    ///
+    /// `results` must have the same length as `chunk` (enforced by StateMachineHandler contract).
+    /// CAS entries where `results[i].succeeded == false` are skipped — no mutation occurred.
     #[cfg(feature = "watch")]
     #[inline]
     pub(super) fn broadcast_watch_events(
         &self,
         chunk: &[Entry],
+        results: &[ApplyResult],
         tx: &tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
     ) {
         use d_engine_proto::client::WatchEventType;
@@ -644,7 +648,15 @@ where
         use d_engine_proto::common::entry_payload::Payload;
         use prost::Message;
 
-        for entry in chunk {
+        debug_assert_eq!(
+            results.len(),
+            chunk.len(),
+            "broadcast_watch_events: results and chunk length mismatch (results={}, chunk={})",
+            results.len(),
+            chunk.len()
+        );
+
+        for (i, entry) in chunk.iter().enumerate() {
             if let Some(ref payload) = entry.payload {
                 if let Some(Payload::Command(bytes)) = &payload.payload {
                     if let Ok(write_cmd) = WriteCommand::decode(bytes.as_ref()) {
@@ -661,12 +673,20 @@ where
                                 event_type: WatchEventType::Delete as i32,
                                 error: 0,
                             }),
-                            Some(Operation::CompareAndSwap(cas)) => Some(WatchResponse {
-                                key: cas.key,
-                                value: cas.new_value,
-                                event_type: WatchEventType::Put as i32,
-                                error: 0,
-                            }),
+                            Some(Operation::CompareAndSwap(cas)) => {
+                                // Only broadcast if CAS actually mutated the value.
+                                // A failed CAS leaves the key unchanged — no watch event.
+                                if results.get(i).is_some_and(|r| r.succeeded) {
+                                    Some(WatchResponse {
+                                        key: cas.key,
+                                        value: cas.new_value,
+                                        event_type: WatchEventType::Put as i32,
+                                        error: 0,
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
                             None => None,
                         };
 

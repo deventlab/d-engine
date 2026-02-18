@@ -37,10 +37,26 @@ impl ClientResponseExt for ClientResponse {
     /// - `Err` with error code on failure
     fn into_write_result(self) -> std::result::Result<bool, ClientApiError> {
         self.validate_error()?;
-        Ok(match self.success_result {
-            Some(SuccessResult::WriteResult(result)) => result.succeeded,
-            _ => false,
-        })
+        match self.success_result {
+            Some(SuccessResult::WriteResult(result)) => Ok(result.succeeded),
+            other => {
+                let found = match &other {
+                    Some(SuccessResult::ReadData(_)) => "ReadData",
+                    Some(_) => "Unknown",
+                    None => "None",
+                };
+                error!(
+                    "Unexpected response type for write operation: expected WriteResult, found {found}"
+                );
+                Err(ClientApiError::Protocol {
+                    code: d_engine_proto::error::ErrorCode::InvalidResponse,
+                    message: format!(
+                        "Unexpected response type: expected WriteResult, found {found}"
+                    ),
+                    supported_versions: None,
+                })
+            }
+        }
     }
 
     /// Convert response to read results

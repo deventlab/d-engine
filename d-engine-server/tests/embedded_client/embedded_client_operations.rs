@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_core::ClientApi;
 use d_engine_server::EmbeddedEngine;
 use tempfile::TempDir;
 
@@ -24,6 +25,9 @@ async fn create_test_engine(test_name: &str) -> (EmbeddedEngine, TempDir) {
 listen_address = "127.0.0.1:{}"
 db_root_dir = "{}"
 single_node = true
+
+[raft.state_machine.lease]
+enabled = true
 "#,
         port,
         db_path.display()
@@ -495,4 +499,284 @@ async fn test_concurrent_write_and_linearizable_read() {
     }
 
     println!("✅ All 100 concurrent linearizable reads saw their own writes");
+}
+
+// =============================================================================
+// put_with_ttl
+// =============================================================================
+
+/// Verifies that put_with_ttl stores a value that is immediately readable.
+///
+/// TTL expiry is not tested here (requires real time passage); this test
+/// focuses on the write path: the entry must be committed and readable
+/// via linearizable read immediately after the call returns.
+#[tokio::test]
+async fn test_put_with_ttl_readable_immediately() {
+    let (engine, _temp_dir) = create_test_engine("put_with_ttl").await;
+    let client = engine.client();
+
+    client
+        .put_with_ttl(b"ttl-key", b"ttl-value", 60)
+        .await
+        .expect("put_with_ttl should succeed");
+
+    let value = client
+        .get_linearizable(b"ttl-key")
+        .await
+        .expect("get_linearizable should succeed");
+
+    assert_eq!(
+        value,
+        Some(Bytes::from("ttl-value")),
+        "value written with TTL must be readable immediately after write completes"
+    );
+}
+
+// =============================================================================
+// get_with_consistency (LeaseRead)
+// =============================================================================
+
+/// Verifies that get_with_consistency with LeaseRead returns the correct value.
+///
+/// On a single-node cluster the leader always holds a valid lease, so
+/// LeaseRead should behave identically to LinearizableRead.
+#[tokio::test]
+async fn test_get_with_consistency_lease_read() {
+    use d_engine_proto::client::ReadConsistencyPolicy;
+
+    let (engine, _temp_dir) = create_test_engine("lease_read").await;
+    let client = engine.client();
+
+    client.put(b"lease-key", b"lease-val").await.expect("put should succeed");
+
+    let value = client
+        .get_with_consistency(b"lease-key", ReadConsistencyPolicy::LeaseRead)
+        .await
+        .expect("get_with_consistency LeaseRead should succeed");
+
+    assert_eq!(value, Some(Bytes::from("lease-val")));
+}
+
+// =============================================================================
+// get_multi_linearizable / get_multi_eventual — alignment
+// =============================================================================
+
+/// Verifies get_multi_linearizable returns an aligned Vec<Option<Bytes>> where
+/// positions corresponding to missing keys contain None.
+///
+/// This exercises the HashMap-based reconstruction that ensures the result
+/// vector length always equals the input key count regardless of which keys
+/// actually exist in the store.
+#[tokio::test]
+async fn test_get_multi_linearizable_aligned_with_missing_keys() {
+    let (engine, _temp_dir) = create_test_engine("get_multi_linearizable").await;
+    let client = engine.client();
+
+    client.put(b"ml1", b"v1").await.expect("put ml1 should succeed");
+    client.put(b"ml3", b"v3").await.expect("put ml3 should succeed");
+    // ml2 intentionally not written
+
+    let keys = vec![Bytes::from("ml1"), Bytes::from("ml2"), Bytes::from("ml3")];
+    let results = client
+        .get_multi_linearizable(&keys)
+        .await
+        .expect("get_multi_linearizable should succeed");
+
+    assert_eq!(results.len(), 3, "result length must equal key count");
+    assert_eq!(results[0], Some(Bytes::from("v1")), "ml1 must be present");
+    assert_eq!(results[1], None, "ml2 was not written — must be None");
+    assert_eq!(results[2], Some(Bytes::from("v3")), "ml3 must be present");
+}
+
+/// Verifies get_multi_eventual returns an aligned Vec<Option<Bytes>>.
+///
+/// Same alignment guarantee as linearizable, but using the eventual
+/// consistency path (local state machine read, no leader round-trip).
+#[tokio::test]
+async fn test_get_multi_eventual_aligned_with_missing_keys() {
+    let (engine, _temp_dir) = create_test_engine("get_multi_eventual").await;
+    let client = engine.client();
+
+    client.put(b"me1", b"a").await.expect("put me1 should succeed");
+    client.put(b"me2", b"b").await.expect("put me2 should succeed");
+    // me3 intentionally not written
+
+    // Allow replication to apply on single-node before eventual read
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let keys = vec![Bytes::from("me1"), Bytes::from("me2"), Bytes::from("me3")];
+    let results = client
+        .get_multi_eventual(&keys)
+        .await
+        .expect("get_multi_eventual should succeed");
+
+    assert_eq!(results.len(), 3, "result length must equal key count");
+    assert_eq!(results[0], Some(Bytes::from("a")));
+    assert_eq!(results[1], Some(Bytes::from("b")));
+    assert_eq!(results[2], None, "me3 was not written — must be None");
+}
+
+/// Verifies that get_multi_linearizable with an empty key slice returns an
+/// empty Vec without error.
+#[tokio::test]
+async fn test_get_multi_linearizable_empty_keys() {
+    let (engine, _temp_dir) = create_test_engine("get_multi_empty").await;
+    let client = engine.client();
+
+    let results = client
+        .get_multi_linearizable(&[])
+        .await
+        .expect("empty key slice should not error");
+
+    assert!(results.is_empty(), "empty input must produce empty output");
+}
+
+// =============================================================================
+// Watch operations (requires `watch` feature)
+// =============================================================================
+
+/// Helper: create an EmbeddedEngine with watch feature enabled.
+///
+/// Separate from create_test_engine because watch requires the
+/// `[raft.watch]` config section to activate the WatchRegistry.
+#[cfg(feature = "watch")]
+async fn create_watch_engine(
+    test_name: &str
+) -> (d_engine_server::EmbeddedEngine, tempfile::TempDir) {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let db_path = temp_dir.path().join(test_name);
+
+    let config_path = temp_dir.path().join("d-engine.toml");
+    // Offset port to avoid collisions with non-watch tests
+    let port = 51000 + (std::process::id() % 10000);
+    let config_content = format!(
+        r#"
+[cluster]
+listen_address = "127.0.0.1:{}"
+db_root_dir = "{}"
+single_node = true
+
+[raft]
+general_raft_timeout_duration_in_ms = 100
+
+[raft.commit_handler]
+batch_size_threshold = 1
+process_interval_ms = 1
+
+[replication]
+max_batch_size = 1
+
+[raft.watch]
+enabled = true
+event_queue_size = 1000
+watcher_buffer_size = 10
+"#,
+        port,
+        db_path.display()
+    );
+    std::fs::write(&config_path, config_content).expect("Failed to write watch config");
+
+    let engine = d_engine_server::EmbeddedEngine::start_with(config_path.to_str().unwrap())
+        .await
+        .expect("Failed to start watch engine");
+
+    engine.wait_ready(Duration::from_secs(5)).await.expect("Watch engine not ready");
+
+    (engine, temp_dir)
+}
+
+/// Verifies that watch() returns a WatcherHandle without error when the
+/// watch feature is enabled and WatchRegistry is initialized.
+#[cfg(feature = "watch")]
+#[tokio::test]
+async fn test_watch_registration_succeeds() {
+    let (engine, _temp_dir) = create_watch_engine("watch_reg").await;
+    let client = engine.client();
+
+    let handle = client.watch(b"watched-key");
+    assert!(handle.is_ok(), "watch registration should succeed");
+}
+
+/// Verifies that a put on a watched key delivers a Put event to the watcher.
+///
+/// This tests the full path: EmbeddedClient::put → Raft commit →
+/// state machine apply → WatchDispatcher → WatcherHandle receiver.
+#[cfg(feature = "watch")]
+#[tokio::test]
+async fn test_watch_receives_put_event() {
+    use d_engine_core::watch::WatchEventType;
+
+    let (engine, _temp_dir) = create_watch_engine("watch_put").await;
+    let client = engine.client();
+
+    let mut handle = client.watch(b"w-key").expect("watch should succeed");
+
+    client.put(b"w-key", b"w-val").await.expect("put should succeed");
+
+    let event = tokio::time::timeout(Duration::from_secs(1), handle.receiver_mut().recv())
+        .await
+        .expect("timed out waiting for Put watch event")
+        .expect("watch channel should not be closed");
+
+    assert_eq!(
+        event.event_type,
+        WatchEventType::Put as i32,
+        "expected Put event"
+    );
+    assert_eq!(event.key, Bytes::from("w-key"));
+    assert_eq!(event.value, Bytes::from("w-val"));
+}
+
+/// Verifies that a delete on a watched key delivers a Delete event to the watcher.
+#[cfg(feature = "watch")]
+#[tokio::test]
+async fn test_watch_receives_delete_event() {
+    use d_engine_core::watch::WatchEventType;
+
+    let (engine, _temp_dir) = create_watch_engine("watch_delete").await;
+    let client = engine.client();
+
+    client.put(b"d-key", b"d-val").await.expect("put should succeed");
+
+    let mut handle = client.watch(b"d-key").expect("watch should succeed");
+
+    client.delete(b"d-key").await.expect("delete should succeed");
+
+    let event = tokio::time::timeout(Duration::from_secs(1), handle.receiver_mut().recv())
+        .await
+        .expect("timed out waiting for Delete watch event")
+        .expect("watch channel should not be closed");
+
+    assert_eq!(
+        event.event_type,
+        WatchEventType::Delete as i32,
+        "expected Delete event"
+    );
+    assert_eq!(event.key, Bytes::from("d-key"));
+}
+
+/// Verifies that a watcher does NOT receive events for keys it is not watching.
+///
+/// Key isolation is a correctness requirement: each watcher must only see
+/// events for its own registered key.
+#[cfg(feature = "watch")]
+#[tokio::test]
+async fn test_watch_key_isolation() {
+    let (engine, _temp_dir) = create_watch_engine("watch_isolation").await;
+    let client = engine.client();
+
+    let mut handle = client.watch(b"my-key").expect("watch should succeed");
+
+    // Write to a different key — watcher must NOT receive this event
+    client.put(b"other-key", b"other-val").await.expect("put should succeed");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    match handle.receiver_mut().try_recv() {
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+            // correct — no event for unrelated key
+        }
+        Ok(event) => panic!("unexpected event for unrelated key: {event:?}"),
+        Err(e) => panic!("unexpected channel error: {e:?}"),
+    }
 }

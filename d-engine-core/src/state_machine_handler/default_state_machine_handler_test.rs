@@ -1708,6 +1708,8 @@ mod broadcast_watch_events_tests {
     };
     use prost::Message;
 
+    use crate::ApplyResult;
+
     fn create_entry(
         index: u64,
         operation: Operation,
@@ -1727,6 +1729,20 @@ mod broadcast_watch_events_tests {
         }
     }
 
+    fn succeeded(index: u64) -> ApplyResult {
+        ApplyResult {
+            index,
+            succeeded: true,
+        }
+    }
+
+    fn failed(index: u64) -> ApplyResult {
+        ApplyResult {
+            index,
+            succeeded: false,
+        }
+    }
+
     #[tokio::test]
     async fn test_broadcast_insert_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
@@ -1741,7 +1757,7 @@ mod broadcast_watch_events_tests {
             }),
         );
 
-        handler.broadcast_watch_events(&[entry], &tx);
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from(&b"key1"[..]));
@@ -1761,7 +1777,7 @@ mod broadcast_watch_events_tests {
             }),
         );
 
-        handler.broadcast_watch_events(&[entry], &tx);
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from(&b"key1"[..]));
@@ -1769,8 +1785,9 @@ mod broadcast_watch_events_tests {
         assert_eq!(event.event_type, WatchEventType::Delete as i32);
     }
 
+    // CAS succeeded → watcher receives Put event with new value
     #[tokio::test]
-    async fn test_broadcast_cas_event() {
+    async fn test_broadcast_cas_success() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
         let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
@@ -1783,7 +1800,7 @@ mod broadcast_watch_events_tests {
             }),
         );
 
-        handler.broadcast_watch_events(&[entry], &tx);
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from(&b"lock"[..]));
@@ -1791,8 +1808,85 @@ mod broadcast_watch_events_tests {
         assert_eq!(event.event_type, WatchEventType::Put as i32);
     }
 
+    // CAS failed → no watch event emitted (key unchanged)
     #[tokio::test]
-    async fn test_broadcast_mixed_operations() {
+    async fn test_broadcast_cas_failure_no_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entry = create_entry(
+            1,
+            Operation::CompareAndSwap(CompareAndSwap {
+                key: b"lock".to_vec().into(),
+                expected_value: Some(b"wrong_owner".to_vec().into()),
+                new_value: b"owner2".to_vec().into(),
+            }),
+        );
+
+        handler.broadcast_watch_events(&[entry], &[failed(1)], &tx);
+
+        // Channel must be empty — no event should have been sent
+        assert!(
+            rx.try_recv().is_err(),
+            "Expected no watch event for failed CAS"
+        );
+    }
+
+    // Multiple CAS: only succeeded ones emit events
+    #[tokio::test]
+    async fn test_broadcast_mixed_cas_success_and_failure() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entries = vec![
+            create_entry(
+                1,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"k1".to_vec().into(),
+                    expected_value: Some(b"v0".to_vec().into()),
+                    new_value: b"v1".to_vec().into(),
+                }),
+            ),
+            create_entry(
+                2,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"k2".to_vec().into(),
+                    expected_value: Some(b"wrong".to_vec().into()),
+                    new_value: b"v2".to_vec().into(),
+                }),
+            ),
+            create_entry(
+                3,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"k3".to_vec().into(),
+                    expected_value: None,
+                    new_value: b"v3".to_vec().into(),
+                }),
+            ),
+        ];
+        let results = vec![succeeded(1), failed(2), succeeded(3)];
+
+        handler.broadcast_watch_events(&entries, &results, &tx);
+
+        // k1 succeeded → Put event
+        let event1 = rx.recv().await.unwrap();
+        assert_eq!(event1.key, Bytes::from(&b"k1"[..]));
+        assert_eq!(event1.value, Bytes::from(&b"v1"[..]));
+        assert_eq!(event1.event_type, WatchEventType::Put as i32);
+
+        // k3 succeeded → Put event (k2 failed, skipped)
+        let event2 = rx.recv().await.unwrap();
+        assert_eq!(event2.key, Bytes::from(&b"k3"[..]));
+        assert_eq!(event2.value, Bytes::from(&b"v3"[..]));
+        assert_eq!(event2.event_type, WatchEventType::Put as i32);
+
+        // No more events
+        assert!(rx.try_recv().is_err(), "Expected no further events");
+    }
+
+    // Insert + failed CAS + Delete → only 2 events (Insert and Delete)
+    #[tokio::test]
+    async fn test_broadcast_mixed_ops_with_failed_cas() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
         let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
@@ -1809,7 +1903,7 @@ mod broadcast_watch_events_tests {
                 2,
                 Operation::CompareAndSwap(CompareAndSwap {
                     key: b"k2".to_vec().into(),
-                    expected_value: None,
+                    expected_value: Some(b"wrong".to_vec().into()),
                     new_value: b"v2".to_vec().into(),
                 }),
             ),
@@ -1820,23 +1914,62 @@ mod broadcast_watch_events_tests {
                 }),
             ),
         ];
+        let results = vec![succeeded(1), failed(2), succeeded(3)];
 
-        handler.broadcast_watch_events(&entries, &tx);
+        handler.broadcast_watch_events(&entries, &results, &tx);
 
-        // Verify Insert event
+        // Insert event
         let event1 = rx.recv().await.unwrap();
         assert_eq!(event1.key, Bytes::from(&b"k1"[..]));
         assert_eq!(event1.event_type, WatchEventType::Put as i32);
 
-        // Verify CAS event
+        // Delete event (failed CAS at index 1 was skipped)
         let event2 = rx.recv().await.unwrap();
-        assert_eq!(event2.key, Bytes::from(&b"k2"[..]));
-        assert_eq!(event2.event_type, WatchEventType::Put as i32);
+        assert_eq!(event2.key, Bytes::from(&b"k3"[..]));
+        assert_eq!(event2.event_type, WatchEventType::Delete as i32);
 
-        // Verify Delete event
-        let event3 = rx.recv().await.unwrap();
-        assert_eq!(event3.key, Bytes::from(&b"k3"[..]));
-        assert_eq!(event3.event_type, WatchEventType::Delete as i32);
+        // No more events
+        assert!(rx.try_recv().is_err(), "Expected no further events");
+    }
+
+    // Verifies results[i] aligns with chunk[i] by index position, not by ApplyResult.index
+    #[tokio::test]
+    async fn test_broadcast_cas_results_index_alignment() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        // chunk[0] = CAS failed, chunk[1] = CAS succeeded
+        let entries = vec![
+            create_entry(
+                10,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"key-a".to_vec().into(),
+                    expected_value: Some(b"old".to_vec().into()),
+                    new_value: b"new-a".to_vec().into(),
+                }),
+            ),
+            create_entry(
+                11,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"key-b".to_vec().into(),
+                    expected_value: Some(b"old".to_vec().into()),
+                    new_value: b"new-b".to_vec().into(),
+                }),
+            ),
+        ];
+        // results[0] = failed (aligns with chunk[0] = key-a)
+        // results[1] = succeeded (aligns with chunk[1] = key-b)
+        let results = vec![failed(10), succeeded(11)];
+
+        handler.broadcast_watch_events(&entries, &results, &tx);
+
+        // Only key-b event should arrive
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.key, Bytes::from(&b"key-b"[..]));
+        assert_eq!(event.value, Bytes::from(&b"new-b"[..]));
+        assert_eq!(event.event_type, WatchEventType::Put as i32);
+
+        assert!(rx.try_recv().is_err(), "key-a should not emit an event");
     }
 
     #[tokio::test]
@@ -1844,7 +1977,6 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
         let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
-        // Entry without operation
         let entry = create_entry(
             1,
             Operation::Insert(Insert {
@@ -1854,7 +1986,7 @@ mod broadcast_watch_events_tests {
             }),
         );
 
-        handler.broadcast_watch_events(&[entry], &tx);
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
 
         // Should still receive valid event
         let event = rx.recv().await.unwrap();

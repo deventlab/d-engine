@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 - **CompareAndSwap (CAS) Operation** (#258): Atomic compare-and-swap primitive for distributed coordination
   - Use cases: Distributed locks, leader election, optimistic updates
   - API: `client.compare_and_swap(key, expected_value, new_value)`
-  - Performance: Zero additional latency vs regular writes
+  - Performance: No additional protocol round-trips; latency is comparable to regular writes in most workloads
 
 ### Changed
 

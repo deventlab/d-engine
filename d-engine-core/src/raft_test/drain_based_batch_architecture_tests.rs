@@ -251,7 +251,10 @@ async fn test_p0_leader_high_load_max_batch_cap() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    // Setup mocks - allow multiple flush calls
+    // Shared state: record how many entries were passed in each flush call.
+    let batch_sizes: Arc<std::sync::Mutex<Vec<usize>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
@@ -260,16 +263,18 @@ async fn test_p0_leader_high_load_max_batch_cap() {
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
+    let sizes_clone = Arc::clone(&batch_sizes);
     let mut replication_handler = crate::MockReplicationCore::new();
-    replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
+    replication_handler.expect_handle_raft_request_in_batch().returning(
+        move |payloads, _, _, _, _| {
+            sizes_clone.lock().unwrap().push(payloads.len());
             Ok(crate::AppendResults {
                 commit_quorum_achieved: true,
                 learner_progress: std::collections::HashMap::new(),
                 peer_updates: std::collections::HashMap::new(),
             })
-        });
+        },
+    );
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;
@@ -282,36 +287,74 @@ async fn test_p0_leader_high_load_max_batch_cap() {
         .await
         .expect("Should become Leader");
 
-    // **Step 1**: Push 1000 commands rapidly (simulate high load)
+    // Architecture note: max_batch_size is enforced by the *drain loop* in the
+    // main event loop (try_recv drains up to max_batch_size commands before flush).
+    // flush_cmd_buffers() always sends the entire buffer in one RPC — the cap is
+    // applied at the push side, not the flush side.
+    //
+    // This test verifies the correct architecture: push MAX_BATCH_SIZE commands,
+    // flush once, repeat 10 times — each flush produces exactly one batch of ≤ cap.
+    const MAX_BATCH_SIZE: usize = 100;
+    const ROUNDS: usize = 10;
 
-    const TOTAL_COMMANDS: usize = 1000;
+    let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
 
     if let RaftRole::Leader(ref mut leader) = raft.role {
-        for i in 0..TOTAL_COMMANDS {
-            let (response_tx, _response_rx) = MaybeCloneOneshot::new();
-            let write_cmd = WriteCommand {
-                operation: Some(Operation::Insert(
-                    d_engine_proto::client::write_command::Insert {
-                        key: Bytes::from(format!("key_{i}")),
-                        value: Bytes::from(format!("value_{i}")),
-                        ttl_secs: 0,
-                    },
-                )),
-            };
-            let write_req = ClientWriteRequest {
-                client_id: 1,
-                command: Some(write_cmd),
-            };
-            let cmd = crate::ClientCmd::Propose(write_req, response_tx);
-            leader.push_client_cmd(cmd, &raft.ctx);
+        for round in 0..ROUNDS {
+            // Push exactly MAX_BATCH_SIZE commands (simulating drain loop cap)
+            for i in 0..MAX_BATCH_SIZE {
+                let (response_tx, _response_rx) = MaybeCloneOneshot::new();
+                let write_cmd = WriteCommand {
+                    operation: Some(Operation::Insert(
+                        d_engine_proto::client::write_command::Insert {
+                            key: Bytes::from(format!("key_{round}_{i}")),
+                            value: Bytes::from(format!("value_{round}_{i}")),
+                            ttl_secs: 0,
+                        },
+                    )),
+                };
+                let write_req = ClientWriteRequest {
+                    client_id: 1,
+                    command: Some(write_cmd),
+                };
+                let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+                leader.push_client_cmd(cmd, &raft.ctx);
+            }
+
+            // Flush: sends exactly the pushed batch to replication
+            leader
+                .flush_cmd_buffers(&raft.ctx, &role_tx)
+                .await
+                .expect("flush should succeed");
         }
 
-        // **Step 2**: Flush to drain
-        let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
-        leader
-            .flush_cmd_buffers(&raft.ctx, &role_tx)
-            .await
-            .expect("flush should succeed");
+        // **Assert 1**: Each batch respected the max_batch_size cap.
+        // Note: BecomeLeader sends one extra no-op replication call for leader
+        // initialization, so total call count is ROUNDS + 1 (or more). We only
+        // assert per-batch size and total payload count.
+        let sizes = batch_sizes.lock().unwrap();
+        for &size in sizes.iter() {
+            assert!(
+                size <= MAX_BATCH_SIZE,
+                "batch size {size} exceeded max_batch_size {MAX_BATCH_SIZE}"
+            );
+        }
+
+        // **Assert 2**: Total client commands processed == ROUNDS × MAX_BATCH_SIZE
+        // (excludes the no-op entry from leader initialization)
+        let total: usize = sizes.iter().sum();
+        assert!(
+            total >= ROUNDS * MAX_BATCH_SIZE,
+            "expected at least {} client commands processed, got {total}",
+            ROUNDS * MAX_BATCH_SIZE
+        );
+
+        // **Assert 3**: Multiple replication calls occurred (one per round + no-op)
+        assert!(
+            sizes.len() >= ROUNDS,
+            "expected at least {ROUNDS} replication calls, got {}",
+            sizes.len()
+        );
     } else {
         panic!("Expected Leader state");
     }
@@ -655,7 +698,10 @@ async fn test_p1_medium_load_natural_batching() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    // Setup mocks for replication
+    // Shared state: record batch sizes seen by replication handler
+    let batch_sizes: Arc<std::sync::Mutex<Vec<usize>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
@@ -664,16 +710,18 @@ async fn test_p1_medium_load_natural_batching() {
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
+    let sizes_clone = Arc::clone(&batch_sizes);
     let mut replication_handler = crate::MockReplicationCore::new();
-    replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
+    replication_handler.expect_handle_raft_request_in_batch().returning(
+        move |payloads, _, _, _, _| {
+            sizes_clone.lock().unwrap().push(payloads.len());
             Ok(crate::AppendResults {
                 commit_quorum_achieved: true,
                 learner_progress: std::collections::HashMap::new(),
                 peer_updates: std::collections::HashMap::new(),
             })
-        });
+        },
+    );
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;
@@ -686,9 +734,16 @@ async fn test_p1_medium_load_natural_batching() {
         .await
         .expect("Should become Leader");
 
-    // **Step 1**: Send ~50 commands with moderate spacing
+    // **Step 1**: Push 50 commands at once (all fit within max_batch_size=100)
+    // Natural batching: all commands accumulated before flush → single batch
     const TOTAL_COMMANDS: usize = 50;
+    const MAX_BATCH_SIZE: usize = 100;
+
     if let RaftRole::Leader(ref mut leader) = raft.role {
+        // Reset batch_sizes to exclude the no-op entry appended during BecomeLeader.
+        // The no-op is an internal Raft mechanism; we only want to observe user command batches.
+        batch_sizes.lock().unwrap().clear();
+
         for i in 0..TOTAL_COMMANDS {
             let (response_tx, _response_rx) = MaybeCloneOneshot::new();
             let write_cmd = WriteCommand {
@@ -708,26 +763,40 @@ async fn test_p1_medium_load_natural_batching() {
             leader.push_client_cmd(cmd, &raft.ctx);
         }
 
-        // **Step 2**: Flush multiple times and verify batching behavior
+        // **Step 2**: Single flush drains all 50 commands in one batch
         let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut flush_count = 0;
+        leader
+            .flush_cmd_buffers(&raft.ctx, &role_tx)
+            .await
+            .expect("flush should succeed");
 
-        // Try flushing multiple times to drain all commands
-        for _ in 0..10 {
-            leader
-                .flush_cmd_buffers(&raft.ctx, &role_tx)
-                .await
-                .expect("flush should succeed");
-            flush_count += 1;
+        // **Assert 1**: All commands dispatched in a single batch call
+        // (50 < max_batch_size=100 → no splitting needed)
+        let sizes = batch_sizes.lock().unwrap();
+        assert_eq!(
+            sizes.len(),
+            1,
+            "50 commands should be dispatched as a single batch, got {} batches",
+            sizes.len()
+        );
 
-            // Small delay to simulate real load spacing
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
+        // **Assert 2**: Batch size equals total commands and respects cap
+        assert_eq!(
+            sizes[0], TOTAL_COMMANDS,
+            "batch must contain all {TOTAL_COMMANDS} commands"
+        );
+        assert!(
+            sizes[0] <= MAX_BATCH_SIZE,
+            "batch size {} exceeded max_batch_size {MAX_BATCH_SIZE}",
+            sizes[0]
+        );
 
-        // **Assertion**: Multiple flush cycles occurred
-        // (With moderate load, we expect more than 1 cycle but less than 50)
-        // This verifies natural batching behavior
-        assert!(flush_count > 0, "Should complete flush operations");
+        // **Assert 3**: All commands accounted for (sum of batches == total)
+        let total: usize = sizes.iter().sum();
+        assert_eq!(
+            total, TOTAL_COMMANDS,
+            "all {TOTAL_COMMANDS} commands must be processed"
+        );
     } else {
         panic!("Expected Leader state");
     }

@@ -105,13 +105,12 @@ async fn test_leader_handles_fatal_error_notifies_pending_requests() {
 /// every queue receive an immediate error response instead of hanging until timeout.
 ///
 /// # Queues verified
-/// - `pending_requests` (write requests awaiting apply)
 /// - `linearizable_read_buffer` (reads buffered pre-flush)
 /// - `lease_read_queue` (lease reads awaiting flush)
 /// - `eventual_read_queue` (eventual reads awaiting flush)
 ///
 /// # Given
-/// - Leader with one request in each queue
+/// - Leader with one request in each read queue
 ///
 /// # When
 /// - FatalError event is handled

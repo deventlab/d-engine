@@ -106,7 +106,8 @@ impl GrpcClient {
             return Err(ErrorCode::InvalidRequest.into());
         }
 
-        // Build request
+        // Build request — keep a reference for result alignment after move
+        let keys_for_alignment = keys.clone();
         let request = ClientReadRequest {
             client_id: client_inner.client_id,
             keys,
@@ -133,7 +134,14 @@ impl GrpcClient {
         match client.handle_client_read(request).await {
             Ok(response) => {
                 debug!("Read response: {:?}", response);
-                response.into_inner().into_read_results()
+                // Server returns only results for existing keys (sparse).
+                // Reconstruct aligned vector matching input key order,
+                // filling None for keys not present in the response.
+                // Mirrors embedded_client::get_multi_with_consistency behavior.
+                let sparse = response.into_inner().into_read_results()?;
+                let results_by_key: std::collections::HashMap<bytes::Bytes, _> =
+                    sparse.into_iter().filter_map(|opt| opt.map(|r| (r.key.clone(), r))).collect();
+                Ok(keys_for_alignment.iter().map(|k| results_by_key.get(k).cloned()).collect())
             }
             Err(status) => {
                 error!("Read request failed: {:?}", status);
