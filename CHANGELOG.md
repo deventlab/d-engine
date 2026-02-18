@@ -29,6 +29,14 @@ All notable changes to this project will be documented in this file.
   - Less boilerplate (no intermediate error type conversion)
   - Clearer error semantics for users
 
+- **Drain-based batch architecture** (#266): Replaced timeout-driven batching with drain-on-arrival pattern
+  - Low load: near-zero wait (eliminated ~1ms timeout penalty)
+  - High load: natural batching, significant throughput improvement
+  - Performance report: TBD
+
+- **Default PersistenceStrategy changed: `MemFirst` → `DiskFirst`** (#268): Raft protocol compliance
+  - **Breaking**: Add `persistence_strategy = "MemFirst"` to `[raft.persistence]` config to restore prior behavior
+
 ### Migration Notes
 
 - Replace `KvClient` with `ClientApi` in trait bounds
