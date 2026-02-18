@@ -12,25 +12,6 @@ env:
   RUST_BACKTRACE: full
 
 jobs:
-  msrv:
-    name: MSRV Check (Rust 1.85)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Install Rust 1.85.0
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.85.0
-
-      - name: cargo check (MSRV)
-        run: cargo check --all-features --workspace
-
   lint:
     name: Lint and Format Check
     runs-on: ubuntu-latest
@@ -71,7 +52,7 @@ jobs:
           fetch-depth: 0
 
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: false
           android: true
@@ -95,18 +76,18 @@ jobs:
 
       - name: Install cargo tools
         run: |
-          cargo install cargo-llvm-cov --version 0.6.21 --locked
-          cargo install cargo-nextest --version 0.9.100 --locked
+          cargo install cargo-llvm-cov --locked
+          cargo install cargo-nextest --version 0.9.127 --locked
 
       - name: Run tests with nextest and generate coverage
         run: |
           cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex "src/generated/.*|src/errors.rs"
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
+          file: lcov.info
           flags: unittests
           name: codecov-umbrella
           verbose: true

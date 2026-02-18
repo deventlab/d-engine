@@ -1,10 +1,10 @@
 //! Batching buffers for the Leader's client request hot path.
 //!
-//! - [`BatchBuffer`]  — generic single-type buffer backed by a contiguous `Vec`.
-//!                      Used for linearizable read requests.
+//! - [`BatchBuffer`] — generic single-type buffer backed by a contiguous `Vec`.
+//!   Used for linearizable read requests.
 //! - [`ProposeBatchBuffer`] — SoA (Struct-of-Arrays) buffer for write proposals.
-//!                            Stores payloads and senders in separate `Vec`s;
-//!                            `flush()` is O(1) via `mem::take`, no unzip scan.
+//!   Stores payloads and senders in separate `Vec`s;
+//!   `flush()` is O(1) via `mem::take`, no unzip scan.
 
 pub mod batch_buffer;
 pub mod propose_batch_buffer;
