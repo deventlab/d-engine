@@ -1940,3 +1940,160 @@ async fn test_linearizable_read_batch_single_quorum() {
 
     drop(_shutdown_tx);
 }
+
+/// **Business Scenario**: Lease read when leadership verification fails
+///
+/// **Purpose**: Verify that when lease has expired and leadership re-verification
+/// fails (e.g. node lost leadership due to network partition), the client is
+/// immediately notified with an error instead of hanging until timeout.
+///
+/// **Key Validation**:
+/// - Lease is expired (not valid)
+/// - verify_leadership_and_refresh_lease fails (quorum not reached)
+/// - Client receives Err response immediately (not hung)
+/// - Error code is UNAVAILABLE
+///
+/// **Architecture Context**:
+/// Previously, `?` on verify failure would return Err without notifying the
+/// sender, causing the client to hang until its own timeout. This test guards
+/// against regression of that bug.
+#[tokio::test]
+#[traced_test]
+async fn test_lease_read_verify_failure_notifies_client() {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
+    // Set lease duration to 0 so lease is always expired
+    node_config.raft.read_consistency.lease_duration_ms = 0;
+
+    // Mock replication: quorum not reached (simulates leadership loss)
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: false,
+                peer_updates: HashMap::from([(2, PeerUpdate::failed()), (3, PeerUpdate::failed())]),
+                learner_progress: HashMap::new(),
+            })
+        });
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_lease_read_verify_failure")
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    let req = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key1")],
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+    };
+    let (tx, mut rx) = MaybeCloneOneshot::new();
+
+    // Action: process_lease_read directly (expired lease → verify → quorum fail)
+    let result = state.process_lease_read(req, tx, &ctx, &role_tx).await;
+
+    // Verify: process_lease_read returns Err
+    assert!(result.is_err(), "Should return error on verify failure");
+
+    // Verify: client is immediately notified (not hung)
+    let client_response = rx.recv().await;
+    assert!(
+        client_response.is_ok(),
+        "Oneshot should have received a message"
+    );
+    let inner = client_response.unwrap();
+    assert!(inner.is_err(), "Client should receive Err response");
+    assert_eq!(
+        inner.unwrap_err().code(),
+        tonic::Code::Unavailable,
+        "Error code should be UNAVAILABLE"
+    );
+
+    drop(_shutdown_tx);
+}
+
+/// **Business Scenario**: Lease read succeeds when lease is valid
+///
+/// **Purpose**: Verify that when the lease is still valid, the client is served
+/// immediately from state machine without any quorum verification.
+///
+/// **Key Validation**:
+/// - Lease is valid (recently refreshed)
+/// - No replication call is made (zero quorum overhead)
+/// - Client receives Ok response immediately
+///
+/// **Architecture Context**:
+/// LeaseRead is the fastest read path: if the leader's lease has not expired,
+/// it can serve reads locally without any network round trip.
+#[tokio::test]
+#[traced_test]
+async fn test_lease_read_valid_lease_serves_immediately() {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
+    // Long lease duration so lease is always valid
+    node_config.raft.read_consistency.lease_duration_ms = 60_000;
+
+    // No replication calls expected (valid lease skips quorum)
+    let replication = MockReplicationCore::new();
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_lease_read_valid_lease")
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    // Set lease timestamp to now so is_lease_valid() returns true
+    state.test_update_lease_timestamp();
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    let req = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key1")],
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+    };
+    let (tx, mut rx) = MaybeCloneOneshot::new();
+
+    // Action: process_lease_read directly (valid lease → serve immediately, no quorum)
+    let result = state.process_lease_read(req, tx, &ctx, &role_tx).await;
+
+    // Verify: succeeds without error
+    assert!(result.is_ok(), "Should succeed with valid lease");
+
+    // Verify: client receives Ok response
+    let client_response = rx.recv().await;
+    assert!(
+        client_response.is_ok(),
+        "Oneshot should have received a message"
+    );
+    assert!(
+        client_response.unwrap().is_ok(),
+        "Client should receive Ok response"
+    );
+
+    // Verify: no replication calls were made (MockReplicationCore has no expectations)
+
+    drop(_shutdown_tx);
+}

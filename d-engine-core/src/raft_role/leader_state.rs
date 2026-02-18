@@ -164,6 +164,7 @@ impl BackpressureMetrics {
         enabled: bool,
         sample_rate: u32,
     ) -> Self {
+        let sample_rate = if sample_rate == 0 { 1 } else { sample_rate };
         let node_id_str = node_id.to_string();
         let labels_write = Arc::new([
             ("node_id".to_string(), node_id_str.clone()),
@@ -1441,12 +1442,61 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             RaftEvent::FatalError { source, error } => {
                 error!("[Leader] Fatal error from {}: {}", source, error);
-                // Notify all pending client requests with error before shutdown
+                let fatal_status = || tonic::Status::internal(format!("Node fatal error: {error}"));
+                // Notify all pending write requests
                 let pending: Vec<_> = self.pending_requests.drain().collect();
-                for (_index, sender) in pending {
-                    let _ = sender.send(Err(tonic::Status::internal(format!(
-                        "Node fatal error: {error}"
-                    ))));
+                if !pending.is_empty() {
+                    warn!(
+                        "[Leader] FatalError: notifying {} pending write requests",
+                        pending.len()
+                    );
+                    for (_index, sender) in pending {
+                        let _ = sender.send(Err(fatal_status()));
+                    }
+                }
+                // Notify buffered linearizable reads (pre-flush)
+                let lin_buf = self.linearizable_read_buffer.take_all();
+                if !lin_buf.is_empty() {
+                    warn!(
+                        "[Leader] FatalError: notifying {} buffered linearizable reads",
+                        lin_buf.len()
+                    );
+                    for (_, sender) in lin_buf {
+                        let _ = sender.send(Err(fatal_status()));
+                    }
+                }
+                // Notify pending linearizable reads awaiting ApplyCompleted
+                if !self.pending_reads.is_empty() {
+                    let count: usize = self.pending_reads.values().map(|b| b.len()).sum();
+                    warn!(
+                        "[Leader] FatalError: notifying {} pending linearizable reads",
+                        count
+                    );
+                    for (_, batch) in std::mem::take(&mut self.pending_reads) {
+                        for (_, sender) in batch {
+                            let _ = sender.send(Err(fatal_status()));
+                        }
+                    }
+                }
+                // Notify queued lease reads
+                if !self.lease_read_queue.is_empty() {
+                    warn!(
+                        "[Leader] FatalError: notifying {} queued lease reads",
+                        self.lease_read_queue.len()
+                    );
+                    for (_, sender) in self.lease_read_queue.drain(..) {
+                        let _ = sender.send(Err(fatal_status()));
+                    }
+                }
+                // Notify queued eventual reads
+                if !self.eventual_read_queue.is_empty() {
+                    warn!(
+                        "[Leader] FatalError: notifying {} queued eventual reads",
+                        self.eventual_read_queue.len()
+                    );
+                    for (_, sender) in self.eventual_read_queue.drain(..) {
+                        let _ = sender.send(Err(fatal_status()));
+                    }
                 }
                 return Err(crate::Error::Fatal(format!(
                     "Fatal error from {source}: {error}"
@@ -2949,7 +2999,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Process single lease-based read request
-    async fn process_lease_read(
+    pub(super) async fn process_lease_read(
         &mut self,
         req: ClientReadRequest,
         sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
@@ -2967,7 +3017,20 @@ impl<T: TypeConfig> LeaderState<T> {
             let _ = sender.send(Ok(response));
         } else {
             // Lease expired - refresh and then serve
-            self.verify_leadership_and_refresh_lease(ctx, role_tx).await?;
+            if let Err(e) = self.verify_leadership_and_refresh_lease(ctx, role_tx).await {
+                warn!("[Leader] Lease read: leadership verification failed: {e}");
+                if sender
+                    .send(Err(tonic::Status::unavailable(format!(
+                        "Leadership verification failed: {e}"
+                    ))))
+                    .is_err()
+                {
+                    warn!(
+                        "[Leader] Lease read: client already disconnected before error response could be sent"
+                    );
+                }
+                return Err(e);
+            }
             let results = ctx
                 .handlers
                 .state_machine_handler

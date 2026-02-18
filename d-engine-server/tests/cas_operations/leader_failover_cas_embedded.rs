@@ -109,20 +109,50 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
     info!("CAS result during leader stop: {:?}", cas_result);
     // Expected: timeout or error (uncommitted request fails)
 
-    // Phase 2: Wait for new leader election via wait_ready on surviving nodes
-    // Poll all surviving nodes: under parallel test load any of them may win election.
+    // Phase 2: Wait for new leader election.
+    // Correct two-step approach:
+    // Step 1 - wait for old leader to go down (channel emits None)
+    // Step 2 - wait for new leader to come up (channel emits Some with new id)
+    // This avoids reading stale cached leader info from wait_ready().
     info!("Phase 2: Waiting for new leader election");
     let surviving_indices: Vec<usize> = (0..engines.len()).filter(|&i| i != leader_idx).collect();
+    let mut leader_rxs: Vec<_> = surviving_indices
+        .iter()
+        .map(|&idx| engines[idx].leader_change_notifier())
+        .collect();
+
+    // Step 1: wait until at least one surviving node sees no leader
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            for rx in &mut leader_rxs {
+                let _ = rx.changed().await;
+                if rx.borrow().is_none() {
+                    return;
+                }
+            }
+        }
+    })
+    .await
+    .expect("Timeout waiting for old leader to step down");
+    info!("Old leader stepped down, waiting for new election");
+
+    // Step 2: wait until a surviving node sees a new leader
     let new_leader_info = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            for &idx in &surviving_indices {
-                if let Ok(info) = engines[idx].wait_ready(Duration::from_secs(1)).await {
-                    if info.leader_id != 0 && info.leader_id != initial_leader_id {
-                        return info;
+            for rx in &mut leader_rxs {
+                if let Some(info) = rx.borrow().as_ref() {
+                    if info.leader_id != 0 {
+                        return *info;
+                    }
+                }
+                let _ = rx.changed().await;
+                if let Some(info) = rx.borrow().as_ref() {
+                    if info.leader_id != 0 {
+                        return *info;
                     }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
