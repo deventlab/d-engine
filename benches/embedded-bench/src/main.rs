@@ -463,6 +463,9 @@ async fn run_local_benchmark(cli: Cli) {
     println!("Leader elected: {}", leader_info.leader_id);
     println!("Node ID: {}", engine.node_id());
 
+    // Signal file used to coordinate follower auto-shutdown in batch mode
+    let done_signal_path = "/tmp/embedded-bench-done";
+
     // Setup Ctrl+C handler
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
 
@@ -474,14 +477,29 @@ async fn run_local_benchmark(cli: Cli) {
 
     // Check if running in batch mode
     if cli.batch {
+        // Clean up any leftover signal file from a previous run
+        let _ = std::fs::remove_file(done_signal_path);
+
         if engine.is_leader() {
             run_batch_tests(&engine, &cli).await;
+            // Signal followers to auto-shutdown
+            let _ = std::fs::write(done_signal_path, "done");
         } else {
             println!(
                 "This node is Follower, keeping cluster membership alive during batch tests..."
             );
-            println!("Press Ctrl+C to shutdown.");
-            let _ = shutdown_rx.changed().await;
+            println!("Will auto-shutdown when leader completes benchmarks.");
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                        if std::path::Path::new(done_signal_path).exists() {
+                            println!("Benchmark completed, shutting down follower.");
+                            break;
+                        }
+                    }
+                }
+            }
         }
     } else {
         // Single test mode (original behavior)
