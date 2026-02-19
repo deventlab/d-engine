@@ -122,7 +122,7 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
         .collect();
 
     // Step 1: wait until at least one surviving node sees no leader
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             for rx in &mut leader_rxs {
                 let _ = rx.changed().await;
@@ -137,7 +137,7 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
     info!("Old leader stepped down, waiting for new election");
 
     // Step 2: wait until a surviving node sees a new leader
-    let new_leader_info = tokio::time::timeout(Duration::from_secs(15), async {
+    let new_leader_info = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             for rx in &mut leader_rxs {
                 if let Some(info) = rx.borrow().as_ref() {

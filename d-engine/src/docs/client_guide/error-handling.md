@@ -88,6 +88,10 @@ match client.put(key, value).await {
 }
 ```
 
+---
+
+## Handling in Standalone Mode (Rust gRPC Client)
+
 ### Leader Failover with `refresh()`
 
 When the leader fails, use `client.refresh()` to rediscover the cluster before retrying:
