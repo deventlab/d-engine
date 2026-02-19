@@ -72,10 +72,14 @@ fn test_take_all_resets_buffer() {
     let mut buffer = BatchBuffer::<TestRequest>::new(3);
     buffer.push(create_test_request());
 
+    let before = Instant::now();
     let taken = buffer.take_all();
+    let after = Instant::now();
+
     assert!(!taken.is_empty());
-    assert!(buffer.buffer.is_empty());
-    assert!(buffer.last_flush.elapsed() < Duration::from_millis(50));
+    assert!(buffer.is_empty());
+    assert!(buffer.last_flush >= before);
+    assert!(buffer.last_flush <= after + Duration::from_secs(1));
 }
 
 /// take_all() returns elements in insertion order (Vec semantics).
@@ -133,14 +137,8 @@ fn test_take_all_resets_last_flush_timer() {
     buffer.take_all();
     let after_take = Instant::now();
 
-    let elapsed = buffer.last_flush.elapsed();
-    assert!(
-        elapsed < Duration::from_millis(100),
-        "last_flush not reset properly"
-    );
-
     assert!(buffer.last_flush >= before_take);
-    assert!(buffer.last_flush <= after_take + Duration::from_millis(10));
+    assert!(buffer.last_flush <= after_take + Duration::from_secs(1));
 }
 
 /// Freshly created buffer is empty.

@@ -66,7 +66,12 @@ async fn test_backpressure_write_limit_enforcement() {
 
     // Verify rejection
     let response = resp_rx.recv().await.unwrap();
-    assert!(response.is_err(), "Should reject with error");
+    let err = response.unwrap_err();
+    assert_eq!(
+        err.code(),
+        tonic::Code::ResourceExhausted,
+        "Should reject with ResourceExhausted"
+    );
     assert_eq!(
         leader.propose_buffer.len(),
         2,
@@ -129,7 +134,12 @@ async fn test_backpressure_read_limit_enforcement() {
 
     // Verify rejection
     let response = resp_rx.recv().await.unwrap();
-    assert!(response.is_err(), "Should reject with error");
+    let err = response.unwrap_err();
+    assert_eq!(
+        err.code(),
+        tonic::Code::ResourceExhausted,
+        "Should reject with ResourceExhausted"
+    );
     assert_eq!(
         leader.linearizable_read_buffer.len(),
         3,
@@ -223,7 +233,12 @@ async fn test_backpressure_write_and_read_independent() {
     leader.push_client_cmd(write_cmd, &ctx);
 
     let write_response = write_rx.recv().await.unwrap();
-    assert!(write_response.is_err(), "Write should be rejected");
+    let write_err = write_response.unwrap_err();
+    assert_eq!(
+        write_err.code(),
+        tonic::Code::ResourceExhausted,
+        "Write should be rejected with ResourceExhausted"
+    );
 
     // Reads should still be accepted
     let (read_tx, _read_rx) = MaybeCloneOneshot::new();
@@ -294,7 +309,12 @@ async fn test_backpressure_all_read_policies() {
     leader.push_client_cmd(cmd, &ctx);
 
     let response = resp_rx.recv().await.unwrap();
-    assert!(response.is_err(), "Should reject with error");
+    let err = response.unwrap_err();
+    assert_eq!(
+        err.code(),
+        tonic::Code::ResourceExhausted,
+        "Should reject with ResourceExhausted"
+    );
 
     // Clear lease queue
     leader.lease_read_queue.clear();
@@ -328,5 +348,10 @@ async fn test_backpressure_all_read_policies() {
     leader.push_client_cmd(cmd, &ctx);
 
     let response = resp_rx.recv().await.unwrap();
-    assert!(response.is_err(), "Should reject with error");
+    let err = response.unwrap_err();
+    assert_eq!(
+        err.code(),
+        tonic::Code::ResourceExhausted,
+        "Should reject with ResourceExhausted"
+    );
 }

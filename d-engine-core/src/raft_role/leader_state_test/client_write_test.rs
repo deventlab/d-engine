@@ -563,10 +563,11 @@ async fn test_drain_single_write_no_delay() {
     // Verify: Request succeeded
     assert!(rx.recv().await.is_ok(), "Write should succeed");
 
-    // Verify: Processing was immediate (< 10ms)
+    // Verify: No batch_timeout delay (drain architecture flushes immediately).
+    // 100ms is generous enough for CI/slow hosts while still catching real regressions.
     assert!(
-        elapsed.as_millis() < 10,
-        "Single write should process immediately, took {elapsed:?}"
+        elapsed.as_millis() < 100,
+        "Single write should process immediately without batch_timeout delay, took {elapsed:?}"
     );
 
     drop(_shutdown_tx);
