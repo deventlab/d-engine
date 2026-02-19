@@ -138,7 +138,7 @@ Waits for leader election (combines node initialization + leader election):
 let client = engine.client();
 ```
 
-Returns `EmbeddedClient` for zero-overhead KV operations.
+Returns `Arc<EmbeddedClient>` for zero-overhead KV operations.
 
 ---
 
@@ -214,7 +214,7 @@ EmbeddedEngine::start_custom(
 engine.wait_ready(timeout: Duration) -> Result<LeaderInfo>
 
 // Get KV client
-engine.client() -> &EmbeddedClient
+engine.client() -> Arc<EmbeddedClient>
 
 // Subscribe to leader changes (optional, for monitoring)
 engine.leader_change_notifier() -> watch::Receiver<Option<LeaderInfo>>

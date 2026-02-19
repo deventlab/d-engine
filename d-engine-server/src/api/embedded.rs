@@ -353,10 +353,13 @@ impl EmbeddedEngine {
         })
     }
 
-    /// Wait for leader election to complete.
+    /// Wait until the cluster is ready to serve requests.
     ///
-    /// Blocks until a leader has been elected in the cluster.
-    /// Event-driven notification (no polling), <1ms latency.
+    /// Blocks until a leader has been elected **and** its no-op entry is committed
+    /// by a majority of nodes (Raft §8). Only at this point is the leader guaranteed
+    /// to be aware of all previously committed entries and safe to serve reads and writes.
+    ///
+    /// Event-driven notification (no polling), <1ms latency after noop commit.
     ///
     /// # Timeout Guidelines
     ///

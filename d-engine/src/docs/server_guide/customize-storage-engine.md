@@ -181,7 +181,7 @@ Reference implementations available in:
 Enable RocksDB feature in your `Cargo.toml`:
 
 ```toml
-d-engine = { version = "0.1.4", features = ["rocksdb"] }
+d-engine = { version = "0.2", features = ["rocksdb"] }
 
 ```
 

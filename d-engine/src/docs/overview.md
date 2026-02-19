@@ -58,7 +58,7 @@ use d_engine::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let engine = EmbeddedEngine::with_rocksdb("./data", None).await?;
+    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
     engine.wait_ready(std::time::Duration::from_secs(5)).await?;
 
     let client = engine.client();

@@ -163,8 +163,33 @@ impl Client {
         ClientBuilder::new(endpoints)
     }
 
+    /// Rediscover the cluster and rebuild the connection pool.
+    ///
+    /// Blocks until a leader whose noop entry is committed by majority is found,
+    /// or `ClientConfig::cluster_ready_timeout` elapses.
+    ///
+    /// **What this does:**
+    /// - Probes all endpoints in round-robin until one reports a ready leader
+    ///   (`current_leader_id` is `Some` and present in the member list)
+    /// - Atomically replaces the cached leader/follower connections
+    /// - After `Ok(())`, `get_leader_id()` returns the new leader and all
+    ///   write/read operations are routed to the correct node
+    ///
+    /// **What this does NOT do:**
+    /// - Does not guarantee that the caller's in-flight requests succeeded;
+    ///   requests sent before `refresh()` may have failed and need to be retried
+    /// - Does not implement application-level retry — the caller is responsible
+    ///   for re-issuing any operations that failed during the failover window
+    /// - Does not update endpoints permanently; pass `new_endpoints` to change
+    ///   the bootstrap list for this and future refreshes
+    ///
+    /// **Typical usage after leader failover:**
+    /// ```ignore
+    /// client.refresh(None).await?;          // blocks until new leader ready
+    /// client.put(key, value).await?;        // now safe to retry operations
+    /// ```
     pub async fn refresh(
-        &mut self,
+        &self,
         new_endpoints: Option<Vec<String>>,
     ) -> std::result::Result<(), ClientApiError> {
         let old_inner = self.inner.client_inner.load();

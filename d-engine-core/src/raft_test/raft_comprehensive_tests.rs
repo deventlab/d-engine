@@ -874,6 +874,75 @@ async fn test_become_leader_full_initialization() {
     // Leadership verification is performed
 }
 
+/// Verifies notify_leader_change(Some) is sent only after noop committed by majority,
+/// not at BecomeLeader entry. Leader is truly ready to serve only when noop is committed.
+#[tokio::test]
+async fn test_leader_ready_notification_only_after_noop_committed() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    let (leader_tx, mut leader_rx) = watch::channel(None);
+    raft.register_leader_change_listener(leader_tx);
+
+    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
+    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+
+    // Must receive Some(leader_id): noop committed successfully, cluster is ready
+    leader_rx.changed().await.expect("Should receive leader ready notification");
+    let info = leader_rx.borrow().expect("Leader info must be Some after noop committed");
+    assert_eq!(info.leader_id, raft.node_id);
+}
+
+/// Verifies notify_leader_change(Some) is never sent when noop fails (no quorum).
+/// Node steps back to Follower; only None is sent — no false "leader ready" signal.
+#[tokio::test]
+async fn test_leader_ready_notification_suppressed_when_noop_fails() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    let mut raft_log = crate::MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+
+    let mut replication_handler = crate::MockReplicationCore::new();
+    replication_handler
+        .expect_handle_raft_request_in_batch()
+        .returning(|_, _, _, _, _| {
+            Ok(crate::AppendResults {
+                commit_quorum_achieved: false, // noop fails: no quorum
+                learner_progress: std::collections::HashMap::new(),
+                peer_updates: std::collections::HashMap::new(),
+            })
+        });
+
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_handler;
+
+    let (leader_tx, mut leader_rx) = watch::channel(None);
+    raft.register_leader_change_listener(leader_tx);
+
+    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
+    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+
+    // Must NOT receive Some(leader_id). Channel starts as None; BecomeFollower writes None
+    // again — send_if_modified skips (no change), so changed() never fires. Timeout = correct.
+    let result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(200), leader_rx.changed()).await;
+    if result.is_ok() {
+        assert!(
+            leader_rx.borrow().is_none(),
+            "Must not send Some(leader_id) when noop fails — no false leader ready signal"
+        );
+    }
+    // timeout: no notification at all — also correct, Some was never sent
+}
+
 // B4. BecomeLearner Event Tests
 
 /// Test: BecomeLearner sends leader_change with None

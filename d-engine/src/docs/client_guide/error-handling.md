@@ -90,6 +90,25 @@ match client.put(key, value).await {
 
 ---
 
+## Handling in Standalone Mode (Rust gRPC Client)
+
+### Leader Failover with `refresh()`
+
+When the leader fails, use `client.refresh()` to rediscover the cluster before retrying:
+
+```rust,ignore
+// After leader failover: refresh blocks until new leader is ready
+client.refresh(None).await?;
+
+// Now safe to retry — connections point to new leader
+client.put(key, value).await?;
+```
+
+`refresh()` respects `ClientConfig::cluster_ready_timeout` (default: 5s). Pass
+`Some(endpoints)` to update the bootstrap list for this and future refreshes.
+
+---
+
 ## Leader Hint
 
 When you get `NOT_LEADER` error, check `metadata.LeaderAddress`:

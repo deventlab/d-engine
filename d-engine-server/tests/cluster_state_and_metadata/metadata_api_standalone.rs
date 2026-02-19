@@ -221,7 +221,7 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
     }
 
     // Connect client
-    let mut client = Client::builder(create_bootstrap_urls(ports))
+    let client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;
