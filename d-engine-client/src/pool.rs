@@ -63,13 +63,12 @@ impl ConnectionPool {
         &mut self,
         new_endpoints: Option<Vec<String>>,
     ) -> std::result::Result<(), ClientApiError> {
-        if let Some(endpoints) = new_endpoints {
-            self.endpoints = endpoints;
-        }
+        let endpoints_to_use = new_endpoints.unwrap_or_else(|| self.endpoints.clone());
         let (leader_conn, follower_conns, members, current_leader_id) =
-            Self::build_connections(&self.endpoints, &self.config).await?;
+            Self::build_connections(&endpoints_to_use, &self.config).await?;
 
-        // Atomic update of fields
+        // Only update endpoints and connections after successful build
+        self.endpoints = endpoints_to_use;
         self.leader_conn = leader_conn;
         self.follower_conns = follower_conns;
         self.members = members;

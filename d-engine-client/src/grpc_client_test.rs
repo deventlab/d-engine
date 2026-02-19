@@ -905,7 +905,7 @@ async fn test_client_refresh_with_new_endpoints() {
     }));
 
     let grpc_client = GrpcClient::new(client_inner.clone());
-    let mut client = Client {
+    let client = Client {
         inner: Arc::new(grpc_client),
     };
 
@@ -974,7 +974,7 @@ async fn test_client_refresh_with_none_endpoints() {
     }));
 
     let grpc_client = GrpcClient::new(client_inner.clone());
-    let mut client = Client {
+    let client = Client {
         inner: Arc::new(grpc_client),
     };
 
@@ -1040,7 +1040,7 @@ async fn test_client_refresh_with_multiple_endpoints() {
     }));
 
     let grpc_client = GrpcClient::new(client_inner.clone());
-    let mut client = Client {
+    let client = Client {
         inner: Arc::new(grpc_client),
     };
 
@@ -1100,7 +1100,7 @@ async fn test_client_refresh_failure_invalid_endpoints() {
     }));
 
     let grpc_client = GrpcClient::new(client_inner.clone());
-    let mut client = Client {
+    let client = Client {
         inner: Arc::new(grpc_client),
     };
 
@@ -1157,7 +1157,7 @@ async fn test_client_refresh_preserves_kv_and_cluster_clients() {
     }));
 
     let grpc_client = GrpcClient::new(client_inner.clone());
-    let mut client = Client {
+    let client = Client {
         inner: Arc::new(grpc_client),
     };
 

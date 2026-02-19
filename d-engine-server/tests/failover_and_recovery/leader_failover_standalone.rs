@@ -59,7 +59,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     }
 
     info!("Cluster ready. Writing initial data");
-    let mut client = Client::builder(create_bootstrap_urls(ports))
+    let client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;
@@ -226,7 +226,7 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
         check_cluster_is_ready(&format!("127.0.0.1:{port}"), 10).await?;
     }
 
-    let mut client = Client::builder(create_bootstrap_urls(ports))
+    let client = Client::builder(create_bootstrap_urls(ports))
         .connect_timeout(Duration::from_secs(5))
         .build()
         .await?;

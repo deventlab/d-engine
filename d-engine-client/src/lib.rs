@@ -189,7 +189,7 @@ impl Client {
     /// client.put(key, value).await?;        // now safe to retry operations
     /// ```
     pub async fn refresh(
-        &mut self,
+        &self,
         new_endpoints: Option<Vec<String>>,
     ) -> std::result::Result<(), ClientApiError> {
         let old_inner = self.inner.client_inner.load();

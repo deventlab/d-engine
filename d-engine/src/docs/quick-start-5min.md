@@ -138,7 +138,7 @@ Waits for leader election (combines node initialization + leader election):
 let client = engine.client();
 ```
 
-Returns `EmbeddedClient` for zero-overhead KV operations.
+Returns `Arc<EmbeddedClient>` for zero-overhead KV operations.
 
 ---
 

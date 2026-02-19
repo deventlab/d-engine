@@ -142,7 +142,7 @@ listen_address = "0.0.0.0:9083"
 initial_cluster = [
     { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 },  # Leader, ACTIVE
     { id = 2, address = "0.0.0.0:9082", role = 1, status = 2 },  # Follower (promoted), ACTIVE
-    { id = 3, address = "0.0.0.0:9083", role = 3, status = 0 },  # Self: Learner, JOINING
+    { id = 3, address = "0.0.0.0:9083", role = 3, status = 0 },  # Self: Learner, PROMOTABLE
 ]
 db_root_dir = "./db"
 ```

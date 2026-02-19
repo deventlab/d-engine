@@ -12,6 +12,10 @@ All notable changes to this project will be documented in this file.
   - Use cases: Distributed locks, leader election, optimistic updates
   - API: `client.compare_and_swap(key, expected_value, new_value)`
   - Performance: No additional protocol round-trips; latency is comparable to regular writes in most workloads
+- **Client: `Client::refresh()`** (#278): Rediscover cluster and rebuild connections after leader failover;
+  blocks until a noop-committed leader is found or `cluster_ready_timeout` elapses
+- **Client: `ClientBuilder::cluster_ready_timeout()`** / **`ClientConfig::cluster_ready_timeout`** (#278):
+  Controls how long `build()` / `refresh()` waits for leader readiness (default: 5s)
 
 ### Changed
 
@@ -43,13 +47,6 @@ All notable changes to this project will be documented in this file.
 - **Eliminated TOCTOU race in connection pool** (#278): Leader probe and TCP connect now share
   one retry loop under `cluster_ready_timeout`; a leader crash between probe success and connect
   no longer causes a silent failure — it is transparently retried
-
-### Added (Client)
-
-- **`Client::refresh()`** (#278): Rediscover cluster and rebuild connections after leader failover;
-  blocks until a noop-committed leader is found or `cluster_ready_timeout` elapses
-- **`ClientBuilder::cluster_ready_timeout()`** / **`ClientConfig::cluster_ready_timeout`** (#278):
-  Controls how long `build()` / `refresh()` waits for leader readiness (default: 5s)
 
 ### Migration Notes
 

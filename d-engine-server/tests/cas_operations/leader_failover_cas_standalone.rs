@@ -75,7 +75,7 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     info!("Cluster ready. Testing CAS with leader failover");
 
     let urls = create_bootstrap_urls(ports);
-    let mut client = Client::builder(urls)
+    let client = Client::builder(urls)
         .connect_timeout(Duration::from_secs(5))
         .cluster_ready_timeout(Duration::from_secs(15))
         .build()
