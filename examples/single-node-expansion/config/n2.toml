@@ -9,8 +9,8 @@ listen_address = "0.0.0.0:9082"
 # Node 1: existing leader (role=2, status=2)
 # Node 2: joining as learner (role=3, status=0)
 initial_cluster = [
-    { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 },  # Existing leader
-    { id = 2, address = "0.0.0.0:9082", role = 3, status = 0 },  # Self: Learner, Joining
+    { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 }, # Existing leader
+    { id = 2, address = "0.0.0.0:9082", role = 3, status = 0 }, # Self: Learner, Joining
 ]
 
 db_root_dir = "./db"
@@ -20,11 +20,6 @@ log_dir = "./logs"
 [raft]
 general_raft_timeout_duration_in_ms = 100
 
-[raft.commit_handler]
-batch_size_threshold = 500
-process_interval_ms = 10
-max_entries_per_chunk = 100
-
 [raft.election]
 election_timeout_min = 1000
 election_timeout_max = 2000
@@ -33,9 +28,6 @@ election_timeout_max = 2000
 default_policy = "LeaseRead"
 lease_duration_ms = 500
 
-[raft.replication]
-rpc_append_entries_in_batch_threshold = 5000
-rpc_append_entries_batch_process_delay_in_ms = 0
 
 [raft.persistence]
 strategy = "MemFirst"

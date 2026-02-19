@@ -17,15 +17,15 @@ pub use d_engine_client::*;
 pub mod prelude {
     #[cfg(feature = "server")]
     pub use d_engine_server::{
-        EmbeddedEngine, Error, FileStateMachine, FileStorageEngine, LocalKvClient, Node,
-        NodeBuilder, Result, StandaloneServer, StateMachine, StorageEngine,
+        EmbeddedClient, EmbeddedEngine, Error, FileStateMachine, FileStorageEngine, Node,
+        NodeBuilder, Result, StandaloneEngine, StateMachine, StorageEngine,
     };
 
     #[cfg(feature = "rocksdb")]
     pub use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 
     #[cfg(feature = "client")]
-    pub use d_engine_client::{Client, ClientBuilder, KvClient};
+    pub use d_engine_client::{Client, ClientApi, ClientBuilder};
 }
 
 /// Documentation modules

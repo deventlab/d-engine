@@ -1,16 +1,14 @@
 use std::sync::Arc;
 
-use bytes::Bytes;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Learner;
 use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::ClusterMembership;
-use d_engine_proto::server::cluster::JoinRequest;
 use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
 use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::cluster_conf_update_response;
@@ -18,9 +16,9 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::PurgeLogRequest;
 use tonic::Code;
 
+use crate::ClientCmd;
 use crate::ConsensusError;
 use crate::ElectionError;
 use crate::Error;
@@ -204,7 +202,7 @@ async fn test_candidate_drain_read_buffer_returns_error() {
 ///
 /// Original test location:
 /// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_tick_case1`
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_tick_triggers_new_election_round_on_success() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_tick_success", graceful_rx, None);
@@ -221,6 +219,10 @@ async fn test_tick_triggers_new_election_round_on_success() {
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
+
+    // Advance time to expire the election timer
+    let election_timeout_max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(election_timeout_max + 1)).await;
 
     // Execute tick
     assert!(
@@ -260,7 +262,7 @@ async fn test_tick_triggers_new_election_round_on_success() {
 ///
 /// Original test location:
 /// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_tick_case2`
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_tick_discovers_higher_term_and_steps_down() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context("/tmp/test_tick_higher_term", graceful_rx, None);
@@ -281,6 +283,10 @@ async fn test_tick_discovers_higher_term_and_steps_down() {
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
+
+    // Advance time to expire the election timer
+    let election_timeout_max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(election_timeout_max + 1)).await;
 
     // Execute tick
     assert!(
@@ -715,19 +721,21 @@ async fn test_handle_client_write_returns_not_leader() {
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::ClientPropose(
+    let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
-            commands: vec![],
+            command: Some(WriteCommand::default()),
         },
         resp_tx,
     );
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+    state.push_client_cmd(cmd, &context);
 
-    let r = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(r.error, ErrorCode::NotLeader as i32);
+    let result = resp_rx.recv().await.expect("channel should not be closed");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(err.message().contains("Not leader"));
 }
 
 /// Test: send_replay_raft_event sends correct events
@@ -792,64 +800,6 @@ async fn test_handle_install_snapshot_returns_permission_denied() {
 
     assert_eq!(status.code(), Code::PermissionDenied);
     assert_eq!(status.message(), "Not Follower or Learner.");
-}
-
-/// Test: RaftLogCleanUp returns PermissionDenied
-///
-/// Original: test_handle_raft_event_case8
-#[tokio::test]
-async fn test_handle_raft_log_cleanup_returns_permission_denied() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_log_cleanup", graceful_rx, None);
-    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-
-    let request = PurgeLogRequest {
-        term: 1,
-        leader_id: 1,
-        leader_commit: 1,
-        last_included: Some(LogId { term: 1, index: 1 }),
-        snapshot_checksum: Bytes::from(vec![1, 2, 3]),
-    };
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::RaftLogCleanUp(request, resp_tx);
-
-    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
-
-    assert!(result.is_ok(), "Expected Ok");
-    let response = resp_rx.recv().await.expect("Response should be received");
-    assert!(response.is_err(), "Expected error response");
-    let status = response.unwrap_err();
-
-    assert_eq!(status.code(), Code::PermissionDenied);
-    assert_eq!(status.message(), "Not Follower");
-}
-
-/// Test: JoinCluster returns PermissionDenied
-///
-/// Original: test_handle_raft_event_case10
-#[tokio::test]
-async fn test_handle_join_cluster_returns_permission_denied() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_join_cluster", graceful_rx, None);
-    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-
-    let request = JoinRequest {
-        status: d_engine_proto::common::NodeStatus::Promotable as i32,
-        node_id: 2,
-        node_role: Learner.into(),
-        address: "127.0.0.1:9090".to_string(),
-    };
-    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::JoinCluster(request, resp_tx);
-
-    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
-
-    assert!(result.is_err(), "Expected error");
-    let response = resp_rx.recv().await.expect("Response should be received");
-    assert!(response.is_err(), "Expected error response");
-    let status = response.unwrap_err();
-
-    assert_eq!(status.code(), Code::PermissionDenied);
 }
 
 /// Test: DiscoverLeader returns PermissionDenied
@@ -918,6 +868,79 @@ mod role_violation_tests {
             Error::Consensus(ConsensusError::RoleViolation { .. })
         ));
     }
+
+    /// Test: Candidate does not create snapshots on ApplyCompleted (transient state)
+    ///
+    /// Purpose:
+    /// Validates that Candidate, as a transient state, does not trigger snapshot creation
+    /// even when ApplyCompleted events are received. This prevents unnecessary snapshot
+    /// operations during the brief election period.
+    ///
+    /// Scenario:
+    /// - Candidate receives ApplyCompleted event with sufficient applied entries
+    /// - State machine handler would normally return should_snapshot=true
+    ///
+    /// Expected:
+    /// - Event handler returns Ok() without error
+    /// - No CreateSnapshotEvent is sent to role_tx (channel remains empty)
+    /// - No snapshot file is created
+    /// - Candidate state remains unchanged
+    ///
+    /// Rationale:
+    /// - Candidate is a short-lived transient state during leader election
+    /// - Once elected as Leader or stepped down to Follower, snapshot will be handled
+    /// - Avoiding snapshot during election reduces unnecessary I/O and complexity
+    ///
+    /// This aligns with the implementation in candidate_state.rs:
+    /// ```rust
+    /// RaftEvent::ApplyCompleted { last_index, results } => {
+    ///     // Candidate is a transient state; snapshot will be triggered after role transition.
+    ///     let _ = (last_index, results);
+    /// }
+    /// ```
+    #[tokio::test]
+    async fn test_candidate_does_not_create_snapshot_on_apply_completed() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context = mock_raft_context("/tmp/test_candidate_no_snapshot", graceful_rx, None);
+
+        let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+        // ApplyCompleted with high index that would normally trigger snapshot
+        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let apply_completed_event = RaftEvent::ApplyCompleted {
+            last_index: 1000,
+            results: vec![],
+        };
+
+        let result =
+            state.handle_raft_event(apply_completed_event, &context, role_tx.clone()).await;
+
+        // VERIFY 1: Event handling succeeds without error
+        assert!(
+            result.is_ok(),
+            "Candidate should handle ApplyCompleted without error"
+        );
+
+        // VERIFY 2: No CreateSnapshotEvent is sent (channel should be empty).
+        // role_tx is kept alive so that Disconnected cannot be confused with "no event sent".
+        match role_rx.try_recv() {
+            Err(mpsc::error::TryRecvError::Empty) => {
+                // Expected: no event sent — correct behavior
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                panic!("role event channel disconnected unexpectedly");
+            }
+            Ok(event) => {
+                panic!(
+                    "Candidate should not send any events on ApplyCompleted, but received: {event:?}"
+                );
+            }
+        }
+        drop(role_tx);
+
+        // VERIFY 3: Candidate state remains unchanged (no snapshot in progress)
+        // Note: CandidateState doesn't have snapshot_in_progress field because it doesn't handle snapshots
+    }
 }
 
 #[cfg(test)]
@@ -939,13 +962,17 @@ mod handle_client_read_request {
             keys: vec![],
         };
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+        state.push_client_cmd(cmd, &context);
 
-        let response = resp_rx.recv().await.unwrap().expect("should get response");
-        assert_eq!(response.error, ErrorCode::NotLeader as i32);
+        // MaybeCloneOneshot in test mode sends values through broadcast channel
+        // The Status error is sent as a value, not as channel error
+        let result = resp_rx.recv().await.expect("channel should not be closed");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("Not leader"));
     }
 
     /// Test: ClientReadRequest with EventualConsistency succeeds
@@ -971,12 +998,78 @@ mod handle_client_read_request {
             keys: vec![],
         };
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-        let raft_event = RaftEvent::ClientReadRequest(client_read_request, resp_tx);
+        let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+        state.push_client_cmd(cmd, &context);
 
-        let r = resp_rx.recv().await.unwrap().unwrap();
-        assert_eq!(r.error, ErrorCode::Success as i32);
+        let response = resp_rx.recv().await.unwrap().unwrap();
+        assert_eq!(response.error, ErrorCode::Success as i32);
     }
+}
+
+/// Test: Candidate handles FatalError and returns error
+///
+/// Verifies that when Candidate receives FatalError from any component,
+/// it returns Error::Fatal and stops further processing.
+///
+/// # Test Scenario
+/// Candidate receives FatalError event from state machine while in candidate role (during election).
+/// Candidate should recognize the fatal error and return Error::Fatal.
+///
+/// # Given
+/// - Candidate in normal state (in election)
+/// - FatalError event from StateMachine component
+///
+/// # When
+/// - Candidate handles FatalError event via handle_raft_event()
+///
+/// # Then
+/// - handle_raft_event() returns Error::Fatal
+/// - Error message contains source and error details
+/// - No role transition events are sent (election is aborted)
+#[tokio::test]
+async fn test_candidate_handles_fatal_error_returns_error() {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    let context = crate::test_utils::mock::mock_raft_context(
+        "/tmp/test_candidate_handles_fatal_error_returns_error",
+        shutdown_rx,
+        None,
+    );
+
+    let mut candidate = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Create FatalError event
+    let fatal_error = RaftEvent::FatalError {
+        source: "StateMachine".to_string(),
+        error: "Network failure - cannot persist state".to_string(),
+    };
+
+    // Create role event channel
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    // Handle the FatalError event
+    let result = candidate.handle_raft_event(fatal_error, &context, role_tx).await;
+
+    // VERIFY 1: handle_raft_event() returns Error::Fatal
+    assert!(
+        result.is_err(),
+        "Expected handle_raft_event to return Err, got: {result:?}"
+    );
+
+    // VERIFY 2: Error is Fatal and contains source information
+    match result.unwrap_err() {
+        Error::Fatal(msg) => {
+            assert!(
+                msg.contains("StateMachine"),
+                "Error message should mention source, got: {msg}"
+            );
+        }
+        other => panic!("Expected Error::Fatal, got: {other:?}"),
+    }
+
+    // VERIFY 3: No role events sent (election is aborted)
+    assert!(
+        role_rx.try_recv().is_err(),
+        "No role transition events should be sent during FatalError handling"
+    );
 }

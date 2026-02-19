@@ -2,14 +2,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::ApplyResult;
 use d_engine_core::AppendResponseWithUpdates;
 use d_engine_core::AppendResults;
 use d_engine_core::MockElectionCore;
 use d_engine_core::MockMembership;
 use d_engine_core::MockReplicationCore;
 use d_engine_core::MockTypeConfig;
+use d_engine_core::RaftEvent;
 use d_engine_core::RaftNodeConfig;
-use d_engine_core::StateUpdate;
 use d_engine_core::convert::safe_kv_bytes;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
@@ -84,7 +85,7 @@ async fn test_handle_service_timeout() {
     // Client Propose request
     assert!(
         node.handle_client_write(Request::new(ClientWriteRequest {
-            commands: vec![],
+            command: Some(WriteCommand::default()),
             client_id: 1,
         }))
         .await
@@ -157,7 +158,7 @@ async fn test_server_is_not_ready() {
     let result = node
         .handle_client_write(Request::new(ClientWriteRequest {
             client_id: 1,
-            commands: vec![],
+            command: Some(WriteCommand::default()),
         }))
         .await;
     assert!(result.is_err());
@@ -190,7 +191,7 @@ async fn test_handle_rpc_services_successfully() {
         .validate()
         .expect("Validate RaftNodeConfig successfully");
     settings.raft.general_raft_timeout_duration_in_ms = 200;
-    settings.raft.replication.rpc_append_entries_in_batch_threshold = 0;
+    settings.raft.batching.max_batch_size = 1;
     settings.cluster.db_root_dir = PathBuf::from(
         "/tmp/
     test_handle_rpc_services_successfully",
@@ -199,6 +200,7 @@ async fn test_handle_rpc_services_successfully() {
 
     membership.expect_voters().returning(Vec::new);
     membership.expect_members().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     membership
         .expect_update_cluster_conf_from_leader()
@@ -213,6 +215,9 @@ async fn test_handle_rpc_services_successfully() {
         });
 
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
+    replication_handler
+        .expect_check_append_entries_request_is_legal()
+        .returning(|my_term, _, _| AppendEntriesResponse::success(1, my_term, None));
     replication_handler.expect_handle_append_entries().returning(move |_, _, _| {
         Ok(AppendResponseWithUpdates {
             response: AppendEntriesResponse::success(1, 1, Some(LogId { term: 1, index: 1 })),
@@ -223,24 +228,24 @@ async fn test_handle_rpc_services_successfully() {
         .expect_handle_raft_request_in_batch()
         .returning(|_, _, _, _, _| {
             Ok(AppendResults {
-                commit_quorum_achieved: false,
+                // Must be true: leader requires quorum on noop entry to confirm leadership.
+                // If false, verify_leadership_persistent() causes immediate step-down.
+                commit_quorum_achieved: true,
                 learner_progress: HashMap::new(),
                 peer_updates: HashMap::new(),
             })
         });
     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
-    election_handler.expect_handle_vote_request().times(1).returning(|_, _, _, _| {
-        Ok(StateUpdate {
-            new_voted_for: None,
-            term_update: None,
-        })
-    });
     election_handler
         .expect_broadcast_vote_requests()
         .returning(|_, _, _, _, _| Ok(()));
     election_handler
         .expect_check_vote_request_is_legal()
-        .returning(|_, _, _, _, _| true);
+        // Return false: the incoming vote request (term=1) is not more up-to-date than
+        // the candidate's current term, so it must not cause a step-down.
+        // Leader (term=2) receiving VoteRequest(term=1) directly rejects without calling
+        // handle_vote_request — correct Raft protocol behavior.
+        .returning(|_, _, _, _, _| false);
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let node = MockBuilder::new(graceful_rx)
@@ -273,6 +278,53 @@ async fn test_handle_rpc_services_successfully() {
             .is_ok()
         );
 
+        // Wait for raft loop to complete BecomeLeader (tick → broadcast_vote_requests → verify noop).
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // handle_client_write and handle_client_read must be sent while node is leader.
+        // append_entries (term=1) will cause the candidate to step down, so write/read
+        // are sent first before append_entries disrupts the leadership state.
+        //
+        // Client writes require ApplyCompleted to resolve pending_requests.
+        // Spawn a task to simulate SM apply after the write is queued.
+        let apply_tx = node.event_tx.clone();
+        tokio::spawn(async move {
+            // Yield multiple times to let raft loop process the write cmd
+            // and queue the sender into pending_requests before we send ApplyCompleted.
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            let _ = apply_tx
+                .send(RaftEvent::ApplyCompleted {
+                    last_index: 1,
+                    results: vec![ApplyResult {
+                        index: 1,
+                        succeeded: true,
+                    }],
+                })
+                .await;
+        });
+        assert!(
+            node.handle_client_write(Request::new(ClientWriteRequest {
+                client_id: 1,
+                command: Some(WriteCommand::delete(safe_kv_bytes(1))),
+            }))
+            .await
+            .is_ok()
+        );
+
+        assert!(node.get_cluster_metadata(Request::new(MetadataRequest {})).await.is_ok());
+
+        assert!(
+            node.handle_client_read(Request::new(ClientReadRequest {
+                client_id: 1,
+                consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+                keys: vec![],
+            }))
+            .await
+            .is_ok()
+        );
+
         assert!(
             node.append_entries(Request::new(AppendEntriesRequest {
                 term: 1,
@@ -292,27 +344,6 @@ async fn test_handle_rpc_services_successfully() {
                 term: 1,
                 version: 1,
                 change: None
-            }))
-            .await
-            .is_ok()
-        );
-
-        assert!(
-            node.handle_client_write(Request::new(ClientWriteRequest {
-                client_id: 1,
-                commands: vec![WriteCommand::delete(safe_kv_bytes(1))],
-            }))
-            .await
-            .is_ok()
-        );
-
-        assert!(node.get_cluster_metadata(Request::new(MetadataRequest {})).await.is_ok());
-
-        assert!(
-            node.handle_client_read(Request::new(ClientReadRequest {
-                client_id: 1,
-                consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
-                keys: vec![],
             }))
             .await
             .is_ok()

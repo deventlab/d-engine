@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use d_engine_client::Client;
-use d_engine_client::ClientApiError;
+use d_engine_core::ClientApi;
+use d_engine_core::ClientApiError;
+use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -63,11 +65,19 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
         .await?;
 
     // Write test data before failover
-    client.kv().put("before-failover", "initial-value").await?;
-    // Wait for data to replicate to all nodes before reading
-    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
-    // Use get_eventual() after sufficient wait time to ensure data is replicated
-    let result = client.kv().get_eventual("before-failover").await?;
+    client.put("before-failover", "initial-value").await?;
+    // Retry read until replicated (fixed sleep is unreliable under parallel test load)
+    let result = {
+        let mut val = None;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+            if let Ok(Some(v)) = client.get_eventual("before-failover").await {
+                val = Some(v);
+                break;
+            }
+        }
+        val
+    };
     assert_eq!(
         result.expect("Key should exist after write").value.as_ref(),
         b"initial-value"
@@ -96,7 +106,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     // Retry put with multiple attempts in case new leader is still stabilizing
     let mut put_attempts = 0;
     loop {
-        match client.kv().put("after-failover", "still-works").await {
+        match client.put("after-failover", "still-works").await {
             Ok(_) => break,
             Err(_e) if put_attempts < 3 => {
                 put_attempts += 1;
@@ -106,15 +116,32 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
             Err(e) => return Err(e),
         }
     }
-    // Wait for data to replicate after failover and re-election
-    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
-    // Verify old data still readable
-    let old_val = client.kv().get_eventual("before-failover").await?.unwrap();
-    assert_eq!(old_val.value.as_ref(), b"initial-value");
+    // Retry reads until replicated after failover and re-election
+    let old_val = {
+        let mut val = None;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+            if let Ok(Some(v)) = client.get_eventual("before-failover").await {
+                val = Some(v);
+                break;
+            }
+        }
+        val
+    };
+    assert_eq!(old_val.unwrap().value.as_ref(), b"initial-value");
 
-    // Verify new data written successfully
-    let new_val = client.kv().get_eventual("after-failover").await?.unwrap();
-    assert_eq!(new_val.value.as_ref(), b"still-works");
+    let new_val = {
+        let mut val = None;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+            if let Ok(Some(v)) = client.get_eventual("after-failover").await {
+                val = Some(v);
+                break;
+            }
+        }
+        val
+    };
+    assert_eq!(new_val.unwrap().value.as_ref(), b"still-works");
 
     info!("Failover test passed. Cluster operational with 2/3 nodes");
 
@@ -136,12 +163,20 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 
     info!("Node 1 restarted. Verifying data sync");
 
-    // Wait for node 1 to sync data from cluster
-    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS * 2)).await;
-    // Verify node 1 synced data from cluster
+    // Retry read until node 1 synced data from cluster
     client.refresh(None).await?;
-    let synced_val = client.kv().get_eventual("after-failover").await?.unwrap();
-    assert_eq!(synced_val.value.as_ref(), b"still-works");
+    let synced_val = {
+        let mut val = None;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+            if let Ok(Some(v)) = client.get_eventual("after-failover").await {
+                val = Some(v);
+                break;
+            }
+        }
+        val
+    };
+    assert_eq!(synced_val.unwrap().value.as_ref(), b"still-works");
 
     info!("Node 1 synced successfully. Test complete");
 
@@ -152,6 +187,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 /// Test minority failure: kill 2 nodes, verify cluster cannot serve writes
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn test_minority_failure() -> Result<(), ClientApiError> {
     reset(&format!("{TEST_DIR}_minority")).await?;
 
@@ -195,8 +231,19 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
         .build()
         .await?;
 
-    // Write initial data
-    client.kv().put("test-key", "test-value").await?;
+    // Write initial data with retry: leader may still be stabilizing under load
+    let mut attempts = 0;
+    loop {
+        match client.put("test-key", "test-value").await {
+            Ok(_) => break,
+            Err(_) if attempts < 5 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                client.refresh(None).await?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 
     info!("Killing 2 nodes to lose majority");
 
@@ -213,10 +260,11 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
     info!("2 nodes killed. Verifying cluster cannot serve writes");
 
     // Attempt write should fail (no majority)
-    client.refresh(None).await?;
+    // refresh may fail when no leader is available — that is expected, ignore the error.
+    let _ = client.refresh(None).await;
     let write_result = tokio::time::timeout(
         Duration::from_secs(5),
-        client.kv().put("should-fail", "no-majority"),
+        client.put("should-fail", "no-majority"),
     )
     .await;
 

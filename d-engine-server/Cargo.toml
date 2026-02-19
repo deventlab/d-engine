@@ -7,6 +7,7 @@ description = "Production-ready Raft consensus engine server and runtime"
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
+rust-version.workspace = true
 keywords = ["raft", "consensus", "distributed-systems", "async"]
 categories = ["asynchronous", "concurrency", "network-programming"]
 publish = true
@@ -29,7 +30,6 @@ watch = ["d-engine-core/watch"]
 [dependencies]
 d-engine-proto = { workspace = true }
 d-engine-core = { workspace = true }
-d-engine-client = { workspace = true }
 
 tokio = { workspace = true }
 tonic = { workspace = true }
@@ -63,6 +63,7 @@ metrics = { version = "0.24", features = [] }
 
 
 [dev-dependencies]
+d-engine-client = { workspace = true }
 d-engine-core = { workspace = true, features = ["__test_support"] }
 serial_test = "3.2.0"
 temp-env = "0.3.6"

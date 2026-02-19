@@ -20,9 +20,6 @@
 mod builder;
 pub use builder::*;
 
-mod client;
-pub use client::*;
-
 mod leader_notifier;
 pub(crate) use leader_notifier::*;
 
@@ -44,7 +41,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use d_engine_core::Membership;
 use d_engine_core::Raft;
@@ -85,6 +81,10 @@ where
     // Network & Storage events, (copied from Raft)
     // TODO: find a better solution
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
+
+    // Client commands (drain-driven)
+    pub(crate) cmd_tx: mpsc::UnboundedSender<d_engine_core::ClientCmd>,
+
     pub(crate) ready: AtomicBool,
 
     /// Notifies when RPC server is ready to accept requests
@@ -104,6 +104,9 @@ where
     /// Watch dispatcher task handle (keeps dispatcher alive)
     #[cfg(feature = "watch")]
     pub(crate) _watch_dispatcher_handle: Option<tokio::task::JoinHandle<()>>,
+
+    /// State machine worker task handle (background apply operations)
+    pub(crate) _sm_worker_handle: Option<tokio::task::JoinHandle<()>>,
 
     /// Commit handler task handle (background log application)
     pub(crate) _commit_handler_handle: Option<tokio::task::JoinHandle<()>>,
@@ -316,11 +319,15 @@ where
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
 
+        // Create dummy cmd_tx (this path is mainly for testing)
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+
         Node {
             node_id,
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
+            cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,
@@ -329,6 +336,7 @@ where
             watch_registry: None,
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
+            _sm_worker_handle: None,
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal,
@@ -341,28 +349,5 @@ where
     /// which Raft node is handling operations.
     pub fn node_id(&self) -> u32 {
         self.node_id
-    }
-
-    /// Creates a zero-overhead local KV client for embedded access.
-    ///
-    /// Returns a client that directly communicates with Raft core
-    /// without gRPC serialization or network traversal.
-    ///
-    /// # Performance
-    /// - 10-20x faster than gRPC client
-    /// - <0.1ms latency per operation
-    ///
-    /// # Example
-    /// ```ignore
-    /// let node = NodeBuilder::new(config).start().await?;
-    /// let client = node.local_client();
-    /// client.put(b"key", b"value").await?;
-    /// ```
-    pub fn local_client(&self) -> LocalKvClient {
-        LocalKvClient::new_internal(
-            self.event_tx.clone(),
-            self.node_id,
-            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms),
-        )
     }
 }

@@ -43,6 +43,10 @@ where
     event_tx: mpsc::Sender<RaftEvent>,
     event_rx: mpsc::Receiver<RaftEvent>,
 
+    // Client commands (drain-driven)
+    cmd_tx: mpsc::UnboundedSender<super::ClientCmd>,
+    cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
+
     // Timer
     role_tx: mpsc::UnboundedSender<RoleEvent>,
     role_rx: mpsc::UnboundedReceiver<RoleEvent>,
@@ -70,6 +74,8 @@ pub struct SignalParams {
     pub(crate) role_rx: mpsc::UnboundedReceiver<RoleEvent>,
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
     pub(crate) event_rx: mpsc::Receiver<RaftEvent>,
+    pub(crate) cmd_tx: mpsc::UnboundedSender<super::ClientCmd>,
+    pub(crate) cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
     pub(crate) shutdown_signal: watch::Receiver<()>,
 }
 
@@ -83,6 +89,8 @@ impl SignalParams {
         role_rx: mpsc::UnboundedReceiver<RoleEvent>,
         event_tx: mpsc::Sender<RaftEvent>,
         event_rx: mpsc::Receiver<RaftEvent>,
+        cmd_tx: mpsc::UnboundedSender<super::ClientCmd>,
+        cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
         Self {
@@ -90,6 +98,8 @@ impl SignalParams {
             role_rx,
             event_tx,
             event_rx,
+            cmd_tx,
+            cmd_rx,
             shutdown_signal,
         }
     }
@@ -126,6 +136,9 @@ where
 
             event_tx: signal_params.event_tx,
             event_rx: signal_params.event_rx,
+
+            cmd_tx: signal_params.cmd_tx,
+            cmd_rx: signal_params.cmd_rx,
 
             role_tx: signal_params.role_tx,
             role_rx: signal_params.role_rx,
@@ -276,7 +289,37 @@ where
                     }
                 }
 
-                // P3: Other events
+                // P3: Client commands (drain-driven batch with RPC merge)
+                Some(first_cmd) = self.cmd_rx.recv() => {
+                    trace!(%self.node_id, "receive first client command");
+
+                    // Push first command and drain rest (direct push for zero-copy)
+                    self.role.push_client_cmd(first_cmd, &self.ctx);
+
+                    // Drain all pending commands from channel (max_batch_size limit)
+                    let max_batch = self.ctx.node_config.raft.batching.max_batch_size;
+                    let mut count = 1;
+
+                    while count < max_batch {
+                        match self.cmd_rx.try_recv() {
+                            Ok(cmd) => {
+                                self.role.push_client_cmd(cmd, &self.ctx);
+                                count += 1;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+
+                    trace!("Drained {} client commands", count);
+
+                    // Flush buffers if thresholds reached
+                    if let Err(e) = self.role.flush_cmd_buffers(&self.ctx, &self.role_tx).await {
+                        error!(%self.node_id, ?e, "flush_cmd_buffers error");
+                        return Err(e);
+                    }
+                }
+
+                // P4: Other events
                 Some(raft_event) = self.event_rx.recv() => {
                     trace!(%self.node_id, ?raft_event, "receive raft event");
 
@@ -285,6 +328,8 @@ where
 
                     if let Err(e) = self.role.handle_raft_event(raft_event, &self.ctx, self.role_tx.clone()).await {
                         error!(%self.node_id, ?e, "handle_raft_event error");
+                        // Fatal errors from SM Worker will be caught here and propagated
+                        return Err(e);
                     }
 
                     #[cfg(test)]
@@ -371,7 +416,6 @@ where
                     .role
                     .verify_leadership_persistent(
                         vec![EntryPayload::noop()],
-                        true,
                         &self.ctx,
                         &self.role_tx,
                     )
@@ -415,11 +459,38 @@ where
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            RoleEvent::NotifyNewCommitIndex(new_commit_data) => {
+            RoleEvent::NotifyNewCommitIndex(mut new_commit_data) => {
+                // Drain all pending NotifyNewCommitIndex events (max_batch_size limit)
+                // This batches multiple committed entries into a single notification
+                let max_batch = self.ctx.node_config.raft.batching.max_batch_size;
+                let mut count = 1;
+
+                while count < max_batch {
+                    match self.role_rx.try_recv() {
+                        Ok(RoleEvent::NotifyNewCommitIndex(next)) => {
+                            // Only keep the largest commit_index
+                            if next.new_commit_index > new_commit_data.new_commit_index {
+                                new_commit_data = next;
+                            }
+                            count += 1;
+                        }
+                        Ok(other) => {
+                            self.role_tx.send(other).map_err(|e| {
+                                let error_str = format!("{e:?}");
+                                error!("Failed to resend role event: {}", error_str);
+                                crate::Error::Fatal(error_str)
+                            })?;
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+
                 debug!(
-                    ?new_commit_data,
-                    "[{}] RoleEvent::NotifyNewCommitIndex.", self.node_id,
+                    "[{}] NotifyNewCommitIndex drained: {} events, max_commit_index={}",
+                    self.node_id, count, new_commit_data.new_commit_index
                 );
+
                 self.notify_new_commit(new_commit_data);
             }
 
@@ -519,6 +590,10 @@ where
     /// performs necessary checks based on current term, role, and state.
     pub fn event_sender(&self) -> mpsc::Sender<RaftEvent> {
         self.event_tx.clone()
+    }
+
+    pub fn cmd_sender(&self) -> mpsc::UnboundedSender<super::ClientCmd> {
+        self.cmd_tx.clone()
     }
 
     /// Returns a cloned role event sender for internal use.

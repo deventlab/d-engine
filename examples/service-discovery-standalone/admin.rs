@@ -6,6 +6,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use d_engine_client::Client;
+use d_engine_client::ClientApi;
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -78,7 +79,6 @@ async fn main() -> Result<()> {
             let key = format!("services/{name}/{instance}");
 
             client
-                .kv()
                 .put(&key, &endpoint)
                 .await
                 .map_err(|e| anyhow::anyhow!("Put failed: {e:?}"))?;
@@ -89,11 +89,7 @@ async fn main() -> Result<()> {
         Commands::Unregister { name, instance } => {
             let key = format!("services/{name}/{instance}");
 
-            client
-                .kv()
-                .delete(&key)
-                .await
-                .map_err(|e| anyhow::anyhow!("Delete failed: {e:?}"))?;
+            client.delete(&key).await.map_err(|e| anyhow::anyhow!("Delete failed: {e:?}"))?;
 
             println!("✓ Unregistered: {key}");
         }
@@ -107,13 +103,10 @@ async fn main() -> Result<()> {
 
             // Try to read index if exists
             let index_key = format!("services/{name}_index");
-            let result = client
-                .kv()
-                .get(&index_key)
-                .await
-                .map_err(|e| anyhow::anyhow!("Get failed: {e:?}"))?;
+            let result =
+                client.get(&index_key).await.map_err(|e| anyhow::anyhow!("Get failed: {e:?}"))?;
             if let Some(result) = result {
-                let instances = String::from_utf8_lossy(&result.value);
+                let instances = String::from_utf8_lossy(&result);
                 println!("Registered instances: {instances}");
             } else {
                 println!("No index found. Register services first.");

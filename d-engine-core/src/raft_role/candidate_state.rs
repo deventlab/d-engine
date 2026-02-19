@@ -2,7 +2,6 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use d_engine_proto::client::ClientResponse;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Candidate;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -22,7 +21,6 @@ use super::RaftRole;
 use super::Result;
 use super::SharedState;
 use super::StateSnapshot;
-use super::can_serve_read_locally;
 use super::follower_state::FollowerState;
 use super::role_state::RaftRoleState;
 use crate::ConsensusError;
@@ -38,7 +36,6 @@ use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::ReplicationCore;
 use crate::RoleEvent;
-use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
 
@@ -161,6 +158,9 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         _raft_event_tx: &mpsc::Sender<RaftEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
+        if Instant::now() < self.timer.next_deadline() {
+            return Ok(());
+        }
         debug!("reset timer");
         self.timer.reset();
 
@@ -362,41 +362,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     )?;
                 }
             }
-            RaftEvent::ClientPropose(_client_propose_request, sender) => {
-                // Return NOT_LEADER with leader metadata for client redirection
-                let response = self.create_not_leader_response(ctx).await;
-                sender.send(Ok(response)).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
-            }
-            RaftEvent::ClientReadRequest(client_read_request, sender) => {
-                match can_serve_read_locally(&client_read_request, ctx) {
-                    Some(_policy) => {
-                        // Only EventualConsistency will reach here - safe to serve locally
-                        let results = ctx
-                            .handlers
-                            .state_machine_handler
-                            .read_from_state_machine(client_read_request.keys)
-                            .unwrap_or_default();
-                        let response = ClientResponse::read_results(results);
-                        debug!("Non-leader serving local read: {:?}", response);
-                        sender.send(Ok(response)).map_err(|e| {
-                            error!("Failed to send local read response: {:?}", e);
-                            NetworkError::SingalSendFailed(format!("{e:?}"))
-                        })?;
-                    }
-                    None => {
-                        // Policy requires leader access - return NOT_LEADER with leader metadata
-                        let response = self.create_not_leader_response(ctx).await;
-                        sender.send(Ok(response)).map_err(|e| {
-                            error!("Failed to send NOT_LEADER response: {:?}", e);
-                            NetworkError::SingalSendFailed(format!("{e:?}"))
-                        })?;
-                    }
-                }
-            }
+
             RaftEvent::FlushReadBuffer => {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Candidate",
@@ -426,17 +392,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     ),
                 }
                 .into());
-            }
-
-            RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
-                debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
-
-                warn!(%self.shared_state.node_id, "Candidate should not receive RaftEvent::RaftLogCleanUp request from Leader");
-                sender.send(Err(Status::permission_denied("Not Follower"))).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
             }
 
             RaftEvent::CreateSnapshotEvent => {
@@ -554,7 +509,22 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             RaftEvent::MembershipApplied => {
                 // Candidates don't maintain cluster metadata cache
                 // This event is only relevant for leaders
-                debug!("Candidate ignoring MembershipApplied event");
+                trace!("Candidate ignoring MembershipApplied event");
+            }
+
+            RaftEvent::ApplyCompleted {
+                last_index,
+                results,
+            } => {
+                // Candidate is a transient state; snapshot will be triggered after role transition.
+                let _ = (last_index, results);
+            }
+
+            RaftEvent::FatalError { source, error } => {
+                error!("[Candidate] Fatal error from {}: {}", source, error);
+                return Err(crate::Error::Fatal(format!(
+                    "Fatal error from {source}: {error}"
+                )));
             }
 
             RaftEvent::StepDownSelfRemoved => {
@@ -639,7 +609,10 @@ impl<T: TypeConfig> CandidateState<T> {
     ) -> Self {
         Self {
             shared_state: SharedState::new(node_id, None, None),
-            timer: ElectionTimer::new((1, 2)),
+            timer: ElectionTimer::new((
+                node_config.raft.election.election_timeout_min,
+                node_config.raft.election.election_timeout_max,
+            )),
             node_config,
             _marker: PhantomData,
             last_purged_index: None, //TODO

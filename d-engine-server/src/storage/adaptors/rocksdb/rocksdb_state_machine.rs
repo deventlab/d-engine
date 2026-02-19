@@ -8,11 +8,13 @@ use std::time::SystemTime;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
+use d_engine_core::ApplyResult;
 use d_engine_core::Error;
 use d_engine_core::Lease;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::CompareAndSwap;
 use d_engine_proto::client::write_command::Delete;
 use d_engine_proto::client::write_command::Insert;
 use d_engine_proto::client::write_command::Operation;
@@ -476,7 +478,7 @@ impl StateMachine for RocksDBStateMachine {
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<ApplyResult>, Error> {
         let db = self.db.load();
         let cf = db
             .cf_handle(STATE_MACHINE_CF)
@@ -484,6 +486,7 @@ impl StateMachine for RocksDBStateMachine {
 
         let mut batch = WriteBatch::default();
         let mut highest_index_entry: Option<LogId> = None;
+        let mut results = Vec::with_capacity(chunk.len());
 
         for entry in chunk {
             assert!(entry.payload.is_some(), "Entry payload should not be None!");
@@ -504,6 +507,8 @@ impl StateMachine for RocksDBStateMachine {
             match entry.payload.unwrap().payload {
                 Some(Payload::Noop(_)) => {
                     debug!("Handling NOOP command at index {}", entry.index);
+                    // NOOP always succeeds
+                    results.push(ApplyResult::success(entry.index));
                 }
                 Some(Payload::Command(data)) => match WriteCommand::decode(&data[..]) {
                     Ok(write_cmd) => match write_cmd.operation {
@@ -528,6 +533,9 @@ impl StateMachine for RocksDBStateMachine {
                                 let lease = unsafe { self.lease.as_ref().unwrap_unchecked() };
                                 lease.register(key.clone(), ttl_secs);
                             }
+
+                            // PUT always succeeds (errors returned as Err)
+                            results.push(ApplyResult::success(entry.index));
                         }
                         Some(Operation::Delete(Delete { key })) => {
                             batch.delete_cf(&cf, &key);
@@ -536,6 +544,44 @@ impl StateMachine for RocksDBStateMachine {
                             if let Some(ref lease) = self.lease {
                                 lease.unregister(&key);
                             }
+
+                            // DELETE always succeeds (errors returned as Err)
+                            results.push(ApplyResult::success(entry.index));
+                        }
+                        Some(Operation::CompareAndSwap(CompareAndSwap {
+                            key,
+                            expected_value,
+                            new_value,
+                        })) => {
+                            // RocksDB doesn't have native CAS, implement via read-compare-write
+                            // This is safe because apply_chunk is called sequentially per Raft log order
+                            let current_value = db.get_cf(&cf, &key).map_err(|e| {
+                                StorageError::DbError(format!("CAS read failed: {e}"))
+                            })?;
+
+                            let cas_success = match (current_value, &expected_value) {
+                                (Some(current), Some(expected)) => current == expected.as_ref(),
+                                (None, None) => true,
+                                _ => false,
+                            };
+
+                            if cas_success {
+                                batch.put_cf(&cf, &key, &new_value);
+                            }
+
+                            // Store CAS result for client response
+                            results.push(if cas_success {
+                                ApplyResult::success(entry.index)
+                            } else {
+                                ApplyResult::failure(entry.index)
+                            });
+
+                            debug!(
+                                "CAS at index {}: key={:?}, success={}",
+                                entry.index,
+                                String::from_utf8_lossy(&key),
+                                cas_success
+                            );
                         }
                         None => {
                             warn!("WriteCommand without operation at index {}", entry.index);
@@ -563,11 +609,12 @@ impl StateMachine for RocksDBStateMachine {
         // - Background strategy: dedicated async task
         // This avoids blocking the Raft apply hot path
 
-        if let Some(log_id) = highest_index_entry {
-            self.update_last_applied(log_id);
+        // Update last_applied after successful batch write
+        if let Some(highest) = highest_index_entry {
+            self.update_last_applied(highest);
         }
 
-        Ok(())
+        Ok(results)
     }
 
     fn len(&self) -> usize {

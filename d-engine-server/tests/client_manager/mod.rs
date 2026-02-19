@@ -2,9 +2,12 @@
 
 use std::time::Duration;
 
+use crate::common::ClientCommands;
+use crate::common::{self};
 use d_engine_client::Client;
-use d_engine_client::ClientApiError;
 use d_engine_client::ClientBuilder;
+use d_engine_core::ClientApi;
+use d_engine_core::ClientApiError;
 use d_engine_core::convert::safe_kv_bytes;
 use d_engine_core::convert::safe_vk;
 use d_engine_proto::client::ReadConsistencyPolicy;
@@ -14,9 +17,6 @@ use tokio::time::sleep;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-
-use crate::common::ClientCommands;
-use crate::common::{self};
 
 const MAX_RETRIES: u32 = 10;
 const RETRY_DELAY_MS: u64 = 100;
@@ -75,7 +75,7 @@ impl ClientManager {
                     let value = value.unwrap();
 
                     info!("put {}:{}", key, value);
-                    match self.client.kv().put(safe_kv_bytes(key), safe_kv_bytes(value)).await {
+                    match self.client.put(safe_kv_bytes(key), safe_kv_bytes(value)).await {
                         Ok(res) => {
                             debug!("Put Success: {:?}", res);
                             return Ok(key);
@@ -100,7 +100,7 @@ impl ClientManager {
                         }
                     }
                 }
-                ClientCommands::Delete => match self.client.kv().delete(safe_kv_bytes(key)).await {
+                ClientCommands::Delete => match self.client.delete(safe_kv_bytes(key)).await {
                     Ok(res) => {
                         debug!("Delete Success: {:?}", res);
                         return Ok(key);
@@ -122,7 +122,7 @@ impl ClientManager {
                     }
                 },
                 ClientCommands::Read => {
-                    match self.client.kv().get_with_policy(safe_kv_bytes(key), None).await? {
+                    match self.client.get_with_policy(safe_kv_bytes(key), None).await? {
                         Some(r) => {
                             let v = safe_vk(&r.value).unwrap();
                             debug!("Success: {:?}", v);
@@ -136,7 +136,6 @@ impl ClientManager {
                 }
                 ClientCommands::Lread => match self
                     .client
-                    .kv()
                     .get_with_policy(
                         safe_kv_bytes(key),
                         Some(ReadConsistencyPolicy::LinearizableRead),
@@ -192,10 +191,10 @@ impl ClientManager {
     }
 
     pub async fn list_members(&self) -> Result<Vec<NodeMeta>, ClientApiError> {
-        self.client.cluster().list_members().await
+        self.client.list_members().await
     }
     pub async fn list_leader_id(&self) -> Result<Option<u32>, ClientApiError> {
-        self.client.cluster().get_leader_id().await
+        self.client.get_leader_id().await
     }
 
     /// Test-only: Read from specific node by creating direct gRPC connection

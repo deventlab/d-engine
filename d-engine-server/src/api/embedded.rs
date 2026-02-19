@@ -8,7 +8,7 @@
 //! ### Using Node (Low-level API)
 //! ```ignore
 //! let node = NodeBuilder::new(config).start().await?;
-//! let client = node.local_client();
+//! // Node does not provide client directly - use EmbeddedEngine instead
 //! tokio::spawn(async move { node.run().await });
 //! // Manual lifecycle management required
 //! ```
@@ -36,7 +36,7 @@
 //!
 //! - ✅ `is_leader()` - Check if current node is leader
 //! - ✅ `leader_info()` - Get leader ID and term
-//! - ✅ `LocalKvClient` returns `NotLeader` error on follower writes
+//! - ✅ `EmbeddedClient` returns `NotLeader` error on follower writes
 //! - ✅ Zero-overhead in-process communication (<0.1ms)
 //!
 //! ## What Applications Must Handle
@@ -120,20 +120,7 @@
 //! 3. **Flexible deployment** - Applications choose load balancer health checks, HTTP redirect, or other strategies
 //! 4. **Performance transparency** - Developers know exactly when network calls occur
 //!
-//! For auto-forwarding with gRPC overhead, use standalone mode with `GrpcKvClient`.
-
-use std::sync::Arc;
-
-#[cfg(feature = "watch")]
-use bytes::Bytes;
-#[cfg(feature = "watch")]
-use d_engine_core::watch::WatchRegistry;
-#[cfg(feature = "watch")]
-use d_engine_core::watch::WatcherHandle;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tracing::error;
-use tracing::info;
+//! For auto-forwarding with gRPC overhead, use standalone mode with `GrpcClient`.
 
 use crate::Result;
 #[cfg(feature = "rocksdb")]
@@ -142,15 +129,33 @@ use crate::RocksDBStateMachine;
 use crate::RocksDBStorageEngine;
 use crate::StateMachine;
 use crate::StorageEngine;
-use crate::node::LocalKvClient;
+use crate::api::EmbeddedClient;
 use crate::node::NodeBuilder;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tracing::error;
+use tracing::info;
+
+struct Inner {
+    node_handle: Mutex<Option<JoinHandle<Result<()>>>>,
+    shutdown_tx: watch::Sender<()>,
+    client: Arc<EmbeddedClient>,
+    leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
+    is_stopped: Mutex<bool>,
+}
 
 /// Embedded d-engine with automatic lifecycle management.
+///
+/// **Thread-safe**: Clone and share across threads freely.
+/// All methods use `&self` - safe to call from multiple contexts.
 ///
 /// Provides high-level KV API for embedded usage:
 /// - `start()` / `start_with()` - Initialize and spawn node
 /// - `wait_ready()` - Wait for leader election
-/// - `client()` - Get local KV client
+/// - `client()` - Get embedded client
 /// - `stop()` - Graceful shutdown
 ///
 /// # Example
@@ -158,7 +163,7 @@ use crate::node::NodeBuilder;
 /// use d_engine::EmbeddedEngine;
 /// use std::time::Duration;
 ///
-/// let engine = EmbeddedEngine::start().await?;
+/// let engine = EmbeddedEngine::start().await?;  // Returns Arc<EmbeddedEngine>
 /// engine.wait_ready(Duration::from_secs(5)).await?;
 ///
 /// let client = engine.client();
@@ -166,13 +171,9 @@ use crate::node::NodeBuilder;
 ///
 /// engine.stop().await?;
 /// ```
+#[derive(Clone)]
 pub struct EmbeddedEngine {
-    node_handle: Option<JoinHandle<Result<()>>>,
-    shutdown_tx: watch::Sender<()>,
-    kv_client: LocalKvClient,
-    leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
-    #[cfg(feature = "watch")]
-    watch_registry: Option<Arc<WatchRegistry>>,
+    inner: Arc<Inner>,
 }
 
 impl EmbeddedEngine {
@@ -210,11 +211,9 @@ impl EmbeddedEngine {
             sm.set_lease(lease);
         }
 
-        let sm = Arc::new(sm);
-
         info!("Starting embedded engine with RocksDB at {:?}", base_dir);
 
-        Self::start_custom(storage, sm, None).await
+        Self::start_custom(storage, Arc::new(sm), None).await
     }
 
     /// Start engine with explicit configuration file.
@@ -254,11 +253,9 @@ impl EmbeddedEngine {
             sm.set_lease(lease);
         }
 
-        let sm = Arc::new(sm);
-
         info!("Starting embedded engine with RocksDB at {:?}", base_dir);
 
-        Self::start_custom(storage, sm, Some(config_path)).await
+        Self::start_custom(storage, Arc::new(sm), Some(config_path)).await
     }
 
     /// Start engine with custom storage and state machine.
@@ -309,12 +306,29 @@ impl EmbeddedEngine {
         // Get leader change notifier before moving node
         let leader_elected_rx = node.leader_change_notifier();
 
-        // Create local KV client before spawning
-        let kv_client = node.local_client();
+        // Create client before spawning
+        #[cfg(not(feature = "watch"))]
+        let client = Arc::new(EmbeddedClient::new_internal(
+            node.event_tx.clone(),
+            node.cmd_tx.clone(),
+            node.node_id,
+            Duration::from_millis(node.node_config.raft.general_raft_timeout_duration_in_ms),
+        ));
 
-        // Capture watch registry (if enabled)
         #[cfg(feature = "watch")]
-        let watch_registry = node.watch_registry.clone();
+        let client = {
+            let watch_registry = node.watch_registry.clone();
+            let mut client = EmbeddedClient::new_internal(
+                node.event_tx.clone(),
+                node.cmd_tx.clone(),
+                node.node_id,
+                Duration::from_millis(node.node_config.raft.general_raft_timeout_duration_in_ms),
+            );
+            if let Some(registry) = &watch_registry {
+                client = client.with_watch_registry(registry.clone());
+            }
+            Arc::new(client)
+        };
 
         // Spawn node.run() in background
         let node_handle = tokio::spawn(async move {
@@ -329,12 +343,13 @@ impl EmbeddedEngine {
         info!("Embedded d-engine started successfully");
 
         Ok(Self {
-            node_handle: Some(node_handle),
-            shutdown_tx,
-            kv_client,
-            leader_elected_rx,
-            #[cfg(feature = "watch")]
-            watch_registry,
+            inner: Arc::new(Inner {
+                node_handle: Mutex::new(Some(node_handle)),
+                shutdown_tx,
+                client,
+                leader_elected_rx,
+                is_stopped: Mutex::new(false),
+            }),
         })
     }
 
@@ -377,7 +392,7 @@ impl EmbeddedEngine {
         &self,
         timeout: std::time::Duration,
     ) -> Result<crate::LeaderInfo> {
-        let mut rx = self.leader_elected_rx.clone();
+        let mut rx = self.inner.leader_elected_rx.clone();
 
         tokio::time::timeout(timeout, async {
             // Check current value first (leader may already be elected)
@@ -427,7 +442,7 @@ impl EmbeddedEngine {
     /// });
     /// ```
     pub fn leader_change_notifier(&self) -> watch::Receiver<Option<crate::LeaderInfo>> {
-        self.leader_elected_rx.clone()
+        self.inner.leader_elected_rx.clone()
     }
 
     /// Returns true if the current node is the Raft leader.
@@ -460,10 +475,11 @@ impl EmbeddedEngine {
     /// }
     /// ```
     pub fn is_leader(&self) -> bool {
-        self.leader_elected_rx
+        self.inner
+            .leader_elected_rx
             .borrow()
             .as_ref()
-            .map(|info| info.leader_id == self.kv_client.node_id())
+            .map(|info| info.leader_id == self.inner.client.node_id())
             .unwrap_or(false)
     }
 
@@ -487,7 +503,7 @@ impl EmbeddedEngine {
     /// }
     /// ```
     pub fn leader_info(&self) -> Option<crate::LeaderInfo> {
-        *self.leader_elected_rx.borrow()
+        *self.inner.leader_elected_rx.borrow()
     }
 
     /// Get a reference to the local KV client.
@@ -502,50 +518,19 @@ impl EmbeddedEngine {
     /// let client = engine.client();
     /// client.put(b"key", b"value").await?;
     /// ```
-    pub fn client(&self) -> &LocalKvClient {
-        &self.kv_client
-    }
-
-    /// Register a watcher for a specific key.
-    ///
-    /// Returns a handle that receives watch events via an mpsc channel.
-    /// The watcher is automatically unregistered when the handle is dropped.
-    ///
-    /// # Arguments
-    /// * `key` - The exact key to watch
-    ///
-    /// # Returns
-    /// * `Result<WatcherHandle>` - Handle for receiving events
-    ///
-    /// # Example
-    /// ```ignore
-    /// let engine = EmbeddedEngine::start().await?;
-    /// let mut handle = engine.watch(b"mykey")?;
-    /// while let Some(event) = handle.receiver_mut().recv().await {
-    ///     println!("Key changed: {:?}", event);
-    /// }
-    /// ```
-    #[cfg(feature = "watch")]
-    pub fn watch(
-        &self,
-        key: impl AsRef<[u8]>,
-    ) -> Result<WatcherHandle> {
-        let registry = self.watch_registry.as_ref().ok_or_else(|| {
-            crate::Error::Fatal(
-                "Watch feature disabled (WatchRegistry not initialized)".to_string(),
-            )
-        })?;
-
-        let key_bytes = Bytes::copy_from_slice(key.as_ref());
-        Ok(registry.register(key_bytes))
+    pub fn client(&self) -> Arc<EmbeddedClient> {
+        Arc::clone(&self.inner.client)
     }
 
     /// Gracefully stop the embedded engine.
+    /// Stop the embedded d-engine gracefully (idempotent).
     ///
     /// This method:
     /// 1. Sends shutdown signal to node
     /// 2. Waits for node.run() to complete
     /// 3. Propagates any errors from node execution
+    ///
+    /// Safe to call multiple times - subsequent calls are no-ops.
     ///
     /// # Errors
     /// Returns error if node encountered issues during shutdown.
@@ -553,28 +538,50 @@ impl EmbeddedEngine {
     /// # Example
     /// ```ignore
     /// engine.stop().await?;
+    /// engine.stop().await?;  // No-op, returns Ok(())
     /// ```
-    pub async fn stop(mut self) -> Result<()> {
+    pub async fn stop(&self) -> Result<()> {
+        let mut is_stopped = self.inner.is_stopped.lock().await;
+        if *is_stopped {
+            return Ok(());
+        }
+
         info!("Stopping embedded d-engine");
 
         // Send shutdown signal
-        let _ = self.shutdown_tx.send(());
+        let _ = self.inner.shutdown_tx.send(());
 
         // Wait for node task to complete
-        if let Some(handle) = self.node_handle.take() {
+        let mut handle_guard = self.inner.node_handle.lock().await;
+        if let Some(handle) = handle_guard.take() {
             match handle.await {
                 Ok(result) => {
                     info!("Embedded d-engine stopped successfully");
+                    *is_stopped = true;
                     result
                 }
                 Err(e) => {
                     error!("Node task panicked: {:?}", e);
+                    *is_stopped = true;
                     Err(crate::Error::Fatal(format!("Node task panicked: {e}")))
                 }
             }
         } else {
+            *is_stopped = true;
             Ok(())
         }
+    }
+
+    /// Check if the engine has been stopped.
+    ///
+    /// # Example
+    /// ```ignore
+    /// if engine.is_stopped() {
+    ///     println!("Engine is stopped");
+    /// }
+    /// ```
+    pub async fn is_stopped(&self) -> bool {
+        *self.inner.is_stopped.lock().await
     }
 
     /// Returns the node ID for testing purposes.
@@ -582,16 +589,20 @@ impl EmbeddedEngine {
     /// Useful in integration tests that need to identify which node
     /// they're interacting with, especially in multi-node scenarios.
     pub fn node_id(&self) -> u32 {
-        self.kv_client.node_id()
+        self.inner.client.node_id()
     }
 }
 
 impl Drop for EmbeddedEngine {
     fn drop(&mut self) {
         // Warn if stop() was not called
-        if let Some(handle) = &self.node_handle {
-            if !handle.is_finished() {
-                error!("EmbeddedEngine dropped without calling stop() - background task may leak");
+        if let Ok(handle) = self.inner.node_handle.try_lock() {
+            if let Some(h) = &*handle {
+                if !h.is_finished() {
+                    error!(
+                        "EmbeddedEngine dropped without calling stop() - background task may leak"
+                    );
+                }
             }
         }
     }

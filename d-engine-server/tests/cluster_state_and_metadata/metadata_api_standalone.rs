@@ -10,7 +10,8 @@
 use std::time::Duration;
 
 use d_engine_client::Client;
-use d_engine_client::ClientApiError;
+use d_engine_core::ClientApi;
+use d_engine_core::ClientApiError;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -73,11 +74,8 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
         .await?;
 
     // Verify current_leader_id is set
-    let leader_id = client
-        .cluster()
-        .get_leader_id()
-        .await?
-        .expect("Leader should be elected after bootstrap");
+    let leader_id =
+        client.get_leader_id().await?.expect("Leader should be elected after bootstrap");
 
     info!("Metadata API returned leader_id: {}", leader_id);
 
@@ -87,7 +85,7 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
     );
 
     // Verify list_members also contains the same leader info
-    let members = client.cluster().list_members().await?;
+    let members = client.list_members().await?;
     assert_eq!(members.len(), 3, "Should have 3 members");
 
     info!("✅ Metadata API correctly returns current_leader_id after bootstrap");
@@ -144,7 +142,7 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
     for i in 0..10 {
         let client_clone = client.clone();
         tasks.push(tokio::spawn(async move {
-            let leader_id = client_clone.cluster().get_leader_id().await;
+            let leader_id = client_clone.get_leader_id().await;
             (i, leader_id)
         }));
     }
@@ -229,11 +227,8 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
         .await?;
 
     // Get initial leader
-    let initial_leader = client
-        .cluster()
-        .get_leader_id()
-        .await?
-        .expect("Leader should exist after bootstrap");
+    let initial_leader =
+        client.get_leader_id().await?.expect("Leader should exist after bootstrap");
 
     info!("Initial leader: {}", initial_leader);
 
@@ -253,7 +248,7 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
     client.refresh(None).await?;
 
     // Verify metadata API returns new leader
-    let new_leader = client.cluster().get_leader_id().await?.expect("New leader should be elected");
+    let new_leader = client.get_leader_id().await?.expect("New leader should be elected");
 
     info!("New leader after failover: {}", new_leader);
 

@@ -11,13 +11,12 @@
 //! - 1000 watchers: < 15% overhead on PUT operations
 
 #![cfg(all(feature = "watch", feature = "rocksdb"))]
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
 
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
 use d_engine_server::api::EmbeddedEngine;
 use tempfile::TempDir;
 
@@ -73,7 +72,7 @@ async fn measure_put_latency(watcher_count: usize) -> f64 {
     let mut _watchers = Vec::new();
     for i in 0..watcher_count {
         let key = format!("watch_key_{i}").into_bytes();
-        let watcher = engine.watch(&key).expect("Failed to register watcher");
+        let watcher = engine.client().watch(&key).expect("Failed to register watcher");
         _watchers.push(watcher);
     }
 

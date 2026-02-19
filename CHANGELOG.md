@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased v0.2.3]
+
+### Added
+
+- **CompareAndSwap (CAS) Operation** (#258): Atomic compare-and-swap primitive for distributed coordination
+  - Use cases: Distributed locks, leader election, optimistic updates
+  - API: `client.compare_and_swap(key, expected_value, new_value)`
+  - Performance: No additional protocol round-trips; latency is comparable to regular writes in most workloads
+
+### Changed
+
+- **Unified Client API** (#258): Merged KV and cluster operations into single `ClientApi` trait
+  - **Breaking**: `KvClient` → `ClientApi`, `KvError` → `ClientApiError`
+  - Simplifies developer experience (single trait for all operations)
+  - Both `GrpcClient` and `EmbeddedClient` implement unified interface
+
+- **WriteResult Message** (#258): Replaced `bool succeeded` with `WriteResult` message
+  - Improves API extensibility (reserved fields for version tracking)
+  - Better type safety for future features
+
+- **Simplified Error Handling** (#258): Removed `LocalClientError`, use `ClientApiError` directly
+  - Unified error type across embedded and standalone clients
+  - Less boilerplate (no intermediate error type conversion)
+  - Clearer error semantics for users
+
+- **Drain-based batch architecture** (#266): Replaced timeout-driven batching with drain-on-arrival pattern
+  - Low load: near-zero wait (eliminated ~1ms timeout penalty)
+  - High load: natural batching, significant throughput improvement
+  - Embedded: linearizable read +92%, lease/eventual read +62% vs v0.2.2
+  - See [bench report v0.2.3](benches/reports/v0.2.3/bench_report_v0.2.3.md)
+
+- **Default PersistenceStrategy changed: `MemFirst` → `DiskFirst`** (#268): Raft protocol compliance
+  - **Breaking**: Add `persistence_strategy = "MemFirst"` to `[raft.persistence]` config to restore prior behavior
+
+### Migration Notes
+
+- Replace `KvClient` with `ClientApi` in trait bounds
+- Replace `KvError` with `ClientApiError` in error handling
+- Update imports: `use d_engine::client::ClientApi;`
+
+---
+
 ## [v0.2.2] - 2026-01-12 [✅ Released]
 
 ### 🎯 Key Improvements
@@ -71,7 +113,7 @@ while let Some(event) = watcher.next().await {
 
 **Performance**: Lock-free, <0.1ms notification latency
 
-#### StandaloneServer - One-Line Deployment
+#### StandaloneEngine - One-Line Deployment
 
 **Use Case**: Independent server process (production deployment)  
 **API**: `run(shutdown_rx)` uses env config, `run_with(config_path, shutdown_rx)` uses explicit config  
@@ -81,9 +123,9 @@ while let Some(event) = watcher.next().await {
 
 **Use Case**: Embed d-engine in your Rust application  
 **API**: `start()` uses env config, `start_with(config_path)` uses explicit config, `start_custom(...)` for advanced usage  
-**Benefit**: Zero gRPC overhead via LocalKvClient (<0.1ms latency)
+**Benefit**: Zero gRPC overhead via EmbeddedClient (<0.1ms latency)
 
-#### LocalKvClient - Zero-Overhead Embedded Access
+#### EmbeddedClient - Zero-Overhead Embedded Access
 
 **When**: Your app and d-engine in same process  
 **Benefit**: Skip gRPC serialization, direct memory access (<0.1ms)  
@@ -95,7 +137,7 @@ while let Some(event) = watcher.next().await {
 
 - `examples/quick-start/` - 5-minute single-node setup
 - `examples/single-node-expansion/` - Dynamic 1→3 node scaling
-- `examples/service-discovery-embedded/` - LocalKvClient zero-overhead access
+- `examples/service-discovery-embedded/` - EmbeddedClient zero-overhead access
 - `examples/service-discovery-standalone/` - Watch API pattern
 
 ---

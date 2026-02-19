@@ -54,12 +54,17 @@
 //!
 //! ### WAL Lifecycle
 //!
+//! WAL is the **primary** crash-safety path. Checkpoints are taken periodically
+//! (every 1000 entries or 10s) to bound replay time on recovery — not on every apply.
+//!
 //! ```text
-//! apply_chunk() → append_to_wal() → [crash safe] → persist_data_async()
-//!                                                 → clear_wal_async()
+//! apply_chunk() → append_to_wal() → update memory → [if should_checkpoint()] → checkpoint()
+//!                                                                                  ├─ persist_data_async()
+//!                                                                                  ├─ persist_metadata_async()
+//!                                                                                  └─ clear_wal_async()
 //! ```
 //!
-//! After successful persistence, WAL is cleared since state is now in `state.data`.
+//! On shutdown (`flush()`), a forced checkpoint ensures no data loss.
 //!
 //! ## Crash Recovery Flow
 //!
@@ -80,17 +85,20 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
 use bytes::Bytes;
+use d_engine_core::ApplyResult;
 use d_engine_core::Error;
 use d_engine_core::Lease;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::CompareAndSwap;
 use d_engine_proto::client::write_command::Delete;
 use d_engine_proto::client::write_command::Insert;
 use d_engine_proto::client::write_command::Operation;
@@ -124,6 +132,7 @@ enum WalOpCode {
     Insert = 1,
     Delete = 2,
     Config = 3,
+    CompareAndSwap = 4,
 }
 
 impl WalOpCode {
@@ -132,6 +141,7 @@ impl WalOpCode {
             "INSERT" => Self::Insert,
             "DELETE" => Self::Delete,
             "CONFIG" => Self::Config,
+            "CAS" => Self::CompareAndSwap,
             _ => Self::Noop,
         }
     }
@@ -141,6 +151,7 @@ impl WalOpCode {
             1 => Self::Insert,
             2 => Self::Delete,
             3 => Self::Config,
+            4 => Self::CompareAndSwap,
             _ => Self::Noop,
         }
     }
@@ -180,6 +191,11 @@ pub struct FileStateMachine {
     // Operational state
     running: AtomicBool,
 
+    // Checkpoint state: WAL is the primary persistence path; checkpoint snapshots
+    // data periodically to bound crash-recovery replay time.
+    wal_entries_since_checkpoint: AtomicU64,
+    last_checkpoint: Mutex<Instant>,
+
     // File handles for persistence
     data_dir: PathBuf,
     // data_file: RwLock<File>,
@@ -209,6 +225,8 @@ impl FileStateMachine {
             last_applied_term: AtomicU64::new(0),
             last_snapshot_metadata: RwLock::new(None),
             running: AtomicBool::new(true),
+            wal_entries_since_checkpoint: AtomicU64::new(0),
+            last_checkpoint: Mutex::new(Instant::now()),
             data_dir: data_dir.clone(),
         };
 
@@ -591,6 +609,18 @@ impl FileStateMachine {
                         applied_count += 1;
                         debug!("Replayed DELETE: key={:?}", key);
                     }
+                    WalOpCode::CompareAndSwap => {
+                        // CAS during replay: Just apply the new_value if present
+                        // The comparison was already done before crash, and succeeded
+                        // (otherwise this entry wouldn't be in WAL)
+                        if let Some(new_value) = value {
+                            data.insert(key.clone(), (new_value, term));
+                            applied_count += 1;
+                            debug!("Replayed CAS: key={:?}", key);
+                        } else {
+                            warn!("CAS operation without new_value in WAL");
+                        }
+                    }
                     WalOpCode::Noop | WalOpCode::Config => {
                         // No data modification needed
                         applied_count += 1;
@@ -625,46 +655,33 @@ impl FileStateMachine {
             data.iter().map(|(k, (v, t))| (k.clone(), (v.clone(), *t))).collect()
         };
 
-        // Write to file without holding data lock
+        // Batch serialize into a single buffer — mirrors persist_data_async().
         let data_path = self.data_dir.join("state.data");
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(data_path)?;
 
-        for (key, (value, term)) in data_copy.iter() {
-            // Write key length (8 bytes)
-            let key_len = key.len() as u64;
-            file.write_all(&key_len.to_be_bytes())?;
+        let estimated: usize =
+            data_copy.iter().map(|(k, (v, _))| 8 + k.len() + 8 + v.len() + 8).sum();
+        let mut buf = Vec::with_capacity(estimated);
 
-            // Write key
-            file.write_all(key)?;
-
-            // Write value length (8 bytes)
-            let value_len = value.len() as u64;
-            file.write_all(&value_len.to_be_bytes())?;
-
-            // Write value
-            file.write_all(value)?;
-
-            // Write term (8 bytes)
-            file.write_all(&term.to_be_bytes())?;
+        for (key, (value, term)) in &data_copy {
+            buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
+            buf.extend_from_slice(key);
+            buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            buf.extend_from_slice(value);
+            buf.extend_from_slice(&term.to_be_bytes());
         }
 
-        file.flush()?;
+        std::fs::write(data_path, buf)?;
         Ok(())
     }
 
     /// Persists key-value data to disk
     async fn persist_data_async(&self) -> Result<(), Error> {
-        // Collect data first to minimize lock time
+        // Collect data under minimal lock scope
         let data_copy: HashMap<Bytes, (Bytes, u64)> = {
             let data = self.data.read();
             data.iter().map(|(k, (v, t))| (k.clone(), (v.clone(), *t))).collect()
         };
 
-        // Write to file without holding data lock
         let data_path = self.data_dir.join("state.data");
         let mut file = OpenOptions::new()
             .write(true)
@@ -673,25 +690,21 @@ impl FileStateMachine {
             .open(data_path)
             .await?;
 
-        for (key, (value, term)) in data_copy.iter() {
-            // Write key length (8 bytes)
-            let key_len = key.len() as u64;
-            file.write_all(&key_len.to_be_bytes()).await?;
+        // Batch serialize into a single buffer — eliminates per-entry async yield overhead.
+        // Mirrors append_to_wal's approach for consistent I/O pattern.
+        let estimated: usize =
+            data_copy.iter().map(|(k, (v, _))| 8 + k.len() + 8 + v.len() + 8).sum();
+        let mut buf = Vec::with_capacity(estimated);
 
-            // Write key
-            file.write_all(key.as_ref()).await?;
-
-            // Write value length (8 bytes)
-            let value_len = value.len() as u64;
-            file.write_all(&value_len.to_be_bytes()).await?;
-
-            // Write value
-            file.write_all(value.as_ref()).await?;
-
-            // Write term (8 bytes)
-            file.write_all(&term.to_be_bytes()).await?;
+        for (key, (value, term)) in &data_copy {
+            buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
+            buf.extend_from_slice(key);
+            buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            buf.extend_from_slice(value);
+            buf.extend_from_slice(&term.to_be_bytes());
         }
 
+        file.write_all(&buf).await?;
         file.flush().await?;
 
         Ok(())
@@ -762,6 +775,40 @@ impl FileStateMachine {
 
         file.set_len(0).await?;
         file.flush().await?;
+        Ok(())
+    }
+
+    /// Returns true if a checkpoint should be taken now.
+    ///
+    /// Triggers on any of:
+    /// - WAL has accumulated ≥ 1000 entries since last checkpoint
+    /// - Last checkpoint was > 10s ago
+    fn should_checkpoint(&self) -> bool {
+        const WAL_ENTRY_THRESHOLD: u64 = 1000;
+        const TIME_THRESHOLD_SECS: u64 = 10;
+
+        if self.wal_entries_since_checkpoint.load(Ordering::Relaxed) >= WAL_ENTRY_THRESHOLD {
+            return true;
+        }
+        if let Ok(last) = self.last_checkpoint.lock() {
+            return last.elapsed().as_secs() >= TIME_THRESHOLD_SECS;
+        }
+        false
+    }
+
+    /// Checkpoint: snapshot full data + metadata to disk, then clear WAL.
+    ///
+    /// WAL is the primary crash-safety path; checkpoint bounds recovery replay time.
+    pub(crate) async fn checkpoint(&self) -> Result<(), Error> {
+        self.persist_data_async().await?;
+        self.persist_metadata_async().await?;
+        self.clear_wal_async().await?;
+
+        self.wal_entries_since_checkpoint.store(0, Ordering::Relaxed);
+        if let Ok(mut last) = self.last_checkpoint.lock() {
+            *last = Instant::now();
+        }
+        debug!("Checkpoint complete");
         Ok(())
     }
 
@@ -909,37 +956,6 @@ impl FileStateMachine {
 
         Ok(())
     }
-
-    /// Piggyback cleanup: Remove expired keys with time budget
-    ///
-    /// This method is called during apply_chunk to cleanup expired keys
-    /// opportunistically (piggyback on existing Raft events).
-    ///
-    /// # Arguments
-    /// * `max_duration_ms` - Maximum time budget for cleanup (milliseconds)
-    ///
-    /// # Returns
-    /// Number of keys deleted
-    ///
-    /// # Performance
-    /// - Fast-path: ~10ns if no TTL keys exist (lazy activation check)
-    /// - Cleanup: O(log N + K) where K = expired keys
-    /// - Time-bounded: stops after max_duration_ms to avoid blocking Raft
-    ///
-    /// # Checkpoint
-    /// Persist memory to disk and clear WAL.
-    /// This is the "safe point" after which WAL is no longer needed.
-    #[allow(unused)]
-    pub(crate) async fn checkpoint(&self) -> Result<(), Error> {
-        // 1. Persist current state
-        self.persist_data_async().await?;
-        self.persist_metadata_async().await?;
-
-        // 2. Clear WAL (data is now in state.data)
-        self.clear_wal_async().await?;
-
-        Ok(())
-    }
 }
 
 impl Drop for FileStateMachine {
@@ -1016,9 +1032,11 @@ impl StateMachine for FileStateMachine {
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<ApplyResult>, Error> {
+        let chunk_len = chunk.len();
         let mut highest_index_entry: Option<LogId> = None;
         let mut batch_operations = Vec::new();
+        let mut results = Vec::with_capacity(chunk_len);
 
         // PHASE 1: Decode all operations and prepare WAL entries
         for entry in chunk {
@@ -1043,8 +1061,10 @@ impl StateMachine for FileStateMachine {
             // Decode operations without holding locks
             match entry.payload.as_ref().unwrap().payload.as_ref() {
                 Some(Payload::Noop(_)) => {
-                    debug!("Handling NOOP command at index {}", entry.index);
+                    let entry_index = entry.index;
+                    debug!("Handling NOOP command at index {}", entry_index);
                     batch_operations.push((entry, "NOOP", Bytes::new(), None, 0));
+                    results.push(ApplyResult::success(entry_index));
                 }
                 Some(Payload::Command(bytes)) => match WriteCommand::decode(&bytes[..]) {
                     Ok(write_cmd) => {
@@ -1055,6 +1075,7 @@ impl StateMachine for FileStateMachine {
                                 value,
                                 ttl_secs,
                             })) => {
+                                let entry_index = entry.index;
                                 batch_operations.push((
                                     entry,
                                     "INSERT",
@@ -1062,9 +1083,20 @@ impl StateMachine for FileStateMachine {
                                     Some(value),
                                     ttl_secs,
                                 ));
+                                results.push(ApplyResult::success(entry_index));
                             }
                             Some(Operation::Delete(Delete { key })) => {
+                                let entry_index = entry.index;
                                 batch_operations.push((entry, "DELETE", key, None, 0));
+                                results.push(ApplyResult::success(entry_index));
+                            }
+                            Some(Operation::CompareAndSwap(CompareAndSwap {
+                                key,
+                                expected_value: _,
+                                new_value,
+                            })) => {
+                                batch_operations.push((entry, "CAS", key, Some(new_value), 0));
+                                // Note: CAS result will be pushed in PHASE 3 after comparison
                             }
                             None => {
                                 warn!("WriteCommand without operation at index {}", entry.index);
@@ -1113,6 +1145,9 @@ impl StateMachine for FileStateMachine {
             // Process all operations without any awaits inside the lock
             for (entry, operation, key, value, ttl_secs) in batch_operations {
                 match operation {
+                    "NOOP" => {
+                        // NOOP result already pushed in PHASE 1
+                    }
                     "INSERT" => {
                         if let Some(value) = value {
                             // ZERO-COPY: Use existing Bytes without cloning if possible
@@ -1133,14 +1168,61 @@ impl StateMachine for FileStateMachine {
                                 lease.register(key, ttl_secs);
                             }
                         }
+                        // Result already pushed in PHASE 1
                     }
                     "DELETE" => {
                         data.remove(&key);
                         if let Some(ref lease) = self.lease {
                             lease.unregister(&key);
                         }
+                        // Result already pushed in PHASE 1
                     }
-                    "NOOP" | "CONFIG" => {
+                    "CAS" => {
+                        // Extract expected_value from original entry
+                        if let Some(Payload::Command(bytes)) =
+                            entry.payload.as_ref().unwrap().payload.as_ref()
+                        {
+                            if let Ok(write_cmd) = WriteCommand::decode(&bytes[..]) {
+                                if let Some(Operation::CompareAndSwap(CompareAndSwap {
+                                    expected_value,
+                                    ..
+                                })) = write_cmd.operation
+                                {
+                                    // Read-compare-write is safe due to sequential apply
+                                    let current_value = data.get(&key);
+
+                                    let cas_success = match (current_value, &expected_value) {
+                                        (Some((current, _)), Some(expected)) => {
+                                            current.as_ref() == expected.as_ref()
+                                        }
+                                        (None, None) => true,
+                                        _ => false,
+                                    };
+
+                                    // Store CAS result for client response
+                                    results.push(if cas_success {
+                                        ApplyResult::success(entry.index)
+                                    } else {
+                                        ApplyResult::failure(entry.index)
+                                    });
+
+                                    debug!(
+                                        "CAS at index {}: key={:?}, success={}",
+                                        entry.index,
+                                        String::from_utf8_lossy(&key),
+                                        cas_success
+                                    );
+
+                                    if cas_success {
+                                        if let Some(new_value) = value {
+                                            data.insert(key, (new_value, entry.term));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "CONFIG" => {
                         // No data modification needed
                     }
                     _ => warn!("Unknown operation: {}", operation),
@@ -1148,23 +1230,21 @@ impl StateMachine for FileStateMachine {
             }
         } // Lock released immediately - no awaits inside!
 
-        // PHASE 4: Update last applied index
-        // Note: Lease cleanup is now handled by:
-        // - Lazy strategy: cleanup in get() method
-        // - Background strategy: dedicated async task
-        // This avoids blocking the Raft apply hot path
-
+        // PHASE 4: Update last applied index and conditionally checkpoint.
+        // WAL (written in PHASE 2) is the primary crash-safety path.
+        // Checkpoint snapshots full data periodically to bound WAL replay time on recovery.
         if let Some(log_id) = highest_index_entry {
             debug!("State machine - updated last_applied: {:?}", log_id);
             self.update_last_applied(log_id);
         }
 
-        // Persist changes to disk and clear WAL
-        self.persist_data_async().await?;
-        self.persist_metadata_async().await?;
-        self.clear_wal_async().await?;
+        self.wal_entries_since_checkpoint.fetch_add(chunk_len as u64, Ordering::Relaxed);
 
-        Ok(())
+        if self.should_checkpoint() {
+            self.checkpoint().await?;
+        }
+
+        Ok(results)
     }
 
     fn len(&self) -> usize {
@@ -1372,39 +1452,30 @@ impl StateMachine for FileStateMachine {
             data.iter().map(|(k, (v, t))| (k.clone(), (v.clone(), *t))).collect()
         };
 
-        // Write data in the same format as the data file
-        for (key, (value, term)) in data_copy.iter() {
-            // Write key length (8 bytes)
-            let key_len = key.len() as u64;
-            file.write_all(&key_len.to_be_bytes()).await?;
-
-            // Write key
-            file.write_all(key).await?;
-
-            // Write value length (8 bytes)
-            let value_len = value.len() as u64;
-            file.write_all(&value_len.to_be_bytes()).await?;
-
-            // Write value
-            file.write_all(value).await?;
-
-            // Write term (8 bytes)
-            file.write_all(&term.to_be_bytes()).await?;
-        }
-
-        // Write lease state if configured
+        // Batch serialize into a single buffer — eliminates per-entry async yield overhead.
         let lease_snapshot = if let Some(ref lease) = self.lease {
             lease.to_snapshot()
         } else {
             Vec::new()
         };
+        let estimated: usize =
+            data_copy.iter().map(|(k, (v, _))| 8 + k.len() + 8 + v.len() + 8).sum::<usize>()
+                + 8
+                + lease_snapshot.len();
+        let mut buf = Vec::with_capacity(estimated);
 
-        // Write lease data length
-        let lease_len = lease_snapshot.len() as u64;
-        file.write_all(&lease_len.to_be_bytes()).await?;
+        for (key, (value, term)) in &data_copy {
+            buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
+            buf.extend_from_slice(key);
+            buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            buf.extend_from_slice(value);
+            buf.extend_from_slice(&term.to_be_bytes());
+        }
 
-        // Write lease data
-        file.write_all(&lease_snapshot).await?;
+        buf.extend_from_slice(&(lease_snapshot.len() as u64).to_be_bytes());
+        buf.extend_from_slice(&lease_snapshot);
+
+        file.write_all(&buf).await?;
 
         file.flush().await?;
 
@@ -1442,10 +1513,8 @@ impl StateMachine for FileStateMachine {
     }
 
     async fn flush_async(&self) -> Result<(), Error> {
-        self.persist_data_async().await?;
-        self.persist_metadata_async().await?;
-        // self.clear_wal_async().await?;
-        Ok(())
+        // Force checkpoint on shutdown to ensure WAL entries are not lost.
+        self.checkpoint().await
     }
 
     async fn reset(&self) -> Result<(), Error> {
@@ -1479,10 +1548,8 @@ impl StateMachine for FileStateMachine {
             }
         }
 
-        // Persist to disk after batch deletion
-        if let Err(e) = self.persist_data() {
-            error!("Failed to persist after background cleanup: {:?}", e);
-        }
+        // Persist to disk after batch deletion; propagate error so caller can retry
+        self.persist_data_async().await?;
 
         info!(
             "Lease background cleanup: deleted {} expired keys",

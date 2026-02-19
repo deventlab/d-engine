@@ -10,11 +10,6 @@
 //! - End-to-end Watch notification latency: < 100µs
 //! - Batch operations: Linear scaling
 
-#![cfg(feature = "watch")]
-
-use std::sync::Arc;
-use std::time::Duration;
-
 use bytes::Bytes;
 use criterion::BenchmarkId;
 use criterion::Criterion;
@@ -33,6 +28,8 @@ use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::entry_payload::Payload;
 use d_engine_server::storage::FileStateMachine;
 use prost::Message;
+use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
@@ -370,6 +367,16 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
                                         };
                                         let _ = broadcast_tx.send(event);
                                     }
+                                    Operation::CompareAndSwap(cas) => {
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: cas.key.clone(),
+                                            value: cas.new_value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
+                                    }
                                 }
                             }
                         }
@@ -427,6 +434,16 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
                                         };
                                         let _ = broadcast_tx.send(event);
                                     }
+                                    Operation::CompareAndSwap(cas) => {
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: cas.key.clone(),
+                                            value: cas.new_value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
+                                    }
                                 }
                             }
                         }
@@ -480,6 +497,16 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
                                             event_type:
                                                 d_engine_proto::client::WatchEventType::Delete
                                                     as i32,
+                                            error: 0,
+                                        };
+                                        let _ = broadcast_tx.send(event);
+                                    }
+                                    Operation::CompareAndSwap(cas) => {
+                                        let event = d_engine_proto::client::WatchResponse {
+                                            key: cas.key.clone(),
+                                            value: cas.new_value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
                                             error: 0,
                                         };
                                         let _ = broadcast_tx.send(event);

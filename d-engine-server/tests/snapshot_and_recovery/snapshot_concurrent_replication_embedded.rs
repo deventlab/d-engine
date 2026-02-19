@@ -24,9 +24,11 @@
 //! 4. Verify Learner ends with all 2000 entries (1500 + 500)
 //! 5. Verify no data loss during PHASE 2.5 temporary DB window
 
+#![cfg(feature = "rocksdb")]
+use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+
 use d_engine_server::EmbeddedEngine;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
+
 use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
@@ -161,8 +163,17 @@ snapshots_dir = '{}'
 
     info!("Phase 1 complete: {} entries written", BASELINE_ENTRIES);
 
-    info!("Waiting for snapshot to be generated on all nodes...");
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    info!("Waiting for snapshot to be generated on Leader...");
+    let leader_id = engines
+        .iter()
+        .find(|e| e.is_leader())
+        .map(|e| e.node_id())
+        .expect("Should have a leader");
+    assert!(
+        crate::common::wait_for_snapshot(&snapshots_dir, leader_id as u64, Duration::from_secs(10))
+            .await,
+        "Leader (Node {leader_id}) failed to generate snapshot within 10s"
+    );
 
     info!("Phase 2: Adding Learner (Node 4)...");
 
@@ -301,7 +312,7 @@ snapshots_dir = '{}'
     );
 
     info!("Phase 5: Verifying data integrity on Leader...");
-    info!("Note: Verifying from Leader because Learner LocalKvClient returns NotLeader");
+    info!("Note: Verifying from Leader because Learner EmbeddedClient returns NotLeader");
 
     let mut verification_errors = Vec::new();
     for i in 0..TOTAL_ENTRIES {

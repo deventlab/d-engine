@@ -114,7 +114,7 @@ pub mod storage;
 
 // -------------------- Primary Entry Points --------------------
 pub use api::EmbeddedEngine;
-pub use api::StandaloneServer;
+pub use api::StandaloneEngine;
 // -------------------- Error Types --------------------
 /// Unified error type for all d-engine operations
 pub use d_engine_core::Error;
@@ -133,20 +133,17 @@ pub use d_engine_core::SnapshotError;
 /// Storage-specific error type
 pub use d_engine_core::StorageError;
 // -------------------- Extension Traits --------------------
+pub use api::EmbeddedClient;
 /// Storage trait for implementing custom storage backends
 ///
 /// Implement this trait to create your own storage engine.
 pub use d_engine_core::{StateMachine, StorageEngine};
-pub use node::LocalClientError;
-pub use node::LocalKvClient;
 pub use node::Node;
 pub use node::NodeBuilder;
 // Re-export storage implementations
-pub use storage::{
-    FileStateMachine,
-    // File-based storage
-    FileStorageEngine,
-};
+pub use storage::{FileStateMachine, FileStorageEngine};
+// Re-export core types needed by applications
+pub use d_engine_core::ApplyResult;
 // Conditional RocksDB exports
 #[cfg(feature = "rocksdb")]
 pub use storage::{RocksDBStateMachine, RocksDBStorageEngine};

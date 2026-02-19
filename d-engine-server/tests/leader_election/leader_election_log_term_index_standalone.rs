@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use d_engine_client::ClientApiError;
+use d_engine_core::ClientApiError;
 use tracing::debug;
 
 use crate::client_manager::ClientManager;

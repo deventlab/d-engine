@@ -52,6 +52,7 @@ use d_engine_core::ReplicationHandler;
 use d_engine_core::Result;
 use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
+use d_engine_core::StateMachineWorker;
 use d_engine_core::StorageEngine;
 use d_engine_core::SystemError;
 use d_engine_core::alias::MOF;
@@ -338,7 +339,6 @@ where
             Arc::new(DefaultStateMachineHandler::new(
                 node_id,
                 last_applied_index,
-                node_config.raft.commit_handler.max_entries_per_chunk,
                 state_machine.clone(),
                 node_config.raft.snapshot.clone(),
                 snapshot_policy,
@@ -357,6 +357,7 @@ where
 
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10240);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let event_tx_clone = event_tx.clone(); // used in commit handler
 
         let node_config_arc = Arc::new(node_config);
@@ -409,6 +410,8 @@ where
                 role_rx,
                 event_tx,
                 event_rx,
+                cmd_tx.clone(),
+                cmd_rx,
                 shutdown_signal.clone(),
             ),
             node_config_arc.clone(),
@@ -421,13 +424,28 @@ where
         let leader_notifier = LeaderNotifier::new();
         raft_core.register_leader_change_listener(leader_notifier.sender());
 
+        // Create SM Worker channel for decoupled apply operations
+        let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+
+        // Spawn SM Worker task
+        let sm_worker = StateMachineWorker::new(
+            node_id,
+            state_machine_handler.clone(),
+            sm_apply_rx,
+            event_tx_clone.clone(),
+            self.shutdown_signal.clone(),
+        );
+        let sm_worker_handle = Self::spawn_state_machine_worker(sm_worker);
+
         // Start CommitHandler in a single thread
         let deps = CommitHandlerDependencies {
             state_machine_handler,
             raft_log: raft_core.ctx.storage.raft_log.clone(),
             membership: membership.clone(),
             event_tx: event_tx_clone,
+            sm_apply_tx,
             shutdown_signal,
+            max_batch_size: raft_core.ctx.node_config.raft.batching.max_batch_size,
         };
 
         let commit_handler = DefaultCommitHandler::<RaftTypeConfig<SE, SM>>::new(
@@ -435,7 +453,6 @@ where
             my_role_i32,
             my_current_term,
             deps,
-            node_config_arc.clone(),
             new_commit_event_rx,
         );
         // Spawn commit listener via Builder method
@@ -451,6 +468,7 @@ where
             raft_core: Arc::new(Mutex::new(raft_core)),
             membership,
             event_tx: event_tx.clone(),
+            cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,
@@ -459,6 +477,7 @@ where
             watch_registry: watch_system.as_ref().map(|(_, reg, _)| Arc::clone(reg)),
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: watch_system.map(|(_, _, handle)| handle),
+            _sm_worker_handle: Some(sm_worker_handle),
             _commit_handler_handle: Some(commit_handler_handle),
             _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),
@@ -487,6 +506,34 @@ where
                 Err(e) => {
                     error!("commit_handler exit program with unexpected error: {:?}", e);
                     println!("commit_handler exit program");
+                }
+            }
+        })
+    }
+
+    /// Spawn state machine worker task as background task.
+    ///
+    /// This task applies state machine entries decoupled from CommitHandler,
+    /// enabling non-blocking entry sending from the critical path. Implements
+    /// graceful drain on shutdown to ensure all pending entries are applied
+    /// before task termination, maintaining Raft protocol compliance.
+    ///
+    /// # Returns
+    /// * `JoinHandle` - Task handle for lifecycle management
+    fn spawn_state_machine_worker(
+        sm_worker: StateMachineWorker<RaftTypeConfig<SE, SM>>
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            match sm_worker.run().await {
+                Ok(_) => {
+                    info!("state_machine_worker exit program");
+                }
+                Err(e) => {
+                    error!(
+                        "state_machine_worker exit program with unexpected error: {:?}",
+                        e
+                    );
+                    println!("state_machine_worker exit program");
                 }
             }
         })

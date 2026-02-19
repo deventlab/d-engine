@@ -14,8 +14,6 @@ use bytes::Bytes;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -49,8 +47,8 @@ use super::SnapshotAssembler;
 use super::SnapshotContext;
 use super::SnapshotPolicy;
 use super::StateMachineHandler;
+use crate::ApplyResult;
 use crate::NewCommitData;
-use crate::RaftLog;
 use crate::Result;
 use crate::SnapshotConfig;
 use crate::SnapshotError;
@@ -59,7 +57,6 @@ use crate::SnapshotPathManager;
 use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
-use crate::alias::ROF;
 use crate::alias::SMOF;
 use crate::alias::SNP;
 use crate::convert::classify_error;
@@ -88,8 +85,6 @@ where
     // Handler, as it manages the application process.
     last_applied: AtomicU64,   // The last applied log index
     pending_commit: AtomicU64, // The highest pending commit index
-    #[allow(unused)]
-    max_entries_per_chunk: usize,
     state_machine: Arc<SMOF<T>>,
 
     // current_snapshot_version: AtomicU64,
@@ -201,7 +196,7 @@ where
     async fn apply_chunk(
         &self,
         chunk: Vec<Entry>,
-    ) -> Result<()> {
+    ) -> Result<Vec<ApplyResult>> {
         let _timer = ScopedTimer::new("apply_chunk");
 
         // Use a timer to measure latency and count chunks
@@ -227,9 +222,9 @@ where
 
         // Fire-and-forget watch events on success (non-blocking)
         #[cfg(feature = "watch")]
-        if apply_result.is_ok() {
+        if let Ok(ref results) = apply_result {
             if let Some(ref tx) = self.watch_event_tx {
-                self.broadcast_watch_events(&chunk, tx);
+                self.broadcast_watch_events(&chunk, results, tx);
             }
         }
 
@@ -278,6 +273,7 @@ where
             }
         }
 
+        // Propagate results to caller
         apply_result
     }
 
@@ -515,123 +511,6 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    async fn validate_purge_request(
-        &self,
-        current_term: u64,
-        leader_id: Option<u32>,
-        req: &PurgeLogRequest,
-    ) -> Result<bool> {
-        // Verification 1: Leader identity legitimacy
-        if req.term < current_term || leader_id != Some(req.leader_id) {
-            return Ok(false);
-        }
-
-        // Verification 2: Locally applied log index >= requested up_to_index
-        if req.last_included.is_none() {
-            return Ok(false);
-        }
-
-        if let Some(last_included) = req.last_included {
-            if self.state_machine.last_applied().index < last_included.index {
-                return Ok(false);
-            }
-        }
-
-        // Verification 3: Verify snapshot consistency (to prevent snapshot data corruption)
-        if let Some(last_snapshot_metadata) = self.state_machine.snapshot_metadata() {
-            if req.snapshot_checksum != last_snapshot_metadata.checksum {
-                return Ok(false);
-            }
-        } else {
-            // There is no corresponding snapshot locally, snapshot synchronization needs to be
-            // triggered
-            return Ok(false);
-        }
-
-        Ok(true)
-    }
-
-    async fn handle_purge_request(
-        &self,
-        current_term: u64,
-        leader_id: Option<u32>,
-        last_purged: Option<LogId>,
-        req: &PurgeLogRequest,
-        raft_log: &Arc<ROF<T>>,
-    ) -> Result<PurgeLogResponse> {
-        // Verification 1: Leader identity legitimacy
-        if req.term < current_term || leader_id != Some(req.leader_id) {
-            return Ok(PurgeLogResponse {
-                node_id: self.node_id,
-                term: current_term,
-                success: false,
-                last_purged,
-            });
-        }
-
-        // Verification 2: Locally applied log index >= requested up_to_index
-        if req.last_included.is_none() {
-            return Ok(PurgeLogResponse {
-                node_id: self.node_id,
-                term: current_term,
-                success: false,
-                last_purged,
-            });
-        }
-
-        if let Some(last_included) = req.last_included {
-            if self.state_machine.last_applied().index < last_included.index {
-                return Ok(PurgeLogResponse {
-                    node_id: self.node_id,
-                    term: current_term,
-                    success: false,
-                    last_purged,
-                });
-            }
-        }
-
-        // Verification 3: Verify snapshot consistency (to prevent snapshot data corruption)
-        if let Some(last_snapshot_metadata) = self.state_machine.snapshot_metadata() {
-            if req.snapshot_checksum != last_snapshot_metadata.checksum {
-                return Ok(PurgeLogResponse {
-                    node_id: self.node_id,
-                    term: current_term,
-                    success: false,
-                    last_purged,
-                });
-            }
-        } else {
-            // There is no corresponding snapshot locally, snapshot synchronization needs to be
-            // triggered
-            return Ok(PurgeLogResponse {
-                node_id: self.node_id,
-                term: current_term,
-                success: false,
-                last_purged,
-            });
-        }
-
-        // Perform physical deletion
-        match raft_log.purge_logs_up_to(req.last_included.unwrap()).await {
-            Ok(_) => Ok(PurgeLogResponse {
-                node_id: self.node_id,
-                term: current_term,
-                success: true,
-                last_purged,
-            }),
-            Err(e) => {
-                error!(?e, "raft_log.purge_logs_up_to");
-                Ok(PurgeLogResponse {
-                    node_id: self.node_id,
-                    term: current_term,
-                    success: false,
-                    last_purged,
-                })
-            }
-        }
-    }
-
     fn get_latest_snapshot_metadata(&self) -> Option<SnapshotMetadata> {
         self.state_machine.snapshot_metadata()
     }
@@ -751,11 +630,15 @@ where
     /// Parses chunk entries and broadcasts WatchEvent via tokio::broadcast channel.
     /// Non-blocking: if channel is full, oldest events are dropped (lagging receivers).
     /// Decoupled from WatchManager: only sends signal, doesn't care who listens.
+    ///
+    /// `results` must have the same length as `chunk` (enforced by StateMachineHandler contract).
+    /// CAS entries where `results[i].succeeded == false` are skipped — no mutation occurred.
     #[cfg(feature = "watch")]
     #[inline]
-    fn broadcast_watch_events(
+    pub(super) fn broadcast_watch_events(
         &self,
         chunk: &[Entry],
+        results: &[ApplyResult],
         tx: &tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
     ) {
         use d_engine_proto::client::WatchEventType;
@@ -765,7 +648,7 @@ where
         use d_engine_proto::common::entry_payload::Payload;
         use prost::Message;
 
-        for entry in chunk {
+        for (i, entry) in chunk.iter().enumerate() {
             if let Some(ref payload) = entry.payload {
                 if let Some(Payload::Command(bytes)) = &payload.payload {
                     if let Ok(write_cmd) = WriteCommand::decode(bytes.as_ref()) {
@@ -782,6 +665,20 @@ where
                                 event_type: WatchEventType::Delete as i32,
                                 error: 0,
                             }),
+                            Some(Operation::CompareAndSwap(cas)) => {
+                                // Only broadcast if CAS actually mutated the value.
+                                // A failed CAS leaves the key unchanged — no watch event.
+                                if results.get(i).is_some_and(|r| r.succeeded) {
+                                    Some(WatchResponse {
+                                        key: cas.key,
+                                        value: cas.new_value,
+                                        event_type: WatchEventType::Put as i32,
+                                        error: 0,
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
                             None => None,
                         };
 
@@ -803,7 +700,6 @@ where
     pub fn new(
         node_id: u32,
         last_applied_index: u64,
-        max_entries_per_chunk: usize,
         state_machine: Arc<SMOF<T>>,
         snapshot_config: SnapshotConfig,
         snapshot_policy: SNP<T>,
@@ -818,7 +714,6 @@ where
             node_id,
             last_applied: AtomicU64::new(last_applied_index),
             pending_commit: AtomicU64::new(0),
-            max_entries_per_chunk,
             state_machine,
             snapshot_policy,
             path_mgr: Arc::new(SnapshotPathManager::new(
@@ -843,7 +738,6 @@ where
     pub(crate) fn new_without_watch(
         node_id: u32,
         last_applied_index: u64,
-        max_entries_per_chunk: usize,
         state_machine: Arc<SMOF<T>>,
         snapshot_config: SnapshotConfig,
         snapshot_policy: SNP<T>,
@@ -851,7 +745,6 @@ where
         Self::new(
             node_id,
             last_applied_index,
-            max_entries_per_chunk,
             state_machine,
             snapshot_config,
             snapshot_policy,

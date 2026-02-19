@@ -7,6 +7,7 @@ description = "gRPC protocol definitions - for building non-Rust d-engine client
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
+rust-version.workspace = true
 keywords = ["raft", "protobuf", "grpc"]
 categories = ["encoding", "network-programming"]
 publish = true

@@ -12,11 +12,11 @@ use tokio::sync::{mpsc, watch};
 use tonic::Status;
 use tracing_test::traced_test;
 
-use crate::AppendResults;
 use crate::ConsensusError;
 use crate::Error;
 use crate::MockMembership;
 use crate::MockRaftLog;
+use crate::{AppendResults, MaybeCloneOneshot};
 
 use crate::PeerUpdate;
 use crate::QuorumVerificationResult;
@@ -100,8 +100,9 @@ fn mock_request(
 ) -> RaftRequestWithSignal {
     RaftRequestWithSignal {
         id: nanoid!(),
-        payloads: vec![],
-        sender,
+        payloads: vec![EntryPayload::command(Bytes::from_static(b"cmd"))],
+        senders: vec![sender],
+        wait_for_apply_event: false,
     }
 }
 
@@ -167,6 +168,7 @@ async fn test_process_batch_quorum_achieved() {
             })
         });
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(6));
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
@@ -670,7 +672,26 @@ async fn setup_commit_index_test_context(
         });
     membership.expect_get_zombie_candidates().returning(Vec::new);
     membership.expect_pre_warm_connections().returning(|| Ok(()));
-    membership.expect_replication_peers().returning(Vec::new);
+    if single_voter {
+        membership.expect_replication_peers().returning(Vec::new);
+    } else {
+        membership.expect_replication_peers().returning(|| {
+            vec![
+                NodeMeta {
+                    id: 2,
+                    address: "".to_string(),
+                    status: NodeStatus::Active as i32,
+                    role: Follower.into(),
+                },
+                NodeMeta {
+                    id: 3,
+                    address: "".to_string(),
+                    status: NodeStatus::Active as i32,
+                    role: Follower.into(),
+                },
+            ]
+        });
+    }
     membership.expect_initial_cluster_size().returning(|| 3);
     context.membership = Arc::new(membership);
 
@@ -734,7 +755,6 @@ async fn test_single_node_cluster_commit_index() {
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(8));
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
@@ -968,6 +988,7 @@ async fn test_verify_internal_quorum_success() {
         });
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     raft_context.storage.raft_log = Arc::new(raft_log);
 
@@ -975,7 +996,7 @@ async fn test_verify_internal_quorum_success() {
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::Success);
     assert!(matches!(
@@ -1029,7 +1050,7 @@ async fn test_verify_internal_quorum_verifiable_failure() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 }
@@ -1108,7 +1129,7 @@ async fn test_verify_internal_quorum_non_verifiable_failure() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::LeadershipLost);
 }
@@ -1158,7 +1179,7 @@ async fn test_verify_internal_quorum_partial_timeouts() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 }
@@ -1204,7 +1225,7 @@ async fn test_verify_internal_quorum_all_timeouts() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 }
@@ -1250,7 +1271,7 @@ async fn test_verify_internal_quorum_higher_term() {
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert!(result.is_err());
     assert!(matches!(
@@ -1301,7 +1322,7 @@ async fn test_verify_internal_quorum_critical_failure() {
 
     let (role_tx, _) = mpsc::unbounded_channel();
 
-    let result = state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+    let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
     assert!(result.is_err());
     assert!(matches!(

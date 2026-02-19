@@ -35,11 +35,13 @@ mod default_state_machine_handler;
 mod snapshot_assembler;
 mod snapshot_guard;
 mod snapshot_policy;
+mod worker;
 
 pub use default_state_machine_handler::*;
 pub(crate) use snapshot_assembler::*;
 pub(crate) use snapshot_guard::*;
 pub use snapshot_policy::*;
+pub use worker::*;
 
 #[cfg(test)]
 mod default_state_machine_handler_test;
@@ -47,13 +49,10 @@ mod default_state_machine_handler_test;
 mod snapshot_assembler_test;
 #[cfg(test)]
 mod wait_applied_test;
-
-use std::sync::Arc;
+#[cfg(test)]
+mod worker_test;
 
 use d_engine_proto::client::ClientResult;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use futures::stream::BoxStream;
@@ -62,9 +61,9 @@ use mockall::automock;
 use tonic::async_trait;
 
 use super::NewCommitData;
+use crate::ApplyResult;
 use crate::Result;
 use crate::TypeConfig;
-use crate::alias::ROF;
 
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
@@ -93,10 +92,13 @@ where
     ) -> Result<()>;
 
     /// Applies a batch of committed log entries to the state machine
+    ///
+    /// Returns execution results for each entry in the same order as input.
+    /// The returned vector length MUST equal the input chunk length.
     async fn apply_chunk(
         &self,
         chunk: Vec<d_engine_proto::common::Entry>,
-    ) -> Result<()>;
+    ) -> Result<Vec<ApplyResult>>;
 
     /// Reads values from the state machine for given keys
     /// Returns None if any key doesn't exist
@@ -141,25 +143,6 @@ where
         snapshot_dir: &std::path::Path,
         snapshot_dir_prefix: &str,
     ) -> crate::Result<()>;
-
-    /// Validates if a log purge request from leader is authorized
-    async fn validate_purge_request(
-        &self,
-        current_term: u64,
-        leader_id: Option<u32>,
-        req: &PurgeLogRequest,
-    ) -> Result<bool>;
-
-    /// Processes log purge requests (for non-leader nodes)
-    #[allow(unused)]
-    async fn handle_purge_request(
-        &self,
-        current_term: u64,
-        leader_id: Option<u32>,
-        last_purged: Option<LogId>,
-        req: &PurgeLogRequest,
-        raft_log: &Arc<ROF<T>>,
-    ) -> Result<PurgeLogResponse>;
 
     /// Retrieves metadata of the latest valid snapshot
     fn get_latest_snapshot_metadata(&self) -> Option<SnapshotMetadata>;

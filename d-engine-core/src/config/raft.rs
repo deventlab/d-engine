@@ -16,9 +16,17 @@ use crate::Result;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RaftConfig {
     /// Configuration settings related to log replication
-    /// Includes parameters like replication batch size and network retry behavior
+    /// Includes parameters like heartbeat interval and AppendEntries entry count limit
     #[serde(default)]
     pub replication: ReplicationConfig,
+
+    /// Client request batching configuration
+    ///
+    /// Controls flush thresholds for the leader's propose and linearizable-read buffers.
+    /// Separate from replication config — this governs the client ingestion layer, not
+    /// the Leader→Follower replication path.
+    #[serde(default)]
+    pub batching: BatchingConfig,
 
     /// Configuration settings for leader election mechanism
     /// Controls timeouts and randomization factors for election timing
@@ -29,11 +37,6 @@ pub struct RaftConfig {
     /// Handles joint consensus transitions and cluster reconfiguration rules
     #[serde(default)]
     pub membership: MembershipConfig,
-
-    /// Configuration settings for commit application handling
-    /// Controls how committed log entries are applied to the state machine
-    #[serde(default)]
-    pub commit_handler: CommitHandlerConfig,
 
     /// Configuration settings for state machine behavior
     /// Controls state machine operations like lease management, compaction, etc.
@@ -81,6 +84,11 @@ pub struct RaftConfig {
     #[serde(default)]
     pub read_consistency: ReadConsistencyConfig,
 
+    /// Backpressure configuration for client request flow control
+    /// Prevents unbounded memory growth by rejecting excess requests
+    #[serde(default)]
+    pub backpressure: BackpressureConfig,
+
     /// RPC compression configuration for different service types
     ///
     /// Controls which RPC service types use response compression.
@@ -93,6 +101,11 @@ pub struct RaftConfig {
     /// Controls event queue sizes and metrics behavior
     #[serde(default)]
     pub watch: WatchConfig,
+
+    /// Performance metrics configuration
+    /// Controls metrics emission and sampling for observability vs performance trade-off
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 impl Debug for RaftConfig {
@@ -107,9 +120,9 @@ impl Default for RaftConfig {
     fn default() -> Self {
         Self {
             replication: ReplicationConfig::default(),
+            batching: BatchingConfig::default(),
             election: ElectionConfig::default(),
             membership: MembershipConfig::default(),
-            commit_handler: CommitHandlerConfig::default(),
             state_machine: StateMachineConfig::default(),
             snapshot: SnapshotConfig::default(),
             persistence: PersistenceConfig::default(),
@@ -119,8 +132,10 @@ impl Default for RaftConfig {
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
             read_consistency: ReadConsistencyConfig::default(),
+            backpressure: BackpressureConfig::default(),
             rpc_compression: RpcCompressionConfig::default(),
             watch: WatchConfig::default(),
+            metrics: MetricsConfig::default(),
         }
     }
 }
@@ -140,9 +155,9 @@ impl RaftConfig {
         }
 
         self.replication.validate()?;
+        self.batching.validate()?;
         self.election.validate()?;
         self.membership.validate()?;
-        self.commit_handler.validate()?;
         self.state_machine.validate()?;
         self.snapshot.validate()?;
         self.read_consistency.validate()?;
@@ -180,15 +195,11 @@ fn default_snapshot_rpc_timeout_ms() -> u64 {
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReplicationConfig {
+    /// Heartbeat interval (milliseconds): how often the leader sends AppendEntries RPCs.
     #[serde(default = "default_append_interval")]
     pub rpc_append_entries_clock_in_ms: u64,
 
-    #[serde(default = "default_batch_threshold")]
-    pub rpc_append_entries_in_batch_threshold: usize,
-
-    #[serde(default = "default_batch_delay")]
-    pub rpc_append_entries_batch_process_delay_in_ms: u64,
-
+    /// Maximum log entries per single AppendEntries RPC to a follower.
     #[serde(default = "default_entries_per_replication")]
     pub append_entries_max_entries_per_replication: u64,
 }
@@ -197,8 +208,6 @@ impl Default for ReplicationConfig {
     fn default() -> Self {
         Self {
             rpc_append_entries_clock_in_ms: default_append_interval(),
-            rpc_append_entries_in_batch_threshold: default_batch_threshold(),
-            rpc_append_entries_batch_process_delay_in_ms: default_batch_delay(),
             append_entries_max_entries_per_replication: default_entries_per_replication(),
         }
     }
@@ -211,38 +220,64 @@ impl ReplicationConfig {
             )));
         }
 
-        if self.rpc_append_entries_in_batch_threshold == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "rpc_append_entries_in_batch_threshold must be > 0".into(),
-            )));
-        }
-
         if self.append_entries_max_entries_per_replication == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "append_entries_max_entries_per_replication must be > 0".into(),
             )));
         }
 
-        if self.rpc_append_entries_batch_process_delay_in_ms >= self.rpc_append_entries_clock_in_ms
-        {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "batch_delay {}ms should be less than append_interval {}ms",
-                self.rpc_append_entries_batch_process_delay_in_ms,
-                self.rpc_append_entries_clock_in_ms
-            ))));
-        }
-
         Ok(())
     }
 }
+
+/// Batching configuration for leader-side drain loops and buffer allocation.
+///
+/// A single value intentionally covers all drain loops because they all operate
+/// within the same heartbeat period and share the same order-of-magnitude concurrency:
+/// - `raft.rs` cmd_rx drain (client propose ingestion)
+/// - `raft.rs` role_rx drain (commit index event coalescing)
+/// - `DefaultCommitHandler` new_commit_rx drain (state machine apply batching)
+///
+/// Also used as the initial Vec capacity for propose and linearizable-read buffers
+/// (construction-time hint only; the propose buffer retains capacity across flushes
+/// via `mem::swap`, while the read buffer resets each flush via `mem::take`).
+///
+/// # Tuning Guidelines
+/// - Low latency priority: lower values → smaller batches, faster flush
+/// - Throughput priority: higher values → larger batches, fewer RPCs
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BatchingConfig {
+    /// Maximum items to drain per heartbeat period across all drain loops.
+    ///
+    /// **Default**: 100
+    #[serde(default = "default_max_batch_size")]
+    pub max_batch_size: usize,
+}
+
+impl Default for BatchingConfig {
+    fn default() -> Self {
+        Self {
+            max_batch_size: default_max_batch_size(),
+        }
+    }
+}
+
+impl BatchingConfig {
+    fn validate(&self) -> Result<()> {
+        if self.max_batch_size == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "batching.max_batch_size must be > 0".into(),
+            )));
+        }
+        Ok(())
+    }
+}
+
 fn default_append_interval() -> u64 {
     100
 }
-fn default_batch_threshold() -> usize {
+fn default_max_batch_size() -> usize {
     100
-}
-fn default_batch_delay() -> u64 {
-    1
 }
 fn default_entries_per_replication() -> u64 {
     100
@@ -360,60 +395,6 @@ impl MembershipConfig {
         }
         Ok(())
     }
-}
-
-/// Submit processor-specific configuration
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CommitHandlerConfig {
-    #[serde(default = "default_batch_size_threshold")]
-    pub batch_size_threshold: u64,
-
-    #[serde(default = "default_process_interval_ms")]
-    pub process_interval_ms: u64,
-
-    #[serde(default = "default_max_entries_per_chunk")]
-    pub max_entries_per_chunk: usize,
-}
-impl Default for CommitHandlerConfig {
-    fn default() -> Self {
-        Self {
-            batch_size_threshold: default_batch_size_threshold(),
-            process_interval_ms: default_process_interval_ms(),
-            max_entries_per_chunk: default_max_entries_per_chunk(),
-        }
-    }
-}
-impl CommitHandlerConfig {
-    fn validate(&self) -> Result<()> {
-        if self.batch_size_threshold == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "batch_size_threshold must be > 0".into(),
-            )));
-        }
-
-        if self.process_interval_ms == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "process_interval_ms must be > 0".into(),
-            )));
-        }
-
-        if self.max_entries_per_chunk == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "max_entries_per_chunk must be > 0".into(),
-            )));
-        }
-
-        Ok(())
-    }
-}
-fn default_batch_size_threshold() -> u64 {
-    100
-}
-fn default_process_interval_ms() -> u64 {
-    10
-}
-fn default_max_entries_per_chunk() -> usize {
-    10
 }
 
 /// State machine behavior configuration
@@ -853,7 +834,7 @@ pub struct PersistenceConfig {
 
 /// Default persistence strategy (optimized for balanced workloads)
 fn default_persistence_strategy() -> PersistenceStrategy {
-    PersistenceStrategy::MemFirst
+    PersistenceStrategy::DiskFirst
 }
 
 /// Default value for flush_workers
@@ -891,6 +872,91 @@ impl Default for PersistenceConfig {
             flush_workers: default_flush_workers(),
             channel_capacity: default_channel_capacity(),
         }
+    }
+}
+
+/// Backpressure configuration for client request flow control
+///
+/// Prevents unbounded memory growth by limiting pending client requests.
+/// When limits are reached, new requests are rejected with RESOURCE_EXHAUSTED
+/// error until the system processes existing requests.
+///
+/// # Value Semantics
+/// - `0` = unlimited (no backpressure)
+/// - `> 0` = maximum pending requests allowed
+///
+/// # Tuning Guidelines(only for reference)
+/// - Low memory (< 4GB): 1000-5000
+/// - Medium memory (4-16GB): 5000-20000
+/// - High memory (> 16GB): 20000-50000
+///
+/// # Example
+/// ```toml
+/// [raft.backpressure]
+/// max_pending_writes = 10000
+/// max_pending_reads = 50000
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackpressureConfig {
+    /// Maximum pending write (propose) requests
+    ///
+    /// Limits the number of client write requests waiting in the leader's
+    /// propose buffer. Write requests typically consume more resources
+    /// (replication, persistence) than reads.
+    ///
+    /// **Default**: 10000 (0 = unlimited)
+    #[serde(default = "default_max_pending_writes")]
+    pub max_pending_writes: usize,
+
+    /// Maximum pending linearizable read requests
+    ///
+    /// Limits the number of client linearizable read requests waiting in
+    /// the leader's read buffer. Read requests can tolerate higher limits
+    /// as they don't require replication.
+    ///
+    /// **Default**: 50000 (0 = unlimited)
+    #[serde(default = "default_max_pending_reads")]
+    pub max_pending_reads: usize,
+}
+
+impl Default for BackpressureConfig {
+    fn default() -> Self {
+        Self {
+            max_pending_writes: default_max_pending_writes(),
+            max_pending_reads: default_max_pending_reads(),
+        }
+    }
+}
+
+fn default_max_pending_writes() -> usize {
+    10_000
+}
+
+fn default_max_pending_reads() -> usize {
+    50_000
+}
+
+impl BackpressureConfig {
+    /// Check if write request should be rejected due to backpressure
+    ///
+    /// Returns true if the current pending count exceeds the limit.
+    /// When `max_pending_writes == 0`, always returns false (unlimited).
+    pub fn should_reject_write(
+        &self,
+        current_pending: usize,
+    ) -> bool {
+        self.max_pending_writes > 0 && current_pending >= self.max_pending_writes
+    }
+
+    /// Check if read request should be rejected due to backpressure
+    ///
+    /// Returns true if the current pending count exceeds the limit.
+    /// When `max_pending_reads == 0`, always returns false (unlimited).
+    pub fn should_reject_read(
+        &self,
+        current_pending: usize,
+    ) -> bool {
+        self.max_pending_reads > 0 && current_pending >= self.max_pending_reads
     }
 }
 
@@ -957,29 +1023,6 @@ pub struct ReadConsistencyConfig {
     /// Default: 10ms (safe buffer for single-node local deployments)
     #[serde(default = "default_state_machine_sync_timeout_ms")]
     pub state_machine_sync_timeout_ms: u64,
-
-    /// ReadIndex batching configuration
-    #[serde(default)]
-    pub read_batching: ReadBatchingConfig,
-}
-
-/// Read batching configuration
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReadBatchingConfig {
-    /// Flush when buffer reaches this size
-    pub size_threshold: usize,
-
-    /// Flush when first request ages beyond this (milliseconds)
-    pub time_threshold_ms: u64,
-}
-
-impl Default for ReadBatchingConfig {
-    fn default() -> Self {
-        Self {
-            size_threshold: 50,
-            time_threshold_ms: 10,
-        }
-    }
 }
 
 impl Default for ReadConsistencyConfig {
@@ -989,7 +1032,6 @@ impl Default for ReadConsistencyConfig {
             lease_duration_ms: default_lease_duration_ms(),
             allow_client_override: default_allow_client_override(),
             state_machine_sync_timeout_ms: default_state_machine_sync_timeout_ms(),
-            read_batching: ReadBatchingConfig::default(),
         }
     }
 }
@@ -1270,4 +1312,72 @@ const fn default_watcher_buffer_size() -> usize {
 
 const fn default_enable_watch_metrics() -> bool {
     false
+}
+
+/// Performance metrics configuration
+///
+/// Controls emission of observability metrics. Disabling metrics reduces overhead
+/// in hot paths but decreases system visibility.
+///
+/// # Example
+/// ```toml
+/// [raft.metrics]
+/// enable_backpressure = true
+/// enable_batch = true
+/// sample_rate = 1  # No sampling (record every event)
+/// ```
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MetricsConfig {
+    /// Enable backpressure metrics (rejections, buffer utilization)
+    ///
+    /// Tracks client request backpressure for capacity planning.
+    /// Disable for absolute maximum performance in trusted environments.
+    ///
+    /// **Default**: false
+    #[serde(default = "default_enable_backpressure_metrics")]
+    pub enable_backpressure: bool,
+
+    /// Enable buffer length gauge (batch.buffer_length for propose and linearizable buffers)
+    ///
+    /// Tracks buffer utilization for capacity planning.
+    /// Disable for absolute maximum performance in trusted environments.
+    ///
+    /// **Default**: false
+    #[serde(default = "default_enable_batch_metrics")]
+    pub enable_batch: bool,
+
+    /// Sample rate for high-frequency gauge metrics
+    ///
+    /// - `1` = record every event (no sampling)
+    /// - `10` = record 1 out of 10 events (10% sampling)
+    /// - `100` = record 1 out of 100 events (1% sampling)
+    ///
+    /// Applies to: buffer_utilization, buffer_length gauges.
+    /// Does NOT apply to: counters (rejections, drain/heartbeat triggers).
+    ///
+    /// **Default**: 1 (no sampling)
+    #[serde(default = "default_metrics_sample_rate")]
+    pub sample_rate: u32,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enable_backpressure: default_enable_backpressure_metrics(),
+            enable_batch: default_enable_batch_metrics(),
+            sample_rate: default_metrics_sample_rate(),
+        }
+    }
+}
+
+fn default_enable_backpressure_metrics() -> bool {
+    false
+}
+
+fn default_enable_batch_metrics() -> bool {
+    false
+}
+
+fn default_metrics_sample_rate() -> u32 {
+    1 // No sampling by default
 }

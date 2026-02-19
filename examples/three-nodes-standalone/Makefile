@@ -50,7 +50,7 @@ start-node3:
 	./target/release/demo 2>&1 | sed 's/^/[Node3] /'
 
 
-start-cluster: clean build
+start-cluster:
 	@echo "Starting 3-node cluster in parallel..."
 	$(MAKE) -j3 start-node1 start-node2 start-node3
 

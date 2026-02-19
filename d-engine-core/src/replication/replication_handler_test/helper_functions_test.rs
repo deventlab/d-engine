@@ -4,20 +4,32 @@
 //! - generate_new_entries: Convert commands to log entries
 //! - build_append_request: Build AppendEntriesRequest for peers
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
+use crate::ConsensusError;
+use crate::Error;
 use crate::MockRaftLog;
 use crate::MockTypeConfig;
 use crate::ReplicationCore;
 use crate::ReplicationData;
+use crate::ReplicationError;
 use crate::ReplicationHandler;
 use crate::client_command_to_entry_payloads;
 use crate::test_utils::mock_insert_log_entries;
 use crate::test_utils::setup_mock_replication_test_context;
+use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::Operation;
 use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::ConflictResult;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
 use dashmap::DashMap;
+use prost::Message;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Generate new entries with empty commands should return empty vector.
 ///
@@ -192,11 +204,6 @@ async fn test_build_append_request_for_different_peers() {
 /// prev_log matches follower's log.
 #[test]
 fn test_append_request_validation_with_valid_request() {
-    use d_engine_proto::common::LogId;
-    use d_engine_proto::server::replication::AppendEntriesRequest;
-    use d_engine_proto::server::replication::SuccessResult;
-    use d_engine_proto::server::replication::append_entries_response;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
     let my_term = 2;
@@ -239,8 +246,6 @@ fn test_append_request_validation_with_valid_request() {
 /// Validates that requests with term lower than current term are rejected.
 #[test]
 fn test_append_request_validation_rejects_stale_term() {
-    use d_engine_proto::server::replication::AppendEntriesRequest;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
     let my_term = 2;
@@ -269,11 +274,6 @@ fn test_append_request_validation_rejects_stale_term() {
 /// but term doesn't match.
 #[test]
 fn test_append_request_validation_conflict_when_log_longer() {
-    use d_engine_proto::common::LogId;
-    use d_engine_proto::server::replication::AppendEntriesRequest;
-    use d_engine_proto::server::replication::ConflictResult;
-    use d_engine_proto::server::replication::append_entries_response;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
     let my_term = 1;
@@ -316,11 +316,6 @@ fn test_append_request_validation_conflict_when_log_longer() {
 /// Validates conflict detection when follower's log length < prev_log_index.
 #[test]
 fn test_append_request_validation_conflict_when_log_shorter() {
-    use d_engine_proto::common::LogId;
-    use d_engine_proto::server::replication::AppendEntriesRequest;
-    use d_engine_proto::server::replication::ConflictResult;
-    use d_engine_proto::server::replication::append_entries_response;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
     let my_term = 1;
@@ -364,9 +359,6 @@ fn test_append_request_validation_conflict_when_log_shorter() {
 /// are always accepted.
 #[test]
 fn test_append_request_validation_accepts_virtual_log() {
-    use d_engine_proto::common::LogId;
-    use d_engine_proto::server::replication::AppendEntriesRequest;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_log_id().returning(|| Some(LogId { term: 1, index: 5 }));
@@ -395,9 +387,6 @@ fn test_append_request_validation_accepts_virtual_log() {
 /// conflicts will be handled later during entry application.
 #[test]
 fn test_append_request_validation_virtual_log_with_entries() {
-    use d_engine_proto::common::LogId;
-    use d_engine_proto::server::replication::AppendEntriesRequest;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let mut raft_log = MockRaftLog::new();
     let my_term = 2;
@@ -434,8 +423,6 @@ fn test_append_request_validation_virtual_log_with_entries() {
 /// conflict includes both term and index information.
 #[test]
 fn test_conflict_response_with_term_and_index() {
-    use d_engine_proto::server::replication::ConflictResult;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let conflict_result = ConflictResult {
         conflict_term: Some(3),
@@ -461,8 +448,6 @@ fn test_conflict_response_with_term_and_index() {
 /// Validates fallback to conflict_index when no term information available.
 #[test]
 fn test_conflict_response_with_index_only() {
-    use d_engine_proto::server::replication::ConflictResult;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let conflict_result = ConflictResult {
         conflict_term: None,
@@ -485,8 +470,6 @@ fn test_conflict_response_with_index_only() {
 /// when no conflict information is available.
 #[test]
 fn test_conflict_response_with_no_info() {
-    use d_engine_proto::server::replication::ConflictResult;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let conflict_result = ConflictResult {
         conflict_term: None,
@@ -512,8 +495,6 @@ fn test_conflict_response_with_no_info() {
 /// ensuring next_index is always >= 1.
 #[test]
 fn test_conflict_response_clamps_zero_index() {
-    use d_engine_proto::server::replication::ConflictResult;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let conflict_result = ConflictResult {
         conflict_term: None,
@@ -538,12 +519,6 @@ fn test_conflict_response_clamps_zero_index() {
 /// HigherTerm error for leader step-down.
 #[test]
 fn test_success_response_triggers_step_down_on_higher_term() {
-    use crate::ConsensusError;
-    use crate::Error;
-    use crate::ReplicationError;
-    use d_engine_proto::common::LogId;
-    use d_engine_proto::server::replication::SuccessResult;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let responder_term = 5;
     let success_result = SuccessResult {
@@ -565,9 +540,6 @@ fn test_success_response_triggers_step_down_on_higher_term() {
 /// and advances next_index.
 #[test]
 fn test_success_response_updates_peer_indices() {
-    use d_engine_proto::common::LogId;
-    use d_engine_proto::server::replication::SuccessResult;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let responder_term = 3;
     let success_result = SuccessResult {
@@ -585,9 +557,6 @@ fn test_success_response_updates_peer_indices() {
 /// are still processed normally.
 #[test]
 fn test_success_response_accepts_lower_term() {
-    use d_engine_proto::common::LogId;
-    use d_engine_proto::server::replication::SuccessResult;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let responder_term = 3;
     let success_result = SuccessResult {
@@ -604,8 +573,6 @@ fn test_success_response_accepts_lower_term() {
 /// match_index=0 and next_index=1.
 #[test]
 fn test_success_response_handles_empty_follower_log() {
-    use d_engine_proto::server::replication::SuccessResult;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let responder_term = 3;
     let success_result = SuccessResult { last_match: None };
@@ -621,9 +588,6 @@ fn test_success_response_handles_empty_follower_log() {
 /// sets next_index=1 for first real entry.
 #[test]
 fn test_success_response_handles_zero_index_match() {
-    use d_engine_proto::common::LogId;
-    use d_engine_proto::server::replication::SuccessResult;
-
     let handler = ReplicationHandler::<MockTypeConfig>::new(1);
     let responder_term = 3;
     let success_result = SuccessResult {
@@ -644,13 +608,6 @@ fn test_success_response_handles_zero_index_match() {
 /// EntryPayload format for log entries.
 #[test]
 fn test_command_conversion_with_multiple_commands() {
-    use bytes::Bytes;
-    use d_engine_proto::client::WriteCommand;
-    use d_engine_proto::client::write_command::Insert;
-    use d_engine_proto::client::write_command::Operation;
-    use d_engine_proto::common::entry_payload::Payload;
-    use prost::Message;
-
     let commands = vec![
         WriteCommand {
             operation: Some(Operation::Insert(Insert {

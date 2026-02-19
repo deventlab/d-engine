@@ -13,11 +13,6 @@ log_dir = "./logs"
 [raft]
 general_raft_timeout_duration_in_ms = 100
 
-[raft.commit_handler]
-batch_size_threshold = 500
-process_interval_ms = 10
-max_entries_per_chunk = 100
-
 [raft.election]
 election_timeout_min = 1000
 election_timeout_max = 2000
@@ -26,15 +21,22 @@ election_timeout_max = 2000
 default_policy = "LeaseRead"
 lease_duration_ms = 500
 
-[raft.replication]
-# Process commands when this number is reached
-rpc_append_entries_in_batch_threshold = 5000
-# Ensure the batch is processed within a maximum delay (e.g., 10ms)
-rpc_append_entries_batch_process_delay_in_ms = 0
+[raft.batching]
+# Maximum number of commands to accumulate in a single batch during drain operations
+max_batch_size = 200
+
+[raft.metrics]
+enable_backpressure = false
+enable_batch = false
+
+[raft.backpressure]
+max_pending_writes = 1000
+max_pending_reads = 500
+
 
 [raft.persistence]
-# strategy = "DiskFirst"
-strategy = "MemFirst"
+strategy = "DiskFirst"
+# strategy = "MemFirst"
 # flush_policy = "Immediate"
 flush_policy = { Batch = { threshold = 100, interval_ms = 20 } }
 # Upcoming feature(v0.1.4)
@@ -59,6 +61,7 @@ max_cleanup_duration_ms = 1
 
 # == Network Control Plane (voting, heartbeat, etc.) ==
 [network.control]
+request_timeout_in_ms = 100
 concurrency_limit = 50             # Increase to 50 to reduce lock contention
 max_concurrent_streams = 1024      # Increase significantly to reduce stream creation overhead
 connection_window_size = 4_194_304 # Increase to 4MB to reduce flow control blocking

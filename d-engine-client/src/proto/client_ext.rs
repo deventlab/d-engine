@@ -29,17 +29,34 @@ pub trait ClientResponseExt {
 }
 
 impl ClientResponseExt for ClientResponse {
-    /// Convert response to boolean write result
+    /// Convert response to boolean result
     ///
     /// # Returns
-    /// - `Ok(true)` on successful write
-    /// - `Err` with converted error code on failure
+    /// - `Ok(true)` for successful Put/Delete, or successful CAS
+    /// - `Ok(false)` for failed CAS
+    /// - `Err` with error code on failure
     fn into_write_result(self) -> std::result::Result<bool, ClientApiError> {
         self.validate_error()?;
-        Ok(match self.success_result {
-            Some(SuccessResult::WriteAck(success)) => success,
-            _ => false,
-        })
+        match self.success_result {
+            Some(SuccessResult::WriteResult(result)) => Ok(result.succeeded),
+            other => {
+                let found = match &other {
+                    Some(SuccessResult::ReadData(_)) => "ReadData",
+                    Some(_) => "Unknown",
+                    None => "None",
+                };
+                error!(
+                    "Unexpected response type for write operation: expected WriteResult, found {found}"
+                );
+                Err(ClientApiError::Protocol {
+                    code: d_engine_proto::error::ErrorCode::InvalidResponse,
+                    message: format!(
+                        "Unexpected response type: expected WriteResult, found {found}"
+                    ),
+                    supported_versions: None,
+                })
+            }
+        }
     }
 
     /// Convert response to read results
@@ -62,7 +79,7 @@ impl ClientResponseExt for ClientResponse {
                 .collect(),
             _ => {
                 let found = match &self.success_result {
-                    Some(SuccessResult::WriteAck(_)) => "WriteAck",
+                    Some(SuccessResult::WriteResult(_)) => "WriteResult",
                     None => "None",
                     _ => "Unknown",
                 };

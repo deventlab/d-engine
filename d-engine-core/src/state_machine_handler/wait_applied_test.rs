@@ -18,7 +18,6 @@ fn create_test_handler_with_applied(
     DefaultStateMachineHandler::new_without_watch(
         1,            // node_id
         last_applied, // last_applied
-        100,          // max_entries_per_chunk
         state_machine,
         snap_config,
         MockSnapshotPolicy::new(),

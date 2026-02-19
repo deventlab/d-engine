@@ -31,6 +31,7 @@ authors = ["Joshua Chi <joshokn@gmail.com>"]
 homepage = "https://github.com/deventlab/d-engine"
 repository = "https://github.com/deventlab/d-engine"
 license = "MIT OR Apache-2.0"
+rust-version = "1.88"
 
 [workspace.dependencies]
 d-engine-proto = { path = "./d-engine-proto", version = "0.2.2" }

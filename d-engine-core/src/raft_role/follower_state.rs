@@ -1,13 +1,13 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use d_engine_proto::client::ClientResponse;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::storage::PurgeLogResponse;
+
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
@@ -26,11 +26,11 @@ use super::HardState;
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
-use super::can_serve_read_locally;
 use super::candidate_state::CandidateState;
 use super::leader_state::LeaderState;
 use super::learner_state::LearnerState;
 use super::role_state::RaftRoleState;
+use super::role_state::check_and_trigger_snapshot;
 use crate::ConsensusError;
 use crate::ElectionCore;
 use crate::ElectionTimer;
@@ -63,6 +63,15 @@ pub struct FollowerState<T: TypeConfig> {
     /// === Persistent State ===
     /// Last physically purged log index (inclusive)
     pub last_purged_index: Option<LogId>,
+
+    // -- Snapshot Management --
+    /// Prevents concurrent snapshot creation
+    ///
+    /// Per industry best practices:
+    /// - Protects against concurrent snapshot requests
+    /// - Ensures snapshot consistency at Raft layer
+    /// - Reduces unnecessary tokio::spawn overhead
+    pub(crate) snapshot_in_progress: AtomicBool,
 
     // -- Cluster Configuration --
     /// Node configuration (shared immutable reference)
@@ -154,6 +163,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         _event_tx: &mpsc::Sender<RaftEvent>,
         _ctx: &RaftContext<T>,
     ) -> Result<()> {
+        if Instant::now() < self.timer.next_deadline() {
+            return Ok(());
+        }
+
         debug!("reset timer");
         self.timer.reset();
 
@@ -319,41 +332,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 )
                 .await?;
             }
-            RaftEvent::ClientPropose(_client_propose_request, sender) => {
-                // Return NOT_LEADER with leader metadata for client redirection
-                let response = self.create_not_leader_response(ctx).await;
-                sender.send(Ok(response)).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
-            }
-            RaftEvent::ClientReadRequest(client_read_request, sender) => {
-                match can_serve_read_locally(&client_read_request, ctx) {
-                    Some(_policy) => {
-                        // Only EventualConsistency will reach here - safe to serve locally
-                        let results = ctx
-                            .handlers
-                            .state_machine_handler
-                            .read_from_state_machine(client_read_request.keys)
-                            .unwrap_or_default();
-                        let response = ClientResponse::read_results(results);
-                        debug!("Non-leader serving local read: {:?}", response);
-                        sender.send(Ok(response)).map_err(|e| {
-                            error!("Failed to send local read response: {:?}", e);
-                            NetworkError::SingalSendFailed(format!("{e:?}"))
-                        })?;
-                    }
-                    None => {
-                        // Policy requires leader access - return NOT_LEADER with leader metadata
-                        let response = self.create_not_leader_response(ctx).await;
-                        sender.send(Ok(response)).map_err(|e| {
-                            error!("Failed to send NOT_LEADER response: {:?}", e);
-                            NetworkError::SingalSendFailed(format!("{e:?}"))
-                        })?;
-                    }
-                }
-            }
+
             RaftEvent::FlushReadBuffer => {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Follower",
@@ -402,87 +381,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 }
             }
 
-            RaftEvent::RaftLogCleanUp(purchase_log_request, sender) => {
-                debug!(?purchase_log_request, "RaftEvent::RaftLogCleanUp");
-
-                let leader_id = self.shared_state().current_leader();
-
-                // ----------------------
-                // Phase 1: Validate Leader purge log request
-                // ----------------------
-                match ctx
-                    .state_machine_handler()
-                    .validate_purge_request(my_term, leader_id, &purchase_log_request)
-                    .await
-                {
-                    Ok(is_valid) => {
-                        debug!(?is_valid, "state_machine_handler.validate_purge_request");
-
-                        let mut success = false;
-                        // let mut last_purged = self.last_purged_index;
-
-                        let current_term = self.current_term();
-                        let node_id = self.shared_state.node_id;
-
-                        if is_valid {
-                            if let Some(last_purged_in_request) = purchase_log_request.last_included
-                            {
-                                // ----------------------
-                                // Phase 2: Validate Leader purge log request
-                                // ----------------------
-                                if self
-                                    .can_purge_logs(self.last_purged_index, last_purged_in_request)
-                                {
-                                    // ----------------------
-                                    // Phase 3: Execute scheduled purge task
-                                    // ----------------------
-                                    match ctx
-                                        .purge_executor()
-                                        .execute_purge(last_purged_in_request)
-                                        .await
-                                    {
-                                        Ok(_) => {
-                                            success = true;
-                                            self.last_purged_index = Some(last_purged_in_request);
-                                        }
-                                        Err(e) => {
-                                            error!(?e, "raft_log.purge_logs_up_to");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        let response = PurgeLogResponse {
-                            node_id,
-                            term: current_term,
-                            success,
-                            last_purged: self.last_purged_index,
-                        };
-                        sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{e:?}");
-                            error!("Failed to send: {}", error_str);
-                            NetworkError::SingalSendFailed(error_str)
-                        })?;
-                    }
-                    Err(e) => {
-                        error!(?e, "RaftEvent::RaftLogCleanUp");
-                        sender
-                            .send(Ok(PurgeLogResponse {
-                                node_id: self.shared_state.node_id,
-                                term: my_term,
-                                success: false,
-                                last_purged: self.last_purged_index,
-                            }))
-                            .map_err(|e| {
-                                let error_str = format!("{e:?}");
-                                error!("Failed to send: {}", error_str);
-                                NetworkError::SingalSendFailed(error_str)
-                            })?;
-                    }
-                }
-                return Ok(());
-            }
-
             RaftEvent::LogPurgeCompleted(_purged_id) => {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Follower",
@@ -496,27 +394,60 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             }
 
             RaftEvent::CreateSnapshotEvent => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Follower",
-                    required_role: "Leader",
-                    context: format!(
-                        "Follower node {} attempted to create snapshot.",
-                        ctx.node_id
-                    ),
+                // Prevent duplicate snapshot creation
+                if self.snapshot_in_progress.load(Ordering::Acquire) {
+                    info!(
+                        "Follower snapshot creation already in progress. Skipping duplicate request."
+                    );
+                    return Ok(());
                 }
-                .into());
+
+                self.snapshot_in_progress.store(true, Ordering::Release);
+                let state_machine_handler = ctx.state_machine_handler().clone();
+
+                // Use spawn to perform snapshot creation in the background
+                tokio::spawn(async move {
+                    let result = state_machine_handler.create_snapshot().await;
+                    info!(
+                        "Follower SnapshotCreated event will be processed in another event thread"
+                    );
+                    if let Err(e) = super::role_state::send_replay_raft_event(
+                        &role_tx,
+                        RaftEvent::SnapshotCreated(result),
+                    ) {
+                        error!("Follower failed to send snapshot creation result: {}", e);
+                    }
+                });
             }
 
-            RaftEvent::SnapshotCreated(_result) => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Follower",
-                    required_role: "Leader",
-                    context: format!(
-                        "Follower node {} attempted to handle created snapshot.",
-                        ctx.node_id
-                    ),
+            RaftEvent::SnapshotCreated(result) => {
+                // Reset snapshot_in_progress flag
+                self.snapshot_in_progress.store(false, Ordering::SeqCst);
+
+                // Per Raft §7: Follower independently purges logs after snapshot generation
+                match result {
+                    Ok((metadata, _path)) => {
+                        if let Some(last_included) = metadata.last_included {
+                            info!(?last_included, "Follower snapshot created, purging logs");
+
+                            // Follower independently decides to purge after snapshot
+                            if self.can_purge_logs(self.last_purged_index, last_included) {
+                                match ctx.purge_executor().execute_purge(last_included).await {
+                                    Ok(_) => {
+                                        self.last_purged_index = Some(last_included);
+                                        info!(?last_included, "Follower logs purged successfully");
+                                    }
+                                    Err(e) => {
+                                        error!(?e, "Failed to purge logs after snapshot");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!(?e, "Follower snapshot creation failed");
+                    }
                 }
-                .into());
             }
 
             RaftEvent::JoinCluster(_join_request, sender) => {
@@ -598,7 +529,28 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             RaftEvent::MembershipApplied => {
                 // Followers don't maintain cluster metadata cache
                 // This event is only relevant for leaders
-                debug!("Follower ignoring MembershipApplied event");
+                trace!("Follower ignoring MembershipApplied event");
+            }
+
+            RaftEvent::ApplyCompleted {
+                last_index,
+                results: _,
+            } => {
+                // Per Raft §7: each server takes snapshots independently.
+                check_and_trigger_snapshot(
+                    last_index,
+                    Follower as i32,
+                    self.current_term(),
+                    ctx,
+                    &role_tx,
+                )?;
+            }
+
+            RaftEvent::FatalError { source, error } => {
+                error!("[Follower] Fatal error from {}: {}", source, error);
+                return Err(crate::Error::Fatal(format!(
+                    "Fatal error from {source}: {error}"
+                )));
             }
 
             RaftEvent::StepDownSelfRemoved => {
@@ -630,6 +582,7 @@ impl<T: TypeConfig> FollowerState<T> {
                 node_config.raft.election.election_timeout_max,
             )),
             node_config,
+            snapshot_in_progress: AtomicBool::new(false),
             _marker: PhantomData,
             last_purged_index: None, /*TODO
                                       * scheduled_purge_upto: None, */
@@ -694,6 +647,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for FollowerState<T> {
                 candidate_state.node_config.raft.election.election_timeout_max,
             )),
             node_config: candidate_state.node_config.clone(),
+            snapshot_in_progress: AtomicBool::new(false),
             last_purged_index: candidate_state.last_purged_index,
             // scheduled_purge_upto: None,
             _marker: PhantomData,
@@ -709,6 +663,9 @@ impl<T: TypeConfig> From<&LeaderState<T>> for FollowerState<T> {
                 leader_state.node_config.raft.election.election_timeout_max,
             )),
             node_config: leader_state.node_config.clone(),
+            snapshot_in_progress: AtomicBool::new(
+                leader_state.snapshot_in_progress.load(Ordering::SeqCst),
+            ),
             last_purged_index: leader_state.last_purged_index,
             // scheduled_purge_upto: None,
             _marker: PhantomData,
@@ -725,8 +682,8 @@ impl<T: TypeConfig> From<&LearnerState<T>> for FollowerState<T> {
                 learner_state.node_config.raft.election.election_timeout_max,
             )),
             node_config: learner_state.node_config.clone(),
+            snapshot_in_progress: AtomicBool::new(false),
             last_purged_index: None, //TODO
-            // scheduled_purge_upto: learner_state.scheduled_purge_upto,
             _marker: PhantomData,
         }
     }

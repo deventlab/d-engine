@@ -211,6 +211,7 @@ impl MockBuilder {
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (
             id,
             raft_log,
@@ -291,7 +292,15 @@ impl MockBuilder {
                 purge_executor: Arc::new(purge_executor),
             },
             membership,
-            SignalParams::new(role_tx, role_rx, event_tx, event_rx, self.shutdown_signal),
+            SignalParams::new(
+                role_tx,
+                role_rx,
+                event_tx,
+                event_rx,
+                cmd_tx,
+                cmd_rx,
+                self.shutdown_signal,
+            ),
             arc_node_config.clone(),
         )
     }
@@ -303,6 +312,7 @@ impl MockBuilder {
         let shutdown_signal = self.shutdown_signal.clone();
         let raft = self.build_raft();
         let event_tx = raft.event_sender();
+        let cmd_tx = raft.cmd_sender();
         let node_config = raft.ctx.node_config.clone();
         let membership = raft.ctx.membership.clone();
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
@@ -313,6 +323,7 @@ impl MockBuilder {
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
+            cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,
@@ -321,6 +332,7 @@ impl MockBuilder {
             watch_registry: None,
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
+            _sm_worker_handle: None,
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal,
@@ -337,6 +349,7 @@ impl MockBuilder {
 
         let raft = self.build_raft();
         let event_tx = raft.event_sender();
+        let cmd_tx = raft.cmd_sender();
         let node_config = node_config_option.unwrap_or_else(|| {
             RaftNodeConfig::new()
                 .expect("Should succeed to init RaftNodeConfig")
@@ -357,6 +370,7 @@ impl MockBuilder {
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
+            cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,
@@ -365,6 +379,7 @@ impl MockBuilder {
             watch_registry: None,
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
+            _sm_worker_handle: None,
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal: shutdown.clone(),
@@ -544,7 +559,7 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
 
     mock.expect_get().returning(|_| Ok(None));
     mock.expect_entry_term().returning(|_| None);
-    mock.expect_apply_chunk().returning(|_| Ok(()));
+    mock.expect_apply_chunk().returning(|_| Ok(vec![]));
     mock.expect_len().returning(|| 0);
 
     mock.expect_update_last_applied().returning(|_| ());
@@ -570,6 +585,7 @@ pub(crate) fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeCo
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().returning(|_| {});
     state_machine_handler.expect_read_from_state_machine().returning(|_| None);
+    state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
 }
 

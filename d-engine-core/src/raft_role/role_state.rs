@@ -27,8 +27,10 @@ use crate::RaftLog;
 use crate::ReplicationCore;
 use crate::Result;
 use crate::RoleEvent;
+use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
+use crate::event::ClientCmd;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::error;
 
@@ -113,7 +115,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
     async fn verify_internal_quorum(
         &mut self,
         _payloads: Vec<EntryPayload>,
-        _bypass_queue: bool,
         _ctx: &RaftContext<Self::T>,
         _role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<QuorumVerificationResult> {
@@ -142,12 +143,10 @@ pub trait RaftRoleState: Send + Sync + 'static {
     async fn verify_leadership_persistent(
         &mut self,
         _payloads: Vec<EntryPayload>,
-        _bypass_queue: bool,
         _ctx: &RaftContext<Self::T>,
         _role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<bool> {
-        warn!("verify_leadership NotLeader error");
-        Err(MembershipError::NotLeader.into())
+        Ok(false)
     }
 
     async fn join_cluster(
@@ -257,7 +256,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
             }))
             .map_err(|e| {
                 let error_str = format!("{e:?}");
-                error!("Failed to send: {}", error_str);
+                error!("Failed to send NotifyNewCommitIndex: {}", error_str);
                 NetworkError::SingalSendFailed(error_str)
             })?;
 
@@ -296,6 +295,102 @@ pub trait RaftRoleState: Send + Sync + 'static {
         ctx: &RaftContext<Self::T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()>;
+
+    /// Push single client command directly to role's internal buffer (zero-copy).
+    ///
+    /// For Leader: push to batch_buffer (writes) or read_buffer (reads)
+    /// For non-Leader:
+    ///   - Writes: immediately reject with NOT_LEADER error
+    ///   - Eventual reads: serve locally from state machine
+    ///   - Linear/Lease reads: immediately reject with NOT_LEADER error
+    fn push_client_cmd(
+        &mut self,
+        cmd: ClientCmd,
+        ctx: &RaftContext<Self::T>,
+    ) {
+        use crate::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
+        use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
+
+        match cmd {
+            ClientCmd::Propose(_, sender) => {
+                // Writes always require leader - reject immediately
+                let status = tonic::Status::failed_precondition("Not leader");
+                let _ = sender.send(Err(status));
+            }
+            ClientCmd::Read(req, sender) => {
+                // Determine effective read policy, mirroring leader_state logic:
+                // 1. If client specified a policy AND server allows override, use client policy.
+                // 2. Otherwise (no policy, or override disabled), use server default.
+                let effective_policy = if req.has_consistency_policy()
+                    && ctx.node_config().raft.read_consistency.allow_client_override
+                {
+                    match req.consistency_policy() {
+                        ClientReadConsistencyPolicy::EventualConsistency => {
+                            ServerReadConsistencyPolicy::EventualConsistency
+                        }
+                        _ => {
+                            // Linear/Lease requires leader
+                            let _ =
+                                sender.send(Err(tonic::Status::failed_precondition("Not leader")));
+                            return;
+                        }
+                    }
+                } else {
+                    // No client policy, or client override not allowed — use server default
+                    ctx.node_config().raft.read_consistency.default_policy.clone()
+                };
+
+                match effective_policy {
+                    ServerReadConsistencyPolicy::EventualConsistency => {
+                        self.process_eventual_read_local(req, sender, ctx);
+                    }
+                    _ => {
+                        // Linear/Lease requires leader
+                        let _ = sender.send(Err(tonic::Status::failed_precondition("Not leader")));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Process eventual consistency read locally (available on all nodes)
+    ///
+    /// Eventual consistency reads can be served by any node (leader, follower, candidate, learner)
+    /// directly from the local state machine without additional consistency checks.
+    /// May return stale data but provides best read performance and availability.
+    fn process_eventual_read_local(
+        &self,
+        req: d_engine_proto::client::ClientReadRequest,
+        sender: crate::MaybeCloneOneshotSender<
+            std::result::Result<d_engine_proto::client::ClientResponse, tonic::Status>,
+        >,
+        ctx: &RaftContext<Self::T>,
+    ) {
+        use d_engine_proto::client::ClientResponse;
+
+        // Read directly from local state machine without any consistency checks
+        let results = ctx
+            .state_machine_handler()
+            .read_from_state_machine(req.keys)
+            .unwrap_or_default();
+
+        let response = ClientResponse::read_results(results);
+        let _ = sender.send(Ok(response));
+    }
+
+    /// Flush command buffers if size or timeout thresholds are reached.
+    ///
+    /// Checks both write and read buffers using BatchBuffer::should_flush().
+    /// For Leader: processes batches if FlushReason::SizeThreshold or FlushReason::Timeout
+    /// For non-Leader: no-op (buffers are empty)
+    async fn flush_cmd_buffers(
+        &mut self,
+        _ctx: &RaftContext<Self::T>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // Default implementation for non-leader: nothing to flush
+        Ok(())
+    }
 
     /// Create NOT_LEADER response with leader metadata for client redirection
     ///
@@ -472,4 +567,39 @@ pub trait RaftRoleState: Send + Sync + 'static {
         warn!("update_match_index NotLeader error");
         Err(MembershipError::NotLeader.into())
     }
+}
+
+/// Send a RaftEvent back into the role event loop for reprocessing.
+pub(super) fn send_replay_raft_event(
+    role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    raft_event: RaftEvent,
+) -> Result<()> {
+    role_tx.send(RoleEvent::ReprocessEvent(Box::new(raft_event))).map_err(|e| {
+        let error_str = format!("{e:?}");
+        error!("Failed to send: {}", error_str);
+        NetworkError::SingalSendFailed(error_str).into()
+    })
+}
+
+/// Check snapshot condition and trigger if met. Used by all role states after SM apply.
+///
+/// Per Raft §7: each server takes snapshots independently. Called from ApplyCompleted
+/// handlers in leader, follower, learner, and candidate states.
+pub(super) fn check_and_trigger_snapshot<T: TypeConfig>(
+    last_index: u64,
+    role: i32,
+    current_term: u64,
+    ctx: &RaftContext<T>,
+    role_tx: &mpsc::UnboundedSender<RoleEvent>,
+) -> Result<()> {
+    if ctx.node_config.raft.snapshot.enable
+        && ctx.state_machine_handler().should_snapshot(NewCommitData {
+            new_commit_index: last_index,
+            role,
+            current_term,
+        })
+    {
+        send_replay_raft_event(role_tx, RaftEvent::CreateSnapshotEvent)?;
+    }
+    Ok(())
 }

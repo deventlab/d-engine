@@ -123,6 +123,7 @@ impl MockBuilder {
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (
             id,
             raft_log,
@@ -208,6 +209,8 @@ impl MockBuilder {
                 role_rx,
                 event_tx,
                 event_rx,
+                cmd_tx,
+                cmd_rx,
                 shutdown_signal: self.shutdown_signal,
             },
             arc_node_config.clone(),
@@ -319,6 +322,7 @@ pub fn mock_raft_log() -> MockRaftLog {
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
     raft_log
 }
 
@@ -347,7 +351,7 @@ pub fn mock_state_machine() -> MockStateMachine {
 
     mock.expect_get().returning(|_| Ok(None));
     mock.expect_entry_term().returning(|_| None);
-    mock.expect_apply_chunk().returning(|_| Ok(()));
+    mock.expect_apply_chunk().returning(|_| Ok(vec![]));
     mock.expect_len().returning(|| 0);
 
     mock.expect_update_last_applied().returning(|_| ());
@@ -372,6 +376,7 @@ pub fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().returning(|_| {});
     state_machine_handler.expect_read_from_state_machine().returning(|_| None);
+    state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
 }
 

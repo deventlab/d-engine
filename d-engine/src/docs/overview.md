@@ -108,6 +108,7 @@ make start-cluster
 - [Single Node Expansion](crate::docs::examples::single_node_expansion) - Scale from 1 to 3 nodes
 - [Three-Node Standalone Cluster](crate::docs::examples::three_nodes_cluster) - Standalone mode cluster
 - [Throughput Optimization](crate::docs::performance::throughput_optimization_guide)
+- [Benchmarking Guide](crate::docs::performance::benchmarking_guide) - Run embedded and standalone benchmarks
 
 ## License
 

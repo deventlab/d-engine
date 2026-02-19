@@ -31,8 +31,6 @@ use d_engine_proto::server::election::raft_election_service_server::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
@@ -179,27 +177,6 @@ where
         let timeout_duration = Duration::from_millis(self.node_config.raft.snapshot_rpc_timeout_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "install_snapshot").await
     }
-
-    async fn purge_log(
-        &self,
-        request: tonic::Request<PurgeLogRequest>,
-    ) -> std::result::Result<tonic::Response<PurgeLogResponse>, Status> {
-        if !self.is_rpc_ready() {
-            warn!("purge_log: Node-{} is not ready!", self.node_id);
-            return Err(Status::unavailable("Service is not ready"));
-        }
-
-        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-
-        self.event_tx
-            .send(RaftEvent::RaftLogCleanUp(request.into_inner(), resp_tx))
-            .await
-            .map_err(|_| Status::internal("Event channel closed"))?;
-
-        let timeout_duration =
-            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
-        handle_rpc_timeout(resp_rx, timeout_duration, "purge_log").await
-    }
 }
 
 #[tonic::async_trait]
@@ -328,22 +305,23 @@ where
         }
 
         let remote_addr = request.remote_addr();
-        let event_tx = self.event_tx.clone();
         let timeout_duration =
             Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
+
+        // Clone cmd_tx before async move to avoid capturing &self
+        let cmd_tx = self.cmd_tx.clone();
 
         let request_future = async move {
             let req: ClientWriteRequest = request.into_inner();
             // Extract request and validate
-            if req.commands.is_empty() {
-                return Err(Status::invalid_argument("Commands cannot be empty"));
+            if req.command.is_none() {
+                return Err(Status::invalid_argument("Command cannot be empty"));
             }
 
             let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-            event_tx
-                .send(RaftEvent::ClientPropose(req, resp_tx))
-                .await
-                .map_err(|_| Status::internal("Event channel closed"))?;
+            cmd_tx
+                .send(d_engine_core::ClientCmd::Propose(req, resp_tx))
+                .map_err(|_| Status::internal("Command channel closed"))?;
 
             handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_write").await
         };
@@ -375,10 +353,12 @@ where
         }
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-        self.event_tx
-            .send(RaftEvent::ClientReadRequest(request.into_inner(), resp_tx))
-            .await
-            .map_err(|_| Status::internal("Event channel closed"))?;
+        self.cmd_tx
+            .send(d_engine_core::ClientCmd::Read(
+                request.into_inner(),
+                resp_tx,
+            ))
+            .map_err(|_| Status::internal("Command channel closed"))?;
 
         let timeout_duration =
             Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);

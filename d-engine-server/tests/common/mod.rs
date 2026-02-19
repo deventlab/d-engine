@@ -8,18 +8,16 @@ use std::time::Duration;
 use bytes::Bytes;
 use bytes::BytesMut;
 use config::Config;
-use d_engine_client::ClientApiError;
+use d_engine_core::ClientApiError;
 use d_engine_core::alias::SMOF;
 use d_engine_core::alias::SOF;
 use d_engine_core::config::BackoffPolicy;
-use d_engine_core::config::CommitHandlerConfig;
 use d_engine_core::config::ElectionConfig;
 use d_engine_core::config::FlushPolicy;
 use d_engine_core::config::PersistenceConfig;
 use d_engine_core::config::PersistenceStrategy;
 use d_engine_core::config::RaftConfig;
 use d_engine_core::config::RaftNodeConfig;
-use d_engine_core::config::ReplicationConfig;
 use d_engine_core::config::SnapshotConfig;
 use d_engine_core::convert::safe_kv_bytes;
 use d_engine_proto::client::WriteCommand;
@@ -188,15 +186,6 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
     let raft = RaftConfig {
         general_raft_timeout_duration_in_ms: 10000,
         snapshot_rpc_timeout_ms: 300_000,
-        replication: ReplicationConfig {
-            rpc_append_entries_in_batch_threshold: 1,
-            ..Default::default()
-        },
-        commit_handler: CommitHandlerConfig {
-            batch_size_threshold: 1,
-            process_interval_ms: 100,
-            ..Default::default()
-        },
         snapshot: SnapshotConfig {
             max_log_entries_before_snapshot: 1,
             cleanup_retain_count: 2,
@@ -596,6 +585,34 @@ impl std::ops::Deref for PortGuard {
 
     fn deref(&self) -> &Self::Target {
         &self.ports
+    }
+}
+
+/// Poll snapshot directory until a .tar.gz file appears or timeout expires.
+/// Replaces blind sleep() calls when waiting for snapshot generation.
+pub async fn wait_for_snapshot(
+    snapshots_dir: &Path,
+    node_id: u64,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let dir = snapshots_dir.join(format!("node{node_id}"));
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            return false;
+        }
+        let has_snapshot = std::fs::read_dir(&dir)
+            .ok()
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("gz"))
+            })
+            .unwrap_or(false);
+        if has_snapshot {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 

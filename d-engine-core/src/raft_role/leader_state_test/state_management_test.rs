@@ -98,8 +98,6 @@ fn test_can_purge_logs_valid_conditions() {
 
     // Setup per Raft paper §7.2 requirements
     state.shared_state.commit_index = 100;
-    state.peer_purge_progress.insert(2, 100); // Follower 2
-    state.peer_purge_progress.insert(3, 100); // Follower 3
 
     // Valid purge window (last_purge=90 < snapshot=99 < commit=100)
     assert!(state.can_purge_logs(
@@ -144,7 +142,6 @@ fn test_can_purge_logs_reject_uncommitted() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
 
     state.shared_state.commit_index = 50;
-    state.peer_purge_progress.insert(2, 100);
 
     // Attempt to purge beyond commit index
     assert!(!state.can_purge_logs(
@@ -182,8 +179,6 @@ fn test_can_purge_logs_enforce_monotonicity() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
 
     state.shared_state.commit_index = 200;
-    state.peer_purge_progress.insert(2, 200);
-    state.peer_purge_progress.insert(3, 200);
 
     // Valid sequence: 100 → 150 → 199
     assert!(state.can_purge_logs(
@@ -228,45 +223,6 @@ fn test_can_purge_logs_enforce_monotonicity() {
 /// Enhanced durability check - ensure peers have progressed sufficiently.
 ///
 /// # Given
-/// - commit_index = 100
-/// - Various peer progress states
-///
-/// # When
-/// - Check purge eligibility
-///
-/// # Then
-/// - Purge allowed when peers meet requirements
-/// - Single lagging peer handled correctly
-#[test]
-fn test_can_purge_logs_cluster_progress() {
-    let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_cluster_progress"));
-    let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-
-    state.shared_state.commit_index = 100;
-
-    // Single lagging peer (index 99 < 100)
-    state.peer_purge_progress.insert(2, 99);
-    state.peer_purge_progress.insert(3, 100);
-    assert!(state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId { index: 99, term: 1 }
-    ));
-
-    // All peers at required index
-    state.peer_purge_progress.insert(2, 100);
-    assert!(state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId { index: 99, term: 1 }
-    ));
-}
-
-/// Test can_purge_logs initial purge state
-///
-/// # Test Scenario
-/// Validate first purge when last_purge_index = None.
-///
-/// # Given
-/// - commit_index = 100
 /// - last_purge_index = None (first purge)
 ///
 /// # When
@@ -281,8 +237,6 @@ fn test_can_purge_logs_initial_purge() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
 
     state.shared_state.commit_index = 100;
-    state.peer_purge_progress.insert(2, 100);
-    state.peer_purge_progress.insert(3, 100);
 
     // First purge (last_purge_index = None)
     assert!(state.can_purge_logs(None, LogId { index: 99, term: 1 }));

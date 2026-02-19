@@ -1,3 +1,5 @@
+use std::{sync::Arc, thread};
+
 use d_engine_proto::server::election::VotedFor;
 
 use super::super::*;
@@ -284,9 +286,6 @@ fn test_shared_state_leader_debug() {
 
 #[test]
 fn test_shared_state_concurrent_updates() {
-    use std::sync::Arc;
-    use std::thread;
-
     let shared = Arc::new(SharedState::new(1, None, None));
 
     // Simulate concurrent leader updates

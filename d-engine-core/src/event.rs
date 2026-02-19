@@ -16,23 +16,36 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::PurgeLogRequest;
-use d_engine_proto::server::storage::PurgeLogResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::SnapshotResponse;
 use tonic::Status;
 
+use crate::ApplyResult;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::StreamResponseSender;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NewCommitData {
     pub new_commit_index: u64,
     pub role: i32,
     pub current_term: u64,
+}
+
+/// Client commands that require batching for performance
+/// Separated from internal RaftEvent for drain-driven processing
+#[derive(Debug)]
+pub enum ClientCmd {
+    Propose(
+        ClientWriteRequest,
+        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+    ),
+    Read(
+        ClientReadRequest,
+        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+    ),
 }
 
 #[derive(Debug)]
@@ -75,16 +88,6 @@ pub enum RaftEvent {
         MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>,
     ),
 
-    ClientPropose(
-        ClientWriteRequest,
-        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
-    ),
-
-    ClientReadRequest(
-        ClientReadRequest,
-        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
-    ),
-
     // Response snapshot stream from Leader
     InstallSnapshotChunk(
         Box<tonic::Streaming<SnapshotChunk>>,
@@ -93,11 +96,6 @@ pub enum RaftEvent {
 
     // Request snapshot stream from Leader
     StreamSnapshot(Box<tonic::Streaming<SnapshotAck>>, StreamResponseSender),
-
-    RaftLogCleanUp(
-        PurgeLogRequest,
-        MaybeCloneOneshotSender<std::result::Result<PurgeLogResponse, Status>>,
-    ),
 
     JoinCluster(
         JoinRequest,
@@ -132,9 +130,24 @@ pub enum RaftEvent {
     /// Leader should refresh cluster metadata cache
     MembershipApplied,
 
+    /// State machine apply failed - node must shutdown.
+    /// Conservative: treat all SM errors as fatal (future: distinguish fatal vs application errors).
+    FatalError {
+        source: String, // Error source
+        error: String,  // Error message
+    },
+
     /// Signal to flush pending read requests
     /// Sent by timeout task when read buffer reaches time threshold
     FlushReadBuffer,
+
+    /// State machine apply completed
+    /// Sent by CommitHandler after applying entries to state machine
+    /// Contains results for each applied entry (e.g., CAS success/failure)
+    ApplyCompleted {
+        last_index: u64,
+        results: Vec<ApplyResult>,
+    },
 }
 
 #[cfg(test)]
@@ -157,13 +170,13 @@ pub enum TestEvent {
 
     StreamSnapshot,
 
-    RaftLogCleanUp(PurgeLogRequest),
-
     JoinCluster(JoinRequest),
 
     DiscoverLeader(LeaderDiscoveryRequest),
 
-    TriggerSnapshotPush { peer_id: u32 },
+    TriggerSnapshotPush {
+        peer_id: u32,
+    },
 
     // None RPC event
     CreateSnapshotEvent,
@@ -174,7 +187,17 @@ pub enum TestEvent {
 
     PromoteReadyLearners,
 
+    FatalError {
+        source: String,
+        error: String,
+    },
+
     FlushReadBuffer,
+
+    ApplyCompleted {
+        last_index: u64,
+        results: Vec<ApplyResult>,
+    },
 }
 
 #[cfg(test)]
@@ -184,11 +207,8 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::ClusterConf(req, _) => TestEvent::ClusterConf(*req),
         RaftEvent::ClusterConfUpdate(req, _) => TestEvent::ClusterConfUpdate(req.clone()),
         RaftEvent::AppendEntries(req, _) => TestEvent::AppendEntries(req.clone()),
-        RaftEvent::ClientPropose(req, _) => TestEvent::ClientPropose(req.clone()),
-        RaftEvent::ClientReadRequest(req, _) => TestEvent::ClientReadRequest(req.clone()),
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
         RaftEvent::StreamSnapshot(_, _) => TestEvent::StreamSnapshot,
-        RaftEvent::RaftLogCleanUp(req, _) => TestEvent::RaftLogCleanUp(req.clone()),
         RaftEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
         RaftEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
@@ -207,6 +227,17 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
             // MembershipApplied is internal event for cache refresh
             TestEvent::CreateSnapshotEvent // Placeholder
         }
+        RaftEvent::FatalError { source, error } => TestEvent::FatalError {
+            source: source.clone(),
+            error: error.clone(),
+        },
         RaftEvent::FlushReadBuffer => TestEvent::FlushReadBuffer,
+        RaftEvent::ApplyCompleted {
+            last_index,
+            results,
+        } => TestEvent::ApplyCompleted {
+            last_index: *last_index,
+            results: results.clone(),
+        },
     }
 }

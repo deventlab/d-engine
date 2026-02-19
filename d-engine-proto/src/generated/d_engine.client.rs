@@ -3,7 +3,7 @@
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WriteCommand {
-    #[prost(oneof = "write_command::Operation", tags = "1, 2")]
+    #[prost(oneof = "write_command::Operation", tags = "1, 2, 3")]
     pub operation: ::core::option::Option<write_command::Operation>,
 }
 /// Nested message and enum types in `WriteCommand`.
@@ -27,12 +27,26 @@ pub mod write_command {
         pub key: ::prost::bytes::Bytes,
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct CompareAndSwap {
+        #[prost(bytes = "bytes", tag = "1")]
+        pub key: ::prost::bytes::Bytes,
+        /// None means key must not exist
+        #[prost(bytes = "bytes", optional, tag = "2")]
+        pub expected_value: ::core::option::Option<::prost::bytes::Bytes>,
+        /// New value to set if comparison succeeds
+        #[prost(bytes = "bytes", tag = "3")]
+        pub new_value: ::prost::bytes::Bytes,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Operation {
         #[prost(message, tag = "1")]
         Insert(Insert),
         #[prost(message, tag = "2")]
         Delete(Delete),
+        #[prost(message, tag = "3")]
+        CompareAndSwap(CompareAndSwap),
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -40,8 +54,9 @@ pub mod write_command {
 pub struct ClientWriteRequest {
     #[prost(uint32, tag = "1")]
     pub client_id: u32,
-    #[prost(message, repeated, tag = "2")]
-    pub commands: ::prost::alloc::vec::Vec<WriteCommand>,
+    /// Changed from 'repeated commands' to singular 'command' (1 request = 1 command)
+    #[prost(message, optional, tag = "2")]
+    pub command: ::core::option::Option<WriteCommand>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -58,6 +73,15 @@ pub struct ClientReadRequest {
     #[prost(enumeration = "ReadConsistencyPolicy", optional, tag = "3")]
     pub consistency_policy: ::core::option::Option<i32>,
 }
+/// Write operation result
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct WriteResult {
+    /// Future: uint64 version = 2;
+    /// Future: bytes prev_value = 3;
+    #[prost(bool, tag = "1")]
+    pub succeeded: bool,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientResponse {
@@ -73,8 +97,8 @@ pub mod client_response {
     #[derive(serde::Serialize, serde::Deserialize)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum SuccessResult {
-        #[prost(bool, tag = "2")]
-        WriteAck(bool),
+        #[prost(message, tag = "2")]
+        WriteResult(super::WriteResult),
         #[prost(message, tag = "3")]
         ReadData(super::ReadResults),
     }

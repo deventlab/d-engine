@@ -8,14 +8,12 @@ use std::time::Duration;
 use bytes::Bytes;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::PurgeLogRequest;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use futures::StreamExt;
 use mockall::Sequence;
-use mockall::predicate::eq;
 use tempfile::TempDir;
 use tempfile::tempdir;
 use tokio::fs::File;
@@ -29,7 +27,6 @@ use super::DefaultStateMachineHandler;
 use super::StateMachineHandler;
 use crate::ConsensusError;
 use crate::Error;
-use crate::MockRaftLog;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockTypeConfig;
@@ -48,7 +45,6 @@ fn test_update_pending_case1() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_update_pending_case1")),
         MockSnapshotPolicy::new(),
@@ -67,7 +63,6 @@ fn test_update_pending_case2() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_update_pending_case2")),
         MockSnapshotPolicy::new(),
@@ -88,7 +83,6 @@ async fn test_update_pending_case3() {
         DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,
             0,
-            1,
             Arc::new(state_machine_mock),
             snapshot_config(PathBuf::from("/tmp/test_update_pending_case3")),
             MockSnapshotPolicy::new(),
@@ -114,7 +108,6 @@ fn test_pending_range_case1() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case1")),
         MockSnapshotPolicy::new(),
@@ -130,7 +123,6 @@ fn test_pending_range_case2() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case2")),
         MockSnapshotPolicy::new(),
@@ -148,7 +140,6 @@ fn test_pending_range_case3() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case3")),
         MockSnapshotPolicy::new(),
@@ -175,12 +166,11 @@ mod apply_chunk_test {
                 .expect_apply_chunk()
                 .returning(|_| Err(Error::Fatal("Test error".to_string())));
         } else {
-            state_machine.expect_apply_chunk().returning(|_| Ok(()));
+            state_machine.expect_apply_chunk().returning(|_| Ok(vec![]));
         }
         DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,
             last_applied_index.unwrap_or(0),
-            1,
             Arc::new(state_machine),
             snapshot_config(PathBuf::from(path)),
             MockSnapshotPolicy::new(),
@@ -392,7 +382,6 @@ fn create_test_handler(
     DefaultStateMachineHandler::new_without_watch(
         1,
         0,
-        1,
         Arc::new(state_machine),
         config,
         MockSnapshotPolicy::new(),
@@ -414,7 +403,6 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(temp_path.to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -646,7 +634,6 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(temp_path.to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -748,7 +735,6 @@ mod create_snapshot_tests {
         let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,
             0,
-            1,
             Arc::new(sm),
             config.clone(),
             MockSnapshotPolicy::new(),
@@ -824,7 +810,6 @@ mod create_snapshot_tests {
             DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
                 1,
                 0,
-                1,
                 Arc::new(sm),
                 config.clone(),
                 snapshot_policy,
@@ -899,7 +884,6 @@ mod create_snapshot_tests {
         let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,
             3, // Current version
-            1,
             Arc::new(sm),
             config.clone(),
             MockSnapshotPolicy::new(),
@@ -943,7 +927,6 @@ mod create_snapshot_tests {
         let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
             1,
             0,
-            1,
             Arc::new(sm),
             config.clone(),
             MockSnapshotPolicy::new(),
@@ -976,7 +959,6 @@ mod create_snapshot_tests {
             DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
                 1,
                 0,
-                1,
                 Arc::new(sm),
                 config,
                 MockSnapshotPolicy::new(),
@@ -1011,7 +993,6 @@ mod create_snapshot_tests {
             DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
                 1,
                 0,
-                1,
                 Arc::new(sm),
                 config,
                 MockSnapshotPolicy::new(),
@@ -1092,7 +1073,6 @@ async fn test_cleanup_snapshot_case1() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(sm),
         config.clone(),
         MockSnapshotPolicy::new(),
@@ -1132,7 +1112,6 @@ async fn test_cleanup_snapshot_case2() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(sm),
         config.clone(),
         MockSnapshotPolicy::new(),
@@ -1170,7 +1149,6 @@ async fn test_cleanup_snapshot_case3() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(sm),
         config.clone(),
         MockSnapshotPolicy::new(),
@@ -1188,307 +1166,6 @@ async fn test_cleanup_snapshot_case3() {
     assert!(remaining.contains(&"invalid_format".into()));
     assert!(remaining.contains(&format!("{}bad-2-2", &config.snapshots_dir_prefix)));
     assert!(remaining.contains(&format!("{}1-1", &config.snapshots_dir_prefix)));
-}
-
-/// #Case 1: Reject stale term
-#[tokio::test]
-#[traced_test]
-async fn test_handle_purge_request_case1() {
-    let temp_dir = TempDir::new().unwrap();
-    let sm = MockStateMachine::new();
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-        1,
-        5, // last_applied
-        100,
-        Arc::new(sm),
-        snapshot_config(temp_dir.path().to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
-
-    let last_included = Some(LogId { index: 5, term: 1 });
-    let req = PurgeLogRequest {
-        term: 3,
-        leader_id: 1,
-        last_included,
-        snapshot_checksum: Bytes::from([1u8; 32].to_vec()),
-        leader_commit: 1,
-    };
-
-    let res = handler
-        .handle_purge_request(
-            5,
-            Some(1),
-            last_included,
-            &req,
-            &Arc::new(MockRaftLog::new()),
-        )
-        .await
-        .unwrap();
-
-    assert!(!res.success);
-    assert_eq!(res.term, 5);
-}
-
-/// # Case 2: Reject if not from current leader
-#[tokio::test]
-#[traced_test]
-async fn test_handle_purge_request_case2() {
-    let temp_dir = TempDir::new().unwrap();
-    let sm = MockStateMachine::new();
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-        1,
-        5,
-        100,
-        Arc::new(sm),
-        snapshot_config(temp_dir.path().to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
-
-    let last_included = Some(LogId { index: 5, term: 1 });
-    let req = PurgeLogRequest {
-        term: 5,
-        leader_id: 2,
-        last_included,
-        snapshot_checksum: Bytes::new(),
-        leader_commit: 1,
-    };
-
-    let res = handler
-        .handle_purge_request(
-            5,
-            Some(1),
-            last_included,
-            &req,
-            &Arc::new(MockRaftLog::new()),
-        )
-        .await
-        .unwrap();
-
-    assert!(!res.success);
-}
-
-// # Case 3: Reject if local state is behind
-#[tokio::test]
-#[traced_test]
-async fn test_handle_purge_request_case3() {
-    let temp_dir = TempDir::new().unwrap();
-    let mut sm = MockStateMachine::new();
-    sm.expect_last_applied().returning(|| LogId { index: 3, term: 1 }); // last applied is 3
-
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-        1,
-        3,
-        100,
-        Arc::new(sm),
-        snapshot_config(temp_dir.path().to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
-
-    let last_included = Some(LogId { index: 5, term: 1 });
-    let req = PurgeLogRequest {
-        term: 5,
-        leader_id: 1,
-        last_included,
-        snapshot_checksum: Bytes::new(),
-        leader_commit: 1,
-    };
-
-    let res = handler
-        .handle_purge_request(
-            5,
-            Some(1),
-            last_included,
-            &req,
-            &Arc::new(MockRaftLog::new()),
-        )
-        .await
-        .unwrap();
-
-    assert!(!res.success);
-}
-
-/// # Case 4: Reject on checksum mismatch
-#[tokio::test]
-#[traced_test]
-async fn test_handle_purge_request_case4() {
-    let temp_dir = TempDir::new().unwrap();
-    let mut sm = MockStateMachine::new();
-    let mut correct_checksum = [0u8; 32];
-    correct_checksum[..3].copy_from_slice(&[1, 2, 3]);
-    create_test_snapshot(&mut sm, 5, 1, correct_checksum).await;
-
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-        1,
-        5,
-        100,
-        Arc::new(sm),
-        snapshot_config(temp_dir.path().to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
-
-    let mut wrong_checksum = [0u8; 32];
-    wrong_checksum[..3].copy_from_slice(&[4, 5, 6]);
-    let last_included = Some(LogId { index: 5, term: 1 });
-    let req = PurgeLogRequest {
-        term: 5,
-        leader_id: 1,
-        last_included,
-        snapshot_checksum: Bytes::from(wrong_checksum.to_vec()),
-        leader_commit: 1,
-    };
-
-    let res = handler
-        .handle_purge_request(
-            5,
-            Some(1),
-            last_included,
-            &req,
-            &Arc::new(MockRaftLog::new()),
-        )
-        .await
-        .unwrap();
-
-    assert!(!res.success);
-}
-
-/// # Case 5: Successful purge
-#[tokio::test]
-#[traced_test]
-async fn test_handle_purge_request_case5() {
-    let temp_dir = TempDir::new().unwrap();
-    let mut sm = MockStateMachine::new();
-    let expected_checksum = [1u8; 32];
-    create_test_snapshot(&mut sm, 5, 1, expected_checksum).await;
-
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-        1,
-        5,
-        100,
-        Arc::new(sm),
-        snapshot_config(temp_dir.path().to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
-
-    let mut raft_log = MockRaftLog::new();
-    raft_log
-        .expect_purge_logs_up_to()
-        .with(eq(LogId { index: 5, term: 1 }))
-        .times(1)
-        .returning(|_| Ok(()));
-
-    let last_included = Some(LogId { index: 5, term: 1 });
-    let req = PurgeLogRequest {
-        term: 5,
-        leader_id: 1,
-        last_included,
-        snapshot_checksum: Bytes::from(expected_checksum.to_vec()),
-        leader_commit: 1,
-    };
-
-    let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(raft_log))
-        .await
-        .unwrap();
-
-    assert!(res.success);
-}
-
-/// # Case 6: Handle storage errors during purge
-#[tokio::test]
-#[traced_test]
-async fn test_handle_purge_request_case6() {
-    let temp_dir = TempDir::new().unwrap();
-    let mut sm = MockStateMachine::new();
-
-    let mut expected_checksum = [1u8; 32];
-    expected_checksum[..3].copy_from_slice(&[1, 2, 3]);
-    create_test_snapshot(&mut sm, 5, 1, expected_checksum).await;
-
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-        1,
-        5,
-        100,
-        Arc::new(sm),
-        snapshot_config(temp_dir.path().to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
-
-    let mut raft_log = MockRaftLog::new();
-    raft_log.expect_purge_logs_up_to().returning(|_| {
-        Err(StorageError::DbError("expect_purge_logs_up_to failed".to_string()).into())
-    });
-
-    let last_included = Some(LogId { index: 5, term: 1 });
-    let req = PurgeLogRequest {
-        term: 5,
-        leader_id: 1,
-        last_included,
-        snapshot_checksum: Bytes::from(expected_checksum.to_vec()),
-        leader_commit: 1,
-    };
-
-    let res = handler
-        .handle_purge_request(5, Some(1), last_included, &req, &Arc::new(raft_log))
-        .await
-        .unwrap();
-
-    assert!(!res.success);
-}
-
-/// # Case 7: Reject when no local snapshot exists
-#[tokio::test]
-#[traced_test]
-async fn test_handle_purge_request_case7() {
-    let temp_dir = TempDir::new().unwrap();
-    let mut sm = MockStateMachine::new();
-    create_test_snapshot(&mut sm, 5, 1, [0_u8; 32]).await;
-
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-        1,
-        5,
-        100,
-        Arc::new(sm),
-        snapshot_config(temp_dir.path().to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
-
-    let last_included = Some(LogId { index: 5, term: 1 });
-    let req = PurgeLogRequest {
-        term: 5,
-        leader_id: 1,
-        last_included,
-        snapshot_checksum: Bytes::from(vec![1, 2, 3]),
-        leader_commit: 1,
-    };
-
-    let res = handler
-        .handle_purge_request(
-            5,
-            Some(1),
-            last_included,
-            &req,
-            &Arc::new(MockRaftLog::new()),
-        )
-        .await
-        .unwrap();
-
-    assert!(!res.success);
-}
-
-// Helper to create test snapshots
-async fn create_test_snapshot(
-    sm: &mut MockStateMachine,
-    index: u64,
-    term: u64,
-    checksum: [u8; 32],
-) {
-    sm.expect_last_applied().returning(move || LogId { index, term });
-    sm.expect_snapshot_metadata().returning(move || {
-        Some(SnapshotMetadata {
-            last_included: Some(LogId { term, index }),
-            checksum: Bytes::from(checksum.to_vec()),
-        })
-    });
 }
 
 async fn create_test_files(
@@ -1851,7 +1528,6 @@ async fn test_snapshot_compression() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         0,
-        1,
         Arc::new(sm),
         config,
         MockSnapshotPolicy::new(),
@@ -1896,7 +1572,6 @@ async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
     let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
         1,
         10,
-        1,
         Arc::new(state_machine_mock),
         snapshot_config(temp_path.to_path_buf()),
         MockSnapshotPolicy::new(),
@@ -2017,5 +1692,304 @@ mod mmap_tests {
         let result = handler.load_chunk_via_mmap(temp_file.path(), 0, test_data.len());
 
         assert!(result.is_ok());
+    }
+}
+
+#[cfg(feature = "watch")]
+mod broadcast_watch_events_tests {
+    use super::*;
+
+    use d_engine_proto::{
+        client::{
+            WatchEventType, WriteCommand,
+            write_command::{CompareAndSwap, Delete, Insert, Operation},
+        },
+        common::{EntryPayload, entry_payload::Payload},
+    };
+    use prost::Message;
+
+    use crate::ApplyResult;
+
+    fn create_entry(
+        index: u64,
+        operation: Operation,
+    ) -> Entry {
+        let write_cmd = WriteCommand {
+            operation: Some(operation),
+        };
+        let mut buf = Vec::new();
+        write_cmd.encode(&mut buf).unwrap();
+
+        Entry {
+            index,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Command(Bytes::from(buf))),
+            }),
+        }
+    }
+
+    fn succeeded(index: u64) -> ApplyResult {
+        ApplyResult {
+            index,
+            succeeded: true,
+        }
+    }
+
+    fn failed(index: u64) -> ApplyResult {
+        ApplyResult {
+            index,
+            succeeded: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_insert_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entry = create_entry(
+            1,
+            Operation::Insert(Insert {
+                key: b"key1".to_vec().into(),
+                value: b"value1".to_vec().into(),
+                ttl_secs: 0,
+            }),
+        );
+
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.key, Bytes::from(&b"key1"[..]));
+        assert_eq!(event.value, Bytes::from(&b"value1"[..]));
+        assert_eq!(event.event_type, WatchEventType::Put as i32);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_delete_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entry = create_entry(
+            1,
+            Operation::Delete(Delete {
+                key: b"key1".to_vec().into(),
+            }),
+        );
+
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.key, Bytes::from(&b"key1"[..]));
+        assert_eq!(event.value, Bytes::new());
+        assert_eq!(event.event_type, WatchEventType::Delete as i32);
+    }
+
+    // CAS succeeded → watcher receives Put event with new value
+    #[tokio::test]
+    async fn test_broadcast_cas_success() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entry = create_entry(
+            1,
+            Operation::CompareAndSwap(CompareAndSwap {
+                key: b"lock".to_vec().into(),
+                expected_value: Some(b"owner1".to_vec().into()),
+                new_value: b"owner2".to_vec().into(),
+            }),
+        );
+
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.key, Bytes::from(&b"lock"[..]));
+        assert_eq!(event.value, Bytes::from(&b"owner2"[..]));
+        assert_eq!(event.event_type, WatchEventType::Put as i32);
+    }
+
+    // CAS failed → no watch event emitted (key unchanged)
+    #[tokio::test]
+    async fn test_broadcast_cas_failure_no_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entry = create_entry(
+            1,
+            Operation::CompareAndSwap(CompareAndSwap {
+                key: b"lock".to_vec().into(),
+                expected_value: Some(b"wrong_owner".to_vec().into()),
+                new_value: b"owner2".to_vec().into(),
+            }),
+        );
+
+        handler.broadcast_watch_events(&[entry], &[failed(1)], &tx);
+
+        // Channel must be empty — no event should have been sent
+        assert!(
+            rx.try_recv().is_err(),
+            "Expected no watch event for failed CAS"
+        );
+    }
+
+    // Multiple CAS: only succeeded ones emit events
+    #[tokio::test]
+    async fn test_broadcast_mixed_cas_success_and_failure() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entries = vec![
+            create_entry(
+                1,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"k1".to_vec().into(),
+                    expected_value: Some(b"v0".to_vec().into()),
+                    new_value: b"v1".to_vec().into(),
+                }),
+            ),
+            create_entry(
+                2,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"k2".to_vec().into(),
+                    expected_value: Some(b"wrong".to_vec().into()),
+                    new_value: b"v2".to_vec().into(),
+                }),
+            ),
+            create_entry(
+                3,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"k3".to_vec().into(),
+                    expected_value: None,
+                    new_value: b"v3".to_vec().into(),
+                }),
+            ),
+        ];
+        let results = vec![succeeded(1), failed(2), succeeded(3)];
+
+        handler.broadcast_watch_events(&entries, &results, &tx);
+
+        // k1 succeeded → Put event
+        let event1 = rx.recv().await.unwrap();
+        assert_eq!(event1.key, Bytes::from(&b"k1"[..]));
+        assert_eq!(event1.value, Bytes::from(&b"v1"[..]));
+        assert_eq!(event1.event_type, WatchEventType::Put as i32);
+
+        // k3 succeeded → Put event (k2 failed, skipped)
+        let event2 = rx.recv().await.unwrap();
+        assert_eq!(event2.key, Bytes::from(&b"k3"[..]));
+        assert_eq!(event2.value, Bytes::from(&b"v3"[..]));
+        assert_eq!(event2.event_type, WatchEventType::Put as i32);
+
+        // No more events
+        assert!(rx.try_recv().is_err(), "Expected no further events");
+    }
+
+    // Insert + failed CAS + Delete → only 2 events (Insert and Delete)
+    #[tokio::test]
+    async fn test_broadcast_mixed_ops_with_failed_cas() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entries = vec![
+            create_entry(
+                1,
+                Operation::Insert(Insert {
+                    key: b"k1".to_vec().into(),
+                    value: b"v1".to_vec().into(),
+                    ttl_secs: 0,
+                }),
+            ),
+            create_entry(
+                2,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"k2".to_vec().into(),
+                    expected_value: Some(b"wrong".to_vec().into()),
+                    new_value: b"v2".to_vec().into(),
+                }),
+            ),
+            create_entry(
+                3,
+                Operation::Delete(Delete {
+                    key: b"k3".to_vec().into(),
+                }),
+            ),
+        ];
+        let results = vec![succeeded(1), failed(2), succeeded(3)];
+
+        handler.broadcast_watch_events(&entries, &results, &tx);
+
+        // Insert event
+        let event1 = rx.recv().await.unwrap();
+        assert_eq!(event1.key, Bytes::from(&b"k1"[..]));
+        assert_eq!(event1.event_type, WatchEventType::Put as i32);
+
+        // Delete event (failed CAS at index 1 was skipped)
+        let event2 = rx.recv().await.unwrap();
+        assert_eq!(event2.key, Bytes::from(&b"k3"[..]));
+        assert_eq!(event2.event_type, WatchEventType::Delete as i32);
+
+        // No more events
+        assert!(rx.try_recv().is_err(), "Expected no further events");
+    }
+
+    // Verifies results[i] aligns with chunk[i] by index position, not by ApplyResult.index
+    #[tokio::test]
+    async fn test_broadcast_cas_results_index_alignment() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        // chunk[0] = CAS failed, chunk[1] = CAS succeeded
+        let entries = vec![
+            create_entry(
+                10,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"key-a".to_vec().into(),
+                    expected_value: Some(b"old".to_vec().into()),
+                    new_value: b"new-a".to_vec().into(),
+                }),
+            ),
+            create_entry(
+                11,
+                Operation::CompareAndSwap(CompareAndSwap {
+                    key: b"key-b".to_vec().into(),
+                    expected_value: Some(b"old".to_vec().into()),
+                    new_value: b"new-b".to_vec().into(),
+                }),
+            ),
+        ];
+        // results[0] = failed (aligns with chunk[0] = key-a)
+        // results[1] = succeeded (aligns with chunk[1] = key-b)
+        let results = vec![failed(10), succeeded(11)];
+
+        handler.broadcast_watch_events(&entries, &results, &tx);
+
+        // Only key-b event should arrive
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.key, Bytes::from(&b"key-b"[..]));
+        assert_eq!(event.value, Bytes::from(&b"new-b"[..]));
+        assert_eq!(event.event_type, WatchEventType::Put as i32);
+
+        assert!(rx.try_recv().is_err(), "key-a should not emit an event");
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_ignores_invalid_entries() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+
+        let entry = create_entry(
+            1,
+            Operation::Insert(Insert {
+                key: b"key1".to_vec().into(),
+                value: b"value1".to_vec().into(),
+                ttl_secs: 0,
+            }),
+        );
+
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
+
+        // Should still receive valid event
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.key, Bytes::from(&b"key1"[..]));
     }
 }

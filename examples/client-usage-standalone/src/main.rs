@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 use d_engine::{
-    Client, ClientApiError, ClientBuilder,
+    Client, ClientApi, ClientApiError, ClientBuilder,
     protocol::{ClientResult, ReadConsistencyPolicy},
 };
 
@@ -52,7 +52,6 @@ async fn handle_write(
 ) -> Result<()> {
     println!("Writing key-value({key}-{value}) pair");
     client
-        .kv()
         .put(safe_kv(key), safe_kv(value))
         .await
         .map(|_| println!("Success"))
@@ -65,7 +64,6 @@ async fn handle_delete(
 ) -> Result<()> {
     println!("Deleting key({key})");
     client
-        .kv()
         .delete(safe_kv(key))
         .await
         .map(|_| println!("Success"))
@@ -85,7 +83,6 @@ async fn handle_read(
     };
 
     let result = client
-        .kv()
         .get_with_policy(safe_kv(key), Some(policy))
         .await
         .map_err(|e: ClientApiError| anyhow::anyhow!("Read error: {e:?}"))?;

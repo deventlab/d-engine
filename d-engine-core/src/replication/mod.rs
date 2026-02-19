@@ -4,14 +4,8 @@
 //! - Leader log propagation
 //! - Follower log consistency checks
 //! - Conflict resolution algorithms
-mod batch_buffer;
 mod replication_handler;
-
-pub use batch_buffer::*;
 pub use replication_handler::*;
-
-#[cfg(test)]
-mod batch_buffer_test;
 
 #[cfg(test)]
 pub mod replication_handler_test;
@@ -48,7 +42,15 @@ pub struct RaftRequestWithSignal {
     #[allow(unused)]
     pub id: String,
     pub payloads: Vec<EntryPayload>,
-    pub sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+    /// Multiple senders for merged requests (1 sender per payload, matched by index)
+    /// Invariant: senders.len() == payloads.len()
+    pub senders: Vec<MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>>,
+
+    /// Does this request need to wait for StateMachine's ApplyCompleted event?
+    ///
+    /// - `true`:  Command payload → must wait for state machine apply
+    /// - `false`: Noop/Config payload → respond immediately after commit
+    pub wait_for_apply_event: bool,
 }
 
 /// AppendEntries response with possible state changes

@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use d_engine_proto::client::ClientResponse;
+use d_engine_proto::client::WatchResponse;
 use d_engine_proto::client::raft_client_service_server::RaftClientServiceServer;
 use d_engine_proto::common::NodeRole;
 use d_engine_proto::common::NodeStatus;
@@ -176,6 +177,107 @@ impl MockNode {
             expected_client_propose_response: Some(Ok(response)),
             ..Default::default()
         };
+        let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
+        let channel = Self::mock_channel_with_port(port).await;
+        Ok((channel, port))
+    }
+
+    /// Simulate CAS-aware mock server for testing compare-and-swap operations
+    ///
+    /// # Parameters
+    /// - `rx`: Shutdown signal receiver
+    /// - `cas_should_succeed`: true = CAS succeeds (comparison matched), false = CAS fails (mismatch)
+    ///
+    /// # Returns
+    /// - Channel and port for the mock server
+    #[allow(clippy::type_complexity)]
+    pub(crate) async fn simulate_cas_mock_server(
+        rx: oneshot::Receiver<()>,
+        cas_should_succeed: bool,
+    ) -> std::result::Result<(Channel, u16), tonic::Status> {
+        let response = if cas_should_succeed {
+            ClientResponse::cas_success()
+        } else {
+            ClientResponse::cas_failure()
+        };
+
+        let builder = Box::new(|port: u16| {
+            Ok(ClusterMembership {
+                version: 1,
+                nodes: vec![NodeMeta {
+                    id: 1,
+                    role: NodeRole::Leader as i32,
+                    address: format!("127.0.0.1:{port}"),
+                    status: NodeStatus::Active.into(),
+                }],
+                current_leader_id: Some(1),
+            })
+        });
+
+        let mock_service = MockRpcService {
+            expected_metadata_response: Some(Arc::new(builder)),
+            expected_client_propose_response: Some(Ok(response)),
+            ..Default::default()
+        };
+
+        let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
+        let channel = Self::mock_channel_with_port(port).await;
+        Ok((channel, port))
+    }
+
+    /// Simulate a watch server that streams the given events then closes.
+    pub(crate) async fn simulate_watch_mock_server(
+        rx: oneshot::Receiver<()>,
+        events: Vec<WatchResponse>,
+    ) -> std::result::Result<(Channel, u16), tonic::Status> {
+        let builder = Box::new(|port: u16| {
+            Ok(ClusterMembership {
+                version: 1,
+                nodes: vec![NodeMeta {
+                    id: 1,
+                    role: NodeRole::Leader as i32,
+                    address: format!("127.0.0.1:{port}"),
+                    status: NodeStatus::Active.into(),
+                }],
+                current_leader_id: Some(1),
+            })
+        });
+
+        let mock_service = crate::mock_rpc::MockRpcService {
+            expected_metadata_response: Some(Arc::new(builder)),
+            expected_watch_events: Some(Ok(events)),
+            ..Default::default()
+        };
+
+        let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
+        let channel = Self::mock_channel_with_port(port).await;
+        Ok((channel, port))
+    }
+
+    /// Simulate a watch server that immediately returns an error.
+    pub(crate) async fn simulate_watch_error_mock_server(
+        rx: oneshot::Receiver<()>,
+        status: tonic::Status,
+    ) -> std::result::Result<(Channel, u16), tonic::Status> {
+        let builder = Box::new(|port: u16| {
+            Ok(ClusterMembership {
+                version: 1,
+                nodes: vec![NodeMeta {
+                    id: 1,
+                    role: NodeRole::Leader as i32,
+                    address: format!("127.0.0.1:{port}"),
+                    status: NodeStatus::Active.into(),
+                }],
+                current_leader_id: Some(1),
+            })
+        });
+
+        let mock_service = crate::mock_rpc::MockRpcService {
+            expected_metadata_response: Some(Arc::new(builder)),
+            expected_watch_events: Some(Err(status)),
+            ..Default::default()
+        };
+
         let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
         let channel = Self::mock_channel_with_port(port).await;
         Ok((channel, port))

@@ -197,17 +197,16 @@ async fn test_election_timer_random_duration_distribution() {
 // ReplicationTimer Tests
 // ============================================================================
 
-/// Test: ReplicationTimer initializes with correct timeouts
+/// Test: ReplicationTimer initializes with correct timeout
 ///
 /// Scenario:
-/// - Create timer with replication_timeout=100ms, batch_interval=50ms
-/// - Verify both deadlines are set correctly
+/// - Create timer with replication_timeout=100ms
+/// - Verify deadline is set correctly
 #[tokio::test]
 async fn test_replication_timer_init() {
     let replication_timeout = 100u64;
-    let batch_interval = 50u64;
 
-    let timer = ReplicationTimer::new(replication_timeout, batch_interval);
+    let timer = ReplicationTimer::new(replication_timeout);
 
     let now = Instant::now();
 
@@ -217,38 +216,24 @@ async fn test_replication_timer_init() {
         replication_elapsed >= Duration::from_millis(replication_timeout - 5),
         "Replication deadline should be close to timeout value"
     );
-
-    // Check batch deadline
-    let batch_elapsed = timer.batch_deadline() - now;
-    assert!(
-        batch_elapsed >= Duration::from_millis(batch_interval - 5),
-        "Batch deadline should be close to interval value"
-    );
 }
 
-/// Test: ReplicationTimer.next_deadline() returns earlier deadline
+/// Test: ReplicationTimer.next_deadline() returns replication deadline
 ///
 /// Scenario:
 /// - Replication timeout: 100ms
-/// - Batch interval: 50ms
-/// - next_deadline() should return batch deadline (50ms)
+/// - next_deadline() should return replication deadline
 #[tokio::test]
-async fn test_replication_timer_next_deadline_earlier() {
-    let timer = ReplicationTimer::new(100u64, 50u64);
+async fn test_replication_timer_next_deadline() {
+    let timer = ReplicationTimer::new(100u64);
 
     let replication = timer.replication_deadline();
-    let batch = timer.batch_deadline();
     let next = timer.next_deadline();
 
-    // Batch is shorter, so next_deadline should equal batch
+    // In drain-based architecture, next_deadline is replication_deadline
     assert_eq!(
-        next, batch,
-        "next_deadline should be the minimum (batch deadline)"
-    );
-
-    assert!(
-        next < replication,
-        "Batch deadline should be earlier than replication deadline"
+        next, replication,
+        "next_deadline should equal replication_deadline"
     );
 }
 
@@ -261,7 +246,7 @@ async fn test_replication_timer_next_deadline_earlier() {
 /// - New deadline should be later
 #[tokio::test]
 async fn test_replication_timer_reset_replication() {
-    let mut timer = ReplicationTimer::new(100u64, 50u64);
+    let mut timer = ReplicationTimer::new(100u64);
     let old_deadline = timer.replication_deadline();
 
     sleep(Duration::from_millis(10)).await;
@@ -275,38 +260,15 @@ async fn test_replication_timer_reset_replication() {
     );
 }
 
-/// Test: ReplicationTimer.reset_batch() updates batch deadline
-///
-/// Scenario:
-/// - Create timer
-/// - Get initial batch deadline
-/// - Sleep and reset batch
-/// - New deadline should be later
-#[tokio::test]
-async fn test_replication_timer_reset_batch() {
-    let mut timer = ReplicationTimer::new(100u64, 50u64);
-    let old_deadline = timer.batch_deadline();
-
-    sleep(Duration::from_millis(10)).await;
-
-    timer.reset_batch();
-    let new_deadline = timer.batch_deadline();
-
-    assert!(
-        new_deadline > old_deadline,
-        "New batch deadline should be later than old one"
-    );
-}
-
 /// Test: ReplicationTimer.is_expired() reflects next_deadline() expiration
 ///
 /// Scenario:
-/// - Create timer with very short timeouts [5ms, 5ms]
+/// - Create timer with very short timeout (5ms)
 /// - Should not be expired immediately
 /// - After sleeping, should be expired
 #[tokio::test]
 async fn test_replication_timer_is_expired() {
-    let timer = ReplicationTimer::new(5u64, 5u64);
+    let timer = ReplicationTimer::new(5u64);
 
     assert!(
         !timer.is_expired(),
@@ -316,67 +278,4 @@ async fn test_replication_timer_is_expired() {
     sleep(Duration::from_millis(20)).await;
 
     assert!(timer.is_expired(), "Timer should be expired after timeout");
-}
-
-/// Test: ReplicationTimer with equal timeout and interval
-///
-/// Scenario:
-/// - Both timeouts are 100ms
-/// - next_deadline should be either one (they're equal)
-#[tokio::test]
-async fn test_replication_timer_equal_timeouts() {
-    let timer = ReplicationTimer::new(100u64, 100u64);
-
-    let replication = timer.replication_deadline();
-    let batch = timer.batch_deadline();
-    let next = timer.next_deadline();
-
-    // When equal, min will return one of them (implementation-dependent)
-    assert_eq!(next, replication.min(batch));
-}
-
-/// Test: ReplicationTimer reset_replication doesn't affect batch deadline
-///
-/// Scenario:
-/// - Create timer
-/// - Get initial batch deadline
-/// - Reset replication
-/// - Batch deadline should be unchanged
-#[tokio::test]
-async fn test_replication_timer_reset_replication_independent() {
-    let mut timer = ReplicationTimer::new(100u64, 50u64);
-    let old_batch = timer.batch_deadline();
-
-    timer.reset_replication();
-
-    let new_batch = timer.batch_deadline();
-
-    // Batch deadline should not change when we only reset replication
-    assert_eq!(
-        old_batch, new_batch,
-        "Batch deadline should be unchanged after resetting replication"
-    );
-}
-
-/// Test: ReplicationTimer reset_batch doesn't affect replication deadline
-///
-/// Scenario:
-/// - Create timer
-/// - Get initial replication deadline
-/// - Reset batch
-/// - Replication deadline should be unchanged
-#[tokio::test]
-async fn test_replication_timer_reset_batch_independent() {
-    let mut timer = ReplicationTimer::new(100u64, 50u64);
-    let old_replication = timer.replication_deadline();
-
-    timer.reset_batch();
-
-    let new_replication = timer.replication_deadline();
-
-    // Replication deadline should not change when we only reset batch
-    assert_eq!(
-        old_replication, new_replication,
-        "Replication deadline should be unchanged after resetting batch"
-    );
 }

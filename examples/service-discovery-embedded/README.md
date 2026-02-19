@@ -4,7 +4,7 @@ Demonstrates d-engine's **Watch API in embedded mode** — ultra-low latency cha
 
 **What you'll learn:**
 
-- Using Watch API with LocalKvClient (no gRPC overhead)
+- Using Watch API with EmbeddedClient (no gRPC overhead)
 - Sub-millisecond read and watch latency
 - Embedded d-engine architecture patterns
 
@@ -16,7 +16,7 @@ Demonstrates d-engine's **Watch API in embedded mode** — ultra-low latency cha
 │  ┌─────────────────────────────────────────────────┐    │
 │  │  d-engine (embedded)                            │    │
 │  │  ┌───────────────┐  ┌────────────────────────┐  │    │
-│  │  │ LocalKvClient │  │ Watch (in-process)     │  │    │
+│  │  │EmbeddedClient │  │ Watch (in-process)     │  │    │
 │  │  │ (<0.1ms read) │  │ (μs latency events)    │  │    │
 │  │  └───────────────┘  └────────────────────────┘  │    │
 │  └─────────────────────────────────────────────────┘    │
@@ -50,14 +50,14 @@ The demo will:
 
 1. Start embedded d-engine in single node
 2. Register a service endpoint
-3. Show how to read with LocalKvClient
+3. Show how to read with EmbeddedClient
 4. Demonstrate in-process watch notifications
 
 ## Key Concepts Demonstrated
 
 ### Primary: Embedded Watch API
 
-- **LocalKvClient** — In-process KV operations with <0.1ms latency
+- **EmbeddedClient** — In-process KV operations with <0.1ms latency
 - **Watch notifications** — Microsecond-level event delivery
 - **Zero serialization** — Direct memory access, no gRPC overhead
 
@@ -70,7 +70,7 @@ The demo will:
 ## When to Use Embedded Mode
 
 - **Ultra-low latency required** — Watch events need microsecond response
-- **Rust-only applications** — LocalKvClient is Rust-native
+- **Rust-only applications** — EmbeddedClient is Rust-native
 - **Co-located architecture** — App and storage in same process
 
 ## Related

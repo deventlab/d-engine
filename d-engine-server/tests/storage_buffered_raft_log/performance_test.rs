@@ -4,14 +4,16 @@
 //! Most tests are marked with #[ignore] and can be run explicitly or
 //! skipped in CI environments.
 
-use std::sync::Arc;
-
+use super::TestContext;
 use bytes::Bytes;
 use d_engine_core::{
     BufferedRaftLog, FlushPolicy, PersistenceConfig, PersistenceStrategy, RaftLog,
 };
 use d_engine_proto::common::{Entry, EntryPayload};
 use d_engine_server::{FileStateMachine, FileStorageEngine, node::RaftTypeConfig};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 use tempfile::tempdir;
 use tokio::time::Instant;
 
@@ -179,9 +181,6 @@ mod filter_out_conflicts_and_append_performance_tests {
 
 #[tokio::test]
 async fn test_last_entry_id_performance() {
-    use super::TestContext;
-    use std::time::Duration;
-
     // Set up test context
     let test_context = TestContext::new(
         PersistenceStrategy::MemFirst,
@@ -228,9 +227,6 @@ async fn test_last_entry_id_performance() {
 
 #[tokio::test]
 async fn test_performance_benchmarks() {
-    use super::TestContext;
-    use std::collections::HashMap;
-
     // Skip performance tests during coverage runs due to instrumentation overhead
     if std::env::var("CARGO_LLVM_COV").is_ok() || std::env::var("CARGO_TARPAULIN").is_ok() {
         eprintln!("Skipping performance test during coverage run");
@@ -336,9 +332,6 @@ async fn test_performance_benchmarks() {
 
 #[tokio::test]
 async fn test_read_performance_remains_lockfree() {
-    use super::TestContext;
-    use std::time::Duration;
-
     // Use environment variable to control performance validation mode
     // Set CI=1 to use relaxed threshold for CI environment (10 reads/sec)
     // Without it, use strict performance validation (10K reads/sec)

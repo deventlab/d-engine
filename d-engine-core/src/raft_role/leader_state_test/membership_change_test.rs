@@ -121,6 +121,7 @@ async fn test_handle_join_cluster_success() {
         });
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     raft_context.storage.raft_log = Arc::new(raft_log);
     let mut state_machine = MockStateMachine::new();
@@ -446,6 +447,7 @@ async fn test_handle_join_cluster_snapshot_triggered() {
     context.transport = Arc::new(transport);
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     context.storage.raft_log = Arc::new(raft_log);
     let mut state_machine = MockStateMachine::new();
@@ -1431,7 +1433,7 @@ mod pending_promotion_tests {
 
             let (role_tx, role_rx) = mpsc::unbounded_channel();
             let mut node_config = node_config(&format!("/tmp/{test_name}"));
-            node_config.raft.replication.rpc_append_entries_in_batch_threshold = 1;
+            node_config.raft.batching.max_batch_size = 1;
             node_config.raft.membership.verify_leadership_persistent_timeout =
                 Duration::from_millis(200);
 
@@ -1470,6 +1472,7 @@ mod pending_promotion_tests {
                 });
 
             let mut raft_log = MockRaftLog::new();
+            raft_log.expect_last_entry_id().returning(|| 4);
             raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
             raft_context.storage.raft_log = Arc::new(raft_log);
 
@@ -1477,8 +1480,7 @@ mod pending_promotion_tests {
 
             let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-            let result =
-                state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+            let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
             assert_eq!(result.unwrap(), QuorumVerificationResult::Success);
             assert!(matches!(
@@ -1516,8 +1518,7 @@ mod pending_promotion_tests {
 
             let (role_tx, _) = mpsc::unbounded_channel();
 
-            let result =
-                state.verify_internal_quorum(payloads, true, &raft_context, &role_tx).await;
+            let result = state.verify_internal_quorum(payloads, &raft_context, &role_tx).await;
 
             assert_eq!(result.unwrap(), QuorumVerificationResult::RetryRequired);
 
