@@ -398,9 +398,6 @@ where
                     committed: true,
                 })?;
 
-                // Notify leader change listeners: this node is now leader
-                self.notify_leader_change(Some(self.node_id), current_term);
-
                 let peer_ids = self.ctx.membership().get_peers_id_with_condition(|_| true).await;
 
                 self.role.init_peers_next_index_and_match_index(
@@ -437,6 +434,9 @@ where
                             ?e,
                             "Failed to track no-op commit index after leadership verification"
                         );
+                    } else {
+                        // Notify leader change listeners: this node is now leader
+                        self.notify_leader_change(Some(self.node_id), current_term);
                     }
                 }
 
