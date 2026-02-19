@@ -156,7 +156,20 @@ impl ConnectionPool {
         addr: &str,
         config: &ClientConfig,
     ) -> Option<std::result::Result<ClusterMembership, ()>> {
-        let channel = Self::create_channel(addr.to_string(), config).await.ok()?;
+        // Use a short connect timeout for probing — dead nodes should fail fast
+        // so the retry loop can move to the next endpoint without burning the
+        // cluster_ready_timeout budget on TCP handshake waits.
+        const MAX_PROBE_CONNECT_MS: u64 = 500;
+        let probe_timeout = config
+            .connect_timeout
+            .min(std::time::Duration::from_millis(MAX_PROBE_CONNECT_MS));
+        let channel = Endpoint::try_from(addr.to_string())
+            .ok()?
+            .connect_timeout(probe_timeout)
+            .timeout(config.request_timeout)
+            .connect()
+            .await
+            .ok()?;
         let mut client = ClusterManagementServiceClient::new(channel);
         if config.enable_compression {
             client = client
