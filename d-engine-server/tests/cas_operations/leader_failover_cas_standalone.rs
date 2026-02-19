@@ -107,32 +107,17 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     info!("CAS result during leader stop: {:?}", cas_result);
     // Expected: timeout, NOT_LEADER, or UNAVAILABLE error
 
-    // Phase 2: Wait for new leader election
-    // Must call client.refresh() to probe cluster and update cached leader id —
-    // get_leader_id() only reads the local cache, which still holds the old leader.
+    // Phase 2: Wait for new leader election.
+    // refresh() internally waits until a noop-committed leader is confirmed
+    // (via load_cluster_metadata round-robin + cluster_ready_timeout).
+    // No manual retry loop needed — refresh() is the barrier.
     info!("Phase 2: Waiting for new leader election");
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
-    // Probe for new leader by attempting a read — more reliable than refresh()+get_leader_id()
-    // because it doesn't depend on the client's cached leader state.
-    let mut new_leader_id = None;
-    for retry in 0..40 {
-        client.refresh(None).await.ok();
-        // Try a read to verify the cluster can serve requests (new leader is active)
-        if client.get(lock_key).await.is_ok() {
-            if let Ok(Some(leader)) = client.get_leader_id().await {
-                if leader != 0 {
-                    new_leader_id = Some(leader);
-                    info!("New leader elected: node {}", leader);
-                    break;
-                }
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        info!("Retry {}/40: Waiting for new leader...", retry + 1);
-    }
-
-    let _new_leader_id = new_leader_id.expect("Failed to elect new leader after 40 retries");
+    client.refresh(None).await?;
+    let new_leader_id = client
+        .get_leader_id()
+        .await?
+        .expect("Leader must be known after successful refresh");
+    info!("New leader elected: node {}", new_leader_id);
     tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
 
     // Phase 3: Verify lock state consistency

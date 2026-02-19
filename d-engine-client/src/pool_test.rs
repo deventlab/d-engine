@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::vec;
 
@@ -97,7 +100,7 @@ async fn test_load_cluster_metadata_success() {
     // This test requires actual network connections. For more isolated testing,
     // consider using a mock server or in-memory transport
     let result = ConnectionPool::load_cluster_metadata(&endpoints, &config).await;
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "Should return (membership, leader_conn)");
 }
 
 #[tokio::test]
@@ -112,6 +115,7 @@ async fn test_create_channel_success() {
         http2_keepalive_timeout: Duration::from_secs(20),
         max_frame_size: 1 << 20, // 1MB
         enable_compression: true,
+        cluster_ready_timeout: Duration::from_secs(5),
     };
 
     // Test with an invalid address to verify timeout behavior
@@ -346,7 +350,7 @@ async fn test_load_cluster_metadata_returns_full_membership() {
     let endpoints = vec![format!("http://localhost:{}", port)];
     let config = ClientConfig::default();
 
-    let membership = ConnectionPool::load_cluster_metadata(&endpoints, &config)
+    let (membership, _conn) = ConnectionPool::load_cluster_metadata(&endpoints, &config)
         .await
         .expect("Should load metadata");
 
@@ -387,4 +391,130 @@ async fn test_parse_cluster_metadata_with_learner_nodes() {
     assert_eq!(result.0, "http://127.0.0.1:50053");
     // All non-leader nodes (including learner) go to followers
     assert_eq!(result.1.len(), 2);
+}
+
+/// probe_endpoint returns None when node is unreachable
+#[tokio::test]
+#[traced_test]
+async fn test_probe_endpoint_unreachable() {
+    let config = ClientConfig::default();
+    let result = ConnectionPool::probe_endpoint("http://127.0.0.1:1", &config).await;
+    assert!(result.is_none());
+}
+
+/// probe_endpoint returns Some(Err(())) when node responds but election is in progress
+/// (current_leader_id = None)
+#[tokio::test]
+#[traced_test]
+async fn test_probe_endpoint_election_in_progress() {
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx,
+        Some(Box::new(|port| {
+            Ok(ClusterMembership {
+                version: 1,
+                nodes: vec![NodeMeta {
+                    id: 1,
+                    role: 0,
+                    address: format!("127.0.0.1:{port}"),
+                    status: NodeStatus::Active.into(),
+                }],
+                current_leader_id: None, // election in progress
+            })
+        })),
+    )
+    .await
+    .unwrap();
+
+    let config = ClientConfig::default();
+    let addr = format!("http://localhost:{port}");
+    let result = ConnectionPool::probe_endpoint(&addr, &config).await;
+    assert!(matches!(result, Some(Err(()))));
+}
+
+/// load_cluster_metadata retries until leader becomes ready.
+/// First calls return no leader; after N calls the mock returns a valid leader.
+#[tokio::test]
+#[traced_test]
+async fn test_load_cluster_metadata_retries_until_leader_ready() {
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let call_count_clone = call_count.clone();
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx,
+        Some(Box::new(move |port| {
+            let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+            if n < 2 {
+                // First 2 calls: election in progress
+                Ok(ClusterMembership {
+                    version: 1,
+                    nodes: vec![NodeMeta {
+                        id: 1,
+                        role: 0,
+                        address: format!("127.0.0.1:{port}"),
+                        status: NodeStatus::Active.into(),
+                    }],
+                    current_leader_id: None,
+                })
+            } else {
+                // Subsequent calls: leader ready
+                Ok(ClusterMembership {
+                    version: 1,
+                    nodes: vec![NodeMeta {
+                        id: 1,
+                        role: 0,
+                        address: format!("127.0.0.1:{port}"),
+                        status: NodeStatus::Active.into(),
+                    }],
+                    current_leader_id: Some(1),
+                })
+            }
+        })),
+    )
+    .await
+    .unwrap();
+
+    let config = ClientConfig::default();
+    let endpoints = vec![format!("http://localhost:{port}")];
+    let (membership, _conn) = ConnectionPool::load_cluster_metadata(&endpoints, &config)
+        .await
+        .expect("Should eventually return ready leader");
+
+    assert_eq!(membership.current_leader_id, Some(1));
+    assert!(call_count.load(Ordering::SeqCst) >= 3);
+}
+
+/// load_cluster_metadata returns ClusterUnavailable when cluster_ready_timeout elapses
+/// without any node reporting a ready leader.
+#[tokio::test]
+#[traced_test]
+async fn test_load_cluster_metadata_timeout() {
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx,
+        Some(Box::new(|port| {
+            Ok(ClusterMembership {
+                version: 1,
+                nodes: vec![NodeMeta {
+                    id: 1,
+                    role: 0,
+                    address: format!("127.0.0.1:{port}"),
+                    status: NodeStatus::Active.into(),
+                }],
+                current_leader_id: None, // always election in progress
+            })
+        })),
+    )
+    .await
+    .unwrap();
+
+    let config = ClientConfig {
+        cluster_ready_timeout: Duration::from_millis(300),
+        ..Default::default()
+    };
+    let endpoints = vec![format!("http://localhost:{port}")];
+
+    let err = ConnectionPool::load_cluster_metadata(&endpoints, &config).await.unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ClusterUnavailable);
 }

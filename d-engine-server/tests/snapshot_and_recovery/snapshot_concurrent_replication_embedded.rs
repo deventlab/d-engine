@@ -142,7 +142,10 @@ snapshots_dir = '{}'
         leader_info.leader_id, leader_info.term
     );
 
-    let leader_idx = engines.iter().position(|e| e.is_leader()).expect("Should have a leader");
+    let leader_idx = engines
+        .iter()
+        .position(|e| e.node_id() == leader_info.leader_id)
+        .expect("Should have a leader");
 
     let leader_client = engines[leader_idx].client().clone();
 

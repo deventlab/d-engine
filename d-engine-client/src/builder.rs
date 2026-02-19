@@ -56,6 +56,19 @@ impl ClientBuilder {
         self
     }
 
+    /// Set cluster ready timeout (default: 5s)
+    ///
+    /// Controls how long build() / refresh() waits for a leader to be elected
+    /// and its noop entry committed. Use shorter values for health checks,
+    /// longer values for production startup.
+    pub fn cluster_ready_timeout(
+        mut self,
+        timeout: Duration,
+    ) -> Self {
+        self.config.cluster_ready_timeout = timeout;
+        self
+    }
+
     /// Enable/disable compression (default: enabled)
     pub fn enable_compression(
         mut self,

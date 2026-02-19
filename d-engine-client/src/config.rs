@@ -47,6 +47,12 @@ pub struct ClientConfig {
     /// Tradeoff: Reduces bandwidth usage at the cost of CPU
     /// Default: true (enabled)
     pub enable_compression: bool,
+
+    /// Maximum time to wait for the cluster to elect a leader during build() or refresh().
+    /// Controls how long the client waits for noop-committed leader readiness.
+    /// Caller-controlled: set shorter for health checks, longer for production startup.
+    /// Default: 5 seconds
+    pub cluster_ready_timeout: Duration,
 }
 
 impl Default for ClientConfig {
@@ -60,6 +66,7 @@ impl Default for ClientConfig {
             http2_keepalive_timeout: Duration::from_secs(20),
             max_frame_size: 1 << 20, // 1MB
             enable_compression: false,
+            cluster_ready_timeout: Duration::from_secs(5),
         }
     }
 }

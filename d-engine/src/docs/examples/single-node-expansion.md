@@ -59,7 +59,7 @@ db_root_dir = "./db"
 **Config field reference**:
 
 - `role = 2`: Leader (NodeRole: 0=Follower, 1=Candidate, 2=Leader, 3=Learner)
-- `status = 2`: ACTIVE (NodeStatus: 0=JOINING, 1=SYNCING, 2=ACTIVE)
+- `status = 2`: ACTIVE (NodeStatus: 0=PROMOTABLE, 1=READ_ONLY, 2=ACTIVE)
 
 **Start**:
 
@@ -98,10 +98,10 @@ db_root_dir = "./db"
 **Key fields**:
 
 - `role = 3`: Learner (will auto-promote to Voter)
-- `status = 0`: JOINING (new node catching up with logs)
+- `status = 0`: PROMOTABLE (learner eligible for promotion)
 
-> **Note**: `status = 0` (JOINING) means this node is new and needs to sync data.  
-> `status = 2` (ACTIVE) means the node is already a formal member (like Node 1).
+> **Note**: `status = 0` (PROMOTABLE) means this node is a learner that can be promoted to voter.  
+> `status = 2` (ACTIVE) means the node is already a formal voting member (like Node 1).
 
 **Why join as Learner (not Follower)?**
 

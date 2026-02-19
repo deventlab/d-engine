@@ -7,7 +7,6 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tracing::debug;
-use tracing::error;
 use tracing::info;
 
 use super::ClientApiError;
@@ -85,25 +84,22 @@ impl ConnectionPool {
         config: &ClientConfig,
     ) -> std::result::Result<(Channel, Vec<Channel>, Vec<NodeMeta>, Option<u32>), ClientApiError>
     {
-        // 1. Load cluster metadata
-        let membership = Self::load_cluster_metadata(endpoints, config).await?;
+        // 1. Load cluster metadata + establish verified leader channel atomically.
+        //    Returns only when a ready leader is confirmed AND its channel is connectable.
+        let (membership, leader_conn) = Self::load_cluster_metadata(endpoints, config).await?;
         info!("Cluster members discovered: {:?}", membership.nodes);
 
-        // 2. Parse leader and follower addresses
-        let (leader_addr, follower_addrs) = Self::parse_cluster_metadata(&membership)?;
+        // 2. Parse follower addresses (leader channel already established above)
+        let (_, follower_addrs) = Self::parse_cluster_metadata(&membership)?;
 
-        // 3. Establish all connections in parallel
-        let leader_future = Self::create_channel(leader_addr, config);
-        let follower_futures =
-            follower_addrs.into_iter().map(|addr| Self::create_channel(addr, config));
-
-        let (leader_conn, follower_conns) =
-            tokio::join!(leader_future, futures::future::join_all(follower_futures));
-
-        // 4. Filter valid connections
-        let leader_conn = leader_conn?;
-        let follower_conns =
-            follower_conns.into_iter().filter_map(std::result::Result::ok).collect();
+        // 3. Establish follower connections in parallel (best-effort, failures are filtered)
+        let follower_conns = futures::future::join_all(
+            follower_addrs.into_iter().map(|addr| Self::create_channel(addr, config)),
+        )
+        .await
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .collect();
 
         Ok((
             leader_conn,
@@ -150,43 +146,106 @@ impl ConnectionPool {
         self.current_leader_id
     }
 
-    /// Discover cluster metadata by probing nodes
+    /// Probe a single endpoint and classify the cluster metadata state.
+    ///
+    /// Returns:
+    /// - `Some(Ok(membership))` — leader is known and present in member list (ready)
+    /// - `Some(Err(()))`        — node responded but cluster not yet ready (election in progress
+    ///   or stale leader ID); caller should try next node
+    /// - `None`                 — node unreachable; caller should try next node
+    pub(super) async fn probe_endpoint(
+        addr: &str,
+        config: &ClientConfig,
+    ) -> Option<std::result::Result<ClusterMembership, ()>> {
+        let channel = Self::create_channel(addr.to_string(), config).await.ok()?;
+        let mut client = ClusterManagementServiceClient::new(channel);
+        if config.enable_compression {
+            client = client
+                .send_compressed(CompressionEncoding::Gzip)
+                .accept_compressed(CompressionEncoding::Gzip);
+        }
+        let membership = client
+            .get_cluster_metadata(tonic::Request::new(MetadataRequest {}))
+            .await
+            .ok()?
+            .into_inner();
+
+        // Classify: ready only if leader_id is known AND present in member list
+        let ready = membership
+            .current_leader_id
+            .is_some_and(|leader_id| membership.nodes.iter().any(|n| n.id == leader_id));
+
+        if ready {
+            Some(Ok(membership))
+        } else {
+            debug!(
+                "probe_endpoint {}: cluster not ready (leader_id={:?})",
+                addr, membership.current_leader_id
+            );
+            Some(Err(()))
+        }
+    }
+
+    /// Wait until the cluster has a reachable, noop-committed leader, then return
+    /// its metadata and an established leader channel.
+    ///
+    /// Probe and connect are treated as a single atomic step inside one retry loop
+    /// sharing `config.cluster_ready_timeout`. This prevents the TOCTOU race where
+    /// probe succeeds but the leader crashes before the channel is established.
+    ///
+    /// Ready = `current_leader_id` is `Some`, present in member list, AND the leader
+    /// channel can be established (TCP connect succeeds).
     pub(super) async fn load_cluster_metadata(
         endpoints: &[String],
         config: &ClientConfig,
-    ) -> std::result::Result<ClusterMembership, ClientApiError> {
-        for addr in endpoints {
-            match Self::create_channel(addr.clone(), config).await {
-                Ok(channel) => {
-                    let mut client = ClusterManagementServiceClient::new(channel);
-                    if config.enable_compression {
-                        client = client
-                            .send_compressed(CompressionEncoding::Gzip)
-                            .accept_compressed(CompressionEncoding::Gzip);
-                    }
-                    match client.get_cluster_metadata(tonic::Request::new(MetadataRequest {})).await
-                    {
-                        Ok(response) => return Ok(response.into_inner()),
-                        Err(e) => {
-                            error!("get_cluster_metadata: {:?}", e);
-                            // Try next node
-                            continue;
-                        }
+    ) -> std::result::Result<(ClusterMembership, Channel), ClientApiError> {
+        const RETRY_BACKOFF_MS: u64 = 200;
+
+        let deadline = tokio::time::Instant::now() + config.cluster_ready_timeout;
+
+        loop {
+            // Probe every endpoint in this round
+            for addr in endpoints {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(ErrorCode::ClusterUnavailable.into());
+                }
+                let membership = match Self::probe_endpoint(addr, config).await {
+                    Some(Ok(m)) => m,
+                    Some(Err(())) => continue, // election in progress — try next
+                    None => continue,          // node unreachable — try next
+                };
+
+                // Probe succeeded: try to establish leader channel in the same step.
+                // If connect fails (leader crashed between probe and connect), continue
+                // to next endpoint — do NOT return error (shared deadline handles timeout).
+                let (leader_addr, _) = Self::parse_cluster_metadata(&membership)?;
+                match Self::create_channel(leader_addr, config).await {
+                    Ok(leader_conn) => return Ok((membership, leader_conn)),
+                    Err(e) => {
+                        debug!("load_cluster_metadata: leader connect failed ({e:?}), retrying");
+                        continue;
                     }
                 }
-                Err(e) => {
-                    error!(
-                        "load_cluster_metadata from addr: {:?}, failed: {:?}",
-                        &addr, e
-                    );
-                    continue;
-                } // Connection failed, try next
             }
+
+            // Full round completed with no ready+connectable leader — backoff then retry
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(ErrorCode::ClusterUnavailable.into());
+            }
+            let backoff = std::time::Duration::from_millis(RETRY_BACKOFF_MS).min(remaining);
+            debug!(
+                "load_cluster_metadata: no ready leader found, retrying in {:?}",
+                backoff
+            );
+            tokio::time::sleep(backoff).await;
         }
-        Err(ErrorCode::ClusterUnavailable.into())
     }
 
-    /// Extract leader address from metadata using current_leader_id
+    /// Extract leader address from metadata using current_leader_id.
+    ///
+    /// Precondition: `membership` must be in Ready state (leader_id is Some and
+    /// present in member list). Guaranteed by `load_cluster_metadata`.
     pub(super) fn parse_cluster_metadata(
         membership: &ClusterMembership
     ) -> std::result::Result<(String, Vec<String>), ClientApiError> {
