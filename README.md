@@ -154,7 +154,7 @@ sequenceDiagram
 
 ## Performance Comparison (d-engine v0.2.2 vs etcd 3.5)
 
-![d-engine vs etcd comparison](https://github.com/deventlab/d-engine/raw/HEAD/benches/embedded-bench/reports/v0.2.2/dengine_comparison_v0.2.2.png)
+![d-engine vs etcd comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.2/dengine_comparison_v0.2.2.png)
 
 ### View Benchmarks Detailed Reports
 
