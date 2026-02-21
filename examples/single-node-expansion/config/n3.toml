@@ -11,7 +11,7 @@ listen_address = "0.0.0.0:9083"
 # Node 3: joining as learner (role=3, status=1)
 initial_cluster = [
     { id = 1, address = "0.0.0.0:9081", role = 3, status = 3 }, # Existing leader
-    { id = 2, address = "0.0.0.0:9082", role = 2, status = 3 }, # Existing follower (promoted)
+    { id = 2, address = "0.0.0.0:9082", role = 1, status = 3 }, # Existing follower (promoted)
     { id = 3, address = "0.0.0.0:9083", role = 4, status = 1 }, # Self: Learner, Joining
 ]
 

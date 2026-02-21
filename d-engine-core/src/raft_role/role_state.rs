@@ -564,7 +564,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
     }
 
     fn drain_read_buffer(&mut self) -> Result<()> {
-        warn!("update_match_index NotLeader error");
+        // No-op for non-leader roles (only Leader has read buffer to drain)
         Err(MembershipError::NotLeader.into())
     }
 }

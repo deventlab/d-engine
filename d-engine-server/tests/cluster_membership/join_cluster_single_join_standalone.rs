@@ -68,7 +68,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     // Create cluster node definitions with dynamic ports
     let initial_cluster_nodes: Vec<(u16, u8, u8)> = initial_ports
         .iter()
-        .map(|&port| (port, 2, 3)) // (port, role, status)
+        .map(|&port| (port, 1, 3)) // (port, role, status)
         .collect();
 
     // Start initial cluster nodes

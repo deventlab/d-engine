@@ -192,7 +192,7 @@ async fn test_learner_rejects_cluster_conf_request() {
 ///
 /// Expected:
 /// - Returns response with success=true
-/// - error_code = None
+/// - error_code = Unspecified
 /// - handle_raft_event returns Ok()
 ///
 /// This validates that learners can receive and apply cluster
@@ -1445,7 +1445,7 @@ async fn test_learner_handles_fatal_error_returns_error() {
 /// **Expected**:
 /// - Read processed immediately in push_client_cmd()
 /// - No NOT_LEADER error
-/// - Response latency < 2ms
+/// - Response latency < 10ms
 /// - Data served from local state machine
 #[tokio::test]
 async fn test_learner_serves_eventual_read_locally() {

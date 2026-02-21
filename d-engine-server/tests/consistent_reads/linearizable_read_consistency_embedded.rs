@@ -21,7 +21,9 @@ async fn create_test_engine(test_name: &str) -> (EmbeddedEngine, TempDir) {
     let db_path = temp_dir.path().join(test_name);
 
     let config_path = temp_dir.path().join("d-engine.toml");
-    let port = 50000 + (std::process::id() % 10000);
+    let mut port_guard = get_available_ports(1).await;
+    port_guard.release_listeners();
+    let port = port_guard.as_slice()[0];
     let config_content = format!(
         r#"
 [cluster]

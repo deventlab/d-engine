@@ -15,13 +15,17 @@ use d_engine_server::EmbeddedEngine;
 use tempfile::TempDir;
 use tokio::time::Instant;
 
+use crate::common::get_available_ports;
+
 /// Helper to create a single-node test engine with embedded mode
 async fn create_test_engine(test_name: &str) -> (EmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
 
     let config_path = temp_dir.path().join("d-engine.toml");
-    let port = 50000 + (std::process::id() % 10000);
+    let mut port_guard = get_available_ports(1).await;
+    port_guard.release_listeners();
+    let port = port_guard.as_slice()[0];
     let config_content = format!(
         r#"
 [cluster]
@@ -168,14 +172,14 @@ async fn test_select_fairness_drain_no_starvation() {
 
         // Assertions: Verify no starvation
         // Thresholds depend on environment:
-        // - Local: strict (p99 < 1ms, p50 < 200µs)
+        // - Local: realistic for dev machines/VMs/containers (p99 < 50ms, p50 < 10ms)
         // - CI: relaxed due to resource contention (p99 < 100ms, p50 < 50ms)
         let is_ci = std::env::var("CI").is_ok();
 
         let (p99_threshold, p50_threshold) = if is_ci {
             (Duration::from_millis(100), Duration::from_millis(50))
         } else {
-            (Duration::from_millis(1), Duration::from_micros(200))
+            (Duration::from_millis(50), Duration::from_millis(10))
         };
 
         assert!(

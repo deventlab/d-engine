@@ -466,7 +466,7 @@ async fn test_handle_cluster_conf_metadata_request() {
 ///
 /// Expected:
 /// - Returns success response
-/// - error_code is None
+/// - error_code is Unspecified
 ///
 /// This validates that Candidate can apply configuration changes from leader.
 ///

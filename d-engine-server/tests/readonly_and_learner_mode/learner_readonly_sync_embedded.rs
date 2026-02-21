@@ -77,8 +77,8 @@ async fn test_readonly_mode_learner_embedded() -> Result<(), Box<dyn std::error:
 node_id = 1
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},  # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }}   # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -111,8 +111,8 @@ general_raft_timeout_duration_in_ms = 5000
 node_id = 2
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},  # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }}   # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -175,9 +175,9 @@ general_raft_timeout_duration_in_ms = 5000
 node_id = 3
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 4, status = 2 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},  # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},  # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 4, status = 2 }}   # NODE_ROLE_LEARNER, NODE_STATUS_READ_ONLY
 ]
 db_root_dir = '{}'
 log_dir = '{}'

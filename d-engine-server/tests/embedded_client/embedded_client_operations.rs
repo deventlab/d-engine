@@ -12,13 +12,17 @@ use d_engine_core::ClientApi;
 use d_engine_server::EmbeddedEngine;
 use tempfile::TempDir;
 
+use crate::common::get_available_ports;
+
 /// Helper to create a test EmbeddedEngine
 async fn create_test_engine(test_name: &str) -> (EmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
 
     let config_path = temp_dir.path().join("d-engine.toml");
-    let port = 50000 + (std::process::id() % 10000);
+    let mut port_guard = get_available_ports(1).await;
+    port_guard.release_listeners();
+    let port = port_guard.as_slice()[0];
     let config_content = format!(
         r#"
 [cluster]
@@ -647,8 +651,10 @@ async fn create_watch_engine(
     let db_path = temp_dir.path().join(test_name);
 
     let config_path = temp_dir.path().join("d-engine.toml");
-    // Offset port to avoid collisions with non-watch tests
-    let port = 51000 + (std::process::id() % 10000);
+    // Use dynamic port allocation to avoid collisions
+    let mut port_guard = get_available_ports(1).await;
+    port_guard.release_listeners();
+    let port = port_guard.as_slice()[0];
     let config_content = format!(
         r#"
 [cluster]

@@ -42,7 +42,7 @@ message MembershipChange {
 message AddNode {
   uint32 node_id = 1;
   string address = 2;
-  NodeStatus status = 3; // Status of the node being added (PROMOTABLE or READ_ONLY)
+  NodeStatus status = 3; // Status of the node being added (NODE_STATUS_UNSPECIFIED, NODE_STATUS_PROMOTABLE, or NODE_STATUS_READ_ONLY)
 }
 
 message RemoveNode {

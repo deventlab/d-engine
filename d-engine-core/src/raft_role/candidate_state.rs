@@ -251,11 +251,10 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         last_log_index,
                         last_log_term,
                     };
-                    sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+                    if let Err(e) = sender.send(Ok(response)) {
+                        // Receiver timed out and dropped — this is normal, do not crash the node
+                        error!("Failed to send VoteResponse (receiver dropped): {:?}", e);
+                    }
                 }
             }
 
@@ -266,11 +265,13 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     .await;
                 debug!("Candidate receive ClusterConf: {:?}", &cluster_conf);
 
-                sender.send(Ok(cluster_conf)).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
+                if let Err(e) = sender.send(Ok(cluster_conf)) {
+                    // Receiver timed out and dropped — this is normal, do not crash the node
+                    error!(
+                        "Failed to send ClusterConf response (receiver dropped): {:?}",
+                        e
+                    );
+                }
             }
 
             RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
@@ -309,11 +310,13 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     "[peer-{}] update_cluster_conf_from_leader response: {:?}",
                     my_id, &response
                 );
-                sender.send(Ok(response)).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
+                if let Err(e) = sender.send(Ok(response)) {
+                    // Receiver timed out and dropped — this is normal, do not crash the node
+                    error!(
+                        "Failed to send ClusterConfUpdate response (receiver dropped): {:?}",
+                        e
+                    );
+                }
             }
 
             RaftEvent::AppendEntries(append_entries_request, sender) => {
@@ -337,11 +340,13 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 if response.is_conflict() || response.is_higher_term() {
                     debug!("Rejecting AppendEntries: {:?}", &response);
 
-                    sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+                    if let Err(e) = sender.send(Ok(response)) {
+                        // Receiver timed out and dropped — this is normal, do not crash the node
+                        error!(
+                            "Failed to send AppendEntries rejection (receiver dropped): {:?}",
+                            e
+                        );
+                    }
                     return Ok(());
                 } else {
                     // Keep syncing leader_id (hot-path: ~5ns atomic store)

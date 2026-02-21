@@ -112,6 +112,11 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
     // Verify: All buffered write clients receive error notifications
     // Note: drain_read_buffer() is called during BecomeFollower transition,
     // which should clear buffers and notify clients
+    let total_requests = response_receivers.len();
+    let mut notified_errors = 0;
+    let mut closed_channels = 0;
+    let mut timeouts = 0;
+
     for (i, mut rx) in response_receivers.into_iter().enumerate() {
         // Try to receive response (may timeout if buffer was silently dropped)
         let result = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
@@ -127,21 +132,29 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
                         || err_str.contains("FailedPrecondition"),
                     "Write {i} should return NOT_LEADER error, got: {err:?}"
                 );
+                notified_errors += 1;
             }
             Ok(Ok(Ok(_))) => {
                 panic!("Write {i} should not succeed after stepdown");
             }
             Ok(Err(_)) => {
-                // Channel closed - acceptable if buffers were dropped
-                // (implementation may choose to drop or notify)
+                // Channel closed - buffer was dropped without explicit notification
+                closed_channels += 1;
             }
             Err(_) => {
-                // Timeout - buffer was likely cleared without notification
-                // This is acceptable as long as data is not silently committed
-                // (we verified Follower state, so no writes can commit)
+                // Timeout - buffer was cleared without notification
+                timeouts += 1;
             }
         }
     }
+
+    // Assert: All clients must receive explicit NOT_LEADER error notification
+    // Per test objective: "No silent data loss (all clients notified)"
+    assert_eq!(
+        notified_errors, total_requests,
+        "All {total_requests} clients should receive explicit NOT_LEADER errors. \
+         Got: {notified_errors} notified, {closed_channels} closed, {timeouts} timeouts"
+    );
 
     // Verify: New Follower rejects subsequent writes
     if let RaftRole::Follower(ref mut follower) = raft.role {
@@ -163,7 +176,10 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
         let cmd = ClientCmd::Propose(write_req, response_tx);
         follower.push_client_cmd(cmd, &raft.ctx);
 
-        let result = response_rx.recv().await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), response_rx.recv())
+                .await
+                .expect("Timed out waiting for Follower rejection response");
         assert!(result.is_ok(), "Should receive response");
 
         if let Ok(Err(err)) = result {

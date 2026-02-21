@@ -398,7 +398,7 @@ async fn test_handle_cluster_conf_metadata_request() {
 /// - Membership update succeeds
 ///
 /// Expected:
-/// - Returns success response with error_code=None
+/// - Returns success response with error_code=Unspecified
 ///
 /// Original: test_handle_raft_event_case3_1
 #[tokio::test]

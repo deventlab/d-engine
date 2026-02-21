@@ -32,18 +32,25 @@ func main() {
 
 		// Try a write
 		writeResp, err := client.HandleClientWrite(context.Background(), &pb.ClientWriteRequest{
-			Commands: []*pb.WriteCommand{{
+			Command: &pb.WriteCommand{
 				Operation: &pb.WriteCommand_Insert_{
 					Insert: &pb.WriteCommand_Insert{
 						Key:   []byte("hello"),
 						Value: []byte("world"),
 					},
 				},
-			}},
+			},
 		})
 
 		if err != nil {
-			log.Fatalf("Write RPC failed: %v", err)
+			// RPC call failed, try next node
+			fmt.Printf("RPC to %s failed: %v, trying next node...\n", currentAddr, err)
+			conn.Close()
+			if i+1 < len(addresses) {
+				currentAddr = addresses[(i+1)%len(addresses)]
+				continue
+			}
+			log.Fatalf("All nodes failed, last error: %v", err)
 		}
 
 		if writeResp.Error == error_pb.ErrorCode_SUCCESS {

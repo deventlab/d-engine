@@ -13,7 +13,7 @@ async fn async_ok(
         term: 1,
         version: 1,
         success: true,
-        error_code: ErrorCode::None.into(),
+        error_code: ErrorCode::Unspecified.into(),
     };
     let response: tonic::Response<ClusterConfUpdateResponse> = tonic::Response::new(c);
     Ok(response)

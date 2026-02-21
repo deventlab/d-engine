@@ -177,7 +177,7 @@ v0.2.3 introduces **breaking wire protocol changes** due to protobuf enum value 
 | ---------------------- | --------- | --------- | ------------------------ |
 | -                      | -         | 0         | `ERROR_CODE_UNSPECIFIED` |
 | NotLeader              | 1         | 1         | `ERROR_CODE_NOT_LEADER`  |
-| ... (others unchanged) |           |           |
+| ... (others unchanged) |           |           |                          |
 
 ### Additional Protobuf Changes
 

@@ -9,6 +9,8 @@ use d_engine_server::api::EmbeddedEngine;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
+use crate::common::get_available_ports;
+
 /// Helper function to create a test EmbeddedEngine with RocksDB
 async fn setup_engine() -> Result<(EmbeddedEngine, TempDir), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
@@ -16,8 +18,10 @@ async fn setup_engine() -> Result<(EmbeddedEngine, TempDir), Box<dyn std::error:
 
     // Create a minimal config with Watch enabled
     let config_path = temp_dir.path().join("d-engine.toml");
-    // Use a high random port to avoid conflicts
-    let port = 50000 + (std::process::id() % 10000);
+    // Get available port to avoid conflicts
+    let mut port_guard = get_available_ports(1).await;
+    port_guard.release_listeners();
+    let port = port_guard.as_slice()[0];
     let config_content = format!(
         r#"
 [cluster]
@@ -104,7 +108,9 @@ async fn test_embedded_watch_always_available_when_compiled()
     // Create config WITHOUT explicit [raft.watch] section
     // Watch should still be available with default values
     let config_path = temp_dir.path().join("d-engine.toml");
-    let port = 50000 + (std::process::id() % 10000);
+    let mut port_guard = get_available_ports(1).await;
+    port_guard.release_listeners();
+    let port = port_guard.as_slice()[0];
     let config_content = format!(
         r#"
 [cluster]

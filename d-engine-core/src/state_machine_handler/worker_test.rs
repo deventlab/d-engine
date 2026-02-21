@@ -216,7 +216,7 @@ async fn test_apply_failure_sends_fatal_error() {
 async fn test_shutdown_drains_remaining_entries() {
     // Given: Mock StateMachineHandler that tracks apply count
     let mut mock_smh = MockStateMachineHandler::new();
-    mock_smh.expect_apply_chunk().returning(|entries| {
+    mock_smh.expect_apply_chunk().times(3).returning(|entries| {
         let results: Vec<crate::ApplyResult> =
             entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect();
         Ok(results)
@@ -363,7 +363,7 @@ async fn test_channel_closed_worker_exits() {
 async fn test_multiple_batches_sequential_processing() {
     // Given: Mock StateMachineHandler
     let mut mock_smh = MockStateMachineHandler::new();
-    mock_smh.expect_apply_chunk().returning(|entries| {
+    mock_smh.expect_apply_chunk().times(3).returning(|entries| {
         let results: Vec<crate::ApplyResult> =
             entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect();
         Ok(results)

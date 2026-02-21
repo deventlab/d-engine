@@ -798,6 +798,20 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
         }
 
+        // Drain write buffer (propose_buffer)
+        if !self.propose_buffer.is_empty() {
+            warn!(
+                "Write batch: draining {} pending write requests due to role change",
+                self.propose_buffer.len()
+            );
+
+            if let Some(batch) = self.propose_buffer.flush() {
+                for sender in batch.senders {
+                    let _ = sender.send(Err(tonic::Status::failed_precondition("Not leader")));
+                }
+            }
+        }
+
         Ok(())
     }
 

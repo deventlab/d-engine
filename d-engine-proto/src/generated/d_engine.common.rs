@@ -77,7 +77,7 @@ pub struct AddNode {
     pub node_id: u32,
     #[prost(string, tag = "2")]
     pub address: ::prost::alloc::string::String,
-    /// Status of the node being added (PROMOTABLE or READ_ONLY)
+    /// Status of the node being added (NODE_STATUS_UNSPECIFIED, NODE_STATUS_PROMOTABLE, or NODE_STATUS_READ_ONLY)
     #[prost(enumeration = "NodeStatus", tag = "3")]
     pub status: i32,
 }
