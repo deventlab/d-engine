@@ -2453,7 +2453,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// OR-combines wait_for_apply flags: if any request needs apply confirmation, all wait.
     /// This is safe because in practice all requests in a batch share the same flag
     /// (writes always true, noop/config always false — never mixed).
-    fn merge_batch_to_write_metadata(
+    pub(super) fn merge_batch_to_write_metadata(
         batch: impl IntoIterator<Item = RaftRequestWithSignal>,
         start_idx: u64,
     ) -> (Vec<EntryPayload>, Option<WriteMetadata>) {
@@ -2908,7 +2908,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Unified write + linearizable read: single RPC for both (2*RTT → 1*RTT).
     ///
     /// Safety: write quorum verification also confirms leadership for reads (Raft §6.4).
-    async fn unified_write_and_linear_read(
+    pub(super) async fn unified_write_and_linear_read(
         &mut self,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
