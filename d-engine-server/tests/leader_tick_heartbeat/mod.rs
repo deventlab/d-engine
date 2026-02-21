@@ -22,5 +22,3 @@
 //! - **T2**: Heartbeat piggybacking - commands flushed via heartbeat trigger
 //! - **T3**: Drain as primary path - high load verification (drain >> heartbeat ratio)
 //! - **T4**: Heartbeat interval precision - timer accuracy and consistency
-
-mod tick_and_heartbeat_embedded;
