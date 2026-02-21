@@ -77,8 +77,8 @@ async fn test_readonly_mode_learner_embedded() -> Result<(), Box<dyn std::error:
 node_id = 1
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 0, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 0, status = 2 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -111,8 +111,8 @@ general_raft_timeout_duration_in_ms = 5000
 node_id = 2
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 0, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 0, status = 2 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -175,9 +175,9 @@ general_raft_timeout_duration_in_ms = 5000
 node_id = 3
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 0, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 0, status = 2 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 3, status = 1 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 4, status = 2 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -206,7 +206,7 @@ general_raft_timeout_duration_in_ms = 5000
 
     // Wait for learner to sync
     tokio::time::sleep(Duration::from_secs(3)).await;
-    println!("[Phase 3] ✓ Node 3 started as ReadOnly Learner (role=3, status=1)\n");
+    println!("[Phase 3] ✓ Node 3 started as ReadOnly Learner (role=4, status=2)\n");
 
     // Phase 4: Verify node 3 can read replicated data
     println!("[Phase 4] Verifying node 3 read-only capability...");
@@ -261,7 +261,7 @@ general_raft_timeout_duration_in_ms = 5000
     println!("║ TEST RESULTS: READONLY LEARNER (EMBEDDED MODE)            ║");
     println!("╠════════════════════════════════════════════════════════════╣");
     println!("║ ✓ EmbeddedEngine supports Learner role configuration     ║");
-    println!("║ ✓ READ_ONLY status (status=1) prevents auto-promotion   ║");
+    println!("║ ✓ READ_ONLY status (status=2) prevents auto-promotion   ║");
     println!("║ ✓ ReadOnly Learners sync data from cluster               ║");
     println!("║ ✓ ReadOnly Learners receive new writes (replication OK) ║");
     println!("║                                                            ║");

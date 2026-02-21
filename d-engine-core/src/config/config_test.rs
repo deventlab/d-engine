@@ -108,9 +108,9 @@ fn environment_variables_should_have_highest_priority() {
         [cluster]
         node_id = 100
         initial_cluster = [
-            { id = 100, name = "n1", address = "127.0.0.1:8081", role = 1, status = 0 },
-            { id = 200, name = "n2", address = "127.0.0.1:9082", role = 1, status = 0 },
-            { id = 300, name = "n3", address = "127.0.0.1:9083", role = 1, status = 0 },
+            { id = 100, name = "n1", address = "127.0.0.1:8081", role = 1, status = 1 },
+            { id = 200, name = "n2", address = "127.0.0.1:9082", role = 1, status = 1 },
+            { id = 300, name = "n3", address = "127.0.0.1:9083", role = 1, status = 1 },
         ]
         "#,
     )
@@ -399,8 +399,8 @@ db_root_dir = "{}/db"
 [[cluster.initial_cluster]]
 id = 1
 address = "127.0.0.1:9091"
-role = 2
-status = 2
+role = 3
+status = 3
 "#,
         temp_dir.path().display()
     )
@@ -439,8 +439,8 @@ db_root_dir = "{}/db"
 [[cluster.initial_cluster]]
 id = 99
 address = "127.0.0.1:9091"
-role = 2
-status = 2
+role = 3
+status = 3
 "#,
         temp_dir.path().display()
     )
@@ -481,14 +481,14 @@ db_root_dir = "{}/db"
 [[cluster.initial_cluster]]
 id = 1
 address = "127.0.0.1:9091"
-role = 2
-status = 2
+role = 3
+status = 3
 
 [[cluster.initial_cluster]]
 id = 200
 address = "127.0.0.1:9092"
-role = 2
-status = 2
+role = 3
+status = 3
 "#,
         temp_dir.path().display()
     )
@@ -531,8 +531,8 @@ db_root_dir = "{}/db"
 [[cluster.initial_cluster]]
 id = 42
 address = "127.0.0.1:9091"
-role = 2
-status = 2
+role = 3
+status = 3
 "#,
         temp_dir.path().display()
     )

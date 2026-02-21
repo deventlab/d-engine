@@ -7,7 +7,7 @@ listen_address = "0.0.0.0:9081"
 
 # Single node startup: only this node in initial_cluster
 initial_cluster = [
-    { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 }, # role=2 (Leader), status=2 (Active)
+    { id = 1, address = "0.0.0.0:9081", role = 3, status = 3 }, # role=2 (Leader), status=3 (Active)
 ]
 
 db_root_dir = "./db"

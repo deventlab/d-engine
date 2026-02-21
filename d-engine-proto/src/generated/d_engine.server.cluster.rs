@@ -48,7 +48,7 @@ pub mod cluster_conf_update_response {
     )]
     #[repr(i32)]
     pub enum ErrorCode {
-        None = 0,
+        Unspecified = 0,
         /// Request sent to non-leader
         NotLeader = 1,
         /// Stale configuration version
@@ -67,23 +67,23 @@ pub mod cluster_conf_update_response {
         /// (if the ProtoBuf definition does not change) and safe for programmatic use.
         pub fn as_str_name(&self) -> &'static str {
             match self {
-                Self::None => "NONE",
-                Self::NotLeader => "NOT_LEADER",
-                Self::VersionConflict => "VERSION_CONFLICT",
-                Self::TermOutdated => "TERM_OUTDATED",
-                Self::InvalidChange => "INVALID_CHANGE",
-                Self::InternalError => "INTERNAL_ERROR",
+                Self::Unspecified => "ERROR_CODE_UNSPECIFIED",
+                Self::NotLeader => "ERROR_CODE_NOT_LEADER",
+                Self::VersionConflict => "ERROR_CODE_VERSION_CONFLICT",
+                Self::TermOutdated => "ERROR_CODE_TERM_OUTDATED",
+                Self::InvalidChange => "ERROR_CODE_INVALID_CHANGE",
+                Self::InternalError => "ERROR_CODE_INTERNAL_ERROR",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
         pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
             match value {
-                "NONE" => Some(Self::None),
-                "NOT_LEADER" => Some(Self::NotLeader),
-                "VERSION_CONFLICT" => Some(Self::VersionConflict),
-                "TERM_OUTDATED" => Some(Self::TermOutdated),
-                "INVALID_CHANGE" => Some(Self::InvalidChange),
-                "INTERNAL_ERROR" => Some(Self::InternalError),
+                "ERROR_CODE_UNSPECIFIED" => Some(Self::Unspecified),
+                "ERROR_CODE_NOT_LEADER" => Some(Self::NotLeader),
+                "ERROR_CODE_VERSION_CONFLICT" => Some(Self::VersionConflict),
+                "ERROR_CODE_TERM_OUTDATED" => Some(Self::TermOutdated),
+                "ERROR_CODE_INVALID_CHANGE" => Some(Self::InvalidChange),
+                "ERROR_CODE_INTERNAL_ERROR" => Some(Self::InternalError),
                 _ => None,
             }
         }

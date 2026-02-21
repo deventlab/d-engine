@@ -6,11 +6,11 @@ node_id = 2
 listen_address = "0.0.0.0:9082"
 
 # List ALL nodes in the cluster (existing + self)
-# Node 1: existing leader (role=2, status=2)
-# Node 2: joining as learner (role=3, status=0)
+# Node 1: existing leader (role=2, status=3)
+# Node 2: joining as learner (role=3, status=1)
 initial_cluster = [
-    { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 }, # Existing leader
-    { id = 2, address = "0.0.0.0:9082", role = 3, status = 0 }, # Self: Learner, Joining
+    { id = 1, address = "0.0.0.0:9081", role = 3, status = 3 }, # Existing leader
+    { id = 2, address = "0.0.0.0:9082", role = 4, status = 1 }, # Self: Learner, Joining
 ]
 
 db_root_dir = "./db"

@@ -416,7 +416,7 @@ async fn test_handle_cluster_conf_update_success() {
                 term: 1,
                 version: 1,
                 success: true,
-                error_code: cluster_conf_update_response::ErrorCode::None.into(),
+                error_code: cluster_conf_update_response::ErrorCode::Unspecified.into(),
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
@@ -443,7 +443,7 @@ async fn test_handle_cluster_conf_update_success() {
     assert!(response.success);
     assert_eq!(
         response.error_code,
-        cluster_conf_update_response::ErrorCode::None as i32
+        cluster_conf_update_response::ErrorCode::Unspecified as i32
     );
 }
 

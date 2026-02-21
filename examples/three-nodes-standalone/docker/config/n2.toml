@@ -2,9 +2,9 @@
 node_id = 2
 listen_address = "192.168.0.12:9082"
 initial_cluster = [
-    { id = 1, address = "192.168.0.11:9081", role = 1, status = 2 },
-    { id = 2, address = "192.168.0.12:9082", role = 1, status = 2 },
-    { id = 3, address = "192.168.0.13:9083", role = 1, status = 2 },
+    { id = 1, address = "192.168.0.11:9081", role = 2, status = 3 },
+    { id = 2, address = "192.168.0.12:9082", role = 2, status = 3 },
+    { id = 3, address = "192.168.0.13:9083", role = 2, status = 3 },
 ]
 db_root_dir = "./db"
 log_dir = "./logs"

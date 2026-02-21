@@ -36,7 +36,7 @@ async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>
 node_id = 1
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -90,8 +90,8 @@ general_raft_timeout_duration_in_ms = 5000
 node_id = 2
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 3, status = 0 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 4, status = 1 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -132,9 +132,9 @@ general_raft_timeout_duration_in_ms = 5000
 node_id = 3
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 2 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 3, status = 0 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 2, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 4, status = 1 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -297,7 +297,7 @@ async fn test_leader_failover_after_dynamic_scaling() -> Result<(), Box<dyn std:
 node_id = 1
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -357,8 +357,8 @@ election_timeout_max = 600
 node_id = 2
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 3, status = 0 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 4, status = 1 }}
 ]
 db_root_dir = '{db_root}'
 log_dir = '{log_dir}'
@@ -398,9 +398,9 @@ election_timeout_max = 6000
 node_id = 3
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 2 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 3, status = 0 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 2, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 4, status = 1 }}
 ]
 db_root_dir = '{db_root}'
 log_dir = '{log_dir}'
@@ -568,9 +568,9 @@ election_timeout_max = 6000
 node_id = 1
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 0, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 0, status = 2 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 0, status = 2 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
 db_root_dir = '{}'
 

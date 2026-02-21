@@ -128,11 +128,138 @@ grep "WAL" /var/log/d-engine.log
 
 ## Timeline
 
-| Version | WAL Format          | Migration Required |
-| ------- | ------------------- | ------------------ |
-| v0.1.x  | Relative TTL        | -                  |
-| v0.2.0+ | Absolute expiration | ✅ Yes (clear WAL) |
-| v0.2.3  | Same as v0.2.0+     | API changes only   |
+| Version | WAL Format          | Wire Protocol       | Migration Required                           |
+| ------- | ------------------- | ------------------- | -------------------------------------------- |
+| v0.1.x  | Relative TTL        | Compatible          | -                                            |
+| v0.2.0+ | Absolute expiration | Compatible (v0.2.x) | ✅ Yes (clear WAL from v0.1.x)               |
+| v0.2.3  | Same as v0.2.0+     | **Incompatible**    | ✅ Yes (protobuf enum changes + API changes) |
+
+---
+
+## 🚨 For v0.2.2 Users: Protobuf Enum Breaking Changes in v0.2.3
+
+### What Changed
+
+v0.2.3 introduces **breaking wire protocol changes** due to protobuf enum value shifts to comply with buf lint standards.
+
+### ⚠️ Critical Impact
+
+**Wire Protocol Incompatibility:**
+
+- v0.2.3 nodes **CANNOT communicate** with v0.2.2 or earlier nodes
+- No rolling upgrade possible - all cluster nodes must upgrade simultaneously
+- Client SDKs must be upgraded to v0.2.3 to connect to upgraded clusters
+
+### Enum Value Changes
+
+#### NodeRole Enum
+
+| Role      | Old Value | New Value | New Constant            |
+| --------- | --------- | --------- | ----------------------- |
+| -         | -         | 0         | `NODE_ROLE_UNSPECIFIED` |
+| Follower  | 0         | 1         | `NODE_ROLE_FOLLOWER`    |
+| Candidate | 1         | 2         | `NODE_ROLE_CANDIDATE`   |
+| Leader    | 2         | 3         | `NODE_ROLE_LEADER`      |
+| Learner   | 3         | 4         | `NODE_ROLE_LEARNER`     |
+
+#### NodeStatus Enum
+
+| Status     | Old Value | New Value | New Constant              |
+| ---------- | --------- | --------- | ------------------------- |
+| -          | -         | 0         | `NODE_STATUS_UNSPECIFIED` |
+| Promotable | 0         | 1         | `NODE_STATUS_PROMOTABLE`  |
+| ReadOnly   | 1         | 2         | `NODE_STATUS_READ_ONLY`   |
+| Active     | 2         | 3         | `NODE_STATUS_ACTIVE`      |
+
+#### ErrorCode Enum
+
+| Error                  | Old Value | New Value | New Constant             |
+| ---------------------- | --------- | --------- | ------------------------ |
+| -                      | -         | 0         | `ERROR_CODE_UNSPECIFIED` |
+| NotLeader              | 1         | 1         | `ERROR_CODE_NOT_LEADER`  |
+| ... (others unchanged) |           |           |
+
+### Additional Protobuf Changes
+
+- **Enum Prefixes**: All enum values now have proper prefixes (`NODE_ROLE_*`, `NODE_STATUS_*`, `ERROR_CODE_*`)
+- **Field Naming**: All fields now use snake_case naming (`leader_id`, `prev_log_index`, `last_log_index`, etc.)
+
+---
+
+## Migration Steps for v0.2.2 → v0.2.3 Protobuf Changes
+
+### Step 1: Update Configuration Files
+
+Update any TOML configuration files that reference enum values:
+
+**Old (v0.2.2):**
+
+```toml
+[cluster]
+node_id = 1
+role = 0        # Follower
+status = 0      # Promotable
+```
+
+**New (v0.2.3):**
+
+```toml
+[cluster]
+node_id = 1
+role = 1        # NODE_ROLE_FOLLOWER
+status = 1      # NODE_STATUS_PROMOTABLE
+```
+
+### Step 2: Upgrade All Cluster Nodes Simultaneously
+
+**⚠️ No Rolling Upgrade Possible**
+
+Since the wire protocol is incompatible, you must upgrade all nodes at once:
+
+1. **Schedule maintenance window** (cluster will be unavailable during upgrade)
+2. **Stop all nodes** in the cluster
+3. **Upgrade binaries** to v0.2.3 on all nodes
+4. **Update configuration files** (see Step 1)
+5. **Start all nodes** simultaneously
+6. **Verify cluster health** (check logs, run health checks)
+
+**For Production Clusters:**
+
+If you require high availability during upgrade:
+
+1. **Set up a parallel v0.2.3 cluster** (new hardware/instances)
+2. **Migrate data** to the new cluster (application-level migration)
+3. **Switch traffic** to new cluster
+4. **Decommission old cluster**
+
+### Step 3: Upgrade Client SDKs
+
+All client applications must upgrade their d-engine SDK to v0.2.3:
+
+**Cargo.toml:**
+
+```toml
+[dependencies]
+d-engine = { version = "0.2.3", features = ["client"] }
+```
+
+**Rebuild and redeploy** all client applications before connecting to upgraded cluster.
+
+### Step 4: Verification
+
+After upgrade, verify:
+
+```bash
+# Check all nodes started successfully
+journalctl -u d-engine -f
+
+# Verify cluster health
+curl http://localhost:8080/health
+
+# Test basic operations
+d-engine-cli put test-key test-value
+d-engine-cli get test-key
+```
 
 ---
 

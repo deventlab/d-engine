@@ -107,7 +107,7 @@ pub async fn create_node_config(
         .map(|(i, &p)| {
             let id = i as u64 + 1;
             format!(
-                "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = 1, status = 2 }}"
+                "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = 1, status = 3 }}"
             )
         })
         .collect::<Vec<_>>()
@@ -128,12 +128,12 @@ pub async fn create_node_config(
 }
 
 /// Create node config with custom role for specific node
-/// Allows setting a node as LEARNER (role=3) instead of VOTER (role=1)
+/// Allows setting a node as LEARNER (role=4) instead of VOTER (role=1)
 pub async fn create_node_config_with_role(
     node_id: u64,
     port: u16,
     cluster_ports: &[u16],
-    node_role: i32, // 1 = VOTER, 3 = LEARNER
+    node_role: i32, // 1 = VOTER, 4 = LEARNER
     db_root_dir: &str,
     log_dir: &str,
 ) -> String {
@@ -145,7 +145,7 @@ pub async fn create_node_config_with_role(
             // Use custom role if this is the current node, otherwise default to VOTER
             let role = if id == node_id { node_role } else { 1 };
             format!(
-                "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = {role}, status = 2 }}"
+                "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = {role}, status = 3 }}"
             )
         })
         .collect::<Vec<_>>()

@@ -19,9 +19,9 @@ message Entry {
 // Log entry payload
 message EntryPayload {
   oneof payload {
-    Noop noop = 1;       // No operation (internal to the protocol)
-    bytes command = 2;    // Business write operation
-    MembershipChange config = 3;  // Cluster configuration change
+    Noop noop = 1; // No operation (internal to the protocol)
+    bytes command = 2; // Business write operation
+    MembershipChange config = 3; // Cluster configuration change
   }
 }
 
@@ -42,9 +42,8 @@ message MembershipChange {
 message AddNode {
   uint32 node_id = 1;
   string address = 2;
-  NodeStatus status = 3;  // Status of the node being added (PROMOTABLE or READ_ONLY)
+  NodeStatus status = 3; // Status of the node being added (PROMOTABLE or READ_ONLY)
 }
-
 
 message RemoveNode {
   uint32 node_id = 1;
@@ -55,7 +54,7 @@ message PromoteLearner {
   NodeStatus status = 2;
 }
 
-message BatchPromote{
+message BatchPromote {
   repeated uint32 node_ids = 1;
   NodeStatus new_status = 2;
 }
@@ -65,39 +64,43 @@ message BatchRemove {
 }
 
 enum NodeStatus {
-    // Learner states
-    PROMOTABLE = 0;     // Learner that CAN be promoted to voter
-    READ_ONLY = 1;      // Learner that will NEVER be promoted (permanent analytics node)
+  // Zero value: unspecified/default state (buf lint: ENUM_ZERO_VALUE_SUFFIX)
+  // Nodes in this state should explicitly set their status before joining cluster
+  NODE_STATUS_UNSPECIFIED = 0;
 
-    // Voter state
-    ACTIVE = 2;         // Voting member (Follower, Candidate, or Leader)
+  // Learner states
+  NODE_STATUS_PROMOTABLE = 1; // Learner that CAN be promoted to voter
+  NODE_STATUS_READ_ONLY = 2; // Learner that will NEVER be promoted (permanent analytics node)
+
+  // Voter state
+  NODE_STATUS_ACTIVE = 3; // Voting member (Follower, Candidate, or Leader)
 }
 
 message SnapshotEntry {
-    bytes key = 1;
-    bytes value = 2;
+  bytes key = 1;
+  bytes value = 2;
 }
 
 message SnapshotMeta {
-    uint64 versionHigh = 1;
-    uint64 versionLow = 2;
-    uint64 createdAtHigh = 3;
-    uint64 createdAtLow = 4;
-    uint32 authorId = 5;
-    LogId lastIncluded = 6;
+  uint64 version_high = 1;
+  uint64 version_low = 2;
+  uint64 created_at_high = 3;
+  uint64 created_at_low = 4;
+  uint32 author_id = 5;
+  LogId last_included = 6;
 }
 
 message Snapshot {
-    SnapshotMeta meta = 1;
-    repeated SnapshotEntry data = 2;
+  SnapshotMeta meta = 1;
+  repeated SnapshotEntry data = 2;
 }
 
-
 enum NodeRole {
-    FOLLOWER = 0;
-    CANDIDATE = 1;
-    LEADER = 2;
-    LEARNER = 3;
+  NODE_ROLE_UNSPECIFIED = 0;
+  NODE_ROLE_FOLLOWER = 1;
+  NODE_ROLE_CANDIDATE = 2;
+  NODE_ROLE_LEADER = 3;
+  NODE_ROLE_LEARNER = 4;
 }
 
 // Leader election information
@@ -105,8 +108,8 @@ enum NodeRole {
 // Purpose: Notify applications about leader changes via watch channel
 // Fields: Minimal - only what Raft protocol needs
 message LeaderInfo {
-    uint32 leader_id = 1;  // Current leader node ID
-    uint64 term = 2;       // Current Raft term
+  uint32 leader_id = 1; // Current leader node ID
+  uint64 term = 2; // Current Raft term
 }
 
 // Leader hint for client redirection
@@ -114,6 +117,6 @@ message LeaderInfo {
 // Purpose: Help clients redirect requests to the current leader
 // Fields: Includes network address for immediate retry
 message LeaderHint {
-    uint32 leader_id = 1;  // Current leader node ID
-    string address = 2;    // Leader's network address (e.g., "127.0.0.1:5001")
+  uint32 leader_id = 1; // Current leader node ID
+  string address = 2; // Leader's network address (e.g., "127.0.0.1:5001")
 }
