@@ -1125,12 +1125,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
             }
 
-            RaftEvent::FlushReadBuffer => {
-
-                // Legacy event - now handled by flush_cmd_buffers in tick
-                // Keep for backward compatibility but it's a no-op
-            }
-
             RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
                 sender
                     .send(Err(Status::permission_denied("Not Follower or Learner. ")))
