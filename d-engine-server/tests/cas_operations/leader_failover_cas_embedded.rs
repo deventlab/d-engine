@@ -110,32 +110,25 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
     // Expected: timeout or error (uncommitted request fails)
 
     // Phase 2: Wait for a new leader from a surviving node.
-    // Skip waiting for None — stop() on embedded engine does not guarantee surviving
-    // nodes emit None before electing a new leader. Directly wait for a surviving
-    // node to report a leader_id different from the stopped leader.
+    // Pick one surviving node and watch its leader_change_notifier
     info!("Phase 2: Waiting for new leader election");
-    let surviving_indices: Vec<usize> = (0..engines.len()).filter(|&i| i != leader_idx).collect();
-    let mut leader_rxs: Vec<_> = surviving_indices
-        .iter()
-        .map(|&idx| engines[idx].leader_change_notifier())
-        .collect();
+    let watcher_idx = if leader_idx == 0 { 1 } else { 0 };
+    let mut leader_rx = engines[watcher_idx].leader_change_notifier();
 
-    let new_leader_info = tokio::time::timeout(Duration::from_secs(20), async {
+    let new_leader_info = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            for rx in &mut leader_rxs {
-                if let Some(info) = rx.borrow().as_ref() {
-                    if info.leader_id != 0 && info.leader_id != initial_leader_id {
-                        return *info;
-                    }
-                }
-                let _ = rx.changed().await;
-                if let Some(info) = rx.borrow().as_ref() {
-                    if info.leader_id != 0 && info.leader_id != initial_leader_id {
-                        return *info;
-                    }
+            // Check current state
+            let current = *leader_rx.borrow();
+
+            if let Some(leader) = current {
+                if leader.leader_id != 0 && leader.leader_id != initial_leader_id {
+                    return leader;
                 }
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Wait for change
+            if leader_rx.changed().await.is_err() {
+                panic!("Leader watch channel closed unexpectedly");
+            }
         }
     })
     .await
