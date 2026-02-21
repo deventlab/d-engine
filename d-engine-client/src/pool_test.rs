@@ -398,8 +398,7 @@ async fn test_parse_cluster_metadata_with_learner_nodes() {
 #[traced_test]
 async fn test_probe_endpoint_unreachable() {
     let config = ClientConfig::default();
-    let budget = Duration::from_secs(5);
-    let result = ConnectionPool::probe_endpoint("http://127.0.0.1:1", &config, budget).await;
+    let result = ConnectionPool::probe_endpoint("http://127.0.0.1:1", &config).await;
     assert!(result.is_none());
 }
 
@@ -429,8 +428,7 @@ async fn test_probe_endpoint_election_in_progress() {
 
     let config = ClientConfig::default();
     let addr = format!("http://localhost:{port}");
-    let budget = Duration::from_secs(5);
-    let result = ConnectionPool::probe_endpoint(&addr, &config, budget).await;
+    let result = ConnectionPool::probe_endpoint(&addr, &config).await;
     assert!(matches!(result, Some(Err(()))));
 }
 

@@ -157,16 +157,12 @@ impl ConnectionPool {
     pub(super) async fn probe_endpoint(
         addr: &str,
         config: &ClientConfig,
-        budget: Duration,
     ) -> Option<std::result::Result<ClusterMembership, ()>> {
         // Use a short connect timeout for probing — dead nodes should fail fast
         // so the retry loop can move to the next endpoint without burning the
         // cluster_ready_timeout budget on TCP handshake waits.
         const MAX_PROBE_CONNECT_MS: u64 = 500;
-        let probe_timeout = config
-            .connect_timeout
-            .min(Duration::from_millis(MAX_PROBE_CONNECT_MS))
-            .min(budget);
+        let probe_timeout = config.connect_timeout.min(Duration::from_millis(MAX_PROBE_CONNECT_MS));
         let channel = Endpoint::try_from(addr.to_string())
             .ok()?
             .connect_timeout(probe_timeout)
@@ -222,15 +218,20 @@ impl ConnectionPool {
         loop {
             // Probe every endpoint in this round
             for addr in endpoints {
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
+                if tokio::time::Instant::now() >= deadline {
                     return Err(ErrorCode::ClusterUnavailable.into());
                 }
-                let membership = match Self::probe_endpoint(addr, config, remaining).await {
+
+                let membership = match Self::probe_endpoint(addr, config).await {
                     Some(Ok(m)) => m,
                     Some(Err(())) => continue, // election in progress — try next
                     None => continue,          // node unreachable — try next
                 };
+
+                // Check deadline after probe to prevent overshoot
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(ErrorCode::ClusterUnavailable.into());
+                }
 
                 // Probe succeeded: try to establish leader channel in the same step.
                 // If connect fails (leader crashed between probe and connect), continue
