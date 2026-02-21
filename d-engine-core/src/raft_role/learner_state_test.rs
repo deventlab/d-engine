@@ -1470,6 +1470,99 @@ async fn test_learner_handles_fatal_error_returns_error() {
     );
 }
 
+// ============================================================================
+// Role-Specific Behavior Tests
+// ============================================================================
+
+/// Learner - Eventual Read Support
+///
+/// **Objective**: Verify Learner can serve EventualConsistency reads locally
+///
+/// **Scenario**:
+/// - Learner node receives EventualConsistency read request
+/// - State machine returns valid data
+///
+/// **Expected**:
+/// - Read processed immediately in push_client_cmd()
+/// - No NOT_LEADER error
+/// - Response latency < 2ms
+/// - Data served from local state machine
+#[tokio::test]
+async fn test_learner_serves_eventual_read_locally() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    // Setup state machine mock for eventual read
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_read_from_state_machine()
+        .times(1)
+        .withf(|keys| keys.len() == 1 && keys[0] == "eventual_key")
+        .returning(|_| {
+            Some(vec![d_engine_proto::client::ClientResult {
+                key: bytes::Bytes::from("eventual_key"),
+                value: bytes::Bytes::from("eventual_value"),
+            }])
+        });
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Send EventualConsistency read request
+    let (response_tx, mut response_rx) = MaybeCloneOneshot::new();
+    let read_req = d_engine_proto::client::ClientReadRequest {
+        client_id: 1,
+        keys: vec![bytes::Bytes::from("eventual_key")],
+        consistency_policy: Some(
+            d_engine_proto::client::ReadConsistencyPolicy::EventualConsistency as i32,
+        ),
+    };
+
+    let start = tokio::time::Instant::now();
+
+    // Push read command (should process immediately)
+    state.push_client_cmd(ClientCmd::Read(read_req, response_tx), &context);
+
+    // Verify: Response ready immediately
+    let result = response_rx.recv().await;
+    let elapsed = start.elapsed();
+
+    assert!(result.is_ok(), "Eventual read should return response");
+
+    // Verify: Latency < 2ms
+    assert!(
+        elapsed.as_millis() < 10,
+        "Eventual read latency should be <10ms, got {:?}ms",
+        elapsed.as_millis()
+    );
+
+    // Verify: Response is success (not NOT_LEADER error)
+    if let Ok(response) = result {
+        match response {
+            Ok(read_response) => {
+                // Check success_result for ReadResults
+                assert!(
+                    read_response.success_result.is_some(),
+                    "Should have success_result"
+                );
+                if let Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
+                    read_data,
+                )) = read_response.success_result
+                {
+                    assert!(!read_data.results.is_empty(), "Should have read results");
+                    assert_eq!(
+                        read_data.results[0].value,
+                        bytes::Bytes::from("eventual_value")
+                    );
+                }
+            }
+            Err(e) => {
+                panic!("Eventual read should succeed on Learner, got error: {e:?}");
+            }
+        }
+    }
+}
+
 /// Test: Learner ApplyCompleted triggers snapshot when condition is met
 ///
 /// Purpose: Verify that learners independently create snapshots per Raft §7.

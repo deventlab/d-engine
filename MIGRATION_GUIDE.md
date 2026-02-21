@@ -1,8 +1,8 @@
-# Migration Guide for d-engine v0.2.0
+# Migration Guide for d-engine
 
 ## 🎯 For New Users
 
-**Starting fresh with v0.2.0?** No migration needed - skip this guide and go to [Quick Start](./examples/quick-start/).
+**Starting fresh with the latest version?** No migration needed - skip this guide and go to [Quick Start](./examples/quick-start/).
 
 ---
 
@@ -132,8 +132,98 @@ grep "WAL" /var/log/d-engine.log
 | ------- | ------------------- | ------------------ |
 | v0.1.x  | Relative TTL        | -                  |
 | v0.2.0+ | Absolute expiration | ✅ Yes (clear WAL) |
+| v0.2.3  | Same as v0.2.0+     | API changes only   |
 
 ---
 
-**Version:** d-engine v0.2.0  
-**Last Updated:** December 2025
+## 🚨 For v0.2.2 Users: API Changes in v0.2.3
+
+### What Changed
+
+v0.2.3 introduces **breaking API changes** to unify client interfaces and improve developer experience.
+
+### Breaking Changes
+
+#### 1. Unified Client API Trait
+
+**Old (v0.2.2):**
+
+```rust
+use d_engine::client::KvClient;
+use d_engine::client::KvError;
+
+async fn example(client: impl KvClient) -> Result<(), KvError> {
+    // ...
+}
+```
+
+**New (v0.2.3):**
+
+```rust
+use d_engine::client::ClientApi;
+use d_engine::client::ClientApiError;
+
+async fn example(client: impl ClientApi) -> Result<(), ClientApiError> {
+    // ...
+}
+```
+
+**Migration Steps:**
+
+- Replace `KvClient` with `ClientApi` in trait bounds
+- Replace `KvError` with `ClientApiError` in error handling
+- Update imports: `use d_engine::client::{ClientApi, ClientApiError};`
+
+---
+
+#### 2. WriteResult Message Type
+
+**Old (v0.2.2):**
+
+```rust
+pub struct WriteResult {
+    pub succeeded: bool,  // Simple boolean
+}
+```
+
+**New (v0.2.3):**
+
+```rust
+pub struct WriteResult {
+    // Message type with extensibility
+    // (No manual changes needed - wire format compatible)
+}
+```
+
+**Impact:** Binary compatible, no code changes required unless you manually construct `WriteResult`.
+
+---
+
+#### 3. Default Persistence Strategy
+
+**Old (v0.2.2):** Default = `MemFirst` (write to memory, async flush to disk)
+
+**New (v0.2.3):** Default = `DiskFirst` (Raft protocol compliance)
+
+**Migration:**
+
+If you want to restore v0.2.2 behavior, add to config:
+
+```toml
+[raft.persistence]
+persistence_strategy = "MemFirst"
+```
+
+⚠️ **Warning:** `MemFirst` trades durability for performance. Only use in scenarios where data loss is acceptable.
+
+---
+
+### Non-Breaking Changes
+
+- **CompareAndSwap (CAS)**: New atomic operation added
+- **Drain-based batching**: Performance improvements (no API changes)
+- **Client::refresh()**: New method for leader rediscovery
+
+---
+
+**Last Updated:** February 2026
