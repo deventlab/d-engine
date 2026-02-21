@@ -398,7 +398,8 @@ async fn test_parse_cluster_metadata_with_learner_nodes() {
 #[traced_test]
 async fn test_probe_endpoint_unreachable() {
     let config = ClientConfig::default();
-    let result = ConnectionPool::probe_endpoint("http://127.0.0.1:1", &config).await;
+    let budget = Duration::from_secs(5);
+    let result = ConnectionPool::probe_endpoint("http://127.0.0.1:1", &config, budget).await;
     assert!(result.is_none());
 }
 
@@ -428,7 +429,8 @@ async fn test_probe_endpoint_election_in_progress() {
 
     let config = ClientConfig::default();
     let addr = format!("http://localhost:{port}");
-    let result = ConnectionPool::probe_endpoint(&addr, &config).await;
+    let budget = Duration::from_secs(5);
+    let result = ConnectionPool::probe_endpoint(&addr, &config, budget).await;
     assert!(matches!(result, Some(Err(()))));
 }
 
@@ -517,4 +519,61 @@ async fn test_load_cluster_metadata_timeout() {
 
     let err = ConnectionPool::load_cluster_metadata(&endpoints, &config).await.unwrap_err();
     assert_eq!(err.code(), ErrorCode::ClusterUnavailable);
+}
+
+/// Test defensive error handling for inconsistent cluster metadata.
+/// Verifies that load_cluster_metadata retries and recovers when encountering
+/// invalid metadata (leader_id present but nodes list empty).
+///
+/// This tests the defensive `let Ok(...) else { warn!; continue }` pattern
+/// added in fix #282. Although probe_endpoint's ready check prevents this
+/// scenario (returns Err for empty nodes), this test validates the retry
+/// loop correctly handles transient inconsistent states and eventually succeeds.
+#[tokio::test]
+#[traced_test]
+async fn test_load_cluster_metadata_parse_failure_after_probe() {
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let call_count_clone = call_count.clone();
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (_channel, port) = MockNode::simulate_mock_service_with_cluster_conf_reps(
+        rx,
+        Some(Box::new(move |port| {
+            let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // First call: return invalid state (leader_id but empty nodes)
+                // probe_endpoint will return Err(()), triggering retry
+                Ok(ClusterMembership {
+                    version: 1,
+                    nodes: vec![],
+                    current_leader_id: Some(1),
+                })
+            } else {
+                // Second call: return valid cluster state
+                Ok(ClusterMembership {
+                    version: 1,
+                    nodes: vec![NodeMeta {
+                        id: 1,
+                        role: 0,
+                        address: format!("127.0.0.1:{port}"),
+                        status: NodeStatus::Active.into(),
+                    }],
+                    current_leader_id: Some(1),
+                })
+            }
+        })),
+    )
+    .await
+    .unwrap();
+
+    let config = ClientConfig::default();
+    let endpoints = vec![format!("http://localhost:{port}")];
+
+    // Should eventually succeed after retrying past the inconsistent state
+    let (membership, _conn) = ConnectionPool::load_cluster_metadata(&endpoints, &config)
+        .await
+        .expect("Should succeed after retrying past invalid state");
+
+    assert_eq!(membership.current_leader_id, Some(1));
+    assert_eq!(membership.nodes.len(), 1);
 }
