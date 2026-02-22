@@ -157,41 +157,47 @@ async fn test_select_fairness_drain_no_starvation() {
     let mut sorted_latencies = latencies.clone();
     sorted_latencies.sort();
 
-    if !sorted_latencies.is_empty() {
-        let p50_idx = sorted_latencies.len() / 2;
-        let p95_idx = (sorted_latencies.len() * 95) / 100;
-        let p99_idx = (sorted_latencies.len() * 99) / 100;
+    // Assert minimum samples before computing percentiles
+    assert!(
+        sorted_latencies.len() >= 10,
+        "Too few latency samples collected: {} (expected ≥ 10). \
+         Monitor task may have failed or reads timed out.",
+        sorted_latencies.len()
+    );
 
-        let p50 = sorted_latencies[p50_idx];
-        let p95 = sorted_latencies[p95_idx];
-        let p99 = sorted_latencies[p99_idx];
+    let p50_idx = sorted_latencies.len() / 2;
+    let p95_idx = (sorted_latencies.len() * 95) / 100;
+    let p99_idx = (sorted_latencies.len() * 99) / 100;
 
-        println!("Read latency p50: {p50:?}");
-        println!("Read latency p95: {p95:?}");
-        println!("Read latency p99: {p99:?}");
+    let p50 = sorted_latencies[p50_idx];
+    let p95 = sorted_latencies[p95_idx];
+    let p99 = sorted_latencies[p99_idx];
 
-        // Assertions: Verify no starvation
-        // Thresholds depend on environment:
-        // - Local: realistic for dev machines/VMs/containers (p99 < 50ms, p50 < 10ms)
-        // - CI: relaxed due to resource contention (p99 < 100ms, p50 < 50ms)
-        let is_ci = std::env::var("CI").is_ok();
+    println!("Read latency p50: {p50:?}");
+    println!("Read latency p95: {p95:?}");
+    println!("Read latency p99: {p99:?}");
 
-        let (p99_threshold, p50_threshold) = if is_ci {
-            (Duration::from_millis(100), Duration::from_millis(50))
-        } else {
-            (Duration::from_millis(50), Duration::from_millis(10))
-        };
+    // Assertions: Verify no starvation
+    // Thresholds depend on environment:
+    // - Local: realistic for dev machines/VMs/containers (p99 < 50ms, p50 < 10ms)
+    // - CI: relaxed due to resource contention (p99 < 100ms, p50 < 50ms)
+    let is_ci = std::env::var("CI").is_ok();
 
-        assert!(
-            p99 < p99_threshold,
-            "P99 latency too high: {p99:?} (threshold: {p99_threshold:?}, CI: {is_ci})"
-        );
+    let (p99_threshold, p50_threshold) = if is_ci {
+        (Duration::from_millis(100), Duration::from_millis(50))
+    } else {
+        (Duration::from_millis(50), Duration::from_millis(10))
+    };
 
-        assert!(
-            p50 < p50_threshold,
-            "P50 latency too high: {p50:?} (threshold: {p50_threshold:?}, CI: {is_ci})"
-        );
-    }
+    assert!(
+        p99 < p99_threshold,
+        "P99 latency too high: {p99:?} (threshold: {p99_threshold:?}, CI: {is_ci})"
+    );
+
+    assert!(
+        p50 < p50_threshold,
+        "P50 latency too high: {p50:?} (threshold: {p50_threshold:?}, CI: {is_ci})"
+    );
 
     // Verify cluster remained healthy (writes were processed)
     assert!(

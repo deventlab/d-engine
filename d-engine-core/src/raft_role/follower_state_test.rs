@@ -2282,7 +2282,7 @@ async fn test_follower_rejects_strong_consistency_reads() {
 
         assert!(result.is_ok(), "Should receive response from Follower");
 
-        // Verify: Response time < 1ms (immediate rejection)
+        // Verify: Response time < 10ms (immediate rejection)
         assert!(
             elapsed.as_millis() < 10,
             "Lease read rejection should be immediate, took {:?}ms",

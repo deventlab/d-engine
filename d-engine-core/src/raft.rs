@@ -350,9 +350,11 @@ where
 
         match role_event {
             RoleEvent::BecomeFollower(leader_id_option) => {
-                // Drain read buffer before stepping down (no-op for non-leader roles)
-                if let Err(e) = self.role.drain_read_buffer() {
-                    tracing::debug!("Skipped read buffer drain (non-leader role): {e:?}");
+                // Drain read buffer when stepping down from Leader; skip otherwise.
+                if self.role.is_leader() {
+                    if let Err(e) = self.role.drain_read_buffer() {
+                        warn!("Failed to drain read buffer during leader step-down: {e:?}");
+                    }
                 }
 
                 debug!("BecomeFollower");
@@ -371,9 +373,11 @@ where
                 //TODO: update membership
             }
             RoleEvent::BecomeCandidate => {
-                // Drain read buffer before stepping down (no-op for non-leader roles)
-                if let Err(e) = self.role.drain_read_buffer() {
-                    tracing::debug!("Skipped read buffer drain (non-leader role): {e:?}");
+                // Drain read buffer when stepping down from Leader; skip otherwise.
+                if self.role.is_leader() {
+                    if let Err(e) = self.role.drain_read_buffer() {
+                        warn!("Failed to drain read buffer during leader step-down: {e:?}");
+                    }
                 }
 
                 debug!("BecomeCandidate");
@@ -444,9 +448,11 @@ where
                 self.notify_role_transition();
             }
             RoleEvent::BecomeLearner => {
-                // Drain read buffer before stepping down (no-op for non-leader roles)
-                if let Err(e) = self.role.drain_read_buffer() {
-                    tracing::debug!("Skipped read buffer drain (non-leader role): {e:?}");
+                // Drain read buffer when stepping down from Leader; skip otherwise.
+                if self.role.is_leader() {
+                    if let Err(e) = self.role.drain_read_buffer() {
+                        warn!("Failed to drain read buffer during leader step-down: {e:?}");
+                    }
                 }
 
                 debug!("BecomeLearner");

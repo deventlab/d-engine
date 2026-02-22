@@ -303,30 +303,7 @@ async fn example(client: impl ClientApi) -> Result<(), ClientApiError> {
 
 ---
 
-#### 2. WriteResult Message Type
-
-**Old (v0.2.2):**
-
-```rust
-pub struct WriteResult {
-    pub succeeded: bool,  // Simple boolean
-}
-```
-
-**New (v0.2.3):**
-
-```rust
-pub struct WriteResult {
-    // Message type with extensibility
-    // (No manual changes needed - wire format compatible)
-}
-```
-
-**Impact:** Binary compatible, no code changes required unless you manually construct `WriteResult`.
-
----
-
-#### 3. Default Persistence Strategy
+#### 2. Default Persistence Strategy
 
 **Old (v0.2.2):** Default = `MemFirst` (write to memory, async flush to disk)
 

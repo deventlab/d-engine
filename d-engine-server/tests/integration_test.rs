@@ -4,6 +4,7 @@ mod cas_operations;
 #[cfg(feature = "rocksdb")]
 mod cluster_lifecycle;
 mod cluster_membership;
+#[cfg(feature = "rocksdb")]
 mod cluster_state_and_metadata;
 mod common;
 #[cfg(feature = "rocksdb")]
@@ -12,6 +13,7 @@ mod consistent_reads;
 mod drain_batching;
 #[cfg(feature = "rocksdb")]
 mod embedded_client;
+#[cfg(feature = "rocksdb")]
 mod failover_and_recovery;
 mod leader_election;
 mod replication_and_sync;

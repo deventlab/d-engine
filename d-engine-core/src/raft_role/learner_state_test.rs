@@ -1489,7 +1489,7 @@ async fn test_learner_serves_eventual_read_locally() {
 
     assert!(result.is_ok(), "Eventual read should return response");
 
-    // Verify: Latency < 2ms
+    // Verify: Latency < 10ms
     assert!(
         elapsed.as_millis() < 10,
         "Eventual read latency should be <10ms, got {:?}ms",
