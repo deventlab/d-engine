@@ -217,4 +217,4 @@ make start-cluster
 
 Historical benchmark reports are available for reference:
 
-- [v0.2.3 Benchmark Report](../../../benches/reports/v0.2.3/bench_report_v0.2.3.md) (Embedded & Standalone)
+- [v0.2.3 Benchmark Report](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3/bench_report_v0.2.3.md) (Embedded & Standalone)

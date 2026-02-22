@@ -155,7 +155,7 @@ tonic::transport::Server::builder()
 > **Key improvement**: 15% reduction in tail latency - critical for consensus stability  
 > **Note**: These metrics show the impact of connection pooling optimization. These results can be further improved by tuning the PersistenceStrategy for your specific workload.
 >
-> For absolute performance benchmarks, see [v0.2.3 Performance Report](../../../benches/reports/v0.2.3/bench_report_v0.2.3.md)
+> For absolute performance benchmarks, see [v0.2.3 Performance Report](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3/bench_report_v0.2.3.md)
 
 ## Operational Recommendations
 

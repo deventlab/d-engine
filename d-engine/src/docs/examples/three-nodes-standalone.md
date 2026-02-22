@@ -2,7 +2,7 @@
 
 ## Overview
 
-This example demonstrates a **production-ready three-node d-engine cluster** with automatic failover and data replication. All benchmark data in [benches/standalone-bench/reports/](../../../../benches/standalone-bench/reports/) is generated using this configuration.
+This example demonstrates a **production-ready three-node d-engine cluster** with automatic failover and data replication. All benchmark data in [benches/reports/v0.2.3/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) is generated using this configuration.
 
 **Key characteristics:**
 
