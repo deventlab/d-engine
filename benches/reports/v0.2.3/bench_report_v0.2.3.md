@@ -7,7 +7,7 @@
 
 **Test Dates**:
 
-- **Local v0.2.3 vs v0.2.2**: February 18, 2026 (3-round average)
+- **Local v0.2.3 vs v0.2.2**: February 22, 2026 (4-round average)
 - **AWS v0.2.3**: February 22, 2026 (6-round embedded, 7-round standalone)
 
 **Key/Value**: 8 bytes / 256 bytes
@@ -20,24 +20,24 @@
 
 | **Scenario**        | **Metric**  | **v0.2.2**    | **v0.2.3**    | **Δ**         |
 | ------------------- | ----------- | ------------- | ------------- | ------------- |
-| Single Client Write | Throughput  | 441 ops/s     | 10,112 ops/s  | **+22.9x** ✅ |
-|                     | Avg Latency | 2.26 ms       | 0.098 ms      | **-95.7%** ✅ |
-|                     | p99 Latency | 3.31 ms       | 0.138 ms      | **-95.8%** ✅ |
-| High Conc. Write    | Throughput  | 202,658 ops/s | 176,839 ops/s | -12.7%        |
-|                     | Avg Latency | 0.49 ms       | 0.56 ms       | +14%          |
-|                     | p99 Latency | 1.16 ms       | 1.88 ms       | +62%          |
-| Linearizable Read   | Throughput  | 279,442 ops/s | 536,571 ops/s | **+92%** ✅   |
-|                     | Avg Latency | 0.36 ms       | 0.185 ms      | **-49%** ✅   |
-|                     | p99 Latency | 0.91 ms       | 0.537 ms      | **-41%** ✅   |
-| Lease Read          | Throughput  | 492,252 ops/s | 797,970 ops/s | **+62%** ✅   |
-|                     | Avg Latency | 0.20 ms       | 0.125 ms      | **-38%** ✅   |
-|                     | p99 Latency | 0.50 ms       | 0.343 ms      | **-31%** ✅   |
-| Eventual Read       | Throughput  | 501,721 ops/s | 819,096 ops/s | **+63%** ✅   |
-|                     | Avg Latency | 0.20 ms       | 0.121 ms      | **-40%** ✅   |
-|                     | p99 Latency | 0.48 ms       | 0.392 ms      | **-18%** ✅   |
-| Hot-Key (10 keys)   | Throughput  | 305,695 ops/s | 522,914 ops/s | **+71%** ✅   |
-|                     | Avg Latency | 0.33 ms       | 0.191 ms      | **-42%** ✅   |
-|                     | p99 Latency | 0.77 ms       | 0.617 ms      | **-20%** ✅   |
+| Single Client Write | Throughput  | 441 ops/s     | 10,075 ops/s  | **+22.8x** ✅ |
+|                     | Avg Latency | 2.26 ms       | 0.099 ms      | **-95.6%** ✅ |
+|                     | p99 Latency | 3.31 ms       | 0.139 ms      | **-95.8%** ✅ |
+| High Conc. Write    | Throughput  | 202,658 ops/s | 176,314 ops/s | -13.0%        |
+|                     | Avg Latency | 0.49 ms       | 0.566 ms      | +16%          |
+|                     | p99 Latency | 1.16 ms       | 1.566 ms      | +35%          |
+| Linearizable Read   | Throughput  | 279,442 ops/s | 508,264 ops/s | **+82%** ✅   |
+|                     | Avg Latency | 0.36 ms       | 0.197 ms      | **-45%** ✅   |
+|                     | p99 Latency | 0.91 ms       | 0.710 ms      | **-22%** ✅   |
+| Lease Read          | Throughput  | 492,252 ops/s | 852,027 ops/s | **+73%** ✅   |
+|                     | Avg Latency | 0.20 ms       | 0.116 ms      | **-42%** ✅   |
+|                     | p99 Latency | 0.50 ms       | 0.342 ms      | **-32%** ✅   |
+| Eventual Read       | Throughput  | 501,721 ops/s | 859,214 ops/s | **+71%** ✅   |
+|                     | Avg Latency | 0.20 ms       | 0.115 ms      | **-42%** ✅   |
+|                     | p99 Latency | 0.48 ms       | 0.382 ms      | **-20%** ✅   |
+| Hot-Key (10 keys)   | Throughput  | 305,695 ops/s | 499,527 ops/s | **+63%** ✅   |
+|                     | Avg Latency | 0.33 ms       | 0.205 ms      | **-38%** ✅   |
+|                     | p99 Latency | 0.77 ms       | 0.638 ms      | **-17%** ✅   |
 
 ---
 
