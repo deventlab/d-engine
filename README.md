@@ -94,7 +94,7 @@ d-engine = "0.2"
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
-> **Performance note**: Embedded mode delivers exceptional performance - **4.6x higher write throughput** and **2.1x faster linearizable reads** vs etcd 3.2 (AWS EC2 3-node cluster). Achieves 64K writes/sec and 181K linearizable reads/sec under high concurrency. See [benches/reports/v0.2.3/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) for detailed benchmarks.
+> **Performance note**: Embedded mode on AWS EC2 3-node cluster achieves **64K writes/sec** and **181K linearizable reads/sec** under high concurrency, with sub-millisecond latency. See [benches/reports/v0.2.3/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) for detailed benchmarks.
 
 **→ Examples:**
 

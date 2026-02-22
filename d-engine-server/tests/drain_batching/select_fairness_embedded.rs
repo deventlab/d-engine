@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use d_engine_server::EmbeddedEngine;
 use tempfile::TempDir;
+use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 use crate::common::get_available_ports;
@@ -87,10 +88,13 @@ async fn test_select_fairness_drain_no_starvation() {
     // Spawn concurrent writer tasks to saturate command channel and trigger drain batching
     const NUM_WRITERS: usize = 8;
     let mut writer_handles = Vec::new();
+    let mut semaphores = Vec::new();
 
     for writer_id in 0..NUM_WRITERS {
         let client = engine.client();
         let write_count_clone = write_count.clone();
+        let sem = Arc::new(Semaphore::new(32)); // cap concurrent in-flight puts per writer
+        semaphores.push(sem.clone()); // save reference for cleanup
 
         let handle = tokio::spawn(async move {
             let mut i = 0u64;
@@ -102,9 +106,11 @@ async fn test_select_fairness_drain_no_starvation() {
                     let value = format!("value_{i}");
                     let client_clone = client.clone();
                     let write_count_clone = write_count_clone.clone();
+                    let permit = sem.clone().acquire_owned().await.unwrap();
 
                     // Spawn background task to handle response
                     tokio::spawn(async move {
+                        let _permit = permit; // released on drop
                         if client_clone.put(key.as_bytes(), value.as_bytes()).await.is_ok() {
                             write_count_clone.fetch_add(1, Ordering::Relaxed);
                         }
@@ -152,9 +158,15 @@ async fn test_select_fairness_drain_no_starvation() {
     // Run test for 3 seconds
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // Stop all writer tasks
-    for handle in writer_handles {
+    // Stop all writer tasks (prevents new requests)
+    for handle in &writer_handles {
         handle.abort();
+    }
+
+    // Drain all in-flight requests before tearing down engine
+    // Acquire all permits to ensure all inner spawned tasks have completed
+    for sem in &semaphores {
+        let _ = sem.acquire_many(32).await;
     }
 
     // Wait for monitor to finish
