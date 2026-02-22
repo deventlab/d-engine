@@ -1330,3 +1330,138 @@ async fn test_verify_internal_quorum_critical_failure() {
         Error::Fatal(msg) if msg == "Storage failure"
     ));
 }
+
+// ============================================================================
+// Regression Tests for Bug #268
+// ============================================================================
+
+/// Test execute_and_process_raft_rpc with multi-node cluster and empty peer_updates
+///
+/// # Regression Test for Bug #186 / #268
+/// Verifies that multi-node cluster does NOT use single-node logic when peer_updates is empty.
+/// Empty peer_updates (all peers timeout) should still calculate commit_index via
+/// calculate_majority_matched_index, not via last_entry_id.
+///
+/// # Test Scenario
+/// Multi-node cluster (3 nodes), all peers timeout (peer_updates={}),
+/// commit_index must be calculated via majority logic, not single-node logic.
+///
+/// # Given
+/// - 3-node cluster (leader + 2 peers)
+/// - All peers timeout → peer_updates = {}
+/// - Mock: last_entry_id() returns 10 (single-node path)
+/// - Mock: calculate_majority_matched_index() returns 6 (multi-node path)
+///
+/// # When
+/// - execute_and_process_raft_rpc is called via unified_write_and_linear_read
+///
+/// # Then
+/// - Commit index = 6 (from calculate_majority_matched_index)
+/// - NOT 10 (from last_entry_id, which would be wrong for multi-node)
+#[tokio::test]
+#[traced_test]
+async fn test_execute_and_process_raft_rpc_multi_node_empty_peer_updates() {
+    let (_graceful_tx, _graceful_rx) = watch::channel(());
+    let mut context = setup_commit_index_test_context(
+        "/tmp/test_execute_and_process_raft_rpc_multi_node_empty_peer_updates",
+        false, // multi-node cluster
+    )
+    .await;
+
+    // Mock replication: quorum achieved but peer_updates empty (all timeouts)
+    context
+        .raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_raft_request_in_batch()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(AppendResults {
+                commit_quorum_achieved: true,
+                peer_updates: HashMap::new(), // ← Empty! All peers timeout
+                learner_progress: HashMap::new(),
+            })
+        });
+
+    let mut raft_log = MockRaftLog::new();
+    // Sentinel values to detect code path:
+    // - Single-node path (WRONG): last_entry_id() → 10
+    // - Multi-node path (CORRECT): calculate_majority_matched_index() → 6
+    raft_log.expect_last_entry_id().returning(|| 10);
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(6));
+    context.raft_context.storage.raft_log = Arc::new(raft_log);
+
+    // Use process_batch directly (simpler than unified_write_and_linear_read)
+    let (tx_write, mut rx_write) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
+    let batch = VecDeque::from(vec![mock_request(tx_write)]);
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
+
+    assert!(result.is_ok());
+    assert_eq!(
+        context.state.shared_state().commit_index,
+        6,
+        "Multi-node cluster with empty peer_updates must use calculate_majority_matched_index (6), not last_entry_id (10)"
+    );
+    assert!(matches!(
+        role_rx.try_recv(),
+        Ok(RoleEvent::NotifyNewCommitIndex(_))
+    ));
+
+    // Write request should succeed
+    let response = rx_write.recv().await.unwrap().unwrap();
+    assert!(response.is_write_success());
+}
+
+/// Test merge_batch_to_write_metadata with empty payload but non-empty senders
+///
+/// # Regression Test for Bug #268
+/// Verifies that merge_batch_to_write_metadata does NOT discard senders when payloads is empty.
+/// This scenario occurs during quorum verification (verify_internal_quorum) where Leader sends
+/// empty payload but needs response channel to wait for quorum result.
+///
+/// # Test Scenario
+/// Internal quorum check: payloads=[] but senders=[channel] (Leader waiting for quorum response)
+///
+/// # Given
+/// - RaftRequestWithSignal with payloads=[] and senders=[sender]
+///
+/// # When
+/// - merge_batch_to_write_metadata is called
+///
+/// # Then
+/// - Returns Some(WriteMetadata) with the sender intact
+/// - NOT None (which would discard the sender and cause channel leak)
+#[tokio::test]
+#[traced_test]
+async fn test_merge_batch_to_write_metadata_empty_payload_with_senders() {
+    use crate::raft_role::leader_state::LeaderState;
+
+    // Create a sender to simulate internal quorum check
+    let (tx, _rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
+
+    // Simulate verify_internal_quorum scenario: empty payload, non-empty sender
+    let batch = vec![RaftRequestWithSignal {
+        id: nanoid!(),
+        payloads: vec![],  // ← Empty payload (quorum check doesn't write logs)
+        senders: vec![tx], // ← Non-empty sender (Leader needs response)
+        wait_for_apply_event: false,
+    }];
+
+    let start_idx = 100;
+    let (payloads, metadata) =
+        LeaderState::<MockTypeConfig>::merge_batch_to_write_metadata(batch.into_iter(), start_idx);
+
+    // Verify results
+    assert!(payloads.is_empty(), "Payloads should be empty");
+    assert!(
+        metadata.is_some(),
+        "WriteMetadata must NOT be None even when payloads is empty"
+    );
+
+    let (idx, senders, wait_for_apply) = metadata.unwrap();
+    assert_eq!(idx, start_idx);
+    assert_eq!(senders.len(), 1, "Sender must be preserved");
+    assert!(!wait_for_apply);
+}

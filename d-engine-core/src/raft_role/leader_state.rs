@@ -798,6 +798,20 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
         }
 
+        // Drain write buffer (propose_buffer)
+        if !self.propose_buffer.is_empty() {
+            warn!(
+                "Write batch: draining {} pending write requests due to role change",
+                self.propose_buffer.len()
+            );
+
+            if let Some(batch) = self.propose_buffer.flush() {
+                for sender in batch.senders {
+                    let _ = sender.send(Err(tonic::Status::failed_precondition("Not leader")));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1123,12 +1137,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         RaftEvent::AppendEntries(append_entries_request, sender),
                     )?;
                 }
-            }
-
-            RaftEvent::FlushReadBuffer => {
-
-                // Legacy event - now handled by flush_cmd_buffers in tick
-                // Keep for backward compatibility but it's a no-op
             }
 
             RaftEvent::InstallSnapshotChunk(_streaming, sender) => {
@@ -2459,7 +2467,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// OR-combines wait_for_apply flags: if any request needs apply confirmation, all wait.
     /// This is safe because in practice all requests in a batch share the same flag
     /// (writes always true, noop/config always false — never mixed).
-    fn merge_batch_to_write_metadata(
+    pub(super) fn merge_batch_to_write_metadata(
         batch: impl IntoIterator<Item = RaftRequestWithSignal>,
         start_idx: u64,
     ) -> (Vec<EntryPayload>, Option<WriteMetadata>) {
@@ -2914,7 +2922,7 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Unified write + linearizable read: single RPC for both (2*RTT → 1*RTT).
     ///
     /// Safety: write quorum verification also confirms leadership for reads (Raft §6.4).
-    async fn unified_write_and_linear_read(
+    pub(super) async fn unified_write_and_linear_read(
         &mut self,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,

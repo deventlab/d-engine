@@ -27,3 +27,6 @@ mod fatal_error_test;
 
 #[cfg(test)]
 mod backpressure_test;
+
+#[cfg(test)]
+mod buffer_cleanup_test;

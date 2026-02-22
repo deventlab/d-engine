@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::{Candidate, Follower, Leader, Learner};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
@@ -39,18 +39,15 @@ fn is_follower(role_i32: i32) -> bool {
 }
 
 fn is_candidate(role_i32: i32) -> bool {
-    // CANDIDATE = 1
-    role_i32 == 1
+    role_i32 == Candidate as i32
 }
 
 fn is_leader(role_i32: i32) -> bool {
-    // LEADER = 2
-    role_i32 == 2
+    role_i32 == Leader as i32
 }
 
 fn is_learner(role_i32: i32) -> bool {
-    // LEARNER = 3
-    role_i32 == 3
+    role_i32 == Learner as i32
 }
 
 // Helper function from server tests

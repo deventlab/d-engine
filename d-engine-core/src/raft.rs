@@ -350,10 +350,8 @@ where
 
         match role_event {
             RoleEvent::BecomeFollower(leader_id_option) => {
-                // Drain read buffer before stepping down
-                if let Err(e) = self.role.drain_read_buffer() {
-                    tracing::warn!("Failed to drain read buffer during role transition: {e:?}");
-                }
+                // Drain read buffer when stepping down from Leader; skip otherwise.
+                let _ = self.role.drain_read_buffer();
 
                 debug!("BecomeFollower");
                 self.role = self.role.become_follower()?;
@@ -371,10 +369,8 @@ where
                 //TODO: update membership
             }
             RoleEvent::BecomeCandidate => {
-                // Drain read buffer before stepping down
-                if let Err(e) = self.role.drain_read_buffer() {
-                    tracing::warn!("Failed to drain read buffer during role transition: {e:?}");
-                }
+                // Drain read buffer when stepping down from Leader; skip otherwise.
+                let _ = self.role.drain_read_buffer();
 
                 debug!("BecomeCandidate");
                 self.role = self.role.become_candidate()?;
@@ -444,10 +440,8 @@ where
                 self.notify_role_transition();
             }
             RoleEvent::BecomeLearner => {
-                // Drain read buffer before stepping down
-                if let Err(e) = self.role.drain_read_buffer() {
-                    tracing::warn!("Failed to drain read buffer during role transition: {e:?}");
-                }
+                // Drain read buffer when stepping down from Leader; skip otherwise.
+                let _ = self.role.drain_read_buffer();
 
                 debug!("BecomeLearner");
                 self.role = self.role.become_learner()?;

@@ -1,21 +1,21 @@
 syntax = "proto3";
 package d_engine.server.replication;
 
-option go_package = "github.com/deventlab/d-engine/proto/server/replication";
-
 import "proto/common.proto";
+
+option go_package = "github.com/deventlab/d-engine/proto/server/replication";
 
 message AppendEntriesRequest {
   uint64 term = 1;
-  uint32 leaderId = 2;
-  uint64 prevLogIndex = 3;
-  uint64 prevLogTerm = 4;
-  repeated common.Entry entries = 5;
-  uint64 leaderCommitIndex = 6;
+  uint32 leader_id = 2;
+  uint64 prev_log_index = 3;
+  uint64 prev_log_term = 4;
+  repeated d_engine.common.Entry entries = 5;
+  uint64 leader_commit_index = 6;
 }
 
 message AppendEntriesResponse {
-  uint32 nodeId = 1;
+  uint32 node_id = 1;
   uint64 term = 2;
   oneof result {
     SuccessResult success = 3;
@@ -34,5 +34,5 @@ message ConflictResult {
 }
 
 service RaftReplicationService {
-  rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse);
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
 }

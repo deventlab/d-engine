@@ -14,7 +14,7 @@ impl ClusterConfUpdateResponse {
             term,
             version,
             success: true,
-            error_code: ErrorCode::None.into(),
+            error_code: ErrorCode::Unspecified.into(),
         }
     }
 

@@ -29,8 +29,8 @@ db_root_dir = "{}"
 [[cluster.initial_cluster]]
 id = 1
 address = "127.0.0.1:0"
-role = 2
-status = 2
+role = 3
+status = 3
 "#,
         db_path.display()
     )

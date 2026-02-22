@@ -23,6 +23,7 @@ use crate::ConsensusError;
 use crate::ElectionError;
 use crate::Error;
 use crate::MaybeCloneOneshot;
+use crate::MockBuilder;
 use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockReplicationCore;
@@ -39,46 +40,6 @@ use crate::test_utils::mock::mock_election_core;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::node_config;
 use tokio::sync::{mpsc, watch};
-
-/// Test: CandidateState rejects FlushReadBuffer event
-///
-/// Scenario: Candidate node receives FlushReadBuffer event
-/// Expected: Returns RoleViolation error (only Leader can handle this event)
-#[tokio::test]
-async fn test_candidate_rejects_flush_read_buffer_event() {
-    let (shutdown_tx, shutdown_rx) = watch::channel(());
-    let ctx = mock_raft_context("/tmp/test_candidate_flush", shutdown_rx, None);
-    let mut state = CandidateState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle FlushReadBuffer event
-    let result = state.handle_raft_event(RaftEvent::FlushReadBuffer, &ctx, role_tx.clone()).await;
-
-    // Verify: Returns RoleViolation error
-    assert!(
-        result.is_err(),
-        "Candidate should reject FlushReadBuffer event"
-    );
-
-    if let Err(e) = result {
-        let error_str = format!("{e:?}");
-        assert!(
-            error_str.contains("RoleViolation"),
-            "Error should be RoleViolation, got: {error_str}"
-        );
-        assert!(
-            error_str.contains("Candidate"),
-            "Error should mention Candidate role"
-        );
-        assert!(
-            error_str.contains("Leader"),
-            "Error should mention Leader as required role"
-        );
-    }
-
-    drop(shutdown_tx);
-}
 
 /// Test: CandidateState can_vote_myself returns true for new candidate
 ///
@@ -505,7 +466,7 @@ async fn test_handle_cluster_conf_metadata_request() {
 ///
 /// Expected:
 /// - Returns success response
-/// - error_code is None
+/// - error_code is Unspecified
 ///
 /// This validates that Candidate can apply configuration changes from leader.
 ///
@@ -527,7 +488,7 @@ async fn test_handle_cluster_conf_update_success() {
                 term: 1,
                 version: 1,
                 success: true,
-                error_code: cluster_conf_update_response::ErrorCode::None.into(),
+                error_code: cluster_conf_update_response::ErrorCode::Unspecified.into(),
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
@@ -559,7 +520,7 @@ async fn test_handle_cluster_conf_update_success() {
     assert!(response.success, "Update should succeed");
     assert_eq!(
         response.error_code,
-        cluster_conf_update_response::ErrorCode::None as i32,
+        cluster_conf_update_response::ErrorCode::Unspecified as i32,
         "Should have no error"
     );
 }
@@ -1072,4 +1033,102 @@ async fn test_candidate_handles_fatal_error_returns_error() {
         role_rx.try_recv().is_err(),
         "No role transition events should be sent during FatalError handling"
     );
+}
+
+// ============================================================================
+// Role-Specific Behavior Tests
+// ============================================================================
+
+/// Candidate to Leader - Buffer Initialization
+///
+/// **Objective**: Verify clean buffer state when Candidate becomes Leader
+///
+/// **Scenario**:
+/// - Candidate wins election
+/// - Transitions to Leader
+/// - Immediately sends write request
+///
+/// **Expected**:
+/// - New Leader initializes empty buffers
+/// - First write request accepted
+/// - Drain → flush works correctly
+/// - No stale data from Candidate state
+#[tokio::test]
+async fn test_new_leader_initializes_empty_buffers() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    // Setup mocks
+    let mut raft_log = crate::MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_append_entries().returning(|_| Ok(()));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+
+    let mut replication_handler = crate::MockReplicationCore::new();
+    replication_handler
+        .expect_handle_raft_request_in_batch()
+        .returning(|_, _, _, _, _| {
+            Ok(crate::AppendResults {
+                commit_quorum_achieved: true,
+                learner_progress: std::collections::HashMap::new(),
+                peer_updates: std::collections::HashMap::new(),
+            })
+        });
+
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_handler;
+
+    // Transition to Candidate
+    raft.handle_role_event(crate::RoleEvent::BecomeCandidate)
+        .await
+        .expect("Should become Candidate");
+
+    // Transition to Leader (Candidate wins election)
+    raft.handle_role_event(crate::RoleEvent::BecomeLeader)
+        .await
+        .expect("Should become Leader");
+
+    // Verify: Leader role is active
+    assert!(
+        matches!(raft.role, crate::RaftRole::Leader(_)),
+        "Should be in Leader state"
+    );
+
+    // Send first write request to new Leader
+    if let crate::RaftRole::Leader(ref mut leader) = raft.role {
+        let (response_tx, _response_rx) = crate::MaybeCloneOneshot::new();
+        let write_cmd = d_engine_proto::client::WriteCommand {
+            operation: Some(d_engine_proto::client::write_command::Operation::Insert(
+                d_engine_proto::client::write_command::Insert {
+                    key: bytes::Bytes::from("first_key"),
+                    value: bytes::Bytes::from("first_value"),
+                    ttl_secs: 0,
+                },
+            )),
+        };
+        let write_req = d_engine_proto::client::ClientWriteRequest {
+            client_id: 1,
+            command: Some(write_cmd),
+        };
+
+        let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+
+        // Push command to buffer (should work on new Leader)
+        leader.push_client_cmd(cmd, &raft.ctx);
+
+        // Flush buffers (verify drain → flush works)
+        let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = leader.flush_cmd_buffers(&raft.ctx, &role_tx).await;
+
+        // Verify: Flush succeeds
+        assert!(
+            result.is_ok(),
+            "New Leader should successfully flush buffers, got: {result:?}"
+        );
+    } else {
+        panic!("Expected Leader state after BecomeLeader");
+    }
 }

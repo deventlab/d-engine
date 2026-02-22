@@ -137,10 +137,6 @@ pub enum RaftEvent {
         error: String,  // Error message
     },
 
-    /// Signal to flush pending read requests
-    /// Sent by timeout task when read buffer reaches time threshold
-    FlushReadBuffer,
-
     /// State machine apply completed
     /// Sent by CommitHandler after applying entries to state machine
     /// Contains results for each applied entry (e.g., CAS success/failure)
@@ -192,8 +188,6 @@ pub enum TestEvent {
         error: String,
     },
 
-    FlushReadBuffer,
-
     ApplyCompleted {
         last_index: u64,
         results: Vec<ApplyResult>,
@@ -231,7 +225,6 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
             source: source.clone(),
             error: error.clone(),
         },
-        RaftEvent::FlushReadBuffer => TestEvent::FlushReadBuffer,
         RaftEvent::ApplyCompleted {
             last_index,
             results,

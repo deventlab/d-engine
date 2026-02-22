@@ -283,10 +283,10 @@ impl<T: TypeConfig> RaftRole<T> {
     #[inline]
     pub fn as_i32(&self) -> i32 {
         match self {
-            RaftRole::Follower(_) => 0,
-            RaftRole::Candidate(_) => 1,
-            RaftRole::Leader(_) => 2,
-            RaftRole::Learner(_) => 3,
+            RaftRole::Follower(_) => d_engine_proto::common::NodeRole::Follower as i32,
+            RaftRole::Candidate(_) => d_engine_proto::common::NodeRole::Candidate as i32,
+            RaftRole::Leader(_) => d_engine_proto::common::NodeRole::Leader as i32,
+            RaftRole::Learner(_) => d_engine_proto::common::NodeRole::Learner as i32,
         }
     }
 

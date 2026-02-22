@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::MetadataRequest;
@@ -160,9 +162,7 @@ impl ConnectionPool {
         // so the retry loop can move to the next endpoint without burning the
         // cluster_ready_timeout budget on TCP handshake waits.
         const MAX_PROBE_CONNECT_MS: u64 = 500;
-        let probe_timeout = config
-            .connect_timeout
-            .min(std::time::Duration::from_millis(MAX_PROBE_CONNECT_MS));
+        let probe_timeout = config.connect_timeout.min(Duration::from_millis(MAX_PROBE_CONNECT_MS));
         let channel = Endpoint::try_from(addr.to_string())
             .ok()?
             .connect_timeout(probe_timeout)
@@ -221,16 +221,28 @@ impl ConnectionPool {
                 if tokio::time::Instant::now() >= deadline {
                     return Err(ErrorCode::ClusterUnavailable.into());
                 }
+
                 let membership = match Self::probe_endpoint(addr, config).await {
                     Some(Ok(m)) => m,
                     Some(Err(())) => continue, // election in progress — try next
                     None => continue,          // node unreachable — try next
                 };
 
+                // Check deadline after probe to prevent overshoot
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(ErrorCode::ClusterUnavailable.into());
+                }
+
                 // Probe succeeded: try to establish leader channel in the same step.
                 // If connect fails (leader crashed between probe and connect), continue
                 // to next endpoint — do NOT return error (shared deadline handles timeout).
-                let (leader_addr, _) = Self::parse_cluster_metadata(&membership)?;
+                let Ok((leader_addr, _)) = Self::parse_cluster_metadata(&membership) else {
+                    // This should be unreachable: probe_endpoint already verified ready state
+                    tracing::warn!(
+                        "parse_cluster_metadata failed after successful probe for {addr}, this is a bug"
+                    );
+                    continue;
+                };
                 match Self::create_channel(leader_addr, config).await {
                     Ok(leader_conn) => return Ok((membership, leader_conn)),
                     Err(e) => {
@@ -245,7 +257,7 @@ impl ConnectionPool {
             if remaining.is_zero() {
                 return Err(ErrorCode::ClusterUnavailable.into());
             }
-            let backoff = std::time::Duration::from_millis(RETRY_BACKOFF_MS).min(remaining);
+            let backoff = Duration::from_millis(RETRY_BACKOFF_MS).min(remaining);
             debug!(
                 "load_cluster_metadata: no ready leader found, retrying in {:?}",
                 backoff

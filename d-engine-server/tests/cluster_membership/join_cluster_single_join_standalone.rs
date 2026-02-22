@@ -68,7 +68,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     // Create cluster node definitions with dynamic ports
     let initial_cluster_nodes: Vec<(u16, u8, u8)> = initial_ports
         .iter()
-        .map(|&port| (port, 1, 2)) // (port, role, status)
+        .map(|&port| (port, 1, 3)) // (port, role, status)
         .collect();
 
     // Start initial cluster nodes
@@ -151,8 +151,8 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     // Create cluster definition including the new node
     let full_cluster_nodes: Vec<(u16, u8, u8)> = initial_ports
         .iter()
-        .map(|&port| (port, 1, 2))
-        .chain(std::iter::once((new_node_port, 3, 0))) // New node as learner
+        .map(|&port| (port, 2, 3))
+        .chain(std::iter::once((new_node_port, 4, 1))) // New node as learner
         .collect();
 
     // Start new node and join it to the cluster

@@ -24,24 +24,29 @@ const (
 type NodeStatus int32
 
 const (
+	// Zero value: unspecified/default state (buf lint: ENUM_ZERO_VALUE_SUFFIX)
+	// Nodes in this state should explicitly set their status before joining cluster
+	NodeStatus_NODE_STATUS_UNSPECIFIED NodeStatus = 0
 	// Learner states
-	NodeStatus_PROMOTABLE NodeStatus = 0 // Learner that CAN be promoted to voter
-	NodeStatus_READ_ONLY  NodeStatus = 1 // Learner that will NEVER be promoted (permanent analytics node)
+	NodeStatus_NODE_STATUS_PROMOTABLE NodeStatus = 1 // Learner that CAN be promoted to voter
+	NodeStatus_NODE_STATUS_READ_ONLY  NodeStatus = 2 // Learner that will NEVER be promoted (permanent analytics node)
 	// Voter state
-	NodeStatus_ACTIVE NodeStatus = 2 // Voting member (Follower, Candidate, or Leader)
+	NodeStatus_NODE_STATUS_ACTIVE NodeStatus = 3 // Voting member (Follower, Candidate, or Leader)
 )
 
 // Enum value maps for NodeStatus.
 var (
 	NodeStatus_name = map[int32]string{
-		0: "PROMOTABLE",
-		1: "READ_ONLY",
-		2: "ACTIVE",
+		0: "NODE_STATUS_UNSPECIFIED",
+		1: "NODE_STATUS_PROMOTABLE",
+		2: "NODE_STATUS_READ_ONLY",
+		3: "NODE_STATUS_ACTIVE",
 	}
 	NodeStatus_value = map[string]int32{
-		"PROMOTABLE": 0,
-		"READ_ONLY":  1,
-		"ACTIVE":     2,
+		"NODE_STATUS_UNSPECIFIED": 0,
+		"NODE_STATUS_PROMOTABLE":  1,
+		"NODE_STATUS_READ_ONLY":   2,
+		"NODE_STATUS_ACTIVE":      3,
 	}
 )
 
@@ -75,25 +80,28 @@ func (NodeStatus) EnumDescriptor() ([]byte, []int) {
 type NodeRole int32
 
 const (
-	NodeRole_FOLLOWER  NodeRole = 0
-	NodeRole_CANDIDATE NodeRole = 1
-	NodeRole_LEADER    NodeRole = 2
-	NodeRole_LEARNER   NodeRole = 3
+	NodeRole_NODE_ROLE_UNSPECIFIED NodeRole = 0
+	NodeRole_NODE_ROLE_FOLLOWER    NodeRole = 1
+	NodeRole_NODE_ROLE_CANDIDATE   NodeRole = 2
+	NodeRole_NODE_ROLE_LEADER      NodeRole = 3
+	NodeRole_NODE_ROLE_LEARNER     NodeRole = 4
 )
 
 // Enum value maps for NodeRole.
 var (
 	NodeRole_name = map[int32]string{
-		0: "FOLLOWER",
-		1: "CANDIDATE",
-		2: "LEADER",
-		3: "LEARNER",
+		0: "NODE_ROLE_UNSPECIFIED",
+		1: "NODE_ROLE_FOLLOWER",
+		2: "NODE_ROLE_CANDIDATE",
+		3: "NODE_ROLE_LEADER",
+		4: "NODE_ROLE_LEARNER",
 	}
 	NodeRole_value = map[string]int32{
-		"FOLLOWER":  0,
-		"CANDIDATE": 1,
-		"LEADER":    2,
-		"LEARNER":   3,
+		"NODE_ROLE_UNSPECIFIED": 0,
+		"NODE_ROLE_FOLLOWER":    1,
+		"NODE_ROLE_CANDIDATE":   2,
+		"NODE_ROLE_LEADER":      3,
+		"NODE_ROLE_LEARNER":     4,
 	}
 )
 
@@ -562,7 +570,7 @@ func (x *AddNode) GetStatus() NodeStatus {
 	if x != nil {
 		return x.Status
 	}
-	return NodeStatus_PROMOTABLE
+	return NodeStatus_NODE_STATUS_UNSPECIFIED
 }
 
 type RemoveNode struct {
@@ -658,7 +666,7 @@ func (x *PromoteLearner) GetStatus() NodeStatus {
 	if x != nil {
 		return x.Status
 	}
-	return NodeStatus_PROMOTABLE
+	return NodeStatus_NODE_STATUS_UNSPECIFIED
 }
 
 type BatchPromote struct {
@@ -710,7 +718,7 @@ func (x *BatchPromote) GetNewStatus() NodeStatus {
 	if x != nil {
 		return x.NewStatus
 	}
-	return NodeStatus_PROMOTABLE
+	return NodeStatus_NODE_STATUS_UNSPECIFIED
 }
 
 type BatchRemove struct {
@@ -811,12 +819,12 @@ func (x *SnapshotEntry) GetValue() []byte {
 
 type SnapshotMeta struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	VersionHigh   uint64                 `protobuf:"varint,1,opt,name=versionHigh,proto3" json:"versionHigh,omitempty"`
-	VersionLow    uint64                 `protobuf:"varint,2,opt,name=versionLow,proto3" json:"versionLow,omitempty"`
-	CreatedAtHigh uint64                 `protobuf:"varint,3,opt,name=createdAtHigh,proto3" json:"createdAtHigh,omitempty"`
-	CreatedAtLow  uint64                 `protobuf:"varint,4,opt,name=createdAtLow,proto3" json:"createdAtLow,omitempty"`
-	AuthorId      uint32                 `protobuf:"varint,5,opt,name=authorId,proto3" json:"authorId,omitempty"`
-	LastIncluded  *LogId                 `protobuf:"bytes,6,opt,name=lastIncluded,proto3" json:"lastIncluded,omitempty"`
+	VersionHigh   uint64                 `protobuf:"varint,1,opt,name=version_high,json=versionHigh,proto3" json:"version_high,omitempty"`
+	VersionLow    uint64                 `protobuf:"varint,2,opt,name=version_low,json=versionLow,proto3" json:"version_low,omitempty"`
+	CreatedAtHigh uint64                 `protobuf:"varint,3,opt,name=created_at_high,json=createdAtHigh,proto3" json:"created_at_high,omitempty"`
+	CreatedAtLow  uint64                 `protobuf:"varint,4,opt,name=created_at_low,json=createdAtLow,proto3" json:"created_at_low,omitempty"`
+	AuthorId      uint32                 `protobuf:"varint,5,opt,name=author_id,json=authorId,proto3" json:"author_id,omitempty"`
+	LastIncluded  *LogId                 `protobuf:"bytes,6,opt,name=last_included,json=lastIncluded,proto3" json:"last_included,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1101,16 +1109,15 @@ const file_proto_common_proto_rawDesc = "" +
 	"\bnode_ids\x18\x01 \x03(\rR\anodeIds\"7\n" +
 	"\rSnapshotEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value\"\xf2\x01\n" +
-	"\fSnapshotMeta\x12 \n" +
-	"\vversionHigh\x18\x01 \x01(\x04R\vversionHigh\x12\x1e\n" +
-	"\n" +
-	"versionLow\x18\x02 \x01(\x04R\n" +
-	"versionLow\x12$\n" +
-	"\rcreatedAtHigh\x18\x03 \x01(\x04R\rcreatedAtHigh\x12\"\n" +
-	"\fcreatedAtLow\x18\x04 \x01(\x04R\fcreatedAtLow\x12\x1a\n" +
-	"\bauthorId\x18\x05 \x01(\rR\bauthorId\x12:\n" +
-	"\flastIncluded\x18\x06 \x01(\v2\x16.d_engine.common.LogIdR\flastIncluded\"q\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\"\xfa\x01\n" +
+	"\fSnapshotMeta\x12!\n" +
+	"\fversion_high\x18\x01 \x01(\x04R\vversionHigh\x12\x1f\n" +
+	"\vversion_low\x18\x02 \x01(\x04R\n" +
+	"versionLow\x12&\n" +
+	"\x0fcreated_at_high\x18\x03 \x01(\x04R\rcreatedAtHigh\x12$\n" +
+	"\x0ecreated_at_low\x18\x04 \x01(\x04R\fcreatedAtLow\x12\x1b\n" +
+	"\tauthor_id\x18\x05 \x01(\rR\bauthorId\x12;\n" +
+	"\rlast_included\x18\x06 \x01(\v2\x16.d_engine.common.LogIdR\flastIncluded\"q\n" +
 	"\bSnapshot\x121\n" +
 	"\x04meta\x18\x01 \x01(\v2\x1d.d_engine.common.SnapshotMetaR\x04meta\x122\n" +
 	"\x04data\x18\x02 \x03(\v2\x1e.d_engine.common.SnapshotEntryR\x04data\"=\n" +
@@ -1121,20 +1128,19 @@ const file_proto_common_proto_rawDesc = "" +
 	"\n" +
 	"LeaderHint\x12\x1b\n" +
 	"\tleader_id\x18\x01 \x01(\rR\bleaderId\x12\x18\n" +
-	"\aaddress\x18\x02 \x01(\tR\aaddress*7\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress*x\n" +
 	"\n" +
-	"NodeStatus\x12\x0e\n" +
-	"\n" +
-	"PROMOTABLE\x10\x00\x12\r\n" +
-	"\tREAD_ONLY\x10\x01\x12\n" +
-	"\n" +
-	"\x06ACTIVE\x10\x02*@\n" +
-	"\bNodeRole\x12\f\n" +
-	"\bFOLLOWER\x10\x00\x12\r\n" +
-	"\tCANDIDATE\x10\x01\x12\n" +
-	"\n" +
-	"\x06LEADER\x10\x02\x12\v\n" +
-	"\aLEARNER\x10\x03B,Z*github.com/deventlab/d-engine/proto/commonb\x06proto3"
+	"NodeStatus\x12\x1b\n" +
+	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16NODE_STATUS_PROMOTABLE\x10\x01\x12\x19\n" +
+	"\x15NODE_STATUS_READ_ONLY\x10\x02\x12\x16\n" +
+	"\x12NODE_STATUS_ACTIVE\x10\x03*\x83\x01\n" +
+	"\bNodeRole\x12\x19\n" +
+	"\x15NODE_ROLE_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12NODE_ROLE_FOLLOWER\x10\x01\x12\x17\n" +
+	"\x13NODE_ROLE_CANDIDATE\x10\x02\x12\x14\n" +
+	"\x10NODE_ROLE_LEADER\x10\x03\x12\x15\n" +
+	"\x11NODE_ROLE_LEARNER\x10\x04B,Z*github.com/deventlab/d-engine/proto/commonb\x06proto3"
 
 var (
 	file_proto_common_proto_rawDescOnce sync.Once
@@ -1181,7 +1187,7 @@ var file_proto_common_proto_depIdxs = []int32{
 	0,  // 8: d_engine.common.AddNode.status:type_name -> d_engine.common.NodeStatus
 	0,  // 9: d_engine.common.PromoteLearner.status:type_name -> d_engine.common.NodeStatus
 	0,  // 10: d_engine.common.BatchPromote.new_status:type_name -> d_engine.common.NodeStatus
-	2,  // 11: d_engine.common.SnapshotMeta.lastIncluded:type_name -> d_engine.common.LogId
+	2,  // 11: d_engine.common.SnapshotMeta.last_included:type_name -> d_engine.common.LogId
 	13, // 12: d_engine.common.Snapshot.meta:type_name -> d_engine.common.SnapshotMeta
 	12, // 13: d_engine.common.Snapshot.data:type_name -> d_engine.common.SnapshotEntry
 	14, // [14:14] is the sub-list for method output_type

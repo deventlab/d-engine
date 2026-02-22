@@ -29,46 +29,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tonic::Code;
 
-/// Test: LearnerState rejects FlushReadBuffer event
-///
-/// Scenario: Learner node receives FlushReadBuffer event
-/// Expected: Returns RoleViolation error (only Leader can handle this event)
-#[tokio::test]
-async fn test_learner_rejects_flush_read_buffer_event() {
-    let (shutdown_tx, shutdown_rx) = watch::channel(());
-    let ctx = mock_raft_context("/tmp/test_learner_flush", shutdown_rx, None);
-    let mut state = LearnerState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle FlushReadBuffer event
-    let result = state.handle_raft_event(RaftEvent::FlushReadBuffer, &ctx, role_tx.clone()).await;
-
-    // Verify: Returns RoleViolation error
-    assert!(
-        result.is_err(),
-        "Learner should reject FlushReadBuffer event"
-    );
-
-    if let Err(e) = result {
-        let error_str = format!("{e:?}");
-        assert!(
-            error_str.contains("RoleViolation"),
-            "Error should be RoleViolation, got: {error_str}"
-        );
-        assert!(
-            error_str.contains("Learner"),
-            "Error should mention Learner role"
-        );
-        assert!(
-            error_str.contains("Leader"),
-            "Error should mention Leader as required role"
-        );
-    }
-
-    drop(shutdown_tx);
-}
-
 /// Test: LearnerState drain_read_buffer returns NotLeader error
 ///
 /// Scenario: Call drain_read_buffer() on Learner
@@ -232,7 +192,7 @@ async fn test_learner_rejects_cluster_conf_request() {
 ///
 /// Expected:
 /// - Returns response with success=true
-/// - error_code = None
+/// - error_code = Unspecified
 /// - handle_raft_event returns Ok()
 ///
 /// This validates that learners can receive and apply cluster
@@ -255,7 +215,7 @@ async fn test_learner_handles_cluster_conf_update_success() {
                 term: 1,
                 version: 1,
                 success: true,
-                error_code: cluster_conf_update_response::ErrorCode::None.into(),
+                error_code: cluster_conf_update_response::ErrorCode::Unspecified.into(),
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
@@ -286,7 +246,7 @@ async fn test_learner_handles_cluster_conf_update_success() {
     assert!(response.success, "Update should succeed");
     assert_eq!(
         response.error_code,
-        cluster_conf_update_response::ErrorCode::None as i32
+        cluster_conf_update_response::ErrorCode::Unspecified as i32
     );
 }
 
@@ -1468,6 +1428,97 @@ async fn test_learner_handles_fatal_error_returns_error() {
         role_rx.try_recv().is_err(),
         "No role transition events should be sent during FatalError handling"
     );
+}
+
+// ============================================================================
+// Role-Specific Behavior Tests
+// ============================================================================
+
+/// Learner - Eventual Read Support
+///
+/// **Objective**: Verify Learner can serve EventualConsistency reads locally
+///
+/// **Scenario**:
+/// - Learner node receives EventualConsistency read request
+/// - State machine returns valid data
+///
+/// **Expected**:
+/// - Read processed immediately in push_client_cmd()
+/// - No NOT_LEADER error
+/// - Response latency < 10ms
+/// - Data served from local state machine
+#[tokio::test]
+async fn test_learner_serves_eventual_read_locally() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    // Setup state machine mock for eventual read
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler
+        .expect_read_from_state_machine()
+        .times(1)
+        .withf(|keys| keys.len() == 1 && keys[0] == "eventual_key")
+        .returning(|_| {
+            Some(vec![d_engine_proto::client::ClientResult {
+                key: bytes::Bytes::from("eventual_key"),
+                value: bytes::Bytes::from("eventual_value"),
+            }])
+        });
+    context.handlers.state_machine_handler = Arc::new(state_machine_handler);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Send EventualConsistency read request
+    let (response_tx, mut response_rx) = MaybeCloneOneshot::new();
+    let read_req = d_engine_proto::client::ClientReadRequest {
+        client_id: 1,
+        keys: vec![bytes::Bytes::from("eventual_key")],
+        consistency_policy: Some(
+            d_engine_proto::client::ReadConsistencyPolicy::EventualConsistency as i32,
+        ),
+    };
+
+    let start = tokio::time::Instant::now();
+
+    // Push read command (should process immediately)
+    state.push_client_cmd(ClientCmd::Read(read_req, response_tx), &context);
+
+    // Verify: Response ready immediately
+    let result = response_rx.recv().await;
+    let elapsed = start.elapsed();
+
+    assert!(result.is_ok(), "Eventual read should return response");
+
+    // Verify: Latency < 10ms
+    assert!(
+        elapsed.as_millis() < 10,
+        "Eventual read latency should be <10ms, got {:?}ms",
+        elapsed.as_millis()
+    );
+
+    // Verify: Response is success (not NOT_LEADER error)
+    if let Ok(response) = result {
+        match response {
+            Ok(read_response) => {
+                // Check success_result for ReadResults
+                match read_response.success_result {
+                    Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
+                        read_data,
+                    )) => {
+                        assert!(!read_data.results.is_empty(), "Should have read results");
+                        assert_eq!(
+                            read_data.results[0].value,
+                            bytes::Bytes::from("eventual_value")
+                        );
+                    }
+                    other => panic!("Expected ReadData variant, got: {other:?}"),
+                }
+            }
+            Err(e) => {
+                panic!("Eventual read should succeed on Learner, got error: {e:?}");
+            }
+        }
+    }
 }
 
 /// Test: Learner ApplyCompleted triggers snapshot when condition is met

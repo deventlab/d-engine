@@ -24,7 +24,7 @@ make all-tests
 
 **Compare with Standalone mode:**
 
-- Standalone report: `../../benches/standalone-bench/reports/v0.2.2/report_v0.2.2.md`
+- Unified report: `../reports/v0.2.3/bench_report_v0.2.3.md`
 - Same test parameters (key-size=8, value-size=256, sequential-keys)
 - Direct performance comparison (Embedded vs Standalone)
 

@@ -44,9 +44,9 @@ async fn test_multi_node_single_leader() -> Result<(), Box<dyn std::error::Error
     let cluster_config = format!(
         r#"
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 2, status = 2 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -203,9 +203,9 @@ async fn test_leader_info_consistency_across_cluster() -> Result<(), Box<dyn std
     let cluster_config = format!(
         r#"
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 2, status = 2 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -385,9 +385,9 @@ async fn test_leader_failover_state_change() -> Result<(), Box<dyn std::error::E
     let cluster_config = format!(
         r#"
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 2, status = 2 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 2, status = 2 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'

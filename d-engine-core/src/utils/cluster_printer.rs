@@ -20,16 +20,17 @@ use crate::TypeConfig;
 /// Get emoji representation for node role
 ///
 /// Maps NodeRole enum values to emoji:
-/// - Follower (0): 📮
-/// - Candidate (1): 🗳️
-/// - Leader (2): 👑
-/// - Learner (3): 🎓
+/// - Follower (1): 📮
+/// - Candidate (2): 🗳️
+/// - Leader (3): 👑
+/// - Learner (4): 🎓
 pub fn role_emoji(role: i32) -> &'static str {
+    use d_engine_proto::common::NodeRole;
     match role {
-        0 => "📮", // Follower
-        1 => "🗳️", // Candidate
-        2 => "👑", // Leader
-        3 => "🎓", // Learner
+        r if r == NodeRole::Follower as i32 => "📮",
+        r if r == NodeRole::Candidate as i32 => "🗳️",
+        r if r == NodeRole::Leader as i32 => "👑",
+        r if r == NodeRole::Learner as i32 => "🎓",
         _ => "❓", // Unknown/Invalid
     }
 }
@@ -37,38 +38,41 @@ pub fn role_emoji(role: i32) -> &'static str {
 /// Get human-readable role name
 ///
 /// Maps NodeRole enum values to display names:
-/// - Follower (0)
-/// - Candidate (1)
-/// - Leader (2)
-/// - Learner (3)
+/// - Follower (1)
+/// - Candidate (2)
+/// - Leader (3)
+/// - Learner (4)
 pub fn role_name(role: i32) -> &'static str {
+    use d_engine_proto::common::NodeRole;
     match role {
-        0 => "Follower",
-        1 => "Candidate",
-        2 => "Leader",
-        3 => "Learner",
+        r if r == NodeRole::Follower as i32 => "Follower",
+        r if r == NodeRole::Candidate as i32 => "Candidate",
+        r if r == NodeRole::Leader as i32 => "Leader",
+        r if r == NodeRole::Learner as i32 => "Learner",
         _ => "Unknown",
     }
 }
 
 /// Get emoji representation for node status
 pub fn status_emoji(status: i32) -> &'static str {
+    use d_engine_proto::common::NodeStatus;
     match status {
-        0 => "🔄", // Joining
-        1 => "🔄", // Syncing
-        2 => "✅", // Active
-        3 => "❌", // Inactive
+        s if s == NodeStatus::Unspecified as i32 => "❓", // Unspecified
+        s if s == NodeStatus::Promotable as i32 => "🔄",  // Promotable (Learner)
+        s if s == NodeStatus::ReadOnly as i32 => "🔄",    // ReadOnly (Learner)
+        s if s == NodeStatus::Active as i32 => "✅",      // Active (Voter)
         _ => "❓",
     }
 }
 
 /// Get human-readable status name
 pub fn status_name(status: i32) -> &'static str {
+    use d_engine_proto::common::NodeStatus;
     match status {
-        0 => "Joining",
-        1 => "Syncing",
-        2 => "Active",
-        3 => "Inactive",
+        s if s == NodeStatus::Unspecified as i32 => "Unspecified",
+        s if s == NodeStatus::Promotable as i32 => "Promotable",
+        s if s == NodeStatus::ReadOnly as i32 => "ReadOnly",
+        s if s == NodeStatus::Active as i32 => "Active",
         _ => "Unknown",
     }
 }

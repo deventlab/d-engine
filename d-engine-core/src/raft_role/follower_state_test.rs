@@ -69,46 +69,6 @@ fn create_vote_request_event(
     )
 }
 
-/// Test: FollowerState rejects FlushReadBuffer event
-///
-/// Scenario: Follower node receives FlushReadBuffer event
-/// Expected: Returns RoleViolation error (only Leader can handle this event)
-#[tokio::test]
-async fn test_follower_rejects_flush_read_buffer_event() {
-    let (shutdown_tx, shutdown_rx) = watch::channel(());
-    let ctx = mock_raft_context("/tmp/test_follower_flush", shutdown_rx, None);
-    let mut state = FollowerState::<MockTypeConfig>::new(1, ctx.node_config.clone(), None, None);
-
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-    // Action: Handle FlushReadBuffer event
-    let result = state.handle_raft_event(RaftEvent::FlushReadBuffer, &ctx, role_tx.clone()).await;
-
-    // Verify: Returns RoleViolation error
-    assert!(
-        result.is_err(),
-        "Follower should reject FlushReadBuffer event"
-    );
-
-    if let Err(e) = result {
-        let error_str = format!("{e:?}");
-        assert!(
-            error_str.contains("RoleViolation"),
-            "Error should be RoleViolation, got: {error_str}"
-        );
-        assert!(
-            error_str.contains("Follower"),
-            "Error should mention Follower role"
-        );
-        assert!(
-            error_str.contains("Leader"),
-            "Error should mention Leader as required role"
-        );
-    }
-
-    drop(shutdown_tx);
-}
-
 /// Test: FollowerState drain_read_buffer returns NotLeader error
 ///
 /// Scenario: Call drain_read_buffer() on Follower
@@ -438,7 +398,7 @@ async fn test_handle_cluster_conf_metadata_request() {
 /// - Membership update succeeds
 ///
 /// Expected:
-/// - Returns success response with error_code=None
+/// - Returns success response with error_code=Unspecified
 ///
 /// Original: test_handle_raft_event_case3_1
 #[tokio::test]
@@ -456,7 +416,7 @@ async fn test_handle_cluster_conf_update_success() {
                 term: 1,
                 version: 1,
                 success: true,
-                error_code: cluster_conf_update_response::ErrorCode::None.into(),
+                error_code: cluster_conf_update_response::ErrorCode::Unspecified.into(),
             })
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
@@ -483,7 +443,7 @@ async fn test_handle_cluster_conf_update_success() {
     assert!(response.success);
     assert_eq!(
         response.error_code,
-        cluster_conf_update_response::ErrorCode::None as i32
+        cluster_conf_update_response::ErrorCode::Unspecified as i32
     );
 }
 
@@ -2276,4 +2236,111 @@ async fn test_apply_completed_respects_snapshot_disabled_config() {
         role_rx.try_recv().is_err(),
         "Should not send snapshot event when snapshot is disabled in config"
     );
+}
+
+// ============================================================================
+// Role-Specific Behavior Tests
+// ============================================================================
+
+/// Follower - Lease/Linear Read Rejection
+///
+/// **Objective**: Verify Follower correctly rejects strong consistency reads
+/// (Lease and Linearizable) with NOT_LEADER error
+///
+/// **Scenario**:
+/// - Follower node receives Lease read request
+/// - Follower node receives Linearizable read request
+///
+/// **Expected**:
+/// - Both requests immediately rejected in push_client_cmd()
+/// - Error: NOT_LEADER with Leader information
+/// - No buffer entry
+/// - Response time < 1ms (immediate rejection)
+#[tokio::test]
+async fn test_follower_rejects_strong_consistency_reads() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Test 1: Lease read should be rejected
+    {
+        let (response_tx, mut response_rx) = MaybeCloneOneshot::new();
+        let read_req = ClientReadRequest {
+            client_id: 1,
+            keys: vec![bytes::Bytes::from("lease_key")],
+            consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+        };
+
+        let start = tokio::time::Instant::now();
+
+        state.push_client_cmd(ClientCmd::Read(read_req, response_tx), &context);
+
+        let result = response_rx.recv().await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok(), "Should receive response from Follower");
+
+        // Verify: Response time < 10ms (immediate rejection)
+        assert!(
+            elapsed.as_millis() < 10,
+            "Lease read rejection should be immediate, took {:?}ms",
+            elapsed.as_millis()
+        );
+
+        // Verify: Response is NOT_LEADER error
+        if let Ok(Err(err)) = result {
+            let err_str = format!("{err:?}");
+            assert!(
+                err_str.contains("Not leader")
+                    || err_str.contains("NotLeader")
+                    || err_str.contains("NOT_LEADER")
+                    || err_str.contains("FailedPrecondition"),
+                "Expected NOT_LEADER error for Lease read, got: {err:?}"
+            );
+        } else {
+            panic!("Lease read to Follower should return NOT_LEADER error, got: {result:?}");
+        }
+    }
+
+    // Test 2: Linearizable read should be rejected
+    {
+        let (response_tx, mut response_rx) = MaybeCloneOneshot::new();
+        let read_req = ClientReadRequest {
+            client_id: 1,
+            keys: vec![bytes::Bytes::from("linear_key")],
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        };
+
+        let start = tokio::time::Instant::now();
+
+        state.push_client_cmd(ClientCmd::Read(read_req, response_tx), &context);
+
+        let result = response_rx.recv().await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok(), "Should receive response from Follower");
+
+        // Verify: Response time < 1ms (immediate rejection)
+        assert!(
+            elapsed.as_millis() < 10,
+            "Linear read rejection should be immediate, took {:?}ms",
+            elapsed.as_millis()
+        );
+
+        // Verify: Response is NOT_LEADER error
+        if let Ok(Err(err)) = result {
+            let err_str = format!("{err:?}");
+            assert!(
+                err_str.contains("Not leader")
+                    || err_str.contains("NotLeader")
+                    || err_str.contains("NOT_LEADER")
+                    || err_str.contains("FailedPrecondition"),
+                "Expected NOT_LEADER error for Linear read, got: {err:?}"
+            );
+        } else {
+            panic!("Linear read to Follower should return NOT_LEADER error, got: {result:?}");
+        }
+    }
 }

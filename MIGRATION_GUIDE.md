@@ -1,8 +1,8 @@
-# Migration Guide for d-engine v0.2.0
+# Migration Guide for d-engine
 
 ## 🎯 For New Users
 
-**Starting fresh with v0.2.0?** No migration needed - skip this guide and go to [Quick Start](./examples/quick-start/).
+**Starting fresh with the latest version?** No migration needed - skip this guide and go to [Quick Start](./examples/quick-start/).
 
 ---
 
@@ -128,12 +128,206 @@ grep "WAL" /var/log/d-engine.log
 
 ## Timeline
 
-| Version | WAL Format          | Migration Required |
-| ------- | ------------------- | ------------------ |
-| v0.1.x  | Relative TTL        | -                  |
-| v0.2.0+ | Absolute expiration | ✅ Yes (clear WAL) |
+| Version       | WAL Format          | Wire Protocol    | Migration Required                           |
+| ------------- | ------------------- | ---------------- | -------------------------------------------- |
+| v0.1.x        | Relative TTL        | Compatible       | -                                            |
+| v0.2.0–v0.2.2 | Absolute expiration | Compatible       | ✅ Yes (clear WAL from v0.1.x)               |
+| v0.2.3+       | Same as v0.2.0+     | **Incompatible** | ✅ Yes (protobuf enum changes + API changes) |
 
 ---
 
-**Version:** d-engine v0.2.0  
-**Last Updated:** December 2025
+## 🚨 For v0.2.2 Users: Protobuf Enum Breaking Changes in v0.2.3
+
+### What Changed
+
+v0.2.3 introduces **breaking wire protocol changes** due to protobuf enum value shifts to comply with buf lint standards.
+
+### ⚠️ Critical Impact
+
+**Wire Protocol Incompatibility:**
+
+- v0.2.3 nodes **CANNOT communicate** with v0.2.2 or earlier nodes
+- No rolling upgrade possible - all cluster nodes must upgrade simultaneously
+- Client SDKs must be upgraded to v0.2.3 to connect to upgraded clusters
+
+### Enum Value Changes
+
+#### NodeRole Enum
+
+| Role      | Old Value | New Value | New Constant            |
+| --------- | --------- | --------- | ----------------------- |
+| -         | -         | 0         | `NODE_ROLE_UNSPECIFIED` |
+| Follower  | 0         | 1         | `NODE_ROLE_FOLLOWER`    |
+| Candidate | 1         | 2         | `NODE_ROLE_CANDIDATE`   |
+| Leader    | 2         | 3         | `NODE_ROLE_LEADER`      |
+| Learner   | 3         | 4         | `NODE_ROLE_LEARNER`     |
+
+#### NodeStatus Enum
+
+| Status     | Old Value | New Value | New Constant              |
+| ---------- | --------- | --------- | ------------------------- |
+| -          | -         | 0         | `NODE_STATUS_UNSPECIFIED` |
+| Promotable | 0         | 1         | `NODE_STATUS_PROMOTABLE`  |
+| ReadOnly   | 1         | 2         | `NODE_STATUS_READ_ONLY`   |
+| Active     | 2         | 3         | `NODE_STATUS_ACTIVE`      |
+
+#### ErrorCode Enum
+
+| Error                  | Old Value | New Value | New Constant             |
+| ---------------------- | --------- | --------- | ------------------------ |
+| -                      | -         | 0         | `ERROR_CODE_UNSPECIFIED` |
+| NotLeader              | 1         | 1         | `ERROR_CODE_NOT_LEADER`  |
+| ... (others unchanged) |           |           |                          |
+
+### Additional Protobuf Changes
+
+- **Enum Prefixes**: All enum values now have proper prefixes (`NODE_ROLE_*`, `NODE_STATUS_*`, `ERROR_CODE_*`)
+- **Field Naming**: All fields now use snake_case naming (`leader_id`, `prev_log_index`, `last_log_index`, etc.)
+
+---
+
+## Migration Steps for v0.2.2 → v0.2.3 Protobuf Changes
+
+### Step 1: Update Configuration Files
+
+Update any TOML configuration files that reference enum values:
+
+**Old (v0.2.2):**
+
+```toml
+[cluster]
+node_id = 1
+role = 0        # Follower
+status = 0      # Promotable
+```
+
+**New (v0.2.3):**
+
+```toml
+[cluster]
+node_id = 1
+role = 1        # NODE_ROLE_FOLLOWER
+status = 1      # NODE_STATUS_PROMOTABLE
+```
+
+### Step 2: Upgrade All Cluster Nodes Simultaneously
+
+**⚠️ No Rolling Upgrade Possible**
+
+Since the wire protocol is incompatible, you must upgrade all nodes at once:
+
+1. **Schedule maintenance window** (cluster will be unavailable during upgrade)
+2. **Stop all nodes** in the cluster
+3. **Upgrade binaries** to v0.2.3 on all nodes
+4. **Update configuration files** (see Step 1)
+5. **Start all nodes** simultaneously
+6. **Verify cluster health** (check logs, run health checks)
+
+**For Production Clusters:**
+
+If you require high availability during upgrade:
+
+1. **Set up a parallel v0.2.3 cluster** (new hardware/instances)
+2. **Migrate data** to the new cluster (application-level migration)
+3. **Switch traffic** to new cluster
+4. **Decommission old cluster**
+
+### Step 3: Upgrade Client SDKs
+
+All client applications must upgrade their d-engine SDK to v0.2.3:
+
+**Cargo.toml:**
+
+```toml
+[dependencies]
+d-engine = { version = "0.2.3", features = ["client"] }
+```
+
+**Rebuild and redeploy** all client applications before connecting to upgraded cluster.
+
+### Step 4: Verification
+
+After upgrade, verify:
+
+```bash
+# Check all nodes started successfully
+journalctl -u d-engine -f
+
+# Verify cluster health
+curl http://localhost:8080/health
+
+# Test basic operations
+d-engine-cli put test-key test-value
+d-engine-cli get test-key
+```
+
+---
+
+## 🚨 For v0.2.2 Users: API Changes in v0.2.3
+
+### What Changed
+
+v0.2.3 introduces **breaking API changes** to unify client interfaces and improve developer experience.
+
+### Breaking Changes
+
+#### 1. Unified Client API Trait
+
+**Old (v0.2.2):**
+
+```rust
+use d_engine::client::KvClient;
+use d_engine::client::KvError;
+
+async fn example(client: impl KvClient) -> Result<(), KvError> {
+    // ...
+}
+```
+
+**New (v0.2.3):**
+
+```rust
+use d_engine::client::ClientApi;
+use d_engine::client::ClientApiError;
+
+async fn example(client: impl ClientApi) -> Result<(), ClientApiError> {
+    // ...
+}
+```
+
+**Migration Steps:**
+
+- Replace `KvClient` with `ClientApi` in trait bounds
+- Replace `KvError` with `ClientApiError` in error handling
+- Update imports: `use d_engine::client::{ClientApi, ClientApiError};`
+
+---
+
+#### 2. Default Persistence Strategy
+
+**Old (v0.2.2):** Default = `MemFirst` (write to memory, async flush to disk)
+
+**New (v0.2.3):** Default = `DiskFirst` (Raft protocol compliance)
+
+**Migration:**
+
+If you want to restore v0.2.2 behavior, add to config:
+
+```toml
+[raft.persistence]
+persistence_strategy = "MemFirst"
+```
+
+⚠️ **Warning:** `MemFirst` trades durability for performance. Only use in scenarios where data loss is acceptable.
+
+---
+
+### Non-Breaking Changes
+
+- **CompareAndSwap (CAS)**: New atomic operation added
+- **Drain-based batching**: Performance improvements (no API changes)
+- **Client::refresh()**: New method for leader rediscovery
+
+---
+
+**Last Updated:** February 2026

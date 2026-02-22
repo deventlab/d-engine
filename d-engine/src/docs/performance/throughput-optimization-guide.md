@@ -32,8 +32,9 @@ Configure the strategy in your `config.toml`:
 ```toml
 [raft.persistence]
 # Choose based on your priority: durability (DiskFirst) or low-latency writes (MemFirst)
-strategy = "MemFirst"
-# strategy = "DiskFirst"
+# DEFAULT in v0.2.3+: DiskFirst (Raft protocol compliance)
+strategy = "DiskFirst"  # Default in v0.2.3+
+# For benchmark/development: strategy = "MemFirst"
 
 # Flush policy works in conjunction with the chosen strategy.
 flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
@@ -154,7 +155,7 @@ tonic::transport::Server::builder()
 > **Key improvement**: 15% reduction in tail latency - critical for consensus stability  
 > **Note**: These metrics show the impact of connection pooling optimization. These results can be further improved by tuning the PersistenceStrategy for your specific workload.
 >
-> For absolute performance benchmarks, see [v0.2.2 Performance Report](../../../benches/standalone-bench/reports/v0.2.2/report_v0.2.2.md)
+> For absolute performance benchmarks, see [v0.2.3 Performance Report](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3/bench_report_v0.2.3.md)
 
 ## Operational Recommendations
 
@@ -233,7 +234,8 @@ Adjust values based on snapshot size, log append rate, and cluster size.
 
 ```toml
 [raft.persistence]
-strategy = "MemFirst"
+strategy = "DiskFirst"  # Default in v0.2.3+
+# For benchmark/development: strategy = "MemFirst"
 flush_policy = { Batch = { threshold = 500, interval_ms = 50 } }
 
 [network.control]
@@ -253,7 +255,7 @@ request_timeout_in_ms = 10_000       # 10s
 
 ```
 
-**Tip**: Single-node setups focus on low resource usage; bulk window size can be smaller since snapshots are local. `MemFirst` is preferred for developer iteration speed.
+**Tip**: Single-node setups focus on low resource usage; bulk window size can be smaller since snapshots are local. For developer iteration speed, consider using `strategy = "MemFirst"`.
 
 ### 2. 3-Node Public Cloud Cluster (Medium Durability)
 
@@ -263,7 +265,8 @@ request_timeout_in_ms = 10_000       # 10s
 
 ```toml
 [raft.persistence]
-strategy = "MemFirst"
+strategy = "DiskFirst"  # Default in v0.2.3+
+# For high-throughput scenarios: strategy = "MemFirst"
 flush_policy = { Batch = { threshold = 2000, interval_ms = 200 } }
 
 [network.control]

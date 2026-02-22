@@ -124,10 +124,10 @@ async fn test_readonly_mode_learner_standalone() -> Result<(), ClientApiError> {
 node_id = 4
 listen_address = '127.0.0.1:{}'
 initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 0, status = 2 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 0, status = 2 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 0, status = 2 }},
-    {{ id = 4, name = 'n4', address = '127.0.0.1:{}', role = 3, status = 1 }}
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 4, name = 'n4', address = '127.0.0.1:{}', role = 4, status = 2 }}
 ]
 db_root_dir = '{}'
 log_dir = '{}'
@@ -220,7 +220,7 @@ general_raft_timeout_duration_in_ms = 5000
     );
     assert_eq!(
         node4_meta_current.role,
-        3, // LEARNER role
+        d_engine_proto::common::NodeRole::Learner as i32, // LEARNER role
         "Node 4 should remain LEARNER role"
     );
     println!("         ✓ Node 4 status verified as READ_ONLY (not promoted to Voter)");
@@ -231,8 +231,8 @@ general_raft_timeout_duration_in_ms = 5000
     println!("║ TEST RESULTS: READONLY LEARNER (RPC STANDALONE)           ║");
     println!("╠════════════════════════════════════════════════════════════╣");
     println!("║ ✓ JoinCluster RPC successfully adds nodes dynamically    ║");
-    println!("║ ✓ Nodes can be added with LEARNER role (role=3)         ║");
-    println!("║ ✓ READ_ONLY status (status=1) prevents auto-promotion   ║");
+    println!("║ ✓ Nodes can be added with LEARNER role (role=4)         ║");
+    println!("║ ✓ READ_ONLY status (status=2) prevents auto-promotion   ║");
     println!("║ ✓ ReadOnly Learners receive all replicated data          ║");
     println!("║ ✓ Quorum calculations exclude ReadOnly Learners          ║");
     println!("║                                                            ║");

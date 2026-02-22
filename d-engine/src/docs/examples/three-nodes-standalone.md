@@ -2,7 +2,7 @@
 
 ## Overview
 
-This example demonstrates a **production-ready three-node d-engine cluster** with automatic failover and data replication. All benchmark data in [benches/standalone-bench/reports/](../../../../benches/standalone-bench/reports/) is generated using this configuration.
+This example demonstrates a **production-ready three-node d-engine cluster** with automatic failover and data replication. All benchmark data in [benches/reports/v0.2.3/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) is generated using this configuration.
 
 **Key characteristics:**
 
@@ -59,7 +59,8 @@ default_policy = "LeaseRead"
 lease_duration_ms = 500
 
 [raft.persistence]
-strategy = "MemFirst"
+strategy = "DiskFirst"  # Default in v0.2.3+, ensures durability
+# For benchmark/development: strategy = "MemFirst"
 flush_policy = { Batch = { threshold = 100, interval_ms = 20 } }
 max_buffered_entries = 10000
 flush_workers = 4
@@ -124,7 +125,7 @@ All performance reports in `/benches/standalone-bench/reports` use this exact co
 
 **Raft settings:**
 
-- Persistence: `MemFirst` with batched flush (100 entries, 20ms interval)
+- Persistence: `DiskFirst` (default in v0.2.3+) with batched flush (100 entries, 20ms interval)
 - Read consistency: `LeaseRead` (500ms lease duration)
 - Replication: Batched append entries (5000 threshold, 0ms delay)
 - Network: Tuned for high throughput (see `config/n1.toml` for details)

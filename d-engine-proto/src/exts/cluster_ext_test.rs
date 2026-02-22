@@ -10,7 +10,7 @@ fn test_cluster_conf_update_response_success() {
     assert_eq!(response.term, 5);
     assert_eq!(response.version, 10);
     assert!(response.success);
-    assert_eq!(response.error_code, ErrorCode::None as i32);
+    assert_eq!(response.error_code, ErrorCode::Unspecified as i32);
 }
 
 #[test]

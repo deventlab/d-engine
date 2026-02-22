@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [Unreleased v0.2.3]
+## [v0.2.3] - 2026-02-21
 
 ### Added
 
@@ -18,6 +18,15 @@ All notable changes to this project will be documented in this file.
   Controls how long `build()` / `refresh()` waits for leader readiness (default: 5s)
 
 ### Changed
+
+- **⚠️ BREAKING: Protobuf Enum Value Shifts** (#279): All protobuf enums now follow buf lint standards with `UNSPECIFIED = 0`
+  - **NodeRole**: Old (Follower=0, Candidate=1, Leader=2, Learner=3) → New (UNSPECIFIED=0, Follower=1, Candidate=2, Leader=3, Learner=4)
+  - **NodeStatus**: Old (Promotable=0, ReadOnly=1, Active=2) → New (UNSPECIFIED=0, Promotable=1, ReadOnly=2, Active=3)
+  - **ErrorCode**: Old (None=0, NotLeader=1, ...) → New (UNSPECIFIED=0, NotLeader=1, ...)
+  - All enum values now have proper prefixes (`NODE_ROLE_*`, `NODE_STATUS_*`, `ERROR_CODE_*`)
+  - All fields now use snake_case naming (`leader_id`, `prev_log_index`, etc.)
+  - **⚠️ Wire protocol incompatibility**: v0.2.3 cannot communicate with v0.2.2 or earlier
+  - **Migration Required**: Update all TOML config files, upgrade all cluster nodes simultaneously (no rolling upgrade), upgrade client SDKs to v0.2.3
 
 - **Unified Client API** (#258): Merged KV and cluster operations into single `ClientApi` trait
   - **Breaking**: `KvClient` → `ClientApi`, `KvError` → `ClientApiError`
@@ -49,6 +58,15 @@ All notable changes to this project will be documented in this file.
   no longer causes a silent failure — it is transparently retried
 
 ### Migration Notes
+
+#### Protobuf Breaking Changes
+
+- **⚠️ Wire protocol incompatible with v0.2.2**: All cluster nodes must upgrade simultaneously
+- Update configuration files: Change `role` and `status` enum values (e.g., `role = 0` → `role = 1` for Follower)
+- Upgrade all client SDKs to v0.2.3 before connecting to upgraded cluster
+- See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md#-for-v022-users-protobuf-enum-breaking-changes-in-v023) for detailed migration steps
+
+#### API Changes
 
 - Replace `KvClient` with `ClientApi` in trait bounds
 - Replace `KvError` with `ClientApiError` in error handling

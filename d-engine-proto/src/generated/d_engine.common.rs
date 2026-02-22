@@ -77,7 +77,7 @@ pub struct AddNode {
     pub node_id: u32,
     #[prost(string, tag = "2")]
     pub address: ::prost::alloc::string::String,
-    /// Status of the node being added (PROMOTABLE or READ_ONLY)
+    /// Status of the node being added (NODE_STATUS_UNSPECIFIED, NODE_STATUS_PROMOTABLE, or NODE_STATUS_READ_ONLY)
     #[prost(enumeration = "NodeStatus", tag = "3")]
     pub status: i32,
 }
@@ -173,16 +173,19 @@ pub struct LeaderHint {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum NodeStatus {
+    /// Zero value: unspecified/default state (buf lint: ENUM_ZERO_VALUE_SUFFIX)
+    /// Nodes in this state should explicitly set their status before joining cluster
+    Unspecified = 0,
     /// Learner states
     ///
     /// Learner that CAN be promoted to voter
-    Promotable = 0,
+    Promotable = 1,
     /// Learner that will NEVER be promoted (permanent analytics node)
-    ReadOnly = 1,
+    ReadOnly = 2,
     /// Voter state
     ///
     /// Voting member (Follower, Candidate, or Leader)
-    Active = 2,
+    Active = 3,
 }
 impl NodeStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -191,17 +194,19 @@ impl NodeStatus {
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            Self::Promotable => "PROMOTABLE",
-            Self::ReadOnly => "READ_ONLY",
-            Self::Active => "ACTIVE",
+            Self::Unspecified => "NODE_STATUS_UNSPECIFIED",
+            Self::Promotable => "NODE_STATUS_PROMOTABLE",
+            Self::ReadOnly => "NODE_STATUS_READ_ONLY",
+            Self::Active => "NODE_STATUS_ACTIVE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "PROMOTABLE" => Some(Self::Promotable),
-            "READ_ONLY" => Some(Self::ReadOnly),
-            "ACTIVE" => Some(Self::Active),
+            "NODE_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "NODE_STATUS_PROMOTABLE" => Some(Self::Promotable),
+            "NODE_STATUS_READ_ONLY" => Some(Self::ReadOnly),
+            "NODE_STATUS_ACTIVE" => Some(Self::Active),
             _ => None,
         }
     }
@@ -210,10 +215,11 @@ impl NodeStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum NodeRole {
-    Follower = 0,
-    Candidate = 1,
-    Leader = 2,
-    Learner = 3,
+    Unspecified = 0,
+    Follower = 1,
+    Candidate = 2,
+    Leader = 3,
+    Learner = 4,
 }
 impl NodeRole {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -222,19 +228,21 @@ impl NodeRole {
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            Self::Follower => "FOLLOWER",
-            Self::Candidate => "CANDIDATE",
-            Self::Leader => "LEADER",
-            Self::Learner => "LEARNER",
+            Self::Unspecified => "NODE_ROLE_UNSPECIFIED",
+            Self::Follower => "NODE_ROLE_FOLLOWER",
+            Self::Candidate => "NODE_ROLE_CANDIDATE",
+            Self::Leader => "NODE_ROLE_LEADER",
+            Self::Learner => "NODE_ROLE_LEARNER",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "FOLLOWER" => Some(Self::Follower),
-            "CANDIDATE" => Some(Self::Candidate),
-            "LEADER" => Some(Self::Leader),
-            "LEARNER" => Some(Self::Learner),
+            "NODE_ROLE_UNSPECIFIED" => Some(Self::Unspecified),
+            "NODE_ROLE_FOLLOWER" => Some(Self::Follower),
+            "NODE_ROLE_CANDIDATE" => Some(Self::Candidate),
+            "NODE_ROLE_LEADER" => Some(Self::Leader),
+            "NODE_ROLE_LEARNER" => Some(Self::Learner),
             _ => None,
         }
     }

@@ -146,6 +146,7 @@ type WriteCommand struct {
 	//
 	//	*WriteCommand_Insert_
 	//	*WriteCommand_Delete_
+	//	*WriteCommand_CompareAndSwap_
 	Operation     isWriteCommand_Operation `protobuf_oneof:"operation"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -206,6 +207,15 @@ func (x *WriteCommand) GetDelete() *WriteCommand_Delete {
 	return nil
 }
 
+func (x *WriteCommand) GetCompareAndSwap() *WriteCommand_CompareAndSwap {
+	if x != nil {
+		if x, ok := x.Operation.(*WriteCommand_CompareAndSwap_); ok {
+			return x.CompareAndSwap
+		}
+	}
+	return nil
+}
+
 type isWriteCommand_Operation interface {
 	isWriteCommand_Operation()
 }
@@ -218,14 +228,20 @@ type WriteCommand_Delete_ struct {
 	Delete *WriteCommand_Delete `protobuf:"bytes,2,opt,name=delete,proto3,oneof"`
 }
 
+type WriteCommand_CompareAndSwap_ struct {
+	CompareAndSwap *WriteCommand_CompareAndSwap `protobuf:"bytes,3,opt,name=compare_and_swap,json=compareAndSwap,proto3,oneof"`
+}
+
 func (*WriteCommand_Insert_) isWriteCommand_Operation() {}
 
 func (*WriteCommand_Delete_) isWriteCommand_Operation() {}
 
+func (*WriteCommand_CompareAndSwap_) isWriteCommand_Operation() {}
+
 type ClientWriteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ClientId      uint32                 `protobuf:"varint,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
-	Commands      []*WriteCommand        `protobuf:"bytes,2,rep,name=commands,proto3" json:"commands,omitempty"`
+	Command       *WriteCommand          `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"` // Changed from 'repeated commands' to singular 'command' (1 request = 1 command)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -267,9 +283,9 @@ func (x *ClientWriteRequest) GetClientId() uint32 {
 	return 0
 }
 
-func (x *ClientWriteRequest) GetCommands() []*WriteCommand {
+func (x *ClientWriteRequest) GetCommand() *WriteCommand {
 	if x != nil {
-		return x.Commands
+		return x.Command
 	}
 	return nil
 }
@@ -338,12 +354,57 @@ func (x *ClientReadRequest) GetConsistencyPolicy() ReadConsistencyPolicy {
 	return ReadConsistencyPolicy_READ_CONSISTENCY_POLICY_LEASE_READ
 }
 
+// Write operation result
+type WriteResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Succeeded     bool                   `protobuf:"varint,1,opt,name=succeeded,proto3" json:"succeeded,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WriteResult) Reset() {
+	*x = WriteResult{}
+	mi := &file_proto_client_client_api_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WriteResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WriteResult) ProtoMessage() {}
+
+func (x *WriteResult) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_client_client_api_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WriteResult.ProtoReflect.Descriptor instead.
+func (*WriteResult) Descriptor() ([]byte, []int) {
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *WriteResult) GetSucceeded() bool {
+	if x != nil {
+		return x.Succeeded
+	}
+	return false
+}
+
 type ClientResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Error error1.ErrorCode       `protobuf:"varint,1,opt,name=error,proto3,enum=d_engine.error.ErrorCode" json:"error,omitempty"`
 	// Types that are valid to be assigned to SuccessResult:
 	//
-	//	*ClientResponse_WriteAck
+	//	*ClientResponse_WriteResult
 	//	*ClientResponse_ReadData
 	SuccessResult isClientResponse_SuccessResult `protobuf_oneof:"success_result"`
 	Metadata      *error1.ErrorMetadata          `protobuf:"bytes,4,opt,name=metadata,proto3" json:"metadata,omitempty"`
@@ -353,7 +414,7 @@ type ClientResponse struct {
 
 func (x *ClientResponse) Reset() {
 	*x = ClientResponse{}
-	mi := &file_proto_client_client_api_proto_msgTypes[3]
+	mi := &file_proto_client_client_api_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -365,7 +426,7 @@ func (x *ClientResponse) String() string {
 func (*ClientResponse) ProtoMessage() {}
 
 func (x *ClientResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[3]
+	mi := &file_proto_client_client_api_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -378,7 +439,7 @@ func (x *ClientResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClientResponse.ProtoReflect.Descriptor instead.
 func (*ClientResponse) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{3}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ClientResponse) GetError() error1.ErrorCode {
@@ -395,13 +456,13 @@ func (x *ClientResponse) GetSuccessResult() isClientResponse_SuccessResult {
 	return nil
 }
 
-func (x *ClientResponse) GetWriteAck() bool {
+func (x *ClientResponse) GetWriteResult() *WriteResult {
 	if x != nil {
-		if x, ok := x.SuccessResult.(*ClientResponse_WriteAck); ok {
-			return x.WriteAck
+		if x, ok := x.SuccessResult.(*ClientResponse_WriteResult); ok {
+			return x.WriteResult
 		}
 	}
-	return false
+	return nil
 }
 
 func (x *ClientResponse) GetReadData() *ReadResults {
@@ -424,15 +485,15 @@ type isClientResponse_SuccessResult interface {
 	isClientResponse_SuccessResult()
 }
 
-type ClientResponse_WriteAck struct {
-	WriteAck bool `protobuf:"varint,2,opt,name=write_ack,json=writeAck,proto3,oneof"`
+type ClientResponse_WriteResult struct {
+	WriteResult *WriteResult `protobuf:"bytes,2,opt,name=write_result,json=writeResult,proto3,oneof"`
 }
 
 type ClientResponse_ReadData struct {
 	ReadData *ReadResults `protobuf:"bytes,3,opt,name=read_data,json=readData,proto3,oneof"`
 }
 
-func (*ClientResponse_WriteAck) isClientResponse_SuccessResult() {}
+func (*ClientResponse_WriteResult) isClientResponse_SuccessResult() {}
 
 func (*ClientResponse_ReadData) isClientResponse_SuccessResult() {}
 
@@ -446,7 +507,7 @@ type ClientResult struct {
 
 func (x *ClientResult) Reset() {
 	*x = ClientResult{}
-	mi := &file_proto_client_client_api_proto_msgTypes[4]
+	mi := &file_proto_client_client_api_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -458,7 +519,7 @@ func (x *ClientResult) String() string {
 func (*ClientResult) ProtoMessage() {}
 
 func (x *ClientResult) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[4]
+	mi := &file_proto_client_client_api_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -471,7 +532,7 @@ func (x *ClientResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClientResult.ProtoReflect.Descriptor instead.
 func (*ClientResult) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{4}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ClientResult) GetKey() []byte {
@@ -497,7 +558,7 @@ type ReadResults struct {
 
 func (x *ReadResults) Reset() {
 	*x = ReadResults{}
-	mi := &file_proto_client_client_api_proto_msgTypes[5]
+	mi := &file_proto_client_client_api_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -509,7 +570,7 @@ func (x *ReadResults) String() string {
 func (*ReadResults) ProtoMessage() {}
 
 func (x *ReadResults) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[5]
+	mi := &file_proto_client_client_api_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -522,7 +583,7 @@ func (x *ReadResults) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadResults.ProtoReflect.Descriptor instead.
 func (*ReadResults) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{5}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ReadResults) GetResults() []*ClientResult {
@@ -547,7 +608,7 @@ type WatchRequest struct {
 
 func (x *WatchRequest) Reset() {
 	*x = WatchRequest{}
-	mi := &file_proto_client_client_api_proto_msgTypes[6]
+	mi := &file_proto_client_client_api_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -559,7 +620,7 @@ func (x *WatchRequest) String() string {
 func (*WatchRequest) ProtoMessage() {}
 
 func (x *WatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[6]
+	mi := &file_proto_client_client_api_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -572,7 +633,7 @@ func (x *WatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
 func (*WatchRequest) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{6}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *WatchRequest) GetClientId() uint32 {
@@ -606,7 +667,7 @@ type WatchResponse struct {
 
 func (x *WatchResponse) Reset() {
 	*x = WatchResponse{}
-	mi := &file_proto_client_client_api_proto_msgTypes[7]
+	mi := &file_proto_client_client_api_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -618,7 +679,7 @@ func (x *WatchResponse) String() string {
 func (*WatchResponse) ProtoMessage() {}
 
 func (x *WatchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[7]
+	mi := &file_proto_client_client_api_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -631,7 +692,7 @@ func (x *WatchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchResponse.ProtoReflect.Descriptor instead.
 func (*WatchResponse) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{7}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *WatchResponse) GetKey() []byte {
@@ -675,7 +736,7 @@ type WriteCommand_Insert struct {
 
 func (x *WriteCommand_Insert) Reset() {
 	*x = WriteCommand_Insert{}
-	mi := &file_proto_client_client_api_proto_msgTypes[8]
+	mi := &file_proto_client_client_api_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -687,7 +748,7 @@ func (x *WriteCommand_Insert) String() string {
 func (*WriteCommand_Insert) ProtoMessage() {}
 
 func (x *WriteCommand_Insert) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[8]
+	mi := &file_proto_client_client_api_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -733,7 +794,7 @@ type WriteCommand_Delete struct {
 
 func (x *WriteCommand_Delete) Reset() {
 	*x = WriteCommand_Delete{}
-	mi := &file_proto_client_client_api_proto_msgTypes[9]
+	mi := &file_proto_client_client_api_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -745,7 +806,7 @@ func (x *WriteCommand_Delete) String() string {
 func (*WriteCommand_Delete) ProtoMessage() {}
 
 func (x *WriteCommand_Delete) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[9]
+	mi := &file_proto_client_client_api_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -768,32 +829,100 @@ func (x *WriteCommand_Delete) GetKey() []byte {
 	return nil
 }
 
+type WriteCommand_CompareAndSwap struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	ExpectedValue []byte                 `protobuf:"bytes,2,opt,name=expected_value,json=expectedValue,proto3,oneof" json:"expected_value,omitempty"` // None means key must not exist
+	NewValue      []byte                 `protobuf:"bytes,3,opt,name=new_value,json=newValue,proto3" json:"new_value,omitempty"`                      // New value to set if comparison succeeds
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WriteCommand_CompareAndSwap) Reset() {
+	*x = WriteCommand_CompareAndSwap{}
+	mi := &file_proto_client_client_api_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WriteCommand_CompareAndSwap) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WriteCommand_CompareAndSwap) ProtoMessage() {}
+
+func (x *WriteCommand_CompareAndSwap) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_client_client_api_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WriteCommand_CompareAndSwap.ProtoReflect.Descriptor instead.
+func (*WriteCommand_CompareAndSwap) Descriptor() ([]byte, []int) {
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{0, 2}
+}
+
+func (x *WriteCommand_CompareAndSwap) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *WriteCommand_CompareAndSwap) GetExpectedValue() []byte {
+	if x != nil {
+		return x.ExpectedValue
+	}
+	return nil
+}
+
+func (x *WriteCommand_CompareAndSwap) GetNewValue() []byte {
+	if x != nil {
+		return x.NewValue
+	}
+	return nil
+}
+
 var File_proto_client_client_api_proto protoreflect.FileDescriptor
 
 const file_proto_client_client_api_proto_rawDesc = "" +
 	"\n" +
-	"\x1dproto/client/client_api.proto\x12\x0fd_engine.client\x1a\x11proto/error.proto\"\x84\x02\n" +
+	"\x1dproto/client/client_api.proto\x12\x0fd_engine.client\x1a\x11proto/error.proto\"\xde\x03\n" +
 	"\fWriteCommand\x12>\n" +
 	"\x06insert\x18\x01 \x01(\v2$.d_engine.client.WriteCommand.InsertH\x00R\x06insert\x12>\n" +
-	"\x06delete\x18\x02 \x01(\v2$.d_engine.client.WriteCommand.DeleteH\x00R\x06delete\x1aK\n" +
+	"\x06delete\x18\x02 \x01(\v2$.d_engine.client.WriteCommand.DeleteH\x00R\x06delete\x12X\n" +
+	"\x10compare_and_swap\x18\x03 \x01(\v2,.d_engine.client.WriteCommand.CompareAndSwapH\x00R\x0ecompareAndSwap\x1aK\n" +
 	"\x06Insert\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12\x19\n" +
 	"\bttl_secs\x18\x03 \x01(\x04R\attlSecs\x1a\x1a\n" +
 	"\x06Delete\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\fR\x03keyB\v\n" +
-	"\toperation\"l\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x1a~\n" +
+	"\x0eCompareAndSwap\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x12*\n" +
+	"\x0eexpected_value\x18\x02 \x01(\fH\x00R\rexpectedValue\x88\x01\x01\x12\x1b\n" +
+	"\tnew_value\x18\x03 \x01(\fR\bnewValueB\x11\n" +
+	"\x0f_expected_valueB\v\n" +
+	"\toperation\"j\n" +
 	"\x12ClientWriteRequest\x12\x1b\n" +
-	"\tclient_id\x18\x01 \x01(\rR\bclientId\x129\n" +
-	"\bcommands\x18\x02 \x03(\v2\x1d.d_engine.client.WriteCommandR\bcommands\"\xb7\x01\n" +
+	"\tclient_id\x18\x01 \x01(\rR\bclientId\x127\n" +
+	"\acommand\x18\x02 \x01(\v2\x1d.d_engine.client.WriteCommandR\acommand\"\xb7\x01\n" +
 	"\x11ClientReadRequest\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\rR\bclientId\x12\x12\n" +
 	"\x04keys\x18\x02 \x03(\fR\x04keys\x12Z\n" +
 	"\x12consistency_policy\x18\x03 \x01(\x0e2&.d_engine.client.ReadConsistencyPolicyH\x00R\x11consistencyPolicy\x88\x01\x01B\x15\n" +
-	"\x13_consistency_policy\"\xea\x01\n" +
+	"\x13_consistency_policy\"+\n" +
+	"\vWriteResult\x12\x1c\n" +
+	"\tsucceeded\x18\x01 \x01(\bR\tsucceeded\"\x8e\x02\n" +
 	"\x0eClientResponse\x12/\n" +
-	"\x05error\x18\x01 \x01(\x0e2\x19.d_engine.error.ErrorCodeR\x05error\x12\x1d\n" +
-	"\twrite_ack\x18\x02 \x01(\bH\x00R\bwriteAck\x12;\n" +
+	"\x05error\x18\x01 \x01(\x0e2\x19.d_engine.error.ErrorCodeR\x05error\x12A\n" +
+	"\fwrite_result\x18\x02 \x01(\v2\x1c.d_engine.client.WriteResultH\x00R\vwriteResult\x12;\n" +
 	"\tread_data\x18\x03 \x01(\v2\x1c.d_engine.client.ReadResultsH\x00R\breadData\x129\n" +
 	"\bmetadata\x18\x04 \x01(\v2\x1d.d_engine.error.ErrorMetadataR\bmetadataB\x10\n" +
 	"\x0esuccess_result\"6\n" +
@@ -836,45 +965,49 @@ func file_proto_client_client_api_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_client_client_api_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_client_client_api_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_proto_client_client_api_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_proto_client_client_api_proto_goTypes = []any{
-	(ReadConsistencyPolicy)(0),   // 0: d_engine.client.ReadConsistencyPolicy
-	(WatchEventType)(0),          // 1: d_engine.client.WatchEventType
-	(*WriteCommand)(nil),         // 2: d_engine.client.WriteCommand
-	(*ClientWriteRequest)(nil),   // 3: d_engine.client.ClientWriteRequest
-	(*ClientReadRequest)(nil),    // 4: d_engine.client.ClientReadRequest
-	(*ClientResponse)(nil),       // 5: d_engine.client.ClientResponse
-	(*ClientResult)(nil),         // 6: d_engine.client.ClientResult
-	(*ReadResults)(nil),          // 7: d_engine.client.ReadResults
-	(*WatchRequest)(nil),         // 8: d_engine.client.WatchRequest
-	(*WatchResponse)(nil),        // 9: d_engine.client.WatchResponse
-	(*WriteCommand_Insert)(nil),  // 10: d_engine.client.WriteCommand.Insert
-	(*WriteCommand_Delete)(nil),  // 11: d_engine.client.WriteCommand.Delete
-	(error1.ErrorCode)(0),        // 12: d_engine.error.ErrorCode
-	(*error1.ErrorMetadata)(nil), // 13: d_engine.error.ErrorMetadata
+	(ReadConsistencyPolicy)(0),          // 0: d_engine.client.ReadConsistencyPolicy
+	(WatchEventType)(0),                 // 1: d_engine.client.WatchEventType
+	(*WriteCommand)(nil),                // 2: d_engine.client.WriteCommand
+	(*ClientWriteRequest)(nil),          // 3: d_engine.client.ClientWriteRequest
+	(*ClientReadRequest)(nil),           // 4: d_engine.client.ClientReadRequest
+	(*WriteResult)(nil),                 // 5: d_engine.client.WriteResult
+	(*ClientResponse)(nil),              // 6: d_engine.client.ClientResponse
+	(*ClientResult)(nil),                // 7: d_engine.client.ClientResult
+	(*ReadResults)(nil),                 // 8: d_engine.client.ReadResults
+	(*WatchRequest)(nil),                // 9: d_engine.client.WatchRequest
+	(*WatchResponse)(nil),               // 10: d_engine.client.WatchResponse
+	(*WriteCommand_Insert)(nil),         // 11: d_engine.client.WriteCommand.Insert
+	(*WriteCommand_Delete)(nil),         // 12: d_engine.client.WriteCommand.Delete
+	(*WriteCommand_CompareAndSwap)(nil), // 13: d_engine.client.WriteCommand.CompareAndSwap
+	(error1.ErrorCode)(0),               // 14: d_engine.error.ErrorCode
+	(*error1.ErrorMetadata)(nil),        // 15: d_engine.error.ErrorMetadata
 }
 var file_proto_client_client_api_proto_depIdxs = []int32{
-	10, // 0: d_engine.client.WriteCommand.insert:type_name -> d_engine.client.WriteCommand.Insert
-	11, // 1: d_engine.client.WriteCommand.delete:type_name -> d_engine.client.WriteCommand.Delete
-	2,  // 2: d_engine.client.ClientWriteRequest.commands:type_name -> d_engine.client.WriteCommand
-	0,  // 3: d_engine.client.ClientReadRequest.consistency_policy:type_name -> d_engine.client.ReadConsistencyPolicy
-	12, // 4: d_engine.client.ClientResponse.error:type_name -> d_engine.error.ErrorCode
-	7,  // 5: d_engine.client.ClientResponse.read_data:type_name -> d_engine.client.ReadResults
-	13, // 6: d_engine.client.ClientResponse.metadata:type_name -> d_engine.error.ErrorMetadata
-	6,  // 7: d_engine.client.ReadResults.results:type_name -> d_engine.client.ClientResult
-	1,  // 8: d_engine.client.WatchResponse.event_type:type_name -> d_engine.client.WatchEventType
-	12, // 9: d_engine.client.WatchResponse.error:type_name -> d_engine.error.ErrorCode
-	3,  // 10: d_engine.client.RaftClientService.HandleClientWrite:input_type -> d_engine.client.ClientWriteRequest
-	4,  // 11: d_engine.client.RaftClientService.HandleClientRead:input_type -> d_engine.client.ClientReadRequest
-	8,  // 12: d_engine.client.RaftClientService.Watch:input_type -> d_engine.client.WatchRequest
-	5,  // 13: d_engine.client.RaftClientService.HandleClientWrite:output_type -> d_engine.client.ClientResponse
-	5,  // 14: d_engine.client.RaftClientService.HandleClientRead:output_type -> d_engine.client.ClientResponse
-	9,  // 15: d_engine.client.RaftClientService.Watch:output_type -> d_engine.client.WatchResponse
-	13, // [13:16] is the sub-list for method output_type
-	10, // [10:13] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	11, // 0: d_engine.client.WriteCommand.insert:type_name -> d_engine.client.WriteCommand.Insert
+	12, // 1: d_engine.client.WriteCommand.delete:type_name -> d_engine.client.WriteCommand.Delete
+	13, // 2: d_engine.client.WriteCommand.compare_and_swap:type_name -> d_engine.client.WriteCommand.CompareAndSwap
+	2,  // 3: d_engine.client.ClientWriteRequest.command:type_name -> d_engine.client.WriteCommand
+	0,  // 4: d_engine.client.ClientReadRequest.consistency_policy:type_name -> d_engine.client.ReadConsistencyPolicy
+	14, // 5: d_engine.client.ClientResponse.error:type_name -> d_engine.error.ErrorCode
+	5,  // 6: d_engine.client.ClientResponse.write_result:type_name -> d_engine.client.WriteResult
+	8,  // 7: d_engine.client.ClientResponse.read_data:type_name -> d_engine.client.ReadResults
+	15, // 8: d_engine.client.ClientResponse.metadata:type_name -> d_engine.error.ErrorMetadata
+	7,  // 9: d_engine.client.ReadResults.results:type_name -> d_engine.client.ClientResult
+	1,  // 10: d_engine.client.WatchResponse.event_type:type_name -> d_engine.client.WatchEventType
+	14, // 11: d_engine.client.WatchResponse.error:type_name -> d_engine.error.ErrorCode
+	3,  // 12: d_engine.client.RaftClientService.HandleClientWrite:input_type -> d_engine.client.ClientWriteRequest
+	4,  // 13: d_engine.client.RaftClientService.HandleClientRead:input_type -> d_engine.client.ClientReadRequest
+	9,  // 14: d_engine.client.RaftClientService.Watch:input_type -> d_engine.client.WatchRequest
+	6,  // 15: d_engine.client.RaftClientService.HandleClientWrite:output_type -> d_engine.client.ClientResponse
+	6,  // 16: d_engine.client.RaftClientService.HandleClientRead:output_type -> d_engine.client.ClientResponse
+	10, // 17: d_engine.client.RaftClientService.Watch:output_type -> d_engine.client.WatchResponse
+	15, // [15:18] is the sub-list for method output_type
+	12, // [12:15] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_proto_client_client_api_proto_init() }
@@ -885,19 +1018,21 @@ func file_proto_client_client_api_proto_init() {
 	file_proto_client_client_api_proto_msgTypes[0].OneofWrappers = []any{
 		(*WriteCommand_Insert_)(nil),
 		(*WriteCommand_Delete_)(nil),
+		(*WriteCommand_CompareAndSwap_)(nil),
 	}
 	file_proto_client_client_api_proto_msgTypes[2].OneofWrappers = []any{}
-	file_proto_client_client_api_proto_msgTypes[3].OneofWrappers = []any{
-		(*ClientResponse_WriteAck)(nil),
+	file_proto_client_client_api_proto_msgTypes[4].OneofWrappers = []any{
+		(*ClientResponse_WriteResult)(nil),
 		(*ClientResponse_ReadData)(nil),
 	}
+	file_proto_client_client_api_proto_msgTypes[11].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_client_client_api_proto_rawDesc), len(file_proto_client_client_api_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

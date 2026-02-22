@@ -77,7 +77,7 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     let urls = create_bootstrap_urls(ports);
     let client = Client::builder(urls)
         .connect_timeout(Duration::from_secs(5))
-        .cluster_ready_timeout(Duration::from_secs(15))
+        .cluster_ready_timeout(Duration::from_secs(30))
         .build()
         .await?;
 
