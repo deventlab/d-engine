@@ -128,11 +128,11 @@ grep "WAL" /var/log/d-engine.log
 
 ## Timeline
 
-| Version | WAL Format          | Wire Protocol       | Migration Required                           |
-| ------- | ------------------- | ------------------- | -------------------------------------------- |
-| v0.1.x  | Relative TTL        | Compatible          | -                                            |
-| v0.2.0+ | Absolute expiration | Compatible (v0.2.x) | ✅ Yes (clear WAL from v0.1.x)               |
-| v0.2.3  | Same as v0.2.0+     | **Incompatible**    | ✅ Yes (protobuf enum changes + API changes) |
+| Version       | WAL Format          | Wire Protocol    | Migration Required                           |
+| ------------- | ------------------- | ---------------- | -------------------------------------------- |
+| v0.1.x        | Relative TTL        | Compatible       | -                                            |
+| v0.2.0–v0.2.2 | Absolute expiration | Compatible       | ✅ Yes (clear WAL from v0.1.x)               |
+| v0.2.3+       | Same as v0.2.0+     | **Incompatible** | ✅ Yes (protobuf enum changes + API changes) |
 
 ---
 

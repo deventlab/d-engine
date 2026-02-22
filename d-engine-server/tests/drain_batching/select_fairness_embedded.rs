@@ -83,30 +83,42 @@ async fn test_select_fairness_drain_no_starvation() {
 
     // Metrics
     let write_count = Arc::new(AtomicU64::new(0));
-    let write_count_clone = write_count.clone();
 
-    // Start high-speed write saturation
-    let client = engine.client();
-    let write_task = tokio::spawn(async move {
-        let mut i = 0u64;
-        loop {
-            let key = format!("key_{i}");
-            let value = format!("value_{i}");
+    // Spawn concurrent writer tasks to saturate command channel and trigger drain batching
+    const NUM_WRITERS: usize = 8;
+    let mut writer_handles = Vec::new();
 
-            // Fire-and-forget writes to saturate channel
-            if client.put(key.as_bytes(), value.as_bytes()).await.is_ok() {
-                write_count_clone.fetch_add(1, Ordering::Relaxed);
-            }
+    for writer_id in 0..NUM_WRITERS {
+        let client = engine.client();
+        let write_count_clone = write_count.clone();
 
-            i += 1;
+        let handle = tokio::spawn(async move {
+            let mut i = 0u64;
+            loop {
+                // Fire-and-forget pattern: spawn multiple requests without waiting
+                // This saturates the command channel to trigger drain-based batching
+                for _ in 0..10 {
+                    let key = format!("key_{writer_id}_{i}");
+                    let value = format!("value_{i}");
+                    let client_clone = client.clone();
+                    let write_count_clone = write_count_clone.clone();
 
-            // No sleep - saturate cmd_rx
-            // But yield to prevent CPU starvation
-            if i % 1000 == 0 {
+                    // Spawn background task to handle response
+                    tokio::spawn(async move {
+                        if client_clone.put(key.as_bytes(), value.as_bytes()).await.is_ok() {
+                            write_count_clone.fetch_add(1, Ordering::Relaxed);
+                        }
+                    });
+
+                    i += 1;
+                }
+
+                // Yield to let requests be sent
                 tokio::task::yield_now().await;
             }
-        }
-    });
+        });
+        writer_handles.push(handle);
+    }
 
     // Monitor Raft protocol responsiveness via read latency
     // (reads require verify_leadership, which uses P4 event channel)
@@ -140,8 +152,10 @@ async fn test_select_fairness_drain_no_starvation() {
     // Run test for 3 seconds
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // Stop write saturation
-    write_task.abort();
+    // Stop all writer tasks
+    for handle in writer_handles {
+        handle.abort();
+    }
 
     // Wait for monitor to finish
     monitor_task.await.expect("Monitor task failed");

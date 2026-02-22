@@ -1501,19 +1501,17 @@ async fn test_learner_serves_eventual_read_locally() {
         match response {
             Ok(read_response) => {
                 // Check success_result for ReadResults
-                assert!(
-                    read_response.success_result.is_some(),
-                    "Should have success_result"
-                );
-                if let Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
-                    read_data,
-                )) = read_response.success_result
-                {
-                    assert!(!read_data.results.is_empty(), "Should have read results");
-                    assert_eq!(
-                        read_data.results[0].value,
-                        bytes::Bytes::from("eventual_value")
-                    );
+                match read_response.success_result {
+                    Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
+                        read_data,
+                    )) => {
+                        assert!(!read_data.results.is_empty(), "Should have read results");
+                        assert_eq!(
+                            read_data.results[0].value,
+                            bytes::Bytes::from("eventual_value")
+                        );
+                    }
+                    other => panic!("Expected ReadData variant, got: {other:?}"),
                 }
             }
             Err(e) => {

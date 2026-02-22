@@ -1,8 +1,8 @@
 module github.com/deventlab/d-engine/proto
 
-go 1.21
+go 1.23
 
-toolchain go1.24.5
+toolchain go1.25.0
 
 require (
 	google.golang.org/grpc v1.64.0

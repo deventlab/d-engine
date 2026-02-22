@@ -217,5 +217,4 @@ make start-cluster
 
 Historical benchmark reports are available for reference:
 
-- [Embedded v0.2.2](../../../benches/embedded-bench/reports/v0.2.2/embedded_bench_report_v0.2.2.md)
-- [Standalone v0.2.2](../../../benches/standalone-bench/reports/v0.2.2/standalone_bench_report_v0.2.2.md)
+- [v0.2.3 Benchmark Report](../../../benches/reports/v0.2.3/bench_report_v0.2.3.md) (Embedded & Standalone)

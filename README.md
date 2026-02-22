@@ -94,7 +94,7 @@ d-engine = "0.2"
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
-> **Performance note**: Embedded mode delivers exceptional performance - **4.6x higher write throughput** and **2x faster linearizable reads** vs etcd 3.5 (3-node cluster on M2 Mac localhost vs etcd on 3 GCE instances). Achieves 203K writes/sec and 279K linearizable reads/sec. See [benches/embedded-bench/reports/v0.2.2/](https://github.com/deventlab/d-engine/tree/main/benches/embedded-bench/reports/v0.2.2) for detailed benchmarks.
+> **Performance note**: Embedded mode delivers exceptional performance - **4.6x higher write throughput** and **2.1x faster linearizable reads** vs etcd 3.2 (AWS EC2 3-node cluster). Achieves 64K writes/sec and 181K linearizable reads/sec under high concurrency. See [benches/reports/v0.2.3/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) for detailed benchmarks.
 
 **→ Examples:**
 
@@ -112,7 +112,7 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 **Use when**: Application and d-engine run as separate processes  
 **Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
 
-> **Performance note**: Standalone mode achieves 64K writes/sec and 12K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (3.1x faster writes, 23x faster reads). See [benches/standalone-bench/reports/v0.2.2/](https://github.com/deventlab/d-engine/tree/main/benches/standalone-bench/reports/v0.2.2) for benchmarks.
+> **Performance note**: Standalone mode achieves 36K writes/sec and 51K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (1.8x faster writes, 3.5x faster reads). See [benches/reports/v0.2.3/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) for benchmarks.
 
 **Note**: Rust apps can use both modes - embedded for performance, standalone for operational flexibility
 
