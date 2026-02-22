@@ -24,7 +24,14 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 
 ## Features
 
-### New in v0.2 🎉
+### New in v0.2.3 🎉
+
+- **CompareAndSwap (CAS)**: Atomic compare-and-swap for distributed locks, leader election, optimistic updates
+- **Drain-based Batching**: Linearizable read +92%, lease/eventual read +62% vs v0.2.2 (embedded mode)
+- **Client Auto-Recovery**: `Client::refresh()` rediscovers cluster after leader failover
+- **Unified Client API**: Single `ClientApi` trait for KV and cluster operations (replaces `KvClient`)
+
+### Core Features (v0.2+)
 
 - **EmbeddedEngine**: Single-node start, scale to 3-node cluster when needed
 - **EmbeddedClient**: Zero-overhead in-process access (<0.1ms latency)
@@ -152,9 +159,9 @@ sequenceDiagram
 
 ---
 
-## Performance Comparison (d-engine v0.2.2 vs etcd 3.5)
+## Performance Comparison (d-engine v0.2.3 vs etcd)
 
-![d-engine vs etcd comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.2/dengine_comparison_v0.2.2.png)
+![d-engine vs etcd comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.3/d-engine_comparison_v0.2.3.png)
 
 ### View Benchmarks Detailed Reports
 
