@@ -351,11 +351,7 @@ where
         match role_event {
             RoleEvent::BecomeFollower(leader_id_option) => {
                 // Drain read buffer when stepping down from Leader; skip otherwise.
-                if self.role.is_leader() {
-                    if let Err(e) = self.role.drain_read_buffer() {
-                        warn!("Failed to drain read buffer during leader step-down: {e:?}");
-                    }
-                }
+                let _ = self.role.drain_read_buffer();
 
                 debug!("BecomeFollower");
                 self.role = self.role.become_follower()?;
@@ -374,11 +370,7 @@ where
             }
             RoleEvent::BecomeCandidate => {
                 // Drain read buffer when stepping down from Leader; skip otherwise.
-                if self.role.is_leader() {
-                    if let Err(e) = self.role.drain_read_buffer() {
-                        warn!("Failed to drain read buffer during leader step-down: {e:?}");
-                    }
-                }
+                let _ = self.role.drain_read_buffer();
 
                 debug!("BecomeCandidate");
                 self.role = self.role.become_candidate()?;
@@ -449,11 +441,7 @@ where
             }
             RoleEvent::BecomeLearner => {
                 // Drain read buffer when stepping down from Leader; skip otherwise.
-                if self.role.is_leader() {
-                    if let Err(e) = self.role.drain_read_buffer() {
-                        warn!("Failed to drain read buffer during leader step-down: {e:?}");
-                    }
-                }
+                let _ = self.role.drain_read_buffer();
 
                 debug!("BecomeLearner");
                 self.role = self.role.become_learner()?;
