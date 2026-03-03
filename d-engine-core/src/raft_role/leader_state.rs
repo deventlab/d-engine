@@ -145,9 +145,9 @@ pub struct ClusterMetadata {
 /// Encapsulates all metrics-related state to avoid polluting the core LeaderState structure.
 /// Pre-allocated labels ensure zero allocations in the request hot path.
 pub struct BackpressureMetrics {
-    /// Pre-allocated labels for write rejections: [("node_id", "<id>"), ("type", "write")]
+    /// Pre-allocated labels for write rejections: [("node_id", "\<id>"), ("type", "write")]
     labels_write: Arc<[(String, String)]>,
-    /// Pre-allocated labels for read rejections: [("node_id", "<id>"), ("type", "read")]
+    /// Pre-allocated labels for read rejections: [("node_id", "\<id>"), ("type", "read")]
     labels_read: Arc<[(String, String)]>,
     /// Runtime switch (branch prediction optimized, ~0ns overhead when false)
     enabled: bool,

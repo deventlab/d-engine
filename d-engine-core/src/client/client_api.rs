@@ -25,10 +25,9 @@
 //! }
 //! ```
 
+use crate::client::client_api_error::ClientApiResult;
 use bytes::Bytes;
 use d_engine_proto::client::ReadConsistencyPolicy;
-
-use crate::client::client_api_error::ClientApiResult;
 
 /// Unified key-value store interface.
 ///
@@ -63,8 +62,8 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`ClientApiError::Network`] if node is shutting down or timeout occurs
-    /// - [`ClientApiError::Business`] for server-side errors (e.g., not leader)
+    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down or timeout occurs
+    /// - [`crate::client::client_api_error::ClientApiError::Business`] for server-side errors (e.g., not leader)
     ///
     /// # Example
     ///
@@ -121,8 +120,8 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`ClientApiError::Network`] if node is shutting down or timeout occurs
-    /// - [`ClientApiError::Business`] for server-side errors
+    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down or timeout occurs
+    /// - [`crate::client::client_api_error::ClientApiError::Business`] for server-side errors
     ///
     /// # Example
     ///
@@ -180,8 +179,8 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`ClientApiError::Network`] if node is shutting down or timeout occurs
-    /// - [`ClientApiError::Business`] for server-side errors
+    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down or timeout occurs
+    /// - [`crate::client::client_api_error::ClientApiError::Business`] for server-side errors
     ///
     /// # Example
     ///
