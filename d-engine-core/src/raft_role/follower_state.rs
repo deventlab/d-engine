@@ -365,8 +365,12 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     )
                     .await
                 {
-                    error!(?e, "Follower handle  RaftEvent::InstallSnapshotChunk");
-                    return Err(e);
+                    // Transient failure: leader may have crashed mid-transfer.
+                    // Follower remains alive; election timer fires after heartbeats stop.
+                    warn!(
+                        ?e,
+                        "Snapshot transfer from leader failed, follower continues"
+                    );
                 }
             }
 

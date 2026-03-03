@@ -31,6 +31,20 @@ pub enum Error {
     Fatal(String),
 }
 
+impl Error {
+    /// Returns true only for errors that require node shutdown.
+    ///
+    /// Fatal: explicit `Fatal` marker, storage data corruption.
+    /// Non-fatal (warn + continue): network, snapshot, election, replication.
+    pub fn is_fatal(&self) -> bool {
+        matches!(
+            self,
+            Error::Fatal(_)
+                | Error::System(SystemError::Storage(StorageError::DataCorruption { .. }))
+        )
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConsensusError {
     /// Illegal Raft node state transitions

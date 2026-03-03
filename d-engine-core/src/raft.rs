@@ -327,9 +327,11 @@ where
                     let event = raft_event_to_test_event(&raft_event);
 
                     if let Err(e) = self.role.handle_raft_event(raft_event, &self.ctx, self.role_tx.clone()).await {
-                        error!(%self.node_id, ?e, "handle_raft_event error");
-                        // Fatal errors from SM Worker will be caught here and propagated
-                        return Err(e);
+                        if e.is_fatal() {
+                            error!(%self.node_id, ?e, "Fatal error in handle_raft_event, shutting down");
+                            return Err(e);
+                        }
+                        warn!(%self.node_id, ?e, "Non-fatal error in handle_raft_event, continuing");
                     }
 
                     #[cfg(test)]

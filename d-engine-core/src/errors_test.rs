@@ -481,3 +481,61 @@ fn test_system_error_node_start_failed_with_message() {
     let msg = err.to_string();
     assert!(msg.contains("initialization failed"));
 }
+
+// --- is_fatal() classification tests ---
+
+#[test]
+fn test_is_fatal_explicit_fatal_marker() {
+    let err = Error::Fatal("disk failure".to_string());
+    assert!(err.is_fatal());
+}
+
+#[test]
+fn test_is_fatal_data_corruption() {
+    let err: Error = StorageError::DataCorruption {
+        location: "raft_log_entry_42".to_string(),
+    }
+    .into();
+    assert!(err.is_fatal());
+}
+
+#[test]
+fn test_is_not_fatal_snapshot_operation_failed() {
+    let err: Error = SnapshotError::OperationFailed("stream closed".to_string()).into();
+    assert!(!err.is_fatal());
+}
+
+#[test]
+fn test_is_not_fatal_snapshot_transfer_failed() {
+    let err: Error = SnapshotError::TransferFailed.into();
+    assert!(!err.is_fatal());
+}
+
+#[test]
+fn test_is_not_fatal_network_service_unavailable() {
+    let err: Error = NetworkError::ServiceUnavailable("node down".to_string()).into();
+    assert!(!err.is_fatal());
+}
+
+#[test]
+fn test_is_not_fatal_election_quorum_failure() {
+    let err: Error = ElectionError::QuorumFailure {
+        required: 2,
+        succeed: 1,
+    }
+    .into();
+    assert!(!err.is_fatal());
+}
+
+#[test]
+fn test_is_not_fatal_replication_quorum_not_reached() {
+    let err: Error = ReplicationError::QuorumNotReached.into();
+    assert!(!err.is_fatal());
+}
+
+#[test]
+fn test_is_not_fatal_storage_log_storage() {
+    // I/O-level log storage errors are not fatal (unlike DataCorruption)
+    let err: Error = StorageError::LogStorage("write failed".to_string()).into();
+    assert!(!err.is_fatal());
+}
