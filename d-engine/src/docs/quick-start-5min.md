@@ -118,10 +118,9 @@ EmbeddedEngine::start_with("d-engine.toml").await?
 This one line:
 
 1. Reads config from `d-engine.toml`
-2. Created `./data/single-node/storage/` (Raft logs)
-3. Created `./data/single-node/state_machine/` (KV data)
-4. Initialized RocksDB storage engines
-5. Built Raft node with node_id=1
+2. Created `./data/single-node/db/` (single RocksDB instance)
+3. Initialized 4 column families: `logs`, `meta`, `state_machine`, `state_machine_meta`
+4. Built Raft node with node_id=1
 6. Spawned `node.run()` in background (Raft protocol)
 7. Returned immediately (non-blocking)
 

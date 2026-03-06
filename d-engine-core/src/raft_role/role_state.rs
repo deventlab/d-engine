@@ -514,19 +514,19 @@ pub trait RaftRoleState: Send + Sync + 'static {
                 response,
                 commit_index_update,
             }) => {
-                if let Some(commit) = commit_index_update {
-                    if let Err(e) = self.update_commit_index_with_signal(
+                if let Some(commit) = commit_index_update
+                    && let Err(e) = self.update_commit_index_with_signal(
                         state_snapshot.role,
                         state_snapshot.current_term,
                         commit,
                         &role_tx,
-                    ) {
-                        error!(
-                            "update_commit_index_with_signal,commit={}, error: {:?}",
-                            commit, e
-                        );
-                        return Err(e);
-                    }
+                    )
+                {
+                    error!(
+                        "update_commit_index_with_signal,commit={}, error: {:?}",
+                        commit, e
+                    );
+                    return Err(e);
                 }
                 debug!("AppendEntriesResponse: {:?}", response);
 

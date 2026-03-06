@@ -111,12 +111,11 @@ impl SnapshotPathManager {
         for pattern in patterns {
             if let Some(stripped) = filename.strip_prefix(pattern) {
                 let parts: Vec<&str> = stripped.split('-').collect();
-                if parts.len() >= 2 {
-                    if let (Ok(index), Ok(term)) =
+                if parts.len() >= 2
+                    && let (Ok(index), Ok(term)) =
                         (parts[0].parse(), parts[1].split('.').next()?.parse())
-                    {
-                        return Some((index, term));
-                    }
+                {
+                    return Some((index, term));
                 }
             }
         }

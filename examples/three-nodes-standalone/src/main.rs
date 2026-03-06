@@ -176,10 +176,10 @@ async fn collect_tokio_metrics(
 
 fn open_file_for_append(path: PathBuf) -> Result<std::fs::File, Box<dyn Error>> {
     // Create parent directories if they don't exist
-    if let Some(parent) = path.parent() {
-        if parent != Path::new("") {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && parent != Path::new("")
+    {
+        std::fs::create_dir_all(parent)?;
     }
 
     let log_file = OpenOptions::new().append(true).create(true).open(&path)?;

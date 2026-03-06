@@ -829,13 +829,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 let current_pending = self.propose_buffer.len();
 
                 // Record buffer utilization metric (with sampling)
-                if let Some(ref metrics) = self.backpressure_metrics {
-                    if backpressure.max_pending_writes > 0 {
-                        let utilization = (current_pending as f64
-                            / backpressure.max_pending_writes as f64)
-                            * 100.0;
-                        metrics.record_buffer_utilization(utilization, true);
-                    }
+                if let Some(ref metrics) = self.backpressure_metrics
+                    && backpressure.max_pending_writes > 0
+                {
+                    let utilization =
+                        (current_pending as f64 / backpressure.max_pending_writes as f64) * 100.0;
+                    metrics.record_buffer_utilization(utilization, true);
                 }
 
                 // Check write backpressure limit
@@ -875,13 +874,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         let current_pending = self.linearizable_read_buffer.len();
 
                         // Record buffer utilization metric (with sampling)
-                        if let Some(ref metrics) = self.backpressure_metrics {
-                            if backpressure.max_pending_reads > 0 {
-                                let utilization = (current_pending as f64
-                                    / backpressure.max_pending_reads as f64)
-                                    * 100.0;
-                                metrics.record_buffer_utilization(utilization, false);
-                            }
+                        if let Some(ref metrics) = self.backpressure_metrics
+                            && backpressure.max_pending_reads > 0
+                        {
+                            let utilization = (current_pending as f64
+                                / backpressure.max_pending_reads as f64)
+                                * 100.0;
+                            metrics.record_buffer_utilization(utilization, false);
                         }
 
                         // Check read backpressure limit
@@ -903,13 +902,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         let current_pending = self.lease_read_queue.len();
 
                         // Record buffer utilization metric (with sampling)
-                        if let Some(ref metrics) = self.backpressure_metrics {
-                            if backpressure.max_pending_reads > 0 {
-                                let utilization = (current_pending as f64
-                                    / backpressure.max_pending_reads as f64)
-                                    * 100.0;
-                                metrics.record_buffer_utilization(utilization, false);
-                            }
+                        if let Some(ref metrics) = self.backpressure_metrics
+                            && backpressure.max_pending_reads > 0
+                        {
+                            let utilization = (current_pending as f64
+                                / backpressure.max_pending_reads as f64)
+                                * 100.0;
+                            metrics.record_buffer_utilization(utilization, false);
                         }
 
                         // Check read backpressure limit
@@ -931,13 +930,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         let current_pending = self.eventual_read_queue.len();
 
                         // Record buffer utilization metric (with sampling)
-                        if let Some(ref metrics) = self.backpressure_metrics {
-                            if backpressure.max_pending_reads > 0 {
-                                let utilization = (current_pending as f64
-                                    / backpressure.max_pending_reads as f64)
-                                    * 100.0;
-                                metrics.record_buffer_utilization(utilization, false);
-                            }
+                        if let Some(ref metrics) = self.backpressure_metrics
+                            && backpressure.max_pending_reads > 0
+                        {
+                            let utilization = (current_pending as f64
+                                / backpressure.max_pending_reads as f64)
+                                * 100.0;
+                            metrics.record_buffer_utilization(utilization, false);
                         }
 
                         // Check read backpressure limit
@@ -2008,15 +2007,15 @@ impl<T: TypeConfig> LeaderState<T> {
         &mut self,
         received_last_included: LogId,
     ) {
-        if let Some(existing) = self.scheduled_purge_upto {
-            if existing.index >= received_last_included.index {
-                warn!(
-                    ?received_last_included,
-                    ?existing,
-                    "Will not update scheduled_purge_upto, received invalid last_included log"
-                );
-                return;
-            }
+        if let Some(existing) = self.scheduled_purge_upto
+            && existing.index >= received_last_included.index
+        {
+            warn!(
+                ?received_last_included,
+                ?existing,
+                "Will not update scheduled_purge_upto, received invalid last_included log"
+            );
+            return;
         }
         info!(?self.scheduled_purge_upto, ?received_last_included, "Updte scheduled_purge_upto.");
         self.scheduled_purge_upto = Some(received_last_included);
@@ -2773,10 +2772,10 @@ impl<T: TypeConfig> LeaderState<T> {
         let mut nodes_to_remove = Vec::new();
 
         for node_id in zombie_candidates {
-            if let Some(status) = membership.get_node_status(node_id).await {
-                if status != NodeStatus::Active {
-                    nodes_to_remove.push(node_id);
-                }
+            if let Some(status) = membership.get_node_status(node_id).await
+                && status != NodeStatus::Active
+            {
+                nodes_to_remove.push(node_id);
             }
         }
         // Batch removal if we have candidates

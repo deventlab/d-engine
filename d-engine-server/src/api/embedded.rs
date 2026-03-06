@@ -124,9 +124,7 @@
 
 use crate::Result;
 #[cfg(feature = "rocksdb")]
-use crate::RocksDBStateMachine;
-#[cfg(feature = "rocksdb")]
-use crate::RocksDBStorageEngine;
+use crate::RocksDBUnifiedEngine;
 use crate::StateMachine;
 use crate::StorageEngine;
 use crate::api::EmbeddedClient;
@@ -198,11 +196,9 @@ impl EmbeddedEngine {
             .await
             .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
 
-        let storage_path = base_dir.join("storage");
-        let sm_path = base_dir.join("state_machine");
+        let db_path = std::path::PathBuf::from(base_dir).join("db");
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let mut sm = RocksDBStateMachine::new(sm_path)?;
+        let (storage, mut sm) = RocksDBUnifiedEngine::open(&db_path)?;
 
         // Inject lease if enabled
         let lease_cfg = &config.raft.state_machine.lease;
@@ -211,9 +207,9 @@ impl EmbeddedEngine {
             sm.set_lease(lease);
         }
 
-        info!("Starting embedded engine with RocksDB at {:?}", base_dir);
+        info!("Starting embedded engine with RocksDB at {:?}", db_path);
 
-        Self::start_custom(storage, Arc::new(sm), None).await
+        Self::start_custom(Arc::new(storage), Arc::new(sm), None).await
     }
 
     /// Start engine with explicit configuration file.
@@ -240,11 +236,9 @@ impl EmbeddedEngine {
             .await
             .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
 
-        let storage_path = base_dir.join("storage");
-        let sm_path = base_dir.join("state_machine");
+        let db_path = base_dir.join("db");
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let mut sm = RocksDBStateMachine::new(sm_path)?;
+        let (storage, mut sm) = RocksDBUnifiedEngine::open(&db_path)?;
 
         // Inject lease if enabled
         let lease_cfg = &config.raft.state_machine.lease;
@@ -253,9 +247,9 @@ impl EmbeddedEngine {
             sm.set_lease(lease);
         }
 
-        info!("Starting embedded engine with RocksDB at {:?}", base_dir);
+        info!("Starting embedded engine with RocksDB at {:?}", db_path);
 
-        Self::start_custom(storage, Arc::new(sm), Some(config_path)).await
+        Self::start_custom(Arc::new(storage), Arc::new(sm), Some(config_path)).await
     }
 
     /// Start engine with custom storage and state machine.
@@ -599,14 +593,11 @@ impl EmbeddedEngine {
 impl Drop for EmbeddedEngine {
     fn drop(&mut self) {
         // Warn if stop() was not called
-        if let Ok(handle) = self.inner.node_handle.try_lock() {
-            if let Some(h) = &*handle {
-                if !h.is_finished() {
-                    error!(
-                        "EmbeddedEngine dropped without calling stop() - background task may leak"
-                    );
-                }
-            }
+        if let Ok(handle) = self.inner.node_handle.try_lock()
+            && let Some(h) = &*handle
+            && !h.is_finished()
+        {
+            error!("EmbeddedEngine dropped without calling stop() - background task may leak");
         }
     }
 }

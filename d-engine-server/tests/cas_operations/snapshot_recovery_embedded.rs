@@ -1,5 +1,5 @@
 #![cfg(feature = "rocksdb")]
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+use d_engine_server::RocksDBUnifiedEngine;
 
 use d_engine_core::ClientApi;
 use d_engine_server::api::EmbeddedEngine;
@@ -34,8 +34,7 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
     info!("Starting 3-node cluster for CAS snapshot test");
 
     let mut engines = Vec::new();
-    let mut storage_paths = Vec::new();
-    let mut sm_paths = Vec::new();
+    let mut db_paths = Vec::new();
 
     for i in 0..3 {
         let node_id = (i + 1) as u64;
@@ -50,23 +49,23 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
 
         let config = node_config(&config_str);
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
-        let storage_path = node_db_root.join("storage");
-        let sm_path = node_db_root.join("state_machine");
+        let db_path = node_db_root.join("db");
 
-        tokio::fs::create_dir_all(&storage_path).await?;
-        tokio::fs::create_dir_all(&sm_path).await?;
+        tokio::fs::create_dir_all(&db_path).await?;
 
-        storage_paths.push(storage_path.clone());
-        sm_paths.push(sm_path.clone());
+        db_paths.push(db_path.clone());
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-cas-snapshot-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine =
-            EmbeddedEngine::start_custom(storage, state_machine, Some(&config_path)).await?;
+        let engine = EmbeddedEngine::start_custom(
+            Arc::new(storage),
+            Arc::new(state_machine),
+            Some(&config_path),
+        )
+        .await?;
         engines.push(engine);
     }
 
@@ -116,14 +115,15 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     info!("Restarting follower node {}", follower_idx + 1);
-    let storage = Arc::new(RocksDBStorageEngine::new(
-        storage_paths[follower_idx].clone(),
-    )?);
-    let state_machine = Arc::new(RocksDBStateMachine::new(sm_paths[follower_idx].clone())?);
+    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_paths[follower_idx])?;
     let config_path = format!("/tmp/d-engine-cas-snapshot-node{}.toml", follower_idx + 1);
 
-    let new_engine =
-        EmbeddedEngine::start_custom(storage, state_machine, Some(&config_path)).await?;
+    let new_engine = EmbeddedEngine::start_custom(
+        Arc::new(storage),
+        Arc::new(state_machine),
+        Some(&config_path),
+    )
+    .await?;
     engines[follower_idx] = new_engine;
 
     tokio::time::sleep(Duration::from_secs(3)).await;

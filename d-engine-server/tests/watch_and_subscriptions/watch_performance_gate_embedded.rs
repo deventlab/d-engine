@@ -11,7 +11,7 @@
 //! - 1000 watchers: < 15% overhead on PUT operations
 
 #![cfg(all(feature = "watch", feature = "rocksdb"))]
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+use d_engine_server::RocksDBUnifiedEngine;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,22 +45,16 @@ watcher_buffer_size = 100
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
     // Create storage and state machine
-    let storage_path = db_path.join("storage");
-    let sm_path = db_path.join("state_machine");
-    tokio::fs::create_dir_all(&storage_path)
-        .await
-        .expect("Failed to create storage dir");
-    tokio::fs::create_dir_all(&sm_path).await.expect("Failed to create sm dir");
+    let (storage, state_machine) =
+        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
 
-    let storage =
-        Arc::new(RocksDBStorageEngine::new(storage_path).expect("Failed to create storage"));
-    let state_machine =
-        Arc::new(RocksDBStateMachine::new(sm_path).expect("Failed to create state machine"));
-
-    let engine =
-        EmbeddedEngine::start_custom(storage, state_machine, Some(config_path.to_str().unwrap()))
-            .await
-            .expect("Failed to start engine");
+    let engine = EmbeddedEngine::start_custom(
+        Arc::new(storage),
+        Arc::new(state_machine),
+        Some(config_path.to_str().unwrap()),
+    )
+    .await
+    .expect("Failed to start engine");
 
     // Wait for ready
     engine.wait_ready(Duration::from_secs(5)).await.expect("Engine not ready");

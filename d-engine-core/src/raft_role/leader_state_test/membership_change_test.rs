@@ -1351,10 +1351,10 @@ mod check_learner_progress_tests {
         // Should receive exactly 1 event
         let mut event_count = 0;
         while let Ok(event) = role_rx.try_recv() {
-            if let RoleEvent::ReprocessEvent(inner) = event {
-                if matches!(*inner, RaftEvent::PromoteReadyLearners) {
-                    event_count += 1;
-                }
+            if let RoleEvent::ReprocessEvent(inner) = event
+                && matches!(*inner, RaftEvent::PromoteReadyLearners)
+            {
+                event_count += 1;
             }
         }
         assert_eq!(

@@ -1,8 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
+use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::EmbeddedEngine;
 use tracing::info;
 use tracing_test::traced_test;
@@ -10,6 +9,7 @@ use tracing_test::traced_test;
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
+use crate::common::wait_for_new_leader;
 
 /// Test 3-node cluster leader failover with EmbeddedEngine API
 ///
@@ -48,22 +48,23 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
         // Each node needs its own storage directory to avoid RocksDB lock conflicts
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
-        let storage_path = node_db_root.join("storage");
-        let sm_path = node_db_root.join("state_machine");
+        let db_path = node_db_root.join("db");
 
-        tokio::fs::create_dir_all(&storage_path).await?;
-        tokio::fs::create_dir_all(&sm_path).await?;
+        tokio::fs::create_dir_all(&db_path).await?;
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-failover-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
         configs.push((config_str, config_path));
 
-        let engine =
-            EmbeddedEngine::start_custom(storage, state_machine, Some(&configs[i].1)).await?;
+        let engine = EmbeddedEngine::start_custom(
+            Arc::new(storage),
+            Arc::new(state_machine),
+            Some(&configs[i].1),
+        )
+        .await?;
         engines.push(engine);
     }
 
@@ -95,44 +96,22 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
     }
     info!("Initial data written successfully");
 
-    // Subscribe to leader changes on a non-leader node
-    let leader_idx = (initial_leader.leader_id - 1) as usize;
-    let watcher_idx = if leader_idx == 0 { 1 } else { 0 };
-    let watcher_id = watcher_idx + 1;
-
-    info!(
-        "Initial leader: {}, Watcher node: {}",
-        initial_leader.leader_id, watcher_id
-    );
-    let mut leader_rx = engines[watcher_idx].leader_change_notifier();
-
     // Kill the actual leader node
+    let leader_idx = (initial_leader.leader_id - 1) as usize;
     info!("Killing leader node {}", initial_leader.leader_id);
     let killed_engine = engines.remove(leader_idx);
     let _killed_config = configs.remove(leader_idx);
     killed_engine.stop().await?;
 
-    // Wait for re-election event
-    info!("Waiting for re-election detected by node {}", watcher_id);
-    let new_leader_info = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            // Check current state
-            let current = *leader_rx.borrow();
-
-            if let Some(leader) = current {
-                if leader.leader_id != initial_leader.leader_id {
-                    return leader;
-                }
-            }
-            // Wait for change
-            if leader_rx.changed().await.is_err() {
-                // If the channel closes, we can't wait anymore
-                panic!("Leader watch channel closed unexpectedly");
-            }
-        }
-    })
-    .await
-    .expect("Timeout waiting for new leader election");
+    // Wait for re-election on any surviving node
+    info!("Waiting for new leader election");
+    let receivers = engines.iter().map(|e| e.leader_change_notifier()).collect();
+    let new_leader_info = wait_for_new_leader(
+        receivers,
+        initial_leader.leader_id,
+        Duration::from_secs(120),
+    )
+    .await;
 
     assert_ne!(
         new_leader_info.leader_id, initial_leader.leader_id,
@@ -222,22 +201,23 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
         let config = node_config(&config_str);
 
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
-        let storage_path = node_db_root.join("storage");
-        let sm_path = node_db_root.join("state_machine");
+        let db_path = node_db_root.join("db");
 
-        tokio::fs::create_dir_all(&storage_path).await?;
-        tokio::fs::create_dir_all(&sm_path).await?;
+        tokio::fs::create_dir_all(&db_path).await?;
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-rejoin-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
         configs.push((config_str, config_path));
 
-        let engine =
-            EmbeddedEngine::start_custom(storage, state_machine, Some(&configs[i].1)).await?;
+        let engine = EmbeddedEngine::start_custom(
+            Arc::new(storage),
+            Arc::new(state_machine),
+            Some(&configs[i].1),
+        )
+        .await?;
         engines.push(engine);
     }
 
@@ -289,14 +269,16 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     // Restart the killed follower
     let config = node_config(&killed_config.0);
     let node_db_root = config.cluster.db_root_dir.join(format!("node{follower_id}"));
-    let storage_path = node_db_root.join("storage");
-    let sm_path = node_db_root.join("state_machine");
+    let db_path = node_db_root.join("db");
 
-    let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-    let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
-    let restarted_engine =
-        EmbeddedEngine::start_custom(storage, state_machine, Some(&killed_config.1)).await?;
+    let restarted_engine = EmbeddedEngine::start_custom(
+        Arc::new(storage),
+        Arc::new(state_machine),
+        Some(&killed_config.1),
+    )
+    .await?;
     restarted_engine.wait_ready(Duration::from_secs(30)).await?;
 
     // Wait for sync
@@ -357,20 +339,21 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
         let config = node_config(&config_str);
 
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
-        let storage_path = node_db_root.join("storage");
-        let sm_path = node_db_root.join("state_machine");
+        let db_path = node_db_root.join("db");
 
-        tokio::fs::create_dir_all(&storage_path).await?;
-        tokio::fs::create_dir_all(&sm_path).await?;
+        tokio::fs::create_dir_all(&db_path).await?;
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-minority-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine =
-            EmbeddedEngine::start_custom(storage, state_machine, Some(&config_path)).await?;
+        let engine = EmbeddedEngine::start_custom(
+            Arc::new(storage),
+            Arc::new(state_machine),
+            Some(&config_path),
+        )
+        .await?;
         engines.push(engine);
     }
 

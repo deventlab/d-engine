@@ -114,15 +114,15 @@ impl From<tonic::transport::Error> for ClientApiError {
     /// A ClientApiError with appropriate error code and retry information
     fn from(err: tonic::transport::Error) -> Self {
         // Determine the error details based on the underlying error
-        if let Some(io_err) = err.source().and_then(|e| e.downcast_ref::<std::io::Error>()) {
-            if io_err.kind() == std::io::ErrorKind::TimedOut {
-                return Self::Network {
-                    code: ErrorCode::ConnectionTimeout,
-                    message: format!("Connection timeout: {err}"),
-                    retry_after_ms: Some(3000), // Retry after 3 seconds
-                    leader_hint: None,
-                };
-            }
+        if let Some(io_err) = err.source().and_then(|e| e.downcast_ref::<std::io::Error>())
+            && io_err.kind() == std::io::ErrorKind::TimedOut
+        {
+            return Self::Network {
+                code: ErrorCode::ConnectionTimeout,
+                message: format!("Connection timeout: {err}"),
+                retry_after_ms: Some(3000), // Retry after 3 seconds
+                leader_hint: None,
+            };
         }
 
         // Check for invalid address errors

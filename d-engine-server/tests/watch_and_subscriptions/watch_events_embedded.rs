@@ -1,5 +1,5 @@
 #![cfg(feature = "rocksdb")]
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+use d_engine_server::RocksDBUnifiedEngine;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,17 +35,14 @@ watcher_buffer_size = 10
     std::fs::write(&config_path, config_content)?;
 
     // Start engine with RocksDB storage
-    let storage_path = db_path.join("storage");
-    let sm_path = db_path.join("state_machine");
-    tokio::fs::create_dir_all(&storage_path).await?;
-    tokio::fs::create_dir_all(&sm_path).await?;
+    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
-    let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-    let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
-
-    let engine =
-        EmbeddedEngine::start_custom(storage, state_machine, Some(config_path.to_str().unwrap()))
-            .await?;
+    let engine = EmbeddedEngine::start_custom(
+        Arc::new(storage),
+        Arc::new(state_machine),
+        Some(config_path.to_str().unwrap()),
+    )
+    .await?;
 
     // Wait for leader election
     engine.wait_ready(Duration::from_secs(5)).await?;
@@ -120,17 +117,14 @@ listen_address = "127.0.0.1:{port}"
     std::fs::write(&config_path, config_content)?;
 
     // Start engine with RocksDB storage
-    let storage_path = db_path.join("storage");
-    let sm_path = db_path.join("state_machine");
-    tokio::fs::create_dir_all(&storage_path).await?;
-    tokio::fs::create_dir_all(&sm_path).await?;
+    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
-    let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-    let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
-
-    let engine =
-        EmbeddedEngine::start_custom(storage, state_machine, Some(config_path.to_str().unwrap()))
-            .await?;
+    let engine = EmbeddedEngine::start_custom(
+        Arc::new(storage),
+        Arc::new(state_machine),
+        Some(config_path.to_str().unwrap()),
+    )
+    .await?;
 
     engine.wait_ready(Duration::from_secs(5)).await?;
 
@@ -347,17 +341,14 @@ watcher_buffer_size = 10
     )?;
 
     // Start engine with RocksDB storage
-    let storage_path = db_path.join("storage");
-    let sm_path = db_path.join("state_machine");
-    tokio::fs::create_dir_all(&storage_path).await?;
-    tokio::fs::create_dir_all(&sm_path).await?;
+    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
-    let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-    let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
-
-    let engine =
-        EmbeddedEngine::start_custom(storage, state_machine, Some(config_path.to_str().unwrap()))
-            .await?;
+    let engine = EmbeddedEngine::start_custom(
+        Arc::new(storage),
+        Arc::new(state_machine),
+        Some(config_path.to_str().unwrap()),
+    )
+    .await?;
 
     // Wait for leader election
     engine.wait_ready(Duration::from_secs(5)).await?;

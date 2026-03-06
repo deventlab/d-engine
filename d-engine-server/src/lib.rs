@@ -146,7 +146,7 @@ pub use storage::{FileStateMachine, FileStorageEngine};
 pub use d_engine_core::ApplyResult;
 // Conditional RocksDB exports
 #[cfg(feature = "rocksdb")]
-pub use storage::{RocksDBStateMachine, RocksDBStorageEngine};
+pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, RocksDBUnifiedEngine};
 
 // -------------------- Data Types --------------------
 

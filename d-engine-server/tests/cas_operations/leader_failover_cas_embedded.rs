@@ -1,5 +1,5 @@
 #![cfg(feature = "rocksdb")]
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+use d_engine_server::RocksDBUnifiedEngine;
 
 use d_engine_core::ClientApi;
 use d_engine_server::api::EmbeddedEngine;
@@ -12,6 +12,7 @@ use tracing_test::traced_test;
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
+use crate::common::wait_for_new_leader;
 
 /// Test CAS operation behavior during leader failover (Embedded mode)
 ///
@@ -60,20 +61,21 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
 
         let config = node_config(&config_str);
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
-        let storage_path = node_db_root.join("storage");
-        let sm_path = node_db_root.join("state_machine");
+        let db_path = node_db_root.join("db");
 
-        tokio::fs::create_dir_all(&storage_path).await?;
-        tokio::fs::create_dir_all(&sm_path).await?;
+        tokio::fs::create_dir_all(&db_path).await?;
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-cas-failover-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine =
-            EmbeddedEngine::start_custom(storage, state_machine, Some(&config_path)).await?;
+        let engine = EmbeddedEngine::start_custom(
+            Arc::new(storage),
+            Arc::new(state_machine),
+            Some(&config_path),
+        )
+        .await?;
         engines.push(engine);
     }
 
@@ -109,30 +111,16 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
     info!("CAS result during leader stop: {:?}", cas_result);
     // Expected: timeout or error (uncommitted request fails)
 
-    // Phase 2: Wait for a new leader from a surviving node.
-    // Pick one surviving node and watch its leader_change_notifier
+    // Phase 2: Wait for a new leader from any surviving node.
     info!("Phase 2: Waiting for new leader election");
-    let watcher_idx = if leader_idx == 0 { 1 } else { 0 };
-    let mut leader_rx = engines[watcher_idx].leader_change_notifier();
+    let receivers = engines
+        .iter()
+        .filter(|e| e.node_id() != initial_leader_id)
+        .map(|e| e.leader_change_notifier())
+        .collect();
 
-    let new_leader_info = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            // Check current state
-            let current = *leader_rx.borrow();
-
-            if let Some(leader) = current {
-                if leader.leader_id != 0 && leader.leader_id != initial_leader_id {
-                    return leader;
-                }
-            }
-            // Wait for change
-            if leader_rx.changed().await.is_err() {
-                panic!("Leader watch channel closed unexpectedly");
-            }
-        }
-    })
-    .await
-    .expect("Timeout waiting for new leader election");
+    let new_leader_info =
+        wait_for_new_leader(receivers, initial_leader_id, Duration::from_secs(120)).await;
 
     info!("New leader elected: node {}", new_leader_info.leader_id);
 

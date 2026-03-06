@@ -1181,44 +1181,39 @@ impl StateMachine for FileStateMachine {
                         // Extract expected_value from original entry
                         if let Some(Payload::Command(bytes)) =
                             entry.payload.as_ref().unwrap().payload.as_ref()
+                            && let Ok(write_cmd) = WriteCommand::decode(&bytes[..])
+                            && let Some(Operation::CompareAndSwap(CompareAndSwap {
+                                expected_value,
+                                ..
+                            })) = write_cmd.operation
                         {
-                            if let Ok(write_cmd) = WriteCommand::decode(&bytes[..]) {
-                                if let Some(Operation::CompareAndSwap(CompareAndSwap {
-                                    expected_value,
-                                    ..
-                                })) = write_cmd.operation
-                                {
-                                    // Read-compare-write is safe due to sequential apply
-                                    let current_value = data.get(&key);
+                            // Read-compare-write is safe due to sequential apply
+                            let current_value = data.get(&key);
 
-                                    let cas_success = match (current_value, &expected_value) {
-                                        (Some((current, _)), Some(expected)) => {
-                                            current.as_ref() == expected.as_ref()
-                                        }
-                                        (None, None) => true,
-                                        _ => false,
-                                    };
-
-                                    // Store CAS result for client response
-                                    results.push(if cas_success {
-                                        ApplyResult::success(entry.index)
-                                    } else {
-                                        ApplyResult::failure(entry.index)
-                                    });
-
-                                    debug!(
-                                        "CAS at index {}: key={:?}, success={}",
-                                        entry.index,
-                                        String::from_utf8_lossy(&key),
-                                        cas_success
-                                    );
-
-                                    if cas_success {
-                                        if let Some(new_value) = value {
-                                            data.insert(key, (new_value, entry.term));
-                                        }
-                                    }
+                            let cas_success = match (current_value, &expected_value) {
+                                (Some((current, _)), Some(expected)) => {
+                                    current.as_ref() == expected.as_ref()
                                 }
+                                (None, None) => true,
+                                _ => false,
+                            };
+
+                            // Store CAS result for client response
+                            results.push(if cas_success {
+                                ApplyResult::success(entry.index)
+                            } else {
+                                ApplyResult::failure(entry.index)
+                            });
+
+                            debug!(
+                                "CAS at index {}: key={:?}, success={}",
+                                entry.index,
+                                String::from_utf8_lossy(&key),
+                                cas_success
+                            );
+
+                            if cas_success && let Some(new_value) = value {
+                                data.insert(key, (new_value, entry.term));
                             }
                         }
                     }

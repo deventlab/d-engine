@@ -95,11 +95,10 @@ impl ProposeBatchBuffer {
         self.payloads.push(payload);
         self.senders.push(sender);
 
-        if self.metrics_enabled {
-            if let Some(ref labels) = self.metrics_labels {
-                metrics::gauge!("batch.buffer_length", labels.as_ref())
-                    .set(self.payloads.len() as f64);
-            }
+        if self.metrics_enabled
+            && let Some(ref labels) = self.metrics_labels
+        {
+            metrics::gauge!("batch.buffer_length", labels.as_ref()).set(self.payloads.len() as f64);
         }
     }
 
@@ -124,10 +123,10 @@ impl ProposeBatchBuffer {
         std::mem::swap(&mut self.payloads, &mut payloads);
         std::mem::swap(&mut self.senders, &mut senders);
 
-        if self.metrics_enabled {
-            if let Some(ref labels) = self.metrics_labels {
-                metrics::gauge!("batch.buffer_length", labels.as_ref()).set(0.0);
-            }
+        if self.metrics_enabled
+            && let Some(ref labels) = self.metrics_labels
+        {
+            metrics::gauge!("batch.buffer_length", labels.as_ref()).set(0.0);
         }
 
         Some(RaftRequestWithSignal {

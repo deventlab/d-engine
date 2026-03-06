@@ -27,8 +27,7 @@ use d_engine_proto::client::write_command::Operation;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::entry_payload::Payload;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
+use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::EmbeddedEngine;
 use prost::Message;
 use tempfile::TempDir;
@@ -112,13 +111,12 @@ watcher_buffer_size = 100
     std::fs::write(&config_path, config_content)?;
 
     // Create storage and state machine
-    let storage_path = db_path.join("storage");
-    let sm_path = db_path.join("state_machine");
-    tokio::fs::create_dir_all(&storage_path).await?;
-    tokio::fs::create_dir_all(&sm_path).await?;
+    let db_open_path = db_path.join("db");
+    tokio::fs::create_dir_all(&db_open_path).await?;
 
-    let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-    let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_open_path)?;
+    let storage = Arc::new(storage);
+    let state_machine = Arc::new(state_machine);
 
     let engine =
         EmbeddedEngine::start_custom(storage, state_machine, Some(config_path.to_str().unwrap()))
@@ -343,13 +341,13 @@ fn bench_apply_chunk_baseline(c: &mut Criterion) {
     group.bench_function("100_entries", |b| {
         b.to_async(&runtime).iter(|| async {
             let temp_dir = TempDir::new().expect("Failed to create temp dir");
-            let sm_path = temp_dir.path().join("state_machine");
-            tokio::fs::create_dir_all(&sm_path).await.unwrap();
+            let db_path = temp_dir.path().join("db");
+            tokio::fs::create_dir_all(&db_path).await.unwrap();
 
-            // Create state machine
-            let state_machine = Arc::new(
-                RocksDBStateMachine::new(&sm_path).expect("Failed to create state machine"),
-            );
+            // Create state machine (storage kept alive for duration of benchmark iter)
+            let (_storage, state_machine) =
+                RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
+            let state_machine = Arc::new(state_machine);
 
             // Create test entries
             let entries = create_test_entries(100, 1);

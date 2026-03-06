@@ -1,8 +1,7 @@
 use d_engine::NodeBuilder;
 // use d_engine::FileStateMachine;
 // use d_engine::FileStorageEngine;
-use d_engine::RocksDBStateMachine;
-use d_engine::RocksDBStorageEngine;
+use d_engine::RocksDBUnifiedEngine;
 use std::env;
 use std::error::Error;
 use std::fs::OpenOptions;
@@ -99,14 +98,13 @@ async fn start_dengine_server(
     // let storage_engine = Arc::new(FileStorageEngine::new(db_path.join("storage_engine")).unwrap());
     // let state_machine = Arc::new(FileStateMachine::new(db_path.join("state_machine")).await.unwrap());
 
-    // Option 2: ROCKSDB
-    let storage_engine = Arc::new(RocksDBStorageEngine::new(db_path.join("storage")).unwrap());
-    let state_machine = Arc::new(RocksDBStateMachine::new(db_path.join("state_machine")).unwrap());
+    // Option 2: ROCKSDB (unified engine — single DB instance, 4 column families)
+    let (storage_engine, state_machine) = RocksDBUnifiedEngine::open(db_path.join("db")).unwrap();
 
     // Start Node
     let node = NodeBuilder::new(None, graceful_rx.clone())
-        .storage_engine(storage_engine)
-        .state_machine(state_machine)
+        .storage_engine(Arc::new(storage_engine))
+        .state_machine(Arc::new(state_machine))
         .start()
         .await
         .expect("start node failed.");
@@ -191,10 +189,10 @@ async fn collect_tokio_metrics(
 
 fn open_file_for_append(path: PathBuf) -> Result<std::fs::File, Box<dyn Error>> {
     // Create parent directories if they don't exist
-    if let Some(parent) = path.parent() {
-        if parent != Path::new("") {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && parent != Path::new("")
+    {
+        std::fs::create_dir_all(parent)?;
     }
 
     let log_file = OpenOptions::new().append(true).create(true).open(&path)?;

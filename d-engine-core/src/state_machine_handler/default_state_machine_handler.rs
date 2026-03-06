@@ -222,10 +222,10 @@ where
 
         // Fire-and-forget watch events on success (non-blocking)
         #[cfg(feature = "watch")]
-        if let Ok(ref results) = apply_result {
-            if let Some(ref tx) = self.watch_event_tx {
-                self.broadcast_watch_events(&chunk, results, tx);
-            }
+        if let Ok(ref results) = apply_result
+            && let Some(ref tx) = self.watch_event_tx
+        {
+            self.broadcast_watch_events(&chunk, results, tx);
         }
 
         // Record latency and chunk size histogram *after* the operation
@@ -452,29 +452,28 @@ where
             let path = entry.path();
             debug!(?path, "cleanup_snapshot");
 
-            if path.extension().is_some_and(|ext| ext == "gz") {
-                if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                    let parsed =
-                        parse_snapshot_dirname(file_name, snapshot_dir_prefix).or_else(|| {
-                            file_name
-                                .strip_suffix(".tar.gz")
-                                .and_then(|s| parse_snapshot_dirname(s, snapshot_dir_prefix))
-                        });
+            if path.extension().is_some_and(|ext| ext == "gz")
+                && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+            {
+                let parsed = parse_snapshot_dirname(file_name, snapshot_dir_prefix).or_else(|| {
+                    file_name
+                        .strip_suffix(".tar.gz")
+                        .and_then(|s| parse_snapshot_dirname(s, snapshot_dir_prefix))
+                });
 
-                    let (index, term) = if let Some(pair) = parsed {
-                        pair
-                    } else {
-                        continue;
-                    };
+                let (index, term) = if let Some(pair) = parsed {
+                    pair
+                } else {
+                    continue;
+                };
 
-                    info!(
-                        "Index: {:>10} | Term: {:>10} | Path: {}",
-                        index,
-                        term,
-                        path.display()
-                    );
-                    snapshots.push(CleanupSnapshotMeta { index, term, path });
-                }
+                info!(
+                    "Index: {:>10} | Term: {:>10} | Path: {}",
+                    index,
+                    term,
+                    path.display()
+                );
+                snapshots.push(CleanupSnapshotMeta { index, term, path });
             }
         }
 
@@ -649,44 +648,43 @@ where
         use prost::Message;
 
         for (i, entry) in chunk.iter().enumerate() {
-            if let Some(ref payload) = entry.payload {
-                if let Some(Payload::Command(bytes)) = &payload.payload {
-                    if let Ok(write_cmd) = WriteCommand::decode(bytes.as_ref()) {
-                        let event = match write_cmd.operation {
-                            Some(Operation::Insert(insert)) => Some(WatchResponse {
-                                key: insert.key,
-                                value: insert.value,
+            if let Some(ref payload) = entry.payload
+                && let Some(Payload::Command(bytes)) = &payload.payload
+                && let Ok(write_cmd) = WriteCommand::decode(bytes.as_ref())
+            {
+                let event = match write_cmd.operation {
+                    Some(Operation::Insert(insert)) => Some(WatchResponse {
+                        key: insert.key,
+                        value: insert.value,
+                        event_type: WatchEventType::Put as i32,
+                        error: 0,
+                    }),
+                    Some(Operation::Delete(delete)) => Some(WatchResponse {
+                        key: delete.key,
+                        value: bytes::Bytes::new(),
+                        event_type: WatchEventType::Delete as i32,
+                        error: 0,
+                    }),
+                    Some(Operation::CompareAndSwap(cas)) => {
+                        // Only broadcast if CAS actually mutated the value.
+                        // A failed CAS leaves the key unchanged — no watch event.
+                        if results.get(i).is_some_and(|r| r.succeeded) {
+                            Some(WatchResponse {
+                                key: cas.key,
+                                value: cas.new_value,
                                 event_type: WatchEventType::Put as i32,
                                 error: 0,
-                            }),
-                            Some(Operation::Delete(delete)) => Some(WatchResponse {
-                                key: delete.key,
-                                value: bytes::Bytes::new(),
-                                event_type: WatchEventType::Delete as i32,
-                                error: 0,
-                            }),
-                            Some(Operation::CompareAndSwap(cas)) => {
-                                // Only broadcast if CAS actually mutated the value.
-                                // A failed CAS leaves the key unchanged — no watch event.
-                                if results.get(i).is_some_and(|r| r.succeeded) {
-                                    Some(WatchResponse {
-                                        key: cas.key,
-                                        value: cas.new_value,
-                                        event_type: WatchEventType::Put as i32,
-                                        error: 0,
-                                    })
-                                } else {
-                                    None
-                                }
-                            }
-                            None => None,
-                        };
-
-                        if let Some(ev) = event {
-                            // Fire-and-forget: ignore send errors (no receivers or lagging)
-                            let _ = tx.send(ev);
+                            })
+                        } else {
+                            None
                         }
                     }
+                    None => None,
+                };
+
+                if let Some(ev) = event {
+                    // Fire-and-forget: ignore send errors (no receivers or lagging)
+                    let _ = tx.send(ev);
                 }
             }
         }

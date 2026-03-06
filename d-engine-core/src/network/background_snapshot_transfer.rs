@@ -285,11 +285,12 @@ where
             // Completion check
             debug!(?total_chunks, "------ total_chunks");
 
-            if let Some(total) = total_chunks {
-                if next_seq >= total && pending_acks.is_empty() {
-                    debug!("All chunks transferred and acknowledged");
-                    break;
-                }
+            if let Some(total) = total_chunks
+                && next_seq >= total
+                && pending_acks.is_empty()
+            {
+                debug!("All chunks transferred and acknowledged");
+                break;
             }
         }
 

@@ -1,4 +1,5 @@
-use super::RocksDBStateMachine;
+use super::RocksDBStorageEngine;
+use super::RocksDBUnifiedEngine;
 use crate::{Error, StateMachine};
 use bytes::Bytes;
 use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
@@ -8,17 +9,21 @@ use d_engine_proto::common::Entry;
 use d_engine_proto::common::entry_payload::Payload;
 use prost::Message;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tempfile::TempDir;
 use tonic::async_trait;
 
 struct RocksDBStateMachineBuilder {
     temp_dir: TempDir,
+    // Partner storage kept alive alongside SM; must be dropped before the next build().
+    storage: Mutex<Option<RocksDBStorageEngine>>,
 }
 
 impl RocksDBStateMachineBuilder {
     fn new() -> Self {
         Self {
             temp_dir: TempDir::new().expect("Failed to create temp dir"),
+            storage: Mutex::new(None),
         }
     }
 }
@@ -26,13 +31,26 @@ impl RocksDBStateMachineBuilder {
 #[async_trait]
 impl StateMachineBuilder for RocksDBStateMachineBuilder {
     async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
+        // Drop old storage so Arc<DB> refcount falls to 0 and RocksDB releases the lock.
+        {
+            *self.storage.lock().unwrap() = None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
         let path = self.temp_dir.path().join("rocksdb_sm");
-        let sm = RocksDBStateMachine::new(path)?;
+        let (storage, sm) = RocksDBUnifiedEngine::open(&path)?;
+        *self.storage.lock().unwrap() = Some(storage);
         Ok(Arc::new(sm))
     }
 
     async fn cleanup(&self) -> Result<(), Error> {
-        // TempDir automatically cleans up on drop
+        *self.storage.lock().unwrap() = None;
+        let delay = if std::env::var("CI").is_ok() {
+            std::time::Duration::from_millis(500)
+        } else {
+            std::time::Duration::from_millis(100)
+        };
+        tokio::time::sleep(delay).await;
         Ok(())
     }
 }
@@ -74,7 +92,8 @@ async fn test_rocksdb_state_machine_performance() {
 async fn test_get_rejected_when_not_serving() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join("test_not_serving");
-    let state_machine = RocksDBStateMachine::new(db_path).expect("Failed to create state machine");
+    let (_storage, state_machine) =
+        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
 
     // Start state machine
     state_machine.start().await.expect("Failed to start");

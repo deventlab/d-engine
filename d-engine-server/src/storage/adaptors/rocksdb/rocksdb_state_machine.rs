@@ -1,5 +1,3 @@
-use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -24,11 +22,15 @@ use d_engine_proto::common::entry_payload::Payload;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
 use prost::Message;
-use rocksdb::Cache;
 use rocksdb::DB;
+use rocksdb::ExportImportFilesMetaData;
+use rocksdb::ImportColumnFamilyOptions;
 use rocksdb::IteratorMode;
+use rocksdb::LiveFile;
 use rocksdb::Options;
 use rocksdb::WriteBatch;
+use serde::Deserialize;
+use serde::Serialize;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
@@ -38,18 +40,43 @@ use tracing::warn;
 
 use crate::storage::DefaultLease;
 
-const STATE_MACHINE_CF: &str = "state_machine";
-const STATE_MACHINE_META_CF: &str = "state_machine_meta";
+use super::LOG_CF;
+use super::META_CF;
+use super::STATE_MACHINE_CF;
+use super::STATE_MACHINE_META_CF;
+
 const LAST_APPLIED_INDEX_KEY: &[u8] = b"last_applied_index";
 const LAST_APPLIED_TERM_KEY: &[u8] = b"last_applied_term";
 const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
 const TTL_STATE_KEY: &[u8] = b"ttl_state";
 
+/// Persisted representation of `ExportImportFilesMetaData` for cross-node snapshot transfer.
+///
+/// `directory` is excluded — it is reconstructed from the local snapshot path on restore.
+#[derive(Serialize, Deserialize)]
+struct CfExportMeta {
+    db_comparator_name: String,
+    files: Vec<CfExportFile>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CfExportFile {
+    column_family_name: String,
+    name: String,
+    size: usize,
+    level: i32,
+    start_key: Option<Vec<u8>>,
+    end_key: Option<Vec<u8>>,
+    smallest_seqno: u64,
+    largest_seqno: u64,
+    num_entries: u64,
+    num_deletions: u64,
+}
+
 /// RocksDB-based state machine implementation with lease support
 #[derive(Debug)]
 pub struct RocksDBStateMachine {
     db: Arc<ArcSwap<DB>>,
-    db_path: PathBuf,
     is_serving: AtomicBool,
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
@@ -69,33 +96,22 @@ pub struct RocksDBStateMachine {
 }
 
 impl RocksDBStateMachine {
-    /// Creates a new RocksDB-based state machine
+    /// Creates a state machine sharing an existing `Arc<DB>` (unified mode).
     ///
-    /// Lease will be injected by NodeBuilder after construction.
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let db_path = path.as_ref().to_path_buf();
-
-        // Configure RocksDB options using shared configuration
-        let opts = Self::configure_db_options();
-        let cfs = vec![STATE_MACHINE_CF, STATE_MACHINE_META_CF];
-
-        let db =
-            DB::open_cf(&opts, &db_path, cfs).map_err(|e| StorageError::DbError(e.to_string()))?;
-        let db_arc = Arc::new(db);
-
-        // Load metadata
-        let (last_applied_index, last_applied_term) = Self::load_state_machine_metadata(&db_arc)?;
-        let last_snapshot_metadata = Self::load_snapshot_metadata(&db_arc)?;
+    /// Called by `RocksDBUnifiedEngine::open()`. The DB must already have
+    /// `STATE_MACHINE_CF` and `STATE_MACHINE_META_CF` column families open.
+    pub(super) fn from_shared_db(db: Arc<DB>) -> Result<Self, Error> {
+        let (last_applied_index, last_applied_term) = Self::load_state_machine_metadata(&db)?;
+        let last_snapshot_metadata = Self::load_snapshot_metadata(&db)?;
 
         Ok(Self {
-            db: Arc::new(ArcSwap::new(db_arc)),
-            db_path,
+            db: Arc::new(ArcSwap::new(db)),
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
             last_snapshot_metadata: RwLock::new(last_snapshot_metadata),
-            lease: None,          // Will be injected by NodeBuilder
-            lease_enabled: false, // Default: no lease until set
+            lease: None,
+            lease_enabled: false,
         })
     }
 
@@ -118,63 +134,6 @@ impl RocksDBStateMachine {
     // Framework-internal method: called by NodeBuilder::build() during initialization.
     // Opens RocksDB with the standard configuration
     // ========== Private helper methods ==========
-
-    /// Configure high-performance RocksDB options.
-    ///
-    /// This shared configuration is used by both `new()` and `open_db()` to ensure
-    /// consistency between initial DB creation and snapshot restoration.
-    ///
-    /// # Configuration Details
-    ///
-    /// - **Memory**: 128MB write buffer, 4 max buffers, merge at 2
-    /// - **Compression**: LZ4 (fast), Zstd for bottommost (space-efficient)
-    /// - **WAL**: 1MB sync interval, manual flush, no fsync
-    /// - **Performance**: 4 background jobs, 5000 max open files, direct I/O
-    /// - **Compaction**: Dynamic level bytes, 64MB target file size, 256MB base level
-    /// - **Cache**: 128MB LRU block cache
-    fn configure_db_options() -> Options {
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-
-        // Memory and write optimization
-        opts.set_max_write_buffer_number(4);
-        opts.set_min_write_buffer_number_to_merge(2);
-        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB
-
-        // Compression optimization
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-        opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
-        opts.set_compression_options(-14, 0, 0, 0); // LZ4 fast compression
-
-        // WAL-related optimizations
-        opts.set_wal_bytes_per_sync(1024 * 1024); // 1MB sync
-        opts.set_manual_wal_flush(true);
-        opts.set_use_fsync(false);
-
-        // Performance Tuning
-        opts.set_max_background_jobs(4);
-        opts.set_max_open_files(5000);
-        opts.set_use_direct_io_for_flush_and_compaction(true);
-        opts.set_use_direct_reads(true);
-
-        // Leveled Compaction Configuration
-        opts.set_level_compaction_dynamic_level_bytes(true);
-        opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB
-        opts.set_max_bytes_for_level_base(256 * 1024 * 1024); // 256MB
-
-        // Block cache configuration
-        let cache = Cache::new_lru_cache(128 * 1024 * 1024); // 128MB
-        opts.set_row_cache(&cache);
-
-        opts
-    }
-
-    fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, Error> {
-        let opts = Self::configure_db_options();
-        let cfs = vec![STATE_MACHINE_CF, STATE_MACHINE_META_CF];
-        DB::open_cf(&opts, path, cfs).map_err(|e| StorageError::DbError(e.to_string()).into())
-    }
 
     fn load_state_machine_metadata(db: &Arc<DB>) -> Result<(u64, u64), Error> {
         let cf = db
@@ -380,7 +339,7 @@ impl RocksDBStateMachine {
             }
 
             // Apply batch delete
-            if let Err(e) = db.write(batch) {
+            if let Err(e) = db.write(&batch) {
                 error!("Failed to delete expired keys: {}", e);
                 break;
             }
@@ -401,8 +360,258 @@ impl RocksDBStateMachine {
         &self,
         batch: WriteBatch,
     ) -> Result<(), Error> {
-        self.db.load().write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.load().write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
+    }
+
+    // ===== Snapshot restore helpers =====
+
+    /// Restore SM state from a snapshot.
+    ///
+    /// Supports two formats:
+    /// - New (CF export): `snapshot_dir/sm/` exists — drop+import, O(1), no tombstones.
+    /// - Old (full checkpoint): fallback clear+copy for backward compatibility.
+    async fn restore_from_snapshot(
+        &self,
+        metadata: &SnapshotMetadata,
+        snapshot_dir: &std::path::Path,
+    ) -> Result<(), Error> {
+        let db = self.db.load();
+
+        if snapshot_dir.join("sm").is_dir() {
+            // New format: CF export via export_column_family
+            Self::restore_from_cf_export(&db, snapshot_dir)?;
+        } else {
+            // Old format: full DB checkpoint — clear + copy (backward compat)
+            Self::clear_cf(&db, STATE_MACHINE_CF)?;
+            Self::clear_cf(&db, STATE_MACHINE_META_CF)?;
+            let snap_db = Self::open_snapshot_readonly(snapshot_dir)?;
+            Self::copy_cf(&snap_db, &db, STATE_MACHINE_CF)?;
+            Self::copy_cf(&snap_db, &db, STATE_MACHINE_META_CF)?;
+        }
+
+        info!("Snapshot restore complete");
+
+        // Restore lease if configured
+        if let Some(ref lease) = self.lease {
+            let ttl_path = snapshot_dir.join("ttl_state.bin");
+            if ttl_path.exists() {
+                let ttl_data = tokio::fs::read(&ttl_path).await?;
+                lease.reload(&ttl_data)?;
+                self.persist_ttl_metadata()?;
+            } else {
+                warn!("No lease state found in snapshot");
+            }
+        }
+
+        *self.last_snapshot_metadata.write() = Some(metadata.clone());
+        if let Some(last_included) = &metadata.last_included {
+            self.update_last_applied(*last_included);
+        }
+
+        self.is_serving.store(true, Ordering::SeqCst);
+        info!("Snapshot applied successfully");
+        Ok(())
+    }
+
+    /// Open a checkpoint for read-only access.
+    ///
+    /// Tries unified (4-CF) first; falls back to standalone (2-CF) for checkpoints
+    /// created before the unified engine migration.
+    fn open_snapshot_readonly(snapshot_dir: &std::path::Path) -> Result<DB, Error> {
+        let mut opts = Options::default();
+        opts.create_if_missing(false);
+        // Try unified checkpoint (4 CFs)
+        match DB::open_cf_for_read_only(
+            &opts,
+            snapshot_dir,
+            [LOG_CF, META_CF, STATE_MACHINE_CF, STATE_MACHINE_META_CF],
+            false,
+        ) {
+            Ok(db) => return Ok(db),
+            Err(e) if e.to_string().to_lowercase().contains("column family") => {
+                // Expected: snapshot was created before unified engine migration (2 CFs only).
+                // Fall through to 2-CF fallback.
+            }
+            Err(e) => return Err(StorageError::DbError(e.to_string()).into()),
+        }
+        // Fall back: standalone checkpoint (SM CFs only)
+        DB::open_cf_for_read_only(
+            &opts,
+            snapshot_dir,
+            [STATE_MACHINE_CF, STATE_MACHINE_META_CF],
+            false,
+        )
+        .map_err(|e| StorageError::DbError(e.to_string()).into())
+    }
+
+    /// Delete all keys in a CF via a single WriteBatch (compatible with `Arc<DB>`).
+    fn clear_cf(
+        db: &DB,
+        cf_name: &str,
+    ) -> Result<(), Error> {
+        let cf = db
+            .cf_handle(cf_name)
+            .ok_or_else(|| StorageError::DbError(format!("CF not found: {cf_name}")))?;
+        let mut batch = WriteBatch::default();
+        for item in db.iterator_cf(&cf, IteratorMode::Start) {
+            let (k, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            batch.delete_cf(&cf, k);
+        }
+        db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Copy all KV pairs from `cf_name` in `src` into the same CF in `dst`.
+    fn copy_cf(
+        src: &DB,
+        dst: &DB,
+        cf_name: &str,
+    ) -> Result<(), Error> {
+        let cf_src = src
+            .cf_handle(cf_name)
+            .ok_or_else(|| StorageError::DbError(format!("CF {cf_name} missing in source DB")))?;
+        let cf_dst = dst
+            .cf_handle(cf_name)
+            .ok_or_else(|| StorageError::DbError(format!("CF {cf_name} missing in dest DB")))?;
+        let mut batch = WriteBatch::default();
+        for item in src.iterator_cf(&cf_src, IteratorMode::Start) {
+            let (k, v) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            batch.put_cf(&cf_dst, k, v);
+        }
+        dst.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Restore SM CFs from a CF export snapshot (new format).
+    ///
+    /// drop_cf + create_column_family_with_import: atomic per CF, no tombstones,
+    /// O(1) via hard-links when source and DB are on the same filesystem.
+    fn restore_from_cf_export(
+        db: &DB,
+        snapshot_dir: &std::path::Path,
+    ) -> Result<(), Error> {
+        let sm_meta = Self::load_cf_export_metadata(
+            &snapshot_dir.join("sm_metadata.bin"),
+            &snapshot_dir.join("sm"),
+        )?;
+        let sm_meta_meta = Self::load_cf_export_metadata(
+            &snapshot_dir.join("sm_meta_metadata.bin"),
+            &snapshot_dir.join("sm_meta"),
+        )?;
+
+        let import_opts = ImportColumnFamilyOptions::default();
+        let cf_opts = Options::default();
+
+        // SAFETY NOTE: drop_cf + create_column_family_with_import is NOT atomic.
+        // If the process crashes between the two drop_cf calls and the imports, the CFs
+        // will be absent on restart. RocksDB does not support CF rename, so true atomicity
+        // is not achievable here. Recovery: the node will restart with missing CFs, return
+        // errors on reads, and wait for the leader to re-send the snapshot (issue #308).
+        db.drop_cf(STATE_MACHINE_CF).map_err(|e| StorageError::DbError(e.to_string()))?;
+        db.drop_cf(STATE_MACHINE_META_CF)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
+
+        // create_column_family_with_import requires at least one SST file.
+        // A CF with no files (e.g. sm_meta before its first flush) must use create_cf instead.
+        if sm_meta.get_files().is_empty() {
+            db.create_cf(STATE_MACHINE_CF, &cf_opts)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+        } else {
+            db.create_column_family_with_import(&cf_opts, STATE_MACHINE_CF, &import_opts, &sm_meta)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+        }
+
+        if sm_meta_meta.get_files().is_empty() {
+            db.create_cf(STATE_MACHINE_META_CF, &cf_opts)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+        } else {
+            db.create_column_family_with_import(
+                &cf_opts,
+                STATE_MACHINE_META_CF,
+                &import_opts,
+                &sm_meta_meta,
+            )
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    /// Serialize `ExportImportFilesMetaData` to a bincode file at `path`.
+    ///
+    /// `directory` is excluded; on restore it is reconstructed from the snapshot path.
+    fn save_cf_export_metadata(
+        metadata: &ExportImportFilesMetaData,
+        path: &std::path::Path,
+    ) -> Result<(), Error> {
+        let files = metadata
+            .get_files()
+            .into_iter()
+            .map(|f| CfExportFile {
+                column_family_name: f.column_family_name,
+                name: f.name,
+                size: f.size,
+                level: f.level,
+                start_key: f.start_key,
+                end_key: f.end_key,
+                smallest_seqno: f.smallest_seqno,
+                largest_seqno: f.largest_seqno,
+                num_entries: f.num_entries,
+                num_deletions: f.num_deletions,
+            })
+            .collect();
+
+        let meta = CfExportMeta {
+            db_comparator_name: metadata.get_db_comparator_name(),
+            files,
+        };
+
+        let bytes = bincode::serialize(&meta).map_err(StorageError::BincodeError)?;
+        std::fs::write(path, bytes).map_err(|e| StorageError::DbError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Deserialize `ExportImportFilesMetaData` from a bincode file, setting `directory` to
+    /// `actual_dir` (the local path of the exported SST files after snapshot transfer).
+    fn load_cf_export_metadata(
+        path: &std::path::Path,
+        actual_dir: &std::path::Path,
+    ) -> Result<ExportImportFilesMetaData, Error> {
+        let bytes = std::fs::read(path).map_err(|e| StorageError::DbError(e.to_string()))?;
+        let meta: CfExportMeta =
+            bincode::deserialize(&bytes).map_err(StorageError::BincodeError)?;
+
+        let dir_str = actual_dir
+            .to_str()
+            .ok_or_else(|| StorageError::DbError("Snapshot path is not valid UTF-8".to_string()))?
+            .to_string();
+
+        let live_files: Vec<LiveFile> = meta
+            .files
+            .into_iter()
+            .map(|f| LiveFile {
+                column_family_name: f.column_family_name,
+                name: f.name,
+                directory: dir_str.clone(),
+                size: f.size,
+                level: f.level,
+                start_key: f.start_key,
+                end_key: f.end_key,
+                smallest_seqno: f.smallest_seqno,
+                largest_seqno: f.largest_seqno,
+                num_entries: f.num_entries,
+                num_deletions: f.num_deletions,
+            })
+            .collect();
+
+        let mut export_metadata = ExportImportFilesMetaData::default();
+        export_metadata.set_db_comparator_name(&meta.db_comparator_name);
+        export_metadata
+            .set_files(&live_files)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
+
+        Ok(export_metadata)
     }
 }
 
@@ -678,103 +887,25 @@ impl StateMachine for RocksDBStateMachine {
         metadata: &SnapshotMetadata,
         snapshot_dir: std::path::PathBuf,
     ) -> Result<(), Error> {
-        info!("Applying snapshot from checkpoint: {:?}", snapshot_dir);
+        info!("Applying snapshot from: {:?}", snapshot_dir);
 
-        // PHASE 1: Stop serving requests
+        // Stop serving — prevents SM reads/writes during restore
         self.is_serving.store(false, Ordering::SeqCst);
-        info!("Stopped serving requests for snapshot restoration");
 
-        // PHASE 2: Flush and prepare old DB for replacement
-        {
-            let old_db = self.db.load();
-            old_db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
-            old_db.cancel_all_background_work(true);
-            info!("Flushed and stopped background work on old DB");
+        let result = self.restore_from_snapshot(metadata, &snapshot_dir).await;
+
+        if let Err(ref e) = result {
+            error!(
+                "Snapshot restore failed, resuming serving with pre-restore state: {:?}",
+                e
+            );
+            // Restore is_serving so the node stays alive and can accept future snapshots.
+            // last_applied_index was NOT updated on failure, so the leader will detect
+            // this follower is still behind and re-send the snapshot (see: issue #308).
+            self.is_serving.store(true, Ordering::SeqCst);
         }
 
-        // PHASE 2.5: Create temporary DB and swap to release old DB's lock
-        // This is critical: we must release the old DB instance completely before moving directories
-        // Otherwise, the old DB still holds a lock on rocksdb_sm/LOCK even after directory rename
-        let temp_dir = tempfile::TempDir::new()?;
-        let temp_db_path = temp_dir.path().join("temp_db");
-        let temp_db = Self::open_db(&temp_db_path).map_err(|e| {
-            error!("Failed to create temporary DB: {:?}", e);
-            e
-        })?;
-
-        // Swap temp DB into self.db, which releases the old DB's Arc
-        // Now old DB's Arc refcount drops to 0, DB instance is dropped, lock is released
-        self.db.store(Arc::new(temp_db));
-        info!("Swapped to temporary DB, old DB lock released");
-
-        // PHASE 3: Atomic directory replacement
-        let backup_dir = self.db_path.with_extension("backup");
-
-        // Remove old backup if exists
-        if backup_dir.exists() {
-            tokio::fs::remove_dir_all(&backup_dir).await?;
-        }
-
-        // Move current DB to backup
-        tokio::fs::rename(&self.db_path, &backup_dir).await?;
-        info!("Backed up current DB to: {:?}", backup_dir);
-
-        // Move checkpoint to DB path
-        tokio::fs::rename(&snapshot_dir, &self.db_path).await.inspect_err(|_e| {
-            // Rollback: restore from backup
-            let _ = std::fs::rename(&backup_dir, &self.db_path);
-        })?;
-        info!("Moved checkpoint to DB path: {:?}", self.db_path);
-
-        // PHASE 4: Open new DB from checkpoint
-        let new_db = Self::open_db(&self.db_path).map_err(|e| {
-            // Rollback: restore from backup
-            let _ = std::fs::rename(&backup_dir, &self.db_path);
-            error!("Failed to open new DB, rolled back to backup: {:?}", e);
-            e
-        })?;
-
-        // Atomically swap DB reference (replacing temp DB with new DB)
-        self.db.store(Arc::new(new_db));
-        info!("Atomically swapped to new DB instance");
-
-        // PHASE 5: Restore TTL state (if lease is configured)
-        if let Some(ref lease) = self.lease {
-            let ttl_path = self.db_path.join("ttl_state.bin");
-            if ttl_path.exists() {
-                let ttl_data = tokio::fs::read(&ttl_path).await?;
-                lease.reload(&ttl_data)?;
-
-                // Persist TTL state to metadata CF to ensure consistency after restart
-                // Without this, a subsequent restart (non-snapshot) would lose TTL state
-                // because load_lease_data() reads from metadata CF, not ttl_state.bin
-                self.persist_ttl_metadata()?;
-
-                info!("Lease state restored from snapshot and persisted to metadata CF");
-            } else {
-                warn!("No lease state found in snapshot");
-            }
-        }
-
-        // PHASE 6: Update metadata
-        *self.last_snapshot_metadata.write() = Some(metadata.clone());
-        if let Some(last_included) = &metadata.last_included {
-            self.update_last_applied(*last_included);
-        }
-
-        // PHASE 7: Resume serving
-        self.is_serving.store(true, Ordering::SeqCst);
-        info!("Resumed serving requests");
-
-        // PHASE 8: Clean up backup (best effort)
-        if let Err(e) = tokio::fs::remove_dir_all(&backup_dir).await {
-            warn!("Failed to remove backup directory: {}", e);
-        } else {
-            info!("Cleaned up backup directory");
-        }
-
-        info!("Snapshot applied successfully - full DB restoration complete");
-        Ok(())
+        result
     }
 
     #[instrument(skip(self))]
@@ -783,18 +914,47 @@ impl StateMachine for RocksDBStateMachine {
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
     ) -> Result<Bytes, Error> {
-        // Create a checkpoint in the new_snapshot_dir
-        // Use scope to ensure checkpoint is dropped before await
+        // Export only SM CFs: compact SST-only export, no Raft log data.
+        // export_column_family() creates only the final subdirectory (e.g. "sm"), so the parent
+        // (new_snapshot_dir) must already exist before calling it.
+        std::fs::create_dir_all(&new_snapshot_dir)?;
         {
             let db = self.db.load();
             let checkpoint = rocksdb::checkpoint::Checkpoint::new(db.as_ref())
                 .map_err(|e| StorageError::DbError(e.to_string()))?;
-            checkpoint
-                .create_checkpoint(&new_snapshot_dir)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-        } // checkpoint dropped here, before any await
+            let cf_sm = db
+                .cf_handle(STATE_MACHINE_CF)
+                .ok_or_else(|| StorageError::DbError("SM CF not found".to_string()))?;
+            let cf_sm_meta = db
+                .cf_handle(STATE_MACHINE_META_CF)
+                .ok_or_else(|| StorageError::DbError("SM meta CF not found".to_string()))?;
 
-        // Persist lease state alongside the checkpoint (if configured)
+            // Flush both CFs before export: export_column_family only captures SST files,
+            // not MemTable data. Without this, small CFs (e.g. sm_meta with only a few
+            // metadata keys) may never have been flushed and would export 0 files.
+            // Synchronous flush (FlushOptions::wait = true by default) is intentional:
+            // we must wait for flush to complete before export or in-flight writes are lost.
+            let flush_opts = rocksdb::FlushOptions::default();
+            db.flush_cf_opt(&cf_sm, &flush_opts)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+            db.flush_cf_opt(&cf_sm_meta, &flush_opts)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+
+            let sm_export = checkpoint
+                .export_column_family(&cf_sm, new_snapshot_dir.join("sm"))
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+            let sm_meta_export = checkpoint
+                .export_column_family(&cf_sm_meta, new_snapshot_dir.join("sm_meta"))
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+
+            Self::save_cf_export_metadata(&sm_export, &new_snapshot_dir.join("sm_metadata.bin"))?;
+            Self::save_cf_export_metadata(
+                &sm_meta_export,
+                &new_snapshot_dir.join("sm_meta_metadata.bin"),
+            )?;
+        } // checkpoint and CF handles dropped here, before any await
+
+        // Persist lease state alongside the export (if configured)
         if let Some(ref lease) = self.lease {
             let ttl_snapshot = lease.to_snapshot();
             let ttl_path = new_snapshot_dir.join("ttl_state.bin");
@@ -802,14 +962,14 @@ impl StateMachine for RocksDBStateMachine {
         }
 
         // Update metadata
-        let checksum = [0; 32]; // For now, we return a dummy checksum.
+        let checksum = [0; 32];
         let snapshot_metadata = SnapshotMetadata {
             last_included: Some(last_included),
             checksum: Bytes::copy_from_slice(&checksum),
         };
         self.persist_last_snapshot_metadata(&snapshot_metadata)?;
 
-        info!("Snapshot generated at {:?} with TTL data", new_snapshot_dir);
+        info!("Snapshot generated at {:?}", new_snapshot_dir);
         Ok(Bytes::copy_from_slice(&checksum))
     }
 
@@ -854,7 +1014,7 @@ impl StateMachine for RocksDBStateMachine {
             batch.delete_cf(&cf, &key);
         }
 
-        db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
 
         // Reset metadata
         self.last_applied_index.store(0, Ordering::SeqCst);

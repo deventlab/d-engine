@@ -27,6 +27,7 @@ use d_engine_proto::server::election::VotedFor;
 use d_engine_server::FileStateMachine;
 use d_engine_server::FileStorageEngine;
 use d_engine_server::HardState;
+use d_engine_server::LeaderInfo;
 use d_engine_server::LogStore;
 use d_engine_server::MetaStore;
 use d_engine_server::Node;
@@ -204,7 +205,7 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
         },
         election: ElectionConfig {
             election_timeout_min: 1000,
-            election_timeout_max: 2000,
+            election_timeout_max: 4000,
             ..Default::default()
         },
         ..Default::default()
@@ -634,4 +635,31 @@ pub async fn get_available_ports(count: usize) -> PortGuard {
         ports,
         _listeners: listeners,
     }
+}
+
+/// Wait for any surviving node to report a new leader different from `old_leader_id`.
+///
+/// Polls all receivers every 50ms and returns as soon as any node's view converges
+/// on a valid new leader. Watching multiple nodes avoids depending on a single node's
+/// task being scheduled promptly under heavy `make test` load.
+pub async fn wait_for_new_leader(
+    receivers: Vec<watch::Receiver<Option<LeaderInfo>>>,
+    old_leader_id: u32,
+    timeout: Duration,
+) -> LeaderInfo {
+    tokio::time::timeout(timeout, async move {
+        loop {
+            for rx in &receivers {
+                if let Some(leader) = *rx.borrow()
+                    && leader.leader_id != 0
+                    && leader.leader_id != old_leader_id
+                {
+                    return leader;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for new leader election")
 }

@@ -192,7 +192,7 @@ d-engine = { version = "0.2", features = ["rocksdb"] }
 - **Concurrency**: Use appropriate locking strategies
 - **Compression**: Consider compressing log entries for large deployments
 
-See `src/storage/adaptors/rocksdb/rocksdb_engine.rs` for a production-grade implementation featuring:
+See `src/storage/adaptors/rocksdb/rocksdb_storage_engine.rs` for a production-grade implementation featuring:
 
 - Write batches for atomic operations
 - Log compaction to reclaim disk space

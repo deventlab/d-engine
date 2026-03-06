@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use bytes::Bytes;
 use d_engine_core::Error;
@@ -20,6 +21,8 @@ use super::*;
 pub struct RocksDBStorageEngineBuilder {
     temp_dir: TempDir,
     instance_id: String,
+    // Partner SM kept alive alongside storage; must be dropped before the next build().
+    sm: Mutex<Option<RocksDBStateMachine>>,
 }
 
 impl RocksDBStorageEngineBuilder {
@@ -29,6 +32,7 @@ impl RocksDBStorageEngineBuilder {
         Self {
             temp_dir,
             instance_id,
+            sm: Mutex::new(None),
         }
     }
 }
@@ -38,8 +42,15 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
     type Engine = RocksDBStorageEngine;
 
     async fn build(&self) -> Result<Arc<Self::Engine>, Error> {
+        // Drop old SM so Arc<DB> refcount falls to 0 and RocksDB releases the lock.
+        {
+            *self.sm.lock().unwrap() = None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
         let path = self.temp_dir.path().join(format!("rocksdb-{}", self.instance_id));
-        let engine = RocksDBStorageEngine::new(path)?;
+        let (engine, sm) = RocksDBUnifiedEngine::open(&path)?;
+        *self.sm.lock().unwrap() = Some(sm);
 
         // Ensure the engine is fully initialized before returning
         engine.log_store().flush_async().await?;
@@ -47,15 +58,13 @@ impl StorageEngineBuilder for RocksDBStorageEngineBuilder {
     }
 
     async fn cleanup(&self) -> Result<(), Error> {
-        // Increase delay for CI environments to ensure all operations complete
+        *self.sm.lock().unwrap() = None;
         let delay = if std::env::var("CI").is_ok() {
             std::time::Duration::from_millis(500)
         } else {
             std::time::Duration::from_millis(100)
         };
         tokio::time::sleep(delay).await;
-
-        // TempDir will be cleaned up automatically when dropped
         Ok(())
     }
 }

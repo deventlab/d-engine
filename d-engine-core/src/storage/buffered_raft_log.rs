@@ -794,10 +794,10 @@ where
                 if flush_now {
                     // Drain pending indexes and flush them
                     let pending = self.get_pending_indexes().await;
-                    if !pending.is_empty() {
-                        if let Err(e) = self.process_flush(&pending).await {
-                            error!("Batch persist failed: {:?}", e);
-                        }
+                    if !pending.is_empty()
+                        && let Err(e) = self.process_flush(&pending).await
+                    {
+                        error!("Batch persist failed: {:?}", e);
                     }
                 }
             }

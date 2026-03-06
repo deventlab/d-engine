@@ -1,5 +1,4 @@
 use std::ops::RangeInclusive;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -13,17 +12,16 @@ use d_engine_core::StorageError;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use prost::Message;
-use rocksdb::Cache;
 use rocksdb::DB;
 use rocksdb::Direction;
 use rocksdb::IteratorMode;
-use rocksdb::Options;
 use rocksdb::WriteBatch;
 use tonic::async_trait;
 use tracing::instrument;
 
-const LOG_CF: &str = "logs";
-const META_CF: &str = "meta";
+use super::LOG_CF;
+use super::META_CF;
+
 const HARD_STATE_KEY: &[u8] = b"hard_state";
 
 /// RocksDB-based log store implementation
@@ -44,14 +42,8 @@ pub struct RocksDBMetaStore {
 /// High-performance storage engine using RocksDB for durability.
 /// Recommended for production deployments.
 ///
-/// # Usage
-///
-/// ```rust,ignore
-/// use d_engine_server::RocksDBStorageEngine;
-/// use std::path::PathBuf;
-///
-/// let engine = RocksDBStorageEngine::new(PathBuf::from("/tmp/raft-db"))?;
-/// ```
+/// Obtain an instance via [`super::RocksDBUnifiedEngine::open`], which shares a single
+/// `Arc<DB>` with [`super::RocksDBStateMachine`] to halve resource usage.
 ///
 /// # Features
 ///
@@ -66,53 +58,13 @@ pub struct RocksDBStorageEngine {
 }
 
 impl RocksDBStorageEngine {
-    /// Creates new RocksDB-based storage engine with column family separation
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        // Configure high-performance RocksDB options
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-
-        // Memory and write optimization
-        opts.set_max_write_buffer_number(4); // Increase the number of write buffers
-        opts.set_min_write_buffer_number_to_merge(2); // Increase the merge threshold
-        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB write buffer
-
-        // Compression optimization
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-        opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
-        opts.set_compression_options(-14, 0, 0, 0); // LZ4 fast compression
-
-        // WAL-related optimizations
-        opts.set_wal_bytes_per_sync(1024 * 1024); // 1MB sync
-        opts.set_manual_wal_flush(true); // manually control WAL flush
-
-        opts.set_use_fsync(false);
-
-        // Performance Tuning
-        opts.set_max_background_jobs(4); // Number of background jobs
-        opts.set_max_open_files(5000); // Maximum number of open files
-        opts.set_use_direct_io_for_flush_and_compaction(true); // Direct I/O
-        opts.set_use_direct_reads(true); // Direct reads
-
-        // Leveled Compaction Configuration
-        opts.set_level_compaction_dynamic_level_bytes(true);
-        opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB base file size
-        opts.set_max_bytes_for_level_base(256 * 1024 * 1024); // 256MB base level size
-
-        // Block cache configuration (shared)
-        let cache = Cache::new_lru_cache(128 * 1024 * 1024); // 128MB block cache
-        opts.set_row_cache(&cache);
-
-        // Define column families
-        let cfs = vec![LOG_CF, META_CF];
-
-        let db = DB::open_cf(&opts, path, cfs).map_err(|e| StorageError::DbError(e.to_string()))?;
-        let db_arc = Arc::new(db);
-
-        let log_store = Arc::new(RocksDBLogStore::new(Arc::clone(&db_arc))?);
-        let meta_store = Arc::new(RocksDBMetaStore::new(Arc::clone(&db_arc))?);
-
+    /// Creates a storage engine sharing an existing `Arc<DB>` (unified mode).
+    ///
+    /// Called by `RocksDBUnifiedEngine::open()` — the caller owns the DB lifecycle.
+    /// The DB must already have `LOG_CF` and `META_CF` column families open.
+    pub(super) fn from_shared_db(db: Arc<DB>) -> Result<Self, Error> {
+        let log_store = Arc::new(RocksDBLogStore::new(Arc::clone(&db))?);
+        let meta_store = Arc::new(RocksDBMetaStore::new(Arc::clone(&db))?);
         Ok(Self {
             log_store,
             meta_store,
@@ -171,12 +123,12 @@ impl RocksDBLogStore {
         // IteratorMode::End positions at the end, next() gives us the largest key
         if let Some(cf) = db.cf_handle(LOG_CF) {
             let mut iter = db.iterator_cf(&cf, IteratorMode::End);
-            if let Some(Ok((key, _))) = iter.next() {
-                if key.len() == 8 {
-                    last_index = u64::from_be_bytes([
-                        key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
-                    ]);
-                }
+            if let Some(Ok((key, _))) = iter.next()
+                && key.len() == 8
+            {
+                last_index = u64::from_be_bytes([
+                    key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
+                ]);
             }
         }
 
@@ -214,7 +166,7 @@ impl LogStore for RocksDBLogStore {
             max_index = max_index.max(entry.index);
         }
 
-        self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
 
         if max_index > 0 {
             self.last_index.store(max_index, Ordering::SeqCst);
@@ -316,7 +268,7 @@ impl LogStore for RocksDBLogStore {
             batch.delete_cf(&cf, &key);
         }
 
-        self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
 
@@ -360,7 +312,7 @@ impl LogStore for RocksDBLogStore {
             batch.delete_cf(&cf, &key);
         }
 
-        self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
 
         // Update last_index: The new last_index should be from_index - 1
         // But if from_index is 0 or 1, last_index should be 0
@@ -407,7 +359,7 @@ impl LogStore for RocksDBLogStore {
             batch.delete_cf(&cf, &key);
         }
 
-        self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
         self.last_index.store(0, Ordering::SeqCst);
         Ok(())
     }

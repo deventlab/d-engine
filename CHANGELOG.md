@@ -4,7 +4,40 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [v0.2.3] - 2026-02-21
+## [v0.2.4] - TBD
+
+### Added
+
+- **RocksDBUnifiedEngine** (#295): Single RocksDB instance with 4 column families replaces
+  the dual-instance setup used by `EmbeddedEngine` and `StandaloneEngine`.
+  Halves file handles, WAL files, background compaction threads, and block cache footprint
+  (256 MB → 128 MB shared cache).
+  - API: `RocksDBUnifiedEngine::open(path)` returns `(RocksDBStorageEngine, RocksDBStateMachine)`
+    sharing one `Arc<DB>`
+  - CF layout: `raft_log`, `raft_meta`, `state_machine_data`, `state_machine_meta`
+  - CF-optimized options: sequential-write tuning for Raft log, bloom filter for SM point lookups
+
+### Changed
+
+- **EmbeddedEngine::start() / start_with()**: Now uses `RocksDBUnifiedEngine` internally.
+  Data path changes from `db_root_dir/storage/` + `db_root_dir/state_machine/` to `db_root_dir/db/`.
+- **StandaloneEngine::run() / run_with()**: Same unified engine and path change as above.
+
+### Migration Notes
+
+#### Data Directory Migration (v0.2.3 → v0.2.4)
+
+Affects users of `EmbeddedEngine::start()`, `start_with()`, or `StandaloneEngine::run()` /
+`run_with()` with RocksDB storage.
+
+- **⚠️ Existing data is NOT migrated automatically**: the old `storage/` and `state_machine/`
+  directories are ignored; the node starts with an empty database at `db/`
+- **Recommended upgrade path**: take a cluster snapshot before upgrading, then restore after
+- Users calling `start_custom()` with explicit `storage` and `sm` arguments are unaffected
+
+---
+
+## [v0.2.3] - 2026-02-21 [✅ Released]
 
 ### Added
 
