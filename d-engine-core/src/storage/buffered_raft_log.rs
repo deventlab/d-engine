@@ -532,12 +532,7 @@ where
 
     async fn reset(&self) -> Result<()> {
         let _timer = ScopedTimer::new("buffered_raft_log::reset");
-        self.reset_internal().await?;
-
-        //reset disk
-        self.log_store.reset().await?;
-
-        Ok(())
+        self.reset_internal().await
     }
 
     fn load_hard_state(&self) -> Result<Option<HardState>> {
