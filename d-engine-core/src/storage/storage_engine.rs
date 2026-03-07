@@ -75,6 +75,23 @@ pub trait LogStore: Send + Sync + 'static {
         from_index: u64,
     ) -> Result<(), Error>;
 
+    /// Whether a single `persist_entries` call is crash-safe without an explicit `flush()`.
+    ///
+    /// Return `true` if your backend writes are immediately durable (e.g. sled, any
+    /// backend with synchronous write-through). Return `false` if durability requires
+    /// an explicit `flush()` call (e.g. RocksDB without `sync=true`, file I/O without
+    /// `sync_all`).
+    ///
+    /// **This value must be accurate.** If you return `true` but writes are not
+    /// actually crash-safe, `durable_index` will advance prematurely and Raft's
+    /// durability guarantee will be broken.
+    ///
+    /// Default: `true` — matches the default no-op `flush()`. Override to `false`
+    /// when your implementation provides a meaningful `flush()`.
+    fn is_write_durable(&self) -> bool {
+        true
+    }
+
     /// Optional: Flush pending writes (use with caution)
     fn flush(&self) -> Result<(), Error> {
         Ok(()) // Default no-op for engines with auto-flush

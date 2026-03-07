@@ -145,6 +145,8 @@ impl MockStorageEngine {
         // Other mock implementations remain similar but should use the thread-local storage
         log_store.expect_purge().returning(|_| Ok(()));
         log_store.expect_truncate().returning(|_| Ok(()));
+        // In-memory mock: writes are immediately durable, no explicit flush needed.
+        log_store.expect_is_write_durable().returning(|| true);
         log_store.expect_flush().returning(|| Ok(()));
         log_store.expect_flush_async().returning(|| Ok(()));
         log_store.expect_reset().returning({

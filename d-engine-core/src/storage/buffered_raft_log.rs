@@ -13,6 +13,32 @@
 //! - Batch I/O operations
 //! - Async persistence pipeline
 //! - Generic storage integration
+//!
+//! ## Durability contract
+//!
+//! `durable_index` means **data is crash-safe**. It is only advanced after the storage
+//! backend confirms durability: either because `LogStore::is_write_durable()` returns
+//! `true` (backend auto-syncs), or after an explicit `LogStore::flush()` call.
+//!
+//! ## Batch flush design
+//!
+//! `FlushPolicy::Batch` has two flush triggers:
+//!
+//! - **Threshold trigger** (`handle_persist_entries`): calls `process_flush` inline when
+//!   `pending_indexes` reaches the configured threshold. Inline execution is required to
+//!   preserve ordering with `flush()` — dispatching to the worker pool would create an
+//!   async gap. On failure the indexes are re-enqueued so the next timer tick retries them.
+//! - **Timer trigger** (`batch_processor`): fires every `interval_ms` and dispatches a
+//!   `FlushTask` to the flush worker pool. On a transient error the worker retries once after
+//!   100 ms. If the retry also fails, the worker exits and **the batch is permanently lost** —
+//!   `durable_index` will not advance and callers on `WaitDurable` will time out. This is
+//!   intentional: a storage failure that survives two attempts is treated as unrecoverable.
+//!
+//! ## flush() semantics
+//!
+//! `flush()` waits until `durable_index >= max_index`. Because `durable_index` is only
+//! advanced after crash-safety is confirmed, this is a true durability barrier regardless
+//! of which path (threshold, timer, or direct write) performed the flush.
 
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
@@ -79,8 +105,6 @@ pub enum LogCommand {
     WaitDurable(u64, oneshot::Sender<()>),
     /// Request to persist specific log entries
     PersistEntries(Vec<u64>),
-    /// Trigger immediate flush with result notification
-    Flush(oneshot::Sender<Result<()>>),
     /// Reset the log storage
     Reset(oneshot::Sender<Result<()>>),
     /// Shutdown command processor
@@ -495,15 +519,15 @@ where
     }
 
     async fn flush(&self) -> Result<()> {
-        // Trigger immediate flush of all pending entries
-        let (tx, rx) = oneshot::channel();
-        self.command_sender.send(LogCommand::Flush(tx)).map_err(|e| {
-            NetworkError::SingalSendFailed(format!("Failed to send flush command: {e:?}",))
-        })?;
-        let _result = rx
-            .await
-            .map_err(|_| NetworkError::SingalSendFailed("Flush ack channel closed".into()))?;
-        Ok(())
+        // Wait until every entry currently in the log is durable.
+        // durable_index is only advanced after the backend guarantees crash-safety
+        // (see process_flush / persist_entries), so this is a true durability barrier
+        // regardless of which flush path (threshold or timer) performs the actual write.
+        let max_index = self.max_index.load(Ordering::Acquire);
+        if max_index == 0 {
+            return Ok(());
+        }
+        self.wait_durable(max_index).await
     }
 
     async fn reset(&self) -> Result<()> {
@@ -717,7 +741,7 @@ where
     }
 
     async fn handle_command(
-        &self,
+        self: &Arc<Self>,
         cmd: LogCommand,
     ) {
         match cmd {
@@ -728,10 +752,6 @@ where
             }
             LogCommand::WaitDurable(index, ack) => {
                 self.handle_wait_durable(index, ack).await;
-            }
-            LogCommand::Flush(ack) => {
-                let result = self.force_flush().await;
-                let _ = ack.send(result);
             }
             LogCommand::Reset(ack) => {
                 if let Err(e) = self.reset_internal().await {
@@ -752,7 +772,7 @@ where
     }
 
     async fn handle_persist_entries(
-        &self,
+        self: &Arc<Self>,
         indexes: &[u64],
     ) {
         // Filter out already persisted indices
@@ -792,12 +812,27 @@ where
                 }
 
                 if flush_now {
-                    // Drain pending indexes and flush them
+                    // Threshold reached: drain and flush inline.
+                    //
+                    // NOTE: This path calls process_flush directly (not via the worker pool) to
+                    // preserve flush ordering with force_flush / LogCommand::Flush. Dispatching
+                    // to the worker pool would introduce an async gap: force_flush drains
+                    // pending_indexes first, so a concurrent worker-pool dispatch would race and
+                    // the explicit flush could return before the data is persisted.
+                    //
+                    // On failure the indexes are re-enqueued so the next timer tick retries them.
                     let pending = self.get_pending_indexes().await;
                     if !pending.is_empty()
                         && let Err(e) = self.process_flush(&pending).await
                     {
-                        error!("Batch persist failed: {:?}", e);
+                        error!(
+                            "Batch persist failed, re-enqueuing {} indexes: {:?}",
+                            pending.len(),
+                            e
+                        );
+                        // Re-enqueue for retry on next timer tick.
+                        let mut state = self.flush_state.lock().await;
+                        state.pending_indexes.extend_from_slice(&pending);
                     }
                 }
             }
@@ -856,8 +891,11 @@ where
         // Persist to storage
         self.log_store.persist_entries(entries).await?;
 
-        // Handle immediate flush policy
-        if matches!(self.flush_policy, FlushPolicy::Immediate) {
+        // Ensure crash-safety before advancing durable_index.
+        // For Immediate policy we always flush. For Batch policy we flush only when the
+        // backend does not guarantee per-write durability (is_write_durable == false).
+        if matches!(self.flush_policy, FlushPolicy::Immediate) || !self.log_store.is_write_durable()
+        {
             self.log_store.flush()?;
         }
 
@@ -884,12 +922,10 @@ where
     }
 
     async fn force_flush(&self) -> Result<()> {
+        // process_flush now ensures flush() is called before advancing durable_index,
+        // so no explicit log_store.flush() is needed here.
         let indexes = self.get_pending_indexes().await;
-        let result = self.process_flush(&indexes).await;
-
-        self.log_store.flush()?;
-
-        result
+        self.process_flush(&indexes).await
     }
 
     /// Notify waiters for completed flush operations
@@ -920,10 +956,10 @@ where
     ) -> Result<()> {
         self.log_store.persist_entries(entries.to_vec()).await?;
 
-        // Handle flush policy
-        match self.flush_policy {
-            FlushPolicy::Immediate => self.log_store.flush()?,
-            FlushPolicy::Batch { .. } => {} // Defer flush
+        // Ensure crash-safety before advancing durable_index.
+        if matches!(self.flush_policy, FlushPolicy::Immediate) || !self.log_store.is_write_durable()
+        {
+            self.log_store.flush()?;
         }
 
         // Update durable index

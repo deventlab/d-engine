@@ -429,6 +429,11 @@ impl LogStore for FileLogStore {
         Ok(())
     }
 
+    fn is_write_durable(&self) -> bool {
+        // File writes are buffered by the OS; sync_all() is required for crash-safety.
+        false
+    }
+
     fn flush(&self) -> Result<(), Error> {
         let mut file = self.file_handle.lock().unwrap();
         file.flush()?;

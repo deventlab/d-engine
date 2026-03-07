@@ -323,6 +323,12 @@ impl LogStore for RocksDBLogStore {
         Ok(())
     }
 
+    fn is_write_durable(&self) -> bool {
+        // RocksDB writes go to WAL + Memtable but are not fsynced by default.
+        // An explicit flush_wal(true) is required for crash-safety.
+        false
+    }
+
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
         // Flush WAL first when manual_wal_flush is enabled

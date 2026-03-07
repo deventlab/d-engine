@@ -22,6 +22,7 @@ fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
     log_store.expect_last_index().returning(|| 0);
     log_store.expect_truncate().returning(|_| Ok(()));
     log_store.expect_reset().returning(|| Ok(()));
+    log_store.expect_is_write_durable().returning(|| true);
     log_store.expect_flush().returning(|| Ok(()));
 
     // Add controllable delay to persist_entries
@@ -188,6 +189,7 @@ async fn test_fresh_cluster_performance_consistency() {
 
     for (strategy, flush_policy) in test_cases {
         let mut log_store = MockLogStore::new();
+        log_store.expect_is_write_durable().returning(|| true);
         log_store.expect_flush().return_once(|| Ok(()));
         log_store.expect_last_index().returning(|| 0);
         log_store.expect_truncate().returning(|_| Ok(()));
