@@ -133,4 +133,109 @@ mod client_api_error_tests {
         assert_eq!(error.code(), ErrorCode::General);
         assert_eq!(error.message(), "Custom error message");
     }
+
+    // ── From<Status> conversions ──────────────────────────────────────────────
+
+    /// Code::Unavailable maps to Business { ClusterUnavailable }.
+    #[test]
+    fn test_from_status_unavailable_maps_to_cluster_unavailable() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::Unavailable, "cluster down");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::ClusterUnavailable);
+        assert!(matches!(err, ClientApiError::Business { .. }));
+    }
+
+    /// Code::Cancelled maps to Network { ConnectionTimeout }.
+    #[test]
+    fn test_from_status_cancelled_maps_to_connection_timeout() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::Cancelled, "cancelled");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::ConnectionTimeout);
+        assert!(matches!(err, ClientApiError::Network { .. }));
+    }
+
+    /// Code::InvalidArgument maps to Business { InvalidRequest }.
+    #[test]
+    fn test_from_status_invalid_argument_maps_to_invalid_request() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::InvalidArgument, "bad arg");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::InvalidRequest);
+    }
+
+    /// Code::PermissionDenied maps to Business { NotLeader }.
+    #[test]
+    fn test_from_status_permission_denied_maps_to_not_leader() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::PermissionDenied, "not leader");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::NotLeader);
+    }
+
+    /// Unhandled gRPC codes produce Business { Uncategorized }.
+    #[test]
+    fn test_from_status_unhandled_code_maps_to_uncategorized() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::DataLoss, "data loss");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::Uncategorized);
+    }
+
+    /// Code::FailedPrecondition without leader metadata maps to Business { StaleOperation }.
+    #[test]
+    fn test_from_status_failed_precondition_without_leader_maps_to_stale() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::FailedPrecondition, "stale");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::StaleOperation);
+        assert!(matches!(err, ClientApiError::Business { .. }));
+    }
+
+    /// Code::FailedPrecondition with valid x-raft-leader metadata maps to
+    /// Network { LeaderChanged } and populates the leader_hint field.
+    #[test]
+    fn test_from_status_failed_precondition_with_leader_metadata_maps_to_leader_changed() {
+        use tonic::Code;
+        use tonic::Status;
+        use tonic::metadata::MetadataValue;
+        let mut s = Status::new(Code::FailedPrecondition, "leader changed");
+        s.metadata_mut().insert(
+            "x-raft-leader",
+            MetadataValue::from_static(r#"{"leader_id":"2","address":"127.0.0.1:8081"}"#),
+        );
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::LeaderChanged);
+        if let ClientApiError::Network { leader_hint, .. } = err {
+            let hint = leader_hint.expect("leader_hint must be populated");
+            assert_eq!(hint.leader_id, 2);
+            assert_eq!(hint.address, "127.0.0.1:8081");
+        } else {
+            panic!("expected Network variant");
+        }
+    }
+
+    /// parse_leader_from_metadata returns None for malformed metadata values,
+    /// causing FailedPrecondition to fall back to Business { StaleOperation }.
+    #[test]
+    fn test_from_status_failed_precondition_with_malformed_leader_metadata_falls_back_to_stale() {
+        use tonic::Code;
+        use tonic::Status;
+        use tonic::metadata::MetadataValue;
+        let mut s = Status::new(Code::FailedPrecondition, "fp");
+        s.metadata_mut().insert(
+            "x-raft-leader",
+            MetadataValue::from_static("not-valid-json"),
+        );
+        let err: ClientApiError = s.into();
+        // parse_leader_from_metadata must fail to extract a valid LeaderHint → StaleOperation.
+        assert_eq!(err.code(), ErrorCode::StaleOperation);
+    }
 }

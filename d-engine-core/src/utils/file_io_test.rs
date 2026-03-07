@@ -58,6 +58,32 @@ async fn test_create_parent_dir_for_directory_without_trailing_separator() {
     assert!(file_io::is_dir(parent_dir).await.unwrap());
 }
 
+/// create_parent_dir_if_not_exist returns PathError when the directory cannot be created
+/// because its parent is read-only (create_dir_all fails with PermissionDenied).
+#[test]
+#[cfg(unix)]
+fn test_create_parent_dir_fails_when_permission_denied() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = tempfile::tempdir().unwrap();
+    // Make the base dir read-only so sub-dir creation fails.
+    let mut perms = std::fs::metadata(base.path()).unwrap().permissions();
+    perms.set_mode(0o444);
+    std::fs::set_permissions(base.path(), perms.clone()).unwrap();
+
+    let target = base.path().join("new_subdir").join("file.txt");
+    let result = create_parent_dir_if_not_exist(&target);
+
+    // Restore permissions so tempdir cleanup succeeds.
+    perms.set_mode(0o755);
+    std::fs::set_permissions(base.path(), perms).unwrap();
+
+    assert!(
+        result.is_err(),
+        "must fail when parent dir creation is denied"
+    );
+}
+
 /// Passed: "/tmp/dir/subdir/"
 /// Expected: "/tmp/dir/subdir" created
 #[tokio::test]

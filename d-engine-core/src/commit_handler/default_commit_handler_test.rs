@@ -1121,6 +1121,79 @@ mod process_batch_test {
         );
     }
 
+    /// Dropping the event receiver makes event_tx.send() fail.
+    /// The MembershipApplied warn path must be executed without panicking or returning Err.
+    #[tokio::test]
+    async fn membership_applied_send_fails_gracefully_when_receiver_dropped() {
+        let entries = build_entries(
+            vec![CommandType::Configuration(Change::AddNode(AddNode {
+                node_id: 2,
+                address: "127.0.0.1:8080".into(),
+                status: d_engine_proto::common::NodeStatus::Promotable as i32,
+            }))],
+            1,
+        );
+
+        let last_applied = entries.len();
+        let mut harness = setup_harness(
+            Leader as i32,
+            1,
+            entries,
+            last_applied as u64,
+            || false,
+            || false,
+            None,
+        );
+
+        // Replace the receiver with a dummy so the original event_tx sends will fail.
+        // Swap old_rx out of the harness so harness is still usable, then drop old_rx.
+        let (_dummy_tx, dummy_rx) = mpsc::channel::<RaftEvent>(1);
+        let old_rx = std::mem::replace(&mut harness.event_rx, dummy_rx);
+        drop(old_rx); // Now harness.event_tx's peer receiver is gone → sends fail.
+
+        let result = harness.process_batch_handler().await;
+        // Config change itself succeeds; send failure is non-fatal (warn only).
+        assert!(
+            result.is_ok(),
+            "send failure on MembershipApplied must not propagate as Err"
+        );
+    }
+
+    /// Dropping the event receiver makes StepDownSelfRemoved send fail.
+    /// The error! path inside the self-removal branch must be executed without panicking.
+    #[tokio::test]
+    async fn step_down_send_fails_gracefully_when_receiver_dropped() {
+        let entries = build_entries(
+            vec![CommandType::Configuration(Change::RemoveNode(RemoveNode {
+                node_id: 1, // Self-removal (node_id = 1 matches my_id = 1)
+            }))],
+            1,
+        );
+
+        let last_applied = entries.len();
+        let mut harness = setup_harness(
+            Leader as i32,
+            1,
+            entries,
+            last_applied as u64,
+            || false,
+            || false,
+            None,
+        );
+
+        // Replace receiver with a dummy so both sends fail.
+        let (_dummy_tx, dummy_rx) = mpsc::channel::<RaftEvent>(1);
+        let old_rx = std::mem::replace(&mut harness.event_rx, dummy_rx);
+        drop(old_rx);
+
+        let result = harness.process_batch_handler().await;
+        // Self-removal is committed; send failure is non-fatal (error! logged, not returned).
+        assert!(
+            result.is_ok(),
+            "send failure on StepDownSelfRemoved must not propagate as Err"
+        );
+    }
+
     /// Test 6: Self-removal sends both MembershipApplied AND StepDownSelfRemoved
     ///
     /// Verifies that when Leader removes itself:

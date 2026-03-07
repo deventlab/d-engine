@@ -2,8 +2,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use d_engine_core::Error;
+use d_engine_core::Lease;
 use d_engine_core::LogStore;
 use d_engine_core::StorageEngine;
+use d_engine_core::config::LeaseConfig;
 use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
 use d_engine_core::storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite};
 use tempfile::TempDir;
@@ -13,6 +15,7 @@ use super::RocksDBStateMachine;
 use super::RocksDBStorageEngine;
 use super::RocksDBUnifiedEngine;
 use crate::StateMachine;
+use crate::storage::DefaultLease;
 
 // Both test suites call build() twice within a single persistence test (write data → drop →
 // build() again → verify data survived). Both builders therefore:
@@ -162,4 +165,76 @@ fn test_concurrent_open_same_path_fails() {
         second.is_err(),
         "second open on a live DB must fail with lock error"
     );
+}
+
+// ── Lease round-trip tests ────────────────────────────────────────────────────
+
+fn make_lease() -> Arc<DefaultLease> {
+    Arc::new(DefaultLease::new(LeaseConfig {
+        enabled: true,
+        interval_ms: 1000,
+        max_cleanup_duration_ms: 10,
+    }))
+}
+
+/// load_lease_data() is a no-op when no lease is configured (lease = None).
+#[tokio::test]
+async fn test_load_lease_data_without_lease_is_noop() {
+    let dir = TempDir::new().expect("temp dir");
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).expect("open");
+
+    // SM was opened without a lease — load_lease_data must succeed silently.
+    let result = sm.load_lease_data().await;
+    assert!(
+        result.is_ok(),
+        "load_lease_data with no lease must not fail"
+    );
+}
+
+/// Registering a lease key, stopping the SM (which persists TTL state), then
+/// reloading from the same DB must restore the lease entry.
+#[tokio::test]
+async fn test_persist_and_reload_lease_round_trip() {
+    let dir = TempDir::new().expect("temp dir");
+    let lease = make_lease();
+
+    // --- Phase 1: write and persist ---
+    {
+        let (_storage, mut sm) = RocksDBUnifiedEngine::open(dir.path()).expect("open");
+        sm.set_lease(Arc::clone(&lease));
+        // Register a key with a long TTL so it survives the reload.
+        lease.register(bytes::Bytes::from("persistent_key"), 3600);
+        // stop() calls persist_ttl_metadata() → writes TTL_STATE_KEY to RocksDB.
+        sm.stop().expect("stop");
+        // Ensure DB is flushed before drop.
+    }
+    // Wait for RocksDB to release the file lock.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // --- Phase 2: reopen and reload ---
+    let new_lease = make_lease();
+    let (_storage2, mut sm2) = RocksDBUnifiedEngine::open(dir.path()).expect("reopen");
+    sm2.set_lease(Arc::clone(&new_lease));
+    sm2.load_lease_data().await.expect("load_lease_data");
+
+    // The key registered in Phase 1 must be present in the reloaded lease.
+    assert!(
+        new_lease.has_lease_keys(),
+        "reloaded lease must contain the persisted key"
+    );
+    assert_eq!(new_lease.len(), 1, "exactly one key should be restored");
+}
+
+/// load_lease_data() succeeds when TTL_STATE_KEY is absent in the DB (first start).
+#[tokio::test]
+async fn test_load_lease_data_with_empty_db_succeeds() {
+    let dir = TempDir::new().expect("temp dir");
+    let (_storage, mut sm) = RocksDBUnifiedEngine::open(dir.path()).expect("open");
+
+    // Inject lease but do NOT persist anything first.
+    sm.set_lease(make_lease());
+
+    // load_lease_data on a fresh DB must succeed without error.
+    let result = sm.load_lease_data().await;
+    assert!(result.is_ok(), "load_lease_data on empty DB must succeed");
 }

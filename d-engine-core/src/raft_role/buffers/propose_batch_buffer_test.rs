@@ -200,3 +200,28 @@ fn flush_swap_produces_correct_second_batch() {
         "cycle 1 data must not be corrupted by cycle 2"
     );
 }
+
+// ── Metrics path coverage ─────────────────────────────────────────────────────
+
+/// push() with metrics_enabled=true executes the gauge branch on every insert.
+/// No metrics recorder is required — metrics::gauge! is a no-op without one,
+/// but the branch body is still traversed and reported as covered.
+#[test]
+fn push_with_metrics_enabled_executes_gauge_branch() {
+    let mut buf = ProposeBatchBuffer::new(4).with_length_gauge(1, "propose", true);
+
+    buf.push(make_payload(), make_sender());
+    buf.push(make_payload(), make_sender());
+    assert_eq!(buf.len(), 2);
+}
+
+/// flush() with metrics_enabled=true executes the reset-gauge branch.
+#[test]
+fn flush_with_metrics_enabled_executes_gauge_reset() {
+    let mut buf = ProposeBatchBuffer::new(4).with_length_gauge(2, "propose", true);
+
+    buf.push(make_payload(), make_sender());
+    let req = buf.flush().expect("must produce a request");
+    assert_eq!(req.payloads.len(), 1);
+    assert!(buf.is_empty());
+}
