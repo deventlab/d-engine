@@ -64,6 +64,19 @@ fn respects_cooldown_period() {
 }
 
 #[test]
+fn cooldown_engages_even_when_below_threshold() {
+    // Regression: last_checked must update on every evaluation, not just on trigger.
+    let policy = LogSizePolicy::new(1000, Duration::from_secs(1));
+    let ctx = test_context(1100, 500, Leader as i32); // lag=600 < 1000
+
+    // First call: below threshold, no trigger — but should still update last_checked
+    assert!(!policy.should_trigger(&ctx));
+
+    // Second call: cooldown should block this even though lag is still below threshold
+    assert!(!policy.should_trigger(&ctx));
+}
+
+#[test]
 fn resets_after_cooldown_period() {
     let policy = LogSizePolicy::new(100, Duration::from_millis(100));
     let ctx = test_context(200, 100, Leader as i32);
@@ -87,7 +100,7 @@ fn follower_triggers_when_threshold_exceeded() {
 
 #[test]
 fn dynamic_threshold_adjustment() {
-    let policy = LogSizePolicy::new(1000, Duration::from_secs(1));
+    let policy = LogSizePolicy::new(1000, Duration::ZERO);
     let ctx = test_context(1200, 500, Leader as i32);
 
     // Initial threshold not met
@@ -141,4 +154,59 @@ fn high_frequency_performance() {
         1 == trigger_count,
         "Unexpected trigger count: {trigger_count}",
     );
+}
+
+#[test]
+fn effective_cooldown_scales_with_lag() {
+    let policy = LogSizePolicy::new(1000, Duration::from_secs(60));
+
+    // No prior lag → full cooldown
+    assert_eq!(policy.effective_cooldown_ms(), 60_000);
+
+    // 50% of threshold → 50% cooldown
+    policy.set_last_lag(500);
+    assert_eq!(policy.effective_cooldown_ms(), 30_000);
+
+    // 90% of threshold → 10% cooldown
+    policy.set_last_lag(900);
+    assert_eq!(policy.effective_cooldown_ms(), 6_000);
+
+    // At threshold → base cooldown (space out re-triggers)
+    policy.set_last_lag(1000);
+    assert_eq!(policy.effective_cooldown_ms(), 60_000);
+
+    // Above threshold → base cooldown
+    policy.set_last_lag(5000);
+    assert_eq!(policy.effective_cooldown_ms(), 60_000);
+}
+
+#[test]
+fn effective_cooldown_zero_base_always_zero() {
+    let policy = LogSizePolicy::new(1000, Duration::ZERO);
+
+    policy.set_last_lag(0);
+    assert_eq!(policy.effective_cooldown_ms(), 0);
+
+    policy.set_last_lag(500);
+    assert_eq!(policy.effective_cooldown_ms(), 0);
+
+    policy.set_last_lag(1000);
+    assert_eq!(policy.effective_cooldown_ms(), 0);
+}
+
+#[test]
+fn dynamic_cooldown_shortens_as_lag_approaches_threshold() {
+    let policy = LogSizePolicy::new(1000, Duration::from_millis(100));
+
+    // First check: lag=800 (80% of threshold), below threshold → no trigger
+    let ctx = test_context(1300, 500, Leader as i32);
+    assert!(!policy.should_trigger(&ctx));
+
+    // Effective cooldown is now 100ms * (1000-800)/1000 = 20ms.
+    // Sleep 30ms — enough to pass the dynamic cooldown but NOT the static 100ms.
+    std::thread::sleep(Duration::from_millis(30));
+
+    // Second check with lag at threshold — should pass the shortened cooldown
+    let ctx2 = test_context(1500, 500, Leader as i32);
+    assert!(policy.should_trigger(&ctx2));
 }
