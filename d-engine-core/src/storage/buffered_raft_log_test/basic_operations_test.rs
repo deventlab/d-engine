@@ -585,7 +585,10 @@ async fn test_single_entry_insert_succeeds() {
 async fn test_is_empty_returns_true_for_new_log() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 0,
+        },
         "test_is_empty_returns_true_for_new_log",
     );
 
@@ -628,7 +631,10 @@ async fn test_is_empty_returns_false_after_append() {
 async fn test_last_log_id_for_empty_log() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 0,
+        },
         "test_last_log_id_for_empty_log",
     );
 

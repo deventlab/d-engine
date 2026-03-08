@@ -24,7 +24,10 @@ use super::TestContext;
 async fn test_high_concurrency() {
     let ctx = TestContext::new(
         PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 0,
+        },
         "test_high_concurrency",
     );
     let mut handles = vec![];
@@ -226,7 +229,10 @@ mod mem_first_tests {
 async fn test_term_index_correctness_under_load() {
     let ctx = TestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 0,
+        },
         "test_term_index_under_load",
     );
 

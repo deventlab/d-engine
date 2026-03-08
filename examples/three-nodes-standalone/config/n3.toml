@@ -37,7 +37,6 @@ max_pending_reads = 500
 [raft.persistence]
 strategy = "DiskFirst"
 # strategy = "MemFirst"
-# flush_policy = "Immediate"
 flush_policy = { Batch = { threshold = 100, interval_ms = 20 } }
 # Maximum number of log entries to buffer in memory
 # when using async persistence strategies (MemFirst/Batched)

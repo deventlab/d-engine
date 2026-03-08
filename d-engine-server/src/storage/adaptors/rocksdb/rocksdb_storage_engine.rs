@@ -105,10 +105,13 @@ impl StorageEngine for RocksDBStorageEngine {
 
 impl Drop for RocksDBLogStore {
     fn drop(&mut self) {
-        // Flush WAL and memtables on drop to ensure durability
-        // This is critical for crash recovery - data must survive process termination
-        if let Err(e) = self.flush() {
-            tracing::error!("Failed to flush RocksDBLogStore on drop: {}", e);
+        // On graceful shutdown, flushing memtable to SST is appropriate here —
+        // this is the ONE correct place for db.flush(), not in the hot write path.
+        if let Err(e) = self.db.flush_wal(true) {
+            tracing::error!("Failed to flush WAL on drop: {}", e);
+        }
+        if let Err(e) = self.db.flush() {
+            tracing::error!("Failed to flush memtable on drop: {}", e);
         } else {
             tracing::debug!("RocksDBLogStore flushed successfully on drop");
         }
@@ -323,24 +326,13 @@ impl LogStore for RocksDBLogStore {
         Ok(())
     }
 
-    fn is_write_durable(&self) -> bool {
-        // RocksDB writes go to WAL + Memtable but are not fsynced by default.
-        // An explicit flush_wal(true) is required for crash-safety.
-        false
-    }
-
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
-        // Flush WAL first when manual_wal_flush is enabled
-        // This ensures write-ahead log is durably persisted before memtable flush
+        // WAL fsync is sufficient for crash-safety: data in WAL can be replayed on restart.
+        // memtable flush is RocksDB's internal concern — triggered automatically in background.
         self.db
-            .flush_wal(true) // true = sync WAL to disk
+            .flush_wal(true)
             .map_err(|e| StorageError::DbError(format!("Failed to flush WAL: {e}")))?;
-
-        // Then flush memtables to SST files
-        self.db
-            .flush()
-            .map_err(|e| StorageError::DbError(format!("Failed to flush memtables: {e}")))?;
         Ok(())
     }
 
@@ -378,10 +370,12 @@ impl LogStore for RocksDBLogStore {
 
 impl Drop for RocksDBMetaStore {
     fn drop(&mut self) {
-        // Flush WAL and memtables on drop to ensure HardState durability
-        // HardState (current_term, voted_for) MUST survive crashes per Raft protocol
-        if let Err(e) = self.flush() {
-            tracing::error!("Failed to flush RocksDBMetaStore on drop: {}", e);
+        // On graceful shutdown, memtable flush is appropriate here.
+        if let Err(e) = self.db.flush_wal(true) {
+            tracing::error!("Failed to flush meta WAL on drop: {}", e);
+        }
+        if let Err(e) = self.db.flush() {
+            tracing::error!("Failed to flush meta memtable on drop: {}", e);
         } else {
             tracing::debug!("RocksDBMetaStore flushed successfully on drop");
         }
@@ -436,17 +430,11 @@ impl MetaStore for RocksDBMetaStore {
 
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
-        // Flush WAL first for metadata durability
-        // Metadata changes (like HardState) MUST survive crashes
+        // WAL fsync is sufficient: HardState in WAL survives crashes.
+        // memtable flush is RocksDB's internal concern — triggered automatically in background.
         self.db
-            .flush_wal(true) // true = sync WAL to disk
+            .flush_wal(true)
             .map_err(|e| StorageError::DbError(format!("Failed to flush meta WAL: {e}")))?;
-
-        // Then flush meta column family memtables
-        self.db
-            .flush()
-            .map_err(|e| StorageError::DbError(format!("Failed to flush meta memtables: {e}")))?;
-
         Ok(())
     }
 

@@ -38,7 +38,6 @@ strategy = "DiskFirst"  # Default in v0.2.3+
 
 # Flush policy works in conjunction with the chosen strategy.
 flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
-# flush_policy = "Immediate"
 
 ```
 
@@ -60,8 +59,7 @@ flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
 
 The flush policy controls how asynchronous (`MemFirst`) writes are persisted to disk.
 
-- **`Immediate`**: Flush every write synchronously. Use with `MemFirst` to approximate `DiskFirst` durability (but with different failure semantics) or with `DiskFirst` for the strongest guarantees. Highest durability, lowest performance.
-- **`Batch { threshold, interval_ms }`**:
+- **`Batch { threshold, interval_ms }`**: The only flush policy. Controls when pending writes are flushed to disk.
   - `threshold`: Flush when this many entries are pending. Larger values increase throughput but also the window of potential data loss.
   - `interval_ms`: Flush after this much time has passed, even if the threshold isn't met. Limits the maximum staleness of data on disk.
 
@@ -199,10 +197,10 @@ client.request_vote(...)  // Control operation on data channel
 get_peer_channel(peer_id, ConnectionType::Control).await?;
 client.request_vote(...)
 
-// DON'T: Use MemFirst with Immediate flush for high-throughput scenarios
+// DON'T: Use MemFirst with threshold=1 for high-throughput scenarios
 // This eliminates the performance benefit of MemFirst.
 [strategy = "MemFirst"]
-flush_policy = "Immediate" // Anti-pattern
+flush_policy = { Batch = { threshold = 1, interval_ms = 0 } } // Anti-pattern for throughput
 
 // DO: Use a Batch policy to amortize disk I/O cost.
 [strategy = "MemFirst"]

@@ -156,8 +156,8 @@ rpc_enable_compression = true
 strategy = "DiskFirst"
 
 # Flush policy controls when memory logs are flushed to disk:
-#   - "Immediate": Flush every entry immediately to disk (sync write).
-#   - { Batch = { threshold, interval_ms } }: Flush when either count or time is exceeded.
+#   - { Batch = { threshold, interval_ms } }: Flush when entry count or elapsed time is exceeded.
+#   - Use threshold=1, interval_ms=0 for per-write durability (highest safety, lowest throughput).
 flush_policy = { Batch = { threshold = 1000, interval_ms = 10 } }
 
 # Maximum number of log entries to buffer in memory

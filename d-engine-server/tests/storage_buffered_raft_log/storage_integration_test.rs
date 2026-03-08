@@ -15,7 +15,10 @@ use super::TestContext;
 async fn test_log_compaction() {
     let ctx = TestContext::new(
         PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 0,
+        },
         "test_log_compaction",
     );
     ctx.append_entries(1, 100, 1).await;

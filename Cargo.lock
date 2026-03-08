@@ -567,8 +567,6 @@ dependencies = [
  "config",
  "crc32fast",
  "criterion",
- "crossbeam",
- "crossbeam-channel",
  "crossbeam-skiplist",
  "d-engine-proto",
  "dashmap",

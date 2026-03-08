@@ -50,7 +50,13 @@ async fn test_reset_performance_during_active_flush() {
                 interval_ms: 1000,
             },
         ),
-        (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
+        (
+            PersistenceStrategy::DiskFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 0,
+            },
+        ),
     ];
 
     for (strategy, flush_policy) in test_cases {
@@ -184,7 +190,13 @@ async fn test_fresh_cluster_performance_consistency() {
                 interval_ms: 1000,
             },
         ),
-        (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate),
+        (
+            PersistenceStrategy::DiskFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 0,
+            },
+        ),
     ];
 
     for (strategy, flush_policy) in test_cases {

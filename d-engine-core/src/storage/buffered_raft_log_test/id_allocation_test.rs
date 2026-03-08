@@ -21,7 +21,10 @@ fn setup_memory() -> Arc<BufferedRaftLog<MockTypeConfig>> {
         1,
         PersistenceConfig {
             strategy: PersistenceStrategy::MemFirst,
-            flush_policy: FlushPolicy::Immediate,
+            flush_policy: FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 0,
+            },
             max_buffered_entries: 1000,
             ..Default::default()
         },

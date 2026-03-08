@@ -21,7 +21,6 @@ batch_size = 5000
 strategy = "MemFirst"
 # strategy = "DiskFirst"
 flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
-# flush_policy = "Immediate"
 
 
 [raft.snapshot]

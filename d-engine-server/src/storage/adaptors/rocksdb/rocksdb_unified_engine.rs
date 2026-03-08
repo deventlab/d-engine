@@ -62,8 +62,6 @@ impl RocksDBUnifiedEngine {
 
         // WAL tuning
         db_opts.set_wal_bytes_per_sync(1024 * 1024);
-        db_opts.set_manual_wal_flush(true);
-        db_opts.set_use_fsync(false);
 
         // Direct I/O
         db_opts.set_use_direct_io_for_flush_and_compaction(true);

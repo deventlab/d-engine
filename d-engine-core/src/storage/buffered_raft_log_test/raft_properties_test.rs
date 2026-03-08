@@ -7,7 +7,10 @@ use d_engine_proto::common::Entry;
 async fn test_log_matching_property() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 0,
+        },
         "test_log_matching",
     );
 
@@ -45,7 +48,10 @@ async fn test_log_matching_property() {
 async fn test_leader_completeness_property() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 0,
+        },
         "test_leader_completeness",
     );
 

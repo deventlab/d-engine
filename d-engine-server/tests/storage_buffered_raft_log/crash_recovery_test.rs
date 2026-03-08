@@ -22,7 +22,10 @@ async fn test_crash_recovery() {
     // Create and populate storage
     let original_ctx = TestContext::new(
         PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 0,
+        },
         "test_crash_recovery",
     );
 
@@ -62,7 +65,10 @@ async fn test_crash_recovery_with_multiple_entries() {
     // Create and populate storage
     let original_ctx = TestContext::new(
         PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            threshold: 1,
+            interval_ms: 0,
+        },
         "test_crash_recovery_with_multiple_entries",
     );
 
@@ -209,7 +215,10 @@ async fn test_partial_flush_with_graceful_shutdown() {
             1,
             PersistenceConfig {
                 strategy: PersistenceStrategy::MemFirst,
-                flush_policy: FlushPolicy::Immediate,
+                flush_policy: FlushPolicy::Batch {
+                    threshold: 1,
+                    interval_ms: 0,
+                },
                 max_buffered_entries: 1000,
                 ..Default::default()
             },
@@ -290,7 +299,10 @@ async fn test_partial_flush_after_crash() {
             1,
             PersistenceConfig {
                 strategy: PersistenceStrategy::MemFirst,
-                flush_policy: FlushPolicy::Immediate,
+                flush_policy: FlushPolicy::Batch {
+                    threshold: 1,
+                    interval_ms: 0,
+                },
                 max_buffered_entries: 1000,
                 ..Default::default()
             },
@@ -309,8 +321,15 @@ async fn test_partial_flush_after_crash() {
 async fn test_recovery_under_different_scenarios() {
     // Test various recovery scenarios
     let scenarios = vec![
-        // MemFirst with Immediate flush - should persist everything
-        (PersistenceStrategy::MemFirst, FlushPolicy::Immediate, 100),
+        // MemFirst with per-write flush (threshold=1) - should persist everything
+        (
+            PersistenceStrategy::MemFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 0,
+            },
+            100,
+        ),
         // MemFirst with batch flushing - only persists when threshold met
         (
             PersistenceStrategy::MemFirst,
@@ -329,7 +348,14 @@ async fn test_recovery_under_different_scenarios() {
             0,
         ),
         // DiskFirst should always persist
-        (PersistenceStrategy::DiskFirst, FlushPolicy::Immediate, 100),
+        (
+            PersistenceStrategy::DiskFirst,
+            FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 0,
+            },
+            100,
+        ),
     ];
 
     for (strategy, flush_policy, expected_recovery) in scenarios {
@@ -351,12 +377,10 @@ async fn test_recovery_under_different_scenarios() {
                 .unwrap();
         }
 
-        // For DiskFirst and Immediate flush, explicitly flush to ensure persistence
-        if matches!(strategy, PersistenceStrategy::DiskFirst)
-            || matches!(flush_policy, FlushPolicy::Immediate)
-        {
+        if matches!(strategy, PersistenceStrategy::DiskFirst) {
             original_ctx.raft_log.flush().await.unwrap();
-        } else if let FlushPolicy::Batch { threshold, .. } = flush_policy {
+        } else {
+            let FlushPolicy::Batch { threshold, .. } = flush_policy;
             // For batch policy, only flush if we reached the threshold
             if 100 >= threshold {
                 original_ctx.raft_log.flush().await.unwrap();
@@ -411,7 +435,10 @@ async fn test_memfirst_crash_recovery_durability() {
             1,
             PersistenceConfig {
                 strategy: PersistenceStrategy::MemFirst,
-                flush_policy: FlushPolicy::Immediate,
+                flush_policy: FlushPolicy::Batch {
+                    threshold: 1,
+                    interval_ms: 0,
+                },
                 max_buffered_entries: 1000,
                 ..Default::default()
             },
@@ -442,7 +469,10 @@ async fn test_diskfirst_crash_recovery_durability() {
                 1,
                 PersistenceConfig {
                     strategy: PersistenceStrategy::DiskFirst,
-                    flush_policy: FlushPolicy::Immediate,
+                    flush_policy: FlushPolicy::Batch {
+                        threshold: 1,
+                        interval_ms: 0,
+                    },
                     max_buffered_entries: 1000,
                     ..Default::default()
                 },
@@ -475,7 +505,10 @@ async fn test_diskfirst_crash_recovery_durability() {
             1,
             PersistenceConfig {
                 strategy: PersistenceStrategy::DiskFirst,
-                flush_policy: FlushPolicy::Immediate,
+                flush_policy: FlushPolicy::Batch {
+                    threshold: 1,
+                    interval_ms: 0,
+                },
                 max_buffered_entries: 1000,
                 ..Default::default()
             },

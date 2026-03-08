@@ -43,7 +43,6 @@
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -62,8 +61,6 @@ use crate::StorageEngine;
 use crate::TypeConfig;
 use crate::alias::SOF;
 use crate::scoped_timer::ScopedTimer;
-use crossbeam::channel::Sender;
-use crossbeam::channel::bounded;
 use crossbeam_skiplist::SkipMap;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
@@ -71,7 +68,7 @@ use dashmap::DashMap;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+
 use tokio::time::Instant;
 use tokio::time::interval;
 use tonic::async_trait;
@@ -83,11 +80,7 @@ pub(crate) struct FlushWorkerPool<T>
 where
     T: TypeConfig,
 {
-    sender: Option<Sender<FlushTask<T>>>,
-    #[allow(dead_code)]
-    shutdown: Arc<AtomicBool>,
-    #[allow(dead_code)]
-    pub(super) worker_handles: Vec<JoinHandle<()>>,
+    sender: Option<mpsc::Sender<FlushTask<T>>>,
 }
 
 pub(crate) struct FlushTask<T>
@@ -619,8 +612,7 @@ where
             );
         }
 
-        // Initialize flush worker pool
-        let flush_workers = Self::create_flush_worker_pool(persistence_config.flush_workers);
+        let flush_workers = Self::create_flush_worker_pool(persistence_config.channel_capacity);
         (
             Self {
                 node_id,
@@ -654,24 +646,10 @@ where
         let arc_self = Arc::new(self);
         let weak_self = Arc::downgrade(&arc_self);
 
-        // Start background processor based on flush policy
-        if let FlushPolicy::Batch { interval_ms, .. } = arc_self.flush_policy {
-            tokio::spawn(Self::batch_processor(weak_self, receiver, interval_ms));
-        } else {
-            tokio::spawn(Self::command_processor(weak_self, receiver));
-        }
+        let FlushPolicy::Batch { interval_ms, .. } = arc_self.flush_policy;
+        tokio::spawn(Self::batch_processor(weak_self, receiver, interval_ms));
 
         arc_self
-    }
-
-    async fn command_processor(
-        this: std::sync::Weak<Self>,
-        mut receiver: mpsc::UnboundedReceiver<LogCommand>,
-    ) {
-        while let Some(cmd) = receiver.recv().await {
-            let Some(this) = this.upgrade() else { break };
-            this.handle_command(cmd).await;
-        }
     }
 
     async fn batch_processor(
@@ -679,7 +657,9 @@ where
         mut receiver: mpsc::UnboundedReceiver<LogCommand>,
         interval_ms: u64,
     ) {
-        let mut interval = interval(Duration::from_millis(interval_ms));
+        // interval_ms=0 means threshold-only flushing; use 1ms floor to satisfy tokio's
+        // non-zero period requirement. The timer path is effectively dead when threshold=1.
+        let mut interval = interval(Duration::from_millis(interval_ms.max(1)));
         let mut shutdown_requested = false;
 
         while !shutdown_requested {
@@ -717,15 +697,21 @@ where
                                 this: this.clone(),
                             };
 
-                            // Handle backpressure gracefully
-                            match this.flush_workers.sender.as_ref().expect("sender should exist").send(flush_task) {
+                            // Non-blocking send: drop the task if the channel is full
+                            // (backpressure) rather than blocking the batch_processor loop.
+                            match this
+                                .flush_workers
+                                .sender
+                                .as_ref()
+                                .expect("sender should exist")
+                                .try_send(flush_task)
+                            {
                                 Ok(_) => {
                                     metrics::counter!("flush_tasks.enqueued").increment(1);
                                 }
                                 Err(e) => {
                                     metrics::counter!("flush_tasks.dropped").increment(1);
-                                    error!("Flush worker pool backlogged, dropping task: {}", e);
-                                    // Consider implementing a retry mechanism or fallback
+                                    error!("Flush worker pool full, dropping task: {}", e);
                                 }
                             }
                         }
@@ -782,20 +768,8 @@ where
         metrics::histogram!("persist_entries_batch_size").record(indexes_to_process.len() as f64);
 
         match self.flush_policy {
-            FlushPolicy::Immediate => {
-                // For Immediate we must persist the *exact incoming indexes* directly.
-                // Do not rely on flush_state.pending_indexes because this field is used
-                // for batching only and may be empty for Immediate path.
-                if !indexes_to_process.is_empty() {
-                    // process_flush expects a slice of indexes -> call directly
-                    // We ignore the Result here but log on error for debugging.
-                    if let Err(e) = self.process_flush(indexes).await {
-                        error!("Immediate persist failed: {:?}", e);
-                    }
-                }
-            }
             FlushPolicy::Batch { threshold, .. } => {
-                // For Batch: accumulate indexes into pending_indexes, then check threshold.
+                // Accumulate indexes into pending_indexes, then check threshold.
                 let mut flush_now = false;
                 {
                     // lock scope small for performance
@@ -843,7 +817,11 @@ where
         self.entries.clear();
         self.durable_index.store(0, Ordering::Release);
         self.next_id.store(1, Ordering::Release);
-        self.waiters.clear();
+        // Explicitly unblock all pending waiters: after reset the entries they were
+        // waiting on no longer exist. Sending () is cleaner than silently dropping
+        // the senders, which would cause wait_durable callers to receive a
+        // channel-closed error instead of a clean return.
+        self.notify_waiters(u64::MAX);
 
         // Reset boundaries
         self.min_index.store(0, Ordering::Release);
@@ -886,11 +864,8 @@ where
         // Persist to storage
         self.log_store.persist_entries(entries).await?;
 
-        // Ensure crash-safety before advancing durable_index.
-        // For Immediate policy we always flush. For Batch policy we flush only when the
-        // backend does not guarantee per-write durability (is_write_durable == false).
-        if matches!(self.flush_policy, FlushPolicy::Immediate) || !self.log_store.is_write_durable()
-        {
+        // Flush only when the backend does not guarantee per-write durability.
+        if !self.log_store.is_write_durable() {
             self.log_store.flush()?;
         }
 
@@ -907,8 +882,8 @@ where
                     break;
                 }
             }
-            if cur > self.durable_index.load(Ordering::Acquire) {
-                self.durable_index.store(cur, Ordering::Release);
+            let prev = self.durable_index.fetch_max(cur, Ordering::AcqRel);
+            if cur > prev {
                 self.notify_waiters(cur);
             }
         }
@@ -951,9 +926,8 @@ where
     ) -> Result<()> {
         self.log_store.persist_entries(entries.to_vec()).await?;
 
-        // Ensure crash-safety before advancing durable_index.
-        if matches!(self.flush_policy, FlushPolicy::Immediate) || !self.log_store.is_write_durable()
-        {
+        // Flush only when the backend does not guarantee per-write durability.
+        if !self.log_store.is_write_durable() {
             self.log_store.flush()?;
         }
 
@@ -1071,97 +1045,68 @@ where
         }
     }
 
-    /// Creates a flush worker pool with configurable number of workers
-    fn create_flush_worker_pool(num_workers: usize) -> FlushWorkerPool<T> {
-        // Configuration: Adjust based on your workload
-        const CHANNEL_CAPACITY: usize = 100; // Provides backpressure
-
-        let (sender, receiver) = bounded::<FlushTask<T>>(CHANNEL_CAPACITY);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let mut worker_handles = Vec::with_capacity(num_workers);
-
-        for worker_id in 0..num_workers {
-            let receiver = receiver.clone();
-            let shutdown = shutdown.clone();
-            let handle = tokio::spawn(async move {
-                loop {
-                    // Check shutdown flag first
-                    if shutdown.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    match receiver.try_recv() {
-                        Ok(task) => {
-                            let FlushTask { indexes, this } = task;
-
-                            // Record metrics for monitoring
-                            let start_time = Instant::now();
-                            metrics::counter!("flush_worker.requests").increment(1);
-                            metrics::histogram!("flush_worker.batch_size")
-                                .record(indexes.len() as f64);
-
-                            // Process the flush
-                            match this.process_flush(&indexes).await {
-                                Ok(_) => {
-                                    let duration = start_time.elapsed();
-                                    metrics::histogram!("flush_worker.success_duration")
-                                        .record(duration.as_micros() as f64);
-                                    debug!(
-                                        "Worker {} successfully processed flush of {} entries in {:?}",
-                                        worker_id,
-                                        indexes.len(),
-                                        duration
-                                    );
-                                }
-                                Err(e) => {
-                                    metrics::counter!("flush_worker.errors").increment(1);
-                                    error!("Worker {} failed to process flush: {}", worker_id, e);
-
-                                    // Implement retry logic for transient errors
-                                    if Self::is_transient_error(&e) {
-                                        warn!("Retrying failed flush operation");
-                                        // Simple retry after delay - consider exponential backoff
-                                        // for production
-                                        tokio::time::sleep(Duration::from_millis(100)).await;
-                                        match this.process_flush(&indexes).await {
-                                            Ok(_) => {
-                                                debug!("Worker {} retry succeeded", worker_id);
-                                            }
-                                            Err(retry_err) => {
-                                                error!(
-                                                    "Worker {} retry failed: {}",
-                                                    worker_id, retry_err
-                                                );
-                                                break; // Only exit on persistent failure
-                                            }
-                                        }
-                                    } else {
-                                        break; // Non-transient - exit immediately
-                                    }
-                                }
-                            }
-                        }
-                        Err(crossbeam::channel::TryRecvError::Empty) => {
-                            // No tasks available, sleep briefly
-                            tokio::time::sleep(Duration::from_millis(1)).await;
-                            continue;
-                        }
-                        Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                            // Channel disconnected, break
-                            break;
-                        }
-                    }
+    /// Creates a flush worker pool with configurable number of workers.
+    ///
+    fn create_flush_worker_pool(channel_capacity: usize) -> FlushWorkerPool<T> {
+        let (sender, receiver) = mpsc::channel::<FlushTask<T>>(channel_capacity);
+        tokio::spawn(async move {
+            let mut rx = receiver;
+            loop {
+                let task = match rx.recv().await {
+                    Some(task) => task,
+                    None => break, // sender dropped — shutdown
+                };
+                if !Self::run_flush_task(task).await {
+                    break; // persistent failure — exit
                 }
-
-                debug!("Flush worker {} shutting down", worker_id);
-            });
-
-            worker_handles.push(handle);
-        }
-
+            }
+            debug!("Flush worker shutting down");
+        });
         FlushWorkerPool {
             sender: Some(sender),
-            shutdown,
-            worker_handles,
+        }
+    }
+
+    /// Returns `true` if the worker should continue, `false` on persistent failure.
+    async fn run_flush_task(task: FlushTask<T>) -> bool {
+        let FlushTask { indexes, this } = task;
+        let start_time = Instant::now();
+        metrics::counter!("flush_worker.requests").increment(1);
+        metrics::histogram!("flush_worker.batch_size").record(indexes.len() as f64);
+
+        match this.process_flush(&indexes).await {
+            Ok(_) => {
+                let duration = start_time.elapsed();
+                metrics::histogram!("flush_worker.success_duration")
+                    .record(duration.as_micros() as f64);
+                debug!(
+                    "Flush worker processed {} entries in {:?}",
+                    indexes.len(),
+                    duration
+                );
+                true
+            }
+            Err(e) => {
+                metrics::counter!("flush_worker.errors").increment(1);
+                error!("Flush worker failed: {}", e);
+
+                if Self::is_transient_error(&e) {
+                    warn!("Flush worker retrying after 100ms");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    match this.process_flush(&indexes).await {
+                        Ok(_) => {
+                            debug!("Flush worker retry succeeded");
+                            true
+                        }
+                        Err(retry_err) => {
+                            error!("Flush worker retry failed: {}", retry_err);
+                            false
+                        }
+                    }
+                } else {
+                    false
+                }
+            }
         }
     }
 
@@ -1172,36 +1117,6 @@ where
         error.to_string().contains("timeout")
             || error.to_string().contains("temporary")
             || error.to_string().contains("busy")
-    }
-
-    // Cleanup method for graceful shutdown
-    #[allow(dead_code)]
-    pub(crate) async fn shutdown(&mut self) {
-        // Signal shutdown to all workers
-        self.flush_workers.shutdown.store(true, Ordering::Relaxed);
-
-        // Take and drop the sender to close channel
-        if let Some(sender) = self.flush_workers.sender.take() {
-            drop(sender);
-        }
-
-        // Wait for each worker to complete with individual timeout
-        for handle in self.flush_workers.worker_handles.drain(..) {
-            match tokio::time::timeout(Duration::from_secs(2), handle).await {
-                Ok(Ok(())) => {
-                    // Worker completed successfully
-                }
-                Ok(Err(e)) => {
-                    warn!("Worker task panicked during shutdown: {:?}", e);
-                }
-                Err(_) => {
-                    warn!("Worker task timed out during shutdown");
-                    // Task is automatically cancelled when JoinHandle is dropped
-                }
-            }
-        }
-
-        debug!("Flush worker pool shut down successfully");
     }
 
     /// Returns the number of entries in the buffer.
@@ -1221,15 +1136,6 @@ where
     #[cfg(any(test, feature = "__test_support"))]
     pub fn durable_index(&self) -> u64 {
         self.durable_index.load(Ordering::Acquire)
-    }
-
-    /// Returns whether all flush workers have finished (test-only).
-    ///
-    /// This accessor enables tests to verify graceful shutdown behavior
-    /// without directly accessing worker handles.
-    #[cfg(test)]
-    pub fn is_all_workers_finished(&self) -> bool {
-        self.flush_workers.worker_handles.iter().all(|h| h.is_finished())
     }
 
     /// Returns reference to next_id atomic for test verification (test-only).

@@ -180,7 +180,10 @@ pub fn setup_raft_components(
         id,
         PersistenceConfig {
             strategy: PersistenceStrategy::DiskFirst,
-            flush_policy: FlushPolicy::Immediate,
+            flush_policy: FlushPolicy::Batch {
+                threshold: 1,
+                interval_ms: 0,
+            },
             max_buffered_entries: 10000,
             ..Default::default()
         },

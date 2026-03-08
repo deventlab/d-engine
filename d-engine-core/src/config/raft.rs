@@ -768,20 +768,17 @@ pub enum PersistenceStrategy {
 }
 
 /// Controls when in-memory logs should be flushed to disk.
+///
+/// Use `Batch { threshold: 1, interval_ms: 0 }` for per-write durability equivalent
+/// to the former `Immediate` policy.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum FlushPolicy {
-    /// Flush each log write immediately to disk.
+    /// Flush entries to disk when either condition is met:
+    /// - The number of unflushed entries reaches `threshold`.
+    /// - The elapsed time since the last flush exceeds `interval_ms`.
     ///
-    /// - Guarantees the highest durability.
-    /// - Each append operation causes a disk write.
-    Immediate,
-
-    /// Flush entries to disk when either of two conditions is met:
-    /// - The number of unflushed entries reaches the given threshold.
-    /// - The elapsed time since the last flush exceeds the configured interval.
-    ///
-    /// - Balances performance and durability.
-    /// - Recent unflushed entries may be lost in the event of a crash or power failure.
+    /// Set `threshold: 1, interval_ms: 0` for per-write durability (highest safety,
+    /// lowest throughput). Larger values trade some durability for higher throughput.
     Batch { threshold: usize, interval_ms: u64 },
 }
 
@@ -810,18 +807,6 @@ pub struct PersistenceConfig {
     #[serde(default = "default_max_buffered_entries")]
     pub max_buffered_entries: usize,
 
-    /// Number of flush worker threads to use for log persistence.
-    ///
-    /// - If set to 0, the system falls back to spawning a new task per flush (legacy behavior,
-    ///   lower latency but less stable under high load).
-    /// - If set to a positive number, a worker pool of that size will be created to process flush
-    ///   requests (more stable and efficient under high load).
-    ///
-    /// This parameter allows tuning between throughput and latency depending on
-    /// workload characteristics.
-    #[serde(default = "default_flush_workers")]
-    pub flush_workers: usize,
-
     /// Capacity of the internal task channel for flush workers.
     ///
     /// - Provides **backpressure** during high write throughput.
@@ -835,11 +820,6 @@ pub struct PersistenceConfig {
 /// Default persistence strategy (optimized for balanced workloads)
 fn default_persistence_strategy() -> PersistenceStrategy {
     PersistenceStrategy::DiskFirst
-}
-
-/// Default value for flush_workers
-fn default_flush_workers() -> usize {
-    2
 }
 
 /// Default value for channel_capacity
@@ -869,7 +849,6 @@ impl Default for PersistenceConfig {
             strategy: default_persistence_strategy(),
             flush_policy: default_flush_policy(),
             max_buffered_entries: default_max_buffered_entries(),
-            flush_workers: default_flush_workers(),
             channel_capacity: default_channel_capacity(),
         }
     }
