@@ -12,6 +12,7 @@ mod lease;
 mod network;
 mod raft;
 mod retry;
+mod storage;
 mod tls;
 pub use cluster::*;
 use config::ConfigError;
@@ -19,6 +20,7 @@ pub use lease::*;
 pub use network::*;
 pub use raft::*;
 pub use retry::*;
+pub use storage::*;
 pub use tls::*;
 #[cfg(test)]
 mod config_test;
@@ -55,6 +57,8 @@ pub struct RaftNodeConfig {
     pub network: NetworkConfig,
     /// Core Raft algorithm parameters
     pub raft: RaftConfig,
+    /// Storage engine infrastructure configuration
+    pub storage: StorageConfig,
     /// Retry policies for distributed operations
     pub retry: RetryPolicies,
     /// TLS/SSL security configuration
@@ -177,6 +181,7 @@ impl RaftNodeConfig {
         self.cluster.validate()?;
         self.raft.validate()?;
         self.network.validate()?;
+        self.storage.validate()?;
         self.tls.validate()?;
         self.retry.validate()?;
         Ok(self)

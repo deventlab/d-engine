@@ -93,3 +93,6 @@ max_frame_size = 16_777_215
 http2_adaptive_window = true              # Enable adaptive window
 http2_max_pending_accept_reset_streams = 2000  # Higher pending stream limit
 http2_max_send_buffer_size = 16_777_216   # 16MB send buffer
+
+[storage]
+unified_db = false

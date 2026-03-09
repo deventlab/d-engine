@@ -124,6 +124,10 @@
 
 use crate::Result;
 #[cfg(feature = "rocksdb")]
+use crate::RocksDBStateMachine;
+#[cfg(feature = "rocksdb")]
+use crate::RocksDBStorageEngine;
+#[cfg(feature = "rocksdb")]
 use crate::RocksDBUnifiedEngine;
 use crate::StateMachine;
 use crate::StorageEngine;
@@ -196,9 +200,23 @@ impl EmbeddedEngine {
             .await
             .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
 
-        let db_path = std::path::PathBuf::from(base_dir).join("db");
-
-        let (storage, mut sm) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, mut sm) = if config.storage.unified_db {
+            let db_path = std::path::PathBuf::from(base_dir).join("db");
+            info!(
+                "Starting embedded engine with unified RocksDB at {:?}",
+                db_path
+            );
+            RocksDBUnifiedEngine::open(&db_path)?
+        } else {
+            let base = std::path::PathBuf::from(base_dir);
+            info!(
+                "Starting embedded engine with separate RocksDB instances at {:?}",
+                base
+            );
+            let storage = RocksDBStorageEngine::new(base.join("storage"))?;
+            let sm = RocksDBStateMachine::new(base.join("state_machine"))?;
+            (storage, sm)
+        };
 
         // Inject lease if enabled
         let lease_cfg = &config.raft.state_machine.lease;
@@ -206,8 +224,6 @@ impl EmbeddedEngine {
             let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
             sm.set_lease(lease);
         }
-
-        info!("Starting embedded engine with RocksDB at {:?}", db_path);
 
         Self::start_custom(Arc::new(storage), Arc::new(sm), None).await
     }
@@ -236,9 +252,22 @@ impl EmbeddedEngine {
             .await
             .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
 
-        let db_path = base_dir.join("db");
-
-        let (storage, mut sm) = RocksDBUnifiedEngine::open(&db_path)?;
+        let (storage, mut sm) = if config.storage.unified_db {
+            let db_path = base_dir.join("db");
+            info!(
+                "Starting embedded engine with unified RocksDB at {:?}",
+                db_path
+            );
+            RocksDBUnifiedEngine::open(&db_path)?
+        } else {
+            info!(
+                "Starting embedded engine with separate RocksDB instances at {:?}",
+                base_dir
+            );
+            let storage = RocksDBStorageEngine::new(base_dir.join("storage"))?;
+            let sm = RocksDBStateMachine::new(base_dir.join("state_machine"))?;
+            (storage, sm)
+        };
 
         // Inject lease if enabled
         let lease_cfg = &config.raft.state_machine.lease;
@@ -246,8 +275,6 @@ impl EmbeddedEngine {
             let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
             sm.set_lease(lease);
         }
-
-        info!("Starting embedded engine with RocksDB at {:?}", db_path);
 
         Self::start_custom(Arc::new(storage), Arc::new(sm), Some(config_path)).await
     }

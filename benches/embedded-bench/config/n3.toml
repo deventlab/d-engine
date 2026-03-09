@@ -19,3 +19,6 @@ enable_batch = false
 
 [raft.snapshot]
 enable = false
+
+[storage]
+unified_db = false

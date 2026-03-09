@@ -54,10 +54,12 @@ impl RocksDBUnifiedEngine {
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
 
-        // Shared write buffer and background jobs for all 4 CFs
-        db_opts.set_max_write_buffer_number(4);
-        db_opts.set_min_write_buffer_number_to_merge(2);
-        db_opts.set_max_background_jobs(4);
+        // Disable global write buffer cap so each CF controls its own flush lifecycle.
+        // Without this, RocksDB imposes a DB-wide limit that triggers simultaneous flushes
+        // across all CFs, causing all CFs to compete for the same background thread pool
+        // and producing write stalls under high-throughput embedded workloads.
+        db_opts.set_db_write_buffer_size(0);
+        db_opts.set_max_background_jobs(2);
         db_opts.set_max_open_files(5000);
 
         // WAL tuning
@@ -98,6 +100,8 @@ impl RocksDBUnifiedEngine {
     fn log_cf_options(block_cache: &Cache) -> Options {
         let mut opts = Options::default();
         opts.set_write_buffer_size(128 * 1024 * 1024);
+        opts.set_max_write_buffer_number(4);
+        opts.set_min_write_buffer_number_to_merge(2);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
         opts.set_compression_options(-14, 0, 0, 0);
@@ -115,6 +119,8 @@ impl RocksDBUnifiedEngine {
     fn sm_cf_options(block_cache: &Cache) -> Options {
         let mut opts = Options::default();
         opts.set_write_buffer_size(64 * 1024 * 1024);
+        opts.set_max_write_buffer_number(4);
+        opts.set_min_write_buffer_number_to_merge(2);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
 
