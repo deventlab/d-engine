@@ -97,7 +97,6 @@ async fn test_shutdown_handles_slow_workers() {
                 interval_ms: 100,
             },
             max_buffered_entries: 1000,
-            ..Default::default()
         },
         storage,
     );

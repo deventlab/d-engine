@@ -53,8 +53,7 @@ impl TestContext {
             PersistenceConfig {
                 strategy: strategy.clone(),
                 flush_policy: flush_policy.clone(),
-                max_buffered_entries: 1000,
-                ..Default::default()
+                max_buffered_entries: 10000,
             },
             storage.clone(),
         );
@@ -83,8 +82,7 @@ impl TestContext {
             PersistenceConfig {
                 strategy: self.strategy.clone(),
                 flush_policy: self.flush_policy.clone(),
-                max_buffered_entries: 1000,
-                ..Default::default()
+                max_buffered_entries: 10000,
             },
             storage.clone(),
         );

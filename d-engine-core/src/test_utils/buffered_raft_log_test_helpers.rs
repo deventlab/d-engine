@@ -39,7 +39,6 @@ impl BufferedRaftLogTestContext {
                 strategy: strategy.clone(),
                 flush_policy: flush_policy.clone(),
                 max_buffered_entries: 1000,
-                ..Default::default()
             },
             storage.clone(),
         );
@@ -86,7 +85,6 @@ impl BufferedRaftLogTestContext {
                 strategy: self.strategy.clone(),
                 flush_policy: self.flush_policy.clone(),
                 max_buffered_entries: 1000,
-                ..Default::default()
             },
             storage.clone(),
         );

@@ -51,8 +51,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                     threshold: 1000,
                     interval_ms,
                 },
-                max_buffered_entries: 1000,
-                ..Default::default()
+                max_buffered_entries: 10000,
             };
 
             let temp_dir = tempdir().unwrap();
@@ -123,8 +122,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                     threshold: 1000,
                     interval_ms,
                 },
-                max_buffered_entries: 1000,
-                ..Default::default()
+                max_buffered_entries: 10000,
             };
 
             let temp_dir = tempdir().unwrap();

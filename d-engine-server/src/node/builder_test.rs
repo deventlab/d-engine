@@ -64,7 +64,6 @@ async fn test_set_raft_log_replaces_default() {
                     interval_ms: 0,
                 },
                 max_buffered_entries: 1000,
-                ..Default::default()
             },
             mock_storage_engine.clone(),
         );

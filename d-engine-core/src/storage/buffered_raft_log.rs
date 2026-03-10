@@ -47,7 +47,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::Error;
 use crate::FlushPolicy;
 use crate::HardState;
 use crate::LogStore;
@@ -69,27 +68,11 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
-use tokio::time::Instant;
 use tokio::time::interval;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
-
-pub(crate) struct FlushWorkerPool<T>
-where
-    T: TypeConfig,
-{
-    sender: Option<mpsc::Sender<FlushTask<T>>>,
-}
-
-pub(crate) struct FlushTask<T>
-where
-    T: TypeConfig,
-{
-    indexes: Vec<u64>,
-    this: Arc<BufferedRaftLog<T>>,
-}
 
 /// Commands for the log processor
 #[derive(Debug)]
@@ -98,8 +81,6 @@ pub enum LogCommand {
     WaitDurable(u64, oneshot::Sender<()>),
     /// Request to persist specific log entries
     PersistEntries(Vec<u64>),
-    /// Reset the log storage
-    Reset(oneshot::Sender<Result<()>>),
     /// Shutdown command processor
     Shutdown,
 }
@@ -152,9 +133,6 @@ where
     // Track flush state
     pub(crate) flush_state: Mutex<FlushState>,
     pub(crate) waiters: DashMap<u64, Vec<oneshot::Sender<()>>>,
-
-    // --- Flush worker pool ---
-    pub(crate) flush_workers: FlushWorkerPool<T>,
 }
 
 #[async_trait]
@@ -400,7 +378,8 @@ where
         new_entries: Vec<Entry>,
     ) -> Result<Option<LogId>> {
         let _timer = ScopedTimer::new("filter_out_conflicts_and_append");
-        // Virtual log handling (snapshot installation)
+        // prev_log_index == 0 means the leader wants the follower to start from scratch
+        // (e.g. new follower joining, or follower log fully diverged). Reset and replace.
         if prev_log_index == 0 && prev_log_term == 0 {
             self.reset().await?;
             self.append_entries(new_entries.clone()).await?;
@@ -612,7 +591,6 @@ where
             );
         }
 
-        let flush_workers = Self::create_flush_worker_pool(persistence_config.channel_capacity);
         (
             Self {
                 node_id,
@@ -632,7 +610,6 @@ where
                 waiters: DashMap::new(),
                 term_first_index,
                 term_last_index,
-                flush_workers,
             },
             command_receiver,
         )
@@ -683,38 +660,15 @@ where
                         None => break,
                     }
                 }
-                // Priority 2: non-blocking refresh trigger
+                // Priority 2: timer-triggered flush (inline, no extra task)
                 _ = interval.tick() => {
                     if let Some(this) = this.upgrade() {
-                        // Quickly get the index to be refreshed (non-blocking)
                         let indexes = this.get_pending_indexes().await;
-
-                        if !indexes.is_empty() {
-
-                            // Send to flush worker pool instead of spawning new task
-                            let flush_task = FlushTask {
-                                indexes,
-                                this: this.clone(),
-                            };
-
-                            // Non-blocking send: drop the task if the channel is full
-                            // (backpressure) rather than blocking the batch_processor loop.
-                            match this
-                                .flush_workers
-                                .sender
-                                .as_ref()
-                                .expect("sender should exist")
-                                .try_send(flush_task)
-                            {
-                                Ok(_) => {
-                                    metrics::counter!("flush_tasks.enqueued").increment(1);
-                                }
-                                Err(e) => {
-                                    metrics::counter!("flush_tasks.dropped").increment(1);
-                                    error!("Flush worker pool full, dropping task: {}", e);
-                                }
+                        if !indexes.is_empty() && let Err(e) = this.process_flush(&indexes).await {
+                                error!("Timer flush failed, re-enqueuing {} indexes: {:?}", indexes.len(), e);
+                                let mut state = this.flush_state.lock().await;
+                                state.pending_indexes.extend(indexes);
                             }
-                        }
                     }
                 }
             }
@@ -733,16 +687,6 @@ where
             }
             LogCommand::WaitDurable(index, ack) => {
                 self.handle_wait_durable(index, ack).await;
-            }
-            LogCommand::Reset(ack) => {
-                if let Err(e) = self.reset_internal().await {
-                    error!("Failed to reset internal state: {}", e);
-                    let _ = ack.send(Err(e));
-                } else {
-                    //reset disk
-                    let result = self.log_store.reset().await;
-                    let _ = ack.send(result);
-                }
             }
             LogCommand::Shutdown => {
                 let _ = self.force_flush().await;
@@ -1043,80 +987,6 @@ where
                 .value()
                 .fetch_max(entry.index, Ordering::AcqRel);
         }
-    }
-
-    /// Creates a flush worker pool with configurable number of workers.
-    ///
-    fn create_flush_worker_pool(channel_capacity: usize) -> FlushWorkerPool<T> {
-        let (sender, receiver) = mpsc::channel::<FlushTask<T>>(channel_capacity);
-        tokio::spawn(async move {
-            let mut rx = receiver;
-            loop {
-                let task = match rx.recv().await {
-                    Some(task) => task,
-                    None => break, // sender dropped — shutdown
-                };
-                if !Self::run_flush_task(task).await {
-                    break; // persistent failure — exit
-                }
-            }
-            debug!("Flush worker shutting down");
-        });
-        FlushWorkerPool {
-            sender: Some(sender),
-        }
-    }
-
-    /// Returns `true` if the worker should continue, `false` on persistent failure.
-    async fn run_flush_task(task: FlushTask<T>) -> bool {
-        let FlushTask { indexes, this } = task;
-        let start_time = Instant::now();
-        metrics::counter!("flush_worker.requests").increment(1);
-        metrics::histogram!("flush_worker.batch_size").record(indexes.len() as f64);
-
-        match this.process_flush(&indexes).await {
-            Ok(_) => {
-                let duration = start_time.elapsed();
-                metrics::histogram!("flush_worker.success_duration")
-                    .record(duration.as_micros() as f64);
-                debug!(
-                    "Flush worker processed {} entries in {:?}",
-                    indexes.len(),
-                    duration
-                );
-                true
-            }
-            Err(e) => {
-                metrics::counter!("flush_worker.errors").increment(1);
-                error!("Flush worker failed: {}", e);
-
-                if Self::is_transient_error(&e) {
-                    warn!("Flush worker retrying after 100ms");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    match this.process_flush(&indexes).await {
-                        Ok(_) => {
-                            debug!("Flush worker retry succeeded");
-                            true
-                        }
-                        Err(retry_err) => {
-                            error!("Flush worker retry failed: {}", retry_err);
-                            false
-                        }
-                    }
-                } else {
-                    false
-                }
-            }
-        }
-    }
-
-    /// Helper to determine if an error is transient and worth retrying
-    fn is_transient_error(error: &Error) -> bool {
-        // Implement logic based on your error types
-        // For example, network timeouts, temporary IO errors, etc.
-        error.to_string().contains("timeout")
-            || error.to_string().contains("temporary")
-            || error.to_string().contains("busy")
     }
 
     /// Returns the number of entries in the buffer.

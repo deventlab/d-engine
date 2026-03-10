@@ -183,8 +183,7 @@ async fn test_partial_flush_with_graceful_shutdown() {
                         threshold: batch_size,
                         interval_ms: 100,
                     },
-                    max_buffered_entries: 1000,
-                    ..Default::default()
+                    max_buffered_entries: 10000,
                 },
                 storage,
             );
@@ -219,8 +218,7 @@ async fn test_partial_flush_with_graceful_shutdown() {
                     threshold: 1,
                     interval_ms: 0,
                 },
-                max_buffered_entries: 1000,
-                ..Default::default()
+                max_buffered_entries: 10000,
             },
             storage,
         );
@@ -252,8 +250,7 @@ async fn test_partial_flush_after_crash() {
                         threshold: batch_size,
                         interval_ms: 100,
                     },
-                    max_buffered_entries: 1000,
-                    ..Default::default()
+                    max_buffered_entries: 10000,
                 },
                 storage,
             );
@@ -303,8 +300,7 @@ async fn test_partial_flush_after_crash() {
                     threshold: 1,
                     interval_ms: 0,
                 },
-                max_buffered_entries: 1000,
-                ..Default::default()
+                max_buffered_entries: 10000,
             },
             storage,
         );
@@ -439,8 +435,7 @@ async fn test_memfirst_crash_recovery_durability() {
                     threshold: 1,
                     interval_ms: 0,
                 },
-                max_buffered_entries: 1000,
-                ..Default::default()
+                max_buffered_entries: 10000,
             },
             storage,
         );
@@ -473,8 +468,7 @@ async fn test_diskfirst_crash_recovery_durability() {
                         threshold: 1,
                         interval_ms: 0,
                     },
-                    max_buffered_entries: 1000,
-                    ..Default::default()
+                    max_buffered_entries: 10000,
                 },
                 storage,
             );
@@ -509,8 +503,7 @@ async fn test_diskfirst_crash_recovery_durability() {
                     threshold: 1,
                     interval_ms: 0,
                 },
-                max_buffered_entries: 1000,
-                ..Default::default()
+                max_buffered_entries: 10000,
             },
             storage,
         );

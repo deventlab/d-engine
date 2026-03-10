@@ -185,7 +185,6 @@ pub fn setup_raft_components(
                 interval_ms: 0,
             },
             max_buffered_entries: 10000,
-            ..Default::default()
         },
         storage_engine.clone(),
     );

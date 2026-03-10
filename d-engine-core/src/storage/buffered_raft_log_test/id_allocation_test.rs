@@ -26,7 +26,6 @@ fn setup_memory() -> Arc<BufferedRaftLog<MockTypeConfig>> {
                 interval_ms: 0,
             },
             max_buffered_entries: 1000,
-            ..Default::default()
         },
         storage,
     );

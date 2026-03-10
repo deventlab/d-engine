@@ -806,25 +806,11 @@ pub struct PersistenceConfig {
     /// high write throughput or when disk persistence is slow.
     #[serde(default = "default_max_buffered_entries")]
     pub max_buffered_entries: usize,
-
-    /// Capacity of the internal task channel for flush workers.
-    ///
-    /// - Provides **backpressure** during high write throughput.
-    /// - Prevents unbounded task accumulation in memory when disk I/O is slow.
-    /// - Larger values improve throughput at the cost of higher memory usage, while smaller values
-    ///   apply stricter flow control but may reduce parallelism.
-    #[serde(default = "default_channel_capacity")]
-    pub channel_capacity: usize,
 }
 
 /// Default persistence strategy (optimized for balanced workloads)
 fn default_persistence_strategy() -> PersistenceStrategy {
     PersistenceStrategy::DiskFirst
-}
-
-/// Default value for channel_capacity
-fn default_channel_capacity() -> usize {
-    100
 }
 
 /// Default flush policy for asynchronous strategies
@@ -849,7 +835,6 @@ impl Default for PersistenceConfig {
             strategy: default_persistence_strategy(),
             flush_policy: default_flush_policy(),
             max_buffered_entries: default_max_buffered_entries(),
-            channel_capacity: default_channel_capacity(),
         }
     }
 }
