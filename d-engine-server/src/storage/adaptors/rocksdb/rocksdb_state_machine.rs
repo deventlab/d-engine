@@ -44,8 +44,6 @@ use tracing::warn;
 
 use crate::storage::DefaultLease;
 
-use super::LOG_CF;
-use super::META_CF;
 use super::STATE_MACHINE_CF;
 use super::STATE_MACHINE_META_CF;
 
@@ -399,29 +397,16 @@ impl RocksDBStateMachine {
 
     // ===== Snapshot restore helpers =====
 
-    /// Restore SM state from a snapshot.
+    /// Restore SM state from a snapshot (CF export format).
     ///
-    /// Supports two formats:
-    /// - New (CF export): `snapshot_dir/sm/` exists — drop+import, O(1), no tombstones.
-    /// - Old (full checkpoint): fallback clear+copy for backward compatibility.
+    /// Uses CF export: drop+import, O(1), no tombstones.
     async fn restore_from_snapshot(
         &self,
         metadata: &SnapshotMetadata,
         snapshot_dir: &std::path::Path,
     ) -> Result<(), Error> {
         let db = self.db.load();
-
-        if snapshot_dir.join("sm").is_dir() {
-            // New format: CF export via export_column_family
-            Self::restore_from_cf_export(&db, snapshot_dir)?;
-        } else {
-            // Old format: full DB checkpoint — clear + copy (backward compat)
-            Self::clear_cf(&db, STATE_MACHINE_CF)?;
-            Self::clear_cf(&db, STATE_MACHINE_META_CF)?;
-            let snap_db = Self::open_snapshot_readonly(snapshot_dir)?;
-            Self::copy_cf(&snap_db, &db, STATE_MACHINE_CF)?;
-            Self::copy_cf(&snap_db, &db, STATE_MACHINE_META_CF)?;
-        }
+        Self::restore_from_cf_export(&db, snapshot_dir)?;
 
         info!("Snapshot restore complete");
 
@@ -444,75 +429,6 @@ impl RocksDBStateMachine {
 
         self.is_serving.store(true, Ordering::SeqCst);
         info!("Snapshot applied successfully");
-        Ok(())
-    }
-
-    /// Open a checkpoint for read-only access.
-    ///
-    /// Tries unified (4-CF) first; falls back to standalone (2-CF) for checkpoints
-    /// created before the unified engine migration.
-    fn open_snapshot_readonly(snapshot_dir: &std::path::Path) -> Result<DB, Error> {
-        let mut opts = Options::default();
-        opts.create_if_missing(false);
-        // Try unified checkpoint (4 CFs)
-        match DB::open_cf_for_read_only(
-            &opts,
-            snapshot_dir,
-            [LOG_CF, META_CF, STATE_MACHINE_CF, STATE_MACHINE_META_CF],
-            false,
-        ) {
-            Ok(db) => return Ok(db),
-            Err(e) if e.to_string().to_lowercase().contains("column family") => {
-                // Expected: snapshot was created before unified engine migration (2 CFs only).
-                // Fall through to 2-CF fallback.
-            }
-            Err(e) => return Err(StorageError::DbError(e.to_string()).into()),
-        }
-        // Fall back: standalone checkpoint (SM CFs only)
-        DB::open_cf_for_read_only(
-            &opts,
-            snapshot_dir,
-            [STATE_MACHINE_CF, STATE_MACHINE_META_CF],
-            false,
-        )
-        .map_err(|e| StorageError::DbError(e.to_string()).into())
-    }
-
-    /// Delete all keys in a CF via a single WriteBatch (compatible with `Arc<DB>`).
-    fn clear_cf(
-        db: &DB,
-        cf_name: &str,
-    ) -> Result<(), Error> {
-        let cf = db
-            .cf_handle(cf_name)
-            .ok_or_else(|| StorageError::DbError(format!("CF not found: {cf_name}")))?;
-        let mut batch = WriteBatch::default();
-        for item in db.iterator_cf(&cf, IteratorMode::Start) {
-            let (k, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-            batch.delete_cf(&cf, k);
-        }
-        db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Copy all KV pairs from `cf_name` in `src` into the same CF in `dst`.
-    fn copy_cf(
-        src: &DB,
-        dst: &DB,
-        cf_name: &str,
-    ) -> Result<(), Error> {
-        let cf_src = src
-            .cf_handle(cf_name)
-            .ok_or_else(|| StorageError::DbError(format!("CF {cf_name} missing in source DB")))?;
-        let cf_dst = dst
-            .cf_handle(cf_name)
-            .ok_or_else(|| StorageError::DbError(format!("CF {cf_name} missing in dest DB")))?;
-        let mut batch = WriteBatch::default();
-        for item in src.iterator_cf(&cf_src, IteratorMode::Start) {
-            let (k, v) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-            batch.put_cf(&cf_dst, k, v);
-        }
-        dst.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
 
