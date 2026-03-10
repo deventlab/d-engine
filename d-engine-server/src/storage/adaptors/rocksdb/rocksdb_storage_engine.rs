@@ -14,12 +14,11 @@ use d_engine_proto::common::LogId;
 use prost::Message;
 use std::path::Path;
 
-use rocksdb::BlockBasedOptions;
 use rocksdb::Cache;
+use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::DB;
 use rocksdb::Direction;
 use rocksdb::IteratorMode;
-use rocksdb::Options;
 use rocksdb::WriteBatch;
 use tonic::async_trait;
 use tracing::instrument;
@@ -67,29 +66,13 @@ impl RocksDBStorageEngine {
     ///
     /// Used when `unified_db = false` (default): each engine owns its own DB instance.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
-        opts.set_write_buffer_size(128 * 1024 * 1024);
-        opts.set_max_write_buffer_number(2);
-        opts.set_min_write_buffer_number_to_merge(1);
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-        opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
-        opts.set_wal_bytes_per_sync(1024 * 1024);
-        opts.set_max_background_jobs(4);
-        opts.set_max_open_files(5000);
-        opts.set_use_direct_io_for_flush_and_compaction(true);
-        opts.set_use_direct_reads(true);
-        opts.set_level_compaction_dynamic_level_bytes(true);
-        opts.set_target_file_size_base(64 * 1024 * 1024);
-        opts.set_max_bytes_for_level_base(256 * 1024 * 1024);
+        let db_opts = super::base_db_options();
 
         let cache = Cache::new_lru_cache(128 * 1024 * 1024);
-        let mut bb_opts = BlockBasedOptions::default();
-        bb_opts.set_block_cache(&cache);
-        opts.set_block_based_table_factory(&bb_opts);
+        let log_cf = ColumnFamilyDescriptor::new(LOG_CF, super::log_cf_options(&cache));
+        let meta_cf = ColumnFamilyDescriptor::new(META_CF, super::meta_cf_options(&cache));
 
-        let db = DB::open_cf(&opts, path, [LOG_CF, META_CF])
+        let db = DB::open_cf_descriptors(&db_opts, path, vec![log_cf, meta_cf])
             .map_err(|e| StorageError::DbError(e.to_string()))?;
         let db_arc = Arc::new(db);
 
