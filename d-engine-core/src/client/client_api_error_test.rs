@@ -239,3 +239,67 @@ mod client_api_error_tests {
         assert_eq!(err.code(), ErrorCode::StaleOperation);
     }
 }
+
+#[cfg(test)]
+mod transport_error_tests {
+    use crate::client::client_api_error::ClientApiError;
+    use d_engine_proto::error::ErrorCode;
+
+    // `tonic::transport::Error` has no public constructor, so these tests trigger
+    // real (but near-instant) connection failures to obtain an actual transport error,
+    // then verify that `From<tonic::transport::Error>` maps it to the correct variant.
+    //
+    // Note: the `contains("invalid uri")` branch was removed from
+    // `From<tonic::transport::Error>` because it was dead code — tonic produces
+    // "invalid URI" (uppercase) not "invalid uri", so the check never matched.
+    // Invalid URI errors from `Endpoint::from_shared()` are not `transport::Error`
+    // and should be handled at the call site.
+
+    /// An invalid URI passed to `Endpoint::from_shared` produces a transport::Error,
+    /// which falls through to the default branch and maps to Network { Uncategorized }.
+    ///
+    /// Business scenario: GrpcClient is constructed with a malformed address — the
+    /// caller must validate the URI before calling tonic, as the transport layer
+    /// does not distinguish URI errors from other failures.
+    #[tokio::test]
+    async fn test_from_transport_error_invalid_uri_maps_to_uncategorized() {
+        // Illegal character (space) in URI — tonic rejects at from_shared as transport::Error.
+        let err: ClientApiError =
+            tonic::transport::Endpoint::from_shared("http://invalid uri:9999".to_string())
+                .expect_err("illegal URI must fail at from_shared")
+                .into();
+
+        // No special branch for URI errors: falls through to Uncategorized default.
+        assert_eq!(
+            err.code(),
+            ErrorCode::Uncategorized,
+            "invalid URI transport error must map to Uncategorized — \
+             URI validation must be done before constructing the tonic Endpoint"
+        );
+        assert!(matches!(err, ClientApiError::Network { .. }));
+    }
+
+    /// Connecting to a port that actively refuses the connection produces a transport
+    /// error that is neither a timeout nor an invalid-URI error.
+    /// Expected mapping: Network { Uncategorized } (the default branch).
+    #[tokio::test]
+    async fn test_from_transport_error_connection_refused_maps_to_uncategorized() {
+        // Port 1 is almost universally refused on loopback — connect returns instantly.
+        let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
+        let err: ClientApiError =
+            ep.connect().await.expect_err("connection to port 1 must fail").into();
+
+        // Connection refused is not a timeout and does not contain "invalid uri",
+        // so it falls through to the default branch.
+        assert_eq!(
+            err.code(),
+            ErrorCode::Uncategorized,
+            "connection-refused transport error must map to Uncategorized; \
+             check the default branch in From<tonic::transport::Error>"
+        );
+        assert!(
+            matches!(err, ClientApiError::Network { .. }),
+            "default transport error must be a Network variant"
+        );
+    }
+}

@@ -945,3 +945,168 @@ listen_addr = "127.0.0.1:0"
         engine.stop().await.expect("Failed to stop engine");
     }
 }
+
+/// Tests for unified RocksDB path (`unified_db = true`) in `start_with()` and `start()`.
+///
+/// These tests exist because `unified_db` is an opt-in feature added in #295: both the
+/// unified and separate RocksDB paths in `start_with()` must be exercised independently.
+/// The default (`unified_db = false`) is already covered by `test_start_with_valid_config`.
+#[cfg(all(test, feature = "rocksdb"))]
+mod unified_db_tests {
+    use std::time::Duration;
+
+    use d_engine_core::ClientApi;
+
+    use crate::api::EmbeddedEngine;
+
+    fn make_config(
+        data_dir: &std::path::Path,
+        unified: bool,
+    ) -> String {
+        format!(
+            r#"
+[cluster]
+node_id = 1
+db_root_dir = "{}"
+
+[cluster.rpc]
+listen_addr = "127.0.0.1:0"
+
+[raft]
+heartbeat_interval_ms = 500
+election_timeout_min_ms = 1500
+election_timeout_max_ms = 3000
+
+[storage]
+unified_db = {unified}
+"#,
+            data_dir.display()
+        )
+    }
+
+    /// `start_with()` with `unified_db = true` should open a single shared RocksDB,
+    /// elect a leader, and shut down cleanly.
+    ///
+    /// Business scenario: Developer opts into unified DB mode to halve resource usage
+    /// on a developer machine or low-memory environment.
+    #[tokio::test]
+    async fn test_start_with_unified_db_starts_and_stops_cleanly() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(&config_path, make_config(temp_dir.path(), true)).expect("write config");
+
+        let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+            .await
+            .expect("start_with(unified_db=true) must succeed");
+
+        let leader = engine
+            .wait_ready(Duration::from_secs(5))
+            .await
+            .expect("leader election must complete within 5 s");
+
+        assert_eq!(leader.leader_id, 1, "single node must elect itself leader");
+        assert!(leader.term > 0, "term must be positive");
+
+        engine.stop().await.expect("stop must succeed");
+    }
+
+    /// `start_with()` with `unified_db = true` must persist data across a restart:
+    /// the single shared DB is re-opened and data written in the first session
+    /// must survive.
+    ///
+    /// Business scenario: Server restart after a crash — data must not be lost
+    /// when the unified DB path is used.
+    #[tokio::test]
+    async fn test_start_with_unified_db_data_persists_across_restart() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(&config_path, make_config(temp_dir.path(), true)).expect("write config");
+
+        // --- Phase 1: write a key ---
+        {
+            let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+                .await
+                .expect("first start must succeed");
+            engine.wait_ready(Duration::from_secs(5)).await.expect("leader election");
+
+            engine
+                .client()
+                .put(b"persist-key", b"persist-value")
+                .await
+                .expect("put must succeed");
+
+            engine.stop().await.expect("stop");
+        }
+
+        // Allow RocksDB file lock to be released before reopening.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // --- Phase 2: reopen and verify ---
+        {
+            let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+                .await
+                .expect("second start must succeed — DB lock must have been released");
+            engine
+                .wait_ready(Duration::from_secs(5))
+                .await
+                .expect("leader election on reopen");
+
+            let value = engine.client().get(b"persist-key").await.expect("get must succeed");
+
+            assert_eq!(
+                value.as_deref(),
+                Some(b"persist-value".as_ref()),
+                "unified DB must persist data across restarts"
+            );
+
+            engine.stop().await.expect("stop");
+        }
+    }
+
+    /// `start_with()` with `unified_db = false` (separate RocksDB instances) should
+    /// also persist data across a restart, confirming parity with the unified path.
+    ///
+    /// Business scenario: Default configuration — developer does not opt in to unified
+    /// mode but still expects data durability after a restart.
+    #[tokio::test]
+    async fn test_start_with_separate_db_data_persists_across_restart() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(&config_path, make_config(temp_dir.path(), false)).expect("write config");
+
+        // --- Phase 1: write ---
+        {
+            let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+                .await
+                .expect("first start must succeed");
+            engine.wait_ready(Duration::from_secs(5)).await.expect("leader election");
+
+            engine.client().put(b"sep-key", b"sep-value").await.expect("put must succeed");
+
+            engine.stop().await.expect("stop");
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // --- Phase 2: verify ---
+        {
+            let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+                .await
+                .expect("second start must succeed");
+            engine
+                .wait_ready(Duration::from_secs(5))
+                .await
+                .expect("leader election on reopen");
+
+            let value = engine.client().get(b"sep-key").await.expect("get must succeed");
+
+            assert_eq!(
+                value.as_deref(),
+                Some(b"sep-value".as_ref()),
+                "separate DB must persist data across restarts"
+            );
+
+            engine.stop().await.expect("stop");
+        }
+    }
+}

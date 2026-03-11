@@ -125,16 +125,6 @@ impl From<tonic::transport::Error> for ClientApiError {
             };
         }
 
-        // Check for invalid address errors
-        if err.to_string().contains("invalid uri") {
-            return Self::Network {
-                code: ErrorCode::InvalidAddress,
-                message: format!("Invalid address: {err}"),
-                retry_after_ms: None, // Not retryable - needs address correction
-                leader_hint: None,
-            };
-        }
-
         // Default case: unexpected transport failure
         Self::Network {
             code: ErrorCode::Uncategorized,

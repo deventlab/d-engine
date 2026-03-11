@@ -524,3 +524,113 @@ listen_addr = "127.0.0.1:0"
         assert!(result.is_ok(), "Server task should not panic");
     }
 }
+
+/// Tests for unified RocksDB path (`unified_db = true`) in `run_with()` and `run()`.
+///
+/// All existing tests use configs without a `[storage]` section, so `unified_db`
+/// defaults to `false` (separate RocksDB instances). These tests exercise the
+/// `unified_db = true` branch introduced in #295 to ensure both paths are verified.
+#[cfg(all(test, feature = "rocksdb"))]
+mod unified_db_tests {
+    use std::time::Duration;
+
+    use tokio::sync::watch;
+
+    use crate::api::StandaloneEngine;
+
+    fn make_config(
+        data_dir: &std::path::Path,
+        unified: bool,
+    ) -> String {
+        format!(
+            r#"
+[cluster]
+node_id = 1
+db_root_dir = "{}"
+
+[cluster.rpc]
+listen_addr = "127.0.0.1:0"
+
+[raft]
+heartbeat_interval_ms = 500
+election_timeout_min_ms = 1500
+election_timeout_max_ms = 3000
+
+[storage]
+unified_db = {unified}
+"#,
+            data_dir.display()
+        )
+    }
+
+    /// `run_with()` with `unified_db = true` should start a single shared RocksDB,
+    /// serve traffic, and shut down cleanly on shutdown signal.
+    ///
+    /// Business scenario: Operator deploys a standalone node with `unified_db = true`
+    /// to reduce memory/FD usage. The server must start and stop without errors.
+    #[tokio::test]
+    #[cfg(debug_assertions)]
+    async fn test_run_with_unified_db_starts_and_shuts_down_cleanly() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(&config_path, make_config(temp_dir.path(), true)).expect("write config");
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+
+        let config_path_str = config_path.to_str().unwrap().to_string();
+        let handle =
+            tokio::spawn(
+                async move { StandaloneEngine::run_with(&config_path_str, shutdown_rx).await },
+            );
+
+        // Give the server enough time to open RocksDB and start the Raft loop.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        shutdown_tx.send(()).expect("send shutdown signal");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("server must stop within 5 s")
+            .expect("server task must not panic");
+
+        assert!(
+            result.is_ok(),
+            "run_with(unified_db=true) must exit cleanly on shutdown signal"
+        );
+    }
+
+    /// `run_with()` with `unified_db = false` (separate RocksDB) should also start
+    /// and shut down cleanly, confirming parity between the two storage paths.
+    ///
+    /// Business scenario: Default deployment — operator does not set `unified_db`,
+    /// so the server opens two separate RocksDB instances.
+    #[tokio::test]
+    #[cfg(debug_assertions)]
+    async fn test_run_with_separate_db_starts_and_shuts_down_cleanly() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(&config_path, make_config(temp_dir.path(), false)).expect("write config");
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+
+        let config_path_str = config_path.to_str().unwrap().to_string();
+        let handle =
+            tokio::spawn(
+                async move { StandaloneEngine::run_with(&config_path_str, shutdown_rx).await },
+            );
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        shutdown_tx.send(()).expect("send shutdown signal");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("server must stop within 5 s")
+            .expect("server task must not panic");
+
+        assert!(
+            result.is_ok(),
+            "run_with(unified_db=false) must exit cleanly on shutdown signal"
+        );
+    }
+}
