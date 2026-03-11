@@ -8,32 +8,28 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **RocksDBUnifiedEngine** (#295): Single RocksDB instance with 4 column families replaces
-  the dual-instance setup used by `EmbeddedEngine` and `StandaloneEngine`.
-  Halves file handles, WAL files, background compaction threads, and block cache footprint
-  (256 MB → 128 MB shared cache).
-  - API: `RocksDBUnifiedEngine::open(path)` returns `(RocksDBStorageEngine, RocksDBStateMachine)`
-    sharing one `Arc<DB>`
-  - CF layout: `raft_log`, `raft_meta`, `state_machine_data`, `state_machine_meta`
-  - CF-optimized options: sequential-write tuning for Raft log, bloom filter for SM point lookups
+- **RocksDBUnifiedEngine** (#295): New single-DB backend, opt-in via `storage.unified_db = true`.
+  Uses 4 column families instead of two separate RocksDB instances.
+  - Reduces memory RSS and file descriptor usage
+  - Tradeoff: slightly lower write/read throughput (workload-dependent)
+  - **Experimental**: both paths are supported in v0.2.4; a future release will standardize on one
+  - When enabled: data path changes to `db_root_dir/db/` (⚠️ existing `storage/` data not migrated automatically)
 
 ### Changed
 
-- **EmbeddedEngine::start() / start_with()**: Now uses `RocksDBUnifiedEngine` internally.
-  Data path changes from `db_root_dir/storage/` + `db_root_dir/state_machine/` to `db_root_dir/db/`.
-- **StandaloneEngine::run() / run_with()**: Same unified engine and path change as above.
+- No behavior change for existing users — `unified_db` defaults to `false`
 
-### Migration Notes
+### ⚠️ Breaking Change — Snapshot Format
 
-#### Data Directory Migration (v0.2.3 → v0.2.4)
+The internal snapshot format changed from RocksDB **checkpoint** (v0.2.3) to
+**CF export** (v0.2.4). Existing v0.2.3 snapshots cannot be loaded by v0.2.4.
 
-Affects users of `EmbeddedEngine::start()`, `start_with()`, or `StandaloneEngine::run()` /
-`run_with()` with RocksDB storage.
+**Migration**: Before upgrading, delete the `snapshot/` directory under `db_root_dir`.
+d-engine will replay from WAL on first start and auto-create a new snapshot once
+the log size threshold is reached.
 
-- **⚠️ Existing data is NOT migrated automatically**: the old `storage/` and `state_machine/`
-  directories are ignored; the node starts with an empty database at `db/`
-- **Recommended upgrade path**: take a cluster snapshot before upgrading, then restore after
-- Users calling `start_custom()` with explicit `storage` and `sm` arguments are unaffected
+> Note: d-engine does not currently provide a manual snapshot trigger API.
+> Snapshots are created automatically based on the configure: e.g. `log_size_threshold`.
 
 ---
 
