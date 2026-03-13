@@ -17,7 +17,7 @@ async fn test_log_compaction() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_log_compaction",
     );

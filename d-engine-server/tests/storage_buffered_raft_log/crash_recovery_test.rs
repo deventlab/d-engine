@@ -24,7 +24,7 @@ async fn test_crash_recovery() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_crash_recovery",
     );
@@ -67,7 +67,7 @@ async fn test_crash_recovery_with_multiple_entries() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_crash_recovery_with_multiple_entries",
     );
@@ -216,7 +216,7 @@ async fn test_partial_flush_with_graceful_shutdown() {
                 strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     threshold: 1,
-                    interval_ms: 0,
+                    interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
             },
@@ -298,7 +298,7 @@ async fn test_partial_flush_after_crash() {
                 strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     threshold: 1,
-                    interval_ms: 0,
+                    interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
             },
@@ -322,7 +322,7 @@ async fn test_recovery_under_different_scenarios() {
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
                 threshold: 1,
-                interval_ms: 0,
+                interval_ms: 1,
             },
             100,
         ),
@@ -348,7 +348,7 @@ async fn test_recovery_under_different_scenarios() {
             PersistenceStrategy::DiskFirst,
             FlushPolicy::Batch {
                 threshold: 1,
-                interval_ms: 0,
+                interval_ms: 1,
             },
             100,
         ),
@@ -433,7 +433,7 @@ async fn test_memfirst_crash_recovery_durability() {
                 strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     threshold: 1,
-                    interval_ms: 0,
+                    interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
             },
@@ -466,7 +466,7 @@ async fn test_diskfirst_crash_recovery_durability() {
                     strategy: PersistenceStrategy::DiskFirst,
                     flush_policy: FlushPolicy::Batch {
                         threshold: 1,
-                        interval_ms: 0,
+                        interval_ms: 1,
                     },
                     max_buffered_entries: 10000,
                 },
@@ -501,7 +501,7 @@ async fn test_diskfirst_crash_recovery_durability() {
                 strategy: PersistenceStrategy::DiskFirst,
                 flush_policy: FlushPolicy::Batch {
                     threshold: 1,
-                    interval_ms: 0,
+                    interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
             },

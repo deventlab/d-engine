@@ -28,11 +28,10 @@
 //!   `pending_indexes` reaches the configured threshold. Inline execution is required to
 //!   preserve ordering with `flush()` — dispatching to the worker pool would create an
 //!   async gap. On failure the indexes are re-enqueued so the next timer tick retries them.
-//! - **Timer trigger** (`batch_processor`): fires every `interval_ms` and dispatches a
-//!   `FlushTask` to the flush worker pool. On a transient error the worker retries once after
-//!   100 ms. If the retry also fails, the worker exits and **the batch is permanently lost** —
-//!   `durable_index` will not advance and callers on `WaitDurable` will time out. This is
-//!   intentional: a storage failure that survives two attempts is treated as unrecoverable.
+//! - **Timer trigger** (`batch_processor`): fires every `interval_ms`. On failure the indexes
+//!   are re-enqueued and retried on the next tick. A storage failure that persists across ticks
+//!   will stall `durable_index` and cause `WaitDurable` callers to time out — this is
+//!   intentional: a persistent storage failure is treated as unrecoverable.
 //!
 //! ## flush() semantics
 //!
@@ -634,9 +633,8 @@ where
         mut receiver: mpsc::UnboundedReceiver<LogCommand>,
         interval_ms: u64,
     ) {
-        // interval_ms=0 means threshold-only flushing; use 1ms floor to satisfy tokio's
-        // non-zero period requirement. The timer path is effectively dead when threshold=1.
-        let mut interval = interval(Duration::from_millis(interval_ms.max(1)));
+        // interval_ms > 0 is enforced by config validation.
+        let mut interval = interval(Duration::from_millis(interval_ms));
         let mut shutdown_requested = false;
 
         while !shutdown_requested {

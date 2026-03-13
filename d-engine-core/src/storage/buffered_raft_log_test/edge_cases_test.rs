@@ -11,7 +11,7 @@ async fn test_empty_log_operations() {
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_empty_log",
     );
@@ -31,7 +31,7 @@ async fn test_single_entry_operations() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_single_entry",
     );
@@ -61,7 +61,7 @@ async fn test_gap_handling_in_indexes() {
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_gap_handling",
     );
@@ -105,7 +105,7 @@ async fn test_extreme_boundary_conditions() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_extreme_boundary_conditions",
     );

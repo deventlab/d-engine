@@ -1038,9 +1038,6 @@ unified_db = {unified}
             engine.stop().await.expect("stop");
         }
 
-        // Allow RocksDB file lock to be released before reopening.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
         // --- Phase 2: reopen and verify ---
         {
             let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
@@ -1085,8 +1082,6 @@ unified_db = {unified}
 
             engine.stop().await.expect("stop");
         }
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         // --- Phase 2: verify ---
         {

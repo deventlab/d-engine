@@ -26,7 +26,7 @@ async fn test_high_concurrency() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_high_concurrency",
     );
@@ -231,7 +231,7 @@ async fn test_term_index_correctness_under_load() {
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_term_index_under_load",
     );

@@ -202,7 +202,7 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             strategy: PersistenceStrategy::DiskFirst,
             flush_policy: FlushPolicy::Batch {
                 threshold: 1,
-                interval_ms: 0,
+                interval_ms: 1,
             },
             ..Default::default()
         },

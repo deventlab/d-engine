@@ -26,7 +26,7 @@ async fn test_disk_first_persists_entries_immediately() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_disk_first_persists_immediately",
     );
@@ -55,7 +55,7 @@ async fn test_disk_first_concurrent_writes_remain_consistent() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_disk_first_concurrent_writes",
     );
@@ -103,7 +103,7 @@ async fn test_disk_first_crash_recovery_restores_entries() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_disk_first_crash_recovery",
     );

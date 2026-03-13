@@ -9,7 +9,7 @@ async fn test_log_matching_property() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_log_matching",
     );
@@ -50,7 +50,7 @@ async fn test_leader_completeness_property() {
         PersistenceStrategy::DiskFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_leader_completeness",
     );

@@ -162,6 +162,7 @@ impl RaftConfig {
         self.snapshot.validate()?;
         self.read_consistency.validate()?;
         self.watch.validate()?;
+        self.persistence.validate()?;
 
         // Warn if lease duration is too long compared to election timeout
         if self.read_consistency.lease_duration_ms > self.election.election_timeout_min / 2 {
@@ -769,16 +770,16 @@ pub enum PersistenceStrategy {
 
 /// Controls when in-memory logs should be flushed to disk.
 ///
-/// Use `Batch { threshold: 1, interval_ms: 0 }` for per-write durability equivalent
-/// to the former `Immediate` policy.
+/// Flush is triggered when either condition is met:
+/// - The number of unflushed entries reaches `threshold`.
+/// - The elapsed time since the last flush exceeds `interval_ms`.
+///
+/// Both `threshold` and `interval_ms` must be greater than zero.
+/// For per-write durability (highest safety, lowest throughput), set `threshold: 1`
+/// with a small `interval_ms` (e.g. 10). Larger values trade some durability for
+/// higher throughput.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum FlushPolicy {
-    /// Flush entries to disk when either condition is met:
-    /// - The number of unflushed entries reaches `threshold`.
-    /// - The elapsed time since the last flush exceeds `interval_ms`.
-    ///
-    /// Set `threshold: 1, interval_ms: 0` for per-write durability (highest safety,
-    /// lowest throughput). Larger values trade some durability for higher throughput.
     Batch { threshold: usize, interval_ms: u64 },
 }
 
@@ -827,6 +828,26 @@ fn default_flush_policy() -> FlushPolicy {
 /// Default maximum buffered log entries
 fn default_max_buffered_entries() -> usize {
     10_000
+}
+
+impl PersistenceConfig {
+    pub fn validate(&self) -> Result<()> {
+        let FlushPolicy::Batch {
+            threshold,
+            interval_ms,
+        } = self.flush_policy;
+        if threshold == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "flush_policy.threshold must be greater than 0".into(),
+            )));
+        }
+        if interval_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "flush_policy.interval_ms must be greater than 0".into(),
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl Default for PersistenceConfig {

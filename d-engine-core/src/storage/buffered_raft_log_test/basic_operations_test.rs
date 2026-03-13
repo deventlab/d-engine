@@ -587,7 +587,7 @@ async fn test_is_empty_returns_true_for_new_log() {
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_is_empty_returns_true_for_new_log",
     );
@@ -633,7 +633,7 @@ async fn test_last_log_id_for_empty_log() {
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_last_log_id_for_empty_log",
     );

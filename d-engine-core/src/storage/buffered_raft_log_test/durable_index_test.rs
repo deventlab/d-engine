@@ -13,7 +13,7 @@ async fn test_durable_index_monotonic_under_concurrency() {
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_durable_index_monotonic",
     );
@@ -54,7 +54,7 @@ async fn test_durable_index_with_non_contiguous_entries() {
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             threshold: 1,
-            interval_ms: 0,
+            interval_ms: 1,
         },
         "test_durable_index_non_contiguous",
     );

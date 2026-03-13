@@ -17,7 +17,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- No behavior change for existing users — `unified_db` defaults to `false`
+- No runtime behavior change for existing deployments — `unified_db` defaults to `false`
 
 ### ⚠️ Breaking Change — Snapshot Format
 
