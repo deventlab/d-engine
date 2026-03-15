@@ -168,6 +168,7 @@ async fn test_p0_leader_single_command_drain_immediately() {
     // Setup mocks
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
@@ -257,6 +258,7 @@ async fn test_p0_leader_high_load_max_batch_cap() {
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
@@ -704,6 +706,7 @@ async fn test_p1_medium_load_natural_batching() {
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
@@ -822,6 +825,7 @@ async fn test_p1_mixed_workload_read_write_coexistence() {
     // Setup mocks
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
@@ -932,6 +936,7 @@ async fn test_p1_burst_load_recovery_after_spike() {
     // Setup mocks
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));

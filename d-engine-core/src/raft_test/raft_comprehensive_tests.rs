@@ -58,6 +58,7 @@ fn prepare_succeed_majority_confirmation() -> (
     let mut raft_log = crate::MockRaftLog::new();
     // Allow multiple calls to last_entry_id() as it may be called during role transitions
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
@@ -669,6 +670,7 @@ async fn test_leader_verification_fails_downgrades() {
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
@@ -902,6 +904,7 @@ async fn test_leader_ready_notification_suppressed_when_noop_fails() {
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
@@ -1330,6 +1333,7 @@ async fn test_leadership_verification_failure_downgrades() {
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
@@ -1429,6 +1433,7 @@ async fn test_network_partition_minority_loses_leadership() {
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));

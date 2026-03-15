@@ -142,6 +142,11 @@ impl LogStore for SledLogStore {
         Ok(())
     }
 
+    fn is_write_durable(&self) -> bool {
+        // apply_batch writes to sled's in-memory log; tree.flush() in flush() provides crash-safety.
+        false
+    }
+
     #[instrument(skip(self))]
     fn flush(&self) -> Result<()> {
         trace!("LogStore flush");

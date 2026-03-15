@@ -352,6 +352,12 @@ impl LogStore for RocksDBLogStore {
         Ok(())
     }
 
+    fn is_write_durable(&self) -> bool {
+        // db.write() uses default WriteOptions (sync=false): data lands in OS page cache,
+        // not guaranteed on disk. flush_wal(true) in flush() provides crash-safety.
+        false
+    }
+
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
         // WAL fsync is sufficient for crash-safety: data in WAL can be replayed on restart.

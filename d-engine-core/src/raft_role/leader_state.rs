@@ -2533,9 +2533,10 @@ impl<T: TypeConfig> LeaderState<T> {
                 }
 
                 let new_commit_index = if self.cluster_metadata.single_voter {
-                    let last_log_index = ctx.raft_log().last_entry_id();
-                    if last_log_index > self.commit_index() {
-                        Some(last_log_index)
+                    // Single-voter fast path: only crash-safe entries advance commit.
+                    let durable = ctx.raft_log().durable_index();
+                    if durable > self.commit_index() {
+                        Some(durable)
                     } else {
                         None
                     }

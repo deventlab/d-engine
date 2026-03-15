@@ -34,6 +34,18 @@ impl LogStore for CustomLogStore {
         Ok(None)
     }
 
+    /// Return true only if a single persist_entries() call is crash-safe without flush().
+    /// Examples: sled (synchronous commit), any backend with write-through to stable storage.
+    /// Return false if durability requires an explicit flush() call (e.g. RocksDB, file I/O).
+    fn is_write_durable(&self) -> bool {
+        false // conservative default; override to true only when writes are immediately durable
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        // Sync pending writes to stable storage (called by BufferedRaftLog when is_write_durable() == false)
+        Ok(())
+    }
+
     // Implement all required methods...
 }
 
@@ -73,25 +85,30 @@ impl StorageEngine for CustomStorageEngine {
 ## 2. Key Implementation Notes
 
 - **Atomicity**: Ensure write operations are atomic—use batch operations where possible
-- **Durability**: Flush writes to persistent storage—implement `flush()` properly
+- **Durability**: Implement `is_write_durable()` accurately—this controls whether `BufferedRaftLog`
+  calls `flush()` after each batch. A wrong `true` advances `durable_index` before data is
+  crash-safe, silently breaking Raft's durability guarantee.
 - **Consistency**: Maintain exactly-once semantics for log entries
-- **Performance**: Target >100k ops/sec for log persistence
+- **Performance**: Target >100k ops/sec for log persistence. Do not call `fsync` inside
+  `persist_entries()`—the framework batches entries and calls `flush()` once per batch
+  (`MemFirst + FlushPolicy::Batch`), which amortises the `fsync` cost across many entries.
 - **Resource Management**: Clean up resources in `Drop` implementation
 
 ## 3. StorageEngine API Reference
 
 ### LogStore Methods
 
-| Method              | Purpose                     | Performance Target     |
-| ------------------- | --------------------------- | ---------------------- |
-| `persist_entries()` | Batch persist log entries   | >100k entries/sec      |
-| `entry()`           | Get single entry by index   | <1ms latency           |
-| `get_entries()`     | Get entries in range        | <1ms for 10k entries   |
-| `purge()`           | Remove logs up to index     | <100ms for 10k entries |
-| `truncate()`        | Remove entries from index   | <100ms                 |
-| `flush()`           | Sync writes to disk         | Varies by backend      |
-| `reset()`           | Clear all data              | <1s                    |
-| `last_index()`      | Get highest persisted index | <100μs                 |
+| Method                 | Purpose                                              | Performance Target     |
+| ---------------------- | ---------------------------------------------------- | ---------------------- |
+| `persist_entries()`    | Batch persist log entries                            | >100k entries/sec      |
+| `entry()`              | Get single entry by index                            | <1ms latency           |
+| `get_entries()`        | Get entries in range                                 | <1ms for 10k entries   |
+| `purge()`              | Remove logs up to index                              | <100ms for 10k entries |
+| `truncate()`           | Remove entries from index                            | <100ms                 |
+| `is_write_durable()`   | Whether persist_entries() is crash-safe without flush() | sync, no I/O        |
+| `flush()`              | Sync writes to stable storage (called when `is_write_durable() == false`) | Varies by backend |
+| `reset()`              | Clear all data                                       | <1s                    |
+| `last_index()`         | Get highest persisted index                          | <100μs                 |
 
 ### MetaStore Methods
 

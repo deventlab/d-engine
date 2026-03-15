@@ -30,3 +30,6 @@ mod backpressure_test;
 
 #[cfg(test)]
 mod buffer_cleanup_test;
+
+#[cfg(test)]
+mod commit_index_test;

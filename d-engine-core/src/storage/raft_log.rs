@@ -67,6 +67,16 @@ pub trait RaftLog: Send + Sync + 'static {
     /// - MUST be >= first_entry_id()
     fn last_entry_id(&self) -> u64;
 
+    /// Returns the highest log index confirmed crash-safe on this node.
+    ///
+    /// Advanced only after the storage backend confirms durability (fsync complete).
+    /// Used by the Raft core for quorum and commit decisions — never use `last_entry_id()`
+    /// for this purpose, as it reflects in-memory state only.
+    ///
+    /// - MemFirst: lags `last_entry_id()` until `batch_processor` completes fsync.
+    /// - DiskFirst: equals `last_entry_id()` (every append blocks until durable).
+    fn durable_index(&self) -> u64;
+
     /// Returns the LogId (term + index) of the last entry.
     ///
     /// # Returns

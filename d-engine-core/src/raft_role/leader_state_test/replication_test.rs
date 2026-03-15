@@ -749,9 +749,10 @@ async fn test_single_node_cluster_commit_index() {
 
     let mut raft_log = MockRaftLog::new();
     // Different return values to detect which code path executes:
-    // - Fixed code (is_single_node_cluster): calls last_entry_id() -> 7
-    // - Buggy code (peer_updates.is_empty): calls calculate_majority_matched_index() -> 8
+    // - Correct code (single_voter path): calls durable_index() -> 7
+    // - Wrong path (peer_updates.is_empty): calls calculate_majority_matched_index() -> 8
     raft_log.expect_last_entry_id().returning(|| 7);
+    raft_log.expect_durable_index().returning(|| 7);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(8));
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
@@ -765,7 +766,7 @@ async fn test_single_node_cluster_commit_index() {
     assert_eq!(
         context.state.shared_state().commit_index,
         7,
-        "Single-node: commit_index should equal last_log_index"
+        "Single-node: commit_index should equal durable_index"
     );
     assert!(matches!(
         role_rx.try_recv(),

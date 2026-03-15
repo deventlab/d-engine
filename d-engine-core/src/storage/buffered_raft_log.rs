@@ -156,6 +156,15 @@ where
         self.max_index.load(Ordering::Acquire)
     }
 
+    fn durable_index(&self) -> u64 {
+        match self.strategy {
+            // MemFirst: fsync is async; only entries confirmed by batch_processor are crash-safe.
+            PersistenceStrategy::MemFirst => self.durable_index.load(Ordering::Acquire),
+            // DiskFirst: every append_entries blocks until fsync completes.
+            PersistenceStrategy::DiskFirst => self.max_index.load(Ordering::Acquire),
+        }
+    }
+
     fn last_entry(&self) -> Option<Entry> {
         let last_index = self.last_entry_id();
         if last_index > 0 {
@@ -432,8 +441,8 @@ where
         mut peer_matched_ids: Vec<u64>,
     ) -> Option<u64> {
         let _timer = ScopedTimer::new("calculate_majority_matched_index");
-        // Include leader's last index
-        peer_matched_ids.push(self.last_entry_id());
+        // Leader's contribution: only crash-safe entries count toward quorum.
+        peer_matched_ids.push(self.durable_index());
 
         // Sort in descending order
         peer_matched_ids.sort_unstable_by(|a, b| b.cmp(a));
@@ -995,15 +1004,6 @@ where
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
-    }
-
-    /// Returns the current durable index (test-only).
-    ///
-    /// This accessor allows tests to verify persistence progress without
-    /// accessing the internal AtomicU64 directly.
-    #[cfg(any(test, feature = "__test_support"))]
-    pub fn durable_index(&self) -> u64 {
-        self.durable_index.load(Ordering::Acquire)
     }
 
     /// Returns reference to next_id atomic for test verification (test-only).

@@ -428,6 +428,13 @@ where
                     request.entries.clone(),
                 )
                 .await?;
+
+            // Wait until appended entries are crash-safe before ACKing.
+            // MemFirst: blocks until batch_processor completes fsync (≤ interval_ms).
+            // DiskFirst: durable_index == last_entry_id, returns immediately.
+            if let Some(ref log_id) = last_log_id_option {
+                raft_log.wait_durable(log_id.index).await?;
+            }
         }
 
         if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(

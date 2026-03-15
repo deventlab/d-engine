@@ -523,6 +523,7 @@ impl MockBuilder {
 pub(crate) fn mock_raft_log() -> MockRaftLog {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_durable_index().returning(|| 0);
     raft_log.expect_last_log_id().returning(|| None);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_load_hard_state().returning(|| Ok(None));

@@ -13,6 +13,15 @@ log_dir = "./logs"
 # Maximum number of commands to accumulate in a single batch during drain operations
 max_batch_size = 500
 
+[raft.persistence]
+strategy = "MemFirst"
+flush_policy = { Batch = { threshold = 1000, interval_ms = 20 } }
+# Maximum number of log entries to buffer in memory
+# when using async persistence strategies (MemFirst/Batched)
+max_buffered_entries = 10000
+flush_workers = 4
+channel_capacity = 1000
+
 [raft.metrics]
 enable_backpressure = false
 enable_batch = false
