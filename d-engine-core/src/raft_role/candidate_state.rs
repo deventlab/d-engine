@@ -330,25 +330,11 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
                 let my_term = self.current_term();
 
-                let response = ctx.replication_handler().check_append_entries_request_is_legal(
-                    my_term,
-                    &append_entries_request,
-                    ctx.raft_log(),
-                );
-
-                // Handle illegal requests (return conflict or higher Term)
-                if response.is_conflict() || response.is_higher_term() {
-                    debug!("Rejecting AppendEntries: {:?}", &response);
-
-                    if let Err(e) = sender.send(Ok(response)) {
-                        // Receiver timed out and dropped — this is normal, do not crash the node
-                        error!(
-                            "Failed to send AppendEntries rejection (receiver dropped): {:?}",
-                            e
-                        );
-                    }
-                    return Ok(());
-                } else {
+                // Raft §5.2: term check takes priority over log matching.
+                // Any AppendEntries from a server with term >= ours means a legitimate
+                // leader exists — step down immediately and let the Follower handle
+                // log conflict responses. Content (log) checks come after identity (term).
+                if append_entries_request.term >= my_term {
                     // Keep syncing leader_id (hot-path: ~5ns atomic store)
                     self.shared_state().set_current_leader(append_entries_request.leader_id);
 
@@ -365,6 +351,21 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         &role_tx,
                         RaftEvent::AppendEntries(append_entries_request, sender),
                     )?;
+                } else {
+                    // request.term < my_term: stale leader, reject.
+                    let response = ctx.replication_handler().check_append_entries_request_is_legal(
+                        my_term,
+                        &append_entries_request,
+                        ctx.raft_log(),
+                    );
+                    debug!("Rejecting AppendEntries from stale leader: {:?}", &response);
+                    if let Err(e) = sender.send(Ok(response)) {
+                        // Receiver timed out and dropped — this is normal, do not crash the node
+                        error!(
+                            "Failed to send AppendEntries rejection (receiver dropped): {:?}",
+                            e
+                        );
+                    }
                 }
             }
 
@@ -476,18 +477,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 return Ok(());
             }
 
-            RaftEvent::TriggerSnapshotPush { peer_id: _ } => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Candidate",
-                    required_role: "Leader",
-                    context: format!(
-                        "Candidate node {} receives RaftEvent::TriggerSnapshotPush",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
-
             RaftEvent::PromoteReadyLearners => {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Candidate",
@@ -504,14 +493,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 // Candidates don't maintain cluster metadata cache
                 // This event is only relevant for leaders
                 trace!("Candidate ignoring MembershipApplied event");
-            }
-
-            RaftEvent::ApplyCompleted {
-                last_index,
-                results,
-            } => {
-                // Candidate is a transient state; snapshot will be triggered after role transition.
-                let _ = (last_index, results);
             }
 
             RaftEvent::FatalError { source, error } => {

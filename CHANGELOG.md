@@ -15,6 +15,12 @@ All notable changes to this project will be documented in this file.
   - **Experimental**: both paths are supported in v0.2.4; a future release will standardize on one
   - When enabled: data path changes to `db_root_dir/db/` (⚠️ existing `storage/` data not migrated automatically)
 
+### 🟡 Important Fixes
+
+- **fix(raft) #340**: Candidate correctly steps down on same-term AppendEntries with log conflict
+  - Eliminates election churn when recovering or newly-joined nodes have lagged logs
+  - Aligns with Raft §5.2 (term check takes priority over log matching)
+
 ### Changed
 
 - No runtime behavior change for existing deployments — `unified_db` defaults to `false`
