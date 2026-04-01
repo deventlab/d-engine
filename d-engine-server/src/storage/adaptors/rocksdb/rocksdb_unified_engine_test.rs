@@ -172,7 +172,7 @@ fn test_concurrent_open_same_path_fails() {
 fn make_lease() -> Arc<DefaultLease> {
     Arc::new(DefaultLease::new(LeaseConfig {
         enabled: true,
-        interval_ms: 1000,
+        cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 10,
     }))
 }

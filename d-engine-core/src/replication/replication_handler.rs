@@ -16,7 +16,6 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
 use d_engine_proto::server::replication::append_entries_response;
-use dashmap::DashMap;
 use prost::Message;
 use tonic::async_trait;
 use tracing::debug;
@@ -26,6 +25,7 @@ use tracing::trace;
 use tracing::warn;
 
 use super::AppendResponseWithUpdates;
+use super::PrepareResult;
 use super::ReplicationCore;
 use crate::AppendResults;
 use crate::IdAllocationError;
@@ -42,7 +42,6 @@ use crate::alias::ROF;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::is_majority;
 
-#[derive(Clone)]
 pub struct ReplicationHandler<T>
 where
     T: TypeConfig,
@@ -51,11 +50,88 @@ where
     _phantom: PhantomData<T>,
 }
 
+// Manual Clone: PhantomData<T> is always Clone regardless of T, so no T: Clone bound needed.
+impl<T: TypeConfig> Clone for ReplicationHandler<T> {
+    fn clone(&self) -> Self {
+        ReplicationHandler {
+            my_id: self.my_id,
+            _phantom: PhantomData,
+        }
+    }
+}
+
 #[async_trait]
 impl<T> ReplicationCore<T> for ReplicationHandler<T>
 where
     T: TypeConfig,
 {
+    async fn prepare_batch_requests(
+        &self,
+        entry_payloads: Vec<EntryPayload>,
+        state_snapshot: StateSnapshot,
+        leader_state_snapshot: LeaderStateSnapshot,
+        cluster_metadata: &crate::raft_role::ClusterMetadata,
+        ctx: &crate::RaftContext<T>,
+    ) -> Result<PrepareResult> {
+        let replication_targets = &cluster_metadata.replication_targets;
+
+        let raft_log = ctx.raft_log();
+        let leader_last_index_before = raft_log.last_entry_id();
+
+        // Phase 1: Write new entries to local log (must stay serial in Raft loop).
+        let new_entries = self
+            .generate_new_entries(entry_payloads, state_snapshot.current_term, raft_log)
+            .await?;
+
+        if replication_targets.is_empty() {
+            return Ok(PrepareResult::default());
+        }
+
+        // Purge boundary: peers with next_index below this need snapshot, not AppendEntries.
+        let min_log_index = raft_log.first_entry_id();
+
+        // Phase 2: Build per-peer payloads.
+        let replication_data = ReplicationData {
+            leader_last_index_before,
+            current_term: state_snapshot.current_term,
+            commit_index: state_snapshot.commit_index,
+            peer_next_indices: leader_state_snapshot.next_index,
+        };
+
+        let mut entries_per_peer = self.prepare_peer_entries(
+            &new_entries,
+            &replication_data,
+            ctx.node_config.raft.replication.append_entries_max_entries_per_replication,
+            raft_log,
+        );
+
+        let mut append_requests = Vec::with_capacity(replication_targets.len());
+        let mut snapshot_targets = Vec::new();
+
+        for peer in replication_targets {
+            let peer_next_id =
+                replication_data.peer_next_indices.get(&peer.id).copied().unwrap_or(1);
+
+            // Peer is behind the purge boundary: must receive snapshot, not AppendEntries.
+            if min_log_index > 1 && peer_next_id < min_log_index {
+                snapshot_targets.push(peer.id);
+                continue;
+            }
+
+            append_requests.push(self.build_append_request(
+                raft_log,
+                peer.id,
+                &mut entries_per_peer,
+                &replication_data,
+            ));
+        }
+
+        Ok(PrepareResult {
+            append_requests,
+            snapshot_targets,
+        })
+    }
+
     async fn handle_raft_request_in_batch(
         &self,
         entry_payloads: Vec<EntryPayload>,
@@ -110,7 +186,7 @@ where
             peer_next_indices: leader_state_snapshot.next_index,
         };
 
-        let entries_per_peer = self.prepare_peer_entries(
+        let mut entries_per_peer = self.prepare_peer_entries(
             &new_entries,
             &replication_data,
             ctx.node_config.raft.replication.append_entries_max_entries_per_replication,
@@ -120,12 +196,15 @@ where
         // ----------------------
         // Phase 4: Build Requests
         // ----------------------
-        let requests = replication_targets
-            .iter()
-            .map(|m| {
-                self.build_append_request(raft_log, m.id, &entries_per_peer, &replication_data)
-            })
-            .collect();
+        let mut requests = Vec::with_capacity(replication_targets.len());
+        for m in replication_targets {
+            requests.push(self.build_append_request(
+                raft_log,
+                m.id,
+                &mut entries_per_peer,
+                &replication_data,
+            ));
+        }
 
         // ----------------------
         // Phase 5: Replication
@@ -329,26 +408,27 @@ where
 
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
-        new_entries: Vec<Entry>,
+        new_entries: &[Entry],
         leader_last_index_before_inserting_new_entries: u64,
-        max_legacy_entries_per_peer: u64, //Maximum number of entries
+        max_legacy_entries_per_peer: u64,
         peer_next_indices: &HashMap<u32, u64>,
         raft_log: &Arc<ROF<T>>,
-    ) -> DashMap<u32, Vec<Entry>> {
+    ) -> HashMap<u32, Vec<Entry>> {
         let _timer = ScopedTimer::new("retrieve_to_be_synced_logs_for_peers");
 
-        let peer_entries: DashMap<u32, Vec<Entry>> = DashMap::new();
+        let peer_count = peer_next_indices.len().saturating_sub(1); // exclude self
+        let mut peer_entries: HashMap<u32, Vec<Entry>> = HashMap::with_capacity(peer_count);
         trace!(
             "retrieve_to_be_synced_logs_for_peers::leader_last_index: {}",
             leader_last_index_before_inserting_new_entries
         );
-        peer_next_indices.keys().for_each(|&id| {
+        for (&id, &peer_next_id) in peer_next_indices {
             if id == self.my_id {
-                return;
+                continue;
             }
-            let peer_next_id = peer_next_indices.get(&id).copied().unwrap_or(1);
 
             debug!("peer: {} next: {}", id, peer_next_id);
+
             let mut entries = Vec::new();
             if leader_last_index_before_inserting_new_entries >= peer_next_id {
                 let until_index = if (leader_last_index_before_inserting_new_entries - peer_next_id)
@@ -374,12 +454,12 @@ where
             }
 
             if !new_entries.is_empty() {
-                entries.extend(new_entries.clone()); // Add new entries
+                entries.extend_from_slice(new_entries);
             }
             if !entries.is_empty() {
                 peer_entries.insert(id, entries);
             }
-        });
+        }
 
         peer_entries
     }
@@ -428,13 +508,6 @@ where
                     request.entries.clone(),
                 )
                 .await?;
-
-            // Wait until appended entries are crash-safe before ACKing.
-            // MemFirst: blocks until batch_processor completes fsync (≤ interval_ms).
-            // DiskFirst: durable_index == last_entry_id, returns immediately.
-            if let Some(ref log_id) = last_log_id_option {
-                raft_log.wait_durable(log_id.index).await?;
-            }
         }
 
         if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(
@@ -512,14 +585,12 @@ where
                 }),
             ),
             Some(conflict_term) => {
-                // Find first index of conflict term
-                // TODO:Upcoming feature #45 in v0.2.0
-                // let conflict_index = raft_log.first_index_for_term(conflict_term);
-                let conflict_index = if request.prev_log_index < last_log_id {
-                    request.prev_log_index.saturating_sub(1)
-                } else {
-                    last_log_id + 1
-                };
+                // Skip entire conflicting term: give Leader the first index of conflict_term
+                // so it jumps to the term boundary in one RPC instead of stepping back one-by-one.
+                // Raft §5.3 optimization (#346).
+                let conflict_index = raft_log
+                    .first_index_for_term(conflict_term)
+                    .unwrap_or_else(|| request.prev_log_index.saturating_sub(1));
                 AppendEntriesResponse::conflict(
                     self.my_id,
                     my_term,
@@ -616,9 +687,9 @@ where
         data: &ReplicationData,
         max_legacy_entries: u64,
         raft_log: &Arc<ROF<T>>,
-    ) -> DashMap<u32, Vec<Entry>> {
+    ) -> HashMap<u32, Vec<Entry>> {
         self.retrieve_to_be_synced_logs_for_peers(
-            new_entries.to_vec(),
+            new_entries,
             data.leader_last_index_before,
             max_legacy_entries,
             &data.peer_next_indices,
@@ -631,7 +702,7 @@ where
         &self,
         raft_log: &Arc<ROF<T>>,
         peer_id: u32,
-        entries_per_peer: &DashMap<u32, Vec<Entry>>,
+        entries_per_peer: &mut HashMap<u32, Vec<Entry>>,
         data: &ReplicationData,
     ) -> (u32, AppendEntriesRequest) {
         let _timer = ScopedTimer::new("build_append_request");
@@ -643,8 +714,8 @@ where
                 (prev_index, term)
             });
 
-        // Get the items to be sent
-        let entries = entries_per_peer.get(&peer_id).map(|e| e.clone()).unwrap_or_default();
+        // Move entries out of the map — avoids Vec clone
+        let entries = entries_per_peer.remove(&peer_id).unwrap_or_default();
 
         debug!(
             "[Leader {} -> Follower {}] Replicating {} entries",

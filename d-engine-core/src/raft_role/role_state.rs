@@ -1,5 +1,4 @@
 use d_engine_proto::client::ClientResponse;
-use d_engine_proto::common::EntryPayload;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
@@ -20,7 +19,6 @@ use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
 use crate::NewCommitData;
-use crate::QuorumVerificationResult;
 use crate::RaftContext;
 use crate::RaftEvent;
 use crate::RaftLog;
@@ -88,6 +86,18 @@ pub trait RaftRoleState: Send + Sync + 'static {
         Err(MembershipError::NotLeader.into())
     }
 
+    /// Update per-peer snapshot push backoff state and emit an alert when persistent
+    /// failures exceed the configured threshold. No-op for non-leader roles.
+    fn handle_snapshot_push_completed(
+        &mut self,
+        _peer_id: u32,
+        _success: bool,
+        _policy: &crate::InstallSnapshotBackoffPolicy,
+        _node_id: u32,
+    ) {
+        // Default: no-op for non-leader roles
+    }
+
     /// Initialize cluster metadata cache (only relevant for Leader)
     async fn init_cluster_metadata(
         &mut self,
@@ -100,53 +110,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
     fn noop_log_id(&self) -> Result<Option<u64>> {
         warn!("noop_log_id NotLeader error");
         Err(MembershipError::NotLeader.into())
-    }
-
-    /// Called when no-op entry is committed after becoming leader.
-    /// Only relevant for Leader role to track linearizable read optimization.
-    fn on_noop_committed(
-        &mut self,
-        _ctx: &RaftContext<Self::T>,
-    ) -> Result<()> {
-        // Default: no-op for non-leader roles
-        Ok(())
-    }
-
-    async fn verify_internal_quorum(
-        &mut self,
-        _payloads: Vec<EntryPayload>,
-        _ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<QuorumVerificationResult> {
-        warn!("verify_internal_quorum NotLeader error");
-        Err(MembershipError::NotLeader.into())
-    }
-
-    /// Immidiatelly verifies leadership status using persistent retry until timeout.
-    ///
-    /// This function is designed for critical operations like configuration changes
-    /// that must eventually succeed. It implements:
-    ///   - Infinite retries with exponential backoff
-    ///   - Jitter randomization to prevent synchronization
-    ///   - Termination only on success, leadership loss, or global timeout
-    ///
-    /// # Parameters
-    /// - `payloads`: Log entries to verify
-    /// - `bypass_queue`: Whether to skip request queues for direct transmission
-    /// - `ctx`: Raft execution context
-    /// - `role_tx`: Channel for role transition events
-    ///
-    /// # Returns
-    /// - `Ok(true)`: Quorum verification succeeded
-    /// - `Ok(false)`: Leadership definitively lost during verification
-    /// - `Err(_)`: Global timeout exceeded or critical failure occurred
-    async fn verify_leadership_persistent(
-        &mut self,
-        _payloads: Vec<EntryPayload>,
-        _ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<bool> {
-        Ok(false)
     }
 
     async fn join_cluster(
@@ -392,6 +355,46 @@ pub trait RaftRoleState: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Handle ApplyCompleted: state machine has applied entries up to `last_index`.
+    /// Leader: sends client responses + serves pending linearizable reads + checks snapshot.
+    /// Follower/Learner: checks snapshot trigger.
+    /// Default: no-op for Candidate (transient state; snapshot deferred to next stable role).
+    async fn handle_apply_completed(
+        &mut self,
+        _last_index: u64,
+        _results: Vec<crate::ApplyResult>,
+        _ctx: &RaftContext<Self::T>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Handle LogFlushed(durable) event: entries up to `durable` are now crash-safe.
+    /// Leader: recalculates commit_index (uses durable_index in quorum calculation).
+    /// Default: no-op for Candidate/Follower/Learner (ACK already sent on memory write).
+    async fn handle_log_flushed(
+        &mut self,
+        _durable: u64,
+        _ctx: &RaftContext<Self::T>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) {
+        // Candidate: no-op
+    }
+
+    /// Handle AppendEntries result from a per-follower ReplicationWorker.
+    /// Leader: updates match_index, recalculates commit, drains pending_client_writes.
+    /// Default: no-op for all non-leader roles (stale results arriving after step-down).
+    async fn handle_append_result(
+        &mut self,
+        _follower_id: u32,
+        _result: crate::Result<d_engine_proto::server::replication::AppendEntriesResponse>,
+        _ctx: &RaftContext<Self::T>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> crate::Result<()> {
+        // Non-leader: stale result arrived after step-down — ignore safely.
+        Ok(())
+    }
+
     /// Create NOT_LEADER response with leader metadata for client redirection
     ///
     /// This method queries the cluster membership to get the current leader's
@@ -530,6 +533,9 @@ pub trait RaftRoleState: Send + Sync + 'static {
                 }
                 debug!("AppendEntriesResponse: {:?}", response);
 
+                // MemFirst: ACK immediately after memory write. IO thread fsyncs async.
+                // Safety: quorum uses last_entry_id (in-memory); crash safety is guaranteed by
+                // majority replication, not per-follower durability.
                 sender.send(Ok(response)).map_err(|e| {
                     let error_str = format!("{e:?}");
                     error!("Failed to send: {}", error_str);

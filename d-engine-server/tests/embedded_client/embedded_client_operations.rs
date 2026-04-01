@@ -667,7 +667,7 @@ general_raft_timeout_duration_in_ms = 100
 
 [raft.commit_handler]
 batch_size_threshold = 1
-process_interval_ms = 1
+process_idle_flush_interval_ms = 1
 
 [replication]
 max_batch_size = 1

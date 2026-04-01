@@ -61,7 +61,7 @@ async fn test_retrieve_only_new_entries_when_peer_caught_up() {
 
     // Act: Retrieve logs to sync
     let result = handler.retrieve_to_be_synced_logs_for_peers(
-        new_entries.clone(),
+        &new_entries,
         leader_last_index_before_inserting_new_entries,
         max_entries,
         &peer_next_indices,
@@ -115,7 +115,7 @@ async fn test_retrieve_old_and_new_entries_when_peer_behind() {
 
     // Act: Retrieve logs to sync
     let result = handler.retrieve_to_be_synced_logs_for_peers(
-        new_entries.clone(),
+        &new_entries,
         leader_last_index_before_inserting_new_entries,
         max_entries,
         &peer_next_indices,
@@ -165,7 +165,7 @@ async fn test_retrieve_only_old_entries_when_no_new_entries() {
 
     // Act: Retrieve logs to sync
     let result = handler.retrieve_to_be_synced_logs_for_peers(
-        new_entries,
+        &new_entries,
         leader_last_index_before_inserting_new_entries,
         max_entries,
         &peer_next_indices,
@@ -216,7 +216,7 @@ async fn test_retrieve_limited_old_entries_with_max_limit() {
 
     // Act: Retrieve logs to sync
     let result = handler.retrieve_to_be_synced_logs_for_peers(
-        new_entries.clone(),
+        &new_entries,
         leader_last_index_before_inserting_new_entries,
         max_legacy_entries_per_peer,
         &peer_next_indices,
@@ -269,7 +269,7 @@ async fn test_retrieve_only_new_entries_when_max_limit_zero() {
 
     // Act: Retrieve logs to sync
     let result = handler.retrieve_to_be_synced_logs_for_peers(
-        new_entries.clone(),
+        &new_entries,
         leader_last_index_before_inserting_new_entries,
         max_legacy_entries_per_peer,
         &peer_next_indices,
@@ -320,7 +320,7 @@ async fn test_leader_id_excluded_from_replication_targets() {
 
     // Act: Retrieve logs to sync
     let result = handler.retrieve_to_be_synced_logs_for_peers(
-        new_entries.clone(),
+        &new_entries,
         leader_last_index_before_inserting_new_entries,
         max_entries,
         &peer_next_indices,
@@ -335,7 +335,7 @@ async fn test_leader_id_excluded_from_replication_targets() {
 
     // Assert: Leader's own ID is excluded
     assert!(
-        result.get(&my_id).is_none(),
+        !result.contains_key(&my_id),
         "leader should not replicate to itself"
     );
 }

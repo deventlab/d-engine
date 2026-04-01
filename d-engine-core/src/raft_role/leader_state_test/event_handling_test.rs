@@ -4,21 +4,16 @@
 //! including vote requests, append entries, client operations, and more.
 
 use d_engine_proto::client::WriteCommand;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tonic::Code;
 use tracing_test::traced_test;
 
-use crate::AppendResults;
 use crate::ClientCmd;
-use crate::ConsensusError;
 use crate::Error;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
-use crate::PeerUpdate;
-use crate::ReplicationError;
 use crate::config::RaftNodeConfig;
 use crate::event::RaftEvent;
 use crate::event::{NewCommitData, RoleEvent};
@@ -35,7 +30,7 @@ use d_engine_proto::server::cluster::{
     ClusterConfChangeRequest, ClusterMembership, MetadataRequest,
 };
 use d_engine_proto::server::election::{VoteRequest, VoteResponse};
-use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
 use tonic::Status;
 
 // ============================================================================
@@ -508,18 +503,11 @@ async fn test_handle_client_propose_success() {
     context
         .handlers
         .replication_handler
-        .expect_handle_raft_request_in_batch()
+        .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
-            Ok(AppendResults {
-                commit_quorum_achieved: true,
-                learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([(2, PeerUpdate::success(5, 6))]),
-            })
-        });
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
-    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     context.storage.raft_log = Arc::new(raft_log);
 
     // New state
@@ -564,7 +552,7 @@ async fn test_handle_client_read_linearizable_failure() {
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
-        .expect_handle_raft_request_in_batch()
+        .expect_prepare_batch_requests()
         .times(1)
         .returning(|_, _, _, _, _| Err(Error::Fatal("".to_string())));
 
@@ -630,41 +618,12 @@ async fn test_handle_client_read_linearizable_success() {
     let expect_new_commit_index = 3;
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-        |_, _, _, _, _| {
-            Ok(AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(3),
-                            next_index: 4,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(4),
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
-                ]),
-                learner_progress: HashMap::new(),
-            })
-        },
-    );
+    replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
-    let mut raft_log = MockRaftLog::new();
-    raft_log.expect_last_entry_id().returning(|| 2);
-    raft_log
-        .expect_calculate_majority_matched_index()
-        .returning(move |_, _, _| Some(expect_new_commit_index));
-
-    // Mock state machine handler: no wait_applied/update_pending in event-driven path.
-    // read_from_state_machine is called by execute_pending_reads when ApplyCompleted fires.
+    // Mock state machine handler: read_from_state_machine called when ApplyCompleted fires.
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
@@ -677,15 +636,31 @@ async fn test_handle_client_read_linearizable_success() {
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.batching.max_batch_size = 1; // Immediately flush
 
+    // MemFirst: handle_log_flushed(expect_new_commit_index) commits to last_entry_id(),
+    // so last_entry_id() must be >= durable=expect_new_commit_index.
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(move || expect_new_commit_index);
+    raft_log.expect_durable_index().returning(|| 0);
+    raft_log.expect_last_log_id().returning(|| None);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
+    raft_log.expect_close().returning(|| ());
+
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_handle_client_read_linearizable_success")
-        .with_raft_log(raft_log)
         .with_replication_handler(replication_handler)
         .with_state_machine_handler(state_machine_handler)
         .with_node_config(node_config)
+        .with_raft_log(raft_log)
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    // noop committed — leader is ready to serve linearizable reads.
+    state.noop_log_id = Some(1);
+    // Pre-set commit_index = 1 so read_index=max(1,1)=1 > last_applied=0 → read deferred to pending_reads.
+    state.update_commit_index(1).expect("should succeed");
 
     // Prepare request
     let keys = vec![safe_kv_bytes(1)];
@@ -703,29 +678,17 @@ async fn test_handle_client_read_linearizable_success() {
     // Push to buffer
     state.push_client_cmd(cmd, &context);
 
-    // Flush: quorum succeeds, read registered in pending_reads[read_index=3]
+    // Flush: prepare_batch_requests fires-and-forgets; read deferred to pending_reads[1]
     state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
-    // Validation criteria 1: Leader commit should be updated to: 3(new commit index)
+    // Advance commit to 3 via single-voter flush path → fires NotifyNewCommitIndex
+    state.cluster_metadata.single_voter = true;
+    state.handle_log_flushed(expect_new_commit_index, &context, &role_tx).await;
+
+    // Validation criteria 1: Leader commit should be updated to: 3
     assert_eq!(state.shared_state().commit_index, expect_new_commit_index);
 
-    // Simulate SM apply: ApplyCompleted fires pending_reads for read_index <= 3
-    state
-        .handle_raft_event(
-            RaftEvent::ApplyCompleted {
-                last_index: expect_new_commit_index,
-                results: vec![],
-            },
-            &context,
-            role_tx.clone(),
-        )
-        .await
-        .expect("ApplyCompleted should succeed");
-
-    // Validation criteria 2: resp_rx receives Ok() (released by ApplyCompleted)
-    assert!(resp_rx.recv().await.unwrap().is_ok());
-
-    // Validation criteria 3: event "RoleEvent::NotifyNewCommitIndex" should be received (from flush)
+    // Validation criteria 3: event "RoleEvent::NotifyNewCommitIndex" should be received
     let event = role_rx.try_recv().unwrap();
     assert!(matches!(
         event,
@@ -735,6 +698,15 @@ async fn test_handle_client_read_linearizable_success() {
             current_term: _
         })
     ));
+
+    // Simulate SM apply: ApplyCompleted fires pending_reads for read_index <= 3
+    state
+        .handle_apply_completed(expect_new_commit_index, vec![], &context, &role_tx)
+        .await
+        .expect("ApplyCompleted should succeed");
+
+    // Validation criteria 2: resp_rx receives Ok() (released by ApplyCompleted)
+    assert!(resp_rx.recv().await.unwrap().is_ok());
 }
 
 /// Test handling ClientReadRequest encountering higher term during replication
@@ -759,20 +731,10 @@ async fn test_handle_client_read_linearizable_success() {
 async fn test_handle_client_read_encounters_higher_term() {
     // Prepare Leader State
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-        move |_, _, _, _, _| {
-            Err(Error::Consensus(ConsensusError::Replication(
-                ReplicationError::HigherTerm(1),
-            )))
-        },
-    );
-
-    let expect_new_commit_index = 3;
-    let mut raft_log = MockRaftLog::new();
-    raft_log.expect_last_entry_id().returning(|| 2);
-    raft_log
-        .expect_calculate_majority_matched_index()
-        .returning(move |_, _, _| Some(expect_new_commit_index));
+    replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -787,6 +749,7 @@ async fn test_handle_client_read_encounters_higher_term() {
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    // Pre-set commit_index = 1 so read_index=1 > last_applied=0 → read deferred to pending_reads
     state.update_commit_index(1).expect("should succeed");
 
     // Prepare request
@@ -802,18 +765,30 @@ async fn test_handle_client_read_encounters_higher_term() {
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
-    // Push to buffer
+    // Push to buffer and flush: read deferred to pending_reads[1]
     state.push_client_cmd(cmd, &context);
-
-    // Flush: discovers HigherTerm, steps down, client receives error
     state.flush_cmd_buffers(&context, &role_tx).await.ok();
 
-    // Validation criteria 1: Leader commit should remain unchanged (HigherTerm aborted the operation)
+    // Simulate peer responding with higher term → triggers step-down
+    let higher_term_resp = AppendEntriesResponse {
+        node_id: 2,
+        term: 10, // higher than leader_term=1
+        result: None,
+    };
+    state
+        .handle_append_result(2, Ok(higher_term_resp), &context, &role_tx)
+        .await
+        .unwrap_err(); // Expected to return Err(HigherTerm)
+
+    // Validation criteria 1: Leader commit should remain unchanged
     assert_eq!(state.shared_state().commit_index, 1);
 
     // Validation criteria 2: event "RoleEvent::BecomeFollower" should be received
     let event = role_rx.try_recv().unwrap();
     assert!(matches!(event, RoleEvent::BecomeFollower(None)));
+
+    // Drain pending reads (step-down cleanup) → sends Unavailable to clients
+    state.drain_read_buffer().expect("drain should succeed");
 
     // Validation criteria 3: Client receives error via response channel
     assert!(resp_rx.recv().await.unwrap().is_err());
@@ -891,41 +866,14 @@ async fn test_handle_install_snapshot_returns_permission_denied() {
 #[tokio::test]
 #[traced_test]
 async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
-    use std::collections::HashMap;
     use tonic::Code;
 
-    // Given: Leader with quorum success (commit_index advances to 3, read_index = 3)
+    // Given: Leader with commit_index=3 pre-set so read_index=3 > last_applied=0 → deferred
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-        |_, _, _, _, _| {
-            Ok(AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(3),
-                            next_index: 4,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(4),
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
-                ]),
-                learner_progress: HashMap::new(),
-            })
-        },
-    );
-
-    let mut raft_log = MockRaftLog::new();
-    raft_log.expect_last_entry_id().returning(|| 2);
-    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(3));
+    replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut node_config = RaftNodeConfig::default();
@@ -934,11 +882,14 @@ async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
     let context = MockBuilder::new(graceful_rx)
         .with_db_path("/tmp/test_drain_read_buffer_clears_pending_reads_on_stepdown")
         .with_replication_handler(replication_handler)
-        .with_raft_log(raft_log)
         .with_node_config(node_config)
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    // noop committed — leader is ready to serve linearizable reads.
+    state.noop_log_id = Some(1);
+    // Pre-set commit_index = 3 so read_index=max(3,1)=3 > last_applied=0 → read deferred to pending_reads
+    state.update_commit_index(3).expect("should succeed");
 
     // Push a linearizable read and flush: quorum succeeds, last_applied(0) < read_index(3)
     // → read enters pending_reads (slow path), no ApplyCompleted will arrive

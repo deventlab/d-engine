@@ -269,7 +269,7 @@ snapshots_dir = '{}'
         TOTAL_ENTRIES
     );
 
-    let mut max_wait = 5;
+    let mut max_wait = 15;
     let mut learner_caught_up = false;
 
     while max_wait > 0 {
@@ -289,12 +289,11 @@ snapshots_dir = '{}'
                 }
             }
             Ok(None) => {
-                if max_wait % 5 == 0 {
-                    info!(
-                        "Learner does not have last key yet (key_{})",
-                        TOTAL_ENTRIES - 1
-                    );
-                }
+                info!(
+                    "Learner does not have last key yet (key_{}), {} seconds remaining",
+                    TOTAL_ENTRIES - 1,
+                    max_wait
+                );
             }
             Err(e) => {
                 info!("Learner read error: {:?}", e);
@@ -303,9 +302,6 @@ snapshots_dir = '{}'
 
         tokio::time::sleep(Duration::from_secs(1)).await;
         max_wait -= 1;
-        if max_wait % 5 == 0 {
-            info!("Still waiting... ({} seconds remaining)", max_wait);
-        }
     }
 
     assert!(

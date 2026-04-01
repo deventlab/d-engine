@@ -16,8 +16,7 @@ async fn test_shutdown_closes_channel_properly() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 10,
-            interval_ms: 100,
+            idle_flush_interval_ms: 100,
         },
         "test_shutdown_channel",
     );
@@ -46,8 +45,7 @@ async fn test_shutdown_awaits_worker_completion() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 100,
-            interval_ms: 5000,
+            idle_flush_interval_ms: 5000,
         },
         "test_shutdown_await_workers",
     );
@@ -93,15 +91,14 @@ async fn test_shutdown_handles_slow_workers() {
         PersistenceConfig {
             strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
-                threshold: 5,
-                interval_ms: 100,
+                idle_flush_interval_ms: 100,
             },
             max_buffered_entries: 1000,
         },
         storage,
     );
 
-    let raft_log = raft_log.start(receiver);
+    let raft_log = raft_log.start(receiver, None);
 
     // Append entries
     for i in 1..=10 {
@@ -137,8 +134,7 @@ async fn test_shutdown_with_multiple_flushes() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 5,
-            interval_ms: 100,
+            idle_flush_interval_ms: 100,
         },
         "test_shutdown_multiple_flushes",
     );

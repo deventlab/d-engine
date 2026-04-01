@@ -86,6 +86,7 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
     raft_log.expect_flush().return_once(|| Ok(()));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    raft_log.expect_close().returning(|| ());
 
     (raft_log, replication_handler)
 }
@@ -585,6 +586,7 @@ mod bootstrap_strategy_tests {
         raft_log.expect_flush().return_once(|| Ok(()));
         raft_log.expect_load_hard_state().returning(|| Ok(None));
         raft_log.expect_save_hard_state().returning(|_| Ok(()));
+        raft_log.expect_close().returning(|| ());
         raft_log
     }
 

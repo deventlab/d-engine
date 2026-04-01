@@ -6,6 +6,7 @@
 //! - Crash recovery simulation
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use bytes::Bytes;
 use d_engine_proto::common::{Entry, EntryPayload};
@@ -42,7 +43,7 @@ impl BufferedRaftLogTestContext {
             },
             storage.clone(),
         );
-        let raft_log = raft_log.start(receiver);
+        let raft_log = raft_log.start(receiver, None);
 
         // Small delay to ensure processor is ready
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -74,6 +75,41 @@ impl BufferedRaftLogTestContext {
         self.raft_log.append_entries(entries).await.unwrap();
     }
 
+    /// Create a context where `is_write_durable()=false`.
+    ///
+    /// Returns the context and a counter incremented on every `flush()` call.
+    /// Use this to verify:
+    ///   - `durable_index` advances only after flush, not after write
+    ///   - Multiple rapid writes are batched into fewer flushes
+    pub fn new_not_durable(
+        flush_policy: FlushPolicy,
+        instance_id: &str,
+    ) -> (Self, Arc<AtomicU64>) {
+        let (storage, flush_count) = MockStorageEngine::not_durable(instance_id.to_string());
+        let storage = Arc::new(storage);
+
+        let (raft_log, receiver) = BufferedRaftLog::new(
+            1,
+            PersistenceConfig {
+                strategy: PersistenceStrategy::MemFirst,
+                flush_policy: flush_policy.clone(),
+                max_buffered_entries: 1000,
+            },
+            storage.clone(),
+        );
+        let raft_log = raft_log.start(receiver, None);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let ctx = Self {
+            raft_log,
+            storage,
+            strategy: PersistenceStrategy::MemFirst,
+            flush_policy,
+            instance_id: instance_id.to_string(),
+        };
+        (ctx, flush_count)
+    }
+
     /// Simulate crash recovery from the same storage instance
     pub fn recover_from_crash(&self) -> Self {
         // Use same instance ID to recover data from thread_local storage
@@ -88,7 +124,7 @@ impl BufferedRaftLogTestContext {
             },
             storage.clone(),
         );
-        let raft_log = raft_log.start(receiver);
+        let raft_log = raft_log.start(receiver, None);
 
         // Small delay to ensure processor is ready
         std::thread::sleep(std::time::Duration::from_millis(10));

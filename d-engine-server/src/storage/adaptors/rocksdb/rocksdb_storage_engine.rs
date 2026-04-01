@@ -12,6 +12,7 @@ use d_engine_core::StorageError;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use prost::Message;
+use rocksdb::WriteOptions;
 use std::path::Path;
 
 use rocksdb::Cache;
@@ -27,6 +28,7 @@ use super::LOG_CF;
 use super::META_CF;
 
 const HARD_STATE_KEY: &[u8] = b"hard_state";
+const PURGE_BOUNDARY_KEY: &[u8] = b"purge_boundary";
 
 /// RocksDB-based log store implementation
 #[derive(Debug)]
@@ -195,7 +197,13 @@ impl LogStore for RocksDBLogStore {
             max_index = max_index.max(entry.index);
         }
 
-        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        let mut write_opts = WriteOptions::default();
+        // sync=false: write to OS page cache only. The IO thread calls flush_wal(true)
+        // (Method C drain-then-fsync) to make entries crash-safe in a single batched fsync.
+        write_opts.set_sync(false);
+        self.db
+            .write_opt(&batch, &write_opts)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
 
         if max_index > 0 {
             self.last_index.store(max_index, Ordering::SeqCst);
@@ -298,6 +306,17 @@ impl LogStore for RocksDBLogStore {
         }
 
         self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+
+        // Persist purge boundary to META_CF for crash recovery.
+        // BufferedRaftLog::new() reads this on restart to restore last_purged_index/term
+        // so that entry_term(last_purged_index) returns the correct term after restart.
+        if let Some(cf_meta) = self.db.cf_handle(META_CF) {
+            let encoded = cutoff_index.encode_to_vec();
+            self.db
+                .put_cf(&cf_meta, PURGE_BOUNDARY_KEY, encoded)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+        }
+
         Ok(())
     }
 
@@ -353,18 +372,43 @@ impl LogStore for RocksDBLogStore {
     }
 
     fn is_write_durable(&self) -> bool {
-        // db.write() uses default WriteOptions (sync=false): data lands in OS page cache,
-        // not guaranteed on disk. flush_wal(true) in flush() provides crash-safety.
-        false
+        // Level 2 semantics: db.write() lands in OS page cache (not RocksDB internal buffer).
+        // Process crash: OS retains page cache → WAL replay on restart → full recovery. ✅
+        // Power loss:    OS page cache lost → data unrecoverable. ❌  (intentional trade-off)
+        //
+        // Returns true → advance_durable_and_notify fires immediately after persist_entries,
+        // without waiting for an explicit flush_wal(true) (Level 3 / fdatasync).
+        // Level 3 support (sync thread + flush_wal) is tracked as a future feature.
+        true
+    }
+
+    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
+        let cf_meta = self
+            .db
+            .cf_handle(META_CF)
+            .ok_or_else(|| StorageError::DbError("Meta column family not found".to_string()))?;
+        match self
+            .db
+            .get_cf(&cf_meta, PURGE_BOUNDARY_KEY)
+            .map_err(|e| StorageError::DbError(e.to_string()))?
+        {
+            Some(bytes) => LogId::decode(&*bytes)
+                .map(Some)
+                .map_err(|e| StorageError::SerializationError(e.to_string()).into()),
+            None => Ok(None),
+        }
     }
 
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
         // WAL fsync is sufficient for crash-safety: data in WAL can be replayed on restart.
         // memtable flush is RocksDB's internal concern — triggered automatically in background.
+        let t0 = std::time::Instant::now();
         self.db
             .flush_wal(true)
             .map_err(|e| StorageError::DbError(format!("Failed to flush WAL: {e}")))?;
+        let ms = t0.elapsed().as_millis();
+        metrics::histogram!("raft.storage.wal_flush_ms").record(ms as f64);
         Ok(())
     }
 

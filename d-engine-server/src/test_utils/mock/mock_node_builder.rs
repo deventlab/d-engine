@@ -211,7 +211,7 @@ impl MockBuilder {
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10);
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel(1024);
         let (
             id,
             raft_log,
@@ -528,6 +528,8 @@ pub(crate) fn mock_raft_log() -> MockRaftLog {
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
+    raft_log.expect_close().returning(|| ());
     raft_log
 }
 

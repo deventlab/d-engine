@@ -11,8 +11,7 @@ async fn test_flush_worker_sustains_throughput_under_load() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 10,
-            interval_ms: 50,
+            idle_flush_interval_ms: 50,
         },
         "test_flush_worker_sustains_throughput",
     );

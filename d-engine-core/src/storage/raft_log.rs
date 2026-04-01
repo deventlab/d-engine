@@ -459,4 +459,11 @@ pub trait RaftLog: Send + Sync + 'static {
         &self,
         hard_state: &crate::HardState,
     ) -> Result<()>;
+
+    /// Gracefully closes the log, ensuring all pending IO completes and any
+    /// background IO threads have exited before returning.
+    ///
+    /// Called during node shutdown. Default is a no-op for implementations
+    /// without a dedicated background IO thread.
+    async fn close(&self) {}
 }

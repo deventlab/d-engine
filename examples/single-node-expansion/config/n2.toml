@@ -31,10 +31,8 @@ lease_duration_ms = 500
 
 [raft.persistence]
 strategy = "MemFirst"
-flush_policy = { Batch = { threshold = 100, interval_ms = 20 } }
+flush_policy = { Batch = { idle_flush_interval_ms = 20 } }
 max_buffered_entries = 10000
-flush_workers = 4
-channel_capacity = 1000
 
 [raft.snapshot]
 enable = false

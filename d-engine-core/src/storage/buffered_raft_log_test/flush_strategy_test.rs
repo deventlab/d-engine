@@ -1,9 +1,9 @@
 //! Flush strategy behavior tests (Mock-based)
 //!
-//! Tests verify different persistence strategies with MockStorageEngine:
-//! - DiskFirst: Immediate persistence simulation
-//! - MemFirst: Buffered then async flush simulation
-//! - Batched: Threshold/interval-based flush simulation
+//! Tests verify MemFirst persistence strategy with MockStorageEngine:
+//! - threshold=1: equivalent to the former DiskFirst — every entry triggers a flush
+//! - high threshold/interval: entries buffered, not yet durable until explicit flush
+//! - timer-based flush: entries become durable after interval elapses
 //!
 //! Note: These tests use MockStorageEngine to verify strategy logic.
 //! Integration tests with real FileStorageEngine are in d-engine-server/tests/integration.
@@ -15,49 +15,48 @@ use tokio::time::{Duration, sleep};
 use crate::test_utils::BufferedRaftLogTestContext;
 use crate::{FlushPolicy, PersistenceStrategy, RaftLog};
 
-/// Test DiskFirst persists entries immediately
+/// Test MemFirst with threshold=1 persists entries after flush
 ///
 /// # Scenario
-/// - Append 5 entries with DiskFirst strategy
-/// - Expected: durable_index reflects immediate persistence
+/// - Append 5 entries with threshold=1 (flush fires after every entry)
+/// - Expected: durable_index == 5 after explicit flush()
 #[tokio::test]
-async fn test_disk_first_persists_entries_immediately() {
+async fn test_mem_first_entries_durable_after_flush() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::DiskFirst,
+        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
-        "test_disk_first_persists_immediately",
+        "test_mem_first_persists_immediately",
     );
 
-    // Act: Append entries
+    // Act: Append entries then wait for durability
     ctx.append_entries(1, 5, 1).await;
+    ctx.raft_log.flush().await.unwrap();
 
-    // Assert: Entries immediately durable
+    // Assert: All entries durable after flush
     assert_eq!(
         ctx.raft_log.durable_index(),
         5,
-        "DiskFirst should persist immediately"
+        "All entries should be durable after flush"
     );
     let entry = ctx.raft_log.entry(3).unwrap().unwrap();
     assert_eq!(entry.index, 3);
 }
 
-/// Test DiskFirst concurrent writes remain consistent
+/// Test MemFirst concurrent writes all durable after flush
 ///
 /// # Scenario
-/// - 10 concurrent tasks each append 100 entries
-/// - Expected: All 1000 entries durable, no data loss
+/// - 10 concurrent tasks each append 100 entries (1000 total)
+/// - Expected: All 1000 entries durable after flush(), no data loss
 #[tokio::test]
-async fn test_disk_first_concurrent_writes_remain_consistent() {
+async fn test_mem_first_concurrent_writes_durable_after_flush() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::DiskFirst,
+        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
-        "test_disk_first_concurrent_writes",
+        "test_mem_first_concurrent_writes",
     );
 
     // Act: Concurrent appends
@@ -82,30 +81,32 @@ async fn test_disk_first_concurrent_writes_remain_consistent() {
         handle.await.unwrap();
     }
 
-    // Assert: All entries persisted
+    // Wait for all entries to become durable
+    ctx.raft_log.flush().await.unwrap();
+
+    // Assert: All entries durable after flush
     assert_eq!(
         ctx.raft_log.durable_index(),
         1000,
-        "All concurrent writes should be durable"
+        "All concurrent writes should be durable after flush"
     );
     assert_eq!(ctx.raft_log.len(), 1000);
 }
 
-/// Test DiskFirst crash recovery restores durable entries
+/// Test MemFirst crash recovery restores only flushed entries
 ///
 /// # Scenario
-/// - Append 5 entries with DiskFirst
+/// - Append 5 entries and call flush() to ensure durability
 /// - Simulate crash and recover
-/// - Expected: All 5 entries recovered from MockStorage
+/// - Expected: All 5 flushed entries recovered from MockStorage
 #[tokio::test]
-async fn test_disk_first_crash_recovery_restores_entries() {
+async fn test_mem_first_crash_recovery_restores_flushed_entries() {
     let original_ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::DiskFirst,
+        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
-        "test_disk_first_crash_recovery",
+        "test_mem_first_crash_recovery",
     );
 
     // Arrange: Append and flush
@@ -150,8 +151,7 @@ async fn test_mem_first_buffers_entries_before_flush() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 100,
-            interval_ms: 1000,
+            idle_flush_interval_ms: 1000,
         },
         "test_mem_first_buffers_entries",
     );
@@ -175,8 +175,7 @@ async fn test_mem_first_flushes_asynchronously() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_mem_first_async_flush",
     );
@@ -206,8 +205,7 @@ async fn test_mem_first_loses_unflushed_data_on_crash() {
     let original_ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 10,
-            interval_ms: 1000,
+            idle_flush_interval_ms: 1000,
         },
         "test_mem_first_data_loss",
     );
@@ -253,8 +251,7 @@ async fn test_mem_first_concurrent_buffering() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1000,
-            interval_ms: 5000,
+            idle_flush_interval_ms: 5000,
         },
         "test_mem_first_concurrent",
     );
@@ -295,8 +292,7 @@ async fn test_batched_flushes_at_threshold() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 5,
-            interval_ms: 10000, // High interval to test threshold trigger
+            idle_flush_interval_ms: 10000, // High interval to test threshold trigger
         },
         "test_batched_threshold",
     );
@@ -322,8 +318,7 @@ async fn test_batched_flushes_at_interval() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 100, // High threshold to test interval trigger
-            interval_ms: 50,
+            idle_flush_interval_ms: 50,
         },
         "test_batched_interval",
     );
@@ -349,8 +344,7 @@ async fn test_batched_partial_flush_recovery() {
     let original_ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 5,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_batched_partial_flush",
     );

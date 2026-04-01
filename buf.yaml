@@ -1,6 +1,6 @@
 version: v2
 modules:
-  - path: d-engine-proto/proto
+  - path: d-engine-proto
 lint:
   use:
     - STANDARD

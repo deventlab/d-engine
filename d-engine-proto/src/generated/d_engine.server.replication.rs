@@ -174,6 +174,38 @@ pub mod raft_replication_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Persistent bidirectional stream per peer; eliminates per-batch h2 stream open/close overhead.
+        pub async fn stream_append_entries(
+            &mut self,
+            request: impl tonic::IntoStreamingRequest<
+                Message = super::AppendEntriesRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::AppendEntriesResponse>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/d_engine.server.replication.RaftReplicationService/StreamAppendEntries",
+            );
+            let mut req = request.into_streaming_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "d_engine.server.replication.RaftReplicationService",
+                        "StreamAppendEntries",
+                    ),
+                );
+            self.inner.streaming(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -194,6 +226,20 @@ pub mod raft_replication_service_server {
             request: tonic::Request<super::AppendEntriesRequest>,
         ) -> std::result::Result<
             tonic::Response<super::AppendEntriesResponse>,
+            tonic::Status,
+        >;
+        /// Server streaming response type for the StreamAppendEntries method.
+        type StreamAppendEntriesStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::AppendEntriesResponse, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        /// Persistent bidirectional stream per peer; eliminates per-batch h2 stream open/close overhead.
+        async fn stream_append_entries(
+            &self,
+            request: tonic::Request<tonic::Streaming<super::AppendEntriesRequest>>,
+        ) -> std::result::Result<
+            tonic::Response<Self::StreamAppendEntriesStream>,
             tonic::Status,
         >;
     }
@@ -319,6 +365,58 @@ pub mod raft_replication_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/d_engine.server.replication.RaftReplicationService/StreamAppendEntries" => {
+                    #[allow(non_camel_case_types)]
+                    struct StreamAppendEntriesSvc<T: RaftReplicationService>(pub Arc<T>);
+                    impl<
+                        T: RaftReplicationService,
+                    > tonic::server::StreamingService<super::AppendEntriesRequest>
+                    for StreamAppendEntriesSvc<T> {
+                        type Response = super::AppendEntriesResponse;
+                        type ResponseStream = T::StreamAppendEntriesStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                tonic::Streaming<super::AppendEntriesRequest>,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as RaftReplicationService>::stream_append_entries(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StreamAppendEntriesSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

@@ -454,14 +454,26 @@ election_timeout_max = 6000
     // ============================================================================
     // Phase 3: Leader Failover - Simulate Node 1 Crash
     // ============================================================================
+    println!("\n========== PRE-FAILOVER STATE CHECK ==========");
+    println!("About to stop Node 1 (current leader)");
+    println!("Node 2 and Node 3 should have been promoted to Voters by now");
+    println!("==============================================\n");
+
     info!("Phase 3: Simulating leader crash (stopping Node 1)");
 
     engine1.stop().await?;
     info!("Node 1 stopped - cluster should detect leader failure and start election");
 
+    // Check state immediately after Node 1 stops
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    println!("\n========== 2s AFTER NODE 1 STOPPED ==========");
+    println!("Node 2 and Node 3 should detect leader failure");
+    println!("If they are Voters with election timers, they should start election soon");
+    println!("==============================================\n");
+
     // Wait for election timeout + re-election
     // With election_timeout_min=3000ms, election should complete within ~5-8 seconds
-    tokio::time::sleep(Duration::from_secs(8)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
 
     // ============================================================================
     // Phase 4: Verify New Leader Election
@@ -568,7 +580,7 @@ db_root_dir = '{}'
 
 [raft]
 election_timeout_ms = 150
-heartbeat_interval_ms = 50
+heartbeat_idle_flush_interval_ms = 50
 "#,
         ports[0], ports[0], ports[1], ports[2], db_root
     );

@@ -413,7 +413,7 @@ db_root_dir = "{}"
 listen_addr = "127.0.0.1:0"
 
 [raft]
-heartbeat_interval_ms = 500
+heartbeat_idle_flush_interval_ms = 500
 election_timeout_min_ms = 1500
 election_timeout_max_ms = 3000
 "#,
@@ -973,7 +973,7 @@ db_root_dir = "{}"
 listen_addr = "127.0.0.1:0"
 
 [raft]
-heartbeat_interval_ms = 500
+heartbeat_idle_flush_interval_ms = 500
 election_timeout_min_ms = 1500
 election_timeout_max_ms = 3000
 

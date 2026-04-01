@@ -1,50 +1,62 @@
 //! Quorum Durability Tests
 //!
-//! Verifies that `durable_index` (crash-safe) — not `last_entry_id` (in-memory) —
-//! gates quorum and commit decisions. Fixed by ticket #329.
+//! MemFirst design: leader contributes `last_entry_id` (in-memory) to quorum.
+//! IO thread persistence is async and NOT on the commit critical path.
+//!
+//! Follower ACK path: followers ACK immediately after memory write (no `wait_durable`).
+//! IO thread fsyncs asynchronously; crash safety is guaranteed by quorum, not per-follower durability.
 
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::BufferedRaftLogTestContext;
 use crate::{FlushPolicy, PersistenceStrategy};
 use std::time::Duration;
 
-/// Flush policy that never auto-flushes: threshold too high to reach, timer far in future.
-/// Guarantees durable_index stays at 0 after append_entries, isolating the memory/disk split.
+/// Flush policy with a far-future safety timer — IO thread only fsyncs on WriteNotify.
+/// In current_thread test runtime, durable_index stays at 0 immediately after append_entries
+/// because the IO thread task has no chance to run until the test yields.
 fn no_auto_flush_policy() -> FlushPolicy {
     FlushPolicy::Batch {
-        threshold: 999_999,
-        interval_ms: 999_999,
+        idle_flush_interval_ms: 999_999,
     }
 }
 
-// ── Quorum uses durable_index, not last_entry_id ──
+// ── Leader quorum uses last_entry_id (in-memory), not durable_index ──
 
-/// Quorum must not advance when leader's entry is in memory but not yet crash-safe.
+/// MemFirst: leader's quorum contribution is last_entry_id (in-memory), not durable_index.
+///
+/// Even when durable_index=0 (IO thread has not flushed), quorum must be satisfied
+/// as soon as last_entry_id + follower ACKs form a majority. IO persistence is async
+/// and must NOT block commit.
+///
+/// This test FAILS if calculate_majority_matched_index uses durable_index (the bug
+/// introduced by fix #329 which incorrectly put IO thread latency on the commit
+/// critical path, causing +617µs avg latency regression in 3-node embedded bench).
 #[tokio::test]
-async fn test_quorum_must_not_count_undurable_leader_entry() {
+async fn test_memfirst_quorum_uses_last_entry_id_not_durable_index() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
-        no_auto_flush_policy(),
-        "test_quorum_no_undurable",
+        no_auto_flush_policy(), // durable_index stays 0 — IO thread won't run
+        "test_memfirst_quorum_last_entry_id",
     );
 
-    // Append entry 1 to memory only — durable_index stays 0
+    // Entry written to SkipMap (in memory). IO thread has not flushed yet.
     ctx.append_entries(1, 1, 1).await;
 
     assert_eq!(ctx.raft_log.last_entry_id(), 1);
-    assert_eq!(ctx.raft_log.durable_index(), 0);
+    assert_eq!(ctx.raft_log.durable_index(), 0); // IO thread hasn't run
 
-    let new_commit = ctx.raft_log.calculate_majority_matched_index(
+    let result = ctx.raft_log.calculate_majority_matched_index(
         1,
         0,
-        vec![1], // one follower acked — would be quorum if leader counts itself
+        vec![1], // one follower acked index=1; together with leader = majority of 3
     );
 
-    // CORRECT: leader's contribution is durable_index=0, not last_entry_id=1
-    // majority cannot be reached until leader flushes
+    // MemFirst: leader contributes last_entry_id=1.
+    // quorum = [leader=1, follower=1] → majority of {leader, f1, f2} satisfied → Some(1).
     assert_eq!(
-        new_commit, None,
-        "CORRECT: quorum must not be reached with leader durable_index=0"
+        result,
+        Some(1),
+        "MemFirst: quorum must use last_entry_id, not durable_index — IO must not block commit"
     );
 }
 
@@ -57,8 +69,7 @@ async fn test_quorum_succeeds_after_leader_flush() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 999_999, // only threshold trigger, no timer
+            idle_flush_interval_ms: 999_999, // only threshold trigger, no timer
         },
         "test_quorum_after_flush",
     );
@@ -116,16 +127,19 @@ async fn test_last_entry_id_diverges_from_durable_index_with_mem_first() {
     // This gap (5 vs 0) is exactly what the quorum bug exploits.
 }
 
-/// DiskFirst must never diverge: every append is immediately durable.
+/// After explicit flush, durable_index must equal last_entry_id.
 #[tokio::test]
-async fn test_last_entry_id_equals_durable_index_with_disk_first() {
+async fn test_durable_index_equals_last_entry_id_after_flush() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::DiskFirst,
-        no_auto_flush_policy(), // irrelevant for DiskFirst but required by constructor
-        "test_no_diverge_disk_first",
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
+        "test_no_diverge_after_flush",
     );
 
     ctx.append_entries(1, 5, 1).await;
+    ctx.raft_log.flush().await.unwrap();
 
     let last = ctx.raft_log.last_entry_id();
     let durable = ctx.raft_log.durable_index();
@@ -133,50 +147,6 @@ async fn test_last_entry_id_equals_durable_index_with_disk_first() {
     assert_eq!(last, 5);
     assert_eq!(
         durable, last,
-        "DiskFirst: durable_index must equal last_entry_id after every append"
-    );
-}
-
-// ── Follower must wait for durable_index before ACK ──
-
-/// Follower ACK flow: after filter_out_conflicts_and_append + wait_durable,
-/// durable_index must equal the appended index before any success response is sent.
-///
-/// threshold=1 ensures the batch_processor flushes immediately on first entry,
-/// so wait_durable(1) returns as soon as the flush completes.
-#[tokio::test]
-async fn test_follower_must_wait_for_durable_before_ack() {
-    let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 1, // flush fires on first entry
-            interval_ms: 999_999,
-        },
-        "test_follower_must_wait_durable",
-    );
-
-    let log_id = ctx
-        .raft_log
-        .filter_out_conflicts_and_append(
-            0,
-            0,
-            vec![d_engine_proto::common::Entry {
-                index: 1,
-                term: 1,
-                payload: None,
-            }],
-        )
-        .await
-        .unwrap()
-        .expect("append must return a log id");
-
-    // Mirrors what replication_handler does before building the success response.
-    ctx.raft_log.wait_durable(log_id.index).await.unwrap();
-
-    // CORRECT: follower only ACKs after durable_index >= appended index
-    assert_eq!(
-        ctx.raft_log.durable_index(),
-        1,
-        "CORRECT: follower must only ack after durable_index >= appended index"
+        "durable_index must equal last_entry_id after flush"
     );
 }

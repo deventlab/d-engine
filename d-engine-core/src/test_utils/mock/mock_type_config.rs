@@ -48,3 +48,8 @@ impl Clone for MockElectionCore<MockTypeConfig> {
         MockElectionCore::new()
     }
 }
+impl Clone for MockReplicationCore<MockTypeConfig> {
+    fn clone(&self) -> Self {
+        MockReplicationCore::new()
+    }
+}

@@ -32,7 +32,7 @@ use crate::SnapshotConfig;
 use crate::SnapshotError;
 use crate::TypeConfig;
 
-pub(crate) struct BackgroundSnapshotTransfer<T> {
+pub struct BackgroundSnapshotTransfer<T> {
     _marker: PhantomData<T>,
 }
 
@@ -42,7 +42,7 @@ where
     T: TypeConfig,
 {
     // Unified push transfer entry point
-    pub(crate) async fn run_push_transfer(
+    pub async fn run_push_transfer(
         node_id: u32,
         data_stream: BoxStream<'static, Result<SnapshotChunk>>,
         channel: tonic::transport::Channel,

@@ -124,6 +124,10 @@ pub async fn create_node_config(
         ]
         db_root_dir = '{db_root_dir}'
         log_dir = '{log_dir}'
+
+        [raft.persistence]
+        strategy = "MemFirst"
+        flush_policy = {{ Batch = {{ threshold = 100, idle_flush_interval_ms = 1 }} }}
         "#
     )
 }
@@ -162,6 +166,10 @@ pub async fn create_node_config_with_role(
         ]
         db_root_dir = '{db_root_dir}'
         log_dir = '{log_dir}'
+
+        [raft.persistence]
+        strategy = "MemFirst"
+        flush_policy = {{ Batch = {{ threshold = 1, idle_flush_interval_ms = 1 }} }}
         "#
     )
 }
@@ -199,10 +207,9 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             ..Default::default()
         },
         persistence: PersistenceConfig {
-            strategy: PersistenceStrategy::DiskFirst,
+            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
+                idle_flush_interval_ms: 1,
             },
             ..Default::default()
         },

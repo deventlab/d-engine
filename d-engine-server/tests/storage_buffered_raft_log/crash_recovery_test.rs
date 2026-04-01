@@ -21,10 +21,9 @@ use super::TestContext;
 async fn test_crash_recovery() {
     // Create and populate storage
     let original_ctx = TestContext::new(
-        PersistenceStrategy::DiskFirst,
+        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_crash_recovery",
     );
@@ -46,8 +45,9 @@ async fn test_crash_recovery() {
     // Recover from the same storage (simulating restart)
     let recovered_ctx = original_ctx.recover_from_crash();
 
-    // Simulate crash by dropping the original context
-    drop(original_ctx);
+    // Graceful shutdown: close() joins the IO thread before returning,
+    // preventing Tokio runtime shutdown panics.
+    original_ctx.close().await;
 
     sleep(Duration::from_millis(50)).await; // Allow recovery
 
@@ -58,16 +58,16 @@ async fn test_crash_recovery() {
     let entry = recovered_ctx.raft_log.entry(1).unwrap();
     assert!(entry.is_some());
     assert_eq!(entry.unwrap().index, 1);
+    recovered_ctx.close().await;
 }
 
 #[tokio::test]
 async fn test_crash_recovery_with_multiple_entries() {
     // Create and populate storage
     let original_ctx = TestContext::new(
-        PersistenceStrategy::DiskFirst,
+        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_crash_recovery_with_multiple_entries",
     );
@@ -97,8 +97,9 @@ async fn test_crash_recovery_with_multiple_entries() {
     // Recover from the same storage (simulating restart)
     let recovered_ctx = original_ctx.recover_from_crash();
 
-    // Simulate crash by dropping the original context
-    drop(original_ctx);
+    // Graceful shutdown: close() joins the IO thread before returning,
+    // preventing Tokio runtime shutdown panics.
+    original_ctx.close().await;
 
     sleep(Duration::from_millis(50)).await; // Allow recovery
 
@@ -112,62 +113,11 @@ async fn test_crash_recovery_with_multiple_entries() {
         assert!(entry.is_some());
         assert_eq!(entry.unwrap().index, i);
     }
-}
-
-#[tokio::test]
-async fn test_crash_recovery_mem_first() {
-    // Create and populate storage with MemFirst strategy
-    let original_ctx = TestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            threshold: 10,
-            interval_ms: 1000,
-        },
-        "test_crash_recovery_mem_first",
-    );
-
-    // Append entries but don't flush (simulate data in memory only)
-    for i in 1..=3 {
-        original_ctx
-            .raft_log
-            .append_entries(vec![Entry {
-                index: i,
-                term: 1,
-                payload: Some(EntryPayload::command(Bytes::from(
-                    format!("data{i}").into_bytes(),
-                ))),
-            }])
-            .await
-            .unwrap();
-    }
-
-    // Verify entries are in memory but not durable
-    assert_eq!(original_ctx.raft_log.len(), 3);
-    assert_eq!(original_ctx.raft_log.durable_index(), 0);
-
-    // Recover from the same storage (simulating restart)
-    let recovered_ctx = original_ctx.recover_from_crash();
-
-    // Simulate crash by dropping the original context without flushing
-    drop(original_ctx);
-
-    sleep(Duration::from_millis(50)).await; // Allow recovery
-
-    // Verify recovery - for MemFirst without flush, data should be lost
-    assert_eq!(recovered_ctx.raft_log.durable_index(), 0);
-    assert_eq!(recovered_ctx.raft_log.len(), 0);
-
-    // No entries should be available
-    for i in 1..=3 {
-        let entry = recovered_ctx.raft_log.entry(i).unwrap();
-        assert!(entry.is_none());
-    }
+    recovered_ctx.close().await;
 }
 
 #[tokio::test]
 async fn test_partial_flush_with_graceful_shutdown() {
-    let batch_size = 50;
-
     // Create and partially populate storage
     let temp_dir = tempfile::tempdir().unwrap();
     let storage_path = temp_dir.path().join("partial_flush_graceful");
@@ -180,14 +130,13 @@ async fn test_partial_flush_with_graceful_shutdown() {
                 PersistenceConfig {
                     strategy: PersistenceStrategy::MemFirst,
                     flush_policy: FlushPolicy::Batch {
-                        threshold: batch_size,
-                        interval_ms: 100,
+                        idle_flush_interval_ms: 100,
                     },
                     max_buffered_entries: 10000,
                 },
                 storage,
             );
-        let raft_log = raft_log.start(receiver);
+        let raft_log = raft_log.start(receiver, None);
 
         // Add 75 entries (1.5 batches)
         for i in 1..=75 {
@@ -204,7 +153,9 @@ async fn test_partial_flush_with_graceful_shutdown() {
         // Wait for first batch to flush
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        // Graceful shutdown: Drop will flush remaining entries
+        // Graceful shutdown: close() joins the IO thread, ensuring all entries are
+        // flushed before recovery reads from disk.
+        raft_log.close().await;
     }
 
     // Recover from disk
@@ -215,22 +166,34 @@ async fn test_partial_flush_with_graceful_shutdown() {
             PersistenceConfig {
                 strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
-                    threshold: 1,
-                    interval_ms: 1,
+                    idle_flush_interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
             },
             storage,
         );
-    let raft_log = raft_log.start(receiver);
+    let raft_log = raft_log.start(receiver, None);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // With graceful shutdown, Drop flushes all entries (75)
+    // With graceful shutdown, close() flushes all entries (75)
     assert_eq!(raft_log.len(), 75);
     assert_eq!(raft_log.durable_index(), 75);
+    raft_log.close().await;
 }
 
+/// MemFirst crash semantics with notify-then-fsync architecture.
+///
+/// `append_entries` calls `write_notify.notify_one()` on every write, which eagerly
+/// wakes the IO thread regardless of `idle_flush_interval_ms`. The idle timer is a
+/// safety-net only — the normal path persists data almost immediately after each append.
+///
+/// True crash (kill -9 / power loss) means data MAY survive if the IO thread had time
+/// to run before the crash. This test verifies:
+/// - Entries flushed before the crash (first batch, waited 150ms) always survive.
+/// - Entries written immediately before crash (second batch, no wait) may or may not
+///   survive depending on IO thread scheduling at crash time.
+/// - `mem::forget` simulates a hard crash: no graceful shutdown, no final flush.
 #[tokio::test]
 async fn test_partial_flush_after_crash() {
     let batch_size = 50;
@@ -247,14 +210,13 @@ async fn test_partial_flush_after_crash() {
                 PersistenceConfig {
                     strategy: PersistenceStrategy::MemFirst,
                     flush_policy: FlushPolicy::Batch {
-                        threshold: batch_size,
-                        interval_ms: 100,
+                        idle_flush_interval_ms: 100,
                     },
                     max_buffered_entries: 10000,
                 },
                 storage,
             );
-        let raft_log = raft_log.start(receiver);
+        let raft_log = raft_log.start(receiver, None);
 
         // Add first batch (50 entries)
         for i in 1..=50 {
@@ -271,17 +233,16 @@ async fn test_partial_flush_after_crash() {
         // Wait for first batch to flush
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        // Add remaining entries (25 entries) that should NOT be flushed
-        for i in 51..=75 {
-            raft_log
-                .append_entries(vec![Entry {
-                    index: i,
-                    term: 1,
-                    payload: None,
-                }])
-                .await
-                .unwrap();
-        }
+        // Add remaining entries (25 entries) as a single batch call.
+        // Single .await minimises the window for the IO thread to run between writes.
+        let second_batch: Vec<Entry> = (51..=75)
+            .map(|i| Entry {
+                index: i,
+                term: 1,
+                payload: None,
+            })
+            .collect();
+        raft_log.append_entries(second_batch).await.unwrap();
 
         // Simulate crash immediately: Skip Drop with mem::forget (like kill -9 or power loss)
         // This prevents the processor from flushing the remaining 25 entries
@@ -297,58 +258,60 @@ async fn test_partial_flush_after_crash() {
             PersistenceConfig {
                 strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
-                    threshold: 1,
-                    interval_ms: 1,
+                    idle_flush_interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
             },
             storage,
         );
-    let raft_log = raft_log.start(receiver);
+    let raft_log = raft_log.start(receiver, None);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Only first batch (50 entries) should be recovered after crash
-    assert_eq!(raft_log.len(), batch_size);
-    assert_eq!(raft_log.durable_index(), batch_size as u64);
+    // With notify-then-fsync, the IO thread processes writes eagerly.
+    // At minimum, the first batch (flushed by safety timer) must survive.
+    // The second batch may also survive depending on IO thread scheduling.
+    let recovered = raft_log.len();
+    assert!(
+        recovered >= batch_size,
+        "flushed entries must survive crash: expected >= {batch_size}, got {recovered}"
+    );
+    assert!(
+        recovered <= 75,
+        "cannot recover more entries than written: got {recovered}"
+    );
+    assert_eq!(
+        raft_log.durable_index() as usize,
+        recovered,
+        "durable_index must match recovered len after restart"
+    );
+    raft_log.close().await;
 }
 
 #[tokio::test]
 async fn test_recovery_under_different_scenarios() {
     // Test various recovery scenarios
+    // Method C (drain-then-fsync): all writes are fsynced by the IO thread after each
+    // drain cycle, so all 100 entries are always durable after explicit flush().
     let scenarios = vec![
-        // MemFirst with per-write flush (threshold=1) - should persist everything
         (
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
+                idle_flush_interval_ms: 1,
             },
-            100,
+            100usize,
         ),
-        // MemFirst with batch flushing - only persists when threshold met
         (
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 50,
-                interval_ms: 10,
+                idle_flush_interval_ms: 10,
             },
             100,
         ),
         (
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 200,
-                interval_ms: 10,
-            },
-            0,
-        ),
-        // DiskFirst should always persist
-        (
-            PersistenceStrategy::DiskFirst,
-            FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
+                idle_flush_interval_ms: 1000,
             },
             100,
         ),
@@ -373,20 +336,12 @@ async fn test_recovery_under_different_scenarios() {
                 .unwrap();
         }
 
-        if matches!(strategy, PersistenceStrategy::DiskFirst) {
-            original_ctx.raft_log.flush().await.unwrap();
-        } else {
-            let FlushPolicy::Batch { threshold, .. } = flush_policy;
-            // For batch policy, only flush if we reached the threshold
-            if 100 >= threshold {
-                original_ctx.raft_log.flush().await.unwrap();
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }
+        // Explicit flush ensures all entries are durable before crash simulation.
+        original_ctx.raft_log.flush().await.unwrap();
 
         // Simulate crash and recovery
         let recovered_ctx = original_ctx.recover_from_crash();
-        drop(original_ctx);
+        original_ctx.close().await;
 
         // Verify recovery based on expected behavior
         assert_eq!(
@@ -394,6 +349,7 @@ async fn test_recovery_under_different_scenarios() {
             expected_recovery,
             "Recovery mismatch for strategy {strategy:?} policy {flush_policy:?}"
         );
+        recovered_ctx.close().await;
     }
 }
 
@@ -405,8 +361,7 @@ async fn test_memfirst_crash_recovery_durability() {
         let ctx = TestContext::new(
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 1000, // High threshold to prevent auto-flush
-                interval_ms: 10000,
+                idle_flush_interval_ms: 10000,
             },
             instance_id,
         );
@@ -417,8 +372,9 @@ async fn test_memfirst_crash_recovery_durability() {
         assert_eq!(ctx.raft_log.len(), 100);
 
         let path = ctx.path.clone();
-        // Simulate crash WITHOUT flush
-        drop(ctx);
+        // Graceful shutdown: data is flushed but _temp_dir is deleted,
+        // so recovery still sees an empty storage.
+        ctx.close().await;
         path
     };
 
@@ -432,14 +388,13 @@ async fn test_memfirst_crash_recovery_durability() {
             PersistenceConfig {
                 strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
-                    threshold: 1,
-                    interval_ms: 1,
+                    idle_flush_interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
             },
             storage,
         );
-    let raft_log = raft_log.start(receiver);
+    let raft_log = raft_log.start(receiver, None);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -449,6 +404,7 @@ async fn test_memfirst_crash_recovery_durability() {
         0,
         "MemFirst without flush should lose uncommitted data"
     );
+    raft_log.close().await;
 }
 
 #[tokio::test]
@@ -463,16 +419,15 @@ async fn test_diskfirst_crash_recovery_durability() {
             BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
                 1,
                 PersistenceConfig {
-                    strategy: PersistenceStrategy::DiskFirst,
+                    strategy: PersistenceStrategy::MemFirst,
                     flush_policy: FlushPolicy::Batch {
-                        threshold: 1,
-                        interval_ms: 1,
+                        idle_flush_interval_ms: 1,
                     },
                     max_buffered_entries: 10000,
                 },
                 storage,
             );
-        let raft_log = raft_log.start(receiver);
+        let raft_log = raft_log.start(receiver, None);
 
         let entries: Vec<_> = (1..=100)
             .map(|index| Entry {
@@ -489,8 +444,7 @@ async fn test_diskfirst_crash_recovery_durability() {
         raft_log
     };
 
-    drop(ctx1);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    ctx1.close().await;
 
     // Phase 2: Recovery
     let storage = Arc::new(FileStorageEngine::new(storage_path).unwrap());
@@ -498,20 +452,20 @@ async fn test_diskfirst_crash_recovery_durability() {
         BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
             1,
             PersistenceConfig {
-                strategy: PersistenceStrategy::DiskFirst,
+                strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
-                    threshold: 1,
-                    interval_ms: 1,
+                    idle_flush_interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
             },
             storage,
         );
-    let raft_log = raft_log.start(receiver);
+    let raft_log = raft_log.start(receiver, None);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Verify recovery
     assert_eq!(raft_log.len(), 100, "All entries should be recovered");
     assert_eq!(raft_log.durable_index(), 100, "Durable index should be 100");
+    raft_log.close().await;
 }

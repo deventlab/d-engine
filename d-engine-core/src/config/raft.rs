@@ -75,6 +75,18 @@ pub struct RaftConfig {
     #[serde(default = "default_snapshot_rpc_timeout_ms")]
     pub snapshot_rpc_timeout_ms: u64,
 
+    /// Command channel capacity for client write requests
+    /// Bounded channel prevents unbounded memory growth under high load
+    /// Default value is set via default_cmd_channel_capacity() function
+    #[serde(default = "default_cmd_channel_capacity")]
+    pub cmd_channel_capacity: usize,
+
+    /// Ordered channel capacity for stream_append_entries ordering
+    /// Controls buffering of response receivers in FIFO order
+    /// Default value is set via default_ordered_channel_capacity() function
+    #[serde(default = "default_ordered_channel_capacity")]
+    pub ordered_channel_capacity: usize,
+
     /// Configuration settings for new node auto join feature
     #[serde(default)]
     pub auto_join: AutoJoinConfig,
@@ -131,6 +143,8 @@ impl Default for RaftConfig {
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
+            cmd_channel_capacity: default_cmd_channel_capacity(),
+            ordered_channel_capacity: default_ordered_channel_capacity(),
             read_consistency: ReadConsistencyConfig::default(),
             backpressure: BackpressureConfig::default(),
             rpc_compression: RpcCompressionConfig::default(),
@@ -194,6 +208,15 @@ fn default_snapshot_rpc_timeout_ms() -> u64 {
     // 1 hour - sufficient for large snapshots
     3_600_000
 }
+
+fn default_cmd_channel_capacity() -> usize {
+    1024
+}
+
+fn default_ordered_channel_capacity() -> usize {
+    1024
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReplicationConfig {
     /// Heartbeat interval (milliseconds): how often the leader sends AppendEntries RPCs.
@@ -738,20 +761,6 @@ fn default_stale_check_interval() -> Duration {
 /// The in-memory `SkipMap` serves as the primary data structure for reads in all modes.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum PersistenceStrategy {
-    /// Disk-first persistence strategy.
-    ///
-    /// - **Write path**: On append, the log entry is first written to disk. Only after a successful
-    ///   disk write is it acknowledged and stored in the in-memory `SkipMap`.
-    ///
-    /// - **Read path**: Reads are always served from the in-memory `SkipMap`.
-    ///
-    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup,
-    ///   ensuring consistent access speed regardless of disk state.
-    ///
-    /// - Suitable for systems prioritizing strong durability while still providing in-memory
-    ///   performance for reads.
-    DiskFirst,
-
     /// Memory-first persistence strategy.
     ///
     /// - **Write path**: On append, the log entry is first written to the in-memory `SkipMap` and
@@ -760,27 +769,24 @@ pub enum PersistenceStrategy {
     ///
     /// - **Read path**: Reads are always served from the in-memory `SkipMap`.
     ///
-    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup, the
-    ///   same as `DiskFirst`.
+    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup.
     ///
-    /// - Suitable for systems that favor lower write latency and faster failover, while still
-    ///   retaining a disk-backed log for crash recovery.
     MemFirst,
 }
 
 /// Controls when in-memory logs should be flushed to disk.
 ///
-/// Flush is triggered when either condition is met:
-/// - The number of unflushed entries reaches `threshold`.
-/// - The elapsed time since the last flush exceeds `interval_ms`.
+/// Flush is triggered by whichever comes first:
+/// - An explicit `flush()` call (immediate, no wait).
+/// - `append_entries` calls `write_notify.notify_one()` for an immediate persist+fsync.
+/// - The idle safety-net timer fires after `idle_flush_interval_ms` of inactivity.
 ///
-/// Both `threshold` and `interval_ms` must be greater than zero.
-/// For per-write durability (highest safety, lowest throughput), set `threshold: 1`
-/// with a small `interval_ms` (e.g. 10). Larger values trade some durability for
-/// higher throughput.
+/// `idle_flush_interval_ms` must be greater than zero. It only fires when no
+/// writes have arrived for that duration; normal-path latency is determined by
+/// the fsync execution time (drain-then-fsync architecture).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum FlushPolicy {
-    Batch { threshold: usize, interval_ms: u64 },
+    Batch { idle_flush_interval_ms: u64 },
 }
 
 /// Configuration parameters for log persistence behavior
@@ -811,7 +817,7 @@ pub struct PersistenceConfig {
 
 /// Default persistence strategy (optimized for balanced workloads)
 fn default_persistence_strategy() -> PersistenceStrategy {
-    PersistenceStrategy::DiskFirst
+    PersistenceStrategy::MemFirst
 }
 
 /// Default flush policy for asynchronous strategies
@@ -820,8 +826,7 @@ fn default_persistence_strategy() -> PersistenceStrategy {
 /// write performance and durability guarantees.
 fn default_flush_policy() -> FlushPolicy {
     FlushPolicy::Batch {
-        threshold: 1024,
-        interval_ms: 100,
+        idle_flush_interval_ms: 1000,
     }
 }
 
@@ -833,17 +838,11 @@ fn default_max_buffered_entries() -> usize {
 impl PersistenceConfig {
     pub fn validate(&self) -> Result<()> {
         let FlushPolicy::Batch {
-            threshold,
-            interval_ms,
+            idle_flush_interval_ms,
         } = self.flush_policy;
-        if threshold == 0 {
+        if idle_flush_interval_ms == 0 {
             return Err(Error::Config(ConfigError::Message(
-                "flush_policy.threshold must be greater than 0".into(),
-            )));
-        }
-        if interval_ms == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "flush_policy.interval_ms must be greater than 0".into(),
+                "flush_policy.idle_flush_interval_ms must be greater than 0".into(),
             )));
         }
         Ok(())
@@ -991,6 +990,8 @@ pub struct ReadConsistencyConfig {
     ///
     /// Only applicable when using the LeaseRead policy. The leader considers
     /// itself valid for this duration after successfully heartbeating to a quorum.
+    ///
+    /// **MUST be > 0**. Config validation will reject 0 or invalid values.
     #[serde(default = "default_lease_duration_ms")]
     pub lease_duration_ms: u64,
 
@@ -1288,7 +1289,7 @@ impl WatchConfig {
 }
 
 const fn default_event_queue_size() -> usize {
-    1000
+    10240
 }
 
 const fn default_watcher_buffer_size() -> usize {

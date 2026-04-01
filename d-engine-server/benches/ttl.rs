@@ -37,7 +37,7 @@ async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
     // For TTL benchmarks, we need lease enabled
     let lease_config = d_engine_core::config::LeaseConfig {
         enabled: true,
-        interval_ms: 1000,
+        cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     };
 
@@ -108,7 +108,7 @@ fn bench_piggyback_cleanup(c: &mut Criterion) {
     for expired_count in [10, 50, 100, 500].iter() {
         let lease_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
         let lease = DefaultLease::new(lease_config);
@@ -146,7 +146,7 @@ fn bench_ttl_registration(c: &mut Criterion) {
 
     let lease_config = d_engine_core::config::LeaseConfig {
         enabled: true,
-        interval_ms: 1000,
+        cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     };
     let lease = DefaultLease::new(lease_config);

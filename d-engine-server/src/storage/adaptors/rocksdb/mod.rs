@@ -37,6 +37,9 @@ pub(super) fn base_db_options() -> Options {
     let mut opts = Options::default();
     opts.create_if_missing(true);
     opts.create_missing_column_families(true);
+    // IO-smoothing hint: triggers async sync_file_range every 1 MB of WAL writes.
+    // This is NOT fdatasync — it spreads dirty page writeback to avoid IO spikes,
+    // but provides no durability guarantee. Pairs well with Level 3 (flush_wal) if added.
     opts.set_wal_bytes_per_sync(1024 * 1024);
     opts.set_max_background_jobs(4);
     opts.set_max_open_files(5000);

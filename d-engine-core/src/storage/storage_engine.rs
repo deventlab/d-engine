@@ -103,6 +103,17 @@ pub trait LogStore: Send + Sync + 'static {
     /// # Implementation note
     /// Should maintain cached value updated on write operations
     fn last_index(&self) -> u64;
+
+    /// Load the purge boundary persisted by the last `purge()` call.
+    ///
+    /// Returns the `LogId` (index + term) of the highest entry ever purged,
+    /// or `None` if `purge()` has never been called. `BufferedRaftLog::new()`
+    /// uses this to restore `last_purged_index/term` after a restart so that
+    /// `entry_term(last_purged_index)` returns the correct term even though
+    /// the entry has been removed from the in-memory log.
+    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
+        Ok(None) // Default: not persisted
+    }
 }
 
 /// Metadata storage operations

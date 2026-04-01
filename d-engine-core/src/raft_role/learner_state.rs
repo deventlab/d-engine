@@ -321,6 +321,21 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                     error!(?e, "Learner handle  RaftEvent::InstallSnapshotChunk");
                     return Err(e);
                 }
+
+                // Advance raft log purge boundary to snapshot's last_included so that
+                // last_log_id() returns the correct position after snapshot install.
+                if let Some(metadata) = ctx.state_machine_handler().get_latest_snapshot_metadata()
+                    && let Some(last_included) = metadata.last_included
+                {
+                    if let Err(e) = ctx.raft_log().purge_logs_up_to(last_included).await {
+                        error!(?e, "Failed to set raft log boundary after snapshot install");
+                    } else {
+                        info!(
+                            ?last_included,
+                            "Learner raft log boundary set after InstallSnapshotChunk"
+                        );
+                    }
+                }
             }
 
             RaftEvent::CreateSnapshotEvent => {
@@ -442,18 +457,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
                 return Ok(());
             }
-            RaftEvent::TriggerSnapshotPush { peer_id: _ } => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Learner",
-                    required_role: "Leader",
-                    context: format!(
-                        "Learner node {} receives RaftEvent::TriggerSnapshotPush",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
-
             RaftEvent::PromoteReadyLearners => {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Learner",
@@ -500,20 +503,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         my_id
                     );
                 }
-            }
-
-            RaftEvent::ApplyCompleted {
-                last_index,
-                results: _,
-            } => {
-                // Per Raft §7: each server takes snapshots independently.
-                check_and_trigger_snapshot(
-                    last_index,
-                    Learner as i32,
-                    self.current_term(),
-                    ctx,
-                    &role_tx,
-                )?;
             }
 
             RaftEvent::FatalError { source, error } => {
@@ -626,8 +615,38 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             )
             .await?;
 
+        // After snapshot install the raft log is empty. Advance the purge boundary
+        // to last_included so last_log_id() returns the correct position and the
+        // leader starts sending entries from last_included.index + 1 instead of 1.
+        if let Some(metadata) = ctx.state_machine_handler().get_latest_snapshot_metadata()
+            && let Some(last_included) = metadata.last_included
+        {
+            ctx.raft_log().purge_logs_up_to(last_included).await?;
+            info!(
+                ?last_included,
+                "Learner raft log boundary set after snapshot install"
+            );
+        }
+
         info!("Successfully fetched and installed initial snapshot");
         Ok(())
+    }
+
+    async fn handle_apply_completed(
+        &mut self,
+        last_index: u64,
+        _results: Vec<crate::ApplyResult>,
+        ctx: &crate::RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> crate::Result<()> {
+        // Per Raft §7: each server takes snapshots independently.
+        check_and_trigger_snapshot(
+            last_index,
+            Learner as i32,
+            self.current_term(),
+            ctx,
+            role_tx,
+        )
     }
 }
 

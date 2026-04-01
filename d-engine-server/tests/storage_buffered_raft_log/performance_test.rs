@@ -43,13 +43,12 @@ mod filter_out_conflicts_and_append_performance_tests {
             (1000, 50), // 1000ms interval, 50ms max duration
         ];
 
-        for (interval_ms, max_duration_ms) in test_cases {
+        for (idle_flush_interval_ms, max_duration_ms) in test_cases {
             // Create MemFirst storage with batch policy
             let config = PersistenceConfig {
                 strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
-                    threshold: 1000,
-                    interval_ms,
+                    idle_flush_interval_ms,
                 },
                 max_buffered_entries: 10000,
             };
@@ -62,7 +61,7 @@ mod filter_out_conflicts_and_append_performance_tests {
             >::new(
                 1, config, Arc::new(FileStorageEngine::new(path).unwrap())
             );
-            let log = log.start(receiver);
+            let log = log.start(receiver, None);
 
             // Populate with test data (1000 entries)
             let mut entries = vec![];
@@ -90,12 +89,12 @@ mod filter_out_conflicts_and_append_performance_tests {
             .unwrap();
 
             let duration = start.elapsed().as_millis() as u64;
-            println!("Interval {interval_ms}ms: Took {duration}ms");
+            println!("Interval {idle_flush_interval_ms}ms: Took {duration}ms");
 
             // Verify performance consistency
             assert!(
                 duration <= max_duration_ms,
-                "Duration {duration}ms exceeds max {max_duration_ms}ms for {interval_ms}ms interval"
+                "Duration {duration}ms exceeds max {max_duration_ms}ms for {idle_flush_interval_ms}ms interval"
             );
 
             // Verify correctness
@@ -114,13 +113,12 @@ mod filter_out_conflicts_and_append_performance_tests {
             (1000, 50), // 1000ms interval, 50ms max duration
         ];
 
-        for (interval_ms, max_duration_ms) in test_cases {
+        for (idle_flush_interval_ms, max_duration_ms) in test_cases {
             // Create MemFirst storage with batch policy
             let config = PersistenceConfig {
                 strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
-                    threshold: 1000,
-                    interval_ms,
+                    idle_flush_interval_ms,
                 },
                 max_buffered_entries: 10000,
             };
@@ -133,7 +131,7 @@ mod filter_out_conflicts_and_append_performance_tests {
             >::new(
                 1, config, Arc::new(FileStorageEngine::new(path).unwrap())
             );
-            let log = log.start(receiver);
+            let log = log.start(receiver, None);
 
             // Populate with test data (1000 entries)
             let mut entries = vec![];
@@ -145,6 +143,9 @@ mod filter_out_conflicts_and_append_performance_tests {
                 });
             }
             log.append_entries(entries.clone()).await.unwrap();
+            // Wait for IO to complete so the measurement is pure in-memory performance,
+            // not affected by background flush contention from the raft-io thread.
+            log.flush().await.unwrap();
 
             // Measure conflict resolution performance
             let start = Instant::now();
@@ -161,12 +162,12 @@ mod filter_out_conflicts_and_append_performance_tests {
             .unwrap();
 
             let duration = start.elapsed().as_millis() as u64;
-            println!("Interval {interval_ms}ms: Took {duration}ms");
+            println!("Interval {idle_flush_interval_ms}ms: Took {duration}ms");
 
             // Verify performance consistency
             assert!(
                 duration <= max_duration_ms,
-                "Duration {duration}ms exceeds max {max_duration_ms}ms for {interval_ms}ms interval"
+                "Duration {duration}ms exceeds max {max_duration_ms}ms for {idle_flush_interval_ms}ms interval"
             );
 
             // Verify correctness
@@ -183,8 +184,7 @@ async fn test_last_entry_id_performance() {
     let test_context = TestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1_000_000,
-            interval_ms: 360_000,
+            idle_flush_interval_ms: 360_000,
         },
         "test_last_entry_id_performance",
     );
@@ -194,7 +194,7 @@ async fn test_last_entry_id_performance() {
     let entries: Vec<_> = (0..ENTRY_COUNT)
         .map(|index| Entry {
             index: index as u64,
-            term: index as u64,
+            term: 1,
             payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
         })
         .collect();
@@ -255,8 +255,7 @@ async fn test_performance_benchmarks() {
     let ctx = TestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1000,
-            interval_ms: 100,
+            idle_flush_interval_ms: 100,
         },
         "performance_benchmark",
     );
@@ -342,8 +341,7 @@ async fn test_read_performance_remains_lockfree() {
     let ctx = TestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1000,
-            interval_ms: 100,
+            idle_flush_interval_ms: 100,
         },
         "test_lockfree_reads",
     );

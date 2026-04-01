@@ -16,7 +16,7 @@
 //! # Enable TTL feature (default: disabled)
 //! [raft.state_machine.lease]
 //! enabled = true
-//! interval_ms = 1000  # Optional, default 1 second
+//! cleanup_interval_ms = 1000  # Optional, default 1 second
 //! ```
 
 use config::ConfigError;
@@ -41,7 +41,7 @@ use crate::errors::Result;
 /// # Performance
 ///
 /// Background cleanup overhead: ~0.001% CPU
-/// - Wakes up every `interval_ms` (default 1000ms)
+/// - Wakes up every `cleanup_interval_ms` (default 1000ms)
 /// - Scans expired keys (limited by `max_cleanup_duration_ms`)
 /// - Deletes expired entries from storage
 ///
@@ -59,7 +59,7 @@ use crate::errors::Result;
 ///     enabled: true,
 ///     ..Default::default()
 /// };
-/// assert_eq!(config.interval_ms, 1000);
+/// assert_eq!(config.cleanup_interval_ms, 1000);
 /// ```
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LeaseConfig {
@@ -72,21 +72,27 @@ pub struct LeaseConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Background cleanup interval in milliseconds
+    /// How often the background worker wakes up to scan and delete expired keys (milliseconds).
     ///
-    /// How often the background worker wakes up to scan and delete expired keys.
+    /// This setting controls MEMORY EFFICIENCY only, not TTL correctness.
+    /// Expired keys are always rejected at read time via `is_expired()` regardless of cleanup
+    /// timing. Cleanup only reclaims the memory occupied by stale DashMap entries.
     ///
-    /// Range: 100-3600000 (100ms to 1 hour)
+    /// Range: 100–60000 (100ms to 60 seconds)
     /// Default: 1000 (1 second)
     ///
+    /// Upper bound rationale: at 60s, a workload of 10K TTL writes/s with TTL=1s accumulates
+    /// ~600K stale entries (~30MB) between cleanups — acceptable for most deployments.
+    /// Beyond 60s, memory growth becomes unbounded in high-throughput short-TTL workloads.
+    ///
     /// Tuning guide:
-    /// - 1000ms (default): Balanced for most workloads
-    /// - 100-500ms: Aggressive cleanup for memory-sensitive apps
-    /// - 5000-10000ms: Relaxed cleanup for low TTL usage
+    /// - 1000ms (default): Good for most workloads
+    /// - 100-500ms: High-throughput short-TTL workloads (e.g., rate limiting, sessions)
+    /// - 5000-60000ms: Low-frequency TTL usage where memory pressure is not a concern
     ///
     /// Only used when `enabled = true`
-    #[serde(default = "default_interval_ms")]
-    pub interval_ms: u64,
+    #[serde(default = "default_cleanup_interval_ms")]
+    pub cleanup_interval_ms: u64,
 
     /// Maximum cleanup duration per cycle (milliseconds)
     ///
@@ -106,7 +112,7 @@ pub struct LeaseConfig {
     pub max_cleanup_duration_ms: u64,
 }
 
-fn default_interval_ms() -> u64 {
+fn default_cleanup_interval_ms() -> u64 {
     1000
 }
 
@@ -118,7 +124,7 @@ impl Default for LeaseConfig {
     fn default() -> Self {
         Self {
             enabled: false, // Default: TTL disabled (zero overhead)
-            interval_ms: default_interval_ms(),
+            cleanup_interval_ms: default_cleanup_interval_ms(),
             max_cleanup_duration_ms: default_max_cleanup_duration_ms(),
         }
     }
@@ -128,7 +134,7 @@ impl LeaseConfig {
     /// Validates configuration parameters
     ///
     /// Returns error if:
-    /// - `interval_ms` is out of range (100-3600000)
+    /// - `cleanup_interval_ms` is out of range (100-60000)
     /// - `max_cleanup_duration_ms` is out of range (1-100)
     pub fn validate(&self) -> Result<()> {
         // Skip validation if disabled
@@ -136,14 +142,15 @@ impl LeaseConfig {
             return Ok(());
         }
 
-        // Validate interval_ms
-        // Range: 100ms to 1 hour
+        // Validate cleanup_interval_ms
+        // Range: 100ms to 60s
         // - Lower bound (100ms): Prevents excessive wakeups (CPU waste)
-        // - Upper bound (3600000ms = 1h): Ensures reasonable cleanup frequency
-        if !(100..=3_600_000).contains(&self.interval_ms) {
+        // - Upper bound (60000ms): Caps stale-entry accumulation; beyond 60s, high-throughput
+        //   short-TTL workloads accumulate unbounded memory (see field doc comment)
+        if !(100..=60_000).contains(&self.cleanup_interval_ms) {
             return Err(Error::Config(ConfigError::Message(format!(
-                "lease cleanup interval_ms must be between 100 and 3600000, got {}",
-                self.interval_ms
+                "lease cleanup_interval_ms must be between 100 and 60000, got {}",
+                self.cleanup_interval_ms
             ))));
         }
 

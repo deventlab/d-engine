@@ -1,101 +1,64 @@
 //! Basic cluster topology scenarios for ReplicationHandler
 //!
-//! Tests verify correct behavior across different cluster configurations:
-//! - Single-node clusters (auto-commit without replication)
-//! - Two-node clusters (simple majority)
-//! - Three-node clusters (standard quorum)
-//! - Five-node clusters (larger quorum calculations)
+//! Tests verify that prepare_batch_requests builds the correct number of
+//! replication requests for each cluster topology:
+//! - Single-node: no requests (no peers to replicate to)
+//! - Two-node: 1 request (one per peer)
+//! - Three-node: 2 requests (one per peer)
+//! - Five-node: 4 requests (one per peer)
 
-use crate::AppendResult;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use crate::ClusterMetadata;
 use crate::LeaderStateSnapshot;
-use crate::MockMembership;
 use crate::MockRaftLog;
-use crate::MockTransport;
 use crate::MockTypeConfig;
-use crate::NetworkError;
 use crate::ReplicationCore;
 use crate::ReplicationHandler;
 use crate::StateSnapshot;
 use crate::test_utils::mock_raft_context;
-use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
 use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::watch;
 
-/// Helper: Create mock membership for multi-node cluster
-fn create_mock_membership_multi_node() -> MockMembership<MockTypeConfig> {
-    let mut membership = MockMembership::new();
-    membership.expect_is_single_node_cluster().returning(|| false);
-    membership.expect_initial_cluster_size().returning(|| 3);
-    membership
-}
-
-/// Single-node cluster should achieve quorum immediately without replication.
+/// Single-node cluster builds no replication requests (no peers to replicate to).
 ///
 /// # Scenario
-/// - Cluster: 1 voter (no peers)
+/// - Cluster: 1 voter (no peers, single_voter=true)
 /// - Input: Empty command batch
-/// - Expected: Immediate commit (no replication needed)
+/// - Expected: Empty request list — no replication needed, auto-commit
 #[tokio::test]
-async fn test_single_voter_achieves_quorum_immediately() {
-    // Arrange: Setup single-voter cluster context
+async fn test_single_voter_builds_no_replication_requests() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
-        "/tmp/test_single_voter_achieves_quorum_immediately",
+        "/tmp/test_single_voter_builds_no_replication_requests",
         graceful_rx,
         None,
     );
-    let my_id = 1;
-    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
 
-    // Arrange: Leader state with empty batch
-    let commands = Vec::new();
-    let state_snapshot = StateSnapshot {
-        current_term: 1,
-        voted_for: None,
-        commit_index: 1,
-        role: Leader.into(),
-    };
-    let leader_state_snapshot = LeaderStateSnapshot {
-        next_index: HashMap::new(),
-        match_index: HashMap::new(),
-        noop_log_id: None,
-    };
-
-    // Arrange: Mock raft log
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
-    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
-    raft_log.expect_entry_term().returning(|_| None);
+    raft_log.expect_first_entry_id().returning(|| 1);
     context.storage.raft_log = Arc::new(raft_log);
 
-    // Arrange: Mock transport (expects no peer communication)
-    let mut transport = MockTransport::new();
-    transport.expect_send_append_requests().returning(move |_, _, _, _| {
-        Err(NetworkError::EmptyPeerList {
-            request_type: "send_vote_requests",
-        }
-        .into())
-    });
-    context.transport = Arc::new(transport);
-
-    // Arrange: Mock membership with no replication peers
-    let mut membership = create_mock_membership_multi_node();
-    membership.expect_replication_peers().returning(Vec::new);
-    context.membership = Arc::new(membership);
-
-    // Act: Process empty batch
     let result = handler
-        .handle_raft_request_in_batch(
-            commands,
-            state_snapshot,
-            leader_state_snapshot,
+        .prepare_batch_requests(
+            vec![],
+            StateSnapshot {
+                current_term: 1,
+                voted_for: None,
+                commit_index: 1,
+                role: Leader.into(),
+            },
+            LeaderStateSnapshot {
+                next_index: HashMap::new(),
+                match_index: HashMap::new(),
+                noop_log_id: None,
+            },
             &ClusterMetadata {
                 single_voter: true,
                 replication_targets: vec![],
@@ -103,80 +66,50 @@ async fn test_single_voter_achieves_quorum_immediately() {
             },
             &context,
         )
-        .await;
+        .await
+        .unwrap();
 
-    // Assert: Quorum achieved without peer responses
-    assert!(result.is_ok(), "single voter should succeed immediately");
-    let append_result = result.unwrap();
     assert!(
-        append_result.commit_quorum_achieved,
-        "single voter should auto-commit"
-    );
-    assert!(
-        append_result.peer_updates.is_empty(),
-        "no peers to update in single-voter cluster"
+        result.append_requests.is_empty() && result.snapshot_targets.is_empty(),
+        "single voter builds no replication requests"
     );
 }
 
-/// Two-node cluster should achieve quorum when peer responds successfully.
+/// Two-node cluster builds one replication request for the single peer.
 ///
 /// # Scenario
-/// - Cluster: 1 leader + 1 voter
-/// - Input: Empty command batch
-/// - Expected: Quorum achieved when single peer responds
+/// - Cluster: 1 leader + 1 voter (2 nodes total)
+/// - Expected: 1 request built, targeting peer 2
 #[tokio::test]
-async fn test_two_node_cluster_achieves_quorum_with_peer_response() {
-    // Arrange: Setup two-node cluster context
+async fn test_two_node_cluster_builds_one_replication_request() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
-        "/tmp/test_two_node_cluster_achieves_quorum",
+        "/tmp/test_two_node_cluster_builds_one_replication_request",
         graceful_rx,
         None,
     );
-    let my_id = 1;
-    let peer2_id = 2;
-    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+    let peer2_id = 2u32;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
 
-    // Arrange: Leader state with empty batch
-    let state_snapshot = StateSnapshot {
-        current_term: 1,
-        voted_for: None,
-        commit_index: 0,
-        role: Leader.into(),
-    };
-    let leader_state_snapshot = LeaderStateSnapshot {
-        next_index: HashMap::new(),
-        match_index: HashMap::new(),
-        noop_log_id: None,
-    };
-
-    // Arrange: Mock raft log
     let mut raft_log = MockRaftLog::new();
-    raft_log.expect_last_entry_id().return_const(1_u64);
-    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
-    raft_log.expect_entry_term().returning(|_| None);
+    raft_log.expect_last_entry_id().returning(|| 1);
+    raft_log.expect_first_entry_id().returning(|| 1);
     context.storage.raft_log = Arc::new(raft_log);
 
-    // Arrange: Mock transport with successful peer response
-    let mut transport = MockTransport::new();
-    transport.expect_send_append_requests().return_once(move |_, _, _, _| {
-        Ok(AppendResult {
-            peer_ids: vec![peer2_id].into_iter().collect(),
-            responses: vec![Ok(AppendEntriesResponse::success(
-                peer2_id,
-                1,
-                Some(LogId { term: 1, index: 1 }),
-            ))],
-        })
-    });
-    context.transport = Arc::new(transport);
-
-    // Act: Process empty batch with 2-node cluster metadata
     let result = handler
-        .handle_raft_request_in_batch(
+        .prepare_batch_requests(
             vec![],
-            state_snapshot,
-            leader_state_snapshot,
+            StateSnapshot {
+                current_term: 1,
+                voted_for: None,
+                commit_index: 0,
+                role: Leader.into(),
+            },
+            LeaderStateSnapshot {
+                next_index: HashMap::new(),
+                match_index: HashMap::new(),
+                noop_log_id: None,
+            },
             &ClusterMetadata {
                 single_voter: false,
                 replication_targets: vec![NodeMeta {
@@ -192,80 +125,53 @@ async fn test_two_node_cluster_achieves_quorum_with_peer_response() {
         .await
         .unwrap();
 
-    // Assert: Quorum achieved (2/2 = leader + 1 peer)
-    assert!(
-        result.commit_quorum_achieved,
-        "two-node cluster should achieve quorum with peer response"
+    assert_eq!(
+        result.append_requests.len(),
+        1,
+        "two-node cluster builds 1 replication request"
+    );
+    assert_eq!(
+        result.append_requests[0].0, peer2_id,
+        "request targets peer 2"
     );
 }
 
-/// Three-node cluster should achieve quorum when both peers respond successfully.
+/// Three-node cluster builds two replication requests, one per peer.
 ///
 /// # Scenario
-/// - Cluster: 1 leader + 2 voters
-/// - Input: Empty command batch
-/// - Expected: Quorum achieved when both peers respond (3/3)
+/// - Cluster: 1 leader + 2 voters (3 nodes total)
+/// - Expected: 2 requests (one for peer 2 and one for peer 3)
 #[tokio::test]
-async fn test_three_node_cluster_achieves_quorum_with_all_peers() {
-    // Arrange: Setup three-node cluster context
+async fn test_three_node_cluster_builds_two_replication_requests() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
-        "/tmp/test_three_node_cluster_achieves_quorum",
+        "/tmp/test_three_node_cluster_builds_two_replication_requests",
         graceful_rx,
         None,
     );
-    let my_id = 1;
-    let peer2_id = 2;
-    let peer3_id = 3;
-    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+    let peer2_id = 2u32;
+    let peer3_id = 3u32;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
 
-    // Arrange: Leader state with empty batch
-    let state_snapshot = StateSnapshot {
-        current_term: 1,
-        voted_for: None,
-        commit_index: 0,
-        role: Leader.into(),
-    };
-    let leader_state_snapshot = LeaderStateSnapshot {
-        next_index: HashMap::new(),
-        match_index: HashMap::new(),
-        noop_log_id: None,
-    };
-
-    // Arrange: Mock raft log
     let mut raft_log = MockRaftLog::new();
-    raft_log.expect_last_entry_id().return_const(1_u64);
-    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
-    raft_log.expect_entry_term().returning(|_| None);
+    raft_log.expect_last_entry_id().returning(|| 1);
+    raft_log.expect_first_entry_id().returning(|| 1);
     context.storage.raft_log = Arc::new(raft_log);
 
-    // Arrange: Mock transport with all peers responding successfully
-    let mut transport = MockTransport::new();
-    transport.expect_send_append_requests().return_once(move |_, _, _, _| {
-        Ok(AppendResult {
-            peer_ids: vec![peer2_id, peer3_id].into_iter().collect(),
-            responses: vec![
-                Ok(AppendEntriesResponse::success(
-                    peer2_id,
-                    1,
-                    Some(LogId { term: 1, index: 1 }),
-                )),
-                Ok(AppendEntriesResponse::success(
-                    peer3_id,
-                    1,
-                    Some(LogId { term: 1, index: 1 }),
-                )),
-            ],
-        })
-    });
-    context.transport = Arc::new(transport);
-
-    // Act: Process empty batch with 3-node cluster metadata
     let result = handler
-        .handle_raft_request_in_batch(
+        .prepare_batch_requests(
             vec![],
-            state_snapshot,
-            leader_state_snapshot,
+            StateSnapshot {
+                current_term: 1,
+                voted_for: None,
+                commit_index: 0,
+                role: Leader.into(),
+            },
+            LeaderStateSnapshot {
+                next_index: HashMap::new(),
+                match_index: HashMap::new(),
+                noop_log_id: None,
+            },
             &ClusterMetadata {
                 single_voter: false,
                 replication_targets: vec![
@@ -289,92 +195,54 @@ async fn test_three_node_cluster_achieves_quorum_with_all_peers() {
         .await
         .unwrap();
 
-    // Assert: Quorum achieved (3/3 = leader + 2 peers)
-    assert!(
-        result.commit_quorum_achieved,
-        "three-node cluster should achieve quorum with all peers responding"
+    assert_eq!(
+        result.append_requests.len(),
+        2,
+        "three-node cluster builds 2 replication requests"
     );
+    let peer_ids: Vec<u32> = result.append_requests.iter().map(|(id, _)| *id).collect();
+    assert!(peer_ids.contains(&peer2_id), "request for peer 2");
+    assert!(peer_ids.contains(&peer3_id), "request for peer 3");
 }
 
-/// Five-node cluster should achieve quorum when all four peers respond successfully.
+/// Five-node cluster builds four replication requests, one per peer.
 ///
 /// # Scenario
-/// - Cluster: 1 leader + 4 voters
-/// - Input: Empty command batch
-/// - Expected: Quorum achieved when all 4 peers respond (5/5)
+/// - Cluster: 1 leader + 4 voters (5 nodes total)
+/// - Expected: 4 requests (one for each peer)
 #[tokio::test]
-async fn test_five_node_cluster_achieves_quorum_with_all_peers() {
-    // Arrange: Setup five-node cluster context
+async fn test_five_node_cluster_builds_four_replication_requests() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context = mock_raft_context(
-        "/tmp/test_five_node_cluster_achieves_quorum",
+        "/tmp/test_five_node_cluster_builds_four_replication_requests",
         graceful_rx,
         None,
     );
-    let my_id = 1;
-    let peer2_id = 2;
-    let peer3_id = 3;
-    let peer4_id = 4;
-    let peer5_id = 5;
-    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+    let peer2_id = 2u32;
+    let peer3_id = 3u32;
+    let peer4_id = 4u32;
+    let peer5_id = 5u32;
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
 
-    // Arrange: Leader state with empty batch
-    let state_snapshot = StateSnapshot {
-        current_term: 1,
-        voted_for: None,
-        commit_index: 0,
-        role: Leader.into(),
-    };
-    let leader_state_snapshot = LeaderStateSnapshot {
-        next_index: HashMap::new(),
-        match_index: HashMap::new(),
-        noop_log_id: None,
-    };
-
-    // Arrange: Mock raft log
     let mut raft_log = MockRaftLog::new();
-    raft_log.expect_last_entry_id().return_const(1_u64);
-    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
-    raft_log.expect_entry_term().returning(|_| None);
+    raft_log.expect_last_entry_id().returning(|| 1);
+    raft_log.expect_first_entry_id().returning(|| 1);
     context.storage.raft_log = Arc::new(raft_log);
 
-    // Arrange: Mock transport with all four peers responding successfully
-    let mut transport = MockTransport::new();
-    transport.expect_send_append_requests().return_once(move |_, _, _, _| {
-        Ok(AppendResult {
-            peer_ids: vec![peer2_id, peer3_id, peer4_id, peer5_id].into_iter().collect(),
-            responses: vec![
-                Ok(AppendEntriesResponse::success(
-                    peer2_id,
-                    1,
-                    Some(LogId { term: 1, index: 1 }),
-                )),
-                Ok(AppendEntriesResponse::success(
-                    peer3_id,
-                    1,
-                    Some(LogId { term: 1, index: 1 }),
-                )),
-                Ok(AppendEntriesResponse::success(
-                    peer4_id,
-                    1,
-                    Some(LogId { term: 1, index: 1 }),
-                )),
-                Ok(AppendEntriesResponse::success(
-                    peer5_id,
-                    1,
-                    Some(LogId { term: 1, index: 1 }),
-                )),
-            ],
-        })
-    });
-    context.transport = Arc::new(transport);
-
-    // Act: Process empty batch with 5-node cluster metadata
     let result = handler
-        .handle_raft_request_in_batch(
+        .prepare_batch_requests(
             vec![],
-            state_snapshot,
-            leader_state_snapshot,
+            StateSnapshot {
+                current_term: 1,
+                voted_for: None,
+                commit_index: 0,
+                role: Leader.into(),
+            },
+            LeaderStateSnapshot {
+                next_index: HashMap::new(),
+                match_index: HashMap::new(),
+                noop_log_id: None,
+            },
             &ClusterMetadata {
                 single_voter: false,
                 replication_targets: vec![
@@ -410,9 +278,14 @@ async fn test_five_node_cluster_achieves_quorum_with_all_peers() {
         .await
         .unwrap();
 
-    // Assert: Quorum achieved (5/5 = leader + 4 peers)
-    assert!(
-        result.commit_quorum_achieved,
-        "five-node cluster should achieve quorum with all peers responding"
+    assert_eq!(
+        result.append_requests.len(),
+        4,
+        "five-node cluster builds 4 replication requests"
     );
+    let peer_ids: Vec<u32> = result.append_requests.iter().map(|(id, _)| *id).collect();
+    assert!(peer_ids.contains(&peer2_id));
+    assert!(peer_ids.contains(&peer3_id));
+    assert!(peer_ids.contains(&peer4_id));
+    assert!(peer_ids.contains(&peer5_id));
 }

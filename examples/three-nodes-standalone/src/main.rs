@@ -17,8 +17,7 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-// #[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     let log_dir = env::var("LOG_DIR")
         .map_err(|_| "LOG_DIR environment variable not set")

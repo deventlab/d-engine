@@ -98,7 +98,7 @@ fn server_error(msg: String) -> ClientApiError {
 #[derive(Clone)]
 pub struct EmbeddedClient {
     event_tx: mpsc::Sender<RaftEvent>,
-    cmd_tx: mpsc::UnboundedSender<d_engine_core::ClientCmd>,
+    cmd_tx: mpsc::Sender<d_engine_core::ClientCmd>,
     client_id: u32,
     timeout: Duration,
     #[cfg(feature = "watch")]
@@ -109,7 +109,7 @@ impl EmbeddedClient {
     /// Internal constructor (used by EmbeddedEngine)
     pub(crate) fn new_internal(
         event_tx: mpsc::Sender<RaftEvent>,
-        cmd_tx: mpsc::UnboundedSender<d_engine_core::ClientCmd>,
+        cmd_tx: mpsc::Sender<d_engine_core::ClientCmd>,
         client_id: u32,
         timeout: Duration,
     ) -> Self {
@@ -171,6 +171,7 @@ impl EmbeddedClient {
 
         self.cmd_tx
             .send(d_engine_core::ClientCmd::Propose(request, resp_tx))
+            .await
             .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
@@ -271,6 +272,7 @@ impl EmbeddedClient {
 
         self.cmd_tx
             .send(d_engine_core::ClientCmd::Read(request, resp_tx))
+            .await
             .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
@@ -347,6 +349,7 @@ impl EmbeddedClient {
 
         self.cmd_tx
             .send(d_engine_core::ClientCmd::Read(request, resp_tx))
+            .await
             .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
@@ -393,6 +396,7 @@ impl EmbeddedClient {
 
         self.cmd_tx
             .send(d_engine_core::ClientCmd::Propose(request, resp_tx))
+            .await
             .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
@@ -532,6 +536,7 @@ impl ClientApi for EmbeddedClient {
 
         self.cmd_tx
             .send(d_engine_core::ClientCmd::Propose(request, resp_tx))
+            .await
             .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)
@@ -591,6 +596,7 @@ impl ClientApi for EmbeddedClient {
 
         self.cmd_tx
             .send(d_engine_core::ClientCmd::Propose(request, resp_tx))
+            .await
             .map_err(|_| channel_closed_error())?;
 
         let result = tokio::time::timeout(self.timeout, resp_rx)

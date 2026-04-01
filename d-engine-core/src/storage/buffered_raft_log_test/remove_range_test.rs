@@ -1,14 +1,22 @@
+use d_engine_proto::common::Entry;
+
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::{BufferedRaftLogTestContext, simulate_insert_command};
 use crate::{FlushPolicy, PersistenceStrategy};
+
+fn entry(
+    index: u64,
+    term: u64,
+) -> Entry {
+    Entry { index, term, payload: None }
+}
 
 #[tokio::test]
 async fn test_remove_middle_range() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_remove_middle_range",
     );
@@ -40,8 +48,7 @@ async fn test_remove_from_start() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_remove_from_start",
     );
@@ -68,8 +75,7 @@ async fn test_remove_to_end() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_remove_to_end",
     );
@@ -97,8 +103,7 @@ async fn test_remove_empty_range() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_remove_empty_range",
     );
@@ -119,8 +124,7 @@ async fn test_remove_entire_log() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_remove_entire_log",
     );
@@ -144,8 +148,7 @@ async fn test_remove_single_entry() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_remove_single_entry",
     );
@@ -160,4 +163,62 @@ async fn test_remove_single_entry() {
     assert_eq!(ctx.raft_log.first_entry_id(), 1);
     assert_eq!(ctx.raft_log.last_entry_id(), 3);
     assert!(ctx.raft_log.entry(2).unwrap().is_none());
+}
+
+/// remove_range must update term_first_index and term_last_index when all entries
+/// for a term are removed.
+///
+/// # Why this matters
+/// The #346 conflict-skip optimization uses first_index_for_term() to jump to the
+/// correct backtrack position. If term_first_index retains a stale entry after
+/// remove_range, the optimization silently returns a wrong index — causing the
+/// leader to backtrack to an incorrect position with no error or warning.
+///
+/// # Scenario
+/// Log: term1=[1-3], term2=[4-6], term3=[7-9]
+/// remove_range(4..=6) removes all term=2 entries
+/// Expected: first/last_index_for_term(2) = None; term=1 and term=3 unchanged
+#[tokio::test]
+async fn test_remove_range_clears_term_indexes_for_removed_entries() {
+    let ctx = BufferedRaftLogTestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch { idle_flush_interval_ms: 1 },
+        "test_remove_range_clears_term_indexes",
+    );
+    ctx.raft_log.reset().await.unwrap();
+
+    // Arrange: term1=[1-3], term2=[4-6], term3=[7-9]
+    for i in 1u64..=3 {
+        ctx.raft_log.append_entries(vec![entry(i, 1)]).await.unwrap();
+    }
+    for i in 4u64..=6 {
+        ctx.raft_log.append_entries(vec![entry(i, 2)]).await.unwrap();
+    }
+    for i in 7u64..=9 {
+        ctx.raft_log.append_entries(vec![entry(i, 3)]).await.unwrap();
+    }
+
+    assert_eq!(ctx.raft_log.first_index_for_term(2), Some(4));
+    assert_eq!(ctx.raft_log.last_index_for_term(2), Some(6));
+
+    // Act: remove all term=2 entries
+    ctx.raft_log.remove_range(4..=6);
+
+    // Assert: term=2 indexes cleared
+    assert_eq!(
+        ctx.raft_log.first_index_for_term(2),
+        None,
+        "all term=2 entries removed: first_index_for_term(2) must be None"
+    );
+    assert_eq!(
+        ctx.raft_log.last_index_for_term(2),
+        None,
+        "all term=2 entries removed: last_index_for_term(2) must be None"
+    );
+
+    // Assert: term=1 and term=3 indexes unchanged
+    assert_eq!(ctx.raft_log.first_index_for_term(1), Some(1));
+    assert_eq!(ctx.raft_log.last_index_for_term(1), Some(3));
+    assert_eq!(ctx.raft_log.first_index_for_term(3), Some(7));
+    assert_eq!(ctx.raft_log.last_index_for_term(3), Some(9));
 }

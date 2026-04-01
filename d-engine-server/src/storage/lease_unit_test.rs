@@ -19,7 +19,7 @@ use crate::storage::lease::DefaultLease;
 fn default_config() -> d_engine_core::config::LeaseConfig {
     d_engine_core::config::LeaseConfig {
         enabled: true,
-        interval_ms: 1000,
+        cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     }
 }
@@ -304,7 +304,7 @@ fn test_reload_invalid_data() {
 fn test_reload_clears_apply_counter() {
     let config = d_engine_core::config::LeaseConfig {
         enabled: true,
-        interval_ms: 1000,
+        cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     };
 
@@ -353,11 +353,11 @@ fn test_on_apply_piggyback_removed() {
 fn test_enabled_config() {
     let config = d_engine_core::config::LeaseConfig {
         enabled: true,
-        interval_ms: 5000,
+        cleanup_interval_ms: 5000,
         max_cleanup_duration_ms: 1,
     };
 
     let lease = DefaultLease::new(config);
     assert!(lease.config().enabled);
-    assert_eq!(lease.config().interval_ms, 5000);
+    assert_eq!(lease.config().cleanup_interval_ms, 5000);
 }

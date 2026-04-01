@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use d_engine_core::AppendResult;
+use d_engine_core::BackgroundSnapshotTransfer;
 use d_engine_core::BackoffPolicy;
 use d_engine_core::ClusterUpdateResult;
 use d_engine_core::ConnectionType;
@@ -13,12 +14,16 @@ use d_engine_core::Error;
 use d_engine_core::InstallSnapshotBackoffPolicy;
 use d_engine_core::Membership;
 use d_engine_core::NetworkError;
+use d_engine_core::ReplicationStream;
 use d_engine_core::Result;
 use d_engine_core::RetryPolicies;
+use d_engine_core::SnapshotConfig;
+use d_engine_core::StateMachineHandler;
 use d_engine_core::Transport;
 use d_engine_core::TypeConfig;
 use d_engine_core::VoteResult;
 use d_engine_core::alias::MOF;
+use d_engine_core::alias::SMHOF;
 use d_engine_core::grpc_task_with_timeout_and_exponential_backoff;
 use d_engine_core::scoped_timer::ScopedTimer;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
@@ -265,6 +270,38 @@ where
         })
     }
 
+    async fn send_append_request(
+        &self,
+        peer_id: u32,
+        request: AppendEntriesRequest,
+        retry_policies: &RetryPolicies,
+        membership: Arc<MOF<T>>,
+        response_compress_enabled: bool,
+    ) -> Result<AppendEntriesResponse> {
+        let appender = self
+            .get_or_create_appender(
+                peer_id,
+                retry_policies.clone(),
+                membership,
+                response_compress_enabled,
+            )
+            .await?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+        appender
+            .send(AppendRequest {
+                request,
+                response_sender: response_tx,
+            })
+            .await
+            .map_err(|_| Error::from(NetworkError::ResponseChannelClosed))?;
+
+        match response_rx.await {
+            Ok(result) => result,
+            Err(_) => Err(Error::from(NetworkError::ResponseChannelClosed)),
+        }
+    }
+
     async fn send_vote_requests(
         &self,
         req: VoteRequest,
@@ -418,6 +455,72 @@ where
     }
 
     // Add this to the Transport trait implementation
+    async fn send_snapshot(
+        &self,
+        peer_id: u32,
+        metadata: d_engine_proto::server::storage::SnapshotMetadata,
+        state_machine_handler: Arc<SMHOF<T>>,
+        membership: Arc<MOF<T>>,
+        config: SnapshotConfig,
+    ) -> Result<()> {
+        debug!(%peer_id, "Pushing snapshot to lagging peer");
+
+        let bulk_channel = membership
+            .get_peer_channel(peer_id, ConnectionType::Bulk)
+            .await
+            .ok_or(NetworkError::PeerConnectionNotFound(peer_id))?;
+
+        let data_stream =
+            state_machine_handler.load_snapshot_data(metadata).await.map_err(|e| {
+                error!(%peer_id, "Failed to load snapshot data: {:?}", e);
+                e
+            })?;
+
+        BackgroundSnapshotTransfer::<T>::run_push_transfer(
+            peer_id,
+            data_stream,
+            bulk_channel,
+            config,
+        )
+        .await
+    }
+
+    async fn open_replication_stream(
+        &self,
+        peer_id: u32,
+        membership: Arc<MOF<T>>,
+        compress: bool,
+    ) -> Result<ReplicationStream> {
+        debug!(%peer_id, "Opening persistent bidi replication stream");
+
+        let channel = membership
+            .get_peer_channel(peer_id, ConnectionType::Data)
+            .await
+            .ok_or(NetworkError::PeerConnectionNotFound(peer_id))?;
+
+        // Bounded send channel (capacity 128) provides natural backpressure to the Raft loop.
+        let (req_tx, req_rx) = mpsc::channel::<AppendEntriesRequest>(128);
+        let req_stream = ReceiverStream::new(req_rx);
+
+        let mut client = RaftReplicationServiceClient::new(channel);
+        if compress {
+            client = client
+                .send_compressed(CompressionEncoding::Gzip)
+                .accept_compressed(CompressionEncoding::Gzip);
+        }
+        let response = client
+            .stream_append_entries(tonic::Request::new(req_stream))
+            .await
+            .map_err(|e| NetworkError::TonicStatusError(Box::new(e)))?;
+
+        let receiver = response.into_inner().boxed();
+
+        Ok(ReplicationStream {
+            sender: req_tx,
+            receiver,
+        })
+    }
+
     async fn request_snapshot_from_leader(
         &self,
         leader_id: u32,
@@ -567,14 +670,22 @@ where
         my_id: u32,
         replication_response_compress_enabled: bool,
     ) {
+        // Cache the channel for the lifetime of this task; refresh only on failure.
+        // Avoids per-request RwLock + DashMap + health-monitor overhead.
+        let mut cached_channel: Option<Channel> = None;
+
         while let Some(req) = receiver.recv().await {
             let AppendRequest {
                 request,
                 response_sender,
             } = req;
 
-            // Get channel for this peer (can be cached for performance)
-            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Data).await {
+            // Refresh channel only when cache is empty (first use or after error).
+            if cached_channel.is_none() {
+                cached_channel = membership.get_peer_channel(peer_id, ConnectionType::Data).await;
+            }
+
+            let channel = match cached_channel.clone() {
                 Some(chan) => chan,
                 None => {
                     let _ = response_sender.send(Err(Error::from(
@@ -593,6 +704,11 @@ where
                 replication_response_compress_enabled,
             )
             .await;
+
+            // On error, invalidate the cached channel so the next request reconnects.
+            if result.is_err() {
+                cached_channel = None;
+            }
 
             let _ = response_sender.send(result);
         }

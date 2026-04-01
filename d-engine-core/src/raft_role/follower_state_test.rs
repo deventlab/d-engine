@@ -2089,12 +2089,7 @@ async fn test_apply_completed_triggers_snapshot_when_condition_met() {
     let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
 
     // ACTION: Handle ApplyCompleted event
-    let apply_completed_event = RaftEvent::ApplyCompleted {
-        last_index: 100,
-        results: vec![],
-    };
-
-    let result = follower.handle_raft_event(apply_completed_event, &context, role_tx).await;
+    let result = follower.handle_apply_completed(100, vec![], &context, &role_tx).await;
 
     // VERIFY 1: Event handling succeeds
     assert!(
@@ -2163,12 +2158,7 @@ async fn test_apply_completed_does_not_trigger_snapshot_when_condition_not_met()
     let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
 
     // ACTION: Handle ApplyCompleted event
-    let apply_completed_event = RaftEvent::ApplyCompleted {
-        last_index: 50,
-        results: vec![],
-    };
-
-    let result = follower.handle_raft_event(apply_completed_event, &context, role_tx).await;
+    let result = follower.handle_apply_completed(50, vec![], &context, &role_tx).await;
 
     // VERIFY 1: Event handling succeeds
     assert!(
@@ -2218,12 +2208,7 @@ async fn test_apply_completed_respects_snapshot_disabled_config() {
     let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
 
     // ACTION: Handle ApplyCompleted event
-    let apply_completed_event = RaftEvent::ApplyCompleted {
-        last_index: 100,
-        results: vec![],
-    };
-
-    let result = follower.handle_raft_event(apply_completed_event, &context, role_tx).await;
+    let result = follower.handle_apply_completed(100, vec![], &context, &role_tx).await;
 
     // VERIFY 1: Event handling succeeds
     assert!(
@@ -2343,4 +2328,154 @@ async fn test_follower_rejects_strong_consistency_reads() {
             panic!("Linear read to Follower should return NOT_LEADER error, got: {result:?}");
         }
     }
+}
+
+// ============================================================================
+// MemFirst ACK Tests
+// ============================================================================
+
+/// Follower ACKs leader immediately after memory write (MemFirst).
+///
+/// The IO thread continues to fsync asynchronously. Safety: before commit,
+/// the leader's durable_index >= N (quorum uses durable_index).
+#[tokio::test]
+async fn test_follower_acks_immediately_after_memory_write() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let leader_term = 2u64;
+    let appended_index = 5u64;
+
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler.expect_handle_append_entries().returning(move |_, _, _| {
+        Ok(AppendResponseWithUpdates {
+            response: AppendEntriesResponse::success(
+                1,
+                leader_term,
+                Some(LogId {
+                    term: leader_term,
+                    index: appended_index,
+                }),
+            ),
+            commit_index_update: None,
+        })
+    });
+    context.handlers.replication_handler = replication_handler;
+    context.membership = Arc::new(MockMembership::new());
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_current_term(leader_term);
+
+    let append_request = AppendEntriesRequest {
+        term: leader_term,
+        leader_id: 2,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    // MemFirst: ACK sent immediately, no waiting for fsync
+    let response = resp_rx.try_recv().expect("ACK must be sent immediately after memory write");
+    assert!(response.unwrap().is_success());
+}
+
+/// Follower sends ACK immediately for heartbeat (no entries).
+#[tokio::test]
+async fn test_follower_acks_immediately_for_heartbeat() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let leader_term = 2u64;
+
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler.expect_handle_append_entries().returning(move |_, _, _| {
+        Ok(AppendResponseWithUpdates {
+            response: AppendEntriesResponse::success(1, leader_term, None),
+            commit_index_update: None,
+        })
+    });
+    context.handlers.replication_handler = replication_handler;
+    context.membership = Arc::new(MockMembership::new());
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_current_term(leader_term);
+
+    let append_request = AppendEntriesRequest {
+        term: leader_term,
+        leader_id: 2,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    let response = resp_rx.try_recv().expect("Heartbeat ACK must be sent immediately");
+    assert!(response.unwrap().is_success());
+}
+
+/// commit_index advances immediately on AppendEntries, ACK is also sent immediately.
+#[tokio::test]
+async fn test_follower_commit_index_and_ack_both_sent_immediately() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let leader_term = 2u64;
+    let appended_index = 5u64;
+    let new_commit = 3u64;
+
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler.expect_handle_append_entries().returning(move |_, _, _| {
+        Ok(AppendResponseWithUpdates {
+            response: AppendEntriesResponse::success(
+                1,
+                leader_term,
+                Some(LogId {
+                    term: leader_term,
+                    index: appended_index,
+                }),
+            ),
+            commit_index_update: Some(new_commit),
+        })
+    });
+    context.handlers.replication_handler = replication_handler;
+    context.membership = Arc::new(MockMembership::new());
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_current_term(leader_term);
+
+    let append_request = AppendEntriesRequest {
+        term: leader_term,
+        leader_id: 2,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit_index: new_commit,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    assert_eq!(
+        state.commit_index(),
+        new_commit,
+        "commit_index must advance immediately"
+    );
+    let response = resp_rx.try_recv().expect("ACK must be sent immediately");
+    assert!(response.unwrap().is_success());
 }

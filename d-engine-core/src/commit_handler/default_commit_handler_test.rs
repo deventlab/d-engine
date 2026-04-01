@@ -437,7 +437,7 @@ mod run_test {
     // interval ticks
     //
     // ## Setup:
-    // - process_interval_ms  = 1ms
+    // - process_idle_flush_interval_ms  = 1ms
 
     // ## Criterias:
     // - apply_batch been triggered twice

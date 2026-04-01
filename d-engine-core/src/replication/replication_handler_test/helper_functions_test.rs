@@ -26,7 +26,6 @@ use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
 use d_engine_proto::server::replication::append_entries_response;
-use dashmap::DashMap;
 use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -137,7 +136,7 @@ async fn test_build_append_request_for_different_peers() {
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
 
     // Arrange: Prepare entries for each peer
-    let entries_per_peer: DashMap<u32, Vec<Entry>> = DashMap::new();
+    let mut entries_per_peer: HashMap<u32, Vec<Entry>> = HashMap::new();
     entries_per_peer.insert(peer2_id, mock_insert_log_entries(vec![300], 1, 3));
     entries_per_peer.insert(peer3_id, mock_insert_log_entries(vec![100, 200, 300], 1, 1));
 
@@ -160,7 +159,7 @@ async fn test_build_append_request_for_different_peers() {
 
     // Act: Build request for peer2
     let (_id, peer2_request) =
-        handler.build_append_request(&context.raft_log, peer2_id, &entries_per_peer, &data);
+        handler.build_append_request(&context.raft_log, peer2_id, &mut entries_per_peer, &data);
 
     // Assert: Peer2 request should have 1 entry
     assert_eq!(
@@ -179,7 +178,7 @@ async fn test_build_append_request_for_different_peers() {
 
     // Act: Build request for peer3
     let (_id, peer3_request) =
-        handler.build_append_request(&context.raft_log, peer3_id, &entries_per_peer, &data);
+        handler.build_append_request(&context.raft_log, peer3_id, &mut entries_per_peer, &data);
 
     // Assert: Peer3 request should have 3 entries
     assert_eq!(
@@ -287,6 +286,8 @@ fn test_append_request_validation_conflict_when_log_longer() {
         })
     });
     raft_log.expect_entry_term().return_once(move |_| Some(entry_term));
+    // #346: conflict_index is now first_index_for_term, not prev_log_index-1.
+    raft_log.expect_first_index_for_term().return_once(|_| Some(1));
 
     let request = AppendEntriesRequest {
         term: 1,
@@ -306,7 +307,7 @@ fn test_append_request_validation_conflict_when_log_longer() {
     }) = response.result.unwrap()
     {
         assert_eq!(conflict_term.unwrap(), entry_term);
-        assert_eq!(conflict_index.unwrap(), prev_log_index.saturating_sub(1));
+        assert_eq!(conflict_index.unwrap(), 1); // first_index_for_term(10) = 1
     }
 }
 
@@ -329,6 +330,8 @@ fn test_append_request_validation_conflict_when_log_shorter() {
         })
     });
     raft_log.expect_entry_term().return_once(move |_| Some(entry_term));
+    // #346: conflict_index is now first_index_for_term, not last_log_id+1.
+    raft_log.expect_first_index_for_term().return_once(|_| Some(2));
 
     let request = AppendEntriesRequest {
         term: 1,
@@ -348,7 +351,105 @@ fn test_append_request_validation_conflict_when_log_shorter() {
     }) = response.result.unwrap()
     {
         assert_eq!(conflict_term.unwrap(), entry_term);
-        assert_eq!(conflict_index.unwrap(), local_last_log_id + 1);
+        assert_eq!(conflict_index.unwrap(), 2); // first_index_for_term(10) = 2
+    }
+}
+
+/// #346: Term conflict returns first_index_for_term so leader skips entire conflicting term.
+///
+/// Follower log has entries at term=2 (indices 5-9). Leader sends prev_log_index=7,
+/// prev_log_term=3 (mismatch: follower has term=2 there). Follower returns
+/// conflict_index = first_index_for_term(2) = 5, letting leader jump to the
+/// start of term 2 in one RPC instead of stepping back one-by-one.
+#[test]
+fn test_conflict_response_uses_first_index_for_conflict_term() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let mut raft_log = MockRaftLog::new();
+    let my_term = 3;
+    let conflict_term = 2u64;
+    let prev_log_index = 7u64;
+    let first_index_of_term = 5u64;
+
+    raft_log.expect_last_log_id().return_once(move || {
+        Some(LogId {
+            term: my_term,
+            index: 9,
+        })
+    });
+    raft_log.expect_entry_term().return_once(move |_| Some(conflict_term));
+    raft_log
+        .expect_first_index_for_term()
+        .return_once(move |_| Some(first_index_of_term));
+
+    let request = AppendEntriesRequest {
+        term: my_term,
+        prev_log_index,
+        prev_log_term: 3, // mismatch: follower has term=2 at index 7
+        entries: vec![],
+        leader_commit_index: 5,
+        leader_id: 2,
+    };
+
+    let response =
+        handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
+    assert!(response.is_conflict());
+    if let append_entries_response::Result::Conflict(ConflictResult {
+        conflict_term: ct,
+        conflict_index: ci,
+    }) = response.result.unwrap()
+    {
+        assert_eq!(ct.unwrap(), conflict_term);
+        assert_eq!(
+            ci.unwrap(),
+            first_index_of_term,
+            "conflict_index must be first_index_for_term(2)=5, not prev_log_index-1=6"
+        );
+    }
+}
+
+/// #346: Falls back to prev_log_index-1 when first_index_for_term returns None.
+///
+/// Defensive path: if term boundary is unknown (e.g. after partial purge),
+/// fall back to the old one-step-back strategy so the protocol stays correct.
+#[test]
+fn test_conflict_falls_back_when_first_index_for_term_is_none() {
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let mut raft_log = MockRaftLog::new();
+    let my_term = 3;
+    let conflict_term = 2u64;
+    let prev_log_index = 7u64;
+
+    raft_log.expect_last_log_id().return_once(move || {
+        Some(LogId {
+            term: my_term,
+            index: 9,
+        })
+    });
+    raft_log.expect_entry_term().return_once(move |_| Some(conflict_term));
+    raft_log.expect_first_index_for_term().return_once(|_| None); // unknown → fallback
+
+    let request = AppendEntriesRequest {
+        term: my_term,
+        prev_log_index,
+        prev_log_term: 3,
+        entries: vec![],
+        leader_commit_index: 5,
+        leader_id: 2,
+    };
+
+    let response =
+        handler.check_append_entries_request_is_legal(my_term, &request, &Arc::new(raft_log));
+    assert!(response.is_conflict());
+    if let append_entries_response::Result::Conflict(ConflictResult {
+        conflict_term: _,
+        conflict_index: ci,
+    }) = response.result.unwrap()
+    {
+        assert_eq!(
+            ci.unwrap(),
+            prev_log_index.saturating_sub(1),
+            "must fall back to prev_log_index-1 when first_index_for_term is None"
+        );
     }
 }
 

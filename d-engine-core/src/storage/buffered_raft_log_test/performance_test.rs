@@ -20,6 +20,7 @@ use d_engine_proto::common::{Entry, EntryPayload};
 fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
     let mut log_store = MockLogStore::new();
     log_store.expect_last_index().returning(|| 0);
+    log_store.expect_load_purge_boundary().returning(|| Ok(None));
     log_store.expect_truncate().returning(|_| Ok(()));
     log_store.expect_reset().returning(|| Ok(()));
     log_store.expect_is_write_durable().returning(|| true);
@@ -38,23 +39,25 @@ fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
 // Tests reset performance during active flush
 #[tokio::test]
 async fn test_reset_performance_during_active_flush() {
-    const FLUSH_DELAY_MS: u64 = 500;
+    // persist_entries mock sleeps for FLUSH_DELAY_MS.
+    // reset() waits for the IO thread to finish its current operation before processing Reset.
+    // CI limit must be > FLUSH_DELAY_MS to account for IO thread overhead;
+    // using 3x headroom (600ms > 200ms) ensures reset doesn't block the full flush duration.
+    const FLUSH_DELAY_MS: u64 = 200;
     let is_ci = std::env::var("CI").is_ok();
-    let max_reset_duration_ms = if is_ci { 500 } else { 50 };
+    let max_reset_duration_ms = if is_ci { 600 } else { 50 };
 
     let test_cases = vec![
         (
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 1000,
-                interval_ms: 1000,
+                idle_flush_interval_ms: 1000,
             },
         ),
         (
-            PersistenceStrategy::DiskFirst,
+            PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
+                idle_flush_interval_ms: 1,
             },
         ),
     ];
@@ -68,16 +71,23 @@ async fn test_reset_performance_during_active_flush() {
         };
 
         let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, storage);
-        let log = log.start(receiver);
+        let log = log.start(receiver, None);
         let barrier = Arc::new(Barrier::new(2));
 
-        // Start long-running flush in background
+        // Start long-running append+flush in background (slow due to persist_entries delay)
         let flush_log = log.clone();
         let flush_barrier = barrier.clone();
         tokio::spawn(async move {
-            let indexes: Vec<u64> = (1..=1000).collect();
             flush_barrier.wait().await; // Sync point
-            let _ = flush_log.process_flush(&indexes).await;
+            let entries: Vec<Entry> = (1..=10)
+                .map(|i| Entry {
+                    index: i,
+                    term: 1,
+                    payload: None,
+                })
+                .collect();
+            let _ = flush_log.append_entries(entries).await;
+            let _ = flush_log.flush().await;
         });
 
         // Wait for flush to start
@@ -111,19 +121,18 @@ async fn test_filter_conflicts_performance_during_flush() {
 
     const FLUSH_DELAY_MS: u64 = 300;
 
-    for (interval_ms, max_duration_ms) in test_cases {
+    for (idle_flush_interval_ms, max_duration_ms) in test_cases {
         let storage = create_delayed_storage(FLUSH_DELAY_MS);
         let config = PersistenceConfig {
             strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
-                threshold: 1000,
-                interval_ms,
+                idle_flush_interval_ms,
             },
             max_buffered_entries: 1000,
         };
 
         let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, storage);
-        let log = log.start(receiver);
+        let log = log.start(receiver, None);
         let barrier = Arc::new(Barrier::new(2));
 
         // Populate with test data
@@ -137,13 +146,12 @@ async fn test_filter_conflicts_performance_during_flush() {
         }
         log.append_entries(entries).await.unwrap();
 
-        // Start long flush in background
+        // Start long flush in background (slow due to persist_entries delay)
         let flush_log = log.clone();
         let flush_barrier = barrier.clone();
         tokio::spawn(async move {
-            let indexes: Vec<u64> = (1..=1000).collect();
             flush_barrier.wait().await;
-            let _ = flush_log.process_flush(&indexes).await;
+            let _ = flush_log.flush().await;
         });
 
         // Wait for flush to start
@@ -168,7 +176,7 @@ async fn test_filter_conflicts_performance_during_flush() {
             duration.as_millis() < max_duration_ms as u128,
             "Operation took {}ms with {}ms interval during flush",
             duration.as_millis(),
-            interval_ms
+            idle_flush_interval_ms
         );
     }
 }
@@ -184,15 +192,13 @@ async fn test_fresh_cluster_performance_consistency() {
         (
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 1000,
-                interval_ms: 1000,
+                idle_flush_interval_ms: 1000,
             },
         ),
         (
-            PersistenceStrategy::DiskFirst,
+            PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
+                idle_flush_interval_ms: 1,
             },
         ),
     ];
@@ -202,6 +208,7 @@ async fn test_fresh_cluster_performance_consistency() {
         log_store.expect_is_write_durable().returning(|| true);
         log_store.expect_flush().return_once(|| Ok(()));
         log_store.expect_last_index().returning(|| 0);
+        log_store.expect_load_purge_boundary().returning(|| Ok(None));
         log_store.expect_truncate().returning(|_| Ok(()));
         log_store.expect_persist_entries().returning(|_| Ok(()));
         log_store.expect_reset().returning(|| Ok(()));
@@ -217,7 +224,7 @@ async fn test_fresh_cluster_performance_consistency() {
             config,
             Arc::new(MockStorageEngine::from(log_store, MockMetaStore::new())),
         );
-        let log = log.start(receiver);
+        let log = log.start(receiver, None);
 
         // Measure reset performance in fresh cluster
         let start = Instant::now();

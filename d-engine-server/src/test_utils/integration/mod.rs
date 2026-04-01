@@ -179,16 +179,15 @@ pub fn setup_raft_components(
     let (buffered_raft_log, receiver) = BufferedRaftLog::new(
         id,
         PersistenceConfig {
-            strategy: PersistenceStrategy::DiskFirst,
+            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
+                idle_flush_interval_ms: 1,
             },
             max_buffered_entries: 10000,
         },
         storage_engine.clone(),
     );
-    let buffered_raft_log = buffered_raft_log.start(receiver);
+    let buffered_raft_log = buffered_raft_log.start(receiver, None);
     let mock_state_machine = mock_state_machine();
     let last_applied_pair = mock_state_machine.last_applied();
 

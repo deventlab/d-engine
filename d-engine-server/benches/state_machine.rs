@@ -44,7 +44,7 @@ async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
     // Enable TTL for benchmarks that need it
     let lease_config = d_engine_core::config::LeaseConfig {
         enabled: true,
-        interval_ms: 1000,
+        cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     };
     let lease = Arc::new(d_engine_server::storage::DefaultLease::new(lease_config));

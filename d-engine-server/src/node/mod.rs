@@ -83,7 +83,7 @@ where
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
 
     // Client commands (drain-driven)
-    pub(crate) cmd_tx: mpsc::UnboundedSender<d_engine_core::ClientCmd>,
+    pub(crate) cmd_tx: mpsc::Sender<d_engine_core::ClientCmd>,
 
     pub(crate) ready: AtomicBool,
 
@@ -105,8 +105,8 @@ where
     #[cfg(feature = "watch")]
     pub(crate) _watch_dispatcher_handle: Option<tokio::task::JoinHandle<()>>,
 
-    /// State machine worker task handle (background apply operations)
-    pub(crate) _sm_worker_handle: Option<tokio::task::JoinHandle<()>>,
+    /// State machine worker thread handle (dedicated OS thread, not a tokio task)
+    pub(crate) _sm_worker_handle: Option<std::thread::JoinHandle<()>>,
 
     /// Commit handler task handle (background log application)
     pub(crate) _commit_handler_handle: Option<tokio::task::JoinHandle<()>>,
@@ -164,7 +164,10 @@ where
         }
 
         // Start Raft main loop
-        self.start_raft_loop().await
+        // Note: IO thread is closed inside Raft::run() on shutdown before returning
+        self.start_raft_loop().await?;
+
+        Ok(())
     }
 
     /// Learner bootstrap: skip cluster ready check, join after warmup.
@@ -320,7 +323,7 @@ where
         let leader_notifier = LeaderNotifier::new();
 
         // Create dummy cmd_tx (this path is mainly for testing)
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1024);
 
         Node {
             node_id,

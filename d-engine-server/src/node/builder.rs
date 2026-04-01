@@ -260,11 +260,11 @@ where
         let lease_cleanup_handle = if node_config.raft.state_machine.lease.enabled {
             info!(
                 "Starting lease background cleanup worker (interval: {}ms)",
-                node_config.raft.state_machine.lease.interval_ms
+                node_config.raft.state_machine.lease.cleanup_interval_ms
             );
             Some(Self::spawn_background_cleanup_worker(
                 Arc::clone(&state_machine),
-                node_config.raft.state_machine.lease.interval_ms,
+                node_config.raft.state_machine.lease.cleanup_interval_ms,
                 self.shutdown_signal.clone(),
             ))
         } else {
@@ -282,6 +282,11 @@ where
         //Retrieve last applied index from state machine
         let last_applied_index = state_machine.last_applied().index;
         info!("Node startup, Last applied index: {}", last_applied_index);
+
+        // Create role channel before raft_log so log_flush_tx can be passed to start().
+        // role_rx is passed to Raft::new() below; only the creation order changes.
+        let (role_tx, role_rx) = mpsc::unbounded_channel();
+
         let raft_log = {
             let (log, receiver) = BufferedRaftLog::new(
                 node_id,
@@ -289,8 +294,9 @@ where
                 storage_engine.clone(),
             );
 
-            // Start processor and get Arc-wrapped instance
-            log.start(receiver)
+            // Start processor and get Arc-wrapped instance.
+            // Pass role_tx so batch_processor sends RoleEvent::LogFlushed after each fsync.
+            log.start(receiver, Some(role_tx.clone()))
         };
 
         let transport = self.transport.take().unwrap_or(GrpcTransport::new(node_id));
@@ -355,10 +361,11 @@ where
 
         let purge_executor = DefaultPurgeExecutor::new(raft_log.clone());
 
-        let (role_tx, role_rx) = mpsc::unbounded_channel();
+        // role_tx / role_rx created earlier (before raft_log) to pass log_flush_tx to start().
         let (event_tx, event_rx) = mpsc::channel(10240);
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel(node_config.raft.cmd_channel_capacity);
         let event_tx_clone = event_tx.clone(); // used in commit handler
+        let role_tx_for_sm = role_tx.clone(); // used in SM worker (ApplyCompleted → P2)
 
         let node_config_arc = Arc::new(node_config);
 
@@ -432,7 +439,7 @@ where
             node_id,
             state_machine_handler.clone(),
             sm_apply_rx,
-            event_tx_clone.clone(),
+            role_tx_for_sm,
             self.shutdown_signal.clone(),
         );
         let sm_worker_handle = Self::spawn_state_machine_worker(sm_worker);
@@ -511,32 +518,30 @@ where
         })
     }
 
-    /// Spawn state machine worker task as background task.
+    /// Spawn state machine worker on a dedicated OS thread.
     ///
-    /// This task applies state machine entries decoupled from CommitHandler,
-    /// enabling non-blocking entry sending from the critical path. Implements
-    /// graceful drain on shutdown to ensure all pending entries are applied
-    /// before task termination, maintaining Raft protocol compliance.
+    /// Runs on `sm-apply-{node_id}` OS thread (not a tokio worker) so that
+    /// synchronous RocksDB writes inside `apply_chunk` never block the async runtime
+    /// or compete with tokio's blocking thread pool.
     ///
     /// # Returns
-    /// * `JoinHandle` - Task handle for lifecycle management
+    /// * `JoinHandle` - Thread handle for lifecycle management
     fn spawn_state_machine_worker(
         sm_worker: StateMachineWorker<RaftTypeConfig<SE, SM>>
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            match sm_worker.run().await {
-                Ok(_) => {
-                    info!("state_machine_worker exit program");
-                }
-                Err(e) => {
-                    error!(
-                        "state_machine_worker exit program with unexpected error: {:?}",
-                        e
-                    );
-                    println!("state_machine_worker exit program");
-                }
-            }
-        })
+    ) -> std::thread::JoinHandle<()> {
+        let node_id = sm_worker.node_id();
+        let handle = tokio::runtime::Handle::current();
+        std::thread::Builder::new()
+            .name(format!("sm-apply-{}", node_id))
+            .spawn(move || {
+                handle.block_on(async move {
+                    match sm_worker.run().await {
+                        Ok(_) => info!("state_machine_worker exit"),
+                        Err(e) => error!("state_machine_worker exit with error: {:?}", e),
+                    }
+                });
+            })
+            .expect("failed to spawn sm-apply thread")
     }
 
     /// Spawn lease background cleanup task (if enabled).
@@ -558,11 +563,12 @@ where
     /// - **Graceful shutdown**: Monitors shutdown signal for clean termination
     fn spawn_background_cleanup_worker(
         state_machine: Arc<SM>,
-        interval_ms: u64,
+        cleanup_interval_ms: u64,
         mut shutdown_signal: watch::Receiver<()>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_millis(cleanup_interval_ms));
 
             loop {
                 tokio::select! {
