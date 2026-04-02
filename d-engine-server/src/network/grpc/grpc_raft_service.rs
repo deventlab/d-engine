@@ -145,6 +145,7 @@ where
         let mut in_stream = request.into_inner();
         let event_tx = self.event_tx.clone();
         let ordered_channel_capacity = self.node_config.raft.ordered_channel_capacity;
+        let mut shutdown = self.shutdown_signal.clone();
 
         // Output: ordered ACKs sent back to the leader over the bidi stream
         let (out_tx, out_rx) = mpsc::channel::<Result<AppendEntriesResponse, Status>>(128);
@@ -154,24 +155,36 @@ where
             MaybeCloneOneshotReceiver<Result<AppendEntriesResponse, Status>>,
         >(ordered_channel_capacity);
 
-        // Recv task: read batches, dispatch to Raft loop without waiting for each ACK
+        // Recv task: read batches, dispatch to Raft loop without waiting for each ACK.
+        // Selects on shutdown signal so the task exits immediately on node stop, rather
+        // than waiting for the next message from the leader. This unblocks serve_with_shutdown
+        // and allows Arc<Node> (and Arc<DB>) to be released promptly after stop().
         tokio::spawn(async move {
             use futures::StreamExt;
-            while let Some(result) = in_stream.next().await {
-                match result {
-                    Ok(req) => {
-                        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-                        if event_tx.send(RaftEvent::AppendEntries(req, resp_tx)).await.is_err() {
-                            warn!("[stream_append_entries|recv] event_tx closed");
-                            break;
-                        }
-                        if ordered_tx.send(resp_rx).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        warn!("[stream_append_entries|recv] stream error: {:?}", e);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => {
                         break;
+                    }
+                    result = in_stream.next() => {
+                        match result {
+                            Some(Ok(req)) => {
+                                let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+                                if event_tx.send(RaftEvent::AppendEntries(req, resp_tx)).await.is_err() {
+                                    warn!("[stream_append_entries|recv] event_tx closed");
+                                    break;
+                                }
+                                if ordered_tx.send(resp_rx).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Some(Err(e)) => {
+                                warn!("[stream_append_entries|recv] stream error: {:?}", e);
+                                break;
+                            }
+                            None => break,
+                        }
                     }
                 }
             }

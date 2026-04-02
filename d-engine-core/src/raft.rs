@@ -265,6 +265,10 @@ where
                     // Close IO thread BEFORE returning (before runtime shutdown)
                     // This ensures RocksDB file lock is released before tokio runtime shuts down
                     self.ctx.storage.raft_log.close().await;
+                    // Unblock any tasks stuck in event_tx.send().await (e.g. gRPC stream handlers).
+                    // Without this, serve_with_shutdown never completes and Arc<Node> is never
+                    // released, keeping Arc<DB> alive and the RocksDB LOCK held indefinitely.
+                    self.event_rx.close();
                     return Ok(());
                 }
                 // P1: Tick: start Heartbeat(replication) or start Election

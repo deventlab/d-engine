@@ -484,7 +484,7 @@ where
             watch_registry: watch_system.as_ref().map(|(_, reg, _)| Arc::clone(reg)),
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: watch_system.map(|(_, _, handle)| handle),
-            _sm_worker_handle: Some(sm_worker_handle),
+            sm_worker_handle: std::sync::Mutex::new(Some(sm_worker_handle)),
             _commit_handler_handle: Some(commit_handler_handle),
             _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),

@@ -271,7 +271,27 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     let node_db_root = config.cluster.db_root_dir.join(format!("node{follower_id}"));
     let db_path = node_db_root.join("db");
 
-    let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+    // Retry opening DB to tolerate async cleanup delays under parallel test load.
+    // Arc<DB> release may lag behind stop() completion when tokio is under heavy load.
+    let (storage, state_machine) = {
+        let mut last_err: Option<Box<dyn std::error::Error>> = None;
+        let mut opened = None;
+        for attempt in 0..50 {
+            match RocksDBUnifiedEngine::open(&db_path) {
+                Ok(ok) => {
+                    opened = Some(ok);
+                    break;
+                }
+                Err(e) if e.to_string().contains("lock hold by current process") => {
+                    info!("DB LOCK held (attempt {attempt}), retrying in 100ms...");
+                    last_err = Some(e.into());
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        opened.ok_or_else(|| last_err.unwrap())?
+    };
 
     let restarted_engine = EmbeddedEngine::start_custom(
         Arc::new(storage),

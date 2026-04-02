@@ -8,7 +8,11 @@ fn entry(
     index: u64,
     term: u64,
 ) -> Entry {
-    Entry { index, term, payload: None }
+    Entry {
+        index,
+        term,
+        payload: None,
+    }
 }
 
 #[tokio::test]
@@ -182,7 +186,9 @@ async fn test_remove_single_entry() {
 async fn test_remove_range_clears_term_indexes_for_removed_entries() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch { idle_flush_interval_ms: 1 },
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_remove_range_clears_term_indexes",
     );
     ctx.raft_log.reset().await.unwrap();

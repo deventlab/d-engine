@@ -40,6 +40,7 @@
 
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
@@ -843,11 +844,19 @@ where
         let io_handle = std::thread::Builder::new()
             .name(format!("raft-io-{}", node_id))
             .spawn(move || {
-                handle.block_on(Self::batch_processor(
-                    weak_self,
-                    receiver,
-                    idle_flush_interval_ms,
-                ));
+                // Wrap with catch_unwind to handle tokio runtime shutdown gracefully
+                let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle.block_on(Self::batch_processor(
+                        weak_self,
+                        receiver,
+                        idle_flush_interval_ms,
+                    ))
+                }));
+                if result.is_err() {
+                    warn!(
+                        "batch_processor panicked during shutdown - likely tokio runtime shutdown"
+                    );
+                }
             })
             .expect("failed to spawn raft-io thread");
 

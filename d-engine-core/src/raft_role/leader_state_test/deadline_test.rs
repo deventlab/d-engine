@@ -206,7 +206,10 @@ async fn test_tick_drains_expired_pending_lease_read() {
         Code::DeadlineExceeded,
         "expired lease read must receive DeadlineExceeded"
     );
-    assert!(state.pending_lease_reads.is_empty(), "expired entry not removed");
+    assert!(
+        state.pending_lease_reads.is_empty(),
+        "expired entry not removed"
+    );
 }
 
 /// Live lease read: tick() leaves the entry untouched.
@@ -223,7 +226,10 @@ async fn test_tick_keeps_non_expired_pending_lease_read() {
 
     state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
 
-    assert!(rx.try_recv().is_err(), "live lease read must not be drained");
+    assert!(
+        rx.try_recv().is_err(),
+        "live lease read must not be drained"
+    );
     assert_eq!(state.pending_lease_reads.len(), 1, "live entry was removed");
 }
 
@@ -253,8 +259,15 @@ async fn test_tick_drains_only_expired_lease_reads_in_mixed_queue() {
         exp_rx.recv().await.expect("channel closed").expect_err("expected Err").code(),
         Code::DeadlineExceeded,
     );
-    assert!(live_rx.try_recv().is_err(), "live lease read must not be drained");
-    assert_eq!(state.pending_lease_reads.len(), 1, "only live entry should remain");
+    assert!(
+        live_rx.try_recv().is_err(),
+        "live lease read must not be drained"
+    );
+    assert_eq!(
+        state.pending_lease_reads.len(),
+        1,
+        "only live entry should remain"
+    );
 }
 
 // ============================================================================
@@ -287,7 +300,10 @@ async fn test_tick_drains_expired_node_join_commit_action() {
         Code::DeadlineExceeded,
         "expired NodeJoin must receive DeadlineExceeded"
     );
-    assert!(state.pending_commit_actions.is_empty(), "expired action not removed");
+    assert!(
+        state.pending_commit_actions.is_empty(),
+        "expired action not removed"
+    );
 }
 
 /// Live NodeJoin action: tick() leaves it untouched.
@@ -311,7 +327,11 @@ async fn test_tick_keeps_non_expired_node_join_commit_action() {
     state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
 
     assert!(rx.try_recv().is_err(), "live NodeJoin must not be drained");
-    assert_eq!(state.pending_commit_actions.len(), 1, "live action was removed");
+    assert_eq!(
+        state.pending_commit_actions.len(),
+        1,
+        "live action was removed"
+    );
 }
 
 /// Expired LeaderNoop action: tick() emits BecomeFollower to role_tx.
@@ -335,7 +355,10 @@ async fn test_tick_expired_leader_noop_triggers_step_down() {
 
     state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
 
-    assert!(state.pending_commit_actions.is_empty(), "expired LeaderNoop not removed");
+    assert!(
+        state.pending_commit_actions.is_empty(),
+        "expired LeaderNoop not removed"
+    );
 
     // tick() must have sent BecomeFollower
     let event = role_rx.try_recv().expect("expected BecomeFollower event");

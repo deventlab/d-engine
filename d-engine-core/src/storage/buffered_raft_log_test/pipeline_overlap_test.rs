@@ -328,7 +328,11 @@ async fn test_replace_range_conflict_persists_correctly_after_crash() {
     ctx.raft_log.flush().await.unwrap();
 
     // Verify memory state before crash
-    assert_eq!(ctx.raft_log.entry(4).unwrap().unwrap().term, 2, "pre-crash: index=4 must be term=2");
+    assert_eq!(
+        ctx.raft_log.entry(4).unwrap().unwrap().term,
+        2,
+        "pre-crash: index=4 must be term=2"
+    );
     assert_eq!(ctx.raft_log.last_entry_id(), 5);
 
     // Simulate crash and recovery

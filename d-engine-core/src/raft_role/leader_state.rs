@@ -773,14 +773,15 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         });
 
         // 4b. Drain expired pending lease reads.
-        self.pending_lease_reads.retain_mut(|entry| {
+        let mut unexpired_reads = VecDeque::new();
+        for entry in self.pending_lease_reads.drain(..) {
             if now >= entry.deadline {
                 let _ = entry.sender.send(Err(Status::deadline_exceeded("lease read timeout")));
-                false
             } else {
-                true
+                unexpired_reads.push_back(entry);
             }
-        });
+        }
+        self.pending_lease_reads = unexpired_reads;
 
         // 5. Drain expired post-commit actions (e.g. noop/join timed out before quorum).
         // A noop timeout means we cannot confirm leadership — step down immediately.
