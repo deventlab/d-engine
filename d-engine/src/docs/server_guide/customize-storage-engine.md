@@ -190,10 +190,10 @@ NodeBuilder::new(config, shutdown_rx)
 
 Reference implementations available in:
 
-- `src/storage/adaptors/rocksdb/` - RocksDB storage engine
-- `src/storage/adaptors/sled/` - Sled storage engine
-- `src/storage/adaptors/file/` - File-based storage
-- `src/storage/adaptors/mem/` - In-memory storage
+- `d-engine-server/src/storage/adaptors/rocksdb/` - RocksDB storage engine
+- `d-engine-server/src/storage/adaptors/sled/` - Sled storage engine
+- `d-engine-server/src/storage/adaptors/file/` - File-based storage
+- `d-engine-server/src/storage/adaptors/mem/` - In-memory storage
 
 Enable RocksDB feature in your `Cargo.toml`:
 
@@ -209,7 +209,7 @@ d-engine = { version = "0.2", features = ["rocksdb"] }
 - **Concurrency**: Use appropriate locking strategies
 - **Compression**: Consider compressing log entries for large deployments
 
-See `src/storage/adaptors/rocksdb/rocksdb_storage_engine.rs` for a production-grade implementation featuring:
+See `d-engine-server/src/storage/adaptors/rocksdb/rocksdb_storage_engine.rs` for a production-grade implementation featuring:
 
 - Write batches for atomic operations
 - Log compaction to reclaim disk space

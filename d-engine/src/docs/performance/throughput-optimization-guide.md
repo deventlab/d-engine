@@ -45,7 +45,7 @@ flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
   - Lower values reduce data loss window but increase IO pressure.
   - Default `1000` ms is suitable for most workloads.
 
-> **Note**: `DiskFirst` strategy was removed in v0.2.4. Use `MemFirst + idle_flush_interval_ms = 1` for near-synchronous behavior if power-loss safety is required.
+> **Note**: `DiskFirst` strategy was removed in v0.2.4. `MemFirst` writes to OS page cache and is process-crash safe but **not power-loss safe** — `idle_flush_interval_ms` controls flush frequency but does not provide fsync-level durability.
 
 ## Batching Configuration
 
@@ -152,7 +152,7 @@ tonic::transport::Server::builder()
 > **Key improvement**: 15% reduction in tail latency - critical for consensus stability  
 > **Note**: These metrics show the impact of connection pooling optimization. These results can be further improved by tuning the PersistenceStrategy for your specific workload.
 >
-> For absolute performance benchmarks, see [v0.2.3 Performance Report](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3/bench_report_v0.2.3.md)
+> For absolute performance benchmarks, see [v0.2.4 Performance Report](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4/bench_report_v0.2.4.md)
 
 ## Operational Recommendations
 
@@ -310,7 +310,7 @@ request_timeout_in_ms = 60_000       # 60s for large snapshots
 
 ```
 
-**Tip**: For higher durability, lower `idle_flush_interval_ms` (e.g., 100ms). For power-loss safety, use `idle_flush_interval_ms = 1` which approaches synchronous fsync behavior.
+**Tip**: For higher write persistence within a process lifecycle, lower `idle_flush_interval_ms` (e.g., 100ms). Note: `MemFirst` is not power-loss safe regardless of flush interval.
 
 ## Network Environment Tuning Recommendations
 

@@ -8,10 +8,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **RocksDBUnifiedEngine** (#295): New single-DB backend, opt-in via `storage.unified_db = true`.
-  Uses 4 column families instead of two separate RocksDB instances.
+- **Unified RocksDB option** (#295): opt-in via `storage.unified_db = true`.
+  Uses a single RocksDB instance with 4 column families instead of two separate instances.
   - Reduces memory RSS and file descriptor usage
-  - Tradeoff: slightly lower write/read throughput (workload-dependent)
   - **Experimental**: both paths are supported in v0.2.4; a future release will standardize on one
   - When enabled: data path changes to `db_root_dir/db/` (⚠️ existing `storage/` data not migrated automatically)
 
@@ -36,6 +35,13 @@ the log size threshold is reached.
 
 > Note: d-engine does not currently provide a manual snapshot trigger API.
 > Snapshots are created automatically based on the configure: e.g. `log_size_threshold`.
+
+### ⚠️ Migration Note — WAL Purge After Snapshot
+
+v0.2.4 purges WAL files after each successful snapshot. If you upgrade from v0.2.3 and
+the node starts replaying from WAL before a new snapshot is taken, ensure sufficient
+disk space is available for WAL replay. Nodes that have fallen significantly behind may
+trigger a snapshot install from the leader instead of WAL replay.
 
 ---
 

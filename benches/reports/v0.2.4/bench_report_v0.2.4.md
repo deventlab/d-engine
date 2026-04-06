@@ -86,14 +86,34 @@
 
 ---
 
+## Benchmark Configuration
+
+All results above were collected with the following configuration:
+
+```toml
+[storage]
+unified_db = false  # separate RocksDB instances for log and meta
+
+[raft.persistence]
+strategy = "MemFirst"
+flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
+
+[raft.batching]
+max_batch_size = 200
+```
+
+The `unified_db = true` path exists but was not covered by this benchmark run.
+
+---
+
 ## Key Changes in v0.2.4
 
-| Change | Ticket | Impact |
-| ------ | ------ | ------ |
-| Unified RocksDB instance: single DB with 4 CFs, shared block cache and background jobs | #295 | Halves resource usage for 3-node embedded clusters; embedded High Conc. Write +12%, Linearizable Read +17%, Hot-Key +29% |
-| Remove `FlushWorkerPool`: run timer flush inline in `batch_processor` | #321 | Eliminates reset/flush race; reduces context-switch overhead per flush cycle |
+| Change | Commit / Ticket | Impact |
+| ------ | --------------- | ------ |
+| Unified IO architecture: single IO thread, drain-then-fsync, pipeline replication | 372df3b (#295, #313, #321, #329, #332–#334, #336, #340–#343, #346) | Embedded High Conc. Write +14%, Linearizable Read +23%, Hot-Key +37%; standalone reads +5–16% |
+| Unified RocksDB option (`unified_db = true`): single DB with 4 CFs, shared block cache | #295 | Reduces memory RSS and file descriptor usage; throughput impact not benchmarked in this report |
 | Fix durable quorum: use `durable_index` for majority calculation and follower ACK | #329 | Prevents data loss with `MemFirst` strategy under concurrent leader+follower crash; correctness fix |
 | Snapshot push when peer log falls behind leader purge boundary | #336 | Fixes stuck follower when leader has purged entries the peer needs (Raft §7 compliance) |
 | Fix candidate not stepping down on same-term AppendEntries conflict | #340 | Prevents unnecessary leader re-elections during membership changes |
 | Reduce default `snapshot_cool_down` from 3600s to 60s | #290 | Enables practical log compaction; prevents unbounded log growth in production |
-| Remove `DiskFirst` persistence strategy | #332 | Simplifies storage layer; `MemFirst + threshold=1` is equivalent and non-blocking |
+| Remove `DiskFirst` persistence strategy | #332 | Simplifies storage layer; `MemFirst` provides OS page-cache durability — power-loss safety requires explicit fsync, which `MemFirst` does not perform |
