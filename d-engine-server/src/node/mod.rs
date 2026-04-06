@@ -107,7 +107,7 @@ where
 
     /// State machine worker thread handle (dedicated OS thread, not a tokio task).
     /// Wrapped in Mutex so run(&self) can take it for joining after Raft loop exits,
-    /// ensuring Arc<DB> is released before run() returns.
+    /// ensuring `Arc<DB>` is released before run() returns.
     pub(crate) sm_worker_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 
     /// Commit handler task handle (background log application)

@@ -1669,27 +1669,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             // Multi-voter: quorum of match_index determines commit.
             // Only voter peers (non-Learner role) may contribute to majority.
             // Learners replicate entries but must never count toward commit quorum.
-            // TODO #322: refactor calculate_new_commit_index to take match_index directly.
-            let peer_keys: HashMap<u32, PeerUpdate> = self
-                .match_index
-                .keys()
-                .filter(|&&id| {
-                    self.cluster_metadata.replication_targets.iter().any(|n| {
-                        n.id == id && n.role != d_engine_proto::common::NodeRole::Learner as i32
-                    })
-                })
-                .map(|&id| {
-                    (
-                        id,
-                        PeerUpdate {
-                            match_index: None,
-                            next_index: 0,
-                            success: false,
-                        },
-                    )
-                })
-                .collect();
-            self.calculate_new_commit_index(ctx.raft_log(), &peer_keys)
+            self.calculate_new_commit_index(ctx.raft_log())
         };
 
         if let Some(new_commit) = new_commit_index {
@@ -1853,30 +1833,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
         // Re-calculate commit index after updating this voter's match_index.
         if peer_update.success && is_voter {
-            // Build peer_keys: only voter peers (non-Learner role) count toward quorum.
-            // Learners may be in match_index from earlier replication but must not
-            // contribute to majority calculation.
-            let peer_keys: HashMap<u32, PeerUpdate> = self
-                .match_index
-                .keys()
-                .filter(|&&id| {
-                    self.cluster_metadata.replication_targets.iter().any(|n| {
-                        n.id == id && n.role != d_engine_proto::common::NodeRole::Learner as i32
-                    })
-                })
-                .map(|&id| {
-                    (
-                        id,
-                        PeerUpdate {
-                            match_index: None,
-                            next_index: 0,
-                            success: false,
-                        },
-                    )
-                })
-                .collect();
-
-            if let Some(new_commit) = self.calculate_new_commit_index(ctx.raft_log(), &peer_keys) {
+            if let Some(new_commit) = self.calculate_new_commit_index(ctx.raft_log()) {
                 self.update_commit_index_with_signal(
                     Leader as i32,
                     self.current_term(),
@@ -1897,7 +1854,16 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 .calculate_majority_matched_index(
                     self.current_term(),
                     self.commit_index(),
-                    peer_keys.keys().filter_map(|&id| self.match_index(id)).collect(),
+                    self.match_index
+                        .iter()
+                        .filter(|(id, _)| {
+                            self.cluster_metadata.replication_targets.iter().any(|n| {
+                                n.id == **id
+                                    && n.role != d_engine_proto::common::NodeRole::Learner as i32
+                            })
+                        })
+                        .map(|(_, idx)| *idx)
+                        .collect(),
                 )
                 .is_some();
             if quorum_confirmed {
@@ -2837,15 +2803,23 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Calculate new submission index
     #[instrument(skip(self))]
     fn calculate_new_commit_index(
-        &mut self,
+        &self,
         raft_log: &Arc<ROF<T>>,
-        peer_updates: &HashMap<u32, PeerUpdate>,
     ) -> Option<u64> {
         let old_commit_index = self.commit_index();
         let current_term = self.current_term();
+        let replication_targets = &self.cluster_metadata.replication_targets;
+        let learner_role = d_engine_proto::common::NodeRole::Learner as i32;
 
-        let matched_ids: Vec<u64> =
-            peer_updates.keys().filter_map(|&id| self.match_index(id)).collect();
+        // Only voter peers (non-Learner) contribute to the commit quorum.
+        let matched_ids: Vec<u64> = self
+            .match_index
+            .iter()
+            .filter(|(id, _)| {
+                replication_targets.iter().any(|n| n.id == **id && n.role != learner_role)
+            })
+            .map(|(_, idx)| *idx)
+            .collect();
 
         let new_commit_index =
             raft_log.calculate_majority_matched_index(current_term, old_commit_index, matched_ids);
