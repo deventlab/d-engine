@@ -1767,7 +1767,7 @@ async fn test_learner_install_snapshot_reports_success_after_all_chunks_applied(
     sm_handler.expect_apply_snapshot_stream_from_leader().once().returning(
         |_term, _stream, ack_tx, _config| {
             // Send 3 ACKs simulating 3 chunks, all accepted, then return Ok.
-            let _ = tokio::spawn(async move {
+            drop(tokio::spawn(async move {
                 for i in 0u32..3 {
                     let _ = ack_tx
                         .send(SnapshotAck {
@@ -1777,7 +1777,7 @@ async fn test_learner_install_snapshot_reports_success_after_all_chunks_applied(
                         })
                         .await;
                 }
-            });
+            }));
             Ok(())
         },
     );
