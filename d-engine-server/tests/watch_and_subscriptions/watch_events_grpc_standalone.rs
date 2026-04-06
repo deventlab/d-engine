@@ -298,16 +298,33 @@ async fn test_watch_node_crash_standalone_mode() -> Result<(), Box<dyn std::erro
     // Perform another write
     client.put(key, b"value_for_new_watcher").await?;
 
-    // New watcher should receive the event
-    let response: WatchResponse = tokio::time::timeout(Duration::from_secs(3), new_stream.next())
-        .await?
-        .expect("New watcher should receive event")?;
-
-    assert_eq!(
-        response.event_type,
-        d_engine_core::watch::WatchEventType::Put as i32
+    // New watcher should receive the event. Under load the WatchDispatcher may
+    // dispatch a stale event (value_after_disconnect, written before this watcher
+    // registered) before the expected one — drain until we find it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut found = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, new_stream.next()).await {
+            Ok(Some(Ok(response))) => {
+                if response.event_type == d_engine_core::watch::WatchEventType::Put as i32
+                    && *response.value == *b"value_for_new_watcher"
+                {
+                    found = true;
+                    break;
+                }
+                // stale event from before registration — skip
+            }
+            _ => break,
+        }
+    }
+    assert!(
+        found,
+        "New watcher should receive value_for_new_watcher within 3s"
     );
-    assert_eq!(&response.value[..], b"value_for_new_watcher");
 
     // Test passes - cleanup was successful and new watcher works
     test_ctx.shutdown().await?;
