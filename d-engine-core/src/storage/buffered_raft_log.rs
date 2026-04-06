@@ -22,14 +22,14 @@
 //! 2. **Persist** — write to OS page cache (no fsync)
 //! 3. **Fsync once** — call `log_store.flush()` (WAL sync to disk)
 //!    Entries arriving during fsync batch into next wakeup
-//! 4. **Advance durable_index** — wake all `WaitDurable` callers
+//! 4. **Advance durable_index** and reply to any pending `IOTask::Flush` caller.
 //!
 //! Fsync execution time is the natural batch window — no timer needed.
 //!
 //! ## Fsync triggers
 //!
 //! 1. **Notify-driven** (normal): Multiple writes → single IO thread wakeup → batch fsync
-//! 2. **Explicit** (flush API): `flush()` → immediate fsync + `wait_durable()`
+//! 2. **Explicit** (flush API): `flush()` → `IOTask::Flush(tx)` → IO thread fsyncs and sends `Result` back
 //! 3. **Idle timer** (safety net): No activity for `idle_flush_interval_ms` → fsync pending
 //!
 //! ## Durability contract
@@ -62,7 +62,6 @@ use crate::scoped_timer::ScopedTimer;
 use crossbeam_skiplist::SkipMap;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-use dashmap::DashMap;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -187,12 +186,8 @@ impl TermSegments {
 ///
 /// All blocking storage operations route through this channel so they never run
 /// on tokio worker threads or the Raft event loop.
-/// Normal write path uses `write_notify` (tokio::sync::Notify) instead of a
-/// channel message — see `BufferedRaftLog::write_notify`.
 #[derive(Debug)]
 pub enum IOTask {
-    /// Wait until specific index is durable
-    WaitDurable(u64, oneshot::Sender<()>),
     /// Atomically truncate from `truncate_from` then persist `new_entries`.
     /// Conflict-resolution path: truncate + write are a single atomic IO unit.
     ReplaceRange {
@@ -207,9 +202,10 @@ pub enum IOTask {
     /// Reset log storage (snapshot install). Routes through IO thread so reset
     /// never runs on the Raft event loop.
     Reset { done: oneshot::Sender<Result<()>> },
-    /// Trigger an immediate drain-then-fsync without new entries.
-    /// Sent by `flush()` so the caller does not wait for the safety-net timer.
-    FlushNow,
+    /// Persist any pending entries then fsync. The IO thread sends the fsync
+    /// result (Ok or Err) back to the caller via the oneshot channel.
+    /// Replaces the former `FlushNow` + `WaitDurable` two-message dance.
+    Flush(oneshot::Sender<Result<()>>),
     /// Shutdown the IO thread
     Shutdown,
 }
@@ -269,7 +265,6 @@ where
     /// single IO thread wakeup, eliminating per-write kernel cond_signal overhead.
     pub(crate) write_notify: Arc<Notify>,
     pub(crate) command_sender: mpsc::UnboundedSender<IOTask>,
-    pub(crate) waiters: DashMap<u64, Vec<oneshot::Sender<()>>>,
 
     // --- P0: LogFlushed event notification ---
     // Sends RoleEvent::LogFlushed(durable) to Raft loop after each fsync.
@@ -429,26 +424,6 @@ where
         // while the IO thread is busy coalesce into one wakeup — no per-write
         // kernel cond_signal. IO thread reads from SkipMap via max_index.
         self.write_notify.notify_one();
-
-        Ok(())
-    }
-
-    async fn wait_durable(
-        &self,
-        index: u64,
-    ) -> Result<()> {
-        let durable_index = self.durable_index.load(Ordering::Acquire);
-        if index <= durable_index {
-            return Ok(());
-        }
-
-        let (tx, rx) = oneshot::channel();
-        self.command_sender.send(IOTask::WaitDurable(index, tx)).map_err(|e| {
-            NetworkError::SingalSendFailed(format!("wait_durable send failed: {e:?}"))
-        })?;
-
-        rx.await
-            .map_err(|_| NetworkError::SingalSendFailed("wait_durable channel closed".into()))?;
 
         Ok(())
     }
@@ -672,9 +647,12 @@ where
         if self.durable_index.load(Ordering::Acquire) >= max_index {
             return Ok(());
         }
-        // Trigger an immediate drain-then-fsync cycle in the IO thread.
-        let _ = self.command_sender.send(IOTask::FlushNow);
-        self.wait_durable(max_index).await
+        let (tx, rx) = oneshot::channel();
+        self.command_sender
+            .send(IOTask::Flush(tx))
+            .map_err(|e| NetworkError::SingalSendFailed(format!("flush send failed: {e:?}")))?;
+        rx.await
+            .map_err(|_| NetworkError::SingalSendFailed("flush channel closed".into()))?
     }
 
     async fn reset(&self) -> Result<()> {
@@ -812,7 +790,6 @@ where
                 next_id: AtomicU64::new(disk_len + 1),
                 write_notify: Arc::new(Notify::new()),
                 command_sender: command_sender.clone(),
-                waiters: DashMap::new(),
                 term_first_index,
                 term_last_index,
                 term_segments,
@@ -917,19 +894,54 @@ where
                     // Drain any pending control commands before fsync.
                     // Shutdown in the drain path must be handled here — it won't reach
                     // the outer receiver arm if consumed in try_recv().
+                    // Collect any Flush senders: they must be replied to AFTER fsync.
                     let mut seen_shutdown = false;
+                    // None until the first Flush arrives — avoids heap allocation on the hot
+                    // write path where flush() is rarely called concurrently with writes.
+                    let mut flush_replies: Option<Vec<oneshot::Sender<Result<()>>>> = None;
                     while let Ok(cmd) = receiver.try_recv() {
-                        if matches!(cmd, IOTask::Shutdown) {
-                            seen_shutdown = true;
-                            break;
+                        match cmd {
+                            IOTask::Shutdown => { seen_shutdown = true; break; }
+                            IOTask::Flush(reply) => { flush_replies.get_or_insert_with(Vec::new).push(reply); }
+                            cmd => { Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await; }
                         }
-                        Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await;
                     }
-                    if pending_max > 0 {
-                        if let Err(e) = this.advance_durable_after_write(pending_max).await {
-                            error!("write_notify fsync failed: {e:?}");
-                        } else {
-                            pending_max = 0;
+                    // Flush callers capture max_index BEFORE sending the task. Entries
+                    // appended between the initial `end` read above and now are in the
+                    // SkipMap but not yet in page cache. Persist them before fsyncing so
+                    // durable_index will reach the level the Flush callers expect.
+                    if flush_replies.is_some() {
+                        let current_max = this.max_index.load(Ordering::Acquire);
+                        if current_max > pending_max {
+                            let new_start = pending_max + 1;
+                            if new_start <= current_max {
+                                match this.get_entries_range(new_start..=current_max) {
+                                    Ok(entries) if !entries.is_empty() => {
+                                        if let Ok(()) = this.log_store.persist_entries(entries).await {
+                                            pending_max = current_max;
+                                        }
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => error!("write_notify flush catch-up persist failed: {e:?}"),
+                                }
+                            }
+                        }
+                    }
+                    let fsync_ok = if pending_max > 0 {
+                        match this.advance_durable_after_write(pending_max).await {
+                            Ok(()) => { pending_max = 0; true }
+                            Err(e) => { error!("write_notify fsync failed: {e:?}"); false }
+                        }
+                    } else {
+                        true
+                    };
+                    if let Some(replies) = flush_replies {
+                        for reply in replies {
+                            let _ = if fsync_ok {
+                                reply.send(Ok(()))
+                            } else {
+                                reply.send(Err(NetworkError::SingalSendFailed("fsync failed".into()).into()))
+                            };
                         }
                     }
                     if seen_shutdown {
@@ -962,7 +974,7 @@ where
                             let _ = this.meta_store.flush();
                             break;
                         }
-                        IOTask::FlushNow => {
+                        IOTask::Flush(reply) => {
                             // Persist any entries not yet in page cache, then fsync.
                             let end = this.max_index.load(Ordering::Acquire);
                             let start = this.durable_index.load(Ordering::Acquire) + 1;
@@ -971,26 +983,52 @@ where
                                 && !entries.is_empty()
                             {
                                 if let Err(e) = this.log_store.persist_entries(entries).await {
-                                    error!("FlushNow persist_entries failed: {e:?}");
+                                    error!("Flush persist_entries failed: {e:?}");
+                                    let _ = reply.send(Err(e));
+                                    continue;
                                 } else {
                                     pending_max = pending_max.max(end);
                                 }
                             }
-                            // Drain remaining control cmds.
+                            // Drain remaining control cmds before fsync so they are
+                            // included in the same fsync batch.
+                            // Collect any extra Flush senders — reply after fsync.
                             let mut seen_shutdown = false;
+                            let mut extra_replies: Vec<oneshot::Sender<Result<()>>> = Vec::new();
                             while let Ok(cmd) = receiver.try_recv() {
-                                if matches!(cmd, IOTask::Shutdown) {
-                                    seen_shutdown = true;
-                                    break;
+                                match cmd {
+                                    IOTask::Shutdown => { seen_shutdown = true; break; }
+                                    IOTask::Flush(extra) => { extra_replies.push(extra); }
+                                    cmd => { Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await; }
                                 }
-                                Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await;
                             }
-                            if pending_max > 0 {
-                                if let Err(e) = this.advance_durable_after_write(pending_max).await {
-                                    error!("FlushNow fsync failed: {e:?}");
-                                } else {
-                                    pending_max = 0;
+                            let fsync_result = if pending_max > 0 {
+                                match this.advance_durable_after_write(pending_max).await {
+                                    Ok(()) => {
+                                        pending_max = 0;
+                                        Ok(())
+                                    }
+                                    Err(e) => {
+                                        error!("Flush fsync failed: {e:?}");
+                                        Err(e)
+                                    }
                                 }
+                            } else {
+                                Ok(())
+                            };
+                            // Reply to the original Flush and any that arrived during drain.
+                            let send_result = |r: oneshot::Sender<Result<()>>| {
+                                let _ = match &fsync_result {
+                                    Ok(()) => r.send(Ok(())),
+                                    Err(e) => r.send(Err(NetworkError::SingalSendFailed(
+                                        format!("{e:?}"),
+                                    )
+                                    .into())),
+                                };
+                            };
+                            send_result(reply);
+                            for extra in extra_replies {
+                                send_result(extra);
                             }
                             if seen_shutdown {
                                 let _ = this.log_store.flush();
@@ -1029,9 +1067,9 @@ where
         }
     }
 
-    /// Handle IOTask variants that are NOT `FlushNow` or `Shutdown`.
+    /// Handle IOTask variants that are NOT `Flush` or `Shutdown`.
     ///
-    /// Callers (`batch_processor`) dispatch `FlushNow` and `Shutdown` directly in the outer
+    /// Callers (`batch_processor`) dispatch `Flush` and `Shutdown` directly in the outer
     /// `match` before this function is ever called — those two arms are unreachable here.
     async fn handle_non_write_cmd(
         cmd: IOTask,
@@ -1039,15 +1077,13 @@ where
         pending_max: &mut u64,
     ) {
         match cmd {
-            IOTask::FlushNow => {
-                // FlushNow encountered in the write_notify drain path — the outer loop
-                // will handle it on the next iteration. No action needed here.
+            IOTask::Flush(_) => {
+                unreachable!(
+                    "Flush must be intercepted in the drain loop before handle_non_write_cmd"
+                )
             }
             IOTask::Shutdown => {
                 unreachable!("Shutdown is always filtered out before reaching handle_non_write_cmd")
-            }
-            IOTask::WaitDurable(index, ack) => {
-                this.handle_wait_durable(index, ack).await;
             }
             IOTask::ReplaceRange {
                 truncate_from,
@@ -1097,11 +1133,6 @@ where
         self.entries.clear();
         self.durable_index.store(0, Ordering::Release);
         self.next_id.store(1, Ordering::Release);
-        // Explicitly unblock all pending waiters: after reset the entries they were
-        // waiting on no longer exist. Sending () is cleaner than silently dropping
-        // the senders, which would cause wait_durable callers to receive a
-        // channel-closed error instead of a clean return.
-        self.notify_waiters(u64::MAX);
 
         // Reset boundaries
         self.min_index.store(0, Ordering::Release);
@@ -1121,19 +1152,6 @@ where
             .map_err(|e| crate::Error::Fatal(format!("IOTask::Reset recv failed: {e:?}")))??;
 
         Ok(())
-    }
-
-    async fn handle_wait_durable(
-        &self,
-        index: u64,
-        ack: oneshot::Sender<()>,
-    ) {
-        let durable_index = self.durable_index.load(Ordering::Acquire);
-        if index <= durable_index {
-            let _ = ack.send(());
-        } else {
-            self.waiters.entry(index).or_default().push(ack);
-        }
     }
 
     /// Insert entries into the in-memory index (SkipMap + term indexes + atomics).
@@ -1184,41 +1202,18 @@ where
         }
     }
 
-    /// Advance `durable_index` to `new_durable` (monotonically) and wake waiters.
+    /// Advance `durable_index` to `new_durable` (monotonically) and send `LogFlushed`.
     fn advance_durable_and_notify(
         &self,
         new_durable: u64,
     ) {
         let prev = self.durable_index.fetch_max(new_durable, Ordering::AcqRel);
-        if new_durable > prev {
-            self.notify_waiters(new_durable);
-            if let Some(ref tx) = self.log_flush_tx {
-                let _ = tx.send(crate::RoleEvent::LogFlushed {
-                    durable_index: new_durable,
-                });
-            }
-        }
-    }
-
-    /// Notify waiters for completed flush operations
-    fn notify_waiters(
-        &self,
-        flushed_index: u64,
-    ) {
-        let mut to_remove = Vec::new();
-
-        for entry in self.waiters.iter() {
-            if *entry.key() <= flushed_index {
-                to_remove.push(*entry.key());
-            }
-        }
-
-        for index in to_remove {
-            if let Some((_, waiters)) = self.waiters.remove(&index) {
-                for waiter in waiters {
-                    let _ = waiter.send(());
-                }
-            }
+        if new_durable > prev
+            && let Some(ref tx) = self.log_flush_tx
+        {
+            let _ = tx.send(crate::RoleEvent::LogFlushed {
+                durable_index: new_durable,
+            });
         }
     }
 

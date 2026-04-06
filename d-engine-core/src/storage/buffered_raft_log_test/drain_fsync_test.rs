@@ -246,3 +246,74 @@ async fn test_flush_is_strict_durability_barrier() {
         "second batch must be fully durable"
     );
 }
+
+/// flush() must return Err when the underlying fsync fails — not hang indefinitely.
+///
+/// ## Bug (pre-fix)
+/// `flush()` sends `IOTask::FlushNow` (fire-and-forget), then calls `wait_durable()`
+/// which registers a `WaitDurable` waiter. If the IO thread's fsync fails, it logs the
+/// error and moves on — `durable_index` never advances, the waiter is never notified,
+/// and `flush()` blocks forever.
+///
+/// ## Fix (#331)
+/// Replace `FlushNow` + `WaitDurable` with a single `IOTask::Flush(oneshot::Sender<Result<()>>)`.
+/// The IO thread performs fsync and sends the result (Ok or Err) directly back to the
+/// caller via the oneshot channel, so `flush()` always returns within bounded time.
+#[tokio::test]
+async fn test_flush_propagates_io_error() {
+    use crate::{
+        BufferedRaftLog, MockStorageEngine, MockTypeConfig, PersistenceConfig, PersistenceStrategy,
+    };
+    use std::sync::Arc;
+    use tokio::time::timeout;
+
+    // Every flush() call on the underlying log store returns an error.
+    // This covers both the auto-fsync triggered by write_notify and the explicit
+    // flush() call, so timing between the two does not affect the outcome.
+    let storage = Arc::new(MockStorageEngine::not_durable_always_failing_flush(
+        "flush_propagates_io_error".into(),
+    ));
+    let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
+        1,
+        PersistenceConfig {
+            strategy: PersistenceStrategy::MemFirst,
+            flush_policy: FlushPolicy::Batch {
+                idle_flush_interval_ms: 60_000,
+            },
+            max_buffered_entries: 1000,
+        },
+        storage,
+    );
+    let raft_log = raft_log.start(receiver, None);
+    std::thread::sleep(Duration::from_millis(10));
+
+    raft_log
+        .append_entries(vec![Entry {
+            index: 1,
+            term: 1,
+            payload: None,
+        }])
+        .await
+        .unwrap();
+
+    // flush() must return Err, not hang.
+    // A 2 s timeout distinguishes the fixed path (Err returned quickly) from
+    // the pre-fix hang (WaitDurable waiter never notified).
+    let result = timeout(Duration::from_secs(2), raft_log.flush()).await;
+
+    match result {
+        Err(_elapsed) => {
+            panic!(
+                "flush() hung: IO error was not propagated back to the caller (pre-fix behaviour)"
+            );
+        }
+        Ok(Ok(())) => {
+            panic!("flush() returned Ok but the fsync mock always fails");
+        }
+        Ok(Err(_e)) => {
+            // Expected: flush() surfaces the fsync failure to the caller.
+        }
+    }
+
+    raft_log.close().await;
+}
