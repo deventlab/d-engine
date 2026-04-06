@@ -290,9 +290,16 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 // Create ACK channel (follower sends ACKs to leader)
                 let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
 
-                // Spawn ACK handler to send final response
+                // Spawn ACK handler to send final response.
+                // Drain ALL ACKs and use the last one — the channel closes only after
+                // apply_snapshot_stream_from_leader returns (success or error), so the
+                // last ACK reflects the true final outcome of the full snapshot install.
                 tokio::spawn(async move {
-                    match ack_rx.recv().await {
+                    let mut last_ack: Option<SnapshotAck> = None;
+                    while let Some(ack) = ack_rx.recv().await {
+                        last_ack = Some(ack);
+                    }
+                    match last_ack {
                         Some(final_ack) => {
                             let response = SnapshotResponse {
                                 term: my_term,
