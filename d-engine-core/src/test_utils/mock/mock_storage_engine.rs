@@ -222,6 +222,29 @@ impl MockStorageEngine {
         }
     }
 
+    /// Create a MockStorageEngine where `is_write_durable()=false` and every
+    /// `flush()` call returns an error, simulating a persistent IO device failure.
+    ///
+    /// Use this to verify that callers (e.g. `flush()`) propagate the error back
+    /// rather than hanging forever waiting for a `durable_index` that never advances.
+    pub fn not_durable_always_failing_flush(id: String) -> Self {
+        let mut mock_log_store = MockLogStore::new();
+        let mut mock_meta_store = MockMetaStore::new();
+
+        Self::configure_mocks(&mut mock_log_store, &mut mock_meta_store, &id);
+        mock_log_store.expect_is_write_durable().returning(|| false);
+        mock_log_store
+            .expect_flush()
+            .returning(|| Err(crate::Error::Fatal("simulated fsync failure".into())));
+        mock_log_store.expect_flush_async().returning(|| Ok(()));
+
+        Self {
+            log_store: Arc::new(mock_log_store),
+            meta_store: Arc::new(mock_meta_store),
+            instance_id: id,
+        }
+    }
+
     /// Configure `is_write_durable=true` and no-op flush (durable mock).
     fn configure_durable(log_store: &mut MockLogStore) {
         log_store.expect_is_write_durable().returning(|| true);
