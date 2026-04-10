@@ -1089,16 +1089,12 @@ where
                 truncate_from,
                 new_entries,
             } => {
-                if let Err(e) = this.log_store.truncate(truncate_from).await {
-                    error!("IOTask::ReplaceRange truncate({truncate_from}) failed: {e:?}");
+                let max_idx = new_entries.last().map(|e| e.index).unwrap_or(0);
+                if let Err(e) = this.log_store.replace_range(truncate_from, new_entries).await {
+                    error!("IOTask::ReplaceRange failed: {e:?}");
                     return;
                 }
-                if !new_entries.is_empty() {
-                    let max_idx = new_entries.last().map(|e| e.index).unwrap_or(0);
-                    if let Err(e) = this.log_store.persist_entries(new_entries).await {
-                        error!("IOTask::ReplaceRange persist_entries failed: {e:?}");
-                        return;
-                    }
+                if max_idx > 0 {
                     *pending_max = (*pending_max).max(max_idx);
                 }
             }

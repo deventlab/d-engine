@@ -146,9 +146,71 @@ impl MockStorageEngine {
             }
         });
 
+        log_store.expect_replace_range().returning({
+            let instance_id_ref = instance_id.clone();
+            move |from_index, new_entries| {
+                // Atomic in mock: delete entries >= from_index, then insert new ones
+                let mut data = MOCK_STORAGE_DATA.lock().unwrap();
+                let prefix = format!("{instance_id_ref}_entry_");
+                let keys_to_delete: Vec<String> = data
+                    .keys()
+                    .filter(|k| {
+                        k.strip_prefix(&prefix)
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .is_some_and(|idx| idx >= from_index)
+                    })
+                    .cloned()
+                    .collect();
+                for key in keys_to_delete {
+                    data.remove(&key);
+                }
+                let new_last_index = if new_entries.is_empty() {
+                    from_index.saturating_sub(1)
+                } else {
+                    for entry in &new_entries {
+                        let key = format!("{}_entry_{}", instance_id_ref, entry.index);
+                        data.insert(key, bincode::serialize(entry).unwrap());
+                    }
+                    new_entries.last().unwrap().index
+                };
+                let last_key = format!("{instance_id_ref}_last_index");
+                if new_last_index == 0 {
+                    data.remove(&last_key);
+                } else {
+                    data.insert(last_key, new_last_index.to_be_bytes().to_vec());
+                }
+                Ok(())
+            }
+        });
         log_store.expect_purge().returning(|_| Ok(()));
         log_store.expect_load_purge_boundary().returning(|| Ok(None));
-        log_store.expect_truncate().returning(|_| Ok(()));
+        log_store.expect_truncate().returning({
+            let instance_id_ref = instance_id.clone();
+            move |from_index| {
+                let mut data = MOCK_STORAGE_DATA.lock().unwrap();
+                let prefix = format!("{instance_id_ref}_entry_");
+                let keys_to_delete: Vec<String> = data
+                    .keys()
+                    .filter(|k| {
+                        k.strip_prefix(&prefix)
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .is_some_and(|idx| idx >= from_index)
+                    })
+                    .cloned()
+                    .collect();
+                for key in keys_to_delete {
+                    data.remove(&key);
+                }
+                let new_last = from_index.saturating_sub(1);
+                let last_key = format!("{instance_id_ref}_last_index");
+                if new_last == 0 {
+                    data.remove(&last_key);
+                } else {
+                    data.insert(last_key, new_last.to_be_bytes().to_vec());
+                }
+                Ok(())
+            }
+        });
         log_store.expect_reset().returning({
             let instance_id_ref = instance_id.clone();
             move || {

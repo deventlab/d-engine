@@ -299,6 +299,51 @@ fn test_corrupted_meta_data() {
     assert!(meta_store.load_hard_state().unwrap().is_none());
 }
 
+/// replace_range removes stale tail and persists new entries in one atomic batch.
+///
+/// Verifies the three invariants:
+///   1. Entries before from_index are untouched
+///   2. Old entries at from_index and beyond are gone
+///   3. New entries replace them, last_index reflects new tail
+#[tokio::test]
+#[traced_test]
+async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
+    let (log_store, _meta, _dir) = setup_storage(1);
+
+    // Arrange: [1(t1)..5(t1)]
+    log_store.persist_entries(create_entries(1..=5)).await.unwrap();
+
+    // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
+    let new_entries: Vec<_> = vec![
+        Entry { index: 3, term: 2, payload: None },
+        Entry { index: 4, term: 2, payload: None },
+    ];
+    log_store.replace_range(3, new_entries).await.unwrap();
+
+    assert_eq!(log_store.entry(1).await.unwrap().unwrap().term, 1);
+    assert_eq!(log_store.entry(2).await.unwrap().unwrap().term, 1);
+    assert_eq!(log_store.entry(3).await.unwrap().unwrap().term, 2);
+    assert_eq!(log_store.entry(4).await.unwrap().unwrap().term, 2);
+    assert!(log_store.entry(5).await.unwrap().is_none(), "entry 5 must be removed");
+    assert_eq!(log_store.last_index(), 4);
+    assert_eq!(log_store.len(), 4);
+}
+
+/// replace_range with empty new_entries truncates only.
+#[tokio::test]
+#[traced_test]
+async fn test_replace_range_with_empty_entries_truncates_only() {
+    let (log_store, _meta, _dir) = setup_storage(1);
+    log_store.persist_entries(create_entries(1..=5)).await.unwrap();
+
+    log_store.replace_range(3, vec![]).await.unwrap();
+
+    assert_eq!(log_store.entry(2).await.unwrap().unwrap().term, 2);
+    assert!(log_store.entry(3).await.unwrap().is_none());
+    assert_eq!(log_store.last_index(), 2);
+    assert_eq!(log_store.len(), 2);
+}
+
 #[test]
 fn test_drop_impl_flushes() {
     let dir = tempfile::tempdir().unwrap();

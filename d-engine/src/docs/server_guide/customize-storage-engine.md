@@ -105,6 +105,7 @@ impl StorageEngine for CustomStorageEngine {
 | `get_entries()`        | Get entries in range                                 | <1ms for 10k entries   |
 | `purge()`              | Remove logs up to index                              | <100ms for 10k entries |
 | `truncate()`           | Remove entries from index                            | <100ms                 |
+| `replace_range()`      | Atomically truncate + persist new entries (default: truncate then persist; override for single-batch atomicity) | Varies by backend |
 | `is_write_durable()`   | Whether persist_entries() is crash-safe without flush() | sync, no I/O        |
 | `flush()`              | Sync writes to stable storage (called when `is_write_durable() == false`) | Varies by backend |
 | `reset()`              | Clear all data                                       | <1s                    |

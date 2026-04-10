@@ -371,6 +371,38 @@ impl LogStore for RocksDBLogStore {
         Ok(())
     }
 
+    /// Atomically truncate from `from_index` and persist `new_entries` in one WriteBatch.
+    ///
+    /// Uses `delete_range_cf` (O(1) range tombstone) + puts in a single commit,
+    /// eliminating the two-batch window of the default implementation.
+    async fn replace_range(
+        &self,
+        from_index: u64,
+        new_entries: Vec<Entry>,
+    ) -> Result<(), Error> {
+        let cf = self
+            .db
+            .cf_handle(LOG_CF)
+            .ok_or_else(|| StorageError::DbError("Log column family not found".to_string()))?;
+
+        let mut batch = WriteBatch::default();
+
+        // delete_range_cf: single range tombstone, compaction reclaims space later
+        let start_key = Self::index_to_key(from_index);
+        let end_key = Self::index_to_key(u64::MAX);
+        batch.delete_range_cf(&cf, start_key, end_key);
+
+        let new_last_index =
+            new_entries.last().map(|e| e.index).unwrap_or(from_index.saturating_sub(1));
+        for entry in &new_entries {
+            batch.put_cf(&cf, Self::index_to_key(entry.index), entry.encode_to_vec());
+        }
+
+        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.last_index.store(new_last_index, Ordering::SeqCst);
+        Ok(())
+    }
+
     fn is_write_durable(&self) -> bool {
         // Level 2 semantics: db.write() lands in OS page cache (not RocksDB internal buffer).
         // Process crash: OS retains page cache → WAL replay on restart → full recovery. ✅

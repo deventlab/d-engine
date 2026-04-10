@@ -506,6 +506,88 @@ mod tests {
         }
     }
 
+    /// replace_range removes stale tail and persists new entries.
+    ///
+    /// File adaptor uses the default LogStore::replace_range() implementation
+    /// (truncate + persist_entries sequentially). This test verifies the correct
+    /// behavior is preserved, and acts as a regression guard if the default impl changes.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_replace_range_removes_stale_tail_and_persists_new_entries() {
+        let (storage, _dir) = setup_storage();
+        let log_store = storage.log_store();
+
+        // Arrange: [1..5] all term=1
+        log_store
+            .persist_entries(
+                (1..=5)
+                    .map(|i| Entry {
+                        index: i,
+                        term: 1,
+                        payload: None,
+                    })
+                    .collect(),
+            )
+            .await
+            .unwrap();
+
+        // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
+        log_store
+            .replace_range(
+                3,
+                vec![
+                    Entry {
+                        index: 3,
+                        term: 2,
+                        payload: None,
+                    },
+                    Entry {
+                        index: 4,
+                        term: 2,
+                        payload: None,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(log_store.entry(1).await.unwrap().unwrap().term, 1);
+        assert_eq!(log_store.entry(2).await.unwrap().unwrap().term, 1);
+        assert_eq!(log_store.entry(3).await.unwrap().unwrap().term, 2);
+        assert_eq!(log_store.entry(4).await.unwrap().unwrap().term, 2);
+        assert!(
+            log_store.entry(5).await.unwrap().is_none(),
+            "entry 5 must be removed"
+        );
+        assert_eq!(log_store.last_index(), 4);
+    }
+
+    /// replace_range with empty new_entries truncates only.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_replace_range_with_empty_entries_truncates_only() {
+        let (storage, _dir) = setup_storage();
+        let log_store = storage.log_store();
+
+        log_store
+            .persist_entries(
+                (1..=5)
+                    .map(|i| Entry {
+                        index: i,
+                        term: 1,
+                        payload: None,
+                    })
+                    .collect(),
+            )
+            .await
+            .unwrap();
+        log_store.replace_range(3, vec![]).await.unwrap();
+
+        assert_eq!(log_store.entry(2).await.unwrap().unwrap().term, 1);
+        assert!(log_store.entry(3).await.unwrap().is_none());
+        assert_eq!(log_store.last_index(), 2);
+    }
+
     #[tokio::test]
     async fn test_file_storage_engine_suite() {
         let builder = FileStorageEngineBuilder::new();

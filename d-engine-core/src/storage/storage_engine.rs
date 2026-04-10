@@ -75,6 +75,22 @@ pub trait LogStore: Send + Sync + 'static {
         from_index: u64,
     ) -> Result<(), Error>;
 
+    /// Atomically truncate from `from_index` and persist `new_entries` in one write.
+    ///
+    /// Default implementation calls `truncate` then `persist_entries` sequentially
+    /// (non-atomic). Override with a single WriteBatch for true crash atomicity.
+    async fn replace_range(
+        &self,
+        from_index: u64,
+        new_entries: Vec<Entry>,
+    ) -> Result<(), Error> {
+        self.truncate(from_index).await?;
+        if !new_entries.is_empty() {
+            self.persist_entries(new_entries).await?;
+        }
+        Ok(())
+    }
+
     /// Whether a single `persist_entries` call is crash-safe without an explicit `flush()`.
     ///
     /// Return `true` if your backend writes are immediately durable (e.g. any backend

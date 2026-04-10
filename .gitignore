@@ -50,3 +50,4 @@ CONTEXT
 .claudeignore
 safe-split-commits.sh
 CLAUDE.md
+.claude/
