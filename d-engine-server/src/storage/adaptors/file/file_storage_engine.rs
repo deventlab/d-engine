@@ -31,17 +31,29 @@ use tracing::info;
 const HARD_STATE_FILE_NAME: &str = "hard_state.bin";
 pub(crate) const HARD_STATE_KEY: &[u8] = b"hard_state";
 
+/// All mutable state for the log store, protected by a single Mutex.
+///
+/// Combining entries, file handle, and position index under one lock eliminates
+/// the three-lock ordering problem and makes replace_range() atomic at the
+/// memory level with no visible intermediate state.
+#[derive(Debug)]
+struct FileLogStoreInner {
+    entries: BTreeMap<u64, Entry>,
+    file: File,
+    /// Maps log index to the file offset of the byte *after* the entry
+    /// (i.e. the start of the next entry). truncate(from) sets file length to
+    /// index_end_pos[from - 1], with no extra file read required.
+    index_end_pos: BTreeMap<u64, u64>,
+}
+
 /// File-based log store implementation
 #[derive(Debug)]
 pub struct FileLogStore {
     #[allow(unused)]
     data_dir: PathBuf,
-
-    entries: Mutex<BTreeMap<u64, Entry>>,
+    inner: Mutex<FileLogStoreInner>,
+    /// Cached last index for hot-path reads without locking.
     last_index: AtomicU64,
-    file_handle: Mutex<File>,
-
-    index_positions: Mutex<BTreeMap<u64, u64>>, // Maps index to file position
 }
 
 /// File-based metadata store implementation
@@ -93,15 +105,9 @@ impl StorageEngine for FileStorageEngine {
 impl FileStorageEngine {
     /// Creates new file-based storage engine
     pub fn new(data_dir: PathBuf) -> Result<Self, Error> {
-        // Ensure data directory exists
         fs::create_dir_all(&data_dir)?;
-
-        // Create log store
         let log_store = Arc::new(FileLogStore::new(data_dir.join("logs"))?);
-
-        // Create meta store
         let meta_store = Arc::new(FileMetaStore::new(data_dir.join("meta"))?);
-
         Ok(Self {
             log_store,
             meta_store,
@@ -118,10 +124,8 @@ impl FileStorageEngine {
 impl FileLogStore {
     /// Creates new file-based log store
     pub fn new(data_dir: PathBuf) -> Result<Self, Error> {
-        // Ensure directory exists
         fs::create_dir_all(&data_dir)?;
 
-        // Open or create the log file
         let log_file_path = data_dir.join("log.data");
         let file = OpenOptions::new()
             .read(true)
@@ -130,119 +134,118 @@ impl FileLogStore {
             .truncate(false)
             .open(log_file_path)?;
 
-        // Load existing entries from file
-        let entries = Mutex::new(BTreeMap::new());
-        let last_index = AtomicU64::new(0);
-        let index_positions = Mutex::new(BTreeMap::new());
-
-        let store = Self {
-            data_dir,
-            entries,
-            last_index,
-            file_handle: Mutex::new(file),
-            index_positions,
+        let mut inner = FileLogStoreInner {
+            entries: BTreeMap::new(),
+            file,
+            index_end_pos: BTreeMap::new(),
         };
 
-        // Load existing data
-        store.load_from_file()?;
+        let last_index = inner.load_from_file()?;
 
-        Ok(store)
-    }
-
-    /// Load entries from file
-    fn load_from_file(&self) -> Result<(), Error> {
-        let mut file = self.file_handle.lock().unwrap();
-        file.seek(SeekFrom::Start(0))?;
-
-        let mut entries = self.entries.lock().unwrap();
-        let mut index_positions = self.index_positions.lock().unwrap();
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
-
-        let mut pos = 0;
-        let mut max_index = 0;
-
-        while pos < buffer.len() {
-            // Record the position of this entry
-            let entry_position = pos as u64;
-
-            // Read entry length
-            if pos + 8 > buffer.len() {
-                break;
-            }
-
-            let len_bytes = &buffer[pos..pos + 8];
-            let entry_len = u64::from_be_bytes([
-                len_bytes[0],
-                len_bytes[1],
-                len_bytes[2],
-                len_bytes[3],
-                len_bytes[4],
-                len_bytes[5],
-                len_bytes[6],
-                len_bytes[7],
-            ]) as usize;
-
-            pos += 8;
-
-            // Read entry data
-            if pos + entry_len > buffer.len() {
-                break;
-            }
-
-            let entry_data = &buffer[pos..pos + entry_len];
-            match Entry::decode(entry_data) {
-                Ok(entry) => {
-                    entries.insert(entry.index, entry.clone());
-                    index_positions.insert(entry.index, entry_position);
-                    max_index = max_index.max(entry.index);
-                }
-                Err(e) => {
-                    eprintln!("Failed to decode entry: {e}",);
-                    // Continue with next entry
-                }
-            }
-
-            pos += entry_len;
-        }
-
-        self.last_index.store(max_index, Ordering::SeqCst);
-        Ok(())
-    }
-
-    /// Write a pre-encoded entry to the file at the current end position.
-    /// Returns the file position at which the entry was written.
-    /// Does NOT flush — caller is responsible for flushing after the batch.
-    fn write_entry_to_file(
-        file: &mut File,
-        encoded: &[u8],
-    ) -> Result<u64, Error> {
-        let position = file.seek(SeekFrom::End(0))?;
-        let len = encoded.len() as u64;
-        file.write_all(&len.to_be_bytes())?;
-        file.write_all(encoded)?;
-        Ok(position)
+        Ok(Self {
+            data_dir,
+            inner: Mutex::new(inner),
+            last_index: AtomicU64::new(last_index),
+        })
     }
 
     #[allow(dead_code)]
     #[cfg(test)]
     pub(crate) fn reset_sync(&self) -> Result<(), Error> {
-        {
-            let mut file = self.file_handle.lock().unwrap();
-            file.set_len(0)?;
-            file.seek(SeekFrom::Start(0))?;
-            file.flush()?;
-        }
-        {
-            let mut store = self.entries.lock().unwrap();
-            store.clear();
-        }
-        {
-            let mut index_positions = self.index_positions.lock().unwrap();
-            index_positions.clear();
-        }
+        let mut inner = self.inner.lock().unwrap();
+        inner.file.set_len(0)?;
+        inner.file.seek(SeekFrom::Start(0))?;
+        inner.file.flush()?;
+        inner.entries.clear();
+        inner.index_end_pos.clear();
         self.last_index.store(0, Ordering::SeqCst);
         Ok(())
+    }
+}
+
+impl FileLogStoreInner {
+    /// Load entries from file on startup. Returns the last index found.
+    fn load_from_file(&mut self) -> Result<u64, Error> {
+        self.file.seek(SeekFrom::Start(0))?;
+
+        let mut buffer = Vec::new();
+        self.file.read_to_end(&mut buffer)?;
+
+        let mut pos: u64 = 0;
+        let mut max_index = 0;
+
+        while pos < buffer.len() as u64 {
+            if pos + 8 > buffer.len() as u64 {
+                break;
+            }
+
+            let len_bytes = &buffer[pos as usize..pos as usize + 8];
+            let entry_len =
+                u64::from_be_bytes(len_bytes.try_into().expect("slice is exactly 8 bytes"));
+
+            let data_start = pos + 8;
+            let end_pos = data_start + entry_len;
+
+            if end_pos > buffer.len() as u64 {
+                break;
+            }
+
+            let entry_data = &buffer[data_start as usize..end_pos as usize];
+            match Entry::decode(entry_data) {
+                Ok(entry) => {
+                    let index = entry.index;
+                    self.entries.insert(index, entry);
+                    self.index_end_pos.insert(index, end_pos);
+                    max_index = max_index.max(index);
+                }
+                Err(e) => {
+                    eprintln!("Failed to decode entry: {e}");
+                }
+            }
+
+            pos = end_pos;
+        }
+
+        Ok(max_index)
+    }
+
+    /// Write a pre-encoded entry to the file at the current end.
+    /// Returns the file end position after writing (= end_pos for this entry).
+    /// Does NOT flush — caller flushes once after the batch.
+    fn write_encoded(
+        &mut self,
+        encoded: &[u8],
+    ) -> Result<u64, Error> {
+        self.file.seek(SeekFrom::End(0))?;
+        let len = encoded.len() as u64;
+        self.file.write_all(&len.to_be_bytes())?;
+        self.file.write_all(encoded)?;
+        Ok(self.file.stream_position()?)
+    }
+
+    /// File end position of the last entry *before* `from_index`.
+    /// Returns 0 if no such entry exists (truncate empties the file).
+    fn end_pos_before(
+        &self,
+        from_index: u64,
+    ) -> u64 {
+        self.index_end_pos
+            .range(..from_index)
+            .next_back()
+            .map(|(_, &pos)| pos)
+            .unwrap_or(0)
+    }
+
+    /// Remove all in-memory state for indices >= from_index.
+    fn remove_from_index(
+        &mut self,
+        from_index: u64,
+    ) {
+        let keys: Vec<u64> = self.entries.range(from_index..).map(|(&k, _)| k).collect();
+        for k in keys {
+            self.entries.remove(&k);
+            self.index_end_pos.remove(&k);
+        }
     }
 }
 
@@ -256,32 +259,19 @@ impl LogStore for FileLogStore {
             return Ok(());
         }
 
-        // Encode all entries before acquiring any lock.
-        let encoded: Vec<(u64, Vec<u8>)> =
-            entries.iter().map(|e| (e.index, e.encode_to_vec())).collect();
+        // Encode all entries before acquiring the lock (pure CPU work).
+        let encoded: Vec<Vec<u8>> = entries.iter().map(|e| e.encode_to_vec()).collect();
 
-        // Write entire batch under a single file lock, flush once at the end.
-        let positions: Vec<(u64, u64)> = {
-            let mut file = self.file_handle.lock().unwrap();
-            let mut positions = Vec::with_capacity(encoded.len());
-            for (index, enc) in &encoded {
-                let pos = Self::write_entry_to_file(&mut file, enc)?;
-                positions.push((*index, pos));
-            }
-            file.flush()?;
-            positions
-        };
-
-        // Update in-memory structures.
         let mut max_index = 0;
         {
-            let mut store = self.entries.lock().unwrap();
-            let mut index_positions = self.index_positions.lock().unwrap();
-            for (entry, (index, pos)) in entries.iter().zip(positions.iter()) {
-                store.insert(*index, entry.clone());
-                index_positions.insert(*index, *pos);
-                max_index = max_index.max(*index);
+            let mut inner = self.inner.lock().unwrap();
+            for (entry, enc) in entries.iter().zip(encoded.iter()) {
+                let end_pos = inner.write_encoded(enc)?;
+                inner.entries.insert(entry.index, entry.clone());
+                inner.index_end_pos.insert(entry.index, end_pos);
+                max_index = max_index.max(entry.index);
             }
+            inner.file.flush()?;
         }
 
         self.last_index.store(max_index, Ordering::SeqCst);
@@ -292,76 +282,44 @@ impl LogStore for FileLogStore {
         &self,
         index: u64,
     ) -> Result<Option<Entry>, Error> {
-        let store = self.entries.lock().unwrap();
-        Ok(store.get(&index).cloned())
+        let inner = self.inner.lock().unwrap();
+        Ok(inner.entries.get(&index).cloned())
     }
 
     fn get_entries(
         &self,
         range: RangeInclusive<u64>,
     ) -> Result<Vec<Entry>, Error> {
-        let store = self.entries.lock().unwrap();
-        let mut result = Vec::new();
-
-        for (_, entry) in store.range(range) {
-            result.push(entry.clone());
-        }
-
-        Ok(result)
+        let inner = self.inner.lock().unwrap();
+        Ok(inner.entries.range(range).map(|(_, e)| e.clone()).collect())
     }
 
     async fn purge(
         &self,
         cutoff_index: LogId,
     ) -> Result<(), Error> {
-        // Step 1: Collect entries to keep (index > cutoff_index)
-        let entries_to_keep: Vec<Entry> = {
-            let entries = self.entries.lock().unwrap();
-            entries
-                .range((cutoff_index.index + 1)..)
-                .map(|(_, entry)| entry.clone())
-                .collect()
-        };
+        let mut inner = self.inner.lock().unwrap();
 
-        // Step 2: Rewrite file with only kept entries
-        {
-            let mut file = self.file_handle.lock().unwrap();
+        let entries_to_keep: Vec<Entry> = inner
+            .entries
+            .range((cutoff_index.index + 1)..)
+            .map(|(_, e)| e.clone())
+            .collect();
 
-            // Truncate file to empty
-            file.set_len(0)?;
-            file.seek(SeekFrom::Start(0))?;
+        // Rewrite file with only kept entries, flush once.
+        inner.file.set_len(0)?;
+        inner.file.seek(SeekFrom::Start(0))?;
+        inner.index_end_pos.clear();
 
-            // Rebuild position index while writing
-            let mut new_positions = BTreeMap::new();
-
-            for entry in &entries_to_keep {
-                // Record current position
-                let position = file.stream_position()?;
-
-                // Encode and write entry
-                let encoded = entry.encode_to_vec();
-                let len = encoded.len() as u64;
-
-                file.write_all(&len.to_be_bytes())?;
-                file.write_all(&encoded)?;
-
-                new_positions.insert(entry.index, position);
-            }
-
-            // Ensure durability
-            file.flush()?;
-            file.sync_all()?;
-
-            // Update position index
-            let mut index_positions = self.index_positions.lock().unwrap();
-            *index_positions = new_positions;
+        for entry in &entries_to_keep {
+            let enc = entry.encode_to_vec();
+            let end_pos = inner.write_encoded(&enc)?;
+            inner.index_end_pos.insert(entry.index, end_pos);
         }
+        inner.file.flush()?;
+        inner.file.sync_all()?;
 
-        // Step 3: Update memory entries (remove purged entries)
-        {
-            let mut entries = self.entries.lock().unwrap();
-            entries.retain(|&index, _| index > cutoff_index.index);
-        }
+        inner.entries.retain(|&index, _| index > cutoff_index.index);
 
         Ok(())
     }
@@ -370,62 +328,56 @@ impl LogStore for FileLogStore {
         &self,
         from_index: u64,
     ) -> Result<(), Error> {
-        let indexes_to_remove: Vec<u64> = {
-            let index_positions = self.index_positions.lock().unwrap();
-            index_positions.range(from_index..).map(|(k, _)| *k).collect()
+        let mut inner = self.inner.lock().unwrap();
+
+        // Compute truncation point from end_pos index — no file read required.
+        let truncate_to = inner.end_pos_before(from_index);
+        inner.file.set_len(truncate_to)?;
+
+        inner.remove_from_index(from_index);
+
+        let new_last = inner.entries.keys().next_back().copied().unwrap_or(0);
+        self.last_index.store(new_last, Ordering::SeqCst);
+
+        Ok(())
+    }
+
+    /// Atomically truncate from `from_index` and persist `new_entries` under a single lock.
+    ///
+    /// All memory and file mutations happen within one `Mutex` critical section, so no
+    /// intermediate state is visible to concurrent readers of `last_index` or `entry()`.
+    async fn replace_range(
+        &self,
+        from_index: u64,
+        new_entries: Vec<Entry>,
+    ) -> Result<(), Error> {
+        let encoded: Vec<Vec<u8>> = new_entries.iter().map(|e| e.encode_to_vec()).collect();
+
+        let new_last = {
+            let mut inner = self.inner.lock().unwrap();
+
+            // Truncate file to the end of the last kept entry.
+            let truncate_to = inner.end_pos_before(from_index);
+            inner.file.set_len(truncate_to)?;
+
+            // Remove in-memory state for truncated range.
+            inner.remove_from_index(from_index);
+
+            // Append new entries and update in-memory state.
+            for (entry, enc) in new_entries.iter().zip(encoded.iter()) {
+                let end_pos = inner.write_encoded(enc)?;
+                inner.entries.insert(entry.index, entry.clone());
+                inner.index_end_pos.insert(entry.index, end_pos);
+            }
+
+            if !new_entries.is_empty() {
+                inner.file.flush()?;
+            }
+
+            inner.entries.keys().next_back().copied().unwrap_or(0)
         };
 
-        // Remove from memory
-        {
-            let mut entries = self.entries.lock().unwrap();
-            for index in &indexes_to_remove {
-                entries.remove(index);
-            }
-        }
-
-        // Remove from position index
-        {
-            let mut index_positions = self.index_positions.lock().unwrap();
-            for index in &indexes_to_remove {
-                index_positions.remove(index);
-            }
-        }
-
-        // Truncate the file
-        if let Some(last_keep_position) = self
-            .index_positions
-            .lock()
-            .unwrap()
-            .range(..from_index)
-            .next_back()
-            .map(|(_, pos)| *pos)
-        {
-            let mut file = self.file_handle.lock().unwrap();
-
-            // Find the end of the last entry to keep
-            file.seek(SeekFrom::Start(last_keep_position))?;
-            let mut len_buffer = [0u8; 8];
-            file.read_exact(&mut len_buffer)?;
-            let entry_len = u64::from_be_bytes(len_buffer);
-
-            // Calculate the position after this entry
-            let truncate_pos = last_keep_position + 8 + entry_len;
-
-            // Truncate the file
-            file.set_len(truncate_pos)?;
-        } else {
-            // No entries to keep, truncate entire file
-            let file = self.file_handle.lock().unwrap();
-            file.set_len(0)?;
-        }
-
-        // Update last index
-        if let Some(new_last_index) = self.index_positions.lock().unwrap().keys().next_back() {
-            self.last_index.store(*new_last_index, Ordering::SeqCst);
-        } else {
-            self.last_index.store(0, Ordering::SeqCst);
-        }
-
+        self.last_index.store(new_last, Ordering::SeqCst);
         Ok(())
     }
 
@@ -435,9 +387,9 @@ impl LogStore for FileLogStore {
     }
 
     fn flush(&self) -> Result<(), Error> {
-        let mut file = self.file_handle.lock().unwrap();
-        file.flush()?;
-        file.sync_all()?;
+        let mut inner = self.inner.lock().unwrap();
+        inner.file.flush()?;
+        inner.file.sync_all()?;
         Ok(())
     }
 
@@ -446,20 +398,12 @@ impl LogStore for FileLogStore {
     }
 
     async fn reset(&self) -> Result<(), Error> {
-        {
-            let mut file = self.file_handle.lock().unwrap();
-            file.set_len(0)?;
-            file.seek(SeekFrom::Start(0))?;
-            file.flush()?;
-        }
-        {
-            let mut store = self.entries.lock().unwrap();
-            store.clear();
-        }
-        {
-            let mut index_positions = self.index_positions.lock().unwrap();
-            index_positions.clear();
-        }
+        let mut inner = self.inner.lock().unwrap();
+        inner.file.set_len(0)?;
+        inner.file.seek(SeekFrom::Start(0))?;
+        inner.file.flush()?;
+        inner.entries.clear();
+        inner.index_end_pos.clear();
         self.last_index.store(0, Ordering::SeqCst);
         Ok(())
     }
@@ -471,8 +415,6 @@ impl LogStore for FileLogStore {
 
 impl Drop for FileLogStore {
     fn drop(&mut self) {
-        // Flush WAL and memtables on drop to ensure durability
-        // This is critical for crash recovery - data must survive process termination
         if let Err(e) = self.flush() {
             tracing::error!("Failed to flush FileLogStore on drop: {}", e);
         } else {
@@ -484,7 +426,6 @@ impl Drop for FileLogStore {
 impl FileMetaStore {
     /// Creates new file-based metadata store
     pub fn new(data_dir: PathBuf) -> Result<Self, Error> {
-        // Ensure directory exists
         fs::create_dir_all(&data_dir)?;
 
         let store = Self {
@@ -492,7 +433,6 @@ impl FileMetaStore {
             data: Mutex::new(HashMap::new()),
         };
 
-        // Load existing data
         store.load_from_file()?;
 
         Ok(store)
@@ -573,7 +513,6 @@ impl MetaStore for FileMetaStore {
     }
 
     fn flush(&self) -> Result<(), Error> {
-        // No-op for file-based store as we flush on each write
         Ok(())
     }
 

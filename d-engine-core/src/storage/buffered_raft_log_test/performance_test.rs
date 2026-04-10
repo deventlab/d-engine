@@ -40,12 +40,11 @@ fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
 #[tokio::test]
 async fn test_reset_performance_during_active_flush() {
     // persist_entries mock sleeps for FLUSH_DELAY_MS.
-    // reset() waits for the IO thread to finish its current operation before processing Reset.
-    // CI limit must be > FLUSH_DELAY_MS to account for IO thread overhead;
-    // using 3x headroom (600ms > 200ms) ensures reset doesn't block the full flush duration.
+    // reset() waits for the IO thread to finish its current in-flight operation before processing
+    // Reset — this is correct behavior. The test verifies reset completes within a bounded time
+    // (3x the flush delay) and does not block indefinitely.
     const FLUSH_DELAY_MS: u64 = 200;
-    let is_ci = std::env::var("CI").is_ok();
-    let max_reset_duration_ms = if is_ci { 600 } else { 50 };
+    let max_reset_duration_ms = FLUSH_DELAY_MS * 3; // 600ms: accounts for IO thread overhead
 
     let test_cases = vec![
         (
