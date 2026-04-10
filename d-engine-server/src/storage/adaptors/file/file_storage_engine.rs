@@ -210,32 +210,18 @@ impl FileLogStore {
         Ok(())
     }
 
-    /// Append entry to file
-    fn append_to_file(
-        &self,
-        entry: &Entry,
-    ) -> Result<(), Error> {
-        let mut file = self.file_handle.lock().unwrap();
-
-        // Get current file position
+    /// Write a pre-encoded entry to the file at the current end position.
+    /// Returns the file position at which the entry was written.
+    /// Does NOT flush — caller is responsible for flushing after the batch.
+    fn write_entry_to_file(
+        file: &mut File,
+        encoded: &[u8],
+    ) -> Result<u64, Error> {
         let position = file.seek(SeekFrom::End(0))?;
-
-        let encoded = entry.encode_to_vec();
-
-        // Write entry length (8 bytes)
         let len = encoded.len() as u64;
         file.write_all(&len.to_be_bytes())?;
-
-        // Write entry data
-        file.write_all(&encoded)?;
-
-        file.flush()?;
-
-        // Update position index
-        let mut index_positions = self.index_positions.lock().unwrap();
-        index_positions.insert(entry.index, position);
-
-        Ok(())
+        file.write_all(encoded)?;
+        Ok(position)
     }
 
     #[allow(dead_code)]
@@ -266,25 +252,39 @@ impl LogStore for FileLogStore {
         &self,
         entries: Vec<Entry>,
     ) -> Result<(), Error> {
-        let mut max_index = 0;
+        if entries.is_empty() {
+            return Ok(());
+        }
 
-        for entry in entries {
-            // Append to file
-            self.append_to_file(&entry)?;
+        // Encode all entries before acquiring any lock.
+        let encoded: Vec<(u64, Vec<u8>)> =
+            entries.iter().map(|e| (e.index, e.encode_to_vec())).collect();
 
-            // Add to memory
-            {
-                let mut store = self.entries.lock().unwrap();
-                store.insert(entry.index, entry.clone());
+        // Write entire batch under a single file lock, flush once at the end.
+        let positions: Vec<(u64, u64)> = {
+            let mut file = self.file_handle.lock().unwrap();
+            let mut positions = Vec::with_capacity(encoded.len());
+            for (index, enc) in &encoded {
+                let pos = Self::write_entry_to_file(&mut file, enc)?;
+                positions.push((*index, pos));
             }
+            file.flush()?;
+            positions
+        };
 
-            max_index = max_index.max(entry.index);
+        // Update in-memory structures.
+        let mut max_index = 0;
+        {
+            let mut store = self.entries.lock().unwrap();
+            let mut index_positions = self.index_positions.lock().unwrap();
+            for (entry, (index, pos)) in entries.iter().zip(positions.iter()) {
+                store.insert(*index, entry.clone());
+                index_positions.insert(*index, *pos);
+                max_index = max_index.max(*index);
+            }
         }
 
-        if max_index > 0 {
-            self.last_index.store(max_index, Ordering::SeqCst);
-        }
-
+        self.last_index.store(max_index, Ordering::SeqCst);
         Ok(())
     }
 
