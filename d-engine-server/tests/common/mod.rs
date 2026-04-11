@@ -214,8 +214,12 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             ..Default::default()
         },
         election: ElectionConfig {
-            election_timeout_min: 1000,
-            election_timeout_max: 4000,
+            // Lower min timeout (300 ms vs 1000 ms) lets the first election complete faster
+            // under CPU saturation, reducing the chance the test hits the overall timeout.
+            // Window width is intentionally kept wide (2700 ms) so staggered nodes rarely
+            // fire simultaneously.
+            election_timeout_min: 300,
+            election_timeout_max: 3000,
             ..Default::default()
         },
         ..Default::default()

@@ -40,7 +40,6 @@
 
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
-use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
@@ -190,9 +189,12 @@ impl TermSegments {
 pub enum IOTask {
     /// Atomically truncate from `truncate_from` then persist `new_entries`.
     /// Conflict-resolution path: truncate + write are a single atomic IO unit.
+    /// `done` is signalled after the IO thread finishes the replace so callers
+    /// can flush() knowing the truncation is durable.
     ReplaceRange {
         truncate_from: u64,
         new_entries: Vec<Entry>,
+        done: oneshot::Sender<Result<()>>,
     },
     /// Purge log entries up to `cutoff` from storage.
     Purge {
@@ -527,18 +529,28 @@ where
 
                     if diverge_index <= last_current_index {
                         // Real term conflict: truncate from diverge_index, replace with tail.
+                        // Await the done channel so callers can flush() knowing the truncation
+                        // is durable — durable_index may exceed max_index after truncation,
+                        // which would cause flush() to short-circuit before the replace lands.
                         self.remove_range(diverge_index..=u64::MAX);
                         self.insert_to_memory(tail);
+                        let (done_tx, done_rx) = oneshot::channel();
                         self.command_sender
                             .send(IOTask::ReplaceRange {
                                 truncate_from: diverge_index,
                                 new_entries: tail.to_vec(),
+                                done: done_tx,
                             })
                             .map_err(|e| {
                                 NetworkError::SingalSendFailed(format!(
                                     "Failed to send ReplaceRange: {e:?}"
                                 ))
                             })?;
+                        done_rx.await.map_err(|_| {
+                            NetworkError::SingalSendFailed(
+                                "ReplaceRange done channel closed".into(),
+                            )
+                        })??;
                     } else {
                         // No conflict — pipeline overlap consumed, append only the new tail.
                         self.append_entries(tail.to_vec()).await?;
@@ -804,8 +816,9 @@ where
     ///
     /// `batch_processor` runs on a dedicated OS thread (not a tokio worker) so that
     /// synchronous RocksDB calls (`db.write`, `flush_wal`) never block the async runtime.
-    /// The thread drives the async batch_processor via `Handle::block_on`, which lets the
-    /// internal tokio channels and timers work unchanged.
+    /// The thread owns its own `new_current_thread` runtime — fully independent of the
+    /// caller's runtime lifecycle.  When the caller's runtime drops (e.g. at test teardown),
+    /// the IO thread's timers and channels are unaffected; it exits cleanly on `Shutdown`.
     pub fn start(
         mut self,
         receiver: mpsc::UnboundedReceiver<IOTask>,
@@ -817,23 +830,18 @@ where
 
         let idle_flush_interval_ms = arc_self.idle_flush_interval_ms;
         let node_id = arc_self.node_id;
-        let handle = tokio::runtime::Handle::current();
         let io_handle = std::thread::Builder::new()
             .name(format!("raft-io-{}", node_id))
             .spawn(move || {
-                // Wrap with catch_unwind to handle tokio runtime shutdown gracefully
-                let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    handle.block_on(Self::batch_processor(
-                        weak_self,
-                        receiver,
-                        idle_flush_interval_ms,
-                    ))
-                }));
-                if result.is_err() {
-                    warn!(
-                        "batch_processor panicked during shutdown - likely tokio runtime shutdown"
-                    );
-                }
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to build raft-io runtime");
+                rt.block_on(Self::batch_processor(
+                    weak_self,
+                    receiver,
+                    idle_flush_interval_ms,
+                ));
             })
             .expect("failed to spawn raft-io thread");
 
@@ -896,6 +904,7 @@ where
                     // the outer receiver arm if consumed in try_recv().
                     // Collect any Flush senders: they must be replied to AFTER fsync.
                     let mut seen_shutdown = false;
+                    let mut fatal_exit = false;
                     // None until the first Flush arrives — avoids heap allocation on the hot
                     // write path where flush() is rarely called concurrently with writes.
                     let mut flush_replies: Option<Vec<oneshot::Sender<Result<()>>>> = None;
@@ -903,8 +912,16 @@ where
                         match cmd {
                             IOTask::Shutdown => { seen_shutdown = true; break; }
                             IOTask::Flush(reply) => { flush_replies.get_or_insert_with(Vec::new).push(reply); }
-                            cmd => { Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await; }
+                            cmd => {
+                                if Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await {
+                                    fatal_exit = true;
+                                    break;
+                                }
+                            }
                         }
+                    }
+                    if fatal_exit {
+                        break; // disk state corrupted — exit without fsync
                     }
                     // Flush callers capture max_index BEFORE sending the task. Entries
                     // appended between the initial `end` read above and now are in the
@@ -994,13 +1011,22 @@ where
                             // included in the same fsync batch.
                             // Collect any extra Flush senders — reply after fsync.
                             let mut seen_shutdown = false;
+                            let mut fatal_exit = false;
                             let mut extra_replies: Vec<oneshot::Sender<Result<()>>> = Vec::new();
                             while let Ok(cmd) = receiver.try_recv() {
                                 match cmd {
                                     IOTask::Shutdown => { seen_shutdown = true; break; }
                                     IOTask::Flush(extra) => { extra_replies.push(extra); }
-                                    cmd => { Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await; }
+                                    cmd => {
+                                        if Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await {
+                                            fatal_exit = true;
+                                            break;
+                                        }
+                                    }
                                 }
+                            }
+                            if fatal_exit {
+                                break; // disk state corrupted — exit without fsync
                             }
                             let fsync_result = if pending_max > 0 {
                                 match this.advance_durable_after_write(pending_max).await {
@@ -1037,7 +1063,9 @@ where
                             }
                         }
                         cmd => {
-                            Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await;
+                            if Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await {
+                                break; // disk state corrupted — exit batch_processor
+                            }
                         }
                     }
                 }
@@ -1071,11 +1099,13 @@ where
     ///
     /// Callers (`batch_processor`) dispatch `Flush` and `Shutdown` directly in the outer
     /// `match` before this function is ever called — those two arms are unreachable here.
+    ///
+    /// Returns `true` if `batch_processor` must exit immediately (fatal IO error).
     async fn handle_non_write_cmd(
         cmd: IOTask,
         this: &Arc<Self>,
         pending_max: &mut u64,
-    ) {
+    ) -> bool {
         match cmd {
             IOTask::Flush(_) => {
                 unreachable!(
@@ -1088,24 +1118,31 @@ where
             IOTask::ReplaceRange {
                 truncate_from,
                 new_entries,
+                done,
             } => {
                 let max_idx = new_entries.last().map(|e| e.index).unwrap_or(0);
-                if let Err(e) = this.log_store.replace_range(truncate_from, new_entries).await {
-                    error!("IOTask::ReplaceRange failed: {e:?}");
-                    return;
+                let result = this.log_store.replace_range(truncate_from, new_entries).await;
+                if let Err(ref e) = result {
+                    error!("IOTask::ReplaceRange failed (fatal): {e:?}");
+                    let _ = done.send(result);
+                    return true; // signal batch_processor to exit — disk state is corrupted
                 }
                 if max_idx > 0 {
                     *pending_max = (*pending_max).max(max_idx);
                 }
+                let _ = done.send(result);
+                false
             }
             IOTask::Purge { cutoff, done } => {
                 let _ = this.log_store.purge(cutoff).await;
                 let _ = done.send(());
+                false
             }
             IOTask::Reset { done } => {
                 let result = this.log_store.reset().await;
                 *pending_max = 0; // disk wiped — pending page-cache watermark must be zeroed
                 let _ = done.send(result);
+                false
             }
         }
     }
