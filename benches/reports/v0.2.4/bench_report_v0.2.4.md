@@ -3,12 +3,12 @@
 **Test Environments**:
 
 - **Local**: Apple M2 Mac mini (8-core, 16GB RAM, 3-node cluster on localhost)
-- **AWS**: EC2 c5.2xlarge (8 vCPUs, 16GB RAM, 50GB SSD) × 3 nodes *(pending)*
+- **AWS**: EC2 c5.2xlarge (8 vCPUs, 16GB RAM, 50GB SSD) × 3 nodes
 
 **Test Dates**:
 
 - **Local v0.2.4 vs v0.2.3**: April 11, 2026 (6-round average, embedded; 6-round average, standalone)
-- **AWS v0.2.4**: *pending*
+- **AWS v0.2.4**: April 11, 2026 (4-round average, embedded; 4-round average, standalone)
 
 **Key/Value**: 8 bytes / 256 bytes
 
@@ -83,9 +83,133 @@
 
 ---
 
-## AWS 3-Node Cluster: d-engine v0.2.4 vs etcd
+## AWS 3-Node Cluster: d-engine v0.2.4 vs v0.2.3
 
-*Pending — AWS benchmark not yet run for v0.2.4.*
+**Hardware**: AWS EC2 c5.2xlarge (8 vCPUs, 16GB RAM, 50GB SSD) × 3 nodes  
+**Date**: April 11, 2026 | 4-round average (embedded and standalone) | Key/Value: 8 bytes / 256 bytes  
+**etcd reference**: Official etcd benchmark (GCE, 8 vCPUs + 16GB + SSD × 3 nodes, etcd 3.2.0)²
+
+![d-engine v0.2.3 vs v0.2.4 Embedded Mode](d-engine_v0.2.3_vs_v0.2.4_embedded_mode.png)
+
+![d-engine v0.2.3 vs v0.2.4 Standalone Mode](d-engine_v0.2.3_vs_v0.2.4_standalone_mode.png)
+
+![d-engine v0.2.4 vs etcd 3.2.0](d-engine_v0.2.4_ vs_etcd_3.2.0.png)
+
+### Embedded Mode: v0.2.4 vs v0.2.3
+
+| **Scenario**        | **Metric**  | **v0.2.3 (AWS)** | **v0.2.4 (AWS)** | **Δ**          |
+| ------------------- | ----------- | ---------------- | ---------------- | -------------- |
+| Single Client Write | Throughput  | 2,710 ops/s      | 4,528 ops/s      | **+67.1%** ✅  |
+|                     | Avg Latency | 0.369 ms         | 0.220 ms         | **-40.4%** ✅  |
+|                     | p99 Latency | 0.588 ms         | 0.328 ms         | **-44.2%** ✅  |
+| High Conc. Write    | Throughput  | 64,269 ops/s     | 123,292 ops/s    | **+91.9%** ✅  |
+|                     | Avg Latency | 1.555 ms         | 0.810 ms         | **-47.9%** ✅  |
+|                     | p99 Latency | 2.809 ms         | 0.973 ms         | **-65.4%** ✅  |
+| Linearizable Read   | Throughput  | 180,768 ops/s    | 321,176 ops/s    | **+77.7%** ✅  |
+|                     | Avg Latency | 0.553 ms         | 0.310 ms         | **-43.9%** ✅  |
+|                     | p99 Latency | 0.751 ms         | 0.390 ms         | **-48.1%** ✅  |
+| Lease Read          | Throughput  | 378,810 ops/s    | 336,056 ops/s    | -11.3% ⚠️     |
+|                     | Avg Latency | 0.264 ms         | 0.297 ms         | +12.5% ⚠️     |
+|                     | p99 Latency | 0.334 ms         | 0.384 ms         | +15.0% ⚠️     |
+| Eventual Read       | Throughput  | 394,709 ops/s    | 343,596 ops/s    | -12.9% ⚠️     |
+|                     | Avg Latency | 0.253 ms         | 0.290 ms         | +14.6% ⚠️     |
+|                     | p99 Latency | 0.320 ms         | 0.372 ms         | +16.3% ⚠️     |
+| Hot-Key (10 keys)   | Throughput  | 184,510 ops/s    | 336,474 ops/s    | **+82.3%** ✅  |
+|                     | Avg Latency | 0.542 ms         | 0.296 ms         | **-45.4%** ✅  |
+|                     | p99 Latency | 0.714 ms         | 0.357 ms         | **-50.0%** ✅  |
+
+**Notes**:
+
+- Lease Read and Eventual Read show -11% ~ -13% regression on AWS. The same pattern appears locally (-2.7%, -1.2%) but is amplified on c5.2xlarge due to weaker single-core performance. Both scenarios are pure in-memory reads (no Raft RPC); the v0.2.4 IO thread architecture introduces an extra Tokio task-switch per operation. Recommend re-running 6 rounds to confirm whether this is within statistical noise before flagging as a regression.
+- All write and read-with-replication scenarios show large improvements: SC Write +67%, HC Write +92%, Lin Read +78%, Hot-Key +82%.
+
+---
+
+### Embedded Mode: v0.2.4 vs etcd 3.2.0
+
+| **Scenario**        | **Metric**  | **d-engine v0.2.4** | **etcd 3.2.0** | **Δ**          |
+| ------------------- | ----------- | ------------------- | -------------- | -------------- |
+| Single Client Write | Throughput  | 4,528 ops/s         | 583 ops/s      | **+7.8x** ✅   |
+|                     | Avg Latency | 0.220 ms            | 1.6 ms         | **-86.3%** ✅  |
+|                     | p99 Latency | 0.328 ms            | —              | —              |
+| High Conc. Write    | Throughput  | 123,292 ops/s       | 44,341 ops/s   | **+2.8x** ✅   |
+|                     | Avg Latency | 0.810 ms            | 22.0 ms        | **-96.3%** ✅  |
+|                     | p99 Latency | 0.973 ms            | —              | —              |
+| Linearizable Read   | Throughput  | 321,176 ops/s       | 141,578 ops/s  | **+2.3x** ✅   |
+|                     | Avg Latency | 0.310 ms            | 5.5 ms         | **-94.4%** ✅  |
+|                     | p99 Latency | 0.390 ms            | —              | —              |
+| Lease Read          | Throughput  | 336,056 ops/s       | —³             | —              |
+|                     | Avg Latency | 0.297 ms            | —              | —              |
+|                     | p99 Latency | 0.384 ms            | —              | —              |
+| Eventual Read       | Throughput  | 343,596 ops/s       | 185,758 ops/s  | **+85.0%** ✅  |
+|                     | Avg Latency | 0.290 ms            | 2.2 ms         | **-86.8%** ✅  |
+|                     | p99 Latency | 0.372 ms            | —              | —              |
+| Hot-Key (10 keys)   | Throughput  | 336,474 ops/s       | —³             | —              |
+|                     | Avg Latency | 0.296 ms            | —              | —              |
+|                     | p99 Latency | 0.357 ms            | —              | —              |
+
+---
+
+### Standalone Mode: v0.2.4 vs v0.2.3
+
+| **Scenario**        | **Metric**  | **v0.2.3 (AWS)** | **v0.2.4 (AWS)** | **Δ**          |
+| ------------------- | ----------- | ---------------- | ---------------- | -------------- |
+| Single Client Write | Throughput  | 1,667 ops/s      | 2,115 ops/s      | **+26.9%** ✅  |
+|                     | Avg Latency | 0.600 ms         | 0.472 ms         | **-21.3%** ✅  |
+|                     | p99 Latency | 0.832 ms         | 0.560 ms         | **-32.7%** ✅  |
+| High Conc. Write    | Throughput  | 36,160 ops/s     | 57,004 ops/s     | **+57.6%** ✅  |
+|                     | Avg Latency | 5.532 ms         | 3.508 ms         | **-36.6%** ✅  |
+|                     | p99 Latency | 10.154 ms        | 6.707 ms         | **-33.9%** ✅  |
+| Linearizable Read   | Throughput  | 51,077 ops/s     | 71,493 ops/s     | **+40.0%** ✅  |
+|                     | Avg Latency | 3.916 ms         | 2.794 ms         | **-28.6%** ✅  |
+|                     | p99 Latency | 8.230 ms         | 6.108 ms         | **-25.8%** ✅  |
+| Lease Read          | Throughput  | 62,555 ops/s     | 72,178 ops/s     | **+15.4%** ✅  |
+|                     | Avg Latency | 3.188 ms         | 2.768 ms         | **-13.2%** ✅  |
+|                     | p99 Latency | 6.676 ms         | 5.942 ms         | **-11.0%** ✅  |
+| Eventual Read       | Throughput  | 151,427 ops/s    | 172,474 ops/s    | **+13.9%** ✅  |
+|                     | Avg Latency | 1.317 ms         | 1.155 ms         | **-12.3%** ✅  |
+|                     | p99 Latency | 2.613 ms         | 2.415 ms         | **-7.6%** ✅   |
+| Hot-Key (10 keys)   | Throughput  | 58,677 ops/s     | 85,071 ops/s     | **+45.0%** ✅  |
+|                     | Avg Latency | 3.407 ms         | 2.347 ms         | **-31.1%** ✅  |
+|                     | p99 Latency | 7.257 ms         | 5.980 ms         | **-17.6%** ✅  |
+
+**Notes**:
+
+- Standalone improvements are consistent and large across all scenarios. HC Write +57.6% and Hot-Key +45% are the headline gains driven by the unified IO architecture (#295) and FileLogStore optimizations (#349, #350).
+- Single Client Write improvement (+26.9%) on AWS is notably better than the Local result (-18.5%). Local regression was due to double-yield overhead being proportionally larger at ~155µs loopback RTT; on AWS with ~470µs true network RTT the same overhead is diluted.
+
+---
+
+### Standalone Mode: v0.2.4 vs etcd 3.2.0
+
+| **Scenario**        | **Metric**  | **d-engine v0.2.4** | **etcd 3.2.0** | **Δ**          |
+| ------------------- | ----------- | ------------------- | -------------- | -------------- |
+| Single Client Write | Throughput  | 2,115 ops/s         | 583 ops/s      | **+3.6x** ✅   |
+|                     | Avg Latency | 0.472 ms            | 1.6 ms         | **-70.5%** ✅  |
+|                     | p99 Latency | 0.560 ms            | —              | —              |
+| High Conc. Write    | Throughput  | 57,004 ops/s        | 44,341 ops/s   | **+28.6%** ✅  |
+|                     | Avg Latency | 3.508 ms            | 22.0 ms        | **-84.1%** ✅  |
+|                     | p99 Latency | 6.707 ms            | —              | —              |
+| Linearizable Read   | Throughput  | 71,493 ops/s        | 141,578 ops/s  | -49.5%         |
+|                     | Avg Latency | 2.794 ms            | 5.5 ms         | **-49.2%** ✅  |
+|                     | p99 Latency | 6.108 ms            | —              | —              |
+| Lease Read          | Throughput  | 72,178 ops/s        | —³             | —              |
+|                     | Avg Latency | 2.768 ms            | —              | —              |
+|                     | p99 Latency | 5.942 ms            | —              | —              |
+| Eventual Read       | Throughput  | 172,474 ops/s       | 185,758 ops/s  | -7.2% →        |
+|                     | Avg Latency | 1.155 ms            | 2.2 ms         | **-47.5%** ✅  |
+|                     | p99 Latency | 2.415 ms            | —              | —              |
+| Hot-Key (10 keys)   | Throughput  | 85,071 ops/s        | —³             | —              |
+|                     | Avg Latency | 2.347 ms            | —              | —              |
+|                     | p99 Latency | 5.980 ms            | —              | —              |
+
+**Notes**:
+
+- Standalone Linearizable Read throughput (71K ops/s) remains below etcd's 141K ops/s. etcd uses a read index optimization that avoids a full Raft round-trip per read; d-engine's linearizable read issues a full consensus round per request. This is a known architectural trade-off; a read-index optimization is planned.
+- Eventual Read throughput (172K ops/s) is now within 7% of etcd (186K ops/s), up from -18.5% in v0.2.3.
+
+² etcd data sourced from [etcd official benchmark documentation](https://etcd.io/docs/v3.6/op-guide/performance/), tested on GCE infrastructure. Different cloud platform; results are for reference only.  
+³ etcd does not have an equivalent mode.
 
 ---
 
