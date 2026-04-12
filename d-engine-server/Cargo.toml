@@ -73,7 +73,6 @@ uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["test-util", "process"] }
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 mockall = "0.12.1"
-nanoid = "0.4.0"
 astral-tokio-tar = "0.6"
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 

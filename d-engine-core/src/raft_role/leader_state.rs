@@ -68,7 +68,7 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::append_entries_response;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
-use nanoid::nanoid;
+use rand::distr::SampleString;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -2222,7 +2222,7 @@ impl<T: TypeConfig> LeaderState<T> {
         if let Err(e) = self
             .execute_request_immediately(
                 RaftRequestWithSignal {
-                    id: nanoid!(),
+                    id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
                     payloads: vec![EntryPayload::noop()],
                     senders: vec![],
                     wait_for_apply_event: false,
@@ -2787,7 +2787,7 @@ impl<T: TypeConfig> LeaderState<T> {
         debug!("3. Submit single config change for all ready learners");
         self.execute_request_immediately(
             RaftRequestWithSignal {
-                id: nanoid!(),
+                id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
                 payloads: vec![EntryPayload::config(config_change)],
                 senders: vec![],
                 wait_for_apply_event: false,
@@ -3019,7 +3019,7 @@ impl<T: TypeConfig> LeaderState<T> {
         if let Err(e) = self
             .execute_request_immediately(
                 RaftRequestWithSignal {
-                    id: nanoid!(),
+                    id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
                     payloads: vec![EntryPayload::config(config_change)],
                     senders: vec![],
                     wait_for_apply_event: false,
@@ -3596,7 +3596,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // Submit batch activation (fire-and-forget; next tick re-tries if not committed).
         self.execute_request_immediately(
             RaftRequestWithSignal {
-                id: nanoid!(),
+                id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
                 payloads: vec![EntryPayload::config(change)],
                 senders: vec![],
                 wait_for_apply_event: false,
@@ -3720,7 +3720,7 @@ impl<T: TypeConfig> LeaderState<T> {
             // Submit single config change for all nodes (fire-and-forget).
             self.execute_request_immediately(
                 RaftRequestWithSignal {
-                    id: nanoid!(),
+                    id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
                     payloads: vec![EntryPayload::config(change)],
                     senders: vec![],
                     wait_for_apply_event: false,
@@ -3761,7 +3761,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // Submit removal (fire-and-forget; maintenance re-tries next tick if not committed).
         self.execute_request_immediately(
             RaftRequestWithSignal {
-                id: nanoid!(),
+                id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
                 payloads: vec![EntryPayload::config(change)],
                 senders: vec![],
                 wait_for_apply_event: false,

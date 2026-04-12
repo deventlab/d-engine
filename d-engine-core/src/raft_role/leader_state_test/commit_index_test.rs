@@ -20,6 +20,7 @@ use bytes::Bytes;
 use d_engine_proto::common::{EntryPayload, LogId};
 use d_engine_proto::server::replication::append_entries_response;
 use d_engine_proto::server::replication::{AppendEntriesResponse, SuccessResult};
+use rand::distr::SampleString;
 
 fn success_response(
     term: u64,
@@ -45,10 +46,9 @@ fn write_request() -> (
         std::result::Result<d_engine_proto::client::ClientResponse, tonic::Status>,
     >,
 ) {
-    use nanoid::nanoid;
     let (tx, rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let req = RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads: vec![EntryPayload::command(Bytes::from_static(b"cmd"))],
         senders: vec![tx],
         wait_for_apply_event: false,

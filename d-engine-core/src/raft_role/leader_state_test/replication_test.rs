@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
-use nanoid::nanoid;
+use rand::distr::SampleString;
 use tokio::sync::{mpsc, watch};
 use tonic::Status;
 use tracing_test::traced_test;
@@ -114,7 +114,7 @@ fn mock_request(
     sender: crate::MaybeCloneOneshotSender<ClientResponseResult>
 ) -> RaftRequestWithSignal {
     RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads: vec![EntryPayload::command(Bytes::from_static(b"cmd"))],
         senders: vec![sender],
         wait_for_apply_event: false,
@@ -926,7 +926,7 @@ async fn test_verify_internal_quorum_success() {
 
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let req = RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads,
         senders: vec![resp_tx],
         wait_for_apply_event: false,
@@ -994,7 +994,7 @@ async fn test_verify_internal_quorum_verifiable_failure() {
 
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let req = RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads,
         senders: vec![resp_tx],
         wait_for_apply_event: false,
@@ -1083,7 +1083,7 @@ async fn test_verify_internal_quorum_non_verifiable_failure() {
 
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let req = RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads,
         senders: vec![resp_tx],
         wait_for_apply_event: false,
@@ -1141,7 +1141,7 @@ async fn test_verify_internal_quorum_partial_timeouts() {
 
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let req = RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads,
         senders: vec![resp_tx],
         wait_for_apply_event: false,
@@ -1196,7 +1196,7 @@ async fn test_verify_internal_quorum_all_timeouts() {
 
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let req = RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads,
         senders: vec![resp_tx],
         wait_for_apply_event: false,
@@ -1258,7 +1258,7 @@ async fn test_verify_internal_quorum_higher_term() {
 
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let req = RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads,
         senders: vec![resp_tx],
         wait_for_apply_event: false,
@@ -1330,7 +1330,7 @@ async fn test_verify_internal_quorum_critical_failure() {
 
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let req = RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads,
         senders: vec![resp_tx],
         wait_for_apply_event: false,
@@ -1450,7 +1450,7 @@ async fn test_merge_batch_to_write_metadata_empty_payload_with_senders() {
 
     // Simulate verify_internal_quorum scenario: empty payload, non-empty sender
     let batch = vec![RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads: vec![],  // ← Empty payload (quorum check doesn't write logs)
         senders: vec![tx], // ← Non-empty sender (Leader needs response)
         wait_for_apply_event: false,

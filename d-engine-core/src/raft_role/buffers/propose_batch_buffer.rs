@@ -20,7 +20,7 @@
 //! `payloads.len() == senders.len()` at all times.
 //! Enforced by routing all mutations through `push()` and `flush()`.
 
-use nanoid::nanoid;
+use rand::distr::SampleString;
 use std::sync::Arc;
 
 use d_engine_proto::client::ClientResponse;
@@ -130,7 +130,7 @@ impl ProposeBatchBuffer {
         }
 
         Some(RaftRequestWithSignal {
-            id: nanoid!(),
+            id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
             payloads,
             senders,
             wait_for_apply_event: true,

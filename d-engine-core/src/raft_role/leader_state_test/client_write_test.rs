@@ -26,7 +26,7 @@ use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::common::membership_change::Change;
 use d_engine_proto::error::ErrorCode;
-use nanoid::nanoid;
+use rand::distr::SampleString;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -155,7 +155,7 @@ async fn test_process_raft_request_immediate_execution() {
         .state
         .execute_request_immediately(
             RaftRequestWithSignal {
-                id: nanoid!(),
+                id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
                 payloads: client_command_to_entry_payloads(request.command.into_iter().collect()),
                 senders: vec![tx],
                 wait_for_apply_event: true,
@@ -253,7 +253,7 @@ async fn test_client_write_waits_for_sm_apply_not_just_commit() {
         .state
         .execute_request_immediately(
             RaftRequestWithSignal {
-                id: nanoid!(),
+                id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
                 payloads: vec![EntryPayload::command(bytes::Bytes::from_static(b"cmd"))],
                 senders: vec![tx],
                 wait_for_apply_event: true,
@@ -379,7 +379,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
         .state
         .execute_request_immediately(
             RaftRequestWithSignal {
-                id: nanoid!(),
+                id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
                 payloads: client_command_to_entry_payloads(
                     request.command.clone().into_iter().collect(),
                 ),
@@ -396,7 +396,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
         .state
         .execute_request_immediately(
             RaftRequestWithSignal {
-                id: nanoid!(),
+                id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
                 payloads: client_command_to_entry_payloads(request.command.into_iter().collect()),
                 senders: vec![tx2],
                 wait_for_apply_event: true,
@@ -1019,7 +1019,7 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
     state
         .execute_request_immediately(
             RaftRequestWithSignal {
-                id: nanoid!(),
+                id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
                 payloads,
                 senders: vec![tx],
                 wait_for_apply_event: false, // KEY: noop path does NOT wait for SM apply
@@ -1105,7 +1105,7 @@ async fn test_config_change_quorum_check_responds_immediately_without_sm_apply()
     state
         .execute_request_immediately(
             RaftRequestWithSignal {
-                id: nanoid!(),
+                id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
                 payloads,
                 senders: vec![tx],
                 wait_for_apply_event: false, // KEY: config-change path does NOT wait for SM apply
@@ -1144,7 +1144,7 @@ fn write_request() -> (
 ) {
     let (tx, rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let req = RaftRequestWithSignal {
-        id: nanoid!(),
+        id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
         payloads: vec![EntryPayload::command(Bytes::from_static(b"cmd"))],
         senders: vec![tx],
         wait_for_apply_event: false,
