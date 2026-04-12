@@ -1,13 +1,12 @@
 use d_engine_client::Client;
 use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
+use d_engine_proto::error::ErrorCode;
 use std::time::Duration;
+use tempfile::TempDir;
 use tracing::info;
 use tracing_test::traced_test;
 
-use tempfile::TempDir;
-
-use crate::common::LATENCY_IN_MS;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
@@ -111,22 +110,76 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     info!("CAS result during leader stop: {:?}", cas_result);
     // Expected: timeout, NOT_LEADER, or UNAVAILABLE error
 
-    // Phase 2: Wait for new leader election.
-    // refresh() internally waits until a noop-committed leader is confirmed
-    // (via load_cluster_metadata round-robin + cluster_ready_timeout).
-    // No manual retry loop needed — refresh() is the barrier.
-    info!("Phase 2: Waiting for new leader election");
-    client.refresh(None).await?;
-    let new_leader_id = client
-        .get_leader_id()
-        .await?
-        .expect("Leader must be known after successful refresh");
-    info!("New leader elected: node {}", new_leader_id);
-    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+    // Phase 2: Wait for a *stable* new leader.
+    //
+    // Why a stability loop instead of a single refresh():
+    //
+    // After node 3 crashes, the surviving nodes (1 and 2) may undergo more than
+    // one election round before settling. A common pattern observed in CI:
+    //
+    //   Node 1 & 2 both start term-3 elections (split vote)
+    //   → Node 2 steps down, resets its election timer (random 300–3000 ms)
+    //   → Node 1 wins term 3 and becomes leader                    ← refresh() returns here
+    //   → Node 2's timer fires before receiving Node 1's heartbeat ← term-4 election starts
+    //   → Node 1 steps down (Raft rule: any higher term forces step-down)
+    //   → Phase 3 reads hit node 1 (stale cached leader) → "Not leader"
+    //
+    // refresh() only guarantees that a ready leader existed at the instant of the
+    // probe — it does NOT guarantee leadership stability going forward.
+    //
+    // Fix: confirm the same leader across two consecutive refresh() calls separated
+    // by 2× the heartbeat interval (200 ms > 2 × 100 ms). If a concurrent election
+    // is in flight, the second call will observe a different leader_id or find no
+    // leader, and the loop retries. Once both calls agree, the leader has survived
+    // at least two full heartbeat cycles and can be considered stable.
+    info!("Phase 2: Waiting for stable new leader election");
+    let new_leader_id = loop {
+        client.refresh(None).await?;
+        let id_first = client
+            .get_leader_id()
+            .await?
+            .expect("Leader must be known after successful refresh");
+
+        // Sleep longer than two heartbeat intervals (heartbeat = 100 ms) so any
+        // concurrent higher-term election has time to complete and become visible.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        client.refresh(None).await?;
+        let id_second = client
+            .get_leader_id()
+            .await?
+            .expect("Leader must be known after second refresh");
+
+        if id_first == id_second {
+            break id_first; // Same leader confirmed twice — election has settled
+        }
+        // Leaders differ: a second election occurred between the two probes.
+        // Loop and wait for the next stable state.
+        info!(
+            "Leader changed from node {} to node {} during stability check — retrying",
+            id_first, id_second
+        );
+    };
+    info!("Stable leader confirmed: node {}", new_leader_id);
 
     // Phase 3: Verify lock state consistency
+    //
+    // Even with the stability loop above there is a residual window between the
+    // second refresh() and the actual read RPC. Guard against it with a single
+    // refresh-and-retry on StaleOperation so the assertion never fails spuriously.
     info!("Phase 3: Verify lock state consistency");
-    let lock_value = client.get(lock_key).await?;
+    let lock_value = match client.get(lock_key).await {
+        Err(ClientApiError::Business {
+            code: ErrorCode::StaleOperation,
+            ..
+        }) => {
+            // A second leader change happened in the tiny gap after the stability
+            // check. Refresh once and retry — this is not a test failure.
+            client.refresh(None).await?;
+            client.get(lock_key).await?
+        }
+        other => other?,
+    };
 
     match lock_value {
         None => {
@@ -150,7 +203,6 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
         acquired_b,
         "Client B should successfully acquire lock after failover"
     );
-    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
 
     // Phase 5: Verify final lock state
     info!("Phase 5: Verify final lock state");
