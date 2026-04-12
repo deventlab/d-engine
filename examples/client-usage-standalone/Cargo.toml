@@ -8,7 +8,6 @@ d-engine = { path = "../../d-engine", features = ["client"], default-features = 
 
 clap = { version = "4.0", features = ["derive"] }
 tokio = { version = "1.36.0", features = ["full"] }
-env_logger = "0.11"
 anyhow = "1.0"
 
 [profile.dev]
