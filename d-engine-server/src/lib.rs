@@ -132,8 +132,11 @@ pub use d_engine_core::Result;
 pub use d_engine_core::SnapshotError;
 /// Storage-specific error type
 pub use d_engine_core::StorageError;
-// -------------------- Extension Traits --------------------
+// -------------------- Client API --------------------
 pub use api::EmbeddedClient;
+/// Unified client operations trait (put/get/delete/CAS/watch).
+/// Re-exported here so embedded-mode users don't need a separate d-engine-client dependency.
+pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
 /// Storage trait for implementing custom storage backends
 ///
 /// Implement this trait to create your own storage engine.
