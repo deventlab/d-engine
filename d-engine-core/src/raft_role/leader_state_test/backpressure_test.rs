@@ -355,3 +355,59 @@ async fn test_backpressure_all_read_policies() {
         "Should reject with ResourceExhausted"
     );
 }
+
+// ============================================================================
+// BackpressureMetrics Unit Tests
+// ============================================================================
+
+/// BackpressureMetrics::record_rejection with enabled=true: write and read paths.
+/// Verifies both branches complete without panic when metrics recording is active.
+#[test]
+fn test_backpressure_metrics_record_rejection_enabled() {
+    use crate::raft_role::leader_state::BackpressureMetrics;
+    let m = BackpressureMetrics::new(1, true, 1);
+    // Both calls must not panic
+    m.record_rejection(true); // write rejection
+    m.record_rejection(false); // read rejection
+}
+
+/// BackpressureMetrics::record_rejection with enabled=false: both paths are no-ops.
+#[test]
+fn test_backpressure_metrics_record_rejection_disabled() {
+    use crate::raft_role::leader_state::BackpressureMetrics;
+    let m = BackpressureMetrics::new(1, false, 1);
+    m.record_rejection(true);
+    m.record_rejection(false);
+}
+
+/// BackpressureMetrics::record_buffer_utilization with enabled=true: sampling logic.
+/// sample_rate=1 means every call records; verifies write and read labels both work.
+#[test]
+fn test_backpressure_metrics_record_buffer_utilization_enabled() {
+    use crate::raft_role::leader_state::BackpressureMetrics;
+    let m = BackpressureMetrics::new(1, true, 1);
+    m.record_buffer_utilization(0.0, true); // write, empty buffer
+    m.record_buffer_utilization(0.5, true); // write, half full
+    m.record_buffer_utilization(1.0, true); // write, full
+    m.record_buffer_utilization(0.5, false); // read, half full
+}
+
+/// BackpressureMetrics::record_buffer_utilization with enabled=false: no-op.
+#[test]
+fn test_backpressure_metrics_record_buffer_utilization_disabled() {
+    use crate::raft_role::leader_state::BackpressureMetrics;
+    let m = BackpressureMetrics::new(1, false, 1);
+    m.record_buffer_utilization(0.5, true);
+    m.record_buffer_utilization(0.5, false);
+}
+
+/// BackpressureMetrics: sample_rate>1 skips most recordings (counter-based sampling).
+/// With sample_rate=3, only every 3rd call records; all calls must not panic.
+#[test]
+fn test_backpressure_metrics_sampling_rate() {
+    use crate::raft_role::leader_state::BackpressureMetrics;
+    let m = BackpressureMetrics::new(1, true, 3);
+    for i in 0..10 {
+        m.record_buffer_utilization(i as f64 / 10.0, i % 2 == 0);
+    }
+}

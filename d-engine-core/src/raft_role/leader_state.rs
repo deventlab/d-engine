@@ -41,7 +41,6 @@ use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::TROF;
-use crate::ensure_safe_join;
 use crate::event::ClientCmd;
 use crate::network::Transport;
 use crate::stream::create_production_snapshot_stream;
@@ -2737,69 +2736,6 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub async fn batch_promote_learners(
-        &mut self,
-        ready_learners_ids: Vec<u32>,
-        ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        // 1. Determine optimal promotion status based on quorum safety
-        debug!("1. Determine optimal promotion status based on quorum safety");
-        let membership = ctx.membership();
-        let current_voters = membership.voters().await.len();
-        // let syncings = membership.nodes_with_status(NodeStatus::Syncing).len();
-        let new_active_count = current_voters + ready_learners_ids.len();
-
-        // Determine target status based on quorum safety
-        trace!(
-            ?current_voters,
-            ?ready_learners_ids,
-            "[Node-{}] new_active_count: {}",
-            self.node_id(),
-            new_active_count
-        );
-        let target_status = if ensure_safe_join(self.node_id(), new_active_count).is_ok() {
-            trace!(
-                "Going to update nodes-{:?} status to Active",
-                ready_learners_ids
-            );
-            NodeStatus::Active
-        } else {
-            trace!(
-                "Not enough quorum to promote learners: {:?}",
-                ready_learners_ids
-            );
-            return Ok(());
-        };
-
-        // 2. Create configuration change payload
-        debug!("2. Create configuration change payload");
-        let config_change = Change::BatchPromote(BatchPromote {
-            node_ids: ready_learners_ids.clone(),
-            new_status: target_status as i32,
-        });
-
-        info!(?config_change, "Replicating cluster config");
-
-        // 3. Submit single config change for all ready learners (fire-and-forget).
-        // Commit confirmation comes via the normal Raft flow; maintenance re-runs on next tick.
-        debug!("3. Submit single config change for all ready learners");
-        self.execute_request_immediately(
-            RaftRequestWithSignal {
-                id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
-                payloads: vec![EntryPayload::config(config_change)],
-                senders: vec![],
-                wait_for_apply_event: false,
-            },
-            ctx,
-            role_tx,
-        )
-        .await?;
-
-        Ok(())
-    }
-
     /// Calculate new submission index
     #[instrument(skip(self))]
     fn calculate_new_commit_index(
@@ -2829,22 +2765,6 @@ impl<T: TypeConfig> LeaderState<T> {
         } else {
             None
         }
-    }
-
-    #[allow(dead_code)]
-    fn if_update_commit_index(
-        &self,
-        new_commit_index_option: Option<u64>,
-    ) -> (bool, u64) {
-        let current_commit_index = self.commit_index();
-        if let Some(new_commit_index) = new_commit_index_option {
-            debug!("Leader::update_commit_index: {:?}", new_commit_index);
-            if current_commit_index < new_commit_index {
-                return (true, new_commit_index);
-            }
-        }
-        debug!("Leader::update_commit_index: false");
-        (false, current_commit_index)
     }
 
     /// Calculate safe read index for linearizable reads.
@@ -3690,7 +3610,7 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Remove non-Active zombie nodes that exceed failure threshold
-    async fn conditionally_purge_zombie_nodes(
+    pub(super) async fn conditionally_purge_zombie_nodes(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
