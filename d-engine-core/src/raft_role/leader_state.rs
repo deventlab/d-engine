@@ -3247,7 +3247,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // Step 1: Remove stale entries (older than configured threshold)
         let now = Instant::now();
         self.pending_promotions.retain(|entry| {
-            now.duration_since(entry.ready_since) <= config.stale_learner_threshold
+            now.saturating_duration_since(entry.ready_since) <= config.stale_learner_threshold
         });
 
         if self.pending_promotions.is_empty() {
@@ -3661,10 +3661,11 @@ impl<T: TypeConfig> LeaderState<T> {
                 trace!(
                     "Inspecting entry: {:?} - {:?} - {:?}",
                     entry,
-                    now.duration_since(entry.ready_since),
+                    now.saturating_duration_since(entry.ready_since),
                     &config.stale_learner_threshold
                 );
-                if now.duration_since(entry.ready_since) > config.stale_learner_threshold {
+                if now.saturating_duration_since(entry.ready_since) > config.stale_learner_threshold
+                {
                     stale_entries.push(entry);
                 } else {
                     // Return non-stale entry and stop
