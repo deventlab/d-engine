@@ -3664,7 +3664,8 @@ impl<T: TypeConfig> LeaderState<T> {
                     now.saturating_duration_since(entry.ready_since),
                     &config.stale_learner_threshold
                 );
-                if now.saturating_duration_since(entry.ready_since) > config.stale_learner_threshold {
+                if now.saturating_duration_since(entry.ready_since) > config.stale_learner_threshold
+                {
                     stale_entries.push(entry);
                 } else {
                     // Return non-stale entry and stop
