@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tracing::trace;
+use tracing::warn;
 
 use super::SnapshotContext;
 use super::SnapshotPolicy;
@@ -30,11 +31,12 @@ impl SnapshotPolicy for LogSizePolicy {
             return false;
         }
 
-        // Cooldown check using atomic operations
+        // Cooldown check — Relaxed is sufficient since the CAS on
+        // is_checking provides actual mutual exclusion.
         let now = timestamp_millis();
-        let last = self.last_checked.load(Ordering::Acquire);
+        let last = self.last_checked.load(Ordering::Relaxed);
 
-        if now - last < self.cooldown_ms {
+        if now.saturating_sub(last) < self.cooldown_ms {
             return false;
         }
 
@@ -47,9 +49,20 @@ impl SnapshotPolicy for LogSizePolicy {
             return false;
         }
 
-        let should_trigger = self.calculate_lag(ctx) >= self.threshold.load(Ordering::Relaxed);
+        let lag = self.calculate_lag(ctx);
+        let threshold = self.threshold.load(Ordering::Relaxed);
+
+        if threshold > 0 && lag >= threshold.saturating_mul(10) {
+            warn!(
+                lag,
+                threshold,
+                "Log lag exceeds 10x snapshot threshold — snapshots may not be keeping up"
+            );
+        }
+
+        let should_trigger = lag >= threshold;
         if should_trigger {
-            self.last_checked.store(now, Ordering::Release);
+            self.last_checked.store(now, Ordering::Relaxed);
         }
 
         self.is_checking.store(false, Ordering::Release);
