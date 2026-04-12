@@ -15,8 +15,7 @@ async fn test_first_index_for_term() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_first_index_for_term",
     );
@@ -91,8 +90,7 @@ async fn test_last_index_for_term() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_last_index_for_term",
     );
@@ -166,8 +164,7 @@ async fn test_term_index_functions_with_purged_logs() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_term_index_with_purged",
     );
@@ -207,43 +204,101 @@ async fn test_term_index_functions_with_purged_logs() {
     assert_eq!(ctx.raft_log.first_index_for_term(3), Some(4));
 }
 
+/// Sequential multi-term insertion correctness test.
+///
+/// Production invariant: all writes to BufferedRaftLog go through the single
+/// Raft event-loop task; there are no concurrent writers. The previous version
+/// of this test spawned multiple tasks writing concurrently, which is not a
+/// production scenario and masked the real invariant. This test verifies
+/// first/last index tracking across five consecutive term segments.
 #[tokio::test]
-async fn test_term_index_functions_with_concurrent_writes() {
+async fn test_term_index_sequential_multi_term_insertion() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 100,
-            interval_ms: 1000,
+            idle_flush_interval_ms: 1000,
         },
-        "test_term_index_concurrent",
+        "test_term_index_sequential_multi_term",
     );
     ctx.raft_log.reset().await.unwrap();
 
-    let mut handles = vec![];
-    for term in 1..=5 {
-        let log = ctx.raft_log.clone();
-        handles.push(tokio::spawn(async move {
-            for i in 1..=10 {
-                let index = (term - 1) * 10 + i;
-                log.insert_batch(vec![Entry {
+    // Insert five consecutive term segments sequentially (as the Raft loop would)
+    for term in 1u64..=5 {
+        for i in 1u64..=10 {
+            let index = (term - 1) * 10 + i;
+            ctx.raft_log
+                .insert_batch(vec![Entry {
                     index,
                     term,
                     payload: None,
                 }])
                 .await
                 .unwrap();
-            }
-        }));
-    }
-
-    for handle in handles {
-        handle.await.unwrap();
+        }
     }
 
     assert_eq!(ctx.raft_log.first_index_for_term(1), Some(1));
     assert_eq!(ctx.raft_log.last_index_for_term(1), Some(10));
+    assert_eq!(ctx.raft_log.first_index_for_term(3), Some(21));
+    assert_eq!(ctx.raft_log.last_index_for_term(3), Some(30));
     assert_eq!(ctx.raft_log.first_index_for_term(5), Some(41));
     assert_eq!(ctx.raft_log.last_index_for_term(5), Some(50));
+}
+
+/// Verify that term indexes (term_first_index, term_last_index) and TermSegments
+/// are correctly rebuilt from disk after a restart.
+///
+/// # Why this matters
+/// `BufferedRaftLog::new()` loads all entries from disk and rebuilds three
+/// in-memory term indexes from scratch. If any of them are incorrectly populated,
+/// queries like `first_index_for_term()` silently return `None` instead of the
+/// correct boundary — causing the #346 conflict-skip optimization to fall back
+/// to one-step-at-a-time backtracking without any error or warning.
+///
+/// # Scenario
+/// - Write 9 entries across 3 terms (term 1: 1-3, term 2: 4-6, term 3: 7-9)
+/// - Flush to disk so entries survive restart
+/// - Simulate restart via `recover_from_crash()`
+/// - Assert all three indexes return correct values on the recovered instance
+#[tokio::test]
+async fn test_term_indexes_rebuilt_correctly_after_restart() {
+    let ctx = BufferedRaftLogTestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
+        "test_term_indexes_rebuilt_after_restart",
+    );
+
+    // term 1: indices 1-3, term 2: indices 4-6, term 3: indices 7-9
+    let entries: Vec<Entry> = (1u64..=9)
+        .map(|i| Entry {
+            index: i,
+            term: ((i - 1) / 3) + 1, // 1,1,1,2,2,2,3,3,3
+            payload: None,
+        })
+        .collect();
+    ctx.raft_log.insert_batch(entries).await.unwrap();
+    ctx.raft_log.flush().await.unwrap();
+
+    // Simulate process restart: new BufferedRaftLog loads from same storage.
+    let recovered = ctx.recover_from_crash();
+
+    // first_index_for_term — used by #346 conflict-skip optimization
+    assert_eq!(recovered.raft_log.first_index_for_term(1), Some(1));
+    assert_eq!(recovered.raft_log.first_index_for_term(2), Some(4));
+    assert_eq!(recovered.raft_log.first_index_for_term(3), Some(7));
+    assert_eq!(recovered.raft_log.first_index_for_term(4), None); // non-existent term
+
+    // last_index_for_term — used by Leader conflict backtracking
+    assert_eq!(recovered.raft_log.last_index_for_term(1), Some(3));
+    assert_eq!(recovered.raft_log.last_index_for_term(2), Some(6));
+    assert_eq!(recovered.raft_log.last_index_for_term(3), Some(9));
+
+    // entry_term via TermSegments — used by AppendEntries log matching check
+    assert_eq!(recovered.raft_log.entry_term(1), Some(1));
+    assert_eq!(recovered.raft_log.entry_term(5), Some(2));
+    assert_eq!(recovered.raft_log.entry_term(9), Some(3));
 }
 
 #[tokio::test]
@@ -251,8 +306,7 @@ async fn test_term_index_performance_large_dataset() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1000,
-            interval_ms: 5000,
+            idle_flush_interval_ms: 5000,
         },
         "test_term_index_performance",
     );

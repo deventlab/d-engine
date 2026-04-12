@@ -1,94 +1,215 @@
-//! High-performance buffered Raft log with static dispatch
+//! High-performance buffered Raft log — notify-then-fsync architecture.
 //!
-//! PersistenceStrategy defines durability guarantees:
+//! ## Durability guarantee (MemFirst strategy)
 //!
-//! - DiskFirst: Entries persisted before becoming visible (SAFE, slower)
-//! - MemFirst: Entries visible before persistence (FAST, crash risk) WARNING: Violates Raft
-//!   durability. Use only if:
-//!   - You accept potential data loss on crash
-//!   - Replication provides redundancy
-//!   - Performance > strict durability
+//! **Level 2 (current)**: `db.write()` → OS page cache (no fsync every write)
+//! - Process crash safe (RocksDB replays WAL on restart)
+//! - Power loss unsafe (OS page cache lost)
+//! - Tradeoff: Skip per-write fsync (1–5ms) for ~3x throughput vs Level 3
 //!
-//! - Lock-free in-memory index
-//! - Batch I/O operations
-//! - Async persistence pipeline
-//! - Generic storage integration
+//! **DiskFirst removed** (was Level 3: fsync every write = blocking, safe but slow)
+//! **MemFirst + idle timer** (current = Level 2: batch fsync, natural window from IO work)
+//!
+//! ## Write path
+//!
+//! `append_entries` inserts entries into in-memory SkipMap, calls `write_notify.notify_one()`.
+//! Multiple concurrent writers coalesce into single IO thread wakeup (no channel, no per-write syscall).
+//!
+//! ## IO thread (notify-then-fsync)
+//!
+//! On wakeup from `write_notify`:
+//! 1. **Read** — scan SkipMap range `(durable_index, max_index]`
+//! 2. **Persist** — write to OS page cache (no fsync)
+//! 3. **Fsync once** — call `log_store.flush()` (WAL sync to disk)
+//!    Entries arriving during fsync batch into next wakeup
+//! 4. **Advance durable_index** and reply to any pending `IOTask::Flush` caller.
+//!
+//! Fsync execution time is the natural batch window — no timer needed.
+//!
+//! ## Fsync triggers
+//!
+//! 1. **Notify-driven** (normal): Multiple writes → single IO thread wakeup → batch fsync
+//! 2. **Explicit** (flush API): `flush()` → `IOTask::Flush(tx)` → IO thread fsyncs and sends `Result` back
+//! 3. **Idle timer** (safety net): No activity for `idle_flush_interval_ms` → fsync pending
+//!
+//! ## Durability contract
+//!
+//! `durable_index` advanced only after fsync.
+//! **Assumption**: Host crashes gracefully (UPS-backed, OS cache writeback guaranteed on shutdown).
+//! **Not safe for**: Power loss scenarios without UPS or host without battery-backed cache.
 
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::Error;
 use crate::FlushPolicy;
 use crate::HardState;
 use crate::LogStore;
 use crate::MetaStore;
 use crate::NetworkError;
 use crate::PersistenceConfig;
-use crate::PersistenceStrategy;
 use crate::RaftLog;
 use crate::Result;
 use crate::StorageEngine;
 use crate::TypeConfig;
 use crate::alias::SOF;
 use crate::scoped_timer::ScopedTimer;
-use crossbeam::channel::Sender;
-use crossbeam::channel::bounded;
 use crossbeam_skiplist::SkipMap;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-use dashmap::DashMap;
-use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
-use tokio::time::interval;
 use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
 
-pub(crate) struct FlushWorkerPool<T>
-where
-    T: TypeConfig,
-{
-    sender: Option<Sender<FlushTask<T>>>,
-    #[allow(dead_code)]
-    shutdown: Arc<AtomicBool>,
-    #[allow(dead_code)]
-    pub(super) worker_handles: Vec<JoinHandle<()>>,
+/// Maximum number of historical term segments (one per leader election).
+/// 1024 is far more than any realistic cluster lifetime.
+const MAX_TERM_SEGMENTS: usize = 1024;
+
+/// Compact term boundary index for O(1) `entry_term()` lookups.
+///
+/// Hot path (99%+ of queries): two `Acquire` loads, no lock, no CAS.
+/// Cold path (election recovery): atomic array reverse-scan, no lock, no unsafe.
+///
+/// When the array is full, new segments are silently dropped and `entry_term()`
+/// falls back to the SkipMap (O(log n)) — correct but slower.
+///
+/// Memory: 2 AtomicU64 + 1 AtomicUsize + 2×1024 AtomicU64 = ~16KB, all inline.
+pub(crate) struct TermSegments {
+    /// Term of the most-recently appended segment.
+    pub(crate) last_term: AtomicU64,
+    /// First log index belonging to `last_term`.
+    pub(crate) last_term_start: AtomicU64,
+    /// Number of valid historical segments stored in `seg_starts`/`seg_terms`.
+    seg_count: AtomicUsize,
+    /// First index of each historical segment, in append order.
+    seg_starts: [AtomicU64; MAX_TERM_SEGMENTS],
+    /// Term of each historical segment, parallel to `seg_starts`.
+    seg_terms: [AtomicU64; MAX_TERM_SEGMENTS],
 }
 
-pub(crate) struct FlushTask<T>
-where
-    T: TypeConfig,
-{
-    indexes: Vec<u64>,
-    this: Arc<BufferedRaftLog<T>>,
+impl TermSegments {
+    pub(crate) fn new() -> Self {
+        Self {
+            last_term: AtomicU64::new(0),
+            last_term_start: AtomicU64::new(0),
+            seg_count: AtomicUsize::new(0),
+            seg_starts: std::array::from_fn(|_| AtomicU64::new(0)),
+            seg_terms: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    /// Return the term for `index`, or `None` if the log is empty or index is out of range.
+    ///
+    /// Hot path: two `Acquire` loads, no lock, no CAS — O(1).
+    /// Cold path: reverse-scan atomic array, k = election count (typically < 10) — O(k).
+    pub(crate) fn get(
+        &self,
+        index: u64,
+    ) -> Option<u64> {
+        let last_start = self.last_term_start.load(Ordering::Acquire);
+        let last_term = self.last_term.load(Ordering::Acquire);
+        if last_term == 0 {
+            return None;
+        }
+        if index >= last_start {
+            return Some(last_term);
+        }
+        // Cold path: reverse-scan historical segments.
+        let count = self.seg_count.load(Ordering::Acquire);
+        (0..count).rev().find_map(|i| {
+            let start = self.seg_starts[i].load(Ordering::Acquire);
+            if start <= index {
+                Some(self.seg_terms[i].load(Ordering::Acquire))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Update after appending entries at the tail. Entries must be in ascending index order.
+    ///
+    /// Common case (same term): one `Acquire` load, no write — O(1).
+    /// Term change: two atomic stores to next slot, no lock — O(1).
+    pub(crate) fn on_append(
+        &self,
+        entries: &[Entry],
+    ) {
+        for entry in entries {
+            let lt = self.last_term.load(Ordering::Acquire);
+            if entry.term == lt {
+                // Same term: pull segment start back if needed (truncation + re-insert).
+                let ls = self.last_term_start.load(Ordering::Acquire);
+                if entry.index < ls {
+                    self.last_term_start.store(entry.index, Ordering::Release);
+                }
+                continue;
+            }
+            if lt == 0 {
+                // First entries ever: initialise hot atomics.
+                self.last_term_start.store(entry.index, Ordering::Release);
+                self.last_term.store(entry.term, Ordering::Release);
+                continue;
+            }
+            // New term boundary: archive current segment into the next slot.
+            // When the array is full, skip the write — entry_term() falls back
+            // to the SkipMap cold path for any overflow segments.
+            let ls = self.last_term_start.load(Ordering::Acquire);
+            let i = self.seg_count.fetch_add(1, Ordering::AcqRel);
+            if i < MAX_TERM_SEGMENTS {
+                self.seg_starts[i].store(ls, Ordering::Release);
+                self.seg_terms[i].store(lt, Ordering::Release);
+            }
+            // Always update hot atomics so the current term remains O(1).
+            self.last_term_start.store(entry.index, Ordering::Release);
+            self.last_term.store(entry.term, Ordering::Release);
+        }
+    }
+
+    /// Reset to empty. Called on log reset (snapshot install / full rewind).
+    pub(crate) fn clear(&self) {
+        self.seg_count.store(0, Ordering::Release);
+        self.last_term.store(0, Ordering::Release);
+        self.last_term_start.store(0, Ordering::Release);
+    }
 }
 
-/// Commands for the log processor
+/// IO tasks for the dedicated raft-io thread.
+///
+/// All blocking storage operations route through this channel so they never run
+/// on tokio worker threads or the Raft event loop.
 #[derive(Debug)]
-pub enum LogCommand {
-    /// Request to wait until specific index is durable
-    WaitDurable(u64, oneshot::Sender<()>),
-    /// Request to persist specific log entries
-    PersistEntries(Vec<u64>),
-    /// Trigger immediate flush with result notification
+pub enum IOTask {
+    /// Atomically truncate from `truncate_from` then persist `new_entries`.
+    /// Conflict-resolution path: truncate + write are a single atomic IO unit.
+    /// `done` is signalled after the IO thread finishes the replace so callers
+    /// can flush() knowing the truncation is durable.
+    ReplaceRange {
+        truncate_from: u64,
+        new_entries: Vec<Entry>,
+        done: oneshot::Sender<Result<()>>,
+    },
+    /// Purge log entries up to `cutoff` from storage.
+    Purge {
+        cutoff: LogId,
+        done: oneshot::Sender<()>,
+    },
+    /// Reset log storage (snapshot install). Routes through IO thread so reset
+    /// never runs on the Raft event loop.
+    Reset { done: oneshot::Sender<Result<()>> },
+    /// Persist any pending entries then fsync. The IO thread sends the fsync
+    /// result (Ok or Err) back to the caller via the oneshot channel.
+    /// Replaces the former `FlushNow` + `WaitDurable` two-message dance.
     Flush(oneshot::Sender<Result<()>>),
-    /// Reset the log storage
-    Reset(oneshot::Sender<Result<()>>),
-    /// Shutdown command processor
+    /// Shutdown the IO thread
     Shutdown,
-}
-
-pub(crate) struct FlushState {
-    pending_indexes: Vec<u64>, // Indexes pending flush
 }
 
 /// High-performance buffered Raft log with event-driven architecture
@@ -111,8 +232,8 @@ where
     pub(crate) log_store: Arc<<SOF<T> as StorageEngine>::LogStore>,
     pub(crate) meta_store: Arc<<SOF<T> as StorageEngine>::MetaStore>,
 
-    pub(crate) strategy: PersistenceStrategy,
-    pub(crate) flush_policy: FlushPolicy,
+    /// Safety-net timer interval (ms). Normal-path latency is determined by fsync time.
+    idle_flush_interval_ms: u64,
 
     // --- In-memory state ---
     // Pending entries
@@ -126,18 +247,34 @@ where
     min_index: AtomicU64, // Smallest log index (0 if empty)
     max_index: AtomicU64, // Largest log index (0 if empty)
 
+    // Purge boundary: last log entry that was purged (index=0 means never purged).
+    // entry_term() checks these when a SkipMap lookup misses, so that
+    // prev_log_term for the snapshot boundary index is always correct.
+    // Write ordering: term stored (Release) before index (Release);
+    // reader loads index (Acquire) then term (Acquire) — ensures consistency.
+    last_purged_index: AtomicU64,
+    last_purged_term: AtomicU64,
+
     term_first_index: SkipMap<u64, AtomicU64>,
     term_last_index: SkipMap<u64, AtomicU64>,
 
-    // --- Flush coordination ---
-    // Channel to trigger flushes
-    pub(crate) command_sender: mpsc::UnboundedSender<LogCommand>,
-    // Track flush state
-    pub(crate) flush_state: Mutex<FlushState>,
-    pub(crate) waiters: DashMap<u64, Vec<oneshot::Sender<()>>>,
+    /// Compact term boundary index — avoids SkipMap lookups in entry_term().
+    term_segments: TermSegments,
 
-    // --- Flush worker pool ---
-    pub(crate) flush_workers: FlushWorkerPool<T>,
+    // --- Flush coordination ---
+    /// Coalesced write notification. `append_entries` calls `notify_one()` after
+    /// inserting into the SkipMap. Multiple concurrent writers coalesce into a
+    /// single IO thread wakeup, eliminating per-write kernel cond_signal overhead.
+    pub(crate) write_notify: Arc<Notify>,
+    pub(crate) command_sender: mpsc::UnboundedSender<IOTask>,
+
+    // --- P0: LogFlushed event notification ---
+    // Sends RoleEvent::LogFlushed(durable) to Raft loop after each fsync.
+    // None in tests; Some(role_tx) in production.
+    log_flush_tx: Option<mpsc::UnboundedSender<crate::RoleEvent>>,
+
+    // IO thread handle — set by start(), used by close() to join before returning.
+    io_thread_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 #[async_trait]
@@ -162,6 +299,11 @@ where
         self.max_index.load(Ordering::Acquire)
     }
 
+    fn durable_index(&self) -> u64 {
+        // fsync is async; only entries confirmed by batch_processor are crash-safe.
+        self.durable_index.load(Ordering::Acquire)
+    }
+
     fn last_entry(&self) -> Option<Entry> {
         let last_index = self.last_entry_id();
         if last_index > 0 {
@@ -179,7 +321,18 @@ where
                 index: entry.index,
             })
         } else {
-            None
+            // Log is empty (e.g. immediately after snapshot install).
+            // Return the snapshot boundary so the leader sees the correct
+            // last-log position and sends entries starting from index+1.
+            let purged_index = self.last_purged_index.load(Ordering::Acquire);
+            if purged_index > 0 {
+                Some(LogId {
+                    index: purged_index,
+                    term: self.last_purged_term.load(Ordering::Acquire),
+                })
+            } else {
+                None
+            }
         }
     }
 
@@ -191,43 +344,26 @@ where
         &self,
         entry_id: u64,
     ) -> Option<u64> {
-        self.entry(entry_id).ok().flatten().map(|entry| entry.term)
+        // Bounds check: skip TermSegments entirely for out-of-range queries.
+        let max = self.max_index.load(Ordering::Acquire);
+        let min = self.min_index.load(Ordering::Acquire);
+        if max == 0 || entry_id < min || entry_id > max {
+            // Cold path: check purge boundary so that AppendEntries built with
+            // prev_log_index == last_purged_index carries the correct term.
+            let purged_index = self.last_purged_index.load(Ordering::Acquire);
+            if purged_index > 0 && entry_id == purged_index {
+                return Some(self.last_purged_term.load(Ordering::Acquire));
+            }
+            return None;
+        }
+        // Hot path: TermSegments — O(1) for current segment, O(log k) for history.
+        // No SkipMap lookup, no epoch::pin(), no CAS.
+        if let Some(term) = self.term_segments.get(entry_id) {
+            return Some(term);
+        }
+        // Fallback: SkipMap — guards against rare transient inconsistency.
+        self.entries.get(&entry_id).map(|e| e.value().term)
     }
-
-    // fn first_index_for_term(
-    //     &self,
-    //     term: u64,
-    // ) -> Option<u64> {
-    //     // OPTIMIZED: Check last entry first for common case
-    //     if let Some(front) = self.entries.front() {
-    //         if front.value().term == term {
-    //             return Some(*front.key());
-    //         }
-    //     }
-
-    //     // OPTIMIZED: Forward scan stops at first match (O(k) where k is position of first term
-    //     // match)
-    //     self.entries.iter().find(|entry| entry.value().term == term).map(|e| *e.key())
-    // }
-
-    // fn last_index_for_term(
-    //     &self,
-    //     term: u64,
-    // ) -> Option<u64> {
-    //     // OPTIMIZED: Check last entry first for common case
-    //     if let Some(last) = self.entries.back() {
-    //         if last.value().term == term {
-    //             return Some(*last.key());
-    //         }
-    //     }
-
-    //     // OPTIMIZED: Reverse scan stops at last match (O(k) where k is position of last term
-    // match)     self.entries
-    //         .iter()
-    //         .rev()
-    //         .find(|entry| entry.value().term == term)
-    //         .map(|e| *e.key())
-    // }
 
     fn first_index_for_term(
         &self,
@@ -269,8 +405,11 @@ where
         &self,
         range: RangeInclusive<u64>,
     ) -> Result<Vec<Entry>> {
-        // OPTIMIZED: SkipMap range scan O(k + log n)
-        Ok(self.entries.range(range).map(|e| e.value().clone()).collect())
+        // OPTIMIZED: SkipMap range scan O(k + log n); pre-allocate to avoid realloc
+        let capacity = (range.end().saturating_sub(*range.start()) + 1) as usize;
+        let mut result = Vec::with_capacity(capacity);
+        result.extend(self.entries.range(range).map(|e| e.value().clone()));
+        Ok(result)
     }
 
     async fn append_entries(
@@ -278,92 +417,15 @@ where
         entries: Vec<Entry>,
     ) -> Result<()> {
         let _timer = ScopedTimer::new("append_entries");
-
-        let max_index = entries.iter().map(|e| e.index).max().unwrap_or(0);
-
-        // Update memory based on strategy
-        match self.strategy {
-            PersistenceStrategy::DiskFirst => {
-                // For DiskFirst, persist first then update memory
-                self.persist_entries(&entries).await?;
-                for entry in &entries {
-                    self.entries.insert(entry.index, entry.clone());
-                }
-
-                self.update_term_indexes(&entries);
-            }
-            PersistenceStrategy::MemFirst => {
-                // For MemFirst, update memory first then persist async
-                for entry in &entries {
-                    self.entries.insert(entry.index, entry.clone());
-                }
-
-                self.update_term_indexes(&entries);
-
-                let indexes: Vec<u64> = entries.iter().map(|e| e.index).collect();
-                self.command_sender.send(LogCommand::PersistEntries(indexes)).map_err(|e| {
-                    NetworkError::SingalSendFailed(format!("Failed to send signal: {e:?}",))
-                })?;
-            }
-        }
-
-        // Update next index
-        let current_next = self.next_id.load(Ordering::Acquire);
-        if max_index >= current_next {
-            self.next_id.store(max_index + 1, Ordering::Release);
-        }
-        // Update atomic indexes
-        if let Some(first_entry) = entries.first() {
-            // Atomic min update
-            let mut current_min = self.min_index.load(Ordering::Relaxed);
-            while first_entry.index < current_min || current_min == 0 {
-                match self.min_index.compare_exchange_weak(
-                    current_min,
-                    first_entry.index,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => break,
-                    Err(e) => current_min = e,
-                }
-            }
-        }
-
-        if let Some(last_entry) = entries.last() {
-            // Atomic max update
-            let mut current_max = self.max_index.load(Ordering::Relaxed);
-            while last_entry.index > current_max {
-                match self.max_index.compare_exchange_weak(
-                    current_max,
-                    last_entry.index,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => break,
-                    Err(e) => current_max = e,
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn wait_durable(
-        &self,
-        index: u64,
-    ) -> Result<()> {
-        let durable_index = self.durable_index.load(Ordering::Acquire);
-        if index <= durable_index {
+        if entries.is_empty() {
             return Ok(());
         }
 
-        let (tx, rx) = oneshot::channel();
-        self.command_sender.send(LogCommand::WaitDurable(index, tx)).map_err(|e| {
-            NetworkError::SingalSendFailed(format!("wait_durable send failed: {e:?}"))
-        })?;
-
-        rx.await
-            .map_err(|_| NetworkError::SingalSendFailed("wait_durable channel closed".into()))?;
+        self.insert_to_memory(&entries);
+        // Signal IO thread to persist. Multiple concurrent notify_one() calls
+        // while the IO thread is busy coalesce into one wakeup — no per-write
+        // kernel cond_signal. IO thread reads from SkipMap via max_index.
+        self.write_notify.notify_one();
 
         Ok(())
     }
@@ -383,7 +445,8 @@ where
         new_entries: Vec<Entry>,
     ) -> Result<Option<LogId>> {
         let _timer = ScopedTimer::new("filter_out_conflicts_and_append");
-        // Virtual log handling (snapshot installation)
+        // prev_log_index == 0 means the leader wants the follower to start from scratch
+        // (e.g. new follower joining, or follower log fully diverged). Reset and replace.
         if prev_log_index == 0 && prev_log_term == 0 {
             self.reset().await?;
             self.append_entries(new_entries.clone()).await?;
@@ -393,41 +456,115 @@ where
             }));
         }
 
-        // Check log consistency
-        let prev_term = self.entry(prev_log_index)?;
-        if prev_term.map(|e| e.term) != Some(prev_log_term) {
+        // Check log consistency: use entry_term() so purge-boundary entries
+        // (entries removed from the SkipMap but recorded in last_purged_index/term)
+        // are still recognised as valid prev_log positions after snapshot install.
+        if self.entry_term(prev_log_index) != Some(prev_log_term) {
             return Ok(self.last_log_id());
         }
 
-        // OPTIMIZATION: Skip removal if no conflicts
         let last_current_index = self.last_entry_id();
-        if prev_log_index >= last_current_index {
-            // Directly append new entries if no conflicts
-            self.append_entries(new_entries.clone()).await?;
-            return Ok(new_entries.last().map(|e| LogId {
-                term: e.term,
-                index: e.index,
-            }));
-        }
 
-        // OPTIMIZATION: Bulk removal
-        let start_index = prev_log_index + 1;
-        if start_index <= last_current_index {
-            // Efficient range removal without retain
-            self.remove_range(start_index..=u64::MAX);
+        // Step 1: partition_point — O(log n_batch), zero SkipMap lookups.
+        // Locates the overlap boundary without touching entry_term() at all.
+        let skip = new_entries.partition_point(|e| e.index <= last_current_index);
+        let overlap = &new_entries[..skip];
+        let tail = &new_entries[skip..];
 
-            // Truncate storage
-            self.log_store.truncate(start_index).await?;
-        }
+        // Step 2: Overlap safety check — O(1), two atomic loads.
+        //
+        // Overlap is safe to skip entirely when all three conditions hold:
+        //   (a) The entire overlap range falls within follower's current term segment
+        //       (first.index >= last_term_start) — no older-term entries below overlap start.
+        //   (b) Incoming overlap entries all carry follower's current term (first.term == last_term).
+        //   (c) No term change within incoming overlap (last.term == last_term); guaranteed by
+        //       Raft non-decreasing term property when combined with (b).
+        //
+        // Covers the steady-state pipeline path (99%+ of calls). Election recovery (new leader,
+        // term conflict in overlap) is caught by condition (b) failing → slow path.
+        let overlap_safe = match overlap.first() {
+            None => true,
+            Some(first) => {
+                let ft = self.term_segments.last_term.load(Ordering::Acquire);
+                let fs = self.term_segments.last_term_start.load(Ordering::Acquire);
+                first.index >= fs
+                    && first.term == ft
+                    && overlap.last().is_none_or(|last| last.term == ft)
+            }
+        };
 
-        // Append new entries
-        self.append_entries(new_entries.clone()).await?;
+        let last_log_id = if overlap_safe {
+            // Fast path: skip entire overlap, append tail only.
+            if tail.is_empty() {
+                new_entries.last().map(|e| LogId {
+                    term: e.term,
+                    index: e.index,
+                })
+            } else {
+                self.append_entries(tail.to_vec()).await?;
+                tail.last().map(|e| LogId {
+                    term: e.term,
+                    index: e.index,
+                })
+            }
+        } else {
+            // Slow path: term boundary detected in overlap — scan for first conflict.
+            // entry_term() uses TermSegments (O(1)) with SkipMap fallback, so each
+            // check is cheap even on this rare election-recovery path.
+            let diverge_pos = new_entries.iter().position(|e| {
+                e.index > last_current_index || self.entry_term(e.index) != Some(e.term)
+            });
 
-        // Return new log head
-        Ok(new_entries.last().map(|e| LogId {
-            term: e.term,
-            index: e.index,
-        }))
+            match diverge_pos {
+                None => {
+                    // All terms matched — idempotent RPC, nothing to do.
+                    new_entries.last().map(|e| LogId {
+                        term: e.term,
+                        index: e.index,
+                    })
+                }
+                Some(pos) => {
+                    let tail = &new_entries[pos..];
+                    let diverge_index = new_entries[pos].index;
+
+                    if diverge_index <= last_current_index {
+                        // Real term conflict: truncate from diverge_index, replace with tail.
+                        // Await the done channel so callers can flush() knowing the truncation
+                        // is durable — durable_index may exceed max_index after truncation,
+                        // which would cause flush() to short-circuit before the replace lands.
+                        self.remove_range(diverge_index..=u64::MAX);
+                        self.insert_to_memory(tail);
+                        let (done_tx, done_rx) = oneshot::channel();
+                        self.command_sender
+                            .send(IOTask::ReplaceRange {
+                                truncate_from: diverge_index,
+                                new_entries: tail.to_vec(),
+                                done: done_tx,
+                            })
+                            .map_err(|e| {
+                                NetworkError::SingalSendFailed(format!(
+                                    "Failed to send ReplaceRange: {e:?}"
+                                ))
+                            })?;
+                        done_rx.await.map_err(|_| {
+                            NetworkError::SingalSendFailed(
+                                "ReplaceRange done channel closed".into(),
+                            )
+                        })??;
+                    } else {
+                        // No conflict — pipeline overlap consumed, append only the new tail.
+                        self.append_entries(tail.to_vec()).await?;
+                    }
+
+                    tail.last().map(|e| LogId {
+                        term: e.term,
+                        index: e.index,
+                    })
+                }
+            }
+        };
+
+        Ok(last_log_id)
     }
 
     fn calculate_majority_matched_index(
@@ -437,7 +574,10 @@ where
         mut peer_matched_ids: Vec<u64>,
     ) -> Option<u64> {
         let _timer = ScopedTimer::new("calculate_majority_matched_index");
-        // Include leader's last index
+        // Leader's contribution: last_entry_id (in-memory). With MemFirst (Level 2), db.write()
+        // returns once data reaches OS page cache — durable_index advances immediately.
+        // Followers also ACK after OS page cache write (no fsync wait). Crash safety is
+        // OS page cache level: process crash is recoverable, power loss is not.
         peer_matched_ids.push(self.last_entry_id());
 
         // Sort in descending order
@@ -488,32 +628,48 @@ where
             self.durable_index.store(cutoff_index.index, Ordering::Release);
         }
 
-        // Persist to storage
-        self.log_store.purge(cutoff_index).await?;
+        // Record purge boundary so entry_term() can return the correct term for
+        // prev_log_index == cutoff_index.index after the entry has been removed.
+        // Write term before index (Release) so readers that load index first then
+        // term (Acquire) always observe a consistent pair.
+        self.last_purged_term.store(cutoff_index.term, Ordering::Release);
+        self.last_purged_index.store(cutoff_index.index, Ordering::Release);
+
+        // Route purge through the IO thread so it never blocks the Raft event loop.
+        // Also writes the purge boundary to META_CF in the RocksDB implementation.
+        let (done_tx, done_rx) = oneshot::channel();
+        self.command_sender
+            .send(IOTask::Purge {
+                cutoff: cutoff_index,
+                done: done_tx,
+            })
+            .map_err(|e| NetworkError::SingalSendFailed(format!("Failed to send Purge: {e:?}")))?;
+        done_rx
+            .await
+            .map_err(|_| NetworkError::SingalSendFailed("Purge channel closed".into()))?;
 
         Ok(())
     }
 
     async fn flush(&self) -> Result<()> {
-        // Trigger immediate flush of all pending entries
+        let max_index = self.max_index.load(Ordering::Acquire);
+        if max_index == 0 {
+            return Ok(());
+        }
+        if self.durable_index.load(Ordering::Acquire) >= max_index {
+            return Ok(());
+        }
         let (tx, rx) = oneshot::channel();
-        self.command_sender.send(LogCommand::Flush(tx)).map_err(|e| {
-            NetworkError::SingalSendFailed(format!("Failed to send flush command: {e:?}",))
-        })?;
-        let _result = rx
-            .await
-            .map_err(|_| NetworkError::SingalSendFailed("Flush ack channel closed".into()))?;
-        Ok(())
+        self.command_sender
+            .send(IOTask::Flush(tx))
+            .map_err(|e| NetworkError::SingalSendFailed(format!("flush send failed: {e:?}")))?;
+        rx.await
+            .map_err(|_| NetworkError::SingalSendFailed("flush channel closed".into()))?
     }
 
     async fn reset(&self) -> Result<()> {
         let _timer = ScopedTimer::new("buffered_raft_log::reset");
-        self.reset_internal().await?;
-
-        //reset disk
-        self.log_store.reset().await?;
-
-        Ok(())
+        self.reset_internal().await
     }
 
     fn load_hard_state(&self) -> Result<Option<HardState>> {
@@ -526,6 +682,21 @@ where
     ) -> Result<()> {
         self.meta_store.save_hard_state(hard_state)
     }
+
+    async fn close(&self) {
+        // Signal the IO thread to flush remaining data and exit.
+        let _ = self.command_sender.send(IOTask::Shutdown);
+        // Take the handle — idempotent; second call is a no-op.
+        let handle = self.io_thread_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            // Join on a spawn_blocking thread so we don't block a tokio worker.
+            tokio::task::spawn_blocking(move || {
+                let _ = handle.join();
+            })
+            .await
+            .ok();
+        }
+    }
 }
 
 impl<T> BufferedRaftLog<T>
@@ -536,14 +707,17 @@ where
         node_id: u32,
         persistence_config: PersistenceConfig,
         storage: Arc<SOF<T>>,
-    ) -> (Self, mpsc::UnboundedReceiver<LogCommand>) {
+    ) -> (Self, mpsc::UnboundedReceiver<IOTask>) {
         let log_store = storage.log_store();
         let meta_store = storage.meta_store();
         let disk_len = log_store.last_index();
 
+        let FlushPolicy::Batch {
+            idle_flush_interval_ms,
+        } = persistence_config.flush_policy;
         debug!(
-            "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, flush: {:?}, disk_len: {:?}",
-            node_id, persistence_config.strategy, persistence_config.flush_policy, disk_len
+            "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, idle_flush_interval_ms: {:?}, disk_len: {:?}",
+            node_id, persistence_config.strategy, idle_flush_interval_ms, disk_len
         );
 
         //TODO: if switch to UnboundedChannel?
@@ -553,6 +727,7 @@ where
         // Initialize term indexes
         let term_first_index = SkipMap::new();
         let term_last_index = SkipMap::new();
+        let term_segments = TermSegments::new();
 
         // Load all entries from disk to memory
         let mut loaded_count = 0;
@@ -562,7 +737,7 @@ where
                     loaded_count = all_entries.len();
                     debug!("Successfully loaded {} entries from disk", loaded_count);
 
-                    for entry in all_entries {
+                    for entry in &all_entries {
                         let index = entry.index;
                         entries.insert(index, entry.clone());
 
@@ -578,6 +753,7 @@ where
                             .value()
                             .fetch_max(index, Ordering::AcqRel);
                     }
+                    term_segments.on_append(&all_entries);
                 }
                 Ok(_empty_entries) => {
                     warn!("Disk reported length {} but loaded 0 entries", disk_len);
@@ -600,115 +776,318 @@ where
             );
         }
 
-        // Initialize flush worker pool
-        let flush_workers = Self::create_flush_worker_pool(persistence_config.flush_workers);
+        // Restore purge boundary from storage so entry_term() returns the correct
+        // term for the snapshot boundary entry even after a restart.
+        let (last_purged_index_val, last_purged_term_val) = match log_store.load_purge_boundary() {
+            Ok(Some(lid)) => (lid.index, lid.term),
+            Ok(None) => (0, 0),
+            Err(e) => {
+                warn!("Failed to load purge boundary: {:?}, defaulting to 0", e);
+                (0, 0)
+            }
+        };
+
         (
             Self {
                 node_id,
                 log_store,
                 meta_store,
-                strategy: persistence_config.strategy,
-                flush_policy: persistence_config.flush_policy,
+                idle_flush_interval_ms,
                 entries,
                 min_index: AtomicU64::new(min_index),
                 max_index: AtomicU64::new(max_index),
+                last_purged_index: AtomicU64::new(last_purged_index_val),
+                last_purged_term: AtomicU64::new(last_purged_term_val),
                 durable_index: AtomicU64::new(disk_len),
                 next_id: AtomicU64::new(disk_len + 1),
+                write_notify: Arc::new(Notify::new()),
                 command_sender: command_sender.clone(),
-                flush_state: Mutex::new(FlushState {
-                    pending_indexes: Vec::new(),
-                }),
-                waiters: DashMap::new(),
                 term_first_index,
                 term_last_index,
-                flush_workers,
+                term_segments,
+                log_flush_tx: None,                            // set in start()
+                io_thread_handle: std::sync::Mutex::new(None), // set in start()
             },
             command_receiver,
         )
     }
 
-    /// Start the command processor and return an Arc-wrapped instance
+    /// Start the command processor and return an Arc-wrapped instance.
+    ///
+    /// `batch_processor` runs on a dedicated OS thread (not a tokio worker) so that
+    /// synchronous RocksDB calls (`db.write`, `flush_wal`) never block the async runtime.
+    /// The thread owns its own `new_current_thread` runtime — fully independent of the
+    /// caller's runtime lifecycle.  When the caller's runtime drops (e.g. at test teardown),
+    /// the IO thread's timers and channels are unaffected; it exits cleanly on `Shutdown`.
     pub fn start(
-        self,
-        receiver: mpsc::UnboundedReceiver<LogCommand>,
+        mut self,
+        receiver: mpsc::UnboundedReceiver<IOTask>,
+        log_flush_tx: Option<mpsc::UnboundedSender<crate::RoleEvent>>,
     ) -> Arc<Self> {
+        self.log_flush_tx = log_flush_tx;
         let arc_self = Arc::new(self);
         let weak_self = Arc::downgrade(&arc_self);
 
-        // Start background processor based on flush policy
-        if let FlushPolicy::Batch { interval_ms, .. } = arc_self.flush_policy {
-            tokio::spawn(Self::batch_processor(weak_self, receiver, interval_ms));
-        } else {
-            tokio::spawn(Self::command_processor(weak_self, receiver));
-        }
+        let idle_flush_interval_ms = arc_self.idle_flush_interval_ms;
+        let node_id = arc_self.node_id;
+        let io_handle = std::thread::Builder::new()
+            .name(format!("raft-io-{}", node_id))
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to build raft-io runtime");
+                rt.block_on(Self::batch_processor(
+                    weak_self,
+                    receiver,
+                    idle_flush_interval_ms,
+                ));
+            })
+            .expect("failed to spawn raft-io thread");
+
+        *arc_self.io_thread_handle.lock().unwrap() = Some(io_handle);
 
         arc_self
     }
 
-    async fn command_processor(
-        this: std::sync::Weak<Self>,
-        mut receiver: mpsc::UnboundedReceiver<LogCommand>,
-    ) {
-        while let Some(cmd) = receiver.recv().await {
-            let Some(this) = this.upgrade() else { break };
-            this.handle_command(cmd).await;
-        }
-    }
-
+    /// Notify-driven IO loop.
+    ///
+    /// Waits on `write_notify.notified()` for new entries in the SkipMap.
+    /// Multiple `notify_one()` calls while the IO thread is busy (persisting or
+    /// fsyncing) coalesce into a single wakeup, reducing kernel cond_signal overhead
+    /// from one-per-write to one-per-burst.
+    ///
+    /// On each wakeup:
+    ///   1. Read entries in `(durable_index, max_index]` from SkipMap.
+    ///   2. persist_entries to OS page cache (no fsync).
+    ///   3. Drain any pending control commands from the mpsc channel.
+    ///   4. fsync once — advance durable_index, wake WaitDurable callers.
+    ///
+    /// Safety-net timer fires after `idle_flush_interval_ms` of inactivity.
     async fn batch_processor(
         this: std::sync::Weak<Self>,
-        mut receiver: mpsc::UnboundedReceiver<LogCommand>,
-        interval_ms: u64,
+        mut receiver: mpsc::UnboundedReceiver<IOTask>,
+        idle_flush_interval_ms: u64,
     ) {
-        let mut interval = interval(Duration::from_millis(interval_ms));
-        let mut shutdown_requested = false;
+        // Upgrade once at entry — Arc stays alive until Shutdown (the real exit signal).
+        let Some(this) = this.upgrade() else { return };
 
-        while !shutdown_requested {
+        let start = tokio::time::Instant::now() + Duration::from_millis(idle_flush_interval_ms);
+        let mut safety_timer =
+            tokio::time::interval_at(start, Duration::from_millis(idle_flush_interval_ms));
+        safety_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Highest index in OS page cache, awaiting fsync. Reset to 0 after each fsync.
+        let mut pending_max: u64 = 0;
+
+        loop {
             tokio::select! {
-                // Priority 1: immediate command processing
+                _ = this.write_notify.notified() => {
+                    // Persist all entries written to SkipMap since last fsync.
+                    let end = this.max_index.load(Ordering::Acquire);
+                    let start = this.durable_index.load(Ordering::Acquire) + 1;
+                    if start <= end {
+                        match this.get_entries_range(start..=end) {
+                            Ok(entries) if !entries.is_empty() => {
+                                if let Err(e) = this.log_store.persist_entries(entries).await {
+                                    error!("write_notify persist_entries failed: {e:?}");
+                                } else {
+                                    pending_max = pending_max.max(end);
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => error!("write_notify get_entries_range failed: {e:?}"),
+                        }
+                    }
+                    // Drain any pending control commands before fsync.
+                    // Shutdown in the drain path must be handled here — it won't reach
+                    // the outer receiver arm if consumed in try_recv().
+                    // Collect any Flush senders: they must be replied to AFTER fsync.
+                    let mut seen_shutdown = false;
+                    let mut fatal_exit = false;
+                    // None until the first Flush arrives — avoids heap allocation on the hot
+                    // write path where flush() is rarely called concurrently with writes.
+                    let mut flush_replies: Option<Vec<oneshot::Sender<Result<()>>>> = None;
+                    while let Ok(cmd) = receiver.try_recv() {
+                        match cmd {
+                            IOTask::Shutdown => { seen_shutdown = true; break; }
+                            IOTask::Flush(reply) => { flush_replies.get_or_insert_with(Vec::new).push(reply); }
+                            cmd => {
+                                if Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await {
+                                    fatal_exit = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if fatal_exit {
+                        break; // disk state corrupted — exit without fsync
+                    }
+                    // Flush callers capture max_index BEFORE sending the task. Entries
+                    // appended between the initial `end` read above and now are in the
+                    // SkipMap but not yet in page cache. Persist them before fsyncing so
+                    // durable_index will reach the level the Flush callers expect.
+                    if flush_replies.is_some() {
+                        let current_max = this.max_index.load(Ordering::Acquire);
+                        if current_max > pending_max {
+                            let new_start = pending_max + 1;
+                            if new_start <= current_max {
+                                match this.get_entries_range(new_start..=current_max) {
+                                    Ok(entries) if !entries.is_empty() => {
+                                        if let Ok(()) = this.log_store.persist_entries(entries).await {
+                                            pending_max = current_max;
+                                        }
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => error!("write_notify flush catch-up persist failed: {e:?}"),
+                                }
+                            }
+                        }
+                    }
+                    let fsync_ok = if pending_max > 0 {
+                        match this.advance_durable_after_write(pending_max).await {
+                            Ok(()) => { pending_max = 0; true }
+                            Err(e) => { error!("write_notify fsync failed: {e:?}"); false }
+                        }
+                    } else {
+                        true
+                    };
+                    if let Some(replies) = flush_replies {
+                        for reply in replies {
+                            let _ = if fsync_ok {
+                                reply.send(Ok(()))
+                            } else {
+                                reply.send(Err(NetworkError::SingalSendFailed("fsync failed".into()).into()))
+                            };
+                        }
+                    }
+                    if seen_shutdown {
+                        let _ = this.log_store.flush();
+                        let _ = this.meta_store.flush();
+                        break;
+                    }
+                }
                 cmd = receiver.recv() => {
+                    let Some(cmd) = cmd else { break };
                     match cmd {
-                        Some(LogCommand::Shutdown) => {
-                            shutdown_requested = true;
-                            if let Some(this) = this.upgrade() {
-                                let _ = this.force_flush().await;
+                        IOTask::Shutdown => {
+                            // Persist any entries not yet in page cache before final flush.
+                            let end = this.max_index.load(Ordering::Acquire);
+                            let start = this.durable_index.load(Ordering::Acquire) + 1;
+                            if start <= end
+                                && let Ok(entries) = this.get_entries_range(start..=end)
+                                && !entries.is_empty()
+                            {
+                                if let Err(e) = this.log_store.persist_entries(entries).await {
+                                    error!("Shutdown persist_entries failed: {e:?}");
+                                } else {
+                                    pending_max = pending_max.max(end);
+                                }
+                            }
+                            if pending_max > 0 {
+                                let _ = this.advance_durable_after_write(pending_max).await;
+                            }
+                            let _ = this.log_store.flush();
+                            let _ = this.meta_store.flush();
+                            break;
+                        }
+                        IOTask::Flush(reply) => {
+                            // Persist any entries not yet in page cache, then fsync.
+                            let end = this.max_index.load(Ordering::Acquire);
+                            let start = this.durable_index.load(Ordering::Acquire) + 1;
+                            if start <= end
+                                && let Ok(entries) = this.get_entries_range(start..=end)
+                                && !entries.is_empty()
+                            {
+                                if let Err(e) = this.log_store.persist_entries(entries).await {
+                                    error!("Flush persist_entries failed: {e:?}");
+                                    let _ = reply.send(Err(e));
+                                    continue;
+                                } else {
+                                    pending_max = pending_max.max(end);
+                                }
+                            }
+                            // Drain remaining control cmds before fsync so they are
+                            // included in the same fsync batch.
+                            // Collect any extra Flush senders — reply after fsync.
+                            let mut seen_shutdown = false;
+                            let mut fatal_exit = false;
+                            let mut extra_replies: Vec<oneshot::Sender<Result<()>>> = Vec::new();
+                            while let Ok(cmd) = receiver.try_recv() {
+                                match cmd {
+                                    IOTask::Shutdown => { seen_shutdown = true; break; }
+                                    IOTask::Flush(extra) => { extra_replies.push(extra); }
+                                    cmd => {
+                                        if Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await {
+                                            fatal_exit = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if fatal_exit {
+                                break; // disk state corrupted — exit without fsync
+                            }
+                            let fsync_result = if pending_max > 0 {
+                                match this.advance_durable_after_write(pending_max).await {
+                                    Ok(()) => {
+                                        pending_max = 0;
+                                        Ok(())
+                                    }
+                                    Err(e) => {
+                                        error!("Flush fsync failed: {e:?}");
+                                        Err(e)
+                                    }
+                                }
+                            } else {
+                                Ok(())
+                            };
+                            // Reply to the original Flush and any that arrived during drain.
+                            let send_result = |r: oneshot::Sender<Result<()>>| {
+                                let _ = match &fsync_result {
+                                    Ok(()) => r.send(Ok(())),
+                                    Err(e) => r.send(Err(NetworkError::SingalSendFailed(
+                                        format!("{e:?}"),
+                                    )
+                                    .into())),
+                                };
+                            };
+                            send_result(reply);
+                            for extra in extra_replies {
+                                send_result(extra);
+                            }
+                            if seen_shutdown {
                                 let _ = this.log_store.flush();
                                 let _ = this.meta_store.flush();
+                                break;
                             }
                         }
-                        Some(cmd) => {
-                            if let Some(this) = this.upgrade() {
-                                this.handle_command(cmd).await;
+                        cmd => {
+                            if Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await {
+                                break; // disk state corrupted — exit batch_processor
                             }
                         }
-                        None => break,
                     }
                 }
-                // Priority 2: non-blocking refresh trigger
-                _ = interval.tick() => {
-                    if let Some(this) = this.upgrade() {
-                        // Quickly get the index to be refreshed (non-blocking)
-                        let indexes = this.get_pending_indexes().await;
-
-                        if !indexes.is_empty() {
-
-                            // Send to flush worker pool instead of spawning new task
-                            let flush_task = FlushTask {
-                                indexes,
-                                this: this.clone(),
-                            };
-
-                            // Handle backpressure gracefully
-                            match this.flush_workers.sender.as_ref().expect("sender should exist").send(flush_task) {
-                                Ok(_) => {
-                                    metrics::counter!("flush_tasks.enqueued").increment(1);
-                                }
-                                Err(e) => {
-                                    metrics::counter!("flush_tasks.dropped").increment(1);
-                                    error!("Flush worker pool backlogged, dropping task: {}", e);
-                                    // Consider implementing a retry mechanism or fallback
-                                }
-                            }
+                _ = safety_timer.tick() => {
+                    // Safety-net: persist and fsync any entries not yet durable.
+                    let end = this.max_index.load(Ordering::Acquire);
+                    let start = this.durable_index.load(Ordering::Acquire) + 1;
+                    if start <= end
+                        && let Ok(entries) = this.get_entries_range(start..=end)
+                        && !entries.is_empty()
+                    {
+                        if let Err(e) = this.log_store.persist_entries(entries).await {
+                            error!("safety-net persist_entries failed: {e:?}");
+                        } else {
+                            pending_max = pending_max.max(end);
+                        }
+                    }
+                    if pending_max > 0 {
+                        if let Err(e) = this.advance_durable_after_write(pending_max).await {
+                            error!("safety-net timer fsync failed: {e:?}");
+                        } else {
+                            pending_max = 0;
                         }
                     }
                 }
@@ -716,104 +1095,77 @@ where
         }
     }
 
-    async fn handle_command(
-        &self,
-        cmd: LogCommand,
-    ) {
+    /// Handle IOTask variants that are NOT `Flush` or `Shutdown`.
+    ///
+    /// Callers (`batch_processor`) dispatch `Flush` and `Shutdown` directly in the outer
+    /// `match` before this function is ever called — those two arms are unreachable here.
+    ///
+    /// Returns `true` if `batch_processor` must exit immediately (fatal IO error).
+    async fn handle_non_write_cmd(
+        cmd: IOTask,
+        this: &Arc<Self>,
+        pending_max: &mut u64,
+    ) -> bool {
         match cmd {
-            LogCommand::PersistEntries(indexes) => {
-                if !indexes.is_empty() {
-                    self.handle_persist_entries(&indexes).await;
+            IOTask::Flush(_) => {
+                unreachable!(
+                    "Flush must be intercepted in the drain loop before handle_non_write_cmd"
+                )
+            }
+            IOTask::Shutdown => {
+                unreachable!("Shutdown is always filtered out before reaching handle_non_write_cmd")
+            }
+            IOTask::ReplaceRange {
+                truncate_from,
+                new_entries,
+                done,
+            } => {
+                let max_idx = new_entries.last().map(|e| e.index).unwrap_or(0);
+                let result = this.log_store.replace_range(truncate_from, new_entries).await;
+                if let Err(ref e) = result {
+                    error!("IOTask::ReplaceRange failed (fatal): {e:?}");
+                    let _ = done.send(result);
+                    return true; // signal batch_processor to exit — disk state is corrupted
                 }
-            }
-            LogCommand::WaitDurable(index, ack) => {
-                self.handle_wait_durable(index, ack).await;
-            }
-            LogCommand::Flush(ack) => {
-                let result = self.force_flush().await;
-                let _ = ack.send(result);
-            }
-            LogCommand::Reset(ack) => {
-                if let Err(e) = self.reset_internal().await {
-                    error!("Failed to reset internal state: {}", e);
-                    let _ = ack.send(Err(e));
-                } else {
-                    //reset disk
-                    let result = self.log_store.reset().await;
-                    let _ = ack.send(result);
+                if max_idx > 0 {
+                    *pending_max = (*pending_max).max(max_idx);
                 }
+                let _ = done.send(result);
+                false
             }
-            LogCommand::Shutdown => {
-                let _ = self.force_flush().await;
-                let _ = self.log_store.flush();
-                let _ = self.meta_store.flush();
+            IOTask::Purge { cutoff, done } => {
+                let _ = this.log_store.purge(cutoff).await;
+                let _ = done.send(());
+                false
+            }
+            IOTask::Reset { done } => {
+                let result = this.log_store.reset().await;
+                *pending_max = 0; // disk wiped — pending page-cache watermark must be zeroed
+                let _ = done.send(result);
+                false
             }
         }
     }
 
-    async fn handle_persist_entries(
+    /// Advance durable_index to `max_index` after data has been written to OS page cache (Level 2).
+    ///
+    /// For Level 2 (current): `is_write_durable=true` → skip flush_wal, advance immediately.
+    /// For Level 3 (future):  `is_write_durable=false` → call flush_wal(sync=true) first.
+    async fn advance_durable_after_write(
         &self,
-        indexes: &[u64],
-    ) {
-        // Filter out already persisted indices
-        let durable_index = self.durable_index.load(Ordering::Acquire);
-        let indexes_to_process: Vec<u64> =
-            indexes.iter().filter(|&&idx| idx > durable_index).cloned().collect();
-
-        if indexes_to_process.is_empty() {
-            return;
+        max_index: u64,
+    ) -> Result<()> {
+        if !self.log_store.is_write_durable() {
+            self.log_store.flush()?;
         }
-        metrics::counter!("persist_entries_calls").increment(1);
-        metrics::histogram!("persist_entries_batch_size").record(indexes_to_process.len() as f64);
-
-        match self.flush_policy {
-            FlushPolicy::Immediate => {
-                // For Immediate we must persist the *exact incoming indexes* directly.
-                // Do not rely on flush_state.pending_indexes because this field is used
-                // for batching only and may be empty for Immediate path.
-                if !indexes_to_process.is_empty() {
-                    // process_flush expects a slice of indexes -> call directly
-                    // We ignore the Result here but log on error for debugging.
-                    if let Err(e) = self.process_flush(indexes).await {
-                        error!("Immediate persist failed: {:?}", e);
-                    }
-                }
-            }
-            FlushPolicy::Batch { threshold, .. } => {
-                // For Batch: accumulate indexes into pending_indexes, then check threshold.
-                let mut flush_now = false;
-                {
-                    // lock scope small for performance
-                    let mut state = self.flush_state.lock().await;
-                    state.pending_indexes.extend_from_slice(indexes_to_process.as_slice());
-                    if state.pending_indexes.len() >= threshold {
-                        flush_now = true;
-                    }
-                }
-
-                if flush_now {
-                    // Drain pending indexes and flush them
-                    let pending = self.get_pending_indexes().await;
-                    if !pending.is_empty() {
-                        if let Err(e) = self.process_flush(&pending).await {
-                            error!("Batch persist failed: {:?}", e);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    async fn get_pending_indexes(&self) -> Vec<u64> {
-        let mut state = self.flush_state.lock().await;
-        std::mem::take(&mut state.pending_indexes)
+        self.advance_durable_and_notify(max_index);
+        Ok(())
     }
 
     async fn reset_internal(&self) -> Result<()> {
         self.entries.clear();
         self.durable_index.store(0, Ordering::Release);
         self.next_id.store(1, Ordering::Release);
-        self.waiters.clear();
 
         // Reset boundaries
         self.min_index.store(0, Ordering::Release);
@@ -822,119 +1174,80 @@ where
         // Clear term indexes to ensure consistency after reset
         self.term_first_index.clear();
         self.term_last_index.clear();
+        self.term_segments.clear();
 
-        self.log_store.reset().await?;
-
-        Ok(())
-    }
-
-    async fn handle_wait_durable(
-        &self,
-        index: u64,
-        ack: oneshot::Sender<()>,
-    ) {
-        let durable_index = self.durable_index.load(Ordering::Acquire);
-        if index <= durable_index {
-            let _ = ack.send(());
-        } else {
-            self.waiters.entry(index).or_default().push(ack);
-        }
-    }
-
-    /// Process entries for flush operation
-    /// Separated to make error handling clearer
-    pub async fn process_flush(
-        &self,
-        indexes: &[u64],
-    ) -> Result<()> {
-        // Collect entries to persist
-        let entries: Vec<Entry> = indexes
-            .iter()
-            .filter_map(|idx| self.entries.get(idx).map(|e| e.value().clone()))
-            .collect();
-
-        // Persist to storage
-        self.log_store.persist_entries(entries).await?;
-
-        // Handle immediate flush policy
-        if matches!(self.flush_policy, FlushPolicy::Immediate) {
-            self.log_store.flush()?;
-        }
-
-        // Update durable index
-        if !indexes.is_empty() {
-            let mut cur = self.durable_index.load(Ordering::Acquire);
-            let mut v = indexes.to_vec();
-            v.sort_unstable();
-            v.dedup();
-            for idx in v {
-                if idx == cur + 1 {
-                    cur = idx;
-                } else if idx > cur + 1 {
-                    break;
-                }
-            }
-            if cur > self.durable_index.load(Ordering::Acquire) {
-                self.durable_index.store(cur, Ordering::Release);
-                self.notify_waiters(cur);
-            }
-        }
+        let (done_tx, done_rx) = oneshot::channel();
+        self.command_sender
+            .send(IOTask::Reset { done: done_tx })
+            .map_err(|e| crate::Error::Fatal(format!("IOTask::Reset send failed: {e:?}")))?;
+        done_rx
+            .await
+            .map_err(|e| crate::Error::Fatal(format!("IOTask::Reset recv failed: {e:?}")))??;
 
         Ok(())
     }
 
-    async fn force_flush(&self) -> Result<()> {
-        let indexes = self.get_pending_indexes().await;
-        let result = self.process_flush(&indexes).await;
-
-        self.log_store.flush()?;
-
-        result
-    }
-
-    /// Notify waiters for completed flush operations
-    fn notify_waiters(
-        &self,
-        flushed_index: u64,
-    ) {
-        let mut to_remove = Vec::new();
-
-        for entry in self.waiters.iter() {
-            if *entry.key() <= flushed_index {
-                to_remove.push(*entry.key());
-            }
-        }
-
-        for index in to_remove {
-            if let Some((_, waiters)) = self.waiters.remove(&index) {
-                for waiter in waiters {
-                    let _ = waiter.send(());
-                }
-            }
-        }
-    }
-
-    async fn persist_entries(
+    /// Insert entries into the in-memory index (SkipMap + term indexes + atomics).
+    fn insert_to_memory(
         &self,
         entries: &[Entry],
-    ) -> Result<()> {
-        self.log_store.persist_entries(entries.to_vec()).await?;
+    ) {
+        for entry in entries {
+            self.entries.insert(entry.index, entry.clone());
+        }
+        self.update_term_indexes(entries);
+        self.term_segments.on_append(entries);
 
-        // Handle flush policy
-        match self.flush_policy {
-            FlushPolicy::Immediate => self.log_store.flush()?,
-            FlushPolicy::Batch { .. } => {} // Defer flush
+        let max_index = entries.iter().map(|e| e.index).max().unwrap_or(0);
+        let current_next = self.next_id.load(Ordering::Acquire);
+        if max_index >= current_next {
+            self.next_id.store(max_index + 1, Ordering::Release);
         }
 
-        // Update durable index
-        if let Some(max_index) = entries.iter().map(|e| e.index).max() {
-            let prev = self.durable_index.fetch_max(max_index, Ordering::AcqRel);
-            if max_index > prev {
-                self.notify_waiters(max_index);
+        if let Some(first_entry) = entries.first() {
+            let mut current_min = self.min_index.load(Ordering::Relaxed);
+            while first_entry.index < current_min || current_min == 0 {
+                match self.min_index.compare_exchange_weak(
+                    current_min,
+                    first_entry.index,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(e) => current_min = e,
+                }
             }
         }
 
-        Ok(())
+        if let Some(last_entry) = entries.last() {
+            let mut current_max = self.max_index.load(Ordering::Relaxed);
+            while last_entry.index > current_max {
+                match self.max_index.compare_exchange_weak(
+                    current_max,
+                    last_entry.index,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(e) => current_max = e,
+                }
+            }
+        }
+    }
+
+    /// Advance `durable_index` to `new_durable` (monotonically) and send `LogFlushed`.
+    fn advance_durable_and_notify(
+        &self,
+        new_durable: u64,
+    ) {
+        let prev = self.durable_index.fetch_max(new_durable, Ordering::AcqRel);
+        if new_durable > prev
+            && let Some(ref tx) = self.log_flush_tx
+        {
+            let _ = tx.send(crate::RoleEvent::LogFlushed {
+                durable_index: new_durable,
+            });
+        }
     }
 
     /// Efficient range removal with targeted term index updates
@@ -1040,139 +1353,6 @@ where
         }
     }
 
-    /// Creates a flush worker pool with configurable number of workers
-    fn create_flush_worker_pool(num_workers: usize) -> FlushWorkerPool<T> {
-        // Configuration: Adjust based on your workload
-        const CHANNEL_CAPACITY: usize = 100; // Provides backpressure
-
-        let (sender, receiver) = bounded::<FlushTask<T>>(CHANNEL_CAPACITY);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let mut worker_handles = Vec::with_capacity(num_workers);
-
-        for worker_id in 0..num_workers {
-            let receiver = receiver.clone();
-            let shutdown = shutdown.clone();
-            let handle = tokio::spawn(async move {
-                loop {
-                    // Check shutdown flag first
-                    if shutdown.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    match receiver.try_recv() {
-                        Ok(task) => {
-                            let FlushTask { indexes, this } = task;
-
-                            // Record metrics for monitoring
-                            let start_time = Instant::now();
-                            metrics::counter!("flush_worker.requests").increment(1);
-                            metrics::histogram!("flush_worker.batch_size")
-                                .record(indexes.len() as f64);
-
-                            // Process the flush
-                            match this.process_flush(&indexes).await {
-                                Ok(_) => {
-                                    let duration = start_time.elapsed();
-                                    metrics::histogram!("flush_worker.success_duration")
-                                        .record(duration.as_micros() as f64);
-                                    debug!(
-                                        "Worker {} successfully processed flush of {} entries in {:?}",
-                                        worker_id,
-                                        indexes.len(),
-                                        duration
-                                    );
-                                }
-                                Err(e) => {
-                                    metrics::counter!("flush_worker.errors").increment(1);
-                                    error!("Worker {} failed to process flush: {}", worker_id, e);
-
-                                    // Implement retry logic for transient errors
-                                    if Self::is_transient_error(&e) {
-                                        warn!("Retrying failed flush operation");
-                                        // Simple retry after delay - consider exponential backoff
-                                        // for production
-                                        tokio::time::sleep(Duration::from_millis(100)).await;
-                                        match this.process_flush(&indexes).await {
-                                            Ok(_) => {
-                                                debug!("Worker {} retry succeeded", worker_id);
-                                            }
-                                            Err(retry_err) => {
-                                                error!(
-                                                    "Worker {} retry failed: {}",
-                                                    worker_id, retry_err
-                                                );
-                                                break; // Only exit on persistent failure
-                                            }
-                                        }
-                                    } else {
-                                        break; // Non-transient - exit immediately
-                                    }
-                                }
-                            }
-                        }
-                        Err(crossbeam::channel::TryRecvError::Empty) => {
-                            // No tasks available, sleep briefly
-                            tokio::time::sleep(Duration::from_millis(1)).await;
-                            continue;
-                        }
-                        Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                            // Channel disconnected, break
-                            break;
-                        }
-                    }
-                }
-
-                debug!("Flush worker {} shutting down", worker_id);
-            });
-
-            worker_handles.push(handle);
-        }
-
-        FlushWorkerPool {
-            sender: Some(sender),
-            shutdown,
-            worker_handles,
-        }
-    }
-
-    /// Helper to determine if an error is transient and worth retrying
-    fn is_transient_error(error: &Error) -> bool {
-        // Implement logic based on your error types
-        // For example, network timeouts, temporary IO errors, etc.
-        error.to_string().contains("timeout")
-            || error.to_string().contains("temporary")
-            || error.to_string().contains("busy")
-    }
-
-    // Cleanup method for graceful shutdown
-    #[allow(dead_code)]
-    pub(crate) async fn shutdown(&mut self) {
-        // Signal shutdown to all workers
-        self.flush_workers.shutdown.store(true, Ordering::Relaxed);
-
-        // Take and drop the sender to close channel
-        if let Some(sender) = self.flush_workers.sender.take() {
-            drop(sender);
-        }
-
-        // Wait for each worker to complete with individual timeout
-        for handle in self.flush_workers.worker_handles.drain(..) {
-            match tokio::time::timeout(Duration::from_secs(2), handle).await {
-                Ok(Ok(())) => {
-                    // Worker completed successfully
-                }
-                Ok(Err(e)) => {
-                    warn!("Worker task panicked during shutdown: {:?}", e);
-                }
-                Err(_) => {
-                    warn!("Worker task timed out during shutdown");
-                    // Task is automatically cancelled when JoinHandle is dropped
-                }
-            }
-        }
-
-        debug!("Flush worker pool shut down successfully");
-    }
-
     /// Returns the number of entries in the buffer.
     ///
     /// # Visibility
@@ -1181,24 +1361,6 @@ where
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
-    }
-
-    /// Returns the current durable index (test-only).
-    ///
-    /// This accessor allows tests to verify persistence progress without
-    /// accessing the internal AtomicU64 directly.
-    #[cfg(any(test, feature = "__test_support"))]
-    pub fn durable_index(&self) -> u64 {
-        self.durable_index.load(Ordering::Acquire)
-    }
-
-    /// Returns whether all flush workers have finished (test-only).
-    ///
-    /// This accessor enables tests to verify graceful shutdown behavior
-    /// without directly accessing worker handles.
-    #[cfg(test)]
-    pub fn is_all_workers_finished(&self) -> bool {
-        self.flush_workers.worker_handles.iter().all(|h| h.is_finished())
     }
 
     /// Returns reference to next_id atomic for test verification (test-only).
@@ -1226,7 +1388,7 @@ where
     T: TypeConfig,
 {
     fn drop(&mut self) {
-        if let Err(e) = self.command_sender.clone().send(LogCommand::Shutdown) {
+        if let Err(e) = self.command_sender.clone().send(IOTask::Shutdown) {
             debug!(
                 "Shutdown command send failed (receiver already closed): {:?}",
                 e

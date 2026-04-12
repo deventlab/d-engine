@@ -75,6 +75,33 @@ pub trait LogStore: Send + Sync + 'static {
         from_index: u64,
     ) -> Result<(), Error>;
 
+    /// Atomically truncate from `from_index` and persist `new_entries` in one write.
+    ///
+    /// Default implementation calls `truncate` then `persist_entries` sequentially
+    /// (non-atomic). Override with a single WriteBatch for true crash atomicity.
+    async fn replace_range(
+        &self,
+        from_index: u64,
+        new_entries: Vec<Entry>,
+    ) -> Result<(), Error> {
+        self.truncate(from_index).await?;
+        if !new_entries.is_empty() {
+            self.persist_entries(new_entries).await?;
+        }
+        Ok(())
+    }
+
+    /// Whether a single `persist_entries` call is crash-safe without an explicit `flush()`.
+    ///
+    /// Return `true` if your backend writes are immediately durable (e.g. any backend
+    /// with synchronous write-through to stable storage). Return `false` if durability
+    /// requires an explicit `flush()` call (e.g. RocksDB without `sync=true`, sled,
+    /// file I/O without `sync_all`).
+    ///
+    /// **This value must be accurate.** A wrong `true` causes `durable_index` to advance
+    /// before data is crash-safe, silently breaking Raft's durability guarantee.
+    fn is_write_durable(&self) -> bool;
+
     /// Optional: Flush pending writes (use with caution)
     fn flush(&self) -> Result<(), Error> {
         Ok(()) // Default no-op for engines with auto-flush
@@ -92,6 +119,17 @@ pub trait LogStore: Send + Sync + 'static {
     /// # Implementation note
     /// Should maintain cached value updated on write operations
     fn last_index(&self) -> u64;
+
+    /// Load the purge boundary persisted by the last `purge()` call.
+    ///
+    /// Returns the `LogId` (index + term) of the highest entry ever purged,
+    /// or `None` if `purge()` has never been called. `BufferedRaftLog::new()`
+    /// uses this to restore `last_purged_index/term` after a restart so that
+    /// `entry_term(last_purged_index)` returns the correct term even though
+    /// the entry has been removed from the in-memory log.
+    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
+        Ok(None) // Default: not persisted
+    }
 }
 
 /// Metadata storage operations

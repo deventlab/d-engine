@@ -27,6 +27,7 @@ use d_engine_proto::server::election::VotedFor;
 use d_engine_server::FileStateMachine;
 use d_engine_server::FileStorageEngine;
 use d_engine_server::HardState;
+use d_engine_server::LeaderInfo;
 use d_engine_server::LogStore;
 use d_engine_server::MetaStore;
 use d_engine_server::Node;
@@ -123,6 +124,10 @@ pub async fn create_node_config(
         ]
         db_root_dir = '{db_root_dir}'
         log_dir = '{log_dir}'
+
+        [raft.persistence]
+        strategy = "MemFirst"
+        flush_policy = {{ Batch = {{ threshold = 100, idle_flush_interval_ms = 1 }} }}
         "#
     )
 }
@@ -161,6 +166,10 @@ pub async fn create_node_config_with_role(
         ]
         db_root_dir = '{db_root_dir}'
         log_dir = '{log_dir}'
+
+        [raft.persistence]
+        strategy = "MemFirst"
+        flush_policy = {{ Batch = {{ threshold = 1, idle_flush_interval_ms = 1 }} }}
         "#
     )
 }
@@ -198,13 +207,19 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             ..Default::default()
         },
         persistence: PersistenceConfig {
-            strategy: PersistenceStrategy::DiskFirst,
-            flush_policy: FlushPolicy::Immediate,
+            strategy: PersistenceStrategy::MemFirst,
+            flush_policy: FlushPolicy::Batch {
+                idle_flush_interval_ms: 1,
+            },
             ..Default::default()
         },
         election: ElectionConfig {
-            election_timeout_min: 1000,
-            election_timeout_max: 2000,
+            // Lower min timeout (300 ms vs 1000 ms) lets the first election complete faster
+            // under CPU saturation, reducing the chance the test hits the overall timeout.
+            // Window width is intentionally kept wide (2700 ms) so staggered nodes rarely
+            // fire simultaneously.
+            election_timeout_min: 300,
+            election_timeout_max: 3000,
             ..Default::default()
         },
         ..Default::default()
@@ -634,4 +649,31 @@ pub async fn get_available_ports(count: usize) -> PortGuard {
         ports,
         _listeners: listeners,
     }
+}
+
+/// Wait for any surviving node to report a new leader different from `old_leader_id`.
+///
+/// Polls all receivers every 50ms and returns as soon as any node's view converges
+/// on a valid new leader. Watching multiple nodes avoids depending on a single node's
+/// task being scheduled promptly under heavy `make test` load.
+pub async fn wait_for_new_leader(
+    receivers: Vec<watch::Receiver<Option<LeaderInfo>>>,
+    old_leader_id: u32,
+    timeout: Duration,
+) -> LeaderInfo {
+    tokio::time::timeout(timeout, async move {
+        loop {
+            for rx in &receivers {
+                if let Some(leader) = *rx.borrow()
+                    && leader.leader_id != 0
+                    && leader.leader_id != old_leader_id
+                {
+                    return leader;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for new leader election")
 }

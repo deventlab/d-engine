@@ -46,11 +46,11 @@ use tracing_test::traced_test;
 /// - No role transition events are sent (leadership continues until higher level handles error)
 #[tokio::test]
 #[traced_test]
-async fn test_leader_handles_fatal_error_notifies_pending_requests() {
+async fn test_leader_handles_fatal_error_notifies_pending_write_apply() {
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = MockBuilder::new(graceful_rx)
-        .with_db_path("/tmp/test_leader_handles_fatal_error_notifies_pending_requests")
+        .with_db_path("/tmp/test_leader_handles_fatal_error_notifies_pending_write_apply")
         .build_context();
 
     // Setup: Create leader in normal state

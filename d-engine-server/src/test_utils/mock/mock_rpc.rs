@@ -97,6 +97,20 @@ impl RaftReplicationService for MockRpcService {
             )),
         }
     }
+
+    type StreamAppendEntriesStream = std::pin::Pin<
+        Box<dyn tokio_stream::Stream<Item = Result<AppendEntriesResponse, tonic::Status>> + Send>,
+    >;
+
+    async fn stream_append_entries(
+        &self,
+        _request: tonic::Request<tonic::Streaming<AppendEntriesRequest>>,
+    ) -> std::result::Result<tonic::Response<Self::StreamAppendEntriesStream>, tonic::Status> {
+        // Mock implementation: not used in current unit tests
+        Err(tonic::Status::unimplemented(
+            "stream_append_entries not implemented in mock",
+        ))
+    }
 }
 
 #[tonic::async_trait]

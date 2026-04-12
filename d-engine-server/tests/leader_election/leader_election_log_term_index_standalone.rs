@@ -105,7 +105,7 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
     // Verify Leader is Node 2
     let bootstrap_urls = create_bootstrap_urls(ports);
     let start = std::time::Instant::now();
-    let timeout = Duration::from_secs(15);
+    let timeout = Duration::from_secs(30);
 
     let client_manager = loop {
         match ClientManager::new(&bootstrap_urls).await {

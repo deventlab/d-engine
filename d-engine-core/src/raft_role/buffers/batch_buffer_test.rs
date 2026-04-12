@@ -149,3 +149,28 @@ fn test_fresh_buffer_is_empty() {
     assert!(buffer.is_empty());
     assert_eq!(buffer.buffer.len(), 0);
 }
+
+// ── Metrics path coverage ─────────────────────────────────────────────────────
+
+/// push() with metrics_enabled=true executes the gauge branch.
+/// No metrics recorder is required — metrics::gauge! is a no-op without one,
+/// but the branch body is still traversed and reported as covered.
+#[test]
+fn test_push_with_metrics_enabled_executes_gauge_branch() {
+    let mut buf = BatchBuffer::<TestRequest>::new(4).with_length_gauge(1, "test_buf", true);
+
+    buf.push(create_test_request());
+    buf.push(create_test_request());
+    assert_eq!(buf.len(), 2);
+}
+
+/// take_all() with metrics_enabled=true executes the reset-gauge branch.
+#[test]
+fn test_take_all_with_metrics_enabled_executes_gauge_reset() {
+    let mut buf = BatchBuffer::<TestRequest>::new(4).with_length_gauge(2, "test_buf", true);
+
+    buf.push(create_test_request());
+    let taken = buf.take_all();
+    assert_eq!(taken.len(), 1);
+    assert!(buf.is_empty());
+}

@@ -13,8 +13,7 @@ async fn test_remove_range_with_concurrent_reads() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_remove_range_with_concurrent_reads",
     );
@@ -57,8 +56,7 @@ async fn test_concurrent_append_and_purge() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 100,
-            interval_ms: 50,
+            idle_flush_interval_ms: 50,
         },
         "test_concurrent_append_purge",
     );

@@ -56,7 +56,7 @@ use crate::utils::cluster::error;
 /// - `T`: Application-specific Raft type configuration
 pub struct FollowerState<T: TypeConfig> {
     // -- Core State --
-    /// Shared cluster state with mutex protection
+    /// Shared cluster state
     pub shared_state: SharedState,
 
     // -- Log Compaction & Purge --
@@ -337,9 +337,15 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 // Create ACK channel (follower sends ACKs to leader)
                 let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
 
-                // Spawn ACK handler to send final response
+                // Spawn ACK handler to send final response.
+                // process_snapshot_stream sends one ACK per chunk; drain all of them and
+                // use the last one as the final status once the sender side is dropped.
                 tokio::spawn(async move {
-                    match ack_rx.recv().await {
+                    let mut last_ack: Option<SnapshotAck> = None;
+                    while let Some(ack) = ack_rx.recv().await {
+                        last_ack = Some(ack);
+                    }
+                    match last_ack {
                         Some(final_ack) => {
                             let response = SnapshotResponse {
                                 term: my_term,
@@ -349,12 +355,12 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             let _ = sender.send(Ok(response));
                         }
                         None => {
-                            let _ = sender.send(Err(Status::internal("ACK channel closed")));
+                            let _ = sender.send(Err(Status::internal("No ACK received")));
                         }
                     }
                 });
 
-                if let Err(e) = ctx
+                let snap_result = ctx
                     .handlers
                     .state_machine_handler
                     .apply_snapshot_stream_from_leader(
@@ -363,10 +369,37 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         ack_tx,
                         &ctx.node_config.raft.snapshot,
                     )
-                    .await
-                {
-                    error!(?e, "Follower handle  RaftEvent::InstallSnapshotChunk");
-                    return Err(e);
+                    .await;
+                match snap_result {
+                    Err(e) => {
+                        // Transient failure: leader may have crashed mid-transfer.
+                        // Follower remains alive; election timer fires after heartbeats stop.
+                        warn!(
+                            ?e,
+                            "Snapshot transfer from leader failed, follower continues"
+                        );
+                    }
+                    Ok(()) => {
+                        // Advance raft log purge boundary to snapshot's last_included so that
+                        // last_log_id() reflects the correct position after snapshot install.
+                        // Without this, the follower would return stale conflict indices to the leader.
+                        if let Some(metadata) =
+                            ctx.state_machine_handler().get_latest_snapshot_metadata()
+                            && let Some(last_included) = metadata.last_included
+                        {
+                            if let Err(e) = ctx.raft_log().purge_logs_up_to(last_included).await {
+                                error!(
+                                    ?e,
+                                    "Failed to set raft log boundary after snapshot install"
+                                );
+                            } else {
+                                info!(
+                                    ?last_included,
+                                    "Follower raft log boundary set after InstallSnapshotChunk"
+                                );
+                            }
+                        }
+                    }
                 }
             }
 
@@ -491,18 +524,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Ok(());
             }
 
-            RaftEvent::TriggerSnapshotPush { peer_id: _ } => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Follower",
-                    required_role: "Leader",
-                    context: format!(
-                        "Follower node {} receives RaftEvent::TriggerSnapshotPush",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
-
             RaftEvent::PromoteReadyLearners => {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Follower",
@@ -521,20 +542,6 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 trace!("Follower ignoring MembershipApplied event");
             }
 
-            RaftEvent::ApplyCompleted {
-                last_index,
-                results: _,
-            } => {
-                // Per Raft §7: each server takes snapshots independently.
-                check_and_trigger_snapshot(
-                    last_index,
-                    Follower as i32,
-                    self.current_term(),
-                    ctx,
-                    &role_tx,
-                )?;
-            }
-
             RaftEvent::FatalError { source, error } => {
                 error!("[Follower] Fatal error from {}: {}", source, error);
                 return Err(crate::Error::Fatal(format!(
@@ -549,6 +556,23 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         }
 
         Ok(())
+    }
+
+    async fn handle_apply_completed(
+        &mut self,
+        last_index: u64,
+        _results: Vec<crate::ApplyResult>,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> crate::Result<()> {
+        // Per Raft §7: each server takes snapshots independently.
+        check_and_trigger_snapshot(
+            last_index,
+            Follower as i32,
+            self.current_term(),
+            ctx,
+            role_tx,
+        )
     }
 }
 

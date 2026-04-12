@@ -58,14 +58,15 @@ async fn test_set_raft_log_replaces_default() {
         BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
             id,
             PersistenceConfig {
-                strategy: PersistenceStrategy::DiskFirst,
-                flush_policy: FlushPolicy::Immediate,
+                strategy: PersistenceStrategy::MemFirst,
+                flush_policy: FlushPolicy::Batch {
+                    idle_flush_interval_ms: 1,
+                },
                 max_buffered_entries: 1000,
-                ..Default::default()
             },
             mock_storage_engine.clone(),
         );
-    let buffered_raft_log = buffered_raft_log.start(receiver);
+    let buffered_raft_log = buffered_raft_log.start(receiver, None);
 
     // diff customization raft_log with orgional one
     let expected_raft_log_ids = vec![1, 2];

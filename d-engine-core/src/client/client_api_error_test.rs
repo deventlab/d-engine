@@ -133,4 +133,173 @@ mod client_api_error_tests {
         assert_eq!(error.code(), ErrorCode::General);
         assert_eq!(error.message(), "Custom error message");
     }
+
+    // ── From<Status> conversions ──────────────────────────────────────────────
+
+    /// Code::Unavailable maps to Business { ClusterUnavailable }.
+    #[test]
+    fn test_from_status_unavailable_maps_to_cluster_unavailable() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::Unavailable, "cluster down");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::ClusterUnavailable);
+        assert!(matches!(err, ClientApiError::Business { .. }));
+    }
+
+    /// Code::Cancelled maps to Network { ConnectionTimeout }.
+    #[test]
+    fn test_from_status_cancelled_maps_to_connection_timeout() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::Cancelled, "cancelled");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::ConnectionTimeout);
+        assert!(matches!(err, ClientApiError::Network { .. }));
+    }
+
+    /// Code::InvalidArgument maps to Business { InvalidRequest }.
+    #[test]
+    fn test_from_status_invalid_argument_maps_to_invalid_request() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::InvalidArgument, "bad arg");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::InvalidRequest);
+    }
+
+    /// Code::PermissionDenied maps to Business { NotLeader }.
+    #[test]
+    fn test_from_status_permission_denied_maps_to_not_leader() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::PermissionDenied, "not leader");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::NotLeader);
+    }
+
+    /// Unhandled gRPC codes produce Business { Uncategorized }.
+    #[test]
+    fn test_from_status_unhandled_code_maps_to_uncategorized() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::DataLoss, "data loss");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::Uncategorized);
+    }
+
+    /// Code::FailedPrecondition without leader metadata maps to Business { StaleOperation }.
+    #[test]
+    fn test_from_status_failed_precondition_without_leader_maps_to_stale() {
+        use tonic::Code;
+        use tonic::Status;
+        let s = Status::new(Code::FailedPrecondition, "stale");
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::StaleOperation);
+        assert!(matches!(err, ClientApiError::Business { .. }));
+    }
+
+    /// Code::FailedPrecondition with valid x-raft-leader metadata maps to
+    /// Network { LeaderChanged } and populates the leader_hint field.
+    #[test]
+    fn test_from_status_failed_precondition_with_leader_metadata_maps_to_leader_changed() {
+        use tonic::Code;
+        use tonic::Status;
+        use tonic::metadata::MetadataValue;
+        let mut s = Status::new(Code::FailedPrecondition, "leader changed");
+        s.metadata_mut().insert(
+            "x-raft-leader",
+            MetadataValue::from_static(r#"{"leader_id":"2","address":"127.0.0.1:8081"}"#),
+        );
+        let err: ClientApiError = s.into();
+        assert_eq!(err.code(), ErrorCode::LeaderChanged);
+        if let ClientApiError::Network { leader_hint, .. } = err {
+            let hint = leader_hint.expect("leader_hint must be populated");
+            assert_eq!(hint.leader_id, 2);
+            assert_eq!(hint.address, "127.0.0.1:8081");
+        } else {
+            panic!("expected Network variant");
+        }
+    }
+
+    /// parse_leader_from_metadata returns None for malformed metadata values,
+    /// causing FailedPrecondition to fall back to Business { StaleOperation }.
+    #[test]
+    fn test_from_status_failed_precondition_with_malformed_leader_metadata_falls_back_to_stale() {
+        use tonic::Code;
+        use tonic::Status;
+        use tonic::metadata::MetadataValue;
+        let mut s = Status::new(Code::FailedPrecondition, "fp");
+        s.metadata_mut().insert(
+            "x-raft-leader",
+            MetadataValue::from_static("not-valid-json"),
+        );
+        let err: ClientApiError = s.into();
+        // parse_leader_from_metadata must fail to extract a valid LeaderHint → StaleOperation.
+        assert_eq!(err.code(), ErrorCode::StaleOperation);
+    }
+}
+
+#[cfg(test)]
+mod transport_error_tests {
+    use crate::client::client_api_error::ClientApiError;
+    use d_engine_proto::error::ErrorCode;
+
+    // `tonic::transport::Error` has no public constructor, so these tests trigger
+    // real (but near-instant) connection failures to obtain an actual transport error,
+    // then verify that `From<tonic::transport::Error>` maps it to the correct variant.
+    //
+    // Note: the `contains("invalid uri")` branch was removed from
+    // `From<tonic::transport::Error>` because it was dead code — tonic produces
+    // "invalid URI" (uppercase) not "invalid uri", so the check never matched.
+    // Invalid URI errors from `Endpoint::from_shared()` are not `transport::Error`
+    // and should be handled at the call site.
+
+    /// An invalid URI passed to `Endpoint::from_shared` produces a transport::Error,
+    /// which falls through to the default branch and maps to Network { Uncategorized }.
+    ///
+    /// Business scenario: GrpcClient is constructed with a malformed address — the
+    /// caller must validate the URI before calling tonic, as the transport layer
+    /// does not distinguish URI errors from other failures.
+    #[tokio::test]
+    async fn test_from_transport_error_invalid_uri_maps_to_uncategorized() {
+        // Illegal character (space) in URI — tonic rejects at from_shared as transport::Error.
+        let err: ClientApiError =
+            tonic::transport::Endpoint::from_shared("http://invalid uri:9999".to_string())
+                .expect_err("illegal URI must fail at from_shared")
+                .into();
+
+        // No special branch for URI errors: falls through to Uncategorized default.
+        assert_eq!(
+            err.code(),
+            ErrorCode::Uncategorized,
+            "invalid URI transport error must map to Uncategorized — \
+             URI validation must be done before constructing the tonic Endpoint"
+        );
+        assert!(matches!(err, ClientApiError::Network { .. }));
+    }
+
+    /// Connecting to a port that actively refuses the connection produces a transport
+    /// error that is neither a timeout nor an invalid-URI error.
+    /// Expected mapping: Network { Uncategorized } (the default branch).
+    #[tokio::test]
+    async fn test_from_transport_error_connection_refused_maps_to_uncategorized() {
+        // Port 1 is almost universally refused on loopback — connect returns instantly.
+        let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
+        let err: ClientApiError =
+            ep.connect().await.expect_err("connection to port 1 must fail").into();
+
+        // Connection refused is not a timeout and does not contain "invalid uri",
+        // so it falls through to the default branch.
+        assert_eq!(
+            err.code(),
+            ErrorCode::Uncategorized,
+            "connection-refused transport error must map to Uncategorized; \
+             check the default branch in From<tonic::transport::Error>"
+        );
+        assert!(
+            matches!(err, ClientApiError::Network { .. }),
+            "default transport error must be a Network variant"
+        );
+    }
 }

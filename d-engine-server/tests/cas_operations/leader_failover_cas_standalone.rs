@@ -1,13 +1,12 @@
 use d_engine_client::Client;
 use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
+use d_engine_proto::error::ErrorCode;
 use std::time::Duration;
+use tempfile::TempDir;
 use tracing::info;
 use tracing_test::traced_test;
 
-use tempfile::TempDir;
-
-use crate::common::LATENCY_IN_MS;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
 use crate::common::check_cluster_is_ready;
@@ -111,22 +110,86 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     info!("CAS result during leader stop: {:?}", cas_result);
     // Expected: timeout, NOT_LEADER, or UNAVAILABLE error
 
-    // Phase 2: Wait for new leader election.
-    // refresh() internally waits until a noop-committed leader is confirmed
-    // (via load_cluster_metadata round-robin + cluster_ready_timeout).
-    // No manual retry loop needed — refresh() is the barrier.
-    info!("Phase 2: Waiting for new leader election");
-    client.refresh(None).await?;
-    let new_leader_id = client
-        .get_leader_id()
-        .await?
-        .expect("Leader must be known after successful refresh");
-    info!("New leader elected: node {}", new_leader_id);
-    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
+    // Phase 2 + 3: Wait for a stable leader AND verify lock state consistency.
+    //
+    // Why these two phases are merged into a single retry loop:
+    //
+    // After node 3 crashes, the surviving nodes may undergo cascading elections
+    // before settling on a stable leader. A pattern observed in both CI and local:
+    //
+    //   Node 1 & 2 both start elections (split vote, multiple rounds)
+    //   → Node A wins term N and becomes leader   ← refresh() sees this and returns
+    //   → Node B's election timer fires, starts term N+1 election
+    //   → Node A receives term N+1, MUST step down (Raft protocol)
+    //   → Phase 3 read hits node A (now a follower) → "Not leader"
+    //
+    // The key insight: checking leader_id consistency across two refresh() calls
+    // does NOT reliably detect this. Cluster metadata (current_leader_id) reflects
+    // what each node *last committed as leader*, not the live Raft state. A node
+    // that just stepped down may still appear as "leader" in other nodes' metadata
+    // until the new leader's noop is replicated.
+    //
+    // The only authoritative check is: can the leader actually serve a read right now?
+    //
+    // Fix: merge Phase 2 and Phase 3 into a refresh→read loop. refresh() discovers
+    // the best-known leader; the subsequent get() is the live proof that the leader
+    // is active. On StaleOperation the loop retries immediately. This converges once
+    // the cluster elects a stable leader that can serve requests end-to-end.
+    // refresh() internally handles cluster_ready_timeout, so the loop is bounded.
+    info!("Phase 2+3: Waiting for stable leader and verifying lock state consistency");
+    let lock_value = loop {
+        client.refresh(None).await?;
+        let new_leader_id = client
+            .get_leader_id()
+            .await?
+            .expect("Leader must be known after successful refresh");
+        info!("Candidate leader: node {}", new_leader_id);
 
-    // Phase 3: Verify lock state consistency
-    info!("Phase 3: Verify lock state consistency");
-    let lock_value = client.get(lock_key).await?;
+        match client.get(lock_key).await {
+            Ok(value) => {
+                // Read succeeded — this leader is actively serving requests.
+                info!("Stable leader confirmed: node {}", new_leader_id);
+                break value;
+            }
+            Err(ClientApiError::Business {
+                code: ErrorCode::StaleOperation,
+                ..
+            }) => {
+                // The leader changed between refresh() and the read RPC.
+                // A cascading election is still in progress — refresh and retry.
+                info!(
+                    "Node {} is no longer leader (cascading election in progress), retrying",
+                    new_leader_id
+                );
+                continue;
+            }
+            Err(ClientApiError::Network {
+                code: ErrorCode::ConnectionTimeout,
+                ..
+            }) => {
+                // Node 1 just won the election but node 2 immediately started its own
+                // candidacy (cascading elections).  A linearizable read requires a
+                // heartbeat-quorum ACK from node 2; while node 2 is a candidate it
+                // ignores node 1's heartbeats.  The pending read sits on the server
+                // until node 2 steps down, which can exceed the client's default
+                // request_timeout (3 s), causing Code::Cancelled / "Timeout expired".
+                //
+                // The cluster will stabilise once node 2 receives node 1's heartbeat
+                // with the winning term and steps down.  Retry refresh() + get() so
+                // we wait for a leader that can actually serve requests end-to-end.
+                info!(
+                    "get() timed out waiting for leader {} to achieve read quorum \
+                     (cascading election still settling), retrying",
+                    new_leader_id
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    };
 
     match lock_value {
         None => {
@@ -150,7 +213,6 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
         acquired_b,
         "Client B should successfully acquire lock after failover"
     );
-    tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
 
     // Phase 5: Verify final lock state
     info!("Phase 5: Verify final lock state");

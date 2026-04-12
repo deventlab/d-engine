@@ -83,7 +83,7 @@ where
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
 
     // Client commands (drain-driven)
-    pub(crate) cmd_tx: mpsc::UnboundedSender<d_engine_core::ClientCmd>,
+    pub(crate) cmd_tx: mpsc::Sender<d_engine_core::ClientCmd>,
 
     pub(crate) ready: AtomicBool,
 
@@ -105,8 +105,10 @@ where
     #[cfg(feature = "watch")]
     pub(crate) _watch_dispatcher_handle: Option<tokio::task::JoinHandle<()>>,
 
-    /// State machine worker task handle (background apply operations)
-    pub(crate) _sm_worker_handle: Option<tokio::task::JoinHandle<()>>,
+    /// State machine worker thread handle (dedicated OS thread, not a tokio task).
+    /// Wrapped in Mutex so run(&self) can take it for joining after Raft loop exits,
+    /// ensuring `Arc<DB>` is released before run() returns.
+    pub(crate) sm_worker_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 
     /// Commit handler task handle (background log application)
     pub(crate) _commit_handler_handle: Option<tokio::task::JoinHandle<()>>,
@@ -163,8 +165,24 @@ where
             self.run_as_voter(&mut shutdown_signal).await?;
         }
 
-        // Start Raft main loop
-        self.start_raft_loop().await
+        // Start Raft main loop.
+        // Note: IO thread is closed inside Raft::run() on shutdown before returning.
+        self.start_raft_loop().await?;
+
+        // Shutdown order is reverse of startup order (TiKV convention):
+        // Raft loop has exited → no more applies will be enqueued.
+        // Join sm-worker thread so its Arc<DB> clone is dropped before we return.
+        // This ensures RocksDB LOCK is released before the caller can reopen the DB.
+        let handle = self.sm_worker_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            tokio::task::spawn_blocking(move || {
+                let _ = handle.join();
+            })
+            .await
+            .ok();
+        }
+
+        Ok(())
     }
 
     /// Learner bootstrap: skip cluster ready check, join after warmup.
@@ -320,7 +338,7 @@ where
         let leader_notifier = LeaderNotifier::new();
 
         // Create dummy cmd_tx (this path is mainly for testing)
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, _cmd_rx) = mpsc::channel(1024);
 
         Node {
             node_id,
@@ -336,7 +354,7 @@ where
             watch_registry: None,
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
-            _sm_worker_handle: None,
+            sm_worker_handle: std::sync::Mutex::new(None),
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal,

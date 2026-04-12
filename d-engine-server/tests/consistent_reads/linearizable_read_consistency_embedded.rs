@@ -7,8 +7,7 @@
 
 use crate::common::{create_node_config, get_available_ports, node_config};
 use d_engine_server::EmbeddedEngine;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
+use d_engine_server::RocksDBUnifiedEngine;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -322,20 +321,21 @@ async fn test_read_index_fixed_with_concurrent_writes_multi_node()
         let config = node_config(&config_str);
 
         let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
-        let storage_path = node_db_root.join("storage");
-        let sm_path = node_db_root.join("state_machine");
+        let db_path = node_db_root.join("db");
 
-        tokio::fs::create_dir_all(&storage_path).await?;
-        tokio::fs::create_dir_all(&sm_path).await?;
+        tokio::fs::create_dir_all(&db_path).await?;
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let state_machine = Arc::new(RocksDBStateMachine::new(sm_path)?);
+        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
         let config_path = format!("/tmp/d-engine-test-linear-read-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine =
-            EmbeddedEngine::start_custom(storage, state_machine, Some(&config_path)).await?;
+        let engine = EmbeddedEngine::start_custom(
+            Arc::new(storage),
+            Arc::new(state_machine),
+            Some(&config_path),
+        )
+        .await?;
         engines.push(engine);
     }
 

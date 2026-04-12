@@ -174,10 +174,10 @@ where
 
                         self.send_to_sm_worker(&mut command_batch).await?;
 
-                        if last_error.is_none() {
-                            if let Err(e) = self.apply_config_change(entry).await {
-                                last_error = Some(e);
-                            }
+                        if last_error.is_none()
+                            && let Err(e) = self.apply_config_change(entry).await
+                        {
+                            last_error = Some(e);
                         }
                     }
                     Some(Payload::Noop(_)) => {
@@ -233,43 +233,43 @@ where
         let _timer = ScopedTimer::new("apply_config_change");
         debug!("Received config change:{:?}", &entry);
 
-        if let Some(payload) = entry.payload {
-            if let Some(Payload::Config(change)) = payload.payload {
-                // Check if this is a self-removal (check BEFORE applying)
-                let is_self_removal = Self::is_self_removal_config(self.my_id, &change);
+        if let Some(payload) = entry.payload
+            && let Some(Payload::Config(change)) = payload.payload
+        {
+            // Check if this is a self-removal (check BEFORE applying)
+            let is_self_removal = Self::is_self_removal_config(self.my_id, &change);
 
-                // 1. Apply to membership state
-                if let Err(e) = self.membership.apply_config_change(change).await {
+            // 1. Apply to membership state
+            if let Err(e) = self.membership.apply_config_change(change).await {
+                error!(
+                    "[{}] Failed to apply config change at index {}: {:?}",
+                    self.my_id, entry.index, e
+                );
+                // Critical error - should panic or handle carefully
+                return Err(e);
+            }
+
+            // 2. CRITICAL: Barrier point
+            self.membership.notify_config_applied(entry.index).await;
+
+            // 2.5. Notify leader to refresh cluster metadata cache
+            // This must happen AFTER membership is applied
+            if let Err(e) = self.event_tx.send(RaftEvent::MembershipApplied).await {
+                warn!("Failed to send MembershipApplied event: {:?}", e);
+            }
+
+            // 3. Leader self-removal: Step down immediately per Raft protocol
+            if is_self_removal {
+                warn!(
+                    "[{}] Node removed from cluster membership, triggering step down (index {})",
+                    self.my_id, entry.index
+                );
+                // Signal step down - error is non-fatal as removal is already committed
+                if let Err(e) = self.event_tx.send(RaftEvent::StepDownSelfRemoved).await {
                     error!(
-                        "[{}] Failed to apply config change at index {}: {:?}",
-                        self.my_id, entry.index, e
+                        "[{}] Failed to send StepDownSelfRemoved event: {:?}",
+                        self.my_id, e
                     );
-                    // Critical error - should panic or handle carefully
-                    return Err(e);
-                }
-
-                // 2. CRITICAL: Barrier point
-                self.membership.notify_config_applied(entry.index).await;
-
-                // 2.5. Notify leader to refresh cluster metadata cache
-                // This must happen AFTER membership is applied
-                if let Err(e) = self.event_tx.send(RaftEvent::MembershipApplied).await {
-                    warn!("Failed to send MembershipApplied event: {:?}", e);
-                }
-
-                // 3. Leader self-removal: Step down immediately per Raft protocol
-                if is_self_removal {
-                    warn!(
-                        "[{}] Node removed from cluster membership, triggering step down (index {})",
-                        self.my_id, entry.index
-                    );
-                    // Signal step down - error is non-fatal as removal is already committed
-                    if let Err(e) = self.event_tx.send(RaftEvent::StepDownSelfRemoved).await {
-                        error!(
-                            "[{}] Failed to send StepDownSelfRemoved event: {:?}",
-                            self.my_id, e
-                        );
-                    }
                 }
             }
         }

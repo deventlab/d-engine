@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use d_engine_core::MaybeCloneOneshot;
+use d_engine_core::MaybeCloneOneshotReceiver;
 use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
 use d_engine_core::StreamResponseSender;
@@ -39,6 +40,7 @@ use futures::Stream;
 #[cfg(feature = "watch")]
 use futures::StreamExt;
 use tokio::select;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
@@ -116,6 +118,94 @@ where
             Duration::from_millis(self.node_config.retry.append_entries.timeout_ms);
 
         handle_rpc_timeout(resp_rx, timeout_duration, "append_entries").await
+    }
+
+    type StreamAppendEntriesStream =
+        Pin<Box<dyn Stream<Item = Result<AppendEntriesResponse, Status>> + Send>>;
+
+    /// Processes a persistent bidirectional AppendEntries stream from the cluster leader.
+    ///
+    /// Decouples request ingestion from response emission:
+    /// - recv task: reads batches from the stream, dispatches each as a `RaftEvent::AppendEntries`
+    ///   (non-blocking between batches)
+    /// - forwarder task: drains ordered response handles sequentially; ordering is guaranteed
+    ///   by the Raft single-threaded event loop
+    async fn stream_append_entries(
+        &self,
+        request: tonic::Request<tonic::Streaming<AppendEntriesRequest>>,
+    ) -> std::result::Result<tonic::Response<Self::StreamAppendEntriesStream>, tonic::Status> {
+        if !self.is_rpc_ready() {
+            warn!(
+                "[rpc|stream_append_entries] Node-{} is not ready!",
+                self.node_id
+            );
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let mut in_stream = request.into_inner();
+        let event_tx = self.event_tx.clone();
+        let ordered_channel_capacity = self.node_config.raft.ordered_channel_capacity;
+        let mut shutdown = self.shutdown_signal.clone();
+
+        // Output: ordered ACKs sent back to the leader over the bidi stream
+        let (out_tx, out_rx) = mpsc::channel::<Result<AppendEntriesResponse, Status>>(128);
+
+        // Ordered queue: response oneshot receivers in FIFO arrival order
+        let (ordered_tx, mut ordered_rx) = mpsc::channel::<
+            MaybeCloneOneshotReceiver<Result<AppendEntriesResponse, Status>>,
+        >(ordered_channel_capacity);
+
+        // Recv task: read batches, dispatch to Raft loop without waiting for each ACK.
+        // Selects on shutdown signal so the task exits immediately on node stop, rather
+        // than waiting for the next message from the leader. This unblocks serve_with_shutdown
+        // and allows Arc<Node> (and Arc<DB>) to be released promptly after stop().
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => {
+                        break;
+                    }
+                    result = in_stream.next() => {
+                        match result {
+                            Some(Ok(req)) => {
+                                let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+                                if event_tx.send(RaftEvent::AppendEntries(req, resp_tx)).await.is_err() {
+                                    warn!("[stream_append_entries|recv] event_tx closed");
+                                    break;
+                                }
+                                if ordered_tx.send(resp_rx).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Some(Err(e)) => {
+                                warn!("[stream_append_entries|recv] stream error: {:?}", e);
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+                }
+            }
+        });
+
+        // Forwarder task: drain ordered queue sequentially (FIFO guaranteed by Raft loop)
+        tokio::spawn(async move {
+            while let Some(resp_rx) = ordered_rx.recv().await {
+                let result = match resp_rx.await {
+                    Ok(Ok(resp)) => Ok(resp),
+                    Ok(Err(status)) => Err(status),
+                    Err(_) => Err(Status::internal("Response channel closed")),
+                };
+                if out_tx.send(result).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let out_stream = tokio_stream::wrappers::ReceiverStream::new(out_rx);
+        Ok(tonic::Response::new(Box::pin(out_stream)))
     }
 }
 
@@ -321,6 +411,7 @@ where
             let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
             cmd_tx
                 .send(d_engine_core::ClientCmd::Propose(req, resp_tx))
+                .await
                 .map_err(|_| Status::internal("Command channel closed"))?;
 
             handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_write").await
@@ -358,6 +449,7 @@ where
                 request.into_inner(),
                 resp_tx,
             ))
+            .await
             .map_err(|_| Status::internal("Command channel closed"))?;
 
         let timeout_duration =

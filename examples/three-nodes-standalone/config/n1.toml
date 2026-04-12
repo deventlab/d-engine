@@ -12,6 +12,9 @@ log_dir = "./logs"
 
 [raft]
 general_raft_timeout_duration_in_ms = 100
+cmd_channel_capacity = 1024
+ordered_channel_capacity = 1024
+
 
 [raft.election]
 election_timeout_min = 1000
@@ -35,15 +38,12 @@ max_pending_reads = 500
 
 
 [raft.persistence]
-strategy = "DiskFirst"
-# strategy = "MemFirst"
-# flush_policy = "Immediate"
-flush_policy = { Batch = { threshold = 100, interval_ms = 20 } }
+# strategy = "DiskFirst"
+strategy = "MemFirst"
+flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 # Maximum number of log entries to buffer in memory
 # when using async persistence strategies (MemFirst/Batched)
 max_buffered_entries = 10000
-flush_workers = 4
-channel_capacity=1000
 
 [raft.snapshot]
 enable = false
@@ -55,14 +55,14 @@ retained_log_entries = 3
 # == TTL Lease Configuration ==
 [raft.state_machine.lease]
 enabled = true
-interval_ms = 1000
+cleanup_interval_ms = 1000
 max_cleanup_duration_ms = 1
 
 # == Network Control Plane (voting, heartbeat, etc.) ==
 [network.control]
 request_timeout_in_ms = 100
 concurrency_limit = 50             # Increase to 50 to reduce lock contention
-max_concurrent_streams = 1024      # Increase significantly to reduce stream creation overhead
+max_concurrent_streams = 4096      # Increase significantly to reduce stream creation overhead
 connection_window_size = 4_194_304 # Increase to 4MB to reduce flow control blocking
 initial_stream_window_size = 2_097_152 # New: initial stream window 2MB
 enable_connect_protocol = true     # Enable HTTP/2 connect protocol optimization
@@ -94,3 +94,6 @@ max_frame_size = 16_777_215
 http2_adaptive_window = true              # Enable adaptive window
 http2_max_pending_accept_reset_streams = 2000  # Higher pending stream limit
 http2_max_send_buffer_size = 16_777_216   # 16MB send buffer
+
+[storage]
+unified_db = false

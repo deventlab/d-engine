@@ -4,26 +4,25 @@ use crate::storage::raft_log::RaftLog;
 use crate::test_utils::BufferedRaftLogTestContext;
 use crate::{FlushPolicy, PersistenceStrategy};
 
+/// Verifies that the flush worker continues operating normally after processing a large number
+/// of flush tasks — the worker does not exit or become unresponsive under sustained load.
 #[tokio::test]
-async fn test_worker_retry_survives_transient_errors() {
+async fn test_flush_worker_sustains_throughput_under_load() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 10,
-            interval_ms: 50,
+            idle_flush_interval_ms: 50,
         },
-        "test_worker_retry_survives",
+        "test_flush_worker_sustains_throughput",
     );
 
-    // Append entries that will trigger flush
     for i in 1..=100 {
         ctx.append_entries(i, 1, 1).await;
     }
 
-    // Wait for flush workers to process
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Verify all workers are still alive by checking continued processing
+    // Verify the worker is still alive by confirming continued processing
     ctx.append_entries(101, 50, 1).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 

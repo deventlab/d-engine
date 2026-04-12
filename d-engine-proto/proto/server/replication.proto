@@ -35,4 +35,7 @@ message ConflictResult {
 
 service RaftReplicationService {
   rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+
+  // Persistent bidirectional stream per peer; eliminates per-batch h2 stream open/close overhead.
+  rpc StreamAppendEntries(stream AppendEntriesRequest) returns (stream AppendEntriesResponse);
 }

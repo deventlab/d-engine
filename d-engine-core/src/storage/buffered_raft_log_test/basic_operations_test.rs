@@ -26,8 +26,7 @@ async fn test_get_entries_range_returns_correct_subset() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_get_entries_range_returns_correct_subset",
     );
@@ -55,8 +54,7 @@ async fn test_get_entries_range_handles_large_range() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_get_entries_range_handles_large_range",
     );
@@ -90,8 +88,7 @@ async fn test_filter_conflicts_removes_entries_with_different_term() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_filter_conflicts_removes_entries_with_different_term",
     );
@@ -138,8 +135,7 @@ async fn test_filter_conflicts_handles_multiple_scenarios() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_filter_conflicts_handles_multiple_scenarios",
     );
@@ -199,8 +195,7 @@ async fn test_last_entry_returns_highest_index() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_last_entry_returns_highest_index",
     );
@@ -225,8 +220,7 @@ async fn test_last_entry_matches_buffer_length() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_last_entry_matches_buffer_length",
     );
@@ -255,8 +249,7 @@ async fn test_last_entry_with_large_payload_id() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_last_entry_with_large_payload_id",
     );
@@ -281,8 +274,7 @@ async fn test_insert_batch_appends_entries_in_order() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_insert_batch_appends_entries_in_order",
     );
@@ -315,8 +307,7 @@ async fn test_get_entries_range_multiple_bounds() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_get_entries_range_multiple_bounds",
     );
@@ -371,8 +362,7 @@ async fn test_insert_duplicate_commands_as_separate_events() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_insert_duplicate_commands_as_separate_events",
     );
@@ -407,8 +397,7 @@ async fn test_purge_after_insert_maintains_consistency() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_purge_after_insert_maintains_consistency",
     );
@@ -441,8 +430,7 @@ async fn test_purge_logs_removes_entries_up_to_index() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_purge_logs_removes_entries_up_to_index",
     );
@@ -490,8 +478,7 @@ async fn test_concurrent_purge_operations_are_safe() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_concurrent_purge_operations_are_safe",
     );
@@ -530,8 +517,7 @@ async fn test_first_entry_id_after_purge_updates() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_first_entry_id_after_purge_updates",
     );
@@ -563,8 +549,7 @@ async fn test_single_entry_insert_succeeds() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_single_entry_insert_succeeds",
     );
@@ -585,7 +570,9 @@ async fn test_single_entry_insert_succeeds() {
 async fn test_is_empty_returns_true_for_new_log() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_is_empty_returns_true_for_new_log",
     );
 
@@ -603,8 +590,7 @@ async fn test_is_empty_returns_false_after_append() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_is_empty_returns_false_after_append",
     );
@@ -628,7 +614,9 @@ async fn test_is_empty_returns_false_after_append() {
 async fn test_last_log_id_for_empty_log() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_last_log_id_for_empty_log",
     );
 
@@ -650,8 +638,7 @@ async fn test_last_log_id_after_appends() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_last_log_id_after_appends",
     );
@@ -677,8 +664,7 @@ async fn test_drop_shuts_down_workers_gracefully() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_drop_shuts_down_workers_gracefully",
     );
@@ -702,16 +688,14 @@ async fn test_same_index_and_term_implies_identical_prefix() {
     let ctx1 = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_log_matching_1",
     );
     let ctx2 = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_log_matching_2",
     );
@@ -744,8 +728,7 @@ async fn test_committed_entry_present_in_future_leaders() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_committed_entry_present",
     );
@@ -777,8 +760,7 @@ async fn test_append_updates_last_entry() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_append_updates_last_entry",
     );
@@ -804,8 +786,7 @@ async fn test_insert_batch_with_empty_list() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_insert_batch_with_empty_list",
     );
@@ -828,8 +809,7 @@ async fn test_insert_batch_updates_metadata() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_insert_batch_updates_metadata",
     );

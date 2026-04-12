@@ -6,8 +6,10 @@ use d_engine_proto::common::Entry;
 #[tokio::test]
 async fn test_log_matching_property() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_log_matching",
     );
 
@@ -44,18 +46,21 @@ async fn test_log_matching_property() {
 #[tokio::test]
 async fn test_leader_completeness_property() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_leader_completeness",
     );
 
-    // Leader writes entries
+    // Leader writes entries and flushes so durable_index = 10
     ctx.append_entries(1, 10, 1).await;
+    ctx.raft_log.flush().await.unwrap();
 
     // Simulate majority replication scenario:
-    // Leader has: [1,2,3,4,5,6,7,8,9,10]
+    // Leader has: [1,2,3,4,5,6,7,8,9,10], durable_index=10
     // Peer1 matched: 7, Peer2 matched: 6, Peer3 matched: 5
-    // With leader's last_entry_id (10), the sorted array is: [10, 7, 6, 5]
+    // With leader's durable_index (10), the sorted array is: [10, 7, 6, 5]
     // Majority index (median) at position 2 is: 6
     let commit_index = ctx.raft_log.calculate_majority_matched_index(
         1,             // current_term
@@ -81,8 +86,7 @@ async fn test_calculate_majority_matched_index_case0() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_calculate_majority_matched_index_case0",
     );
@@ -106,8 +110,7 @@ async fn test_calculate_majority_matched_index_case1() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_calculate_majority_matched_index_case1",
     );
@@ -131,8 +134,7 @@ async fn test_calculate_majority_matched_index_case2() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_calculate_majority_matched_index_case2",
     );
@@ -157,8 +159,7 @@ async fn test_calculate_majority_matched_index_case3() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_calculate_majority_matched_index_case3",
     );
@@ -181,8 +182,7 @@ async fn test_calculate_majority_matched_index_case4() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_calculate_majority_matched_index_case4",
     );
@@ -206,8 +206,7 @@ async fn test_calculate_majority_matched_index_case5() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1,
-            interval_ms: 1,
+            idle_flush_interval_ms: 1,
         },
         "test_calculate_majority_matched_index_case5",
     );

@@ -172,9 +172,9 @@ impl GrpcClient {
         let client_inner = self.client_inner.load();
 
         // Balance from read clients
-        let mut rng = StdRng::from_entropy();
+        let mut rng = StdRng::from_os_rng();
         let channels = client_inner.pool.get_all_channels();
-        let i = rng.gen_range(0..channels.len());
+        let i = rng.random_range(0..channels.len());
 
         let mut client = RaftClientServiceClient::new(channels[i].clone());
 

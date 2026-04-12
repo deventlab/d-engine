@@ -93,6 +93,72 @@ async fn test_sled_performance() -> Result<()> {
     Ok(())
 }
 
+/// replace_range removes stale tail and persists new entries in one atomic batch.
+///
+/// Verifies the three invariants:
+///   1. Entries before from_index are untouched
+///   2. Old entries at from_index and beyond are gone
+///   3. New entries replace them, last_index reflects new tail
+#[tokio::test]
+#[traced_test]
+async fn test_replace_range_removes_stale_tail_and_persists_new_entries() -> Result<()> {
+    let builder = SledStorageEngineBuilder::new();
+    let engine = builder.build().await?;
+    let log_store = engine.log_store();
+
+    // Arrange: [1(t1)..5(t1)]
+    log_store
+        .persist_entries(
+            (1..=5)
+                .map(|i| Entry { index: i, term: 1, payload: None })
+                .collect(),
+        )
+        .await?;
+
+    // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
+    log_store
+        .replace_range(
+            3,
+            vec![
+                Entry { index: 3, term: 2, payload: None },
+                Entry { index: 4, term: 2, payload: None },
+            ],
+        )
+        .await?;
+
+    assert_eq!(log_store.entry(1).await?.unwrap().term, 1);
+    assert_eq!(log_store.entry(2).await?.unwrap().term, 1);
+    assert_eq!(log_store.entry(3).await?.unwrap().term, 2);
+    assert_eq!(log_store.entry(4).await?.unwrap().term, 2);
+    assert!(log_store.entry(5).await?.is_none(), "entry 5 must be removed");
+    assert_eq!(log_store.last_index(), 4);
+    Ok(())
+}
+
+/// replace_range with empty new_entries truncates only.
+#[tokio::test]
+#[traced_test]
+async fn test_replace_range_with_empty_entries_truncates_only() -> Result<()> {
+    let builder = SledStorageEngineBuilder::new();
+    let engine = builder.build().await?;
+    let log_store = engine.log_store();
+
+    log_store
+        .persist_entries(
+            (1..=5)
+                .map(|i| Entry { index: i, term: 1, payload: None })
+                .collect(),
+        )
+        .await?;
+
+    log_store.replace_range(3, vec![]).await?;
+
+    assert_eq!(log_store.entry(2).await?.unwrap().term, 1);
+    assert!(log_store.entry(3).await?.is_none());
+    assert_eq!(log_store.last_index(), 2);
+    Ok(())
+}
+
 /// Helper function to create a test command payload
 fn create_test_command_payload(index: u64) -> EntryPayload {
     let key = Bytes::from(format!("key_{index}").into_bytes());

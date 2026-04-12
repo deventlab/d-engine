@@ -6,8 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::EmbeddedEngine;
-use d_engine_server::RocksDBStateMachine;
-use d_engine_server::RocksDBStorageEngine;
+use d_engine_server::RocksDBUnifiedEngine;
 use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
@@ -93,16 +92,15 @@ general_raft_timeout_duration_in_ms = 5000
     tokio::fs::write(node1_config_path, &node1_config).await?;
 
     let config1 = node_config(&node1_config);
-    let storage_path1 = config1.cluster.db_root_dir.join("node1/storage");
-    let sm_path1 = config1.cluster.db_root_dir.join("node1/state_machine");
+    let db_path1 = config1.cluster.db_root_dir.join("node1/db");
 
-    tokio::fs::create_dir_all(&storage_path1).await?;
-    tokio::fs::create_dir_all(&sm_path1).await?;
+    tokio::fs::create_dir_all(&db_path1).await?;
 
-    let storage1 = Arc::new(RocksDBStorageEngine::new(storage_path1)?);
-    let sm1 = Arc::new(RocksDBStateMachine::new(sm_path1)?);
+    let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
 
-    let engine1 = EmbeddedEngine::start_custom(storage1, sm1, Some(node1_config_path)).await?;
+    let engine1 =
+        EmbeddedEngine::start_custom(Arc::new(storage1), Arc::new(sm1), Some(node1_config_path))
+            .await?;
 
     // Node 2 config
     let node2_config = format!(
@@ -127,16 +125,15 @@ general_raft_timeout_duration_in_ms = 5000
     tokio::fs::write(node2_config_path, &node2_config).await?;
 
     let config2 = node_config(&node2_config);
-    let storage_path2 = config2.cluster.db_root_dir.join("node2/storage");
-    let sm_path2 = config2.cluster.db_root_dir.join("node2/state_machine");
+    let db_path2 = config2.cluster.db_root_dir.join("node2/db");
 
-    tokio::fs::create_dir_all(&storage_path2).await?;
-    tokio::fs::create_dir_all(&sm_path2).await?;
+    tokio::fs::create_dir_all(&db_path2).await?;
 
-    let storage2 = Arc::new(RocksDBStorageEngine::new(storage_path2)?);
-    let sm2 = Arc::new(RocksDBStateMachine::new(sm_path2)?);
+    let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
 
-    let engine2 = EmbeddedEngine::start_custom(storage2, sm2, Some(node2_config_path)).await?;
+    let engine2 =
+        EmbeddedEngine::start_custom(Arc::new(storage2), Arc::new(sm2), Some(node2_config_path))
+            .await?;
 
     // Wait for cluster to be ready
     let leader1 = engine1.wait_ready(Duration::from_secs(5)).await?;
@@ -192,16 +189,15 @@ general_raft_timeout_duration_in_ms = 5000
     tokio::fs::write(node3_config_path, &node3_config).await?;
 
     let config3 = node_config(&node3_config);
-    let storage_path3 = config3.cluster.db_root_dir.join("node3/storage");
-    let sm_path3 = config3.cluster.db_root_dir.join("node3/state_machine");
+    let db_path3 = config3.cluster.db_root_dir.join("node3/db");
 
-    tokio::fs::create_dir_all(&storage_path3).await?;
-    tokio::fs::create_dir_all(&sm_path3).await?;
+    tokio::fs::create_dir_all(&db_path3).await?;
 
-    let storage3 = Arc::new(RocksDBStorageEngine::new(storage_path3)?);
-    let sm3 = Arc::new(RocksDBStateMachine::new(sm_path3)?);
+    let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
 
-    let engine3 = EmbeddedEngine::start_custom(storage3, sm3, Some(node3_config_path)).await?;
+    let engine3 =
+        EmbeddedEngine::start_custom(Arc::new(storage3), Arc::new(sm3), Some(node3_config_path))
+            .await?;
     println!("         ✓ Node 3 process started");
 
     // Wait for learner to sync

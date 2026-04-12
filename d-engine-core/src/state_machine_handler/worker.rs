@@ -2,8 +2,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info};
 
-use crate::RaftEvent;
 use crate::Result;
+use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
 use crate::alias::SMHOF;
@@ -20,7 +20,7 @@ use crate::alias::SMHOF;
 pub struct StateMachineWorker<T: TypeConfig> {
     state_machine_handler: Arc<SMHOF<T>>,
     sm_apply_rx: mpsc::UnboundedReceiver<Vec<d_engine_proto::common::Entry>>,
-    event_tx: mpsc::Sender<RaftEvent>,
+    role_tx: mpsc::UnboundedSender<RoleEvent>,
     shutdown_signal: watch::Receiver<()>,
     node_id: u32,
 }
@@ -30,23 +30,27 @@ impl<T: TypeConfig> StateMachineWorker<T> {
         node_id: u32,
         state_machine_handler: Arc<SMHOF<T>>,
         sm_apply_rx: mpsc::UnboundedReceiver<Vec<d_engine_proto::common::Entry>>,
-        event_tx: mpsc::Sender<RaftEvent>,
+        role_tx: mpsc::UnboundedSender<RoleEvent>,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
         Self {
             state_machine_handler,
             sm_apply_rx,
-            event_tx,
+            role_tx,
             shutdown_signal,
             node_id,
         }
+    }
+
+    pub fn node_id(&self) -> u32 {
+        self.node_id
     }
 
     pub async fn run(self) -> Result<()> {
         debug!("[Node-{}] SM Worker started", self.node_id);
         let node_id = self.node_id;
         let state_machine_handler = self.state_machine_handler;
-        let event_tx = self.event_tx;
+        let role_tx = self.role_tx;
         let mut sm_apply_rx = self.sm_apply_rx;
         let mut shutdown_signal = self.shutdown_signal.clone();
         let mut shutdown = false;
@@ -63,7 +67,7 @@ impl<T: TypeConfig> StateMachineWorker<T> {
                 entries = sm_apply_rx.recv() => {
                     match entries {
                         Some(entries) => {
-                            Self::apply_and_notify(&node_id, &state_machine_handler, &event_tx, entries).await?;
+                            Self::apply_and_notify(&node_id, &state_machine_handler, &role_tx, entries).await?;
                         }
                         None => {
                             debug!("[Node-{}] SM Worker: apply channel closed", node_id);
@@ -82,7 +86,7 @@ impl<T: TypeConfig> StateMachineWorker<T> {
         // Graceful drain: process remaining entries after shutdown signal
         debug!("[Node-{}] SM Worker draining pending applies", node_id);
         while let Ok(entries) = sm_apply_rx.try_recv() {
-            Self::apply_and_notify(&node_id, &state_machine_handler, &event_tx, entries).await?;
+            Self::apply_and_notify(&node_id, &state_machine_handler, &role_tx, entries).await?;
         }
 
         info!("[Node-{}] SM Worker shutdown complete", node_id);
@@ -92,7 +96,7 @@ impl<T: TypeConfig> StateMachineWorker<T> {
     async fn apply_and_notify(
         node_id: &u32,
         state_machine_handler: &Arc<SMHOF<T>>,
-        event_tx: &mpsc::Sender<RaftEvent>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
         entries: Vec<d_engine_proto::common::Entry>,
     ) -> Result<()> {
         // Apply all entries at once (no chunking)
@@ -104,14 +108,13 @@ impl<T: TypeConfig> StateMachineWorker<T> {
                         node_id, last.index
                     );
 
-                    // let send_start = std::time::Instant::now();
-                    if let Err(e) = event_tx
-                        .send(RaftEvent::ApplyCompleted {
-                            last_index: last.index,
-                            results,
-                        })
-                        .await
-                    {
+                    // Send via role_tx (P2, unbounded) to prevent priority inversion:
+                    // ApplyCompleted is internal (driven by commit) and must not be
+                    // starved by external RPCs on event_tx (P4, bounded).
+                    if let Err(e) = role_tx.send(RoleEvent::ApplyCompleted {
+                        last_index: last.index,
+                        results,
+                    }) {
                         error!(
                             "[Node-{}] Failed to send ApplyCompleted event: {:?}",
                             node_id, e
@@ -126,31 +129,20 @@ impl<T: TypeConfig> StateMachineWorker<T> {
             Err(e) => {
                 error!("[Node-{}] SM apply failed: {:?}", node_id, e);
 
-                // Classify error and send FatalError event if needed
-                if Self::is_fatal_error(&e) {
-                    let error_msg = format!("{e:?}");
-                    if let Err(send_err) = event_tx
-                        .send(RaftEvent::FatalError {
-                            source: "StateMachine".to_string(),
-                            error: error_msg,
-                        })
-                        .await
-                    {
-                        error!(
-                            "[Node-{}] Failed to send FatalError event: {:?}",
-                            node_id, send_err
-                        );
-                    }
+                // Send FatalError via role_tx (unbounded) — must not block waiting for
+                // space on the bounded event_tx when the node is already in fatal state.
+                if let Err(send_err) = role_tx.send(RoleEvent::FatalError {
+                    source: "StateMachine".to_string(),
+                    error: format!("{e:?}"),
+                }) {
+                    error!(
+                        "[Node-{}] Failed to send FatalError event: {:?}",
+                        node_id, send_err
+                    );
                 }
 
                 Err(e)
             }
         }
-    }
-
-    /// Check if error should trigger node shutdown.
-    /// Conservative: all SM errors treated as fatal (future: distinguish error types).
-    fn is_fatal_error(_error: &crate::Error) -> bool {
-        true // All errors are fatal - SM apply failures indicate unrecoverable state
     }
 }

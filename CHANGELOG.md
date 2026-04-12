@@ -4,7 +4,48 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [v0.2.3] - 2026-02-21
+## [v0.2.4] - TBD
+
+### Added
+
+- **Unified RocksDB option** (#295): opt-in via `storage.unified_db = true`.
+  Uses a single RocksDB instance with 4 column families instead of two separate instances.
+  - Reduces memory RSS and file descriptor usage
+  - **Experimental**: both paths are supported in v0.2.4; a future release will standardize on one
+  - When enabled: data path changes to `db_root_dir/db/` (⚠️ existing `storage/` data not migrated automatically)
+
+### 🟡 Important Fixes
+
+- **fix(raft) #340**: Candidate correctly steps down on same-term AppendEntries with log conflict
+  - Eliminates election churn when recovering or newly-joined nodes have lagged logs
+  - Aligns with Raft §5.2 (term check takes priority over log matching)
+
+### Changed
+
+- No runtime behavior change for existing deployments — `unified_db` defaults to `false`
+
+### ⚠️ Breaking Change — Snapshot Format
+
+The internal snapshot format changed from RocksDB **checkpoint** (v0.2.3) to
+**CF export** (v0.2.4). Existing v0.2.3 snapshots cannot be loaded by v0.2.4.
+
+**Migration**: Before upgrading, delete the `snapshot/` directory under `db_root_dir`.
+d-engine will replay from WAL on first start and auto-create a new snapshot once
+the log size threshold is reached.
+
+> Note: d-engine does not currently provide a manual snapshot trigger API.
+> Snapshots are created automatically based on the configure: e.g. `log_size_threshold`.
+
+### ⚠️ Migration Note — WAL Purge After Snapshot
+
+v0.2.4 purges WAL files after each successful snapshot. If you upgrade from v0.2.3 and
+the node starts replaying from WAL before a new snapshot is taken, ensure sufficient
+disk space is available for WAL replay. Nodes that have fallen significantly behind may
+trigger a snapshot install from the leader instead of WAL replay.
+
+---
+
+## [v0.2.3] - 2026-02-21 [✅ Released]
 
 ### Added
 

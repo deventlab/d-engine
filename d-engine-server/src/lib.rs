@@ -44,14 +44,14 @@
 //! **Standalone Mode** (independent server):
 //!
 //! ```rust,ignore
-//! use d_engine_server::StandaloneServer;
+//! use d_engine_server::StandaloneEngine;
 //! use tokio::sync::watch;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     std::env::set_var("CONFIG_PATH", "config.toml");
 //!     let (_shutdown_tx, shutdown_rx) = watch::channel(());
-//!     StandaloneServer::run(shutdown_rx).await?;
+//!     StandaloneEngine::run(shutdown_rx).await?;
 //!     Ok(())
 //! }
 //! ```
@@ -101,7 +101,7 @@ pub mod node;
 
 /// Public API layer for different deployment modes
 ///
-/// Contains [`EmbeddedEngine`] and [`StandaloneServer`].
+/// Contains [`EmbeddedEngine`] and [`StandaloneEngine`].
 pub mod api;
 
 // Re-export LeaderInfo from d-engine-core
@@ -146,7 +146,7 @@ pub use storage::{FileStateMachine, FileStorageEngine};
 pub use d_engine_core::ApplyResult;
 // Conditional RocksDB exports
 #[cfg(feature = "rocksdb")]
-pub use storage::{RocksDBStateMachine, RocksDBStorageEngine};
+pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, RocksDBUnifiedEngine};
 
 // -------------------- Data Types --------------------
 

@@ -168,22 +168,21 @@ async fn test_p0_leader_single_command_drain_immediately() {
     // Setup mocks
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
+    // Scaffold: prepare_batch_requests succeeds (no peers in single-node test).
+    // In the new per-follower worker architecture, log write + request building happen
+    // synchronously in the Raft loop. Workers fire-and-forget. Returning Ok(crate::PrepareResult::default())
+    // lets BecomeLeader and subsequent process_batch calls complete without errors.
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                learner_progress: std::collections::HashMap::new(),
-                peer_updates: std::collections::HashMap::new(),
-            })
-        });
+        .expect_prepare_batch_requests()
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;
@@ -257,24 +256,25 @@ async fn test_p0_leader_high_load_max_batch_cap() {
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
+    // Batch size tracking: prepare_batch_requests receives the entry_payloads vec.
+    // We record payloads.len() to verify the batch cap is respected per flush call.
+    // In the new architecture, prepare_batch_requests does log write + request building;
+    // returning Ok(crate::PrepareResult::default()) means no workers are spawned (no real peers here).
     let sizes_clone = Arc::clone(&batch_sizes);
     let mut replication_handler = crate::MockReplicationCore::new();
-    replication_handler.expect_handle_raft_request_in_batch().returning(
-        move |payloads, _, _, _, _| {
+    replication_handler
+        .expect_prepare_batch_requests()
+        .returning(move |payloads, _, _, _, _| {
             sizes_clone.lock().unwrap().push(payloads.len());
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                learner_progress: std::collections::HashMap::new(),
-                peer_updates: std::collections::HashMap::new(),
-            })
-        },
-    );
+            Ok(crate::PrepareResult::default())
+        });
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;
@@ -704,24 +704,24 @@ async fn test_p1_medium_load_natural_batching() {
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
+    // Batch size tracking: records payloads.len() per flush to verify natural batching.
+    // prepare_batch_requests is where log write + request building happen in the new
+    // per-follower worker architecture. Returning Ok(crate::PrepareResult::default()) = no peer workers spawned.
     let sizes_clone = Arc::clone(&batch_sizes);
     let mut replication_handler = crate::MockReplicationCore::new();
-    replication_handler.expect_handle_raft_request_in_batch().returning(
-        move |payloads, _, _, _, _| {
+    replication_handler
+        .expect_prepare_batch_requests()
+        .returning(move |payloads, _, _, _, _| {
             sizes_clone.lock().unwrap().push(payloads.len());
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                learner_progress: std::collections::HashMap::new(),
-                peer_updates: std::collections::HashMap::new(),
-            })
-        },
-    );
+            Ok(crate::PrepareResult::default())
+        });
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;
@@ -822,22 +822,20 @@ async fn test_p1_mixed_workload_read_write_coexistence() {
     // Setup mocks
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
+    // Scaffold: prepare_batch_requests succeeds (no peers).
+    // This test focuses on read/write coexistence in the Raft loop buffer, not
+    // replication behavior. Returning Ok(crate::PrepareResult::default()) satisfies process_batch calls.
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                learner_progress: std::collections::HashMap::new(),
-                peer_updates: std::collections::HashMap::new(),
-            })
-        });
+        .expect_prepare_batch_requests()
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;
@@ -932,22 +930,20 @@ async fn test_p1_burst_load_recovery_after_spike() {
     // Setup mocks
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
+    // Scaffold: prepare_batch_requests succeeds (no peers).
+    // This test verifies burst/drain recovery behavior in the Raft loop buffer.
+    // Returning Ok(crate::PrepareResult::default()) satisfies process_batch calls without peer replication.
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                learner_progress: std::collections::HashMap::new(),
-                peer_updates: std::collections::HashMap::new(),
-            })
-        });
+        .expect_prepare_batch_requests()
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;

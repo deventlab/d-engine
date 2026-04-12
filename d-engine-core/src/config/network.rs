@@ -230,7 +230,7 @@ fn default_concurrency_limit() -> usize {
     256
 }
 fn default_max_streams() -> u32 {
-    500
+    1024
 }
 fn default_tcp_nodelay() -> bool {
     true

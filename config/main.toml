@@ -1,9 +1,24 @@
-# Load the basic configuration template
-includes = [
-    "base/cluster.toml",
-    "base/monitoring.toml",
-    "base/network.toml",
-    "base/raft.toml",
-    "base/retry.toml",
-    "base/tls.toml",
-]
+# d-engine reference configuration
+#
+# HOW CONFIG LOADING WORKS:
+#   Config is loaded via the `config` crate in RaftNodeConfig::new():
+#     1. Type defaults (lowest priority)
+#     2. Single file from CONFIG_PATH env var (if set)
+#     3. RAFT__* environment variables (highest priority)
+#
+#   To layer multiple files (e.g., base + node-specific overrides), call
+#   RaftNodeConfig::new()?.with_override_config("overlays/n1.toml")?.validate()
+#   in your application code.
+#
+# REFERENCE FILES (use as CONFIG_PATH base):
+#   config/base/raft.toml     - All Raft settings with documentation
+#   config/base/cluster.toml  - Cluster identity template
+#   config/base/network.toml  - Network tuning
+#   config/base/retry.toml    - Retry policies
+#   config/base/tls.toml      - TLS settings
+#
+# NODE OVERLAYS (apply on top of base via with_override_config):
+#   config/overlays/n1.toml   - Node 1 identity
+#   config/overlays/n2.toml   - Node 2 identity
+#   config/overlays/n3.toml   - Node 3 identity
+#   config/overlays/prod.toml - Production tuning overrides

@@ -23,7 +23,6 @@ use std::sync::atomic::Ordering;
 
 use candidate_state::CandidateState;
 use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::common::EntryPayload;
 use d_engine_proto::server::election::VotedFor;
 use follower_state::FollowerState;
 pub use leader_state::ClusterMetadata;
@@ -358,6 +357,27 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().init_peers_next_index_and_match_index(last_entry_id, peer_ids)
     }
 
+    /// Reset `next_index[peer] = match_index[peer] + 1` after a bidi stream disconnect.
+    /// Ensures the next heartbeat re-sends any unACKed in-flight entries.
+    pub(crate) fn handle_peer_stream_error(
+        &mut self,
+        peer_id: u32,
+    ) {
+        let match_idx = self.state().match_index(peer_id).unwrap_or(0);
+        let _ = self.state_mut().update_next_index(peer_id, match_idx + 1);
+    }
+
+    pub(crate) fn handle_snapshot_push_completed(
+        &mut self,
+        peer_id: u32,
+        success: bool,
+        policy: &crate::InstallSnapshotBackoffPolicy,
+        node_id: u32,
+    ) {
+        self.state_mut()
+            .handle_snapshot_push_completed(peer_id, success, policy, node_id)
+    }
+
     pub(crate) async fn tick(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
@@ -383,22 +403,18 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut().handle_raft_event(raft_event, ctx, role_tx).await
     }
 
-    pub(crate) async fn verify_leadership_persistent(
+    /// Fire-and-forget noop to confirm quorum; delegates to LeaderState only.
+    /// Called from the BecomeLeader handler; no-op for non-leader roles.
+    pub(crate) async fn initiate_noop_commit(
         &mut self,
-        payloads: Vec<EntryPayload>,
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<bool> {
-        self.state_mut().verify_leadership_persistent(payloads, ctx, role_tx).await
-    }
-
-    /// Notify role that no-op entry has been committed.
-    /// Only Leader role performs actual tracking.
-    pub(crate) fn on_noop_committed(
-        &mut self,
-        ctx: &RaftContext<T>,
     ) -> Result<()> {
-        self.state_mut().on_noop_committed(ctx)
+        if let RaftRole::Leader(state) = self {
+            state.initiate_noop_commit(ctx, role_tx).await
+        } else {
+            Ok(())
+        }
     }
 
     /// Drain pending read buffer when stepping down from Leader.
@@ -427,6 +443,42 @@ impl<T: TypeConfig> RaftRole<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         self.state_mut().flush_cmd_buffers(ctx, role_tx).await
+    }
+
+    /// Dispatch ApplyCompleted to the current role state.
+    pub(crate) async fn handle_apply_completed(
+        &mut self,
+        last_index: u64,
+        results: Vec<crate::ApplyResult>,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> crate::Result<()>
+    where
+        T: TypeConfig,
+    {
+        self.state_mut().handle_apply_completed(last_index, results, ctx, role_tx).await
+    }
+
+    /// Dispatch LogFlushed(durable) to the current role state.
+    /// Follower/Learner: sends deferred ACK. Leader: recalculates commit.
+    pub(crate) async fn handle_log_flushed(
+        &mut self,
+        durable: u64,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) {
+        self.state_mut().handle_log_flushed(durable, ctx, role_tx).await
+    }
+
+    /// Dispatch AppendResult from a per-follower worker back to the current role state.
+    pub(crate) async fn handle_append_result(
+        &mut self,
+        follower_id: u32,
+        result: crate::Result<d_engine_proto::server::replication::AppendEntriesResponse>,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> crate::Result<()> {
+        self.state_mut().handle_append_result(follower_id, result, ctx, role_tx).await
     }
 }
 
@@ -463,13 +515,6 @@ impl<'de> Deserialize<'de> for HardState {
             voted_for: hard_state_de.voted_for,
         })
     }
-}
-
-#[derive(Debug, PartialEq)]
-pub enum QuorumVerificationResult {
-    Success,        // Leadership confirmation successful
-    LeadershipLost, // Confirmation of leadership loss (need to abdicate)
-    RetryRequired,  // Retry required (leadership still exists)
 }
 
 use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;

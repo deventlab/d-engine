@@ -25,7 +25,7 @@
 //! 5. Verify no data loss during PHASE 2.5 temporary DB window
 
 #![cfg(feature = "rocksdb")]
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+use d_engine_server::RocksDBUnifiedEngine;
 
 use d_engine_server::EmbeddedEngine;
 
@@ -120,17 +120,16 @@ snapshots_dir = '{}'
         let config_path = format!("/tmp/learner_snap_node{node_id}.toml");
         tokio::fs::write(&config_path, &config).await?;
 
-        let storage_path = db_root_dir.join(format!("node{node_id}/storage"));
-        let sm_path = db_root_dir.join(format!("node{node_id}/state_machine"));
+        let db_path = db_root_dir.join(format!("node{node_id}/db"));
 
-        tokio::fs::create_dir_all(&storage_path).await?;
-        tokio::fs::create_dir_all(&sm_path).await?;
+        tokio::fs::create_dir_all(&db_path).await?;
         tokio::fs::create_dir_all(snapshots_dir.join(format!("node{node_id}"))).await?;
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let sm = Arc::new(RocksDBStateMachine::new(sm_path)?);
+        let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, Some(&config_path)).await?;
+        let engine =
+            EmbeddedEngine::start_custom(Arc::new(storage), Arc::new(sm), Some(&config_path))
+                .await?;
         engines.push(engine);
     }
 
@@ -218,19 +217,19 @@ snapshots_dir = '{}'
     let learner_config_path = "/tmp/learner_snap_node4.toml".to_string();
     tokio::fs::write(&learner_config_path, &learner_config).await?;
 
-    let learner_storage_path = db_root_dir.join("node4/storage");
-    let learner_sm_path = db_root_dir.join("node4/state_machine");
+    let learner_db_path = db_root_dir.join("node4/db");
 
-    tokio::fs::create_dir_all(&learner_storage_path).await?;
-    tokio::fs::create_dir_all(&learner_sm_path).await?;
+    tokio::fs::create_dir_all(&learner_db_path).await?;
     tokio::fs::create_dir_all(snapshots_dir.join("node4")).await?;
 
-    let learner_storage = Arc::new(RocksDBStorageEngine::new(learner_storage_path)?);
-    let learner_sm = Arc::new(RocksDBStateMachine::new(learner_sm_path)?);
+    let (learner_storage, learner_sm) = RocksDBUnifiedEngine::open(&learner_db_path)?;
 
-    let learner_engine =
-        EmbeddedEngine::start_custom(learner_storage, learner_sm, Some(&learner_config_path))
-            .await?;
+    let learner_engine = EmbeddedEngine::start_custom(
+        Arc::new(learner_storage),
+        Arc::new(learner_sm),
+        Some(&learner_config_path),
+    )
+    .await?;
 
     info!("Learner started: Node 4");
     info!("Learner is now receiving snapshot from Leader...");
@@ -270,7 +269,7 @@ snapshots_dir = '{}'
         TOTAL_ENTRIES
     );
 
-    let mut max_wait = 5;
+    let mut max_wait = 15;
     let mut learner_caught_up = false;
 
     while max_wait > 0 {
@@ -290,12 +289,11 @@ snapshots_dir = '{}'
                 }
             }
             Ok(None) => {
-                if max_wait % 5 == 0 {
-                    info!(
-                        "Learner does not have last key yet (key_{})",
-                        TOTAL_ENTRIES - 1
-                    );
-                }
+                info!(
+                    "Learner does not have last key yet (key_{}), {} seconds remaining",
+                    TOTAL_ENTRIES - 1,
+                    max_wait
+                );
             }
             Err(e) => {
                 info!("Learner read error: {:?}", e);
@@ -304,9 +302,6 @@ snapshots_dir = '{}'
 
         tokio::time::sleep(Duration::from_secs(1)).await;
         max_wait -= 1;
-        if max_wait % 5 == 0 {
-            info!("Still waiting... ({} seconds remaining)", max_wait);
-        }
     }
 
     assert!(
@@ -362,18 +357,18 @@ snapshots_dir = '{}'
 
     info!("Phase 6: Checking snapshot files on Learner...");
     let learner_snapshot_dir = snapshots_dir.join("node4");
-    if learner_snapshot_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&learner_snapshot_dir) {
-            let snapshot_files: Vec<_> =
-                entries.filter_map(|e| e.ok()).filter(|e| e.path().is_file()).collect();
+    if learner_snapshot_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&learner_snapshot_dir)
+    {
+        let snapshot_files: Vec<_> =
+            entries.filter_map(|e| e.ok()).filter(|e| e.path().is_file()).collect();
 
-            if !snapshot_files.is_empty() {
-                info!(
-                    "Snapshot received successfully: {} file(s) in {:?}",
-                    snapshot_files.len(),
-                    learner_snapshot_dir
-                );
-            }
+        if !snapshot_files.is_empty() {
+            info!(
+                "Snapshot received successfully: {} file(s) in {:?}",
+                snapshot_files.len(),
+                learner_snapshot_dir
+            );
         }
     }
 

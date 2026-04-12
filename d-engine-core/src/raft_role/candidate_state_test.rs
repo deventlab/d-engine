@@ -630,20 +630,33 @@ async fn test_handle_append_entries_rejects_lower_term() {
     assert!(response.is_higher_term());
 }
 
-/// Test: CandidateState handles AppendEntries conflict
+/// Test: Candidate rejects AppendEntries from a stale leader (lower term)
+///
+/// Scenario:
+/// - Candidate is in term 2
+/// - Receives AppendEntries with term=1 (stale leader)
+///
+/// Expected:
+/// - Candidate stays in Candidate state (no role change)
+/// - Sends back a higher_term response to inform the stale leader
+/// - Term remains unchanged
+///
+/// When check_append_entries_request_is_legal is called with my_term(2) > request.term(1),
+/// Rule 1 fires and returns higher_term — the candidate correctly informs the stale leader
+/// of the current term without stepping down.
 ///
 /// Original: test_handle_raft_event_case4_3
 #[tokio::test]
-async fn test_handle_append_entries_conflict() {
+async fn test_handle_append_entries_rejects_stale_leader() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_append_conflict", graceful_rx, None);
+    let mut context = mock_raft_context("/tmp/test_append_stale_leader", graceful_rx, None);
     let term = 2;
-    let new_leader_term = term - 1;
+    let stale_leader_term = term - 1;
 
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_check_append_entries_request_is_legal()
-        .returning(move |_, _, _| AppendEntriesResponse::conflict(1, term, None, None));
+        .returning(move |_, _, _| AppendEntriesResponse::higher_term(1, term));
 
     context.membership = Arc::new(MockMembership::new());
     context.handlers.replication_handler = replication_handler;
@@ -652,7 +665,7 @@ async fn test_handle_append_entries_conflict() {
     state.update_current_term(term);
 
     let append_entries_request = AppendEntriesRequest {
-        term: new_leader_term,
+        term: stale_leader_term,
         leader_id: 5,
         prev_log_index: 0,
         prev_log_term: 1,
@@ -664,11 +677,162 @@ async fn test_handle_append_entries_conflict() {
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
-    assert!(role_rx.try_recv().is_err());
+    assert!(
+        role_rx.try_recv().is_err(),
+        "Candidate must not change role for stale leader"
+    );
     assert_eq!(state.current_term(), term);
 
     let response = resp_rx.recv().await.expect("should succeed").unwrap();
-    assert!(response.is_conflict());
+    assert!(
+        response.is_higher_term(),
+        "Stale leader must receive higher_term response"
+    );
+}
+
+/// Test: Candidate steps down when receiving AppendEntries with same term, even with log conflict.
+///
+/// Scenario:
+/// - Candidate is in term 3
+/// - Receives AppendEntries with term=3 (legitimate leader, same term) where prev_log_index
+///   exceeds the candidate's log length — a log conflict would occur
+///
+/// Expected (Raft §5.2):
+/// - Candidate must step down immediately (BecomeFollower + ReprocessEvent)
+/// - check_append_entries_request_is_legal is NOT called (term check takes priority)
+/// - No response is sent by the candidate; Follower will respond after reprocessing
+/// - Term remains unchanged (request.term == my_term, no update needed)
+///
+/// Why this test fails if the fix is reverted:
+/// The old code called check_append_entries_request_is_legal first; a conflict result
+/// caused an early return without stepping down. The candidate stayed alive, could
+/// re-increment its term on the next tick, and force the legitimate leader to step down.
+#[tokio::test]
+async fn test_handle_append_entries_same_term_log_conflict_steps_down() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_append_same_term_conflict_step_down",
+        graceful_rx,
+        None,
+    );
+    let term = 3;
+
+    // No expectation on check_append_entries_request_is_legal.
+    // If old (buggy) code calls it, mockall panics — the test fails on revert as intended.
+    let replication_handler = MockReplicationCore::new();
+    context.membership = Arc::new(MockMembership::new());
+    context.handlers.replication_handler = replication_handler;
+
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(term);
+
+    // request.term == my_term: legitimate leader, but prev_log_index beyond our log
+    let append_entries_request = AppendEntriesRequest {
+        term,
+        leader_id: 5,
+        prev_log_index: 10,
+        prev_log_term: term,
+        entries: vec![],
+        leader_commit_index: 10,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    assert!(
+        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))),
+        "Candidate must step down when receiving AppendEntries with term >= currentTerm (Raft §5.2)"
+    );
+    assert!(
+        matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)),
+        "Candidate must replay the event so Follower can handle the log conflict"
+    );
+
+    // Term unchanged — request.term == my_term, no update needed
+    assert_eq!(state.current_term(), term);
+
+    // No response from candidate — Follower responds after reprocessing
+    assert!(
+        resp_rx.recv().await.is_err(),
+        "Candidate must not send a response; Follower will respond after reprocessing"
+    );
+}
+
+/// Test: Candidate steps down and updates term when AppendEntries carries a higher term,
+/// even when the log check would produce a conflict.
+///
+/// Scenario:
+/// - Candidate is in term 2
+/// - Receives AppendEntries with term=3 (new leader, higher term) where prev_log_index
+///   exceeds the candidate's log — log conflict would occur
+///
+/// Expected (Raft §5.2):
+/// - Candidate must step down immediately (BecomeFollower + ReprocessEvent)
+/// - Candidate's term is updated to the leader's higher term before stepping down
+/// - check_append_entries_request_is_legal is NOT called (term check takes priority)
+/// - No response sent; Follower handles log consistency after reprocessing
+///
+/// Why this test fails if the fix is reverted:
+/// Old code ran check_append_entries_request_is_legal before the term-update branch.
+/// A conflict result caused an early return without the term update or role transition,
+/// leaving the candidate in a stale term and potentially disrupting cluster stability.
+#[tokio::test]
+async fn test_handle_append_entries_higher_term_log_conflict_steps_down_and_updates_term() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_append_higher_term_conflict_step_down",
+        graceful_rx,
+        None,
+    );
+    let my_term = 2;
+    let leader_term = my_term + 1;
+
+    // No expectation on check_append_entries_request_is_legal — panics if called (old code path).
+    let replication_handler = MockReplicationCore::new();
+    context.membership = Arc::new(MockMembership::new());
+    context.handlers.replication_handler = replication_handler;
+
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(my_term);
+
+    // request.term > my_term: new leader with higher term, but conflict-triggering prev_log_index
+    let append_entries_request = AppendEntriesRequest {
+        term: leader_term,
+        leader_id: 5,
+        prev_log_index: 10,
+        prev_log_term: leader_term,
+        entries: vec![],
+        leader_commit_index: 10,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    assert!(
+        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))),
+        "Candidate must step down when receiving AppendEntries with term > currentTerm (Raft §5.2)"
+    );
+    assert!(
+        matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)),
+        "Candidate must replay the event so Follower can handle the log conflict"
+    );
+
+    // Term must be updated to the higher leader term
+    assert_eq!(
+        state.current_term(),
+        leader_term,
+        "Candidate must adopt the higher term from AppendEntries"
+    );
+
+    // No response from candidate — Follower responds after reprocessing
+    assert!(
+        resp_rx.recv().await.is_err(),
+        "Candidate must not send a response; Follower will respond after reprocessing"
+    );
 }
 
 /// Test: CandidateState handles ClientPropose (write request)
@@ -852,13 +1016,7 @@ mod role_violation_tests {
     /// - Once elected as Leader or stepped down to Follower, snapshot will be handled
     /// - Avoiding snapshot during election reduces unnecessary I/O and complexity
     ///
-    /// This aligns with the implementation in candidate_state.rs:
-    /// ```rust
-    /// RaftEvent::ApplyCompleted { last_index, results } => {
-    ///     // Candidate is a transient state; snapshot will be triggered after role transition.
-    ///     let _ = (last_index, results);
-    /// }
-    /// ```
+    /// Candidate uses the default no-op `handle_apply_completed` from the trait.
     #[tokio::test]
     async fn test_candidate_does_not_create_snapshot_on_apply_completed() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -868,13 +1026,8 @@ mod role_violation_tests {
 
         // ApplyCompleted with high index that would normally trigger snapshot
         let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-        let apply_completed_event = RaftEvent::ApplyCompleted {
-            last_index: 1000,
-            results: vec![],
-        };
 
-        let result =
-            state.handle_raft_event(apply_completed_event, &context, role_tx.clone()).await;
+        let result = state.handle_apply_completed(1000, vec![], &context, &role_tx).await;
 
         // VERIFY 1: Event handling succeeds without error
         assert!(
@@ -1061,6 +1214,7 @@ async fn test_new_leader_initializes_empty_buffers() {
     // Setup mocks
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
@@ -1069,14 +1223,8 @@ async fn test_new_leader_initializes_empty_buffers() {
 
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                learner_progress: std::collections::HashMap::new(),
-                peer_updates: std::collections::HashMap::new(),
-            })
-        });
+        .expect_prepare_batch_requests()
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;

@@ -17,8 +17,7 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-// #[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     let log_dir = env::var("LOG_DIR")
         .map_err(|_| "LOG_DIR environment variable not set")
@@ -176,10 +175,10 @@ async fn collect_tokio_metrics(
 
 fn open_file_for_append(path: PathBuf) -> Result<std::fs::File, Box<dyn Error>> {
     // Create parent directories if they don't exist
-    if let Some(parent) = path.parent() {
-        if parent != Path::new("") {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && parent != Path::new("")
+    {
+        std::fs::create_dir_all(parent)?;
     }
 
     let log_file = OpenOptions::new().append(true).create(true).open(&path)?;

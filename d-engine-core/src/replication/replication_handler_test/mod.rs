@@ -38,3 +38,6 @@ mod log_retrieval_test;
 
 #[cfg(test)]
 mod quorum_calculation_test;
+
+#[cfg(test)]
+mod snapshot_trigger_test;

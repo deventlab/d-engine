@@ -15,21 +15,18 @@ use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
-use crate::common::reset;
 use crate::common::start_node;
-
-const TEST_DIR: &str = "cluster_start_stop/failover";
-const DB_ROOT_DIR: &str = "./db/cluster_start_stop/failover";
-const LOG_DIR: &str = "./logs/cluster_start_stop/failover";
 
 /// Test 3-node cluster failover: kill leader, verify re-election and data consistency
 #[tokio::test]
 #[traced_test]
 async fn test_3_node_failover() -> Result<(), ClientApiError> {
-    reset(TEST_DIR).await?;
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let db_root_dir = temp_dir.path().join("db").to_string_lossy().to_string();
+    let log_dir = temp_dir.path().join("logs").to_string_lossy().to_string();
 
     let mut port_guard = get_available_ports(3).await;
-    port_guard.release_listeners(); // Release listeners before starting nodes
+    port_guard.release_listeners();
     let ports = port_guard.as_slice();
 
     let mut ctx = TestContext {
@@ -42,7 +39,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
             node_config(
-                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config((i + 1) as u64, *port, ports, &db_root_dir, &log_dir).await,
             ),
             None,
             None,
@@ -148,7 +145,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     // Restart node 1 and verify it rejoins cluster
     info!("Restarting node 1");
     let (graceful_tx, node_handle) = start_node(
-        node_config(&create_node_config(1, ports[0], ports, DB_ROOT_DIR, LOG_DIR).await),
+        node_config(&create_node_config(1, ports[0], ports, &db_root_dir, &log_dir).await),
         None,
         None,
     )
@@ -189,7 +186,9 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 #[traced_test]
 #[serial]
 async fn test_minority_failure() -> Result<(), ClientApiError> {
-    reset(&format!("{TEST_DIR}_minority")).await?;
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let db_root_dir = temp_dir.path().join("db").to_string_lossy().to_string();
+    let log_dir = temp_dir.path().join("logs").to_string_lossy().to_string();
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
@@ -204,14 +203,7 @@ async fn test_minority_failure() -> Result<(), ClientApiError> {
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
             node_config(
-                &create_node_config(
-                    (i + 1) as u64,
-                    *port,
-                    ports,
-                    &format!("{DB_ROOT_DIR}_minority"),
-                    &format!("{LOG_DIR}_minority"),
-                )
-                .await,
+                &create_node_config((i + 1) as u64, *port, ports, &db_root_dir, &log_dir).await,
             ),
             None,
             None,

@@ -62,6 +62,27 @@ pub struct InstallSnapshotBackoffPolicy {
     /// Timeout between chunks on receiver side (milliseconds)
     #[serde(default = "default_between_chunk_timeout_ms")]
     pub between_chunk_timeout_ms: u64,
+
+    /// Number of consecutive leader-initiated snapshot push failures before emitting an
+    /// error-level alert (tracing::error! + metrics counter).
+    ///
+    /// Protecting the leader's replication throughput is the highest priority.
+    /// A value of 5 avoids alert storms from brief network partitions while still
+    /// surfacing persistent peer failures (disk full, crashed node) within seconds.
+    #[serde(default = "default_push_failure_alert_threshold")]
+    pub push_failure_alert_threshold: u32,
+
+    /// Maximum backoff interval between consecutive leader-initiated snapshot push
+    /// attempts for the same peer (milliseconds).
+    ///
+    /// Intentionally higher than `max_delay_ms` (chunk-level RPC retry cap):
+    /// once the chunk-level retries are exhausted, the leader should wait a full
+    /// 30 s before re-attempting the entire transfer. This prevents a permanently
+    /// unreachable peer from consuming I/O bandwidth on every heartbeat cycle and
+    /// starving healthy followers' AppendEntries. Leader protection is the
+    /// highest priority.
+    #[serde(default = "default_push_backoff_max_delay_ms")]
+    pub push_backoff_max_delay_ms: u64,
 }
 
 /// Domain-specific retry strategy configurations for Raft subsystems
@@ -181,6 +202,8 @@ impl Default for RetryPolicies {
                 min_timeout_ms: default_min_timeout_ms(),
                 max_timeout_ms: default_max_timeout_ms(),
                 between_chunk_timeout_ms: default_between_chunk_timeout_ms(),
+                push_failure_alert_threshold: default_push_failure_alert_threshold(),
+                push_backoff_max_delay_ms: default_push_backoff_max_delay_ms(),
             },
 
             internal_quorum: BackoffPolicy {
@@ -291,6 +314,20 @@ impl InstallSnapshotBackoffPolicy {
             return Err(Error::Config(ConfigError::Message(format!(
                 "{}: max_delay_ms({}) exceeds 2min limit",
                 policy_name, self.max_delay_ms
+            ))));
+        }
+
+        if self.push_failure_alert_threshold == 0 {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{policy_name}: push_failure_alert_threshold cannot be 0"
+            ))));
+        }
+
+        if self.push_backoff_max_delay_ms < self.max_delay_ms {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "{}: push_backoff_max_delay_ms({}) must be >= max_delay_ms({}) \
+                 to ensure leader-side backoff is not shorter than chunk-level retry cap",
+                policy_name, self.push_backoff_max_delay_ms, self.max_delay_ms
             ))));
         }
 
@@ -439,5 +476,11 @@ fn default_max_timeout_ms() -> u64 {
     30_000
 }
 fn default_between_chunk_timeout_ms() -> u64 {
+    30_000
+}
+fn default_push_failure_alert_threshold() -> u32 {
+    5
+}
+fn default_push_backoff_max_delay_ms() -> u64 {
     30_000
 }

@@ -1,6 +1,3 @@
-use std::sync::Arc;
-
-use d_engine_proto::common::EntryPayload;
 // Re-export LeaderInfo from proto (application layer use)
 pub use d_engine_proto::common::LeaderInfo;
 use d_engine_proto::server::election::VotedFor;
@@ -30,6 +27,7 @@ use crate::Result;
 use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::TROF;
+use std::sync::Arc;
 
 pub struct Raft<T>
 where
@@ -44,8 +42,8 @@ where
     event_rx: mpsc::Receiver<RaftEvent>,
 
     // Client commands (drain-driven)
-    cmd_tx: mpsc::UnboundedSender<super::ClientCmd>,
-    cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
+    cmd_tx: mpsc::Sender<super::ClientCmd>,
+    cmd_rx: mpsc::Receiver<super::ClientCmd>,
 
     // Timer
     role_tx: mpsc::UnboundedSender<RoleEvent>,
@@ -74,8 +72,8 @@ pub struct SignalParams {
     pub(crate) role_rx: mpsc::UnboundedReceiver<RoleEvent>,
     pub(crate) event_tx: mpsc::Sender<RaftEvent>,
     pub(crate) event_rx: mpsc::Receiver<RaftEvent>,
-    pub(crate) cmd_tx: mpsc::UnboundedSender<super::ClientCmd>,
-    pub(crate) cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
+    pub(crate) cmd_tx: mpsc::Sender<super::ClientCmd>,
+    pub(crate) cmd_rx: mpsc::Receiver<super::ClientCmd>,
     pub(crate) shutdown_signal: watch::Receiver<()>,
 }
 
@@ -89,8 +87,8 @@ impl SignalParams {
         role_rx: mpsc::UnboundedReceiver<RoleEvent>,
         event_tx: mpsc::Sender<RaftEvent>,
         event_rx: mpsc::Receiver<RaftEvent>,
-        cmd_tx: mpsc::UnboundedSender<super::ClientCmd>,
-        cmd_rx: mpsc::UnboundedReceiver<super::ClientCmd>,
+        cmd_tx: mpsc::Sender<super::ClientCmd>,
+        cmd_rx: mpsc::Receiver<super::ClientCmd>,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
         Self {
@@ -264,6 +262,13 @@ where
                 // P0: shutdown received;
                 _ = self.shutdown_signal.changed() => {
                     info!("[Raft:{}] shutdown signal received.", self.node_id);
+                    // Close IO thread BEFORE returning (before runtime shutdown)
+                    // This ensures RocksDB file lock is released before tokio runtime shuts down
+                    self.ctx.storage.raft_log.close().await;
+                    // Unblock any tasks stuck in event_tx.send().await (e.g. gRPC stream handlers).
+                    // Without this, serve_with_shutdown never completes and Arc<Node> is never
+                    // released, keeping Arc<DB> alive and the RocksDB LOCK held indefinitely.
+                    self.event_rx.close();
                     return Ok(());
                 }
                 // P1: Tick: start Heartbeat(replication) or start Election
@@ -280,7 +285,7 @@ where
                     }
                 }
 
-                // P2: Role events
+                // P2: Role events — handle first, drain rest after select
                 Some(role_event) = self.role_rx.recv() => {
                     debug!(%self.node_id, ?role_event, "receive role event");
 
@@ -289,37 +294,13 @@ where
                     }
                 }
 
-                // P3: Client commands (drain-driven batch with RPC merge)
+                // P3: Client commands — push first, drain rest after select
                 Some(first_cmd) = self.cmd_rx.recv() => {
                     trace!(%self.node_id, "receive first client command");
-
-                    // Push first command and drain rest (direct push for zero-copy)
                     self.role.push_client_cmd(first_cmd, &self.ctx);
-
-                    // Drain all pending commands from channel (max_batch_size limit)
-                    let max_batch = self.ctx.node_config.raft.batching.max_batch_size;
-                    let mut count = 1;
-
-                    while count < max_batch {
-                        match self.cmd_rx.try_recv() {
-                            Ok(cmd) => {
-                                self.role.push_client_cmd(cmd, &self.ctx);
-                                count += 1;
-                            }
-                            Err(_) => break,
-                        }
-                    }
-
-                    trace!("Drained {} client commands", count);
-
-                    // Flush buffers if thresholds reached
-                    if let Err(e) = self.role.flush_cmd_buffers(&self.ctx, &self.role_tx).await {
-                        error!(%self.node_id, ?e, "flush_cmd_buffers error");
-                        return Err(e);
-                    }
                 }
 
-                // P4: Other events
+                // P4: Other events — handle first, drain rest after select
                 Some(raft_event) = self.event_rx.recv() => {
                     trace!(%self.node_id, ?raft_event, "receive raft event");
 
@@ -327,9 +308,11 @@ where
                     let event = raft_event_to_test_event(&raft_event);
 
                     if let Err(e) = self.role.handle_raft_event(raft_event, &self.ctx, self.role_tx.clone()).await {
-                        error!(%self.node_id, ?e, "handle_raft_event error");
-                        // Fatal errors from SM Worker will be caught here and propagated
-                        return Err(e);
+                        if e.is_fatal() {
+                            error!(%self.node_id, ?e, "Fatal error in handle_raft_event, shutting down");
+                            return Err(e);
+                        }
+                        warn!(%self.node_id, ?e, "Non-fatal error in handle_raft_event, continuing");
                     }
 
                     #[cfg(test)]
@@ -337,7 +320,88 @@ where
                 }
 
             }
+
+            // After any arm fires: drain all channels in order.
+            // role_rx first: processes ACKs/commits and sends responses to clients,
+            // naturally yielding at .await points so client tasks can enqueue their
+            // next writes into cmd_rx before drain_client_cmds runs.
+            tokio::task::yield_now().await;
+            self.drain_role_events().await?;
+            // Yield after role events so woken client tasks can enqueue their next
+            // writes into cmd_rx before drain_client_cmds runs.
+            tokio::task::yield_now().await;
+            self.drain_client_cmds().await?;
+            self.drain_raft_events().await?;
         }
+    }
+
+    /// Drain all pending role events (up to max_batch_size).
+    async fn drain_role_events(&mut self) -> Result<()> {
+        let max = self.ctx.node_config.raft.batching.max_batch_size;
+        let mut count = 0;
+        while count < max {
+            match self.role_rx.try_recv() {
+                Ok(role_event) => {
+                    if let Err(e) = self.handle_role_event(role_event).await {
+                        error!(%self.node_id, ?e, "drain_role_events: handle_role_event error");
+                    }
+                    count += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        Ok(())
+    }
+
+    /// Drain all pending client commands (up to max_batch_size) and flush.
+    async fn drain_client_cmds(&mut self) -> Result<()> {
+        let max = self.ctx.node_config.raft.batching.max_batch_size;
+        let mut count = 0;
+        while count < max {
+            match self.cmd_rx.try_recv() {
+                Ok(cmd) => {
+                    self.role.push_client_cmd(cmd, &self.ctx);
+                    count += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        if count > 0 {
+            trace!("Drained {} client commands", count);
+        }
+        // Always flush: the P3 select arm may have pushed a command before this drain ran.
+        // flush_cmd_buffers checks is_empty() internally and is a no-op when nothing is buffered.
+        if let Err(e) = self.role.flush_cmd_buffers(&self.ctx, &self.role_tx).await {
+            error!(%self.node_id, ?e, "drain_client_cmds: flush_cmd_buffers error");
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Drain all pending raft events (up to max_batch_size).
+    async fn drain_raft_events(&mut self) -> Result<()> {
+        let max = self.ctx.node_config.raft.batching.max_batch_size;
+        let mut count = 0;
+        while count < max {
+            match self.event_rx.try_recv() {
+                Ok(raft_event) => {
+                    if let Err(e) = self
+                        .role
+                        .handle_raft_event(raft_event, &self.ctx, self.role_tx.clone())
+                        .await
+                    {
+                        if e.is_fatal() {
+                            error!(%self.node_id, ?e, "Fatal error in drain_raft_events, shutting down");
+                            return Err(e);
+                        }
+                        warn!(%self.node_id, ?e, "Non-fatal error in drain_raft_events, continuing");
+                    }
+                    count += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        Ok(())
     }
 
     /// `handle_role_event` will be responsbile to process role trasnsition and
@@ -404,36 +468,15 @@ where
                 // Initialize cluster metadata cache for hot path optimization
                 self.role.state_mut().init_cluster_metadata(&self.ctx.membership()).await?;
 
-                //async action
-                if !self
-                    .role
-                    .verify_leadership_persistent(
-                        vec![EntryPayload::noop()],
-                        &self.ctx,
-                        &self.role_tx,
-                    )
-                    .await
-                    .unwrap_or(false)
-                {
-                    warn!(
-                        "Verify leadership in new term failed. Now the node is going to step back to Follower..."
-                    );
+                // Fire-and-forget noop to confirm quorum.
+                // Completion is delivered asynchronously via RoleEvent::NoopCommitted.
+                if let Err(e) = self.role.initiate_noop_commit(&self.ctx, &self.role_tx).await {
+                    warn!(?e, "initiate_noop_commit failed — stepping down");
                     self.role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
                         let error_str = format!("{e:?}");
                         error!("Failed to send: {}", error_str);
                         NetworkError::SingalSendFailed(error_str)
                     })?;
-                } else {
-                    // Track no-op index for linearizable read optimization (best-effort)
-                    if let Err(e) = self.role.on_noop_committed(&self.ctx) {
-                        warn!(
-                            ?e,
-                            "Failed to track no-op commit index after leadership verification"
-                        );
-                    } else {
-                        // Notify leader change listeners: this node is now leader
-                        self.notify_leader_change(Some(self.node_id), current_term);
-                    }
                 }
 
                 #[cfg(test)]
@@ -502,6 +545,78 @@ where
                     error!("Failed to send: {}", error_str);
                     NetworkError::SingalSendFailed(error_str)
                 })?;
+            }
+
+            RoleEvent::LogFlushed { durable_index } => {
+                debug!("LogFlushed: durable_index={}", durable_index);
+                self.role.handle_log_flushed(durable_index, &self.ctx, &self.role_tx).await;
+            }
+
+            RoleEvent::AppendResult {
+                follower_id,
+                result,
+            } => {
+                debug!("AppendResult: follower_id={}", follower_id);
+                if let Err(e) = self
+                    .role
+                    .handle_append_result(follower_id, result, &self.ctx, &self.role_tx)
+                    .await
+                {
+                    error!("handle_append_result failed: {:?}", e);
+                }
+            }
+
+            RoleEvent::NoopCommitted { term } => {
+                debug!("NoopCommitted: term={}", term);
+                // on_noop_committed already called directly in drain_commit_actions.
+                // Only notify leader change listeners here (requires Raft<T> access).
+                self.notify_leader_change(Some(self.node_id), term);
+            }
+
+            RoleEvent::FatalError { source, error } => {
+                error!(%self.node_id, %source, %error, "Fatal error from SM worker — shutting down");
+                return Err(crate::Error::Fatal(format!("{source}: {error}")));
+            }
+
+            RoleEvent::ApplyCompleted {
+                last_index,
+                results,
+            } => {
+                // Routed via role_tx (P2) to avoid priority inversion against AppendEntries at P4.
+                if let Err(e) = self
+                    .role
+                    .handle_apply_completed(last_index, results, &self.ctx, &self.role_tx)
+                    .await
+                {
+                    if e.is_fatal() {
+                        error!(%self.node_id, ?e, "Fatal error in ApplyCompleted handler");
+                        return Err(e);
+                    }
+                    warn!(%self.node_id, ?e, "Non-fatal error in ApplyCompleted handler");
+                }
+            }
+
+            RoleEvent::PeerStreamError { peer_id } => {
+                debug!(%peer_id, "PeerStreamError: bidi stream disconnected, resetting next_index");
+                self.role.handle_peer_stream_error(peer_id);
+            }
+
+            RoleEvent::SnapshotPushCompleted { peer_id, success } => {
+                debug!(%peer_id, %success, "SnapshotPushCompleted");
+                if success {
+                    // Reset next_index to last_entry_id + 1 so the peer is no longer below
+                    // the purge boundary and resumes AppendEntries on the next heartbeat.
+                    // Using last_entry_id follows Raft convention (nextIndex = leader last + 1);
+                    // if the peer is behind, the conflict response will walk it back correctly.
+                    let last_entry_id = self.ctx.raft_log().last_entry_id();
+                    let _ = self
+                        .role
+                        .init_peers_next_index_and_match_index(last_entry_id, vec![peer_id]);
+                }
+                // Update per-peer backoff state; emit error alert + metrics when consecutive
+                // failures reach the configured threshold (leader protection highest priority).
+                let policy = &self.ctx.node_config.retry.install_snapshot;
+                self.role.handle_snapshot_push_completed(peer_id, success, policy, self.node_id);
             }
         };
 
@@ -586,7 +701,7 @@ where
         self.event_tx.clone()
     }
 
-    pub fn cmd_sender(&self) -> mpsc::UnboundedSender<super::ClientCmd> {
+    pub fn cmd_sender(&self) -> mpsc::Sender<super::ClientCmd> {
         self.cmd_tx.clone()
     }
 

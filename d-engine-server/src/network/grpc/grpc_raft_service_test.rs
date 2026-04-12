@@ -1,16 +1,15 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::ApplyResult;
 use d_engine_core::AppendResponseWithUpdates;
-use d_engine_core::AppendResults;
 use d_engine_core::MockElectionCore;
 use d_engine_core::MockMembership;
+use d_engine_core::MockRaftLog;
 use d_engine_core::MockReplicationCore;
 use d_engine_core::MockTypeConfig;
-use d_engine_core::RaftEvent;
 use d_engine_core::RaftNodeConfig;
+use d_engine_core::RoleEvent;
 use d_engine_core::convert::safe_kv_bytes;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
@@ -28,6 +27,7 @@ use d_engine_proto::server::election::raft_election_service_server::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
+use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time;
 use tonic::Code;
@@ -214,6 +214,25 @@ async fn test_handle_rpc_services_successfully() {
             current_leader_id: None,
         });
 
+    // Dynamic log index: starts at 0, incremented by prepare_batch_requests per payload written.
+    // Used so the test can read the correct log index when sending LogFlushed to trigger commit.
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let log_index = Arc::new(AtomicU64::new(0));
+    let li_last = log_index.clone();
+    let li_flush = log_index.clone();
+    let li_prepare = log_index.clone();
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_last_entry_id()
+        .returning(move || li_last.load(Ordering::Relaxed));
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    raft_log.expect_last_log_id().returning(|| None);
+
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
         .expect_check_append_entries_request_is_legal()
@@ -225,15 +244,10 @@ async fn test_handle_rpc_services_successfully() {
         })
     });
     replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
-            Ok(AppendResults {
-                // Must be true: leader requires quorum on noop entry to confirm leadership.
-                // If false, verify_leadership_persistent() causes immediate step-down.
-                commit_quorum_achieved: true,
-                learner_progress: HashMap::new(),
-                peer_updates: HashMap::new(),
-            })
+        .expect_prepare_batch_requests()
+        .returning(move |payloads, _, _, _, _| {
+            li_prepare.fetch_add(payloads.len() as u64, Ordering::Relaxed);
+            Ok(d_engine_core::PrepareResult::default())
         });
     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
     election_handler
@@ -248,7 +262,16 @@ async fn test_handle_rpc_services_successfully() {
         .returning(|_, _, _, _, _| false);
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let node = MockBuilder::new(graceful_rx)
+    // Create role channel so the test can inject LogFlushed events directly into the raft loop.
+    // Commit in single-voter mode is now async (driven by LogFlushed from BufferedRaftLog);
+    // since this test uses MockRaftLog (no real batch_processor), we send LogFlushed manually.
+    let (role_tx, role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let test_role_tx = role_tx.clone();
+    let mut builder = MockBuilder::new(graceful_rx);
+    builder.role_tx = Some(role_tx);
+    builder.role_rx = Some(role_rx);
+    let node = builder
+        .with_raft_log(raft_log)
         .with_membership(membership)
         .with_replication_handler(replication_handler)
         .with_election_handler(election_handler)
@@ -285,24 +308,34 @@ async fn test_handle_rpc_services_successfully() {
         // append_entries (term=1) will cause the candidate to step down, so write/read
         // are sent first before append_entries disrupts the leadership state.
         //
-        // Client writes require ApplyCompleted to resolve pending_requests.
-        // Spawn a task to simulate SM apply after the write is queued.
-        let apply_tx = node.event_tx.clone();
+        // Client writes require commit + ApplyCompleted to resolve pending_write_apply.
+        // Spawn a task to: (1) fire LogFlushed to advance commit_index, then
+        // (2) simulate SM apply completion. Both are needed because with MockRaftLog
+        // there is no real batch_processor sending LogFlushed events.
         tokio::spawn(async move {
-            // Yield multiple times to let raft loop process the write cmd
-            // and queue the sender into pending_requests before we send ApplyCompleted.
+            // Yield to let raft loop process the write cmd and store it in
+            // pending_client_writes before we advance the commit index.
             for _ in 0..10 {
                 tokio::task::yield_now().await;
             }
-            let _ = apply_tx
-                .send(RaftEvent::ApplyCompleted {
-                    last_index: 1,
-                    results: vec![ApplyResult {
-                        index: 1,
-                        succeeded: true,
-                    }],
-                })
-                .await;
+            // Advance commit_index via LogFlushed — moves entries from
+            // pending_client_writes into pending_write_apply (drain_pending_client_writes).
+            let flush_idx = li_flush.load(Ordering::Relaxed);
+            let _ = test_role_tx.send(RoleEvent::LogFlushed {
+                durable_index: flush_idx,
+            });
+            // Yield again so the raft loop processes LogFlushed before ApplyCompleted.
+            for _ in 0..5 {
+                tokio::task::yield_now().await;
+            }
+            // ApplyCompleted is now sent via role_tx (P2) to avoid priority inversion.
+            let _ = test_role_tx.send(RoleEvent::ApplyCompleted {
+                last_index: 2,
+                results: vec![ApplyResult {
+                    index: 2,
+                    succeeded: true,
+                }],
+            });
         });
         assert!(
             node.handle_client_write(Request::new(ClientWriteRequest {

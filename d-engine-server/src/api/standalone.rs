@@ -9,6 +9,8 @@ use crate::Result;
 use crate::RocksDBStateMachine;
 #[cfg(feature = "rocksdb")]
 use crate::RocksDBStorageEngine;
+#[cfg(feature = "rocksdb")]
+use crate::RocksDBUnifiedEngine;
 use crate::StateMachine;
 use crate::StorageEngine;
 use crate::node::NodeBuilder;
@@ -43,13 +45,22 @@ impl StandaloneEngine {
             .await
             .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
 
-        let storage_path = base_dir.join("storage");
-        let sm_path = base_dir.join("state_machine");
-
-        tracing::info!("Starting standalone server with RocksDB at {:?}", base_dir);
-
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let mut sm = RocksDBStateMachine::new(sm_path)?;
+        let (storage, mut sm) = if config.storage.unified_db {
+            let db_path = base_dir.join("db");
+            tracing::info!(
+                "Starting standalone server with unified RocksDB at {:?}",
+                db_path
+            );
+            RocksDBUnifiedEngine::open(&db_path)?
+        } else {
+            tracing::info!(
+                "Starting standalone server with separate RocksDB instances at {:?}",
+                base_dir
+            );
+            let storage = RocksDBStorageEngine::new(base_dir.join("storage"))?;
+            let sm = RocksDBStateMachine::new(base_dir.join("state_machine"))?;
+            (storage, sm)
+        };
 
         // Inject lease if enabled
         let lease_cfg = &config.raft.state_machine.lease;
@@ -58,9 +69,7 @@ impl StandaloneEngine {
             sm.set_lease(lease);
         }
 
-        let sm = Arc::new(sm);
-
-        Self::run_custom(storage, sm, shutdown_rx, None).await
+        Self::run_custom(Arc::new(storage), Arc::new(sm), shutdown_rx, None).await
     }
 
     /// Run server with explicit configuration file.
@@ -92,13 +101,22 @@ impl StandaloneEngine {
             .await
             .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
 
-        let storage_path = base_dir.join("storage");
-        let sm_path = base_dir.join("state_machine");
-
-        tracing::info!("Starting standalone server with RocksDB at {:?}", base_dir);
-
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let mut sm = RocksDBStateMachine::new(sm_path)?;
+        let (storage, mut sm) = if config.storage.unified_db {
+            let db_path = base_dir.join("db");
+            tracing::info!(
+                "Starting standalone server with unified RocksDB at {:?}",
+                db_path
+            );
+            RocksDBUnifiedEngine::open(&db_path)?
+        } else {
+            tracing::info!(
+                "Starting standalone server with separate RocksDB instances at {:?}",
+                base_dir
+            );
+            let storage = RocksDBStorageEngine::new(base_dir.join("storage"))?;
+            let sm = RocksDBStateMachine::new(base_dir.join("state_machine"))?;
+            (storage, sm)
+        };
 
         // Inject lease if enabled
         let lease_cfg = &config.raft.state_machine.lease;
@@ -107,9 +125,13 @@ impl StandaloneEngine {
             sm.set_lease(lease);
         }
 
-        let sm = Arc::new(sm);
-
-        Self::run_custom(storage, sm, shutdown_rx, Some(config_path)).await
+        Self::run_custom(
+            Arc::new(storage),
+            Arc::new(sm),
+            shutdown_rx,
+            Some(config_path),
+        )
+        .await
     }
 
     /// Run server with custom storage engine and state machine.

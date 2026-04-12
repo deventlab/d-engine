@@ -20,8 +20,7 @@ batch_size = 5000
 [raft.persistence]
 strategy = "MemFirst"
 # strategy = "DiskFirst"
-flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
-# flush_policy = "Immediate"
+flush_policy = { Batch = { idle_flush_interval_ms = 100 } }
 
 [raft.snapshot]
 enable = false

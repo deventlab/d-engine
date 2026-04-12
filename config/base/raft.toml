@@ -1,17 +1,6 @@
-[raft]
-# Metric used to convert a follower to learner if its next_id is far behind leader's commit_index
-# Be careful: too small may cause oscillation between learner and follower states
-learner_catchup_threshold = 10
-
-# Interval for checking if learners need to be converted to followers (milliseconds)
-learner_check_throttle_ms = 1000
-
-# General Raft operation timeout duration (milliseconds)
-general_raft_timeout_duration_in_ms = 100
-
-# Timeout for snapshot-related RPC operations (milliseconds)
-# Default: 1 hour for large snapshot transfers
-snapshot_rpc_timeout_ms = 3_600_000
+# =============================================================================
+# DEVELOPER SETTINGS — safe to adjust for your application
+# =============================================================================
 
 [raft.batching]
 # Maximum number of commands to accumulate in a single batch during drain operations.
@@ -23,220 +12,244 @@ snapshot_rpc_timeout_ms = 3_600_000
 # 2. try_recv() drains up to `max_batch_size` pending commands
 # 3. Entire batch is flushed to followers immediately
 #
-# Example with max_batch_size = 100:
-# - If 50 commands arrive: drain triggers immediately with 50 commands
-# - If 150 commands arrive: two batches (100 + 50)
-# - Heartbeat (100ms) acts as safety net for incomplete batches
-#
 # Tuning guidelines:
-# - Low latency (< 1ms): 50-100 (drain faster, less batching)
-# - Balanced: 100 (default, good throughput/latency trade-off)
-# - High throughput (> 10K ops/sec): 200-500 (batch more for efficiency)
+# - Low latency priority: 50-100 (drain faster, smaller batches)
+# - Balanced (default): 100
+# - High throughput (> 10K ops/sec, embedded mode): 200-500
 max_batch_size = 100
 
+[raft.read_consistency]
+# Default read consistency policy for the cluster.
+# Options: "LeaseRead", "LinearizableRead", "EventualConsistency"
+#
+# LeaseRead:          Low latency, serves locally within lease window. Assumes bounded clock drift.
+# LinearizableRead:   Strongest consistency, contacts quorum before serving. Slight latency cost.
+# EventualConsistency: Lowest latency, may return stale data. Can be served by non-leader nodes.
+default_policy = "LinearizableRead"
+
+# Lease duration for LeaseRead policy (milliseconds).
+# Must be < election_timeout_min / 2 to avoid stale reads during leader transitions.
+lease_duration_ms = 250
+
+# Allow clients to override default policy per request.
+allow_client_override = true
+
+# Timeout to wait for state machine to catch up with commit index (milliseconds).
+# Used by LinearizableRead to ensure reads reflect all committed writes.
+# Typical apply latency: <1ms on local SSD. Default: 10ms (safe buffer).
+state_machine_sync_timeout_ms = 10
+
+[raft.state_machine.lease]
+# Enable TTL (time-to-live) key expiration feature.
+# When disabled (default), no lease components are initialized — zero overhead.
+# When enabled, a background worker periodically removes expired keys.
+enabled = false
+
+# How often the background cleanup worker runs (milliseconds).
+# Controls MEMORY EFFICIENCY only — expired keys are always rejected at read time
+# regardless of this setting. Only reclaims DashMap memory from stale entries.
+# Range: 100–60000. Default: 1000 (1 second).
+cleanup_interval_ms = 1000
+
+# Maximum time the cleanup worker spends per cycle (milliseconds).
+# Limits CPU impact of cleanup scans. Default: 1ms (safe for latency-sensitive apps).
+max_cleanup_duration_ms = 1
+
+[raft.backpressure]
+# Maximum pending write (propose) requests before rejecting with RESOURCE_EXHAUSTED.
+# 0 = unlimited. Tune based on available memory and expected write concurrency.
+# Default: 10000. Examples use lower values (1000) to limit memory in dev.
+max_pending_writes = 10000
+
+# Maximum pending linearizable read requests before rejecting.
+# Reads tolerate higher limits than writes (no replication cost).
+# Default: 50000.
+max_pending_reads = 50000
+
+# =============================================================================
+# EXPERT SETTINGS — do not modify without understanding Raft consensus
+# Incorrect values can cause data loss, split-brain, or performance collapse
+# =============================================================================
+
+[raft]
+# Maximum log entry gap between leader and learner before triggering catch-up replication.
+# Too small: oscillation between learner and follower states.
+learner_catchup_threshold = 10
+
+# Interval for checking if learners are eligible for promotion (milliseconds).
+learner_check_throttle_ms = 1000
+
+# General Raft operation timeout (milliseconds). Fallback when no specific timeout is set.
+general_raft_timeout_duration_in_ms = 50
+
+# Timeout for snapshot RPC operations (milliseconds). Default: 1 hour for large snapshots.
+snapshot_rpc_timeout_ms = 3_600_000
+
+# Command channel capacity for client write requests.
+# Bounded channel prevents unbounded memory growth under high load.
+# Tuning: low traffic 512-1024 / medium 1024-2048 / high > 10K: 2048-4096
+cmd_channel_capacity = 1024
+
+# Ordered channel capacity for stream_append_entries ordering.
+# Should match or exceed cmd_channel_capacity.
+ordered_channel_capacity = 1024
+
 [raft.replication]
-# Leader's append entries tick interval (milliseconds)
+# Leader AppendEntries RPC interval — effectively the heartbeat period (milliseconds).
 rpc_append_entries_clock_in_ms = 100
 
-# Maximum entries per replication request to slow followers
-# Prevents overwhelming slow followers with too many entries at once
+# Maximum log entries per AppendEntries RPC to slow followers.
+# Prevents overwhelming slow followers with too many entries at once.
 append_entries_max_entries_per_replication = 100
 
 [raft.election]
-# Minimum election timeout (milliseconds)
+# Minimum election timeout (milliseconds). Must be > 2× heartbeat interval.
 election_timeout_min = 500
 
-# Maximum election timeout (milliseconds)
+# Maximum election timeout (milliseconds). Randomized between min and max.
 election_timeout_max = 1000
 
-# Interval for checking RPC connection health (seconds)
+# Interval for checking RPC connection health (seconds).
 rpc_peer_connectinon_monitor_interval_in_sec = 30
 
-# Internal RPC client request ID
+# Internal RPC client request ID (leave at 0 unless debugging RPC routing).
 internal_rpc_client_request_id = 0
 
 [raft.membership]
-# Service name for cluster health check probes
+# gRPC service name used for cluster health check probes.
 cluster_healthcheck_probe_service_name = "d_engine.server.cluster.ClusterManagementService"
 
-# Timeout for leader to keep verifying its leadership
-# Leader will retry sending no-op entries to confirm leadership within this duration
+# Timeout for leader to keep retrying no-op entries to confirm leadership (seconds).
 verify_leadership_persistent_timeout = { secs = 3600 }
 
-# Interval for membership maintenance tasks (seconds)
+# Interval for membership maintenance tasks (seconds).
 membership_maintenance_interval = { secs = 30 }
 
-# Zombie node detection and cleanup configuration
 [raft.membership.zombie]
-# Number of consecutive connection failures before marking node as zombie
+# Consecutive connection failures before marking a node as zombie.
 threshold = 3
 
-# Interval for purging zombie nodes (seconds)
+# Interval for purging zombie nodes (seconds).
 purge_interval = { secs = 30 }
 
-# Learner promotion configuration
 [raft.membership.promotion]
-# Duration after which a learner is considered stale if not promoted
+# Duration after which a learner is considered stale if not promoted (seconds).
 stale_learner_threshold = { secs = 300 }
 
-# Interval for checking stale learners (seconds)
+# Interval for checking stale learners (seconds).
 stale_check_interval = { secs = 30 }
 
-[raft.state_machine]
-# Lease (time-based expiration) configuration
-# Alias: can also be configured as "ttl" in TOML files
-# Example: [raft.state_machine.lease] or [raft.state_machine.ttl]
+[raft.persistence]
+# Persistence strategy: "MemFirst" — entries written to memory first, flushed to disk async.
+# For per-write durability (process-crash safe on every write), set:
+#   flush_policy = { Batch = { idle_flush_interval_ms = 1 } }
+strategy = "MemFirst"
+
+# Flush policy: drain-then-fsync architecture.
+#   idle_flush_interval_ms: safety-net timer — fires after this many ms of write inactivity.
+#   Normal-path latency = one fsync (~1-5ms NVMe). Explicit flush() triggers immediate fsync.
+flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
+
+# Maximum log entries to buffer in memory when using MemFirst.
+# Safety valve against memory exhaustion during write bursts or slow disk.
+max_buffered_entries = 10000
 
 [raft.snapshot]
-# Enable snapshot functionality
+# Enable snapshot functionality (log compaction).
 enable = true
 
-# Maximum log entries before triggering snapshot creation
+# Number of log entries before triggering snapshot creation.
 max_log_entries_before_snapshot = 1000
 
-# Cooldown period between consecutive snapshot checks
-snapshot_cool_down_since_last_check = { secs = 3600 }
+# Minimum cooldown between consecutive snapshot checks (v0.2.4: reduced from 3600s to 60s).
+# Prevents excessive snapshot evaluation in tight loops.
+snapshot_cool_down_since_last_check = { secs = 60 }
 
-# Number of historical snapshot versions to retain during cleanup
+# Number of historical snapshot versions to retain for recovery safety.
 cleanup_retain_count = 2
 
-# Directory for storing snapshots
+# Snapshot storage directory.
 snapshots_dir = "./snapshots/"
 
-# Prefix for snapshot directory names
+# Prefix for snapshot directory names.
 snapshots_dir_prefix = "snapshot"
 
-# Size of individual chunks for snapshot transfer (bytes)
+# Chunk size for snapshot transfer (bytes). Larger chunks = fewer RPCs, more memory per transfer.
 chunk_size = 1024
 
-# Number of log entries to retain after snapshot (0 = disable retention)
+# Log entries to retain after snapshot (minimum 1 for Raft §6 compliance).
 retained_log_entries = 1
 
-# Number of chunks to process before yielding (sender side)
+# Chunks to process before yielding — prevents blocking other tasks during large transfers.
 sender_yield_every_n_chunks = 1
-
-# Number of chunks to process before yielding (receiver side)
 receiver_yield_every_n_chunks = 1
 
-# Maximum bandwidth for snapshot transfer (Mbps)
+# Maximum snapshot transfer bandwidth (Mbps). 0 = unlimited.
 max_bandwidth_mbps = 1
 
-# Queue size for snapshot push operations
+# Queue size for snapshot push operations.
 push_queue_size = 100
 
-# Cache size for snapshot data (entries)
+# Cache size for snapshot data (entries).
 cache_size = 10000
 
-# Maximum retries for snapshot transfer operations
+# Max retries for snapshot transfer operations.
 max_retries = 1
 
-# Timeout for snapshot transfer operations (seconds)
+# Timeout for snapshot transfer (seconds).
 transfer_timeout_in_sec = 600
 
-# Retry interval for failed snapshot operations (milliseconds)
+# Retry interval for failed snapshot operations (milliseconds).
 retry_interval_in_ms = 10
 
-# Backoff duration before retrying snapshot push (milliseconds)
+# Backoff before retrying snapshot push (milliseconds).
 snapshot_push_backoff_in_ms = 100
 
-# Maximum retry attempts for snapshot push operations
+# Max retry attempts for snapshot push.
 snapshot_push_max_retry = 3
 
-# Timeout for snapshot push operations (milliseconds)
+# Timeout for snapshot push operations (milliseconds).
 push_timeout_in_ms = 300_000
 
 [raft.auto_join]
-# Enable compression for auto-join RPC operations
+# Enable gRPC compression for auto-join RPC operations.
 rpc_enable_compression = true
 
-[raft.persistence]
-# Persistence strategy:
-#   - "DiskFirst": Strongest durability. Each log entry is written to disk before memory.
-#   - "MemFirst": Highest performance. Entries go to memory first, disk asynchronously.
-strategy = "DiskFirst"
-
-# Flush policy controls when memory logs are flushed to disk:
-#   - "Immediate": Flush every entry immediately to disk (sync write).
-#   - { Batch = { threshold, interval_ms } }: Flush when either count or time is exceeded.
-flush_policy = { Batch = { threshold = 1000, interval_ms = 10 } }
-
-# Maximum number of log entries to buffer in memory
-# Applies when using async persistence strategies (MemFirst/Batched)
-max_buffered_entries = 10000
-
-# Number of flush worker threads for log persistence
-# - 0: Spawn new task per flush (legacy behavior, lower latency)
-# - >0: Use worker pool (more stable under high load)
-flush_workers = 2
-
-# Capacity of internal task channel for flush workers
-# Provides backpressure during high write throughput
-channel_capacity = 100
-
-[raft.read_consistency]
-# Default read consistency policy for the cluster
-# Options: "LeaseRead", "LinearizableRead", "EventualConsistency"
-default_policy = "LinearizableRead"
-
-# Lease duration for LeaseRead policy (milliseconds)
-# Only applicable when using LeaseRead policy
-lease_duration_ms = 250
-
-# Allow clients to override default policy per request
-allow_client_override = true
-
-# Timeout to wait for state machine to catch up with commit index (milliseconds)
-# Used by LinearizableRead to ensure reads reflect all committed writes
-# Typical apply latency: <1ms on local SSD. Default: 10ms (safe buffer)
-state_machine_sync_timeout_ms = 10
-
-# ReadIndex batching configuration
-[raft.read_consistency.read_batching]
-
-# Number of read requests to batch together
-size_threshold = 50
-
-# Maximum time to wait before processing batch (milliseconds)
-time_threshold_ms = 10
-
-# Granular RPC compression configuration
 [raft.rpc_compression]
-# High-frequency replication traffic - compression CPU overhead outweighs network benefit in VPC
+# High-frequency replication traffic — compression CPU overhead outweighs benefit in LAN/VPC.
 replication_response = false
 
-# Election traffic - low volume, kept enabled for backward compatibility
+# Election traffic — low volume, kept enabled for backward compatibility.
 election_response = true
 
-# Snapshot transfers - large data volumes benefit from compression
+# Snapshot transfers — large payloads benefit from compression in all environments.
 snapshot_response = true
 
-# Cluster management - configuration data benefits from compression
+# Cluster management — configuration data benefits from compression.
 cluster_response = true
 
-# Client responses - disabling improves performance in VPC/LAN environments
+# Client responses — disabled for LAN/VPC where bandwidth is not the bottleneck.
 client_response = false
 
-# Watch mechanism configuration for monitoring key changes
-# Provides lock-free event notification with minimal write path overhead
-# Controlled by 'watch' feature flag at compile time
 [raft.watch]
-
-# Global event queue buffer size (shared across all watchers)
-# Tuning guidelines:
-#   - Low traffic (< 1K writes/sec): 500-1000
-#   - Medium traffic (1K-10K writes/sec): 1000-2000
-#   - High traffic (> 10K writes/sec): 2000-5000
-# Memory impact: ~24 bytes per slot, default 1000 ≈ 24KB
+# Global event queue buffer size (shared across all watchers).
+# Memory: ~24 bytes/slot. Tuning: low traffic 500-1000 / medium 1000-2000 / high 2000-5000.
 event_queue_size = 1000
 
-# Per-watcher channel buffer size
-# Tuning guidelines:
-#   - Fast consumers (< 1ms processing): 5-10
-#   - Normal consumers (1-10ms processing): 10-20
-#   - Slow consumers (> 10ms processing): 20-50
-# Memory impact: ~240 bytes per slot per watcher
+# Per-watcher channel buffer size.
+# Memory: ~240 bytes/slot/watcher. Fast consumers: 5-10 / normal: 10-20 / slow: 20-50.
 watcher_buffer_size = 10
 
-# Enable detailed metrics and logging for watch operations
-# Useful for debugging but adds ~0.001% overhead
+# Enable detailed metrics and logging for watch operations. Adds ~0.001% overhead.
 enable_metrics = false
+
+[raft.metrics]
+# Enable backpressure metrics (rejection counters, buffer utilization).
+enable_backpressure = false
+
+# Enable batch buffer length gauge for propose and linearizable-read buffers.
+enable_batch = false
+
+# Sample rate for high-frequency gauge metrics. 1 = every event, 10 = 10% sampling.
+# Does NOT affect counters (rejections, drain/heartbeat triggers).
+sample_rate = 1

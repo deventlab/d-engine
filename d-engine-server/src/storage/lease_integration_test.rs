@@ -162,7 +162,7 @@ mod file_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let lease_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
         let sm =
@@ -192,7 +192,7 @@ mod file_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let lease_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
         let sm = create_file_state_machine_with_lease(
@@ -241,7 +241,7 @@ mod file_state_machine_tests {
         let state_machine_path = temp_dir.path().to_path_buf();
         let lease_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
 
@@ -314,7 +314,7 @@ mod file_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let lease_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
         let sm =
@@ -345,7 +345,7 @@ mod file_state_machine_tests {
         let state_machine_path = temp_dir.path().to_path_buf();
         let lease_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
 
@@ -603,7 +603,7 @@ mod file_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let lease_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 50,
         };
         let sm =
@@ -656,7 +656,7 @@ mod file_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let lease_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1, // Very short limit
         };
         let sm =
@@ -711,17 +711,20 @@ mod rocksdb_state_machine_tests {
     use tokio::time::sleep;
 
     use crate::storage::RocksDBStateMachine;
+    use crate::storage::RocksDBStorageEngine;
+    use crate::storage::RocksDBUnifiedEngine;
 
-    /// Helper to create a RocksDBStateMachine with lease injected for testing
+    /// Helper to create a RocksDBStateMachine with lease injected for testing.
+    /// Returns (storage, sm) — caller must keep storage alive alongside sm.
     async fn create_rocksdb_state_machine_with_lease(
         path: std::path::PathBuf,
         lease_config: d_engine_core::config::LeaseConfig,
-    ) -> RocksDBStateMachine {
-        let mut sm = RocksDBStateMachine::new(path).unwrap();
+    ) -> (RocksDBStorageEngine, RocksDBStateMachine) {
+        let (storage, mut sm) = RocksDBUnifiedEngine::open(&path).unwrap();
         let lease = std::sync::Arc::new(crate::storage::DefaultLease::new(lease_config));
         sm.set_lease(lease);
         sm.load_lease_data().await.unwrap();
-        sm
+        (storage, sm)
     }
 
     /// Helper to create an entry with Insert command
@@ -779,10 +782,10 @@ mod rocksdb_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
-        let sm =
+        let (_storage, sm) =
             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
                 .await;
 
@@ -811,10 +814,10 @@ mod rocksdb_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
-        let sm = create_rocksdb_state_machine_with_lease(
+        let (_storage, sm) = create_rocksdb_state_machine_with_lease(
             temp_dir.path().join("rocksdb"),
             ttl_config.clone(),
         )
@@ -842,7 +845,7 @@ mod rocksdb_state_machine_tests {
 
         // Create new state machine and restore snapshot
         let temp_dir2 = TempDir::new().unwrap();
-        let sm2 =
+        let (_storage2, sm2) =
             create_rocksdb_state_machine_with_lease(temp_dir2.path().join("rocksdb"), ttl_config)
                 .await;
 
@@ -865,10 +868,10 @@ mod rocksdb_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
-        let sm =
+        let (_storage, sm) =
             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
                 .await;
 
@@ -897,10 +900,10 @@ mod rocksdb_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
-        let sm =
+        let (_storage, sm) =
             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
                 .await;
 
@@ -927,10 +930,10 @@ mod rocksdb_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
-        let sm =
+        let (_storage, sm) =
             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
                 .await;
 
@@ -976,13 +979,13 @@ mod rocksdb_state_machine_tests {
         let state_machine_path = temp_dir.path().join("rocksdb");
         let ttl_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
 
         // Phase 1: Create state machine and insert keys with TTL
         {
-            let sm = create_rocksdb_state_machine_with_lease(
+            let (_storage, sm) = create_rocksdb_state_machine_with_lease(
                 state_machine_path.clone(),
                 ttl_config.clone(),
             )
@@ -1012,7 +1015,7 @@ mod rocksdb_state_machine_tests {
 
         // Phase 2: Restart - create new state machine from same directory
         {
-            let sm =
+            let (_storage, sm) =
                 create_rocksdb_state_machine_with_lease(state_machine_path.clone(), ttl_config)
                     .await;
 
@@ -1050,10 +1053,10 @@ mod rocksdb_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
             enabled: true,
-            interval_ms: 1000,
+            cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
-        let sm =
+        let (_storage, sm) =
             create_rocksdb_state_machine_with_lease(temp_dir.path().join("rocksdb"), ttl_config)
                 .await;
 
@@ -1076,7 +1079,7 @@ mod rocksdb_state_machine_tests {
     //         let temp_dir = TempDir::new().unwrap();
     //         let ttl_config = d_engine_core::config::LeaseConfig {
     //             enabled: true,
-    //             interval_ms: 1000,
+    //             cleanup_interval_ms: 1000,
     //             max_cleanup_duration_ms: 1,
     //         };
     //         let sm =

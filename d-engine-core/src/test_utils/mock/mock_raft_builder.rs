@@ -123,7 +123,7 @@ impl MockBuilder {
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
         let (role_tx, role_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10);
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel(1024);
         let (
             id,
             raft_log,
@@ -318,11 +318,13 @@ impl MockBuilder {
 pub fn mock_raft_log() -> MockRaftLog {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_durable_index().returning(|| 0);
     raft_log.expect_last_log_id().returning(|| None);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
+    raft_log.expect_close().returning(|| ());
     raft_log
 }
 
@@ -377,6 +379,7 @@ pub fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
     state_machine_handler.expect_update_pending().returning(|_| {});
     state_machine_handler.expect_read_from_state_machine().returning(|_| None);
     state_machine_handler.expect_should_snapshot().returning(|_| false);
+    state_machine_handler.expect_get_latest_snapshot_metadata().returning(|| None);
     state_machine_handler
 }
 
@@ -401,6 +404,7 @@ pub fn mock_membership() -> MockMembership<MockTypeConfig> {
             nodes: vec![],
             current_leader_id: None,
         });
+    membership.expect_get_cluster_conf_version().returning(|| 1);
     membership.expect_get_zombie_candidates().returning(Vec::new);
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
 

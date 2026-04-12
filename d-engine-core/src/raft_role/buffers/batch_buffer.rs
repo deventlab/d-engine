@@ -54,11 +54,10 @@ impl<E> BatchBuffer<E> {
     ) {
         self.buffer.push(request);
 
-        if self.metrics_enabled {
-            if let Some(ref labels) = self.metrics_labels {
-                metrics::gauge!("batch.buffer_length", labels.as_ref())
-                    .set(self.buffer.len() as f64);
-            }
+        if self.metrics_enabled
+            && let Some(ref labels) = self.metrics_labels
+        {
+            metrics::gauge!("batch.buffer_length", labels.as_ref()).set(self.buffer.len() as f64);
         }
     }
 
@@ -67,10 +66,10 @@ impl<E> BatchBuffer<E> {
         self.last_flush = Instant::now();
         let items = std::mem::take(&mut self.buffer);
 
-        if self.metrics_enabled {
-            if let Some(ref labels) = self.metrics_labels {
-                metrics::gauge!("batch.buffer_length", labels.as_ref()).set(0.0);
-            }
+        if self.metrics_enabled
+            && let Some(ref labels) = self.metrics_labels
+        {
+            metrics::gauge!("batch.buffer_length", labels.as_ref()).set(0.0);
         }
 
         items

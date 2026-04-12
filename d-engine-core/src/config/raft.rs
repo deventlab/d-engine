@@ -75,6 +75,18 @@ pub struct RaftConfig {
     #[serde(default = "default_snapshot_rpc_timeout_ms")]
     pub snapshot_rpc_timeout_ms: u64,
 
+    /// Command channel capacity for client write requests
+    /// Bounded channel prevents unbounded memory growth under high load
+    /// Default value is set via default_cmd_channel_capacity() function
+    #[serde(default = "default_cmd_channel_capacity")]
+    pub cmd_channel_capacity: usize,
+
+    /// Ordered channel capacity for stream_append_entries ordering
+    /// Controls buffering of response receivers in FIFO order
+    /// Default value is set via default_ordered_channel_capacity() function
+    #[serde(default = "default_ordered_channel_capacity")]
+    pub ordered_channel_capacity: usize,
+
     /// Configuration settings for new node auto join feature
     #[serde(default)]
     pub auto_join: AutoJoinConfig,
@@ -131,6 +143,8 @@ impl Default for RaftConfig {
             general_raft_timeout_duration_in_ms: default_general_timeout(),
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
+            cmd_channel_capacity: default_cmd_channel_capacity(),
+            ordered_channel_capacity: default_ordered_channel_capacity(),
             read_consistency: ReadConsistencyConfig::default(),
             backpressure: BackpressureConfig::default(),
             rpc_compression: RpcCompressionConfig::default(),
@@ -162,6 +176,7 @@ impl RaftConfig {
         self.snapshot.validate()?;
         self.read_consistency.validate()?;
         self.watch.validate()?;
+        self.persistence.validate()?;
 
         // Warn if lease duration is too long compared to election timeout
         if self.read_consistency.lease_duration_ms > self.election.election_timeout_min / 2 {
@@ -193,6 +208,15 @@ fn default_snapshot_rpc_timeout_ms() -> u64 {
     // 1 hour - sufficient for large snapshots
     3_600_000
 }
+
+fn default_cmd_channel_capacity() -> usize {
+    1024
+}
+
+fn default_ordered_channel_capacity() -> usize {
+    1024
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReplicationConfig {
     /// Heartbeat interval (milliseconds): how often the leader sends AppendEntries RPCs.
@@ -737,20 +761,6 @@ fn default_stale_check_interval() -> Duration {
 /// The in-memory `SkipMap` serves as the primary data structure for reads in all modes.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum PersistenceStrategy {
-    /// Disk-first persistence strategy.
-    ///
-    /// - **Write path**: On append, the log entry is first written to disk. Only after a successful
-    ///   disk write is it acknowledged and stored in the in-memory `SkipMap`.
-    ///
-    /// - **Read path**: Reads are always served from the in-memory `SkipMap`.
-    ///
-    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup,
-    ///   ensuring consistent access speed regardless of disk state.
-    ///
-    /// - Suitable for systems prioritizing strong durability while still providing in-memory
-    ///   performance for reads.
-    DiskFirst,
-
     /// Memory-first persistence strategy.
     ///
     /// - **Write path**: On append, the log entry is first written to the in-memory `SkipMap` and
@@ -759,30 +769,24 @@ pub enum PersistenceStrategy {
     ///
     /// - **Read path**: Reads are always served from the in-memory `SkipMap`.
     ///
-    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup, the
-    ///   same as `DiskFirst`.
+    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup.
     ///
-    /// - Suitable for systems that favor lower write latency and faster failover, while still
-    ///   retaining a disk-backed log for crash recovery.
     MemFirst,
 }
 
 /// Controls when in-memory logs should be flushed to disk.
+///
+/// Flush is triggered by whichever comes first:
+/// - An explicit `flush()` call (immediate, no wait).
+/// - `append_entries` calls `write_notify.notify_one()` for an immediate persist+fsync.
+/// - The idle safety-net timer fires after `idle_flush_interval_ms` of inactivity.
+///
+/// `idle_flush_interval_ms` must be greater than zero. It only fires when no
+/// writes have arrived for that duration; normal-path latency is determined by
+/// the fsync execution time (drain-then-fsync architecture).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum FlushPolicy {
-    /// Flush each log write immediately to disk.
-    ///
-    /// - Guarantees the highest durability.
-    /// - Each append operation causes a disk write.
-    Immediate,
-
-    /// Flush entries to disk when either of two conditions is met:
-    /// - The number of unflushed entries reaches the given threshold.
-    /// - The elapsed time since the last flush exceeds the configured interval.
-    ///
-    /// - Balances performance and durability.
-    /// - Recent unflushed entries may be lost in the event of a crash or power failure.
-    Batch { threshold: usize, interval_ms: u64 },
+    Batch { idle_flush_interval_ms: u64 },
 }
 
 /// Configuration parameters for log persistence behavior
@@ -809,42 +813,11 @@ pub struct PersistenceConfig {
     /// high write throughput or when disk persistence is slow.
     #[serde(default = "default_max_buffered_entries")]
     pub max_buffered_entries: usize,
-
-    /// Number of flush worker threads to use for log persistence.
-    ///
-    /// - If set to 0, the system falls back to spawning a new task per flush (legacy behavior,
-    ///   lower latency but less stable under high load).
-    /// - If set to a positive number, a worker pool of that size will be created to process flush
-    ///   requests (more stable and efficient under high load).
-    ///
-    /// This parameter allows tuning between throughput and latency depending on
-    /// workload characteristics.
-    #[serde(default = "default_flush_workers")]
-    pub flush_workers: usize,
-
-    /// Capacity of the internal task channel for flush workers.
-    ///
-    /// - Provides **backpressure** during high write throughput.
-    /// - Prevents unbounded task accumulation in memory when disk I/O is slow.
-    /// - Larger values improve throughput at the cost of higher memory usage, while smaller values
-    ///   apply stricter flow control but may reduce parallelism.
-    #[serde(default = "default_channel_capacity")]
-    pub channel_capacity: usize,
 }
 
 /// Default persistence strategy (optimized for balanced workloads)
 fn default_persistence_strategy() -> PersistenceStrategy {
-    PersistenceStrategy::DiskFirst
-}
-
-/// Default value for flush_workers
-fn default_flush_workers() -> usize {
-    2
-}
-
-/// Default value for channel_capacity
-fn default_channel_capacity() -> usize {
-    100
+    PersistenceStrategy::MemFirst
 }
 
 /// Default flush policy for asynchronous strategies
@@ -853,8 +826,7 @@ fn default_channel_capacity() -> usize {
 /// write performance and durability guarantees.
 fn default_flush_policy() -> FlushPolicy {
     FlushPolicy::Batch {
-        threshold: 1024,
-        interval_ms: 100,
+        idle_flush_interval_ms: 1000,
     }
 }
 
@@ -863,14 +835,26 @@ fn default_max_buffered_entries() -> usize {
     10_000
 }
 
+impl PersistenceConfig {
+    pub fn validate(&self) -> Result<()> {
+        let FlushPolicy::Batch {
+            idle_flush_interval_ms,
+        } = self.flush_policy;
+        if idle_flush_interval_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "flush_policy.idle_flush_interval_ms must be greater than 0".into(),
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl Default for PersistenceConfig {
     fn default() -> Self {
         Self {
             strategy: default_persistence_strategy(),
             flush_policy: default_flush_policy(),
             max_buffered_entries: default_max_buffered_entries(),
-            flush_workers: default_flush_workers(),
-            channel_capacity: default_channel_capacity(),
         }
     }
 }
@@ -1006,6 +990,8 @@ pub struct ReadConsistencyConfig {
     ///
     /// Only applicable when using the LeaseRead policy. The leader considers
     /// itself valid for this duration after successfully heartbeating to a quorum.
+    ///
+    /// **MUST be > 0**. Config validation will reject 0 or invalid values.
     #[serde(default = "default_lease_duration_ms")]
     pub lease_duration_ms: u64,
 
@@ -1303,7 +1289,7 @@ impl WatchConfig {
 }
 
 const fn default_event_queue_size() -> usize {
-    1000
+    10240
 }
 
 const fn default_watcher_buffer_size() -> usize {

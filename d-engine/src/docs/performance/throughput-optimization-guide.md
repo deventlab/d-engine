@@ -23,49 +23,46 @@ pub(crate) enum ConnectionType {
 
 ## Persistence Strategy & Throughput/Latency Trade-offs
 
-The choice of persistence strategy (`DiskFirst` vs. `MemFirst`) and `FlushPolicy` is the primary mechanism for balancing write throughput against write latency and durability guarantees.
+`MemFirst` is the only persistence strategy in v0.2.4+. It writes to OS page cache (process-crash safe, not power-loss safe) and flushes asynchronously.
 
 ### Strategy Configuration
 
-Configure the strategy in your `config.toml`:
-
 ```toml
 [raft.persistence]
-# Choose based on your priority: durability (DiskFirst) or low-latency writes (MemFirst)
-# DEFAULT in v0.2.3+: DiskFirst (Raft protocol compliance)
-strategy = "DiskFirst"  # Default in v0.2.3+
-# For benchmark/development: strategy = "MemFirst"
-
-# Flush policy works in conjunction with the chosen strategy.
-flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
-# flush_policy = "Immediate"
-
+strategy = "MemFirst"
+flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 ```
 
-### `DiskFirst` Strategy (High Durability)
+### `MemFirst` Strategy
 
-- **Write Path**: An entry is written to disk _before_ being acknowledged and added to the in-memory store.
-- **Latency/Throughput**: Higher, more consistent write latency per operation. Maximum throughput may be limited by disk write speed.
-- **Durability**: Strong. Acknowledged entries are always on disk. No data loss on process crash.
-- **Use Case**: Systems where data integrity is the absolute highest priority, even at the cost of higher write latency.
-
-### `MemFirst` Strategy (High Throughput / Low Latency)
-
-- **Write Path**: An entry is immediately added to the in-memory store and acknowledged. Disk persistence happens asynchronously.
-- **Latency/Throughput**: Very low write latency and high throughput, as writes are batched for disk I/O.
-- **Durability**: Eventual. A process crash can lose the most recently acknowledged entries that haven't been flushed yet.
-- **Use Case**: Systems requiring high write performance and low latency, where a small window of potential data loss is acceptable.
+- **Write Path**: Entry written to OS page cache immediately; IO thread flushes asynchronously.
+- **Durability**: Process crash safe (OS page cache survives). Power loss may drop the most recent unflushed entries.
+- **Throughput**: High. Writes batch naturally; no per-write fsync.
 
 ### `FlushPolicy` Tuning
 
-The flush policy controls how asynchronous (`MemFirst`) writes are persisted to disk.
+- **`Batch { idle_flush_interval_ms }`**: Flush after this many milliseconds of idle time.
+  - Lower values reduce data loss window but increase IO pressure.
+  - Default `1000` ms is suitable for most workloads.
 
-- **`Immediate`**: Flush every write synchronously. Use with `MemFirst` to approximate `DiskFirst` durability (but with different failure semantics) or with `DiskFirst` for the strongest guarantees. Highest durability, lowest performance.
-- **`Batch { threshold, interval_ms }`**:
-  - `threshold`: Flush when this many entries are pending. Larger values increase throughput but also the window of potential data loss.
-  - `interval_ms`: Flush after this much time has passed, even if the threshold isn't met. Limits the maximum staleness of data on disk.
+> **Note**: `DiskFirst` strategy was removed in v0.2.4. `MemFirst` writes to OS page cache and is process-crash safe but **not power-loss safe** — `idle_flush_interval_ms` controls flush frequency but does not provide fsync-level durability.
 
-**Recommendation**: For most production use cases, `MemFirst` with a `Batch` policy offers the best balance of performance and durability. Tune the `threshold` based on your acceptable data loss window (RPO) and the `interval_ms` based on your crash recovery tolerance.
+## Batching Configuration
+
+The `max_batch_size` controls how many commands are drained per Raft loop iteration.
+
+```toml
+[raft.batching]
+max_batch_size = 200  # default, suitable for most deployments
+```
+
+| Deployment | Recommended | Rationale |
+|---|---|---|
+| Embedded 3-node | **200** | Matches typical concurrent client counts; higher values yield diminishing returns |
+| Standalone 3-node | **200** | Network RTT dominates; batch size has limited impact |
+| High concurrency (500+ clients) | **500** | Increase if HC Write throughput plateaus |
+
+> **Rule of thumb**: For embedded mode, optimal `max_batch_size ≈ concurrent_client_count`. For standalone, keep at 200 unless profiling shows cmd_rx consistently saturated.
 
 ## Configuration Tuning
 
@@ -155,7 +152,7 @@ tonic::transport::Server::builder()
 > **Key improvement**: 15% reduction in tail latency - critical for consensus stability  
 > **Note**: These metrics show the impact of connection pooling optimization. These results can be further improved by tuning the PersistenceStrategy for your specific workload.
 >
-> For absolute performance benchmarks, see [v0.2.3 Performance Report](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3/bench_report_v0.2.3.md)
+> For absolute performance benchmarks, see [v0.2.4 Performance Report](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4/bench_report_v0.2.4.md)
 
 ## Operational Recommendations
 
@@ -199,14 +196,13 @@ client.request_vote(...)  // Control operation on data channel
 get_peer_channel(peer_id, ConnectionType::Control).await?;
 client.request_vote(...)
 
-// DON'T: Use MemFirst with Immediate flush for high-throughput scenarios
-// This eliminates the performance benefit of MemFirst.
+// DON'T: Set idle_flush_interval_ms too low — defeats batching.
 [strategy = "MemFirst"]
-flush_policy = "Immediate" // Anti-pattern
+flush_policy = { Batch = { idle_flush_interval_ms = 1 } } // Near-synchronous; low throughput
 
-// DO: Use a Batch policy to amortize disk I/O cost.
+// DO: Use a generous idle interval to amortize disk I/O cost.
 [strategy = "MemFirst"]
-flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
+flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 
 ```
 
@@ -219,7 +215,7 @@ flush_policy = { Batch = { threshold = 1000, interval_ms = 100 } }
 3. **Improves fault containment**
    Connection issues affect only one operation type
 4. **Decouples Performance from Durability**
-   The `PersistenceStrategy` allows you to choose the right trade-off between fast writes (`MemFirst`) and guaranteed durability (`DiskFirst`) for your use case.
+   `MemFirst` with tunable `idle_flush_interval_ms` lets you balance write throughput against flush frequency.
 
 ## Reference Deployment Configurations
 
@@ -234,9 +230,8 @@ Adjust values based on snapshot size, log append rate, and cluster size.
 
 ```toml
 [raft.persistence]
-strategy = "DiskFirst"  # Default in v0.2.3+
-# For benchmark/development: strategy = "MemFirst"
-flush_policy = { Batch = { threshold = 500, interval_ms = 50 } }
+strategy = "MemFirst"
+flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 
 [network.control]
 concurrency_limit = 10
@@ -255,7 +250,7 @@ request_timeout_in_ms = 10_000       # 10s
 
 ```
 
-**Tip**: Single-node setups focus on low resource usage; bulk window size can be smaller since snapshots are local. For developer iteration speed, consider using `strategy = "MemFirst"`.
+**Tip**: Single-node setups focus on low resource usage; bulk window size can be smaller since snapshots are local.
 
 ### 2. 3-Node Public Cloud Cluster (Medium Durability)
 
@@ -265,9 +260,8 @@ request_timeout_in_ms = 10_000       # 10s
 
 ```toml
 [raft.persistence]
-strategy = "DiskFirst"  # Default in v0.2.3+
-# For high-throughput scenarios: strategy = "MemFirst"
-flush_policy = { Batch = { threshold = 2000, interval_ms = 200 } }
+strategy = "MemFirst"
+flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 
 [network.control]
 concurrency_limit = 20
@@ -296,8 +290,8 @@ request_timeout_in_ms = 30_000       # 30s for multi-GB snapshots
 
 ```toml
 [raft.persistence]
-strategy = "DiskFirst" # Highest durability guarantee
-# flush_policy is less critical for DiskFirst but can help with batching internal operations.
+strategy = "MemFirst"
+flush_policy = { Batch = { idle_flush_interval_ms = 100 } }  # More frequent flush for durability
 
 [network.control]
 concurrency_limit = 50
@@ -316,7 +310,7 @@ request_timeout_in_ms = 60_000       # 60s for large snapshots
 
 ```
 
-**Tip**: Use `DiskFirst` for systems where data integrity is non-negotiable (e.g., financial systems). Be aware that write throughput will be bound by disk I/O latency.
+**Tip**: For higher write persistence within a process lifecycle, lower `idle_flush_interval_ms` (e.g., 100ms). Note: `MemFirst` is not power-loss safe regardless of flush interval.
 
 ## Network Environment Tuning Recommendations
 

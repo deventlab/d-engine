@@ -1,5 +1,4 @@
 use std::ops::RangeInclusive;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -13,18 +12,23 @@ use d_engine_core::StorageError;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use prost::Message;
+use rocksdb::WriteOptions;
+use std::path::Path;
+
 use rocksdb::Cache;
+use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::DB;
 use rocksdb::Direction;
 use rocksdb::IteratorMode;
-use rocksdb::Options;
 use rocksdb::WriteBatch;
 use tonic::async_trait;
 use tracing::instrument;
 
-const LOG_CF: &str = "logs";
-const META_CF: &str = "meta";
+use super::LOG_CF;
+use super::META_CF;
+
 const HARD_STATE_KEY: &[u8] = b"hard_state";
+const PURGE_BOUNDARY_KEY: &[u8] = b"purge_boundary";
 
 /// RocksDB-based log store implementation
 #[derive(Debug)]
@@ -44,14 +48,8 @@ pub struct RocksDBMetaStore {
 /// High-performance storage engine using RocksDB for durability.
 /// Recommended for production deployments.
 ///
-/// # Usage
-///
-/// ```rust,ignore
-/// use d_engine_server::RocksDBStorageEngine;
-/// use std::path::PathBuf;
-///
-/// let engine = RocksDBStorageEngine::new(PathBuf::from("/tmp/raft-db"))?;
-/// ```
+/// Obtain an instance via [`super::RocksDBUnifiedEngine::open`], which shares a single
+/// `Arc<DB>` with [`super::RocksDBStateMachine`] to halve resource usage.
 ///
 /// # Features
 ///
@@ -66,53 +64,35 @@ pub struct RocksDBStorageEngine {
 }
 
 impl RocksDBStorageEngine {
-    /// Creates new RocksDB-based storage engine with column family separation
+    /// Opens (or creates) a dedicated RocksDB instance for log + meta storage.
+    ///
+    /// Used when `unified_db = false` (default): each engine owns its own DB instance.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        // Configure high-performance RocksDB options
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
-        opts.create_missing_column_families(true);
+        let db_opts = super::base_db_options();
 
-        // Memory and write optimization
-        opts.set_max_write_buffer_number(4); // Increase the number of write buffers
-        opts.set_min_write_buffer_number_to_merge(2); // Increase the merge threshold
-        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB write buffer
+        let cache = Cache::new_lru_cache(128 * 1024 * 1024);
+        let log_cf = ColumnFamilyDescriptor::new(LOG_CF, super::log_cf_options(&cache));
+        let meta_cf = ColumnFamilyDescriptor::new(META_CF, super::meta_cf_options(&cache));
 
-        // Compression optimization
-        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-        opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
-        opts.set_compression_options(-14, 0, 0, 0); // LZ4 fast compression
-
-        // WAL-related optimizations
-        opts.set_wal_bytes_per_sync(1024 * 1024); // 1MB sync
-        opts.set_manual_wal_flush(true); // manually control WAL flush
-
-        opts.set_use_fsync(false);
-
-        // Performance Tuning
-        opts.set_max_background_jobs(4); // Number of background jobs
-        opts.set_max_open_files(5000); // Maximum number of open files
-        opts.set_use_direct_io_for_flush_and_compaction(true); // Direct I/O
-        opts.set_use_direct_reads(true); // Direct reads
-
-        // Leveled Compaction Configuration
-        opts.set_level_compaction_dynamic_level_bytes(true);
-        opts.set_target_file_size_base(64 * 1024 * 1024); // 64MB base file size
-        opts.set_max_bytes_for_level_base(256 * 1024 * 1024); // 256MB base level size
-
-        // Block cache configuration (shared)
-        let cache = Cache::new_lru_cache(128 * 1024 * 1024); // 128MB block cache
-        opts.set_row_cache(&cache);
-
-        // Define column families
-        let cfs = vec![LOG_CF, META_CF];
-
-        let db = DB::open_cf(&opts, path, cfs).map_err(|e| StorageError::DbError(e.to_string()))?;
+        let db = DB::open_cf_descriptors(&db_opts, path, vec![log_cf, meta_cf])
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
         let db_arc = Arc::new(db);
 
         let log_store = Arc::new(RocksDBLogStore::new(Arc::clone(&db_arc))?);
         let meta_store = Arc::new(RocksDBMetaStore::new(Arc::clone(&db_arc))?);
+        Ok(Self {
+            log_store,
+            meta_store,
+        })
+    }
 
+    /// Creates a storage engine sharing an existing `Arc<DB>` (unified mode).
+    ///
+    /// Called by `RocksDBUnifiedEngine::open()` — the caller owns the DB lifecycle.
+    /// The DB must already have `LOG_CF` and `META_CF` column families open.
+    pub(super) fn from_shared_db(db: Arc<DB>) -> Result<Self, Error> {
+        let log_store = Arc::new(RocksDBLogStore::new(Arc::clone(&db))?);
+        let meta_store = Arc::new(RocksDBMetaStore::new(Arc::clone(&db))?);
         Ok(Self {
             log_store,
             meta_store,
@@ -153,10 +133,13 @@ impl StorageEngine for RocksDBStorageEngine {
 
 impl Drop for RocksDBLogStore {
     fn drop(&mut self) {
-        // Flush WAL and memtables on drop to ensure durability
-        // This is critical for crash recovery - data must survive process termination
-        if let Err(e) = self.flush() {
-            tracing::error!("Failed to flush RocksDBLogStore on drop: {}", e);
+        // On graceful shutdown, flushing memtable to SST is appropriate here —
+        // this is the ONE correct place for db.flush(), not in the hot write path.
+        if let Err(e) = self.db.flush_wal(true) {
+            tracing::error!("Failed to flush WAL on drop: {}", e);
+        }
+        if let Err(e) = self.db.flush() {
+            tracing::error!("Failed to flush memtable on drop: {}", e);
         } else {
             tracing::debug!("RocksDBLogStore flushed successfully on drop");
         }
@@ -171,12 +154,12 @@ impl RocksDBLogStore {
         // IteratorMode::End positions at the end, next() gives us the largest key
         if let Some(cf) = db.cf_handle(LOG_CF) {
             let mut iter = db.iterator_cf(&cf, IteratorMode::End);
-            if let Some(Ok((key, _))) = iter.next() {
-                if key.len() == 8 {
-                    last_index = u64::from_be_bytes([
-                        key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
-                    ]);
-                }
+            if let Some(Ok((key, _))) = iter.next()
+                && key.len() == 8
+            {
+                last_index = u64::from_be_bytes([
+                    key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
+                ]);
             }
         }
 
@@ -214,7 +197,13 @@ impl LogStore for RocksDBLogStore {
             max_index = max_index.max(entry.index);
         }
 
-        self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        let mut write_opts = WriteOptions::default();
+        // sync=false: write to OS page cache only. The IO thread calls flush_wal(true)
+        // (Method C drain-then-fsync) to make entries crash-safe in a single batched fsync.
+        write_opts.set_sync(false);
+        self.db
+            .write_opt(&batch, &write_opts)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
 
         if max_index > 0 {
             self.last_index.store(max_index, Ordering::SeqCst);
@@ -316,7 +305,18 @@ impl LogStore for RocksDBLogStore {
             batch.delete_cf(&cf, &key);
         }
 
-        self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+
+        // Persist purge boundary to META_CF for crash recovery.
+        // BufferedRaftLog::new() reads this on restart to restore last_purged_index/term
+        // so that entry_term(last_purged_index) returns the correct term after restart.
+        if let Some(cf_meta) = self.db.cf_handle(META_CF) {
+            let encoded = cutoff_index.encode_to_vec();
+            self.db
+                .put_cf(&cf_meta, PURGE_BOUNDARY_KEY, encoded)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+        }
+
         Ok(())
     }
 
@@ -360,7 +360,7 @@ impl LogStore for RocksDBLogStore {
             batch.delete_cf(&cf, &key);
         }
 
-        self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
 
         // Update last_index: The new last_index should be from_index - 1
         // But if from_index is 0 or 1, last_index should be 0
@@ -371,18 +371,76 @@ impl LogStore for RocksDBLogStore {
         Ok(())
     }
 
+    /// Atomically truncate from `from_index` and persist `new_entries` in one WriteBatch.
+    ///
+    /// Uses `delete_range_cf` (O(1) range tombstone) + puts in a single commit,
+    /// eliminating the two-batch window of the default implementation.
+    async fn replace_range(
+        &self,
+        from_index: u64,
+        new_entries: Vec<Entry>,
+    ) -> Result<(), Error> {
+        let cf = self
+            .db
+            .cf_handle(LOG_CF)
+            .ok_or_else(|| StorageError::DbError("Log column family not found".to_string()))?;
+
+        let mut batch = WriteBatch::default();
+
+        // delete_range_cf: single range tombstone, compaction reclaims space later
+        let start_key = Self::index_to_key(from_index);
+        let end_key = Self::index_to_key(u64::MAX);
+        batch.delete_range_cf(&cf, start_key, end_key);
+
+        let new_last_index =
+            new_entries.last().map(|e| e.index).unwrap_or(from_index.saturating_sub(1));
+        for entry in &new_entries {
+            batch.put_cf(&cf, Self::index_to_key(entry.index), entry.encode_to_vec());
+        }
+
+        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.last_index.store(new_last_index, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn is_write_durable(&self) -> bool {
+        // Level 2 semantics: db.write() lands in OS page cache (not RocksDB internal buffer).
+        // Process crash: OS retains page cache → WAL replay on restart → full recovery. ✅
+        // Power loss:    OS page cache lost → data unrecoverable. ❌  (intentional trade-off)
+        //
+        // Returns true → advance_durable_and_notify fires immediately after persist_entries,
+        // without waiting for an explicit flush_wal(true) (Level 3 / fdatasync).
+        // Level 3 support (sync thread + flush_wal) is tracked as a future feature.
+        true
+    }
+
+    fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {
+        let cf_meta = self
+            .db
+            .cf_handle(META_CF)
+            .ok_or_else(|| StorageError::DbError("Meta column family not found".to_string()))?;
+        match self
+            .db
+            .get_cf(&cf_meta, PURGE_BOUNDARY_KEY)
+            .map_err(|e| StorageError::DbError(e.to_string()))?
+        {
+            Some(bytes) => LogId::decode(&*bytes)
+                .map(Some)
+                .map_err(|e| StorageError::SerializationError(e.to_string()).into()),
+            None => Ok(None),
+        }
+    }
+
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
-        // Flush WAL first when manual_wal_flush is enabled
-        // This ensures write-ahead log is durably persisted before memtable flush
+        // WAL fsync is sufficient for crash-safety: data in WAL can be replayed on restart.
+        // memtable flush is RocksDB's internal concern — triggered automatically in background.
+        let t0 = std::time::Instant::now();
         self.db
-            .flush_wal(true) // true = sync WAL to disk
+            .flush_wal(true)
             .map_err(|e| StorageError::DbError(format!("Failed to flush WAL: {e}")))?;
-
-        // Then flush memtables to SST files
-        self.db
-            .flush()
-            .map_err(|e| StorageError::DbError(format!("Failed to flush memtables: {e}")))?;
+        let ms = t0.elapsed().as_millis();
+        metrics::histogram!("raft.storage.wal_flush_ms").record(ms as f64);
         Ok(())
     }
 
@@ -407,7 +465,7 @@ impl LogStore for RocksDBLogStore {
             batch.delete_cf(&cf, &key);
         }
 
-        self.db.write(batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
         self.last_index.store(0, Ordering::SeqCst);
         Ok(())
     }
@@ -420,10 +478,12 @@ impl LogStore for RocksDBLogStore {
 
 impl Drop for RocksDBMetaStore {
     fn drop(&mut self) {
-        // Flush WAL and memtables on drop to ensure HardState durability
-        // HardState (current_term, voted_for) MUST survive crashes per Raft protocol
-        if let Err(e) = self.flush() {
-            tracing::error!("Failed to flush RocksDBMetaStore on drop: {}", e);
+        // On graceful shutdown, memtable flush is appropriate here.
+        if let Err(e) = self.db.flush_wal(true) {
+            tracing::error!("Failed to flush meta WAL on drop: {}", e);
+        }
+        if let Err(e) = self.db.flush() {
+            tracing::error!("Failed to flush meta memtable on drop: {}", e);
         } else {
             tracing::debug!("RocksDBMetaStore flushed successfully on drop");
         }
@@ -478,17 +538,11 @@ impl MetaStore for RocksDBMetaStore {
 
     #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
-        // Flush WAL first for metadata durability
-        // Metadata changes (like HardState) MUST survive crashes
+        // WAL fsync is sufficient: HardState in WAL survives crashes.
+        // memtable flush is RocksDB's internal concern — triggered automatically in background.
         self.db
-            .flush_wal(true) // true = sync WAL to disk
+            .flush_wal(true)
             .map_err(|e| StorageError::DbError(format!("Failed to flush meta WAL: {e}")))?;
-
-        // Then flush meta column family memtables
-        self.db
-            .flush()
-            .map_err(|e| StorageError::DbError(format!("Failed to flush meta memtables: {e}")))?;
-
         Ok(())
     }
 

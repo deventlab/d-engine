@@ -53,12 +53,11 @@ impl TestContext {
             PersistenceConfig {
                 strategy: strategy.clone(),
                 flush_policy: flush_policy.clone(),
-                max_buffered_entries: 1000,
-                ..Default::default()
+                max_buffered_entries: 10000,
             },
             storage.clone(),
         );
-        let raft_log = raft_log.start(receiver);
+        let raft_log = raft_log.start(receiver, None);
 
         // Small delay to ensure processor is ready
         std::thread::sleep(Duration::from_millis(10));
@@ -73,6 +72,17 @@ impl TestContext {
         }
     }
 
+    /// Explicitly close the raft log IO thread.
+    ///
+    /// Must be called at the end of tests using graceful-shutdown semantics.
+    /// Unlike `drop()` which only sends Shutdown (fire-and-forget), `close()`
+    /// joins the IO thread before returning, preventing Tokio runtime
+    /// shutdown panics.
+    pub async fn close(self) {
+        self.raft_log.close().await;
+        // _temp_dir drops here, after the IO thread has fully exited
+    }
+
     /// Simulate crash recovery by creating new context from same storage path
     pub fn recover_from_crash(&self) -> Self {
         let temp_dir = tempdir().unwrap();
@@ -83,12 +93,11 @@ impl TestContext {
             PersistenceConfig {
                 strategy: self.strategy.clone(),
                 flush_policy: self.flush_policy.clone(),
-                max_buffered_entries: 1000,
-                ..Default::default()
+                max_buffered_entries: 10000,
             },
             storage.clone(),
         );
-        let raft_log = raft_log.start(receiver);
+        let raft_log = raft_log.start(receiver, None);
 
         std::thread::sleep(Duration::from_millis(10));
 

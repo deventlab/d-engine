@@ -55,6 +55,14 @@ pub struct MaybeCloneOneshotReceiver<T: Send> {
 
     #[cfg(any(test, feature = "__test_support"))]
     test_inner: Option<broadcast::Receiver<T>>, // None for non-cloneable types
+
+    /// Lazily-initialized pinned future for the `Future` impl.
+    /// Created on first `poll()` by moving `test_inner` into an async block,
+    /// so that `broadcast::Receiver::recv()` registers wakers correctly
+    /// instead of spinning with `wake_by_ref()`.
+    #[cfg(any(test, feature = "__test_support"))]
+    recv_fut:
+        Option<Pin<Box<dyn Future<Output = Result<T, broadcast::error::RecvError>> + Send + Sync>>>,
 }
 #[cfg(any(test, feature = "__test_support"))]
 impl<T: Send> MaybeCloneOneshotSender<T> {
@@ -114,7 +122,7 @@ impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
     }
 }
 #[cfg(any(test, feature = "__test_support"))]
-impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
+impl<T: Send + Clone + 'static> Future for MaybeCloneOneshotReceiver<T> {
     type Output = Result<T, broadcast::error::RecvError>;
 
     fn poll(
@@ -123,26 +131,19 @@ impl<T: Send + Clone> Future for MaybeCloneOneshotReceiver<T> {
     ) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        // Using the recv method of tokio::sync::broadcast::Receiver
-        if let Some(rx) = &mut this.test_inner {
-            match rx.try_recv() {
-                Ok(value) => Poll::Ready(Ok(value)),
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    // Register a Waker to wake up the task when data arrives
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                Err(broadcast::error::TryRecvError::Closed) => {
-                    Poll::Ready(Err(broadcast::error::RecvError::Closed))
-                }
-                Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                    Poll::Ready(Err(broadcast::error::RecvError::Lagged(n)))
-                }
-            }
-        } else {
-            // Fallback for non-cloneable types
-            panic!("Cannot broadcast non-cloneable type in tests");
+        // Lazily initialize the recv future on first poll.
+        // We move `test_inner` into an async block so that
+        // `broadcast::Receiver::recv()` properly registers the waker with the
+        // channel — no spin loop, fully compatible with `tokio::time::pause()`.
+        if this.recv_fut.is_none() {
+            let mut rx = this
+                .test_inner
+                .take()
+                .expect("MaybeCloneOneshotReceiver: test_inner already consumed");
+            this.recv_fut = Some(Box::pin(async move { rx.recv().await }));
         }
+
+        this.recv_fut.as_mut().unwrap().as_mut().poll(cx)
     }
 }
 
@@ -164,6 +165,7 @@ impl<T: Send + Clone> Clone for MaybeCloneOneshotReceiver<T> {
         Self {
             inner: receiver,
             test_inner: Some(self.test_inner.as_ref().unwrap().resubscribe()),
+            recv_fut: None,
         }
     }
 }
@@ -183,6 +185,7 @@ impl<T: Send + Clone> RaftOneshot<T> for MaybeCloneOneshot {
             MaybeCloneOneshotReceiver {
                 inner: rx,
                 test_inner: Some(test_rx),
+                recv_fut: None,
             },
         )
     }

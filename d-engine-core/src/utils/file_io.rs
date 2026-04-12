@@ -36,15 +36,15 @@ pub fn create_parent_dir_if_not_exist(path: &Path) -> Result<()> {
         path.parent().unwrap_or(path) // file path, create parent directory
     };
 
-    if !dir_to_create.exists() {
-        if let Err(e) = create_dir_all(dir_to_create) {
-            error!(?e, "create_parent_dir_if_not_exist failed.");
-            return Err(StorageError::PathError {
-                path: path.to_path_buf(),
-                source: e,
-            }
-            .into());
+    if !dir_to_create.exists()
+        && let Err(e) = create_dir_all(dir_to_create)
+    {
+        error!(?e, "create_parent_dir_if_not_exist failed.");
+        return Err(StorageError::PathError {
+            path: path.to_path_buf(),
+            source: e,
         }
+        .into());
     }
 
     Ok(())
@@ -266,10 +266,10 @@ pub(crate) fn validate_compressed_format(path: &Path) -> Result<()> {
         return Err(FileError::NotFound(path.display().to_string()).into());
     }
     // 2. Check file size
-    if let Ok(metadata) = std::fs::metadata(path) {
-        if metadata.len() < 10 {
-            return Err(FileError::TooSmall(metadata.len()).into());
-        }
+    if let Ok(metadata) = std::fs::metadata(path)
+        && metadata.len() < 10
+    {
+        return Err(FileError::TooSmall(metadata.len()).into());
     }
 
     // 3. Check the file extension

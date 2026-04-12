@@ -36,6 +36,7 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
     // Setup mocks
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_append_entries().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
@@ -44,14 +45,8 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
 
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                learner_progress: std::collections::HashMap::new(),
-                peer_updates: std::collections::HashMap::new(),
-            })
-        });
+        .expect_prepare_batch_requests()
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;

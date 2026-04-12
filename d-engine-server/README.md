@@ -149,10 +149,11 @@ d-engine-server = { version = "0.2", features = ["rocksdb"] }
 ```
 
 ```rust
-use d_engine_server::{RocksDBStorageEngine, RocksDBStateMachine};
+use d_engine_server::RocksDBUnifiedEngine;
 
-let storage = Arc::new(RocksDBStorageEngine::new("./data/logs")?);
-let sm = Arc::new(RocksDBStateMachine::new("./data/sm").await?);
+let (storage, sm) = RocksDBUnifiedEngine::open("./data/db")?;
+let storage = Arc::new(storage);
+let sm = Arc::new(sm);
 ```
 
 ---

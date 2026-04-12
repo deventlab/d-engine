@@ -469,12 +469,12 @@ impl StateMachine for SledStateMachine {
 
             debug!("2. Validate snapshot version - only apply if newer than current state");
             // 2. Validate snapshot version - only apply if newer than current state
-            if let Some(current_metadata) = self.snapshot_metadata() {
-                if let Some(current_last_included) = current_metadata.last_included {
-                    // Only allow application when the new snapshot index is larger
-                    if new_last_included.index <= current_last_included.index {
-                        return Err(SnapshotError::Outdated.into());
-                    }
+            if let Some(current_metadata) = self.snapshot_metadata()
+                && let Some(current_last_included) = current_metadata.last_included
+            {
+                // Only allow application when the new snapshot index is larger
+                if new_last_included.index <= current_last_included.index {
+                    return Err(SnapshotError::Outdated.into());
                 }
             }
 

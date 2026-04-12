@@ -22,13 +22,17 @@
 
 mod basic_operations_test;
 mod concurrent_operations_test;
+mod drain_fsync_test;
 mod durable_index_test;
 mod edge_cases_test;
 mod flush_strategy_test;
 mod id_allocation_test;
 mod performance_test;
+mod pipeline_overlap_test;
+mod quorum_durability_test;
 mod raft_properties_test;
 mod remove_range_test;
 mod shutdown_test;
 mod term_index_test;
+mod term_segments_test;
 mod worker_test;

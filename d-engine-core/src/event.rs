@@ -64,6 +64,59 @@ pub enum RoleEvent {
     LeaderDiscovered(u32, u64), // (leader_id, term)
 
     ReprocessEvent(Box<RaftEvent>), //Replay the raft event when step down as another role
+
+    /// Notify Raft loop that log entries up to `durable_index` are crash-safe (fsync complete).
+    /// Sent by batch_processor after flush completes.
+    /// Follower/Learner: triggers pending ACK send. Leader: triggers commit re-calculation.
+    LogFlushed {
+        durable_index: u64,
+    },
+
+    /// AppendEntries result from a per-follower ReplicationWorker back to the Raft loop.
+    /// Leader processes this in handle_append_result: updates match_index, re-calculates commit,
+    /// and drains pending_client_writes when quorum is achieved.
+    AppendResult {
+        follower_id: u32,
+        result: Result<AppendEntriesResponse>,
+    },
+
+    /// Snapshot push result from a per-follower ReplicationWorker back to the Raft loop.
+    /// Emitted after `transport.send_snapshot` completes (success or failure).
+    /// Leader uses this to clear the per-worker `snapshot_in_progress` flag if needed.
+    SnapshotPushCompleted {
+        peer_id: u32,
+        success: bool,
+    },
+
+    /// Noop entry committed — leader has confirmed quorum leadership.
+    /// Sent by LeaderState::drain_commit_actions when the noop log index is committed.
+    /// Raft loop responds by calling on_noop_committed() + notify_leader_change().
+    NoopCommitted {
+        term: u64,
+    },
+
+    /// State machine apply completed — processed at P2 (unbounded role_tx) to avoid
+    /// priority inversion: AppendEntries RPCs at P4 (bounded event_tx) must not starve
+    /// internal commit-driven events.
+    ApplyCompleted {
+        last_index: u64,
+        results: Vec<ApplyResult>,
+    },
+
+    /// Bidi replication stream to a follower broke (network disconnect or error).
+    /// Emitted by the replication worker's recv task when it gets an Err from the stream.
+    /// Raft loop resets `next_index[peer] = match_index[peer] + 1` so that the next
+    /// heartbeat re-sends any unACKed entries.  Worker handles reconnection internally.
+    PeerStreamError {
+        peer_id: u32,
+    },
+
+    /// Fatal error from SM worker — node must shutdown.
+    /// Sent via role_tx (P2) so it is not blocked behind external RPCs on event_tx (P4).
+    FatalError {
+        source: String,
+        error: String,
+    },
 }
 
 #[derive(Debug)]
@@ -107,12 +160,6 @@ pub enum RaftEvent {
         MaybeCloneOneshotSender<std::result::Result<LeaderDiscoveryResponse, Status>>,
     ),
 
-    // Leader connect with peers and push snapshot stream
-    #[allow(unused)]
-    TriggerSnapshotPush {
-        peer_id: u32,
-    },
-
     CreateSnapshotEvent,
 
     LogPurgeCompleted(LogId),
@@ -135,14 +182,6 @@ pub enum RaftEvent {
     FatalError {
         source: String, // Error source
         error: String,  // Error message
-    },
-
-    /// State machine apply completed
-    /// Sent by CommitHandler after applying entries to state machine
-    /// Contains results for each applied entry (e.g., CAS success/failure)
-    ApplyCompleted {
-        last_index: u64,
-        results: Vec<ApplyResult>,
     },
 }
 
@@ -169,10 +208,6 @@ pub enum TestEvent {
     JoinCluster(JoinRequest),
 
     DiscoverLeader(LeaderDiscoveryRequest),
-
-    TriggerSnapshotPush {
-        peer_id: u32,
-    },
 
     // None RPC event
     CreateSnapshotEvent,
@@ -208,9 +243,6 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
         RaftEvent::SnapshotCreated(_result) => TestEvent::SnapshotCreated,
         RaftEvent::LogPurgeCompleted(id) => TestEvent::LogPurgeCompleted(*id),
-        RaftEvent::TriggerSnapshotPush { peer_id } => {
-            TestEvent::TriggerSnapshotPush { peer_id: *peer_id }
-        }
         RaftEvent::PromoteReadyLearners => TestEvent::PromoteReadyLearners,
         RaftEvent::StepDownSelfRemoved => {
             // StepDownSelfRemoved is handled at Raft level, not converted to TestEvent
@@ -224,13 +256,6 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::FatalError { source, error } => TestEvent::FatalError {
             source: source.clone(),
             error: error.clone(),
-        },
-        RaftEvent::ApplyCompleted {
-            last_index,
-            results,
-        } => TestEvent::ApplyCompleted {
-            last_index: *last_index,
-            results: results.clone(),
         },
     }
 }

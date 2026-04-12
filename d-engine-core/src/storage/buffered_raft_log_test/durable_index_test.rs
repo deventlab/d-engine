@@ -11,7 +11,9 @@ use d_engine_proto::common::Entry;
 async fn test_durable_index_monotonic_under_concurrency() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_durable_index_monotonic",
     );
 
@@ -49,7 +51,9 @@ async fn test_durable_index_monotonic_under_concurrency() {
 async fn test_durable_index_with_non_contiguous_entries() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_durable_index_non_contiguous",
     );
 

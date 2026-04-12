@@ -9,7 +9,9 @@ use d_engine_proto::common::{Entry, EntryPayload, LogId};
 async fn test_empty_log_operations() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_empty_log",
     );
 
@@ -25,8 +27,10 @@ async fn test_empty_log_operations() {
 #[tokio::test]
 async fn test_single_entry_operations() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_single_entry",
     );
 
@@ -53,7 +57,9 @@ async fn test_single_entry_operations() {
 async fn test_gap_handling_in_indexes() {
     let ctx = BufferedRaftLogTestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_gap_handling",
     );
 
@@ -93,8 +99,10 @@ async fn test_gap_handling_in_indexes() {
 #[tokio::test]
 async fn test_extreme_boundary_conditions() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_extreme_boundary_conditions",
     );
 

@@ -4,14 +4,21 @@ listen_address = "0.0.0.0:9081"
 initial_cluster = [
     { id = 1, address = "0.0.0.0:9081", role = 1, status = 3 },
     { id = 2, address = "0.0.0.0:9082", role = 1, status = 3 },
-    { id = 3, address = "0.0.0.0:9083", role = 1, status = 3 }
+    { id = 3, address = "0.0.0.0:9083", role = 1, status = 3 },
 ]
 db_root_dir = "./data/n1"
 log_dir = "./logs"
 
 [raft.batching]
 # Maximum number of commands to accumulate in a single batch during drain operations
-max_batch_size = 500
+max_batch_size = 200
+
+[raft.persistence]
+strategy = "MemFirst"
+flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
+# Maximum number of log entries to buffer in memory
+# when using async persistence strategies (MemFirst/Batched)
+max_buffered_entries = 10000
 
 [raft.metrics]
 enable_backpressure = false
@@ -19,3 +26,6 @@ enable_batch = false
 
 [raft.snapshot]
 enable = false
+
+[storage]
+unified_db = false

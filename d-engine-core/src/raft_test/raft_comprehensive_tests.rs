@@ -55,24 +55,39 @@ fn prepare_succeed_majority_confirmation() -> (
     crate::MockRaftLog,
     crate::MockReplicationCore<MockTypeConfig>,
 ) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Dynamic counter: starts at 11 (pre-noop state).
+    // prepare_batch_requests increments it by the number of payloads written,
+    // so last_entry_id / durable_index reflect the noop entry after it is "written".
+    let log_index = Arc::new(AtomicU64::new(11));
+    let li_last = log_index.clone();
+    let li_durable = log_index.clone();
+    let li_prepare = log_index.clone();
+
     let mut raft_log = crate::MockRaftLog::new();
-    // Allow multiple calls to last_entry_id() as it may be called during role transitions
-    raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log
+        .expect_last_entry_id()
+        .returning(move || li_last.load(Ordering::Relaxed));
+    raft_log
+        .expect_durable_index()
+        .returning(move || li_durable.load(Ordering::Relaxed));
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
     let mut replication_handler = crate::MockReplicationCore::new();
-    // Allow multiple calls to handle_raft_request_in_batch
+    // Increment the shared counter by the number of payloads written so that
+    // last_entry_id() / durable_index() return the post-write value.  This is
+    // required for the single-voter inline-flush path in verify_internal_quorum
+    // to advance past the noop entry and fire the commit signal.
     replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(move |_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                learner_progress: std::collections::HashMap::new(),
-                peer_updates: std::collections::HashMap::new(),
-            })
+        .expect_prepare_batch_requests()
+        .returning(move |payloads, _, _, _, _| {
+            li_prepare.fetch_add(payloads.len() as u64, Ordering::Relaxed);
+            Ok(crate::PrepareResult::default())
         });
 
     (raft_log, replication_handler)
@@ -661,14 +676,16 @@ async fn test_leader_verification_fails_downgrades() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    // Setup mocks for failed verification
+    // prepare_batch_requests returning Err propagates through execute_request_immediately
+    // → verify_internal_quorum returns Err → BecomeFollower queued → leader downgrades.
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
-        .expect_handle_raft_request_in_batch()
+        .expect_prepare_batch_requests()
         .returning(|_, _, _, _, _| Err(crate::Error::Fatal("Verification failed".to_string())));
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
@@ -887,6 +904,14 @@ async fn test_leader_ready_notification_only_after_noop_committed() {
     raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
     raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
 
+    // In the async design, BecomeLeader queues RoleEvent::NoopCommitted via role_tx.
+    // The Raft loop would process it, but in unit tests we drive events manually.
+    // Single-voter path: initiate_noop_commit fires drain_commit_actions synchronously
+    // (via Phase 4 → handle_log_flushed), sending NoopCommitted to role_tx.
+    // Process it now to complete the leader ready notification.
+    let term = raft.role.current_term();
+    raft.handle_role_event(RoleEvent::NoopCommitted { term }).await.unwrap();
+
     // Must receive Some(leader_id): noop committed successfully, cluster is ready
     leader_rx.changed().await.expect("Should receive leader ready notification");
     let info = leader_rx.borrow().expect("Leader info must be Some after noop committed");
@@ -902,21 +927,18 @@ async fn test_leader_ready_notification_suppressed_when_noop_fails() {
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
+    // prepare_batch_requests returning Err simulates noop failure:
+    // verify_internal_quorum returns Err → BecomeFollower queued → notify_leader_change(Some) never sent.
     let mut replication_handler = crate::MockReplicationCore::new();
-    replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: false, // noop fails: no quorum
-                learner_progress: std::collections::HashMap::new(),
-                peer_updates: std::collections::HashMap::new(),
-            })
-        });
+    replication_handler.expect_prepare_batch_requests().returning(|_, _, _, _, _| {
+        Err(crate::Error::Fatal("Noop verification failed".to_string()))
+    });
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;
@@ -1322,14 +1344,17 @@ async fn test_leadership_verification_failure_downgrades() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    // Setup mocks for failed verification
+    // Setup mocks for failed verification.
+    // prepare_batch_requests returning Err (e.g. majority timeout) propagates through
+    // execute_request_immediately → verify_internal_quorum → leader downgrades to follower.
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
-        .expect_handle_raft_request_in_batch()
+        .expect_prepare_batch_requests()
         .returning(|_, _, _, _, _| Err(crate::Error::Fatal("Majority timeout".to_string())));
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
@@ -1421,14 +1446,18 @@ async fn test_network_partition_minority_loses_leadership() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    // Setup mocks for partition (only 1 response out of 3 needed = minority)
+    // Setup mocks for network partition.
+    // prepare_batch_requests returning Err simulates minority partition — log writes fail
+    // (or peer list is unreachable). Propagates through execute_request_immediately →
+    // verify_internal_quorum → leader steps down (cannot maintain quorum).
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
-        .expect_handle_raft_request_in_batch()
+        .expect_prepare_batch_requests()
         .returning(|_, _, _, _, _| Err(crate::Error::Fatal("Partition".to_string())));
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
+    raft_log.expect_durable_index().returning(|| 11);
     raft_log.expect_flush().returning(|| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(11));
     raft_log.expect_load_hard_state().returning(|| Ok(None));
@@ -2079,6 +2108,7 @@ async fn test_graceful_shutdown_persists_hardstate() {
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_save_hard_state().times(1).returning(|_| Ok(()));
+    raft_log.expect_close().returning(|| ());
     raft.ctx.storage.raft_log = Arc::new(raft_log);
 
     // 2. Start the Raft main loop

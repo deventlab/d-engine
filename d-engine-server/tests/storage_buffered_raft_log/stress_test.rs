@@ -23,8 +23,10 @@ use super::TestContext;
 #[tokio::test]
 async fn test_high_concurrency() {
     let ctx = TestContext::new(
-        PersistenceStrategy::DiskFirst,
-        FlushPolicy::Immediate,
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_high_concurrency",
     );
     let mut handles = vec![];
@@ -49,6 +51,9 @@ async fn test_high_concurrency() {
         handle.await.unwrap();
     }
 
+    // With MemFirst, entries are buffered; wait for all to be durable before asserting.
+    ctx.raft_log.flush().await.unwrap();
+
     // Verify all entries persisted
     assert_eq!(ctx.raft_log.durable_index(), 1000);
     assert_eq!(ctx.raft_log.len(), 1000);
@@ -60,8 +65,7 @@ async fn test_high_concurrency_mixed_operations() {
     let ctx = TestContext::new(
         PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
-            threshold: 1000,
-            interval_ms: 100,
+            idle_flush_interval_ms: 100,
         },
         "test_high_concurrency_mixed_operations",
     );
@@ -133,8 +137,7 @@ mod mem_first_tests {
         let ctx = TestContext::new(
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
+                idle_flush_interval_ms: 1,
             },
             "test_basic_write_before_persist",
         );
@@ -150,8 +153,7 @@ mod mem_first_tests {
         let ctx = TestContext::new(
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
+                idle_flush_interval_ms: 1,
             },
             "test_async_persistence",
         );
@@ -170,8 +172,7 @@ mod mem_first_tests {
         let ctx = TestContext::new(
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
+                idle_flush_interval_ms: 1,
             },
             "test_power_loss_data_loss",
         );
@@ -189,8 +190,7 @@ mod mem_first_tests {
         let ctx = TestContext::new(
             PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
-                threshold: 1,
-                interval_ms: 1,
+                idle_flush_interval_ms: 1,
             },
             "test_high_concurrency_memory_only",
         );
@@ -226,7 +226,9 @@ mod mem_first_tests {
 async fn test_term_index_correctness_under_load() {
     let ctx = TestContext::new(
         PersistenceStrategy::MemFirst,
-        FlushPolicy::Immediate,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
         "test_term_index_under_load",
     );
 

@@ -16,7 +16,7 @@
 //!    - Ensures no data loss during concurrent AppendEntries
 
 #![cfg(feature = "rocksdb")]
-use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+use d_engine_server::RocksDBUnifiedEngine;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -112,17 +112,16 @@ snapshots_dir = '{}'
         let config_path = format!("/tmp/snapshot_concurrent_node{node_id}.toml");
         tokio::fs::write(&config_path, &config).await?;
 
-        let storage_path = db_root_dir.join(format!("node{node_id}/storage"));
-        let sm_path = db_root_dir.join(format!("node{node_id}/state_machine"));
+        let db_path = db_root_dir.join(format!("node{node_id}/db"));
 
-        tokio::fs::create_dir_all(&storage_path).await?;
-        tokio::fs::create_dir_all(&sm_path).await?;
+        tokio::fs::create_dir_all(&db_path).await?;
         tokio::fs::create_dir_all(snapshots_dir.join(format!("node{node_id}"))).await?;
 
-        let storage = Arc::new(RocksDBStorageEngine::new(storage_path)?);
-        let sm = Arc::new(RocksDBStateMachine::new(sm_path)?);
+        let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, Some(&config_path)).await?;
+        let engine =
+            EmbeddedEngine::start_custom(Arc::new(storage), Arc::new(sm), Some(&config_path))
+                .await?;
         engines.push(engine);
     }
 

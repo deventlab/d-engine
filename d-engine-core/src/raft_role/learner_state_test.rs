@@ -10,6 +10,7 @@ use crate::RaftOneshot;
 use crate::RoleEvent;
 use crate::raft_role::learner_state::LearnerState;
 use crate::raft_role::role_state::RaftRoleState;
+use crate::test_utils::create_test_snapshot_stream;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::mock_raft_context_with_temp;
@@ -24,6 +25,9 @@ use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::cluster::cluster_conf_update_response;
 use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use mockall::predicate::eq;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
@@ -1561,12 +1565,7 @@ async fn test_apply_completed_triggers_snapshot_when_condition_met() {
     let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
 
     // ACTION: Handle ApplyCompleted event
-    let apply_completed_event = RaftEvent::ApplyCompleted {
-        last_index: 100,
-        results: vec![],
-    };
-
-    let result = learner.handle_raft_event(apply_completed_event, &context, role_tx).await;
+    let result = learner.handle_apply_completed(100, vec![], &context, &role_tx).await;
 
     // VERIFY 1: Event handling succeeds
     assert!(
@@ -1633,12 +1632,7 @@ async fn test_apply_completed_does_not_trigger_snapshot_when_condition_not_met()
     let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
 
     // ACTION: Handle ApplyCompleted event
-    let apply_completed_event = RaftEvent::ApplyCompleted {
-        last_index: 50,
-        results: vec![],
-    };
-
-    let result = learner.handle_raft_event(apply_completed_event, &context, role_tx).await;
+    let result = learner.handle_apply_completed(50, vec![], &context, &role_tx).await;
 
     // VERIFY 1: Event handling succeeds
     assert!(
@@ -1686,12 +1680,7 @@ async fn test_apply_completed_respects_snapshot_disabled_config() {
     let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
 
     // ACTION: Handle ApplyCompleted event
-    let apply_completed_event = RaftEvent::ApplyCompleted {
-        last_index: 100,
-        results: vec![],
-    };
-
-    let result = learner.handle_raft_event(apply_completed_event, &context, role_tx).await;
+    let result = learner.handle_apply_completed(100, vec![], &context, &role_tx).await;
 
     // VERIFY 1: Event handling succeeds
     assert!(
@@ -1704,4 +1693,196 @@ async fn test_apply_completed_respects_snapshot_disabled_config() {
         role_rx.try_recv().is_err(),
         "Should not send snapshot event when snapshot is disabled in config"
     );
+}
+
+// ============================================================================
+// MemFirst ACK Tests
+// ============================================================================
+
+/// Learner ACKs leader immediately after memory write (MemFirst).
+#[tokio::test]
+async fn test_learner_acks_immediately_after_memory_write() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let leader_term = 2u64;
+    let appended_index = 5u64;
+
+    let mut replication_handler = crate::MockReplicationCore::new();
+    replication_handler.expect_handle_append_entries().returning(move |_, _, _| {
+        Ok(crate::AppendResponseWithUpdates {
+            response: d_engine_proto::server::replication::AppendEntriesResponse::success(
+                1,
+                leader_term,
+                Some(LogId {
+                    term: leader_term,
+                    index: appended_index,
+                }),
+            ),
+            commit_index_update: None,
+        })
+    });
+    context.handlers.replication_handler = replication_handler;
+    context.membership = Arc::new(MockMembership::new());
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(leader_term);
+
+    let append_request = d_engine_proto::server::replication::AppendEntriesRequest {
+        term: leader_term,
+        leader_id: 2,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+
+    // MemFirst: ACK sent immediately
+    let response = resp_rx.try_recv().expect("ACK must be sent immediately after memory write");
+    assert!(response.unwrap().is_success());
+}
+
+// ============================================================================
+// InstallSnapshotChunk Tests
+// ============================================================================
+
+/// Learner reports success only after all chunks are applied.
+///
+/// The ACK handler must drain the full ACK channel (not stop at the first ACK)
+/// and wait for `apply_snapshot_stream_from_leader` to complete before replying.
+/// This test uses 3 ACKs to confirm the last one is used for the final response.
+#[tokio::test]
+async fn test_learner_install_snapshot_reports_success_after_all_chunks_applied() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    // Mock: apply_snapshot_stream_from_leader sends 3 ACKs (simulating 3 chunks),
+    // all Accepted, then returns Ok(()).
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_apply_snapshot_stream_from_leader().once().returning(
+        |_term, _stream, ack_tx, _config| {
+            // Send 3 ACKs simulating 3 chunks, all accepted, then return Ok.
+            drop(tokio::spawn(async move {
+                for i in 0u32..3 {
+                    let _ = ack_tx
+                        .send(SnapshotAck {
+                            seq: i,
+                            status: ChunkStatus::Accepted as i32,
+                            next_requested: i + 1,
+                        })
+                        .await;
+                }
+            }));
+            Ok(())
+        },
+    );
+    sm_handler.expect_get_latest_snapshot_metadata().returning(|| None);
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(2);
+
+    let chunks: Vec<SnapshotChunk> = vec![SnapshotChunk::default()];
+    let stream = create_test_snapshot_stream(chunks);
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    state
+        .handle_raft_event(
+            RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx),
+            &context,
+            role_tx,
+        )
+        .await
+        .unwrap();
+
+    // Response must arrive (apply is done before reply)
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s") // timeout
+        .expect("recv must not fail") // RecvError
+        .expect("response must be Ok"); // Status error
+
+    assert!(
+        response.success,
+        "Learner must report success after all chunks applied"
+    );
+}
+
+/// Learner must NOT report success when a mid-stream chunk fails.
+///
+/// ## Bug (pre-fix)
+/// The ACK handler only waits for the **first** ACK via `ack_rx.recv()`.
+/// When chunk 1 is accepted, the handler immediately sends `success: true` —
+/// even though chunk 2 (and the overall apply) will fail.
+///
+/// ## Fix
+/// Drain **all** ACKs with `while let Some(ack) = ack_rx.recv().await` and use
+/// the last one, mirroring FollowerState. The channel only closes after
+/// `apply_snapshot_stream_from_leader` returns (success or error), ensuring
+/// the final ACK reflects the true outcome.
+#[tokio::test]
+async fn test_learner_install_snapshot_does_not_report_success_on_mid_chunk_failure() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    // Mock: chunk 1 sends an Accepted ACK, then apply fails mid-stream.
+    // Pre-fix: ACK handler sees the first Accepted ACK and replies success:true before apply ends.
+    // Post-fix: ACK handler drains until channel closes (after apply returns Err), uses last ACK.
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_apply_snapshot_stream_from_leader().once().returning(
+        |_term, _stream, ack_tx, _config| {
+            // Mirrors real apply_snapshot_stream_from_leader contract:
+            // chunk 1 accepted, chunk 2 fails → send Failed ACK before returning Err.
+            // The ACK handler must use the LAST ACK (Failed), not the first (Accepted).
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 1,
+                status: ChunkStatus::Failed as i32,
+                next_requested: 1,
+            });
+            // ack_tx dropped here → channel closes → ACK handler while loop exits
+            Err(crate::Error::Fatal("simulated mid-chunk failure".into()))
+        },
+    );
+    sm_handler.expect_get_latest_snapshot_metadata().returning(|| None);
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(2);
+
+    let chunks: Vec<SnapshotChunk> = vec![SnapshotChunk::default()];
+    let stream = create_test_snapshot_stream(chunks);
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // handle_raft_event returns Err (apply failed) — that is expected
+    let _ = state
+        .handle_raft_event(
+            RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx),
+            &context,
+            role_tx,
+        )
+        .await;
+
+    // The ACK handler may or may not have sent a response (depends on whether
+    // the spawned task ran). If it did respond, it must NOT be success:true.
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv()).await;
+    if let Ok(Ok(Ok(r))) = response {
+        assert!(
+            !r.success,
+            "Learner must NOT report success when apply failed mid-stream (got success:true — pre-fix bug)"
+        );
+    }
+    // If no response arrived or it was an error — acceptable here.
+    // The primary assertion: success:true must never be sent on failure.
 }

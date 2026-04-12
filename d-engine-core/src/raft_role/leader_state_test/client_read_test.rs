@@ -1,25 +1,20 @@
 use crate::ClientCmd;
+use crate::MockMembership;
 use crate::MockStateMachineHandler;
 use crate::ReadConsistencyPolicy;
-use crate::candidate_state::CandidateState;
 use crate::convert::safe_kv_bytes;
-use crate::follower_state::FollowerState;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
-use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::node_config;
-use crate::{AppendResults, MockMembership, NewCommitData, PeerUpdate, RaftEvent, RoleEvent};
-use crate::{
-    ConsensusError, Error, MockRaftLog, MockReplicationCore, RaftNodeConfig, ReplicationError,
-};
+use crate::{Error, MockRaftLog, MockReplicationCore, RaftNodeConfig};
 use bytes::Bytes;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::error::ErrorCode;
-use std::collections::HashMap;
+use d_engine_proto::server::cluster::NodeMeta;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -221,90 +216,6 @@ async fn test_wait_until_applied_no_wait() {
     // Then: should not call update_pending or wait_applied (verified by mock expectations)
 }
 
-/// Test on_noop_committed for Leader role
-///
-/// # Test Scenario
-/// This verifies that Leader correctly tracks the no-op entry index after
-/// successful leadership verification, enabling linearizable read optimization.
-///
-/// # Given
-/// - Node becomes Leader
-/// - No-op entry is appended and committed (last_entry_id = 42)
-///
-/// # When
-/// - on_noop_committed(ctx) is called after verify_leadership_persistent succeeds
-///
-/// # Then
-/// - Leader should read last_entry_id from raft_log (returns 42)
-/// - Leader should set noop_log_id = Some(42)
-/// - Future calculate_read_index() calls will use this value
-#[tokio::test]
-#[traced_test]
-async fn test_on_noop_committed_leader() {
-    // Given: Leader with committed no-op entry at index 42
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context = mock_raft_context("/tmp/test_on_noop_committed_leader", graceful_rx, None);
-    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
-
-    let mut mock_log = MockRaftLog::new();
-    mock_log.expect_last_entry_id().return_const(42u64);
-    context.storage.raft_log = Arc::new(mock_log);
-
-    // When: on_noop_committed is called
-    state.on_noop_committed(&context).expect("should succeed");
-
-    // Then: noop_log_id should be set to 42
-    assert_eq!(
-        state.noop_log_id,
-        Some(42),
-        "Leader should track noop_log_id from last_entry_id"
-    );
-}
-
-/// Test on_noop_committed for non-Leader roles (should be no-op)
-///
-/// # Test Scenario
-/// This verifies role responsibility isolation: only Leader tracks no-op entries,
-/// other roles safely ignore this call per the trait's default implementation.
-///
-/// # Given
-/// - Node is in Follower or Candidate role
-///
-/// # When
-/// - on_noop_committed(ctx) is called (e.g., during incorrect role transition)
-///
-/// # Then
-/// - Should return Ok(()) without side effects (default trait implementation)
-/// - Should NOT panic or return error
-/// - Follower/Candidate do not manage noop_log_id field
-///
-/// # Rationale
-/// Follows single responsibility principle: only Leader needs linearizable read optimization
-#[tokio::test]
-#[traced_test]
-async fn test_on_noop_committed_non_leader() {
-    // Given: Non-leader roles
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = mock_raft_context("/tmp/test_on_noop_committed_non_leader", graceful_rx, None);
-
-    // When/Then: Follower handles as no-op
-    let mut follower =
-        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    let result = follower.on_noop_committed(&context);
-    assert!(
-        result.is_ok(),
-        "Follower should handle on_noop_committed as no-op"
-    );
-
-    // When/Then: Candidate handles as no-op
-    let mut candidate = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-    let result = candidate.on_noop_committed(&context);
-    assert!(
-        result.is_ok(),
-        "Candidate should handle on_noop_committed as no-op"
-    );
-}
-
 /// Test wait_until_applied with slow state machine apply
 ///
 /// # Test Scenario
@@ -492,9 +403,9 @@ async fn test_linearizable_read_quorum_failure() {
     // Given: Leader with replication handler that fails
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
-        .expect_handle_raft_request_in_batch()
+        .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::Fatal("".to_string())));
+        .returning(|_, _, _, _, _| Err(Error::Fatal("Quorum verification failed".to_string())));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
@@ -571,32 +482,14 @@ async fn test_linearizable_read_quorum_success() {
 
     // Given: Leader with successful replication
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-        |_, _, _, _, _| {
-            Ok(AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(3),
-                            next_index: 4,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(4),
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
-                ]),
-                learner_progress: HashMap::new(),
-            })
-        },
-    );
+    replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            // New architecture: prepare_batch_requests returns empty vector for read-only batches
+            // Reads fire in Phase 3 when last_applied >= read_index
+            Ok(crate::PrepareResult::default())
+        });
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 2);
@@ -626,6 +519,8 @@ async fn test_linearizable_read_quorum_success() {
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    // noop committed — leader is ready to serve linearizable reads.
+    state.noop_log_id = Some(1);
 
     // When: Client sends LinearizableRead request
     let keys = vec![safe_kv_bytes(1)];
@@ -637,7 +532,7 @@ async fn test_linearizable_read_quorum_success() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // Push to buffer
     state.push_client_cmd(cmd, &context);
@@ -645,35 +540,20 @@ async fn test_linearizable_read_quorum_success() {
     // Flush: quorum succeeds, read registered in pending_reads[read_index=3]
     state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
-    // Then: Leader commit_index updated
-    assert_eq!(state.commit_index(), expect_new_commit_index);
+    // Note: In new architecture, commit_index advances asynchronously via handle_append_result
+    // We skip the sync commit assertion and move to ApplyCompleted
 
     // Simulate SM apply: ApplyCompleted fires pending_reads for read_index <= 3
     state
-        .handle_raft_event(
-            RaftEvent::ApplyCompleted {
-                last_index: expect_new_commit_index,
-                results: vec![],
-            },
-            &context,
-            role_tx.clone(),
-        )
+        .handle_apply_completed(expect_new_commit_index, vec![], &context, &role_tx)
         .await
         .expect("ApplyCompleted should succeed");
 
     // Then: Client receives successful response (released by ApplyCompleted)
     assert!(resp_rx.recv().await.unwrap().is_ok());
 
-    // Then: NotifyNewCommitIndex event sent (by flush_cmd_buffers)
-    let event = role_rx.try_recv().unwrap();
-    assert!(matches!(
-        event,
-        RoleEvent::NotifyNewCommitIndex(NewCommitData {
-            new_commit_index: _expect_new_commit_index,
-            role: _,
-            current_term: _
-        })
-    ));
+    // Note: In new architecture, NotifyNewCommitIndex is sent by handle_append_result,
+    // not by flush_cmd_buffers. This test focuses on the read path completion.
 }
 
 /// Test linearizable read encountering higher term during verification
@@ -706,15 +586,16 @@ async fn test_linearizable_read_quorum_success() {
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_encounters_higher_term() {
-    // Given: Leader with higher term response from peers
+    // Given: Leader with higher term detected during prepare phase
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-        move |_, _, _, _, _| {
-            Err(Error::Consensus(ConsensusError::Replication(
-                ReplicationError::HigherTerm(1),
-            )))
-        },
-    );
+    replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(move |_, _, _, _, _| {
+            // New architecture: Higher term detection now happens via handle_append_result
+            // For testing, we simulate fatal error during prepare phase
+            Err(Error::Fatal("Higher term detected".to_string()))
+        });
 
     let expect_new_commit_index = 3;
     let mut raft_log = MockRaftLog::new();
@@ -747,20 +628,20 @@ async fn test_linearizable_read_encounters_higher_term() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // Push to buffer and flush (triggers leadership verification which discovers higher term)
     state.push_client_cmd(cmd, &context);
     let _ = state.flush_cmd_buffers(&context, &role_tx).await;
 
-    // Then: Leader commit remains unchanged (HigherTerm aborted the operation)
+    // Then: Leader commit remains unchanged (Fatal error aborted the operation)
     assert_eq!(state.commit_index(), 1);
 
-    // Then: BecomeFollower event sent
-    let event = role_rx.try_recv().unwrap();
-    assert!(matches!(event, RoleEvent::BecomeFollower(None)));
+    // Note: In new architecture, HigherTerm detection happens in handle_append_result,
+    // not in prepare_batch_requests. This test simulates a Fatal error during prepare.
+    // The BecomeFollower event would be sent when workers respond with higher term.
 
-    // Then: Client receives error via response channel
+    // Then: Client receives error via response channel (Fatal error from prepare phase)
     assert!(resp_rx.recv().await.unwrap().is_err());
 }
 
@@ -838,66 +719,85 @@ async fn test_lease_read_with_valid_lease() {
     assert_eq!(response.error, ErrorCode::Success as i32);
 }
 
-/// Test LeaseRead policy with expired lease
+/// Test expired lease detection
 ///
 /// # Test Scenario
-/// This verifies LeaseRead fallback: when lease is expired, Leader must
-/// perform quorum verification before serving read.
+/// This is Part 1 of the LeaseRead expired lease path.
+/// Verifies that the system correctly detects when a lease has expired.
 ///
 /// # Given
-/// - Leader has expired lease (timestamp not updated)
-/// - Server allows client override
-/// - Replication handler configured to succeed
-/// - batching.max_batch_size = 1 (immediate flush)
+/// - Leader initialized without updating lease timestamp
 ///
 /// # When
-/// - Client sends read request with LeaseRead policy
-/// - Lease validity check fails
-/// - Fallback to quorum verification
+/// - Check lease validity
 ///
 /// # Then
-/// - Request triggers quorum verification (handle_raft_request_in_batch called)
-/// - After successful verification, request succeeds
-/// - Response returns success
+/// - is_lease_valid() returns false
 ///
-/// # Raft Protocol Context
-/// When lease expires, LeaseRead cannot guarantee linearizability without
-/// revalidating leadership via quorum. This ensures safety even if lease
-/// duration is misconfigured or clock skew occurs.
+/// # Complete Path Coverage
+/// This test + test_expired_lease_triggers_verify_fallback +
+/// test_single_voter_lease_refreshed_on_log_flushed (in lease_refresh_on_log_flushed_test.rs)
+/// together cover the full "expired lease → verify → refresh → success" path.
 #[tokio::test]
 #[traced_test]
-async fn test_lease_read_with_expired_lease() {
-    let mut replication_handler = MockReplicationCore::new();
-    replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-        |_, _, _, _, _| {
-            Ok(AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: HashMap::new(),
-                learner_progress: HashMap::new(),
-            })
-        },
-    );
-
-    let mut raft_log = MockRaftLog::new();
-    raft_log.expect_last_entry_id().returning(|| 10);
-    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
-
+async fn test_expired_lease_detection() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
-    // Configure server to allow client override
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_expired_lease_detection")
+        .build_context();
+
+    let state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // Don't update lease timestamp - lease should be expired by default
+    assert!(
+        !state.is_lease_valid(&context),
+        "Lease should be expired when timestamp is never updated"
+    );
+}
+
+/// Test expired lease on single-voter is refreshed immediately and read is served
+///
+/// # Test Scenario
+/// Single-voter: self is the entire quorum, so expired lease is refreshed
+/// immediately without sending AppendEntries. Read is served in the same flush.
+///
+/// # Given
+/// - Leader with expired lease (timestamp not updated)
+/// - Single-voter cluster
+///
+/// # When
+/// - Client sends LeaseRead request
+///
+/// # Then
+/// - flush_cmd_buffers returns without blocking
+/// - Lease is refreshed (is_lease_valid returns true after flush)
+/// - Sender receives success response
+#[tokio::test]
+#[traced_test]
+async fn test_expired_lease_single_voter_refreshed_immediately() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.read_consistency.allow_client_override = true;
-    node_config.raft.batching.max_batch_size = 1; // Immediately flush
+    node_config.raft.batching.max_batch_size = 1;
 
     let context = MockBuilder::new(graceful_rx)
-        .with_db_path("/tmp/test_lease_read_with_expired_lease")
-        .with_replication_handler(replication_handler)
-        .with_raft_log(raft_log)
+        .with_db_path("/tmp/test_expired_lease_single_voter_refreshed_immediately")
         .with_node_config(node_config)
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
-    // Don't update lease timestamp - lease should be expired by default
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    assert!(
+        !state.is_lease_valid(&context),
+        "Precondition: lease expired"
+    );
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
@@ -909,25 +809,20 @@ async fn test_lease_read_with_expired_lease() {
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(cmd, &context);
-    // Flush: quorum succeeds, LeaseRead (expired) falls back to linearizable,
-    // read registered in pending_reads[read_index=5]
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
+    state.flush_cmd_buffers(&context, &role_tx).await.unwrap();
 
-    // Simulate SM apply: releases pending linearizable read
-    state
-        .handle_raft_event(
-            RaftEvent::ApplyCompleted {
-                last_index: 5,
-                results: vec![],
-            },
-            &context,
-            role_tx.clone(),
-        )
-        .await
-        .expect("ApplyCompleted should succeed");
+    // Lease must be refreshed after flush
+    assert!(
+        state.is_lease_valid(&context),
+        "Lease must be refreshed after single-voter flush"
+    );
 
-    let response = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(response.error, ErrorCode::Success as i32);
+    // Sender must receive success response
+    let result = resp_rx.recv().await.unwrap();
+    assert!(
+        result.is_ok(),
+        "Single-voter expired lease read must succeed immediately"
+    );
 }
 
 /// Test unspecified consistency policy defaults to LinearizableRead
@@ -959,32 +854,13 @@ async fn test_lease_read_with_expired_lease() {
 #[traced_test]
 async fn test_unspecified_policy_defaults_to_linearizable_read() {
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler.expect_handle_raft_request_in_batch().times(1).returning(
-        |_, _, _, _, _| {
-            Ok(AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(4),
-                            next_index: 5,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                ]),
-                learner_progress: HashMap::new(),
-            })
-        },
-    );
+    replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            // Unspecified policy defaults to LinearizableRead
+            Ok(crate::PrepareResult::default())
+        });
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 10);
@@ -1012,6 +888,8 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    // noop committed — leader is ready to serve linearizable reads.
+    state.noop_log_id = Some(1);
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
@@ -1028,14 +906,7 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
 
     // Simulate SM apply: releases pending linearizable read
     state
-        .handle_raft_event(
-            RaftEvent::ApplyCompleted {
-                last_index: 5,
-                results: vec![],
-            },
-            &context,
-            role_tx.clone(),
-        )
+        .handle_apply_completed(5, vec![], &context, &role_tx)
         .await
         .expect("ApplyCompleted should succeed");
 
@@ -1194,16 +1065,10 @@ async fn test_linearizable_read_batch_shared_quorum() {
 
     // Mock replication handler - expect exactly 1 call for the entire batch
     let mut replication = MockReplicationCore::new();
-    replication
-        .expect_handle_raft_request_in_batch()
-        .times(1)
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: Default::default(),
-                learner_progress: Default::default(),
-            })
-        });
+    replication.expect_prepare_batch_requests().times(1).returning(|_, _, _, _, _| {
+        // Multiple requests batched naturally
+        Ok(crate::PrepareResult::default())
+    });
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_linearizable_read_batch_shared_quorum")
@@ -1289,21 +1154,27 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
 
     // Mock replication - expect only 1 call (from LinearizableRead only)
     let mut replication = MockReplicationCore::new();
-    replication
-        .expect_handle_raft_request_in_batch()
-        .times(1)
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: Default::default(),
-                learner_progress: Default::default(),
-            })
-        });
+    replication.expect_prepare_batch_requests().times(1).returning(|_, _, _, _, _| {
+        // Linearizable read refreshes lease (via handle_log_flushed in single-voter)
+        Ok(crate::PrepareResult::default())
+    });
+
+    // MemFirst: handle_log_flushed(1) commits to last_entry_id(), must be >= durable=1.
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 1);
+    raft_log.expect_durable_index().returning(|| 0);
+    raft_log.expect_last_log_id().returning(|| None);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
+    raft_log.expect_close().returning(|| ());
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_lease_reuse")
         .with_node_config(node_config)
         .with_replication_handler(replication)
+        .with_raft_log(raft_log)
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
@@ -1335,9 +1206,13 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     assert!(rx1.recv().await.is_ok(), "LinearizableRead should succeed");
 
     // Verify: Lease is now valid (refreshed by LinearizableRead)
+    // After flush in single-voter: lease refreshed via handle_log_flushed
+    // Manually trigger to simulate the async flush event
+    state.handle_log_flushed(1, &ctx, &role_tx).await;
+
     assert!(
         state.is_lease_valid(&ctx),
-        "Lease should be valid after LinearizableRead refresh"
+        "Lease should be valid after log flush (single-voter)"
     );
 
     // Action 2: LeaseRead (should reuse valid lease, no quorum check)
@@ -1540,16 +1415,10 @@ async fn test_client_policy_override_denied() {
 
     // Mock replication handler for LinearizableRead quorum verification
     let mut replication = MockReplicationCore::new();
-    replication
-        .expect_handle_raft_request_in_batch()
-        .times(1)
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: HashMap::new(),
-                learner_progress: HashMap::new(),
-            })
-        });
+    replication.expect_prepare_batch_requests().times(1).returning(|_, _, _, _, _| {
+        // Single-voter cluster: reads fire immediately in Phase 3
+        Ok(crate::PrepareResult::default())
+    });
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_client_policy_override_denied")
@@ -1624,16 +1493,10 @@ async fn test_drain_single_request_no_delay() {
 
     // Mock replication for quorum verification
     let mut replication = MockReplicationCore::new();
-    replication
-        .expect_handle_raft_request_in_batch()
-        .times(1)
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: Default::default(),
-                learner_progress: Default::default(),
-            })
-        });
+    replication.expect_prepare_batch_requests().times(1).returning(|_, _, _, _, _| {
+        // Server enforces LinearizableRead despite client request
+        Ok(crate::PrepareResult::default())
+    });
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_drain_single_request")
@@ -1710,16 +1573,10 @@ async fn test_drain_multiple_requests_natural_batch() {
 
     // Mock replication - expect single call for entire batch
     let mut replication = MockReplicationCore::new();
-    replication
-        .expect_handle_raft_request_in_batch()
-        .times(1)
-        .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: Default::default(),
-                learner_progress: Default::default(),
-            })
-        });
+    replication.expect_prepare_batch_requests().times(1).returning(|_, _, _, _, _| {
+        // Single request immediately processed
+        Ok(crate::PrepareResult::default())
+    });
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_drain_multiple_requests")
@@ -1888,14 +1745,11 @@ async fn test_linearizable_read_batch_single_quorum() {
     // Mock replication - expect EXACTLY 1 call for the entire batch
     let mut replication = MockReplicationCore::new();
     replication
-        .expect_handle_raft_request_in_batch()
+        .expect_prepare_batch_requests()
         .times(1) // KEY: Single quorum check for all requests
         .returning(|_, _, _, _, _| {
-            Ok(crate::AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: Default::default(),
-                learner_progress: Default::default(),
-            })
+            // Batch optimization: single quorum for all 5 reads
+            Ok(crate::PrepareResult::default())
         });
 
     let ctx = MockBuilder::new(shutdown_rx)
@@ -1937,90 +1791,6 @@ async fn test_linearizable_read_batch_single_quorum() {
     // Verify: MockReplicationCore received exactly 1 call
     // (If each request triggered separate quorum check, we'd see 5 calls)
     // The .times(1) expectation validates this optimization.
-
-    drop(_shutdown_tx);
-}
-
-/// **Business Scenario**: Lease read when leadership verification fails
-///
-/// **Purpose**: Verify that when lease has expired and leadership re-verification
-/// fails (e.g. node lost leadership due to network partition), the client is
-/// immediately notified with an error instead of hanging until timeout.
-///
-/// **Key Validation**:
-/// - Lease is expired (not valid)
-/// - verify_leadership_and_refresh_lease fails (quorum not reached)
-/// - Client receives Err response immediately (not hung)
-/// - Error code is UNAVAILABLE
-///
-/// **Architecture Context**:
-/// Previously, `?` on verify failure would return Err without notifying the
-/// sender, causing the client to hang until its own timeout. This test guards
-/// against regression of that bug.
-#[tokio::test]
-#[traced_test]
-async fn test_lease_read_verify_failure_notifies_client() {
-    let (_shutdown_tx, shutdown_rx) = watch::channel(());
-
-    let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.allow_client_override = true;
-    // Set lease duration to 0 so lease is always expired
-    node_config.raft.read_consistency.lease_duration_ms = 0;
-
-    // Mock replication: quorum not reached (simulates leadership loss)
-    let mut replication = MockReplicationCore::new();
-    replication
-        .expect_handle_raft_request_in_batch()
-        .times(1)
-        .returning(|_, _, _, _, _| {
-            Ok(AppendResults {
-                commit_quorum_achieved: false,
-                peer_updates: HashMap::from([(2, PeerUpdate::failed()), (3, PeerUpdate::failed())]),
-                learner_progress: HashMap::new(),
-            })
-        });
-
-    let ctx = MockBuilder::new(shutdown_rx)
-        .with_db_path("/tmp/test_lease_read_verify_failure")
-        .with_node_config(node_config)
-        .with_replication_handler(replication)
-        .build_context();
-
-    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-
-    let mut membership = MockMembership::new();
-    membership.expect_voters().returning(Vec::new);
-    membership.expect_replication_peers().returning(Vec::new);
-    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
-
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-    let req = ClientReadRequest {
-        client_id: 1,
-        keys: vec![Bytes::from_static(b"key1")],
-        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
-    };
-    let (tx, mut rx) = MaybeCloneOneshot::new();
-
-    // Action: process_lease_read directly (expired lease → verify → quorum fail)
-    let result = state.process_lease_read(req, tx, &ctx, &role_tx).await;
-
-    // Verify: process_lease_read returns Err
-    assert!(result.is_err(), "Should return error on verify failure");
-
-    // Verify: client is immediately notified (not hung)
-    let client_response = rx.recv().await;
-    assert!(
-        client_response.is_ok(),
-        "Oneshot should have received a message"
-    );
-    let inner = client_response.unwrap();
-    assert!(inner.is_err(), "Client should receive Err response");
-    assert_eq!(
-        inner.unwrap_err().code(),
-        tonic::Code::Unavailable,
-        "Error code should be UNAVAILABLE"
-    );
 
     drop(_shutdown_tx);
 }
@@ -2096,4 +1866,183 @@ async fn test_lease_read_valid_lease_serves_immediately() {
     // Verify: no replication calls were made (MockReplicationCore has no expectations)
 
     drop(_shutdown_tx);
+}
+
+/// LinearizableRead is rejected when noop entry is not yet committed (noop_log_id = None).
+///
+/// # Scenario
+/// New leader calls initiate_noop_commit() (fire-and-forget). Before NoopCommitted
+/// arrives, a client sends a LinearizableRead. With noop_log_id = None,
+/// calculate_read_index() falls back to commit_index. If last_applied >= commit_index,
+/// the read is served immediately in Phase 3 — without any quorum confirmation.
+/// This violates linearizability: the leader may be in a minority partition.
+///
+/// # Before fix (will FAIL)
+/// noop_log_id = None → read_index = commit_index = 0 → last_applied(0) >= 0
+/// → execute_pending_reads fires immediately → client receives Ok (unsafe).
+///
+/// # After fix (will PASS)
+/// Guard before Phase 3 checks noop_log_id.is_none() and rejects the read
+/// with Unavailable("LeaderNotReady"). Client retries after noop commits.
+#[tokio::test]
+#[traced_test]
+async fn test_linearizable_read_rejected_when_noop_not_committed() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // prepare_batch_requests succeeds (pure read, no new entries).
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.batching.max_batch_size = 1;
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_linearizable_read_rejected_when_noop_not_committed")
+        .with_replication_handler(replication_handler)
+        .with_node_config(node_config)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    // noop_log_id = None by default — noop not yet committed.
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let cmd = ClientCmd::Read(
+        ClientReadRequest {
+            client_id: 1,
+            keys: vec![safe_kv_bytes(1)],
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        },
+        resp_tx,
+    );
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    state.push_client_cmd(cmd, &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.ok();
+
+    // After fix: client receives LeaderNotReady (noop not yet committed).
+    // Before fix: client receives Ok (unsafe — no quorum confirmation).
+    let result = resp_rx.recv().await.unwrap();
+    assert!(
+        result.is_err(),
+        "expected LeaderNotReady error before noop commits, but got Ok"
+    );
+    assert_eq!(
+        result.unwrap_err().code(),
+        Code::Unavailable,
+        "expected Unavailable(LeaderNotReady)"
+    );
+}
+
+/// Expired lease in multi-voter cluster queues request in `pending_lease_reads` without blocking.
+///
+/// # Fix Verification
+/// The old code called `verify_internal_quorum` which blocked awaiting a quorum ACK that
+/// never arrived (empty payload → no log entry → commit_index never advanced → DeadlineExceeded).
+///
+/// The fix: `process_lease_read` no longer calls `verify_internal_quorum`. Instead it:
+/// 1. Pushes the request into `pending_lease_reads`
+/// 2. Fires an empty AppendEntries heartbeat (fire-and-forget)
+/// 3. Returns immediately — `drain_pending_lease_reads` is called from `handle_append_result`
+///    when quorum ACK arrives
+///
+/// # Expected (Fixed)
+/// - `process_lease_read` returns in <1ms (no blocking)
+/// - Request is queued in `pending_lease_reads`, NOT in `pending_client_writes`
+#[tokio::test]
+#[traced_test]
+async fn test_lease_read_empty_payload_verification_hangs_in_multi_node() {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
+    node_config.raft.read_consistency.lease_duration_ms = 1; // Lease expires immediately
+    node_config.raft.batching.max_batch_size = 1;
+
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_prepare_batch_requests()
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+
+    let ctx = MockBuilder::new(shutdown_rx)
+        .with_db_path("/tmp/test_lease_verification_empty_payload_hangs")
+        .with_node_config(node_config)
+        .with_replication_handler(replication)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(|| {
+        vec![
+            NodeMeta {
+                id: 2,
+                address: String::new(),
+                role: 0,
+                status: 0,
+            },
+            NodeMeta {
+                id: 3,
+                address: String::new(),
+                role: 0,
+                status: 0,
+            },
+        ]
+    });
+    membership.expect_replication_peers().returning(|| {
+        vec![
+            NodeMeta {
+                id: 2,
+                address: String::new(),
+                role: 0,
+                status: 0,
+            },
+            NodeMeta {
+                id: 3,
+                address: String::new(),
+                role: 0,
+                status: 0,
+            },
+        ]
+    });
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    assert!(
+        !state.cluster_metadata.single_voter,
+        "precondition: multi-voter"
+    );
+    assert!(!state.is_lease_valid(&ctx), "precondition: lease expired");
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let req = ClientReadRequest {
+        client_id: 1,
+        keys: vec![Bytes::from_static(b"key1")],
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+    };
+    let (tx, _rx) = MaybeCloneOneshot::new();
+
+    // process_lease_read must return immediately (no blocking await on quorum)
+    let start = std::time::Instant::now();
+    let result = state.process_lease_read(req, tx, &ctx, &role_tx).await;
+    let elapsed = start.elapsed();
+
+    assert!(result.is_ok(), "process_lease_read must not return Err");
+    assert!(
+        elapsed < std::time::Duration::from_millis(50),
+        "process_lease_read must return immediately, elapsed={elapsed:?}"
+    );
+
+    // Request must be queued in pending_lease_reads, NOT in pending_client_writes
+    assert_eq!(
+        state.pending_lease_reads.len(),
+        1,
+        "request must be in pending_lease_reads"
+    );
+    assert_eq!(
+        state.pending_client_writes.len(),
+        0,
+        "pending_client_writes must be empty"
+    );
 }

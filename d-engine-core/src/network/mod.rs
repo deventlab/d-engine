@@ -10,7 +10,7 @@ mod background_snapshot_transfer;
 
 #[cfg(test)]
 mod background_snapshot_transfer_test;
-pub(crate) use background_snapshot_transfer::*;
+pub use background_snapshot_transfer::*;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::election::VoteRequest;
@@ -18,8 +18,11 @@ use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use futures::stream::BoxStream;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
+use tokio::sync::mpsc;
 use tonic::async_trait;
 
 use crate::BackoffPolicy;
@@ -27,6 +30,18 @@ use crate::NetworkError;
 use crate::Result;
 use crate::RetryPolicies;
 use crate::TypeConfig;
+
+/// Per-peer persistent bidirectional replication stream.
+///
+/// Opened once per follower at leader startup (or on reconnect). The sender
+/// pushes `AppendEntriesRequest` batches; the receiver yields
+/// `AppendEntriesResponse` ACKs. Dropping the sender closes the stream.
+pub struct ReplicationStream {
+    /// Push AppendEntries batches directly into the open h2 stream (capacity = 128).
+    pub sender: mpsc::Sender<AppendEntriesRequest>,
+    /// Receive ACKs from the follower; items are `Result<_, tonic::Status>`.
+    pub receiver: BoxStream<'static, std::result::Result<AppendEntriesResponse, tonic::Status>>,
+}
 
 // Define a structured return value
 #[derive(Debug, Clone)]
@@ -238,6 +253,55 @@ where
         membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<Vec<d_engine_proto::server::cluster::LeaderDiscoveryResponse>>;
 
+    /// Send a single AppendEntries request to one peer (used by ReplicationWorker).
+    ///
+    /// Non-blocking from the caller's perspective: the caller fires this and the
+    /// per-follower worker task awaits the response independently. Reuses the
+    /// existing FIFO `peer_appender_task` infrastructure internally.
+    ///
+    /// # Parameters
+    /// - `peer_id`: Target follower node ID
+    /// - `request`: AppendEntries RPC request
+    /// - `retry`: Retry / timeout configuration
+    /// - `membership`: Cluster membership for channel resolution
+    /// - `response_compress_enabled`: Enable gRPC response compression
+    ///
+    /// # Returns
+    /// `Ok(AppendEntriesResponse)` on success, `Err` on network / timeout failure
+    async fn send_append_request(
+        &self,
+        peer_id: u32,
+        request: AppendEntriesRequest,
+        retry: &RetryPolicies,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+        response_compress_enabled: bool,
+    ) -> Result<AppendEntriesResponse>;
+
+    /// Pushes a snapshot to a lagging peer (called by per-follower ReplicationWorker).
+    ///
+    /// Used when a peer's `next_index` falls below the leader's purge boundary and
+    /// AppendEntries would carry a stale `prev_log_term = 0`, causing a perpetual
+    /// conflict loop.  The worker calls this and awaits completion before emitting
+    /// `RoleEvent::SnapshotPushCompleted`.
+    ///
+    /// # Parameters
+    /// - `peer_id`: Target follower node ID
+    /// - `metadata`: Snapshot metadata (term, index, size)
+    /// - `state_machine_handler`: Used to load the snapshot data stream
+    /// - `membership`: Cluster membership for bulk-channel resolution
+    /// - `config`: Snapshot transfer configuration (chunk size, timeout, etc.)
+    ///
+    /// # Returns
+    /// `Ok(())` on successful transfer, `Err` on network or serialization failure.
+    async fn send_snapshot(
+        &self,
+        peer_id: u32,
+        metadata: SnapshotMetadata,
+        state_machine_handler: std::sync::Arc<crate::alias::SMHOF<T>>,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+        config: crate::SnapshotConfig,
+    ) -> Result<()>;
+
     /// Requests and streams a snapshot from the current leader.
     ///
     /// # Parameters
@@ -259,6 +323,27 @@ where
         retry: &crate::InstallSnapshotBackoffPolicy,
         membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<Box<tonic::Streaming<SnapshotChunk>>>;
+
+    /// Opens a persistent bidirectional AppendEntries stream to the given peer.
+    ///
+    /// Called once per follower when the leader becomes active (or on reconnect).
+    /// The returned [`ReplicationStream`] contains:
+    /// - `sender`: push batches into the open h2 stream (non-blocking, capacity 128)
+    /// - `receiver`: stream of ACKs from the follower
+    ///
+    /// When the stream breaks (network error, peer restart), the receiver yields
+    /// an `Err(tonic::Status)` and the caller should emit
+    /// `RoleEvent::PeerStreamError { peer_id }` so the Raft loop can reset
+    /// `next_index` and schedule reconnection.
+    ///
+    /// # Errors
+    /// Returns `NetworkError` if the initial stream handshake fails.
+    async fn open_replication_stream(
+        &self,
+        peer_id: u32,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+        compress: bool,
+    ) -> Result<ReplicationStream>;
 }
 
 // Module level utils
