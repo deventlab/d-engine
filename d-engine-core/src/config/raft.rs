@@ -619,8 +619,7 @@ fn default_max_log_entries_before_snapshot() -> u64 {
 /// Default cooldown duration between snapshot checks.
 ///
 /// Prevents constant evaluation of snapshot conditions in tight loops.
-/// With adaptive cooldown in `LogSizePolicy`, this is the *base* value that
-/// shrinks automatically as log lag approaches the snapshot threshold.
+/// Reduced from 3600s to 60s to allow timely log compaction under typical workloads.
 fn default_snapshot_cool_down_since_last_check() -> Duration {
     Duration::from_secs(60)
 }
