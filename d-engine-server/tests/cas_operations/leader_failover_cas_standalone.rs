@@ -110,75 +110,85 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     info!("CAS result during leader stop: {:?}", cas_result);
     // Expected: timeout, NOT_LEADER, or UNAVAILABLE error
 
-    // Phase 2: Wait for a *stable* new leader.
+    // Phase 2 + 3: Wait for a stable leader AND verify lock state consistency.
     //
-    // Why a stability loop instead of a single refresh():
+    // Why these two phases are merged into a single retry loop:
     //
-    // After node 3 crashes, the surviving nodes (1 and 2) may undergo more than
-    // one election round before settling. A common pattern observed in CI:
+    // After node 3 crashes, the surviving nodes may undergo cascading elections
+    // before settling on a stable leader. A pattern observed in both CI and local:
     //
-    //   Node 1 & 2 both start term-3 elections (split vote)
-    //   → Node 2 steps down, resets its election timer (random 300–3000 ms)
-    //   → Node 1 wins term 3 and becomes leader                    ← refresh() returns here
-    //   → Node 2's timer fires before receiving Node 1's heartbeat ← term-4 election starts
-    //   → Node 1 steps down (Raft rule: any higher term forces step-down)
-    //   → Phase 3 reads hit node 1 (stale cached leader) → "Not leader"
+    //   Node 1 & 2 both start elections (split vote, multiple rounds)
+    //   → Node A wins term N and becomes leader   ← refresh() sees this and returns
+    //   → Node B's election timer fires, starts term N+1 election
+    //   → Node A receives term N+1, MUST step down (Raft protocol)
+    //   → Phase 3 read hits node A (now a follower) → "Not leader"
     //
-    // refresh() only guarantees that a ready leader existed at the instant of the
-    // probe — it does NOT guarantee leadership stability going forward.
+    // The key insight: checking leader_id consistency across two refresh() calls
+    // does NOT reliably detect this. Cluster metadata (current_leader_id) reflects
+    // what each node *last committed as leader*, not the live Raft state. A node
+    // that just stepped down may still appear as "leader" in other nodes' metadata
+    // until the new leader's noop is replicated.
     //
-    // Fix: confirm the same leader across two consecutive refresh() calls separated
-    // by 2× the heartbeat interval (200 ms > 2 × 100 ms). If a concurrent election
-    // is in flight, the second call will observe a different leader_id or find no
-    // leader, and the loop retries. Once both calls agree, the leader has survived
-    // at least two full heartbeat cycles and can be considered stable.
-    info!("Phase 2: Waiting for stable new leader election");
-    let new_leader_id = loop {
+    // The only authoritative check is: can the leader actually serve a read right now?
+    //
+    // Fix: merge Phase 2 and Phase 3 into a refresh→read loop. refresh() discovers
+    // the best-known leader; the subsequent get() is the live proof that the leader
+    // is active. On StaleOperation the loop retries immediately. This converges once
+    // the cluster elects a stable leader that can serve requests end-to-end.
+    // refresh() internally handles cluster_ready_timeout, so the loop is bounded.
+    info!("Phase 2+3: Waiting for stable leader and verifying lock state consistency");
+    let lock_value = loop {
         client.refresh(None).await?;
-        let id_first = client
+        let new_leader_id = client
             .get_leader_id()
             .await?
             .expect("Leader must be known after successful refresh");
+        info!("Candidate leader: node {}", new_leader_id);
 
-        // Sleep longer than two heartbeat intervals (heartbeat = 100 ms) so any
-        // concurrent higher-term election has time to complete and become visible.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        client.refresh(None).await?;
-        let id_second = client
-            .get_leader_id()
-            .await?
-            .expect("Leader must be known after second refresh");
-
-        if id_first == id_second {
-            break id_first; // Same leader confirmed twice — election has settled
+        match client.get(lock_key).await {
+            Ok(value) => {
+                // Read succeeded — this leader is actively serving requests.
+                info!("Stable leader confirmed: node {}", new_leader_id);
+                break value;
+            }
+            Err(ClientApiError::Business {
+                code: ErrorCode::StaleOperation,
+                ..
+            }) => {
+                // The leader changed between refresh() and the read RPC.
+                // A cascading election is still in progress — refresh and retry.
+                info!(
+                    "Node {} is no longer leader (cascading election in progress), retrying",
+                    new_leader_id
+                );
+                continue;
+            }
+            Err(ClientApiError::Network {
+                code: ErrorCode::ConnectionTimeout,
+                ..
+            }) => {
+                // Node 1 just won the election but node 2 immediately started its own
+                // candidacy (cascading elections).  A linearizable read requires a
+                // heartbeat-quorum ACK from node 2; while node 2 is a candidate it
+                // ignores node 1's heartbeats.  The pending read sits on the server
+                // until node 2 steps down, which can exceed the client's default
+                // request_timeout (3 s), causing Code::Cancelled / "Timeout expired".
+                //
+                // The cluster will stabilise once node 2 receives node 1's heartbeat
+                // with the winning term and steps down.  Retry refresh() + get() so
+                // we wait for a leader that can actually serve requests end-to-end.
+                info!(
+                    "get() timed out waiting for leader {} to achieve read quorum \
+                     (cascading election still settling), retrying",
+                    new_leader_id
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            Err(e) => {
+                return Err(e);
+            }
         }
-        // Leaders differ: a second election occurred between the two probes.
-        // Loop and wait for the next stable state.
-        info!(
-            "Leader changed from node {} to node {} during stability check — retrying",
-            id_first, id_second
-        );
-    };
-    info!("Stable leader confirmed: node {}", new_leader_id);
-
-    // Phase 3: Verify lock state consistency
-    //
-    // Even with the stability loop above there is a residual window between the
-    // second refresh() and the actual read RPC. Guard against it with a single
-    // refresh-and-retry on StaleOperation so the assertion never fails spuriously.
-    info!("Phase 3: Verify lock state consistency");
-    let lock_value = match client.get(lock_key).await {
-        Err(ClientApiError::Business {
-            code: ErrorCode::StaleOperation,
-            ..
-        }) => {
-            // A second leader change happened in the tiny gap after the stability
-            // check. Refresh once and retry — this is not a test failure.
-            client.refresh(None).await?;
-            client.get(lock_key).await?
-        }
-        other => other?,
     };
 
     match lock_value {
