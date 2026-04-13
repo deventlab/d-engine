@@ -936,3 +936,35 @@ async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
         "drained reads must get Unavailable error"
     );
 }
+
+// ============================================================================
+// StepDownSelfRemoved Tests
+// ============================================================================
+
+/// Leader receives StepDownSelfRemoved → sends BecomeFollower and returns Ok.
+///
+/// Per Raft protocol, after a leader commits its own removal from the cluster
+/// it must immediately step down to Follower. This test verifies:
+/// 1. handle_raft_event returns Ok(())
+/// 2. A BecomeFollower(None) event is sent on role_tx
+#[tokio::test]
+async fn test_step_down_self_removed_sends_become_follower() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let raft_context = mock_raft_context("/tmp/test_step_down_self_removed", graceful_rx, None);
+
+    let node_config = raft_context.node_config();
+    let mut leader_state = LeaderState::<MockTypeConfig>::new(1, node_config);
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let result = leader_state
+        .handle_raft_event(RaftEvent::StepDownSelfRemoved, &raft_context, role_tx)
+        .await;
+
+    assert!(result.is_ok(), "StepDownSelfRemoved must return Ok");
+
+    let event = role_rx.try_recv().expect("BecomeFollower event must be sent");
+    assert!(
+        matches!(event, RoleEvent::BecomeFollower(None)),
+        "Expected BecomeFollower(None), got: {event:?}"
+    );
+}

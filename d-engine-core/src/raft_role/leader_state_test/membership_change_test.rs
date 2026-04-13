@@ -754,260 +754,6 @@ mod trigger_background_snapshot_test {
 }
 
 // ============================================================================
-// Batch Learner Promotion Tests
-// ============================================================================
-
-#[cfg(test)]
-mod batch_promote_learners_test {
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    use tokio::sync::{mpsc, watch};
-
-    use parking_lot::Mutex;
-
-    use crate::Error;
-    use crate::MockMembership;
-    use crate::MockRaftLog;
-    use crate::MockReplicationCore;
-    use crate::RaftContext;
-    use crate::event::RoleEvent;
-    use crate::raft_role::leader_state::LeaderState;
-    use crate::test_utils::mock::MockBuilder;
-    use crate::test_utils::mock::MockTypeConfig;
-    use crate::test_utils::node_config;
-    use d_engine_proto::common::EntryPayload;
-    use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
-    use d_engine_proto::server::cluster::NodeMeta;
-    use mockall::predicate::eq;
-
-    enum VerifyInternalQuorumWithRetrySuccess {
-        Failure,
-        Error,
-    }
-
-    struct TestContext {
-        raft_context: RaftContext<MockTypeConfig>,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
-        _role_rx: mpsc::UnboundedReceiver<RoleEvent>,
-        leader_state: LeaderState<MockTypeConfig>,
-    }
-
-    async fn setup_test_context(
-        test_name: &str,
-        current_voters: usize,
-        ready_learners: Vec<u32>,
-        verify_leadership_limited_retry_success: VerifyInternalQuorumWithRetrySuccess,
-    ) -> TestContext {
-        let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut node_config = node_config(&format!("/tmp/{test_name}"));
-        node_config.raft.learner_catchup_threshold = 100;
-        node_config.raft.membership.verify_leadership_persistent_timeout = Duration::from_secs(1);
-
-        let mut raft_context =
-            MockBuilder::new(graceful_rx).with_node_config(node_config).build_context();
-
-        // Mock membership
-        let mut membership = MockMembership::new();
-        membership.expect_is_single_node_cluster().returning(|| false);
-        membership.expect_can_rejoin().returning(|_, _| Ok(()));
-        membership.expect_voters().returning(move || {
-            (1..=current_voters)
-                .map(|id| NodeMeta {
-                    id: id as u32,
-                    address: format!("addr_{id}"),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                })
-                .collect()
-        });
-
-        let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
-        // New architecture: prepare_batch_requests returns empty vector or error
-        replication_handler.expect_prepare_batch_requests().times(..).returning(
-            move |_, _, _, _, _| match verify_leadership_limited_retry_success {
-                VerifyInternalQuorumWithRetrySuccess::Failure => {
-                    // Failure: returns empty vector, verification times out (no quorum)
-                    Ok(crate::PrepareResult::default())
-                }
-                VerifyInternalQuorumWithRetrySuccess::Error => {
-                    // Error: returns fatal error during prepare phase
-                    Err(Error::Fatal("Simulated higher term error".to_string()))
-                }
-            },
-        );
-        raft_context.handlers.replication_handler = replication_handler;
-
-        let mut raft_log = MockRaftLog::new();
-        raft_log.expect_last_entry_id().returning(|| 10);
-        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
-        raft_context.storage.raft_log = Arc::new(raft_log);
-
-        // Mock learner statuses
-        for learner_id in &ready_learners {
-            membership
-                .expect_get_node_status()
-                .with(eq(*learner_id))
-                .return_const(Some(NodeStatus::Promotable));
-        }
-
-        raft_context.membership = Arc::new(membership);
-
-        let leader_state = LeaderState::new(1, raft_context.node_config());
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        TestContext {
-            raft_context,
-            role_tx,
-            _role_rx,
-            leader_state,
-        }
-    }
-
-    /// Test successful promotion path: verifies correct BatchPromote config is submitted
-    /// when ensure_safe_join allows the promotion (3 voters + 1 learner = 4 total, even → odd after
-    /// adding self, so safe). Quorum completion requires a full Raft loop; this test validates
-    /// the unit-testable portion (config payload is correctly formed and submitted).
-    #[tokio::test]
-    async fn test_batch_promote_learners_success() {
-        use d_engine_proto::common::membership_change::Change;
-
-        let captured_payloads = Arc::new(Mutex::new(Vec::<EntryPayload>::new()));
-        let captured_clone = captured_payloads.clone();
-
-        let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut cfg = node_config("/tmp/test_batch_promote_learners_success");
-        cfg.raft.learner_catchup_threshold = 100;
-        // Short timeout: quorum can't complete in unit tests; we only verify payload submission
-        cfg.raft.membership.verify_leadership_persistent_timeout = Duration::from_millis(50);
-
-        let mut raft_context = MockBuilder::new(graceful_rx).with_node_config(cfg).build_context();
-
-        let mut membership = MockMembership::new();
-        membership.expect_is_single_node_cluster().returning(|| false);
-        membership.expect_can_rejoin().returning(|_, _| Ok(()));
-        // 3 voter followers → new_active_count = 3+1 = 4 (even) → ensure_safe_join passes
-        membership.expect_voters().returning(|| {
-            (1..=3u32)
-                .map(|id| NodeMeta {
-                    id,
-                    address: format!("addr_{id}"),
-                    role: Follower.into(),
-                    status: NodeStatus::Active.into(),
-                })
-                .collect()
-        });
-        membership
-            .expect_get_node_status()
-            .with(eq(4u32))
-            .return_const(Some(NodeStatus::Promotable));
-        raft_context.membership = Arc::new(membership);
-
-        let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
-        replication_handler.expect_prepare_batch_requests().times(..).returning(
-            move |payloads, _, _, _, _| {
-                captured_clone.lock().extend(payloads.clone());
-                Ok(crate::PrepareResult::default())
-            },
-        );
-        raft_context.handlers.replication_handler = replication_handler;
-
-        let mut raft_log = MockRaftLog::new();
-        raft_log.expect_last_entry_id().returning(|| 10);
-        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
-        raft_context.storage.raft_log = Arc::new(raft_log);
-
-        let mut leader_state = LeaderState::new(1, raft_context.node_config());
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        // Timeout is expected: quorum can't complete without a running Raft loop
-        let _ = leader_state.batch_promote_learners(vec![4], &raft_context, &role_tx).await;
-
-        // Verify the correct BatchPromote config change was submitted for replication
-        let payloads = captured_payloads.lock();
-        assert_eq!(payloads.len(), 1, "Should submit exactly one config change");
-        match &payloads[0].payload {
-            Some(d_engine_proto::common::entry_payload::Payload::Config(change)) => {
-                match &change.change {
-                    Some(Change::BatchPromote(batch_promote)) => {
-                        assert_eq!(batch_promote.node_ids, vec![4], "Should promote node 4");
-                        assert_eq!(
-                            batch_promote.new_status,
-                            NodeStatus::Active as i32,
-                            "Should promote to Active status"
-                        );
-                    }
-                    _ => panic!("Expected BatchPromote change, got: {:?}", change.change),
-                }
-            }
-            _ => panic!("Expected Config payload, got: {:?}", payloads[0].payload),
-        }
-    }
-
-    /// Test promotion: ensure_safe_join passes (3+1=4 even), config change submitted fire-and-forget.
-    /// Commit confirmation comes via the normal Raft flow; this test validates submission succeeds.
-    #[tokio::test]
-    async fn test_batch_promote_learners_quorum_failed() {
-        let mut ctx = setup_test_context(
-            "test_batch_promote_learners_quorum_failed",
-            3, // 3 voter followers → new_active_count = 3+1 = 4 (even) → safety passes
-            vec![4],
-            VerifyInternalQuorumWithRetrySuccess::Failure,
-        )
-        .await;
-
-        let result = ctx
-            .leader_state
-            .batch_promote_learners(vec![4], &ctx.raft_context, &ctx.role_tx)
-            .await;
-
-        // Fire-and-forget: config change submitted, returns Ok regardless of future commit outcome
-        assert!(result.is_ok());
-    }
-
-    /// Test safety check prevents unsafe promotion: 2 voter followers + 1 learner = 3 total
-    /// (odd) → ensure_safe_join returns Err → batch_promote_learners returns Ok(()) immediately
-    /// without submitting any config change. Cluster stays at even count → Raft quorum preserved.
-    #[tokio::test]
-    async fn test_batch_promote_learners_quorum_safety() {
-        let mut ctx = setup_test_context(
-            "test_batch_promote_learners_quorum_safety",
-            2, // 2 voter followers → new_active_count = 2+1 = 3 (odd) → safety blocks
-            vec![4],
-            VerifyInternalQuorumWithRetrySuccess::Failure,
-        )
-        .await;
-
-        let result = ctx
-            .leader_state
-            .batch_promote_learners(vec![4], &ctx.raft_context, &ctx.role_tx)
-            .await;
-
-        assert!(result.is_ok());
-    }
-
-    /// Test error during quorum verification: prepare_batch_requests returns Fatal error →
-    /// verify_internal_quorum propagates Err immediately (no timeout wait).
-    #[tokio::test]
-    async fn test_batch_promote_learners_verification_error() {
-        let mut ctx = setup_test_context(
-            "test_batch_promote_learners_verification_error",
-            3,
-            vec![4],
-            VerifyInternalQuorumWithRetrySuccess::Error,
-        )
-        .await;
-
-        let result = ctx
-            .leader_state
-            .batch_promote_learners(vec![4], &ctx.raft_context, &ctx.role_tx)
-            .await;
-
-        assert!(result.is_err());
-    }
-}
-
-// ============================================================================
 // Stale Learner Detection and Cleanup Tests
 // ============================================================================
 
@@ -2082,5 +1828,177 @@ mod pending_promotion_tests {
                 assert!((voters + size) % 2 == 1 || size == 0);
             }
         }
+    }
+}
+
+// ============================================================================
+// Zombie Node Purge Tests
+// ============================================================================
+
+#[cfg(test)]
+mod zombie_purge_tests {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+    use tokio::sync::{mpsc, watch};
+
+    use crate::MockMembership;
+    use crate::MockRaftLog;
+    use crate::raft_role::leader_state::LeaderState;
+    use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
+    use crate::test_utils::node_config;
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
+    use d_engine_proto::server::cluster::NodeMeta;
+
+    /// No zombie candidates → conditionally_purge_zombie_nodes does nothing.
+    #[tokio::test]
+    async fn test_purge_zombie_nodes_no_candidates() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let cfg = node_config("/tmp/test_purge_zombie_nodes_no_candidates");
+        let mut raft_context = MockBuilder::new(graceful_rx).with_node_config(cfg).build_context();
+
+        let mut membership = MockMembership::new();
+        membership.expect_get_zombie_candidates().returning(Vec::new);
+        raft_context.membership = Arc::new(membership);
+
+        let captured_payloads = Arc::new(Mutex::new(Vec::<EntryPayload>::new()));
+        let captured_clone = captured_payloads.clone();
+        raft_context
+            .handlers
+            .replication_handler
+            .expect_prepare_batch_requests()
+            .times(0) // Must NOT be called when there are no candidates
+            .returning(move |payloads, _, _, _, _| {
+                captured_clone.lock().extend(payloads.clone());
+                Ok(crate::PrepareResult::default())
+            });
+
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 10);
+        raft_context.storage.raft_log = Arc::new(raft_log);
+
+        let node_config = raft_context.node_config();
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        let result = leader.conditionally_purge_zombie_nodes(&role_tx, &raft_context).await;
+        assert!(result.is_ok());
+        assert!(
+            captured_payloads.lock().is_empty(),
+            "No BatchRemove should be submitted"
+        );
+    }
+
+    /// Zombie candidates with non-Active status → BatchRemove config change submitted.
+    #[tokio::test]
+    async fn test_purge_zombie_nodes_submits_batch_remove() {
+        use d_engine_proto::common::membership_change::Change;
+
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let mut cfg = node_config("/tmp/test_purge_zombie_nodes_submits_batch_remove");
+        cfg.raft.membership.verify_leadership_persistent_timeout =
+            std::time::Duration::from_millis(50);
+        let mut raft_context = MockBuilder::new(graceful_rx).with_node_config(cfg).build_context();
+
+        let mut membership = MockMembership::new();
+        // Two zombie candidates: node 5 and node 6
+        membership.expect_get_zombie_candidates().returning(|| vec![5, 6]);
+        // Both are non-Active (Promotable) → both should be removed
+        membership.expect_get_node_status().returning(|_| Some(NodeStatus::Promotable));
+        // Membership voter mock needed by execute_request_immediately internals
+        membership.expect_voters().returning(|| {
+            vec![NodeMeta {
+                id: 1,
+                address: "addr_1".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active as i32,
+            }]
+        });
+        membership.expect_is_single_node_cluster().returning(|| false);
+        membership.expect_can_rejoin().returning(|_, _| Ok(()));
+        raft_context.membership = Arc::new(membership);
+
+        let captured_payloads = Arc::new(Mutex::new(Vec::<EntryPayload>::new()));
+        let captured_clone = captured_payloads.clone();
+        raft_context
+            .handlers
+            .replication_handler
+            .expect_prepare_batch_requests()
+            .times(..)
+            .returning(move |payloads, _, _, _, _| {
+                captured_clone.lock().extend(payloads.clone());
+                Ok(crate::PrepareResult::default())
+            });
+
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 10);
+        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
+        raft_context.storage.raft_log = Arc::new(raft_log);
+
+        let node_config = raft_context.node_config();
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        let result = leader.conditionally_purge_zombie_nodes(&role_tx, &raft_context).await;
+        assert!(result.is_ok());
+
+        // Verify BatchRemove was submitted for both zombie nodes
+        let payloads = captured_payloads.lock();
+        assert_eq!(payloads.len(), 1, "Should submit exactly one BatchRemove");
+        match &payloads[0].payload {
+            Some(d_engine_proto::common::entry_payload::Payload::Config(change)) => {
+                match &change.change {
+                    Some(Change::BatchRemove(batch_remove)) => {
+                        let mut ids = batch_remove.node_ids.clone();
+                        ids.sort();
+                        assert_eq!(ids, vec![5, 6], "Should remove both zombie nodes");
+                    }
+                    _ => panic!("Expected BatchRemove, got: {:?}", change.change),
+                }
+            }
+            _ => panic!("Expected Config payload, got: {:?}", payloads[0].payload),
+        }
+    }
+
+    /// Zombie candidate with Active status → should NOT be removed.
+    #[tokio::test]
+    async fn test_purge_zombie_nodes_skips_active_nodes() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let cfg = node_config("/tmp/test_purge_zombie_nodes_skips_active");
+        let mut raft_context = MockBuilder::new(graceful_rx).with_node_config(cfg).build_context();
+
+        let mut membership = MockMembership::new();
+        // One zombie candidate: node 7, but it's Active
+        membership.expect_get_zombie_candidates().returning(|| vec![7]);
+        membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
+        raft_context.membership = Arc::new(membership);
+
+        let captured_payloads = Arc::new(Mutex::new(Vec::<EntryPayload>::new()));
+        let captured_clone = captured_payloads.clone();
+        raft_context
+            .handlers
+            .replication_handler
+            .expect_prepare_batch_requests()
+            .times(0) // Must NOT be called: Active node is not a zombie to remove
+            .returning(move |payloads, _, _, _, _| {
+                captured_clone.lock().extend(payloads.clone());
+                Ok(crate::PrepareResult::default())
+            });
+
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 10);
+        raft_context.storage.raft_log = Arc::new(raft_log);
+
+        let node_config = raft_context.node_config();
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        let result = leader.conditionally_purge_zombie_nodes(&role_tx, &raft_context).await;
+        assert!(result.is_ok());
+        assert!(
+            captured_payloads.lock().is_empty(),
+            "Active node must not be removed"
+        );
     }
 }
