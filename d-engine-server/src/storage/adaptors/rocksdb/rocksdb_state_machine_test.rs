@@ -1,6 +1,7 @@
 use super::RocksDBStorageEngine;
 use super::RocksDBUnifiedEngine;
 use crate::{Error, StateMachine};
+use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
 use d_engine_proto::client::WriteCommand;
@@ -11,7 +12,6 @@ use prost::Message;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tempfile::TempDir;
-use tonic::async_trait;
 
 struct RocksDBStateMachineBuilder {
     temp_dir: TempDir,

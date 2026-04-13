@@ -1,9 +1,9 @@
+use async_trait::async_trait;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::entry_payload::Payload;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::info;

@@ -12,7 +12,7 @@ use axum::{
 };
 use clap::{Parser, Subcommand};
 use hdrhistogram::Histogram;
-use rand::distributions::Alphanumeric;
+use rand::distr::Alphanumeric;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
@@ -164,8 +164,8 @@ fn generate_prefixed_key(
 }
 
 fn generate_value(size: usize) -> Vec<u8> {
-    let mut rng = rand::rngs::SmallRng::from_entropy();
-    (0..size).map(|_| rng.r#gen()).collect()
+    let mut rng = rand::rngs::SmallRng::from_os_rng();
+    (0..size).map(|_| rng.random()).collect()
 }
 
 #[tokio::main]

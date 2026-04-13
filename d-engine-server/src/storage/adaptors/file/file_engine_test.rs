@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use d_engine_core::Error;
 use d_engine_core::StateMachine;
 use d_engine_core::state_machine_test::StateMachineBuilder;
@@ -7,7 +8,6 @@ use d_engine_core::state_machine_test::StateMachineTestSuite;
 use d_engine_core::storage_engine_test::StorageEngineBuilder;
 use d_engine_core::storage_engine_test::StorageEngineTestSuite;
 use tempfile::TempDir;
-use tonic::async_trait;
 use tracing_test::traced_test;
 
 use super::FileStorageEngine;

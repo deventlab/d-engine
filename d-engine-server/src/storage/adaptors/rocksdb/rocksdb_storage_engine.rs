@@ -15,13 +15,13 @@ use prost::Message;
 use rocksdb::WriteOptions;
 use std::path::Path;
 
+use async_trait::async_trait;
 use rocksdb::Cache;
 use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::DB;
 use rocksdb::Direction;
 use rocksdb::IteratorMode;
 use rocksdb::WriteBatch;
-use tonic::async_trait;
 use tracing::instrument;
 
 use super::LOG_CF;

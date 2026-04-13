@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use bytes::BytesMut;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::Entry;
@@ -17,7 +18,6 @@ use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
 use d_engine_proto::server::replication::append_entries_response;
 use prost::Message;
-use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::info;

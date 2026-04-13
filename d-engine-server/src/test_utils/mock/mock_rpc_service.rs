@@ -39,7 +39,7 @@ impl MockNode {
         is_ready: bool,
     ) -> Result<(u16, SocketAddr)> {
         // Return port + address
-        let (mut health_reporter, health_service) = health_reporter();
+        let (health_reporter, health_service) = health_reporter();
         if is_ready {
             health_reporter.set_serving::<RaftClientServiceServer<MockNode>>().await;
             health_reporter.set_serving::<RaftElectionServiceServer<MockNode>>().await;

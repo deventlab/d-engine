@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use async_trait::async_trait;
 use d_engine_core::Error;
 use d_engine_core::Lease;
 use d_engine_core::LogStore;
@@ -9,7 +10,6 @@ use d_engine_core::config::LeaseConfig;
 use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
 use d_engine_core::storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite};
 use tempfile::TempDir;
-use tonic::async_trait;
 
 use super::RocksDBStateMachine;
 use super::RocksDBStorageEngine;

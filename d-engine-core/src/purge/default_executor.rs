@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use d_engine_proto::common::LogId;
-use tonic::async_trait;
 
 use crate::PurgeExecutor;
 use crate::RaftLog;

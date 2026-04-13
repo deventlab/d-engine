@@ -5,11 +5,11 @@
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
-use tonic::async_trait;
 
 use crate::Error;
 use crate::HardState;

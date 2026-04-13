@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::CompareAndSwap;
@@ -15,7 +16,6 @@ use d_engine_proto::common::entry_payload::Payload;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use prost::Message;
 use tempfile::TempDir;
-use tonic::async_trait;
 
 use crate::Error;
 use crate::storage::StateMachine;

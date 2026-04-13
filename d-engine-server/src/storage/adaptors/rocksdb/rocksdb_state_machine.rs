@@ -24,6 +24,7 @@ use parking_lot::RwLock;
 use prost::Message;
 use std::path::Path;
 
+use async_trait::async_trait;
 use rocksdb::Cache;
 use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::DB;
@@ -35,7 +36,6 @@ use rocksdb::Options;
 use rocksdb::WriteBatch;
 use serde::Deserialize;
 use serde::Serialize;
-use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::info;

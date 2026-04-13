@@ -8,12 +8,12 @@ use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::election::VoteResponse;
 
+use async_trait::async_trait;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotResponse;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
-use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::info;

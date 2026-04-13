@@ -12,11 +12,11 @@ mod election_handler_test;
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
-use tonic::async_trait;
 
 use crate::RaftNodeConfig;
 use crate::Result;

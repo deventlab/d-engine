@@ -10,10 +10,10 @@ pub use default_executor::*;
 #[cfg(test)]
 mod default_executor_test;
 
+use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
-use tonic::async_trait;
 
 use crate::Result;
 

@@ -30,5 +30,5 @@ tracing = { workspace = true }
 
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.13"
 vergen = { version = "8.1", features = ["git", "gitcl"] }

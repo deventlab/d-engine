@@ -15,6 +15,7 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
+use async_trait::async_trait;
 use d_engine_core::ConnectionType;
 use d_engine_core::Membership;
 use d_engine_core::MembershipError;
@@ -35,7 +36,6 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tokio::task;
-use tonic::async_trait;
 use tonic::transport::Channel;
 use tracing::debug;
 use tracing::error;

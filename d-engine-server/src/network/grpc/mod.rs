@@ -60,7 +60,7 @@ where
     T: TypeConfig,
 {
     // Create a HealthReporter to manage the health status
-    let (mut health_reporter, health_service) = health_reporter();
+    let (health_reporter, health_service) = health_reporter();
 
     // Set the initial health status to SERVING
     health_reporter.set_serving::<RaftClientServiceServer<Node<T>>>().await;

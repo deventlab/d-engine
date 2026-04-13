@@ -55,9 +55,9 @@ pub use default_commit_handler::*;
 #[cfg(test)]
 mod default_commit_handler_test;
 
+use async_trait::async_trait;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
-use tonic::async_trait;
 
 use crate::Result;
 

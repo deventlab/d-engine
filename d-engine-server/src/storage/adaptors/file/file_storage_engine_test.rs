@@ -470,11 +470,11 @@ mod tests {
 
     // Integration tests using StorageEngineTestSuite
 
+    use async_trait::async_trait;
     use d_engine_core::Error;
     use d_engine_core::storage::storage_engine_test::{
         StorageEngineBuilder, StorageEngineTestSuite,
     };
-    use tonic::async_trait;
 
     /// Builder for FileStorageEngine test instances
     struct FileStorageEngineBuilder {

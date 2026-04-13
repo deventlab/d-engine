@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
 use d_engine_proto::common::NodeRole::Learner;
@@ -18,7 +19,6 @@ use d_engine_proto::server::storage::SnapshotResponse;
 use tokio::sync::mpsc::{self};
 use tokio::time::Instant;
 use tonic::Status;
-use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::info;

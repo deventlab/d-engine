@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use async_trait::async_trait;
 use d_engine_core::Error;
 use d_engine_core::HardState;
 use d_engine_core::LogStore;
@@ -24,7 +25,6 @@ use d_engine_core::StorageError;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use prost::Message;
-use tonic::async_trait;
 use tracing::info;
 
 // Constants for file structure
