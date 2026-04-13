@@ -1,13 +1,13 @@
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_proto::client::write_command::Insert;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
 use prost::Message;
-use tonic::async_trait;
 
 use crate::Error;
 use crate::HardState;

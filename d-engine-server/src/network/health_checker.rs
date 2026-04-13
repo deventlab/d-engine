@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use async_trait::async_trait;
 use d_engine_core::NetworkConfig;
 use d_engine_core::NetworkError;
 use d_engine_core::Result;
@@ -7,7 +8,6 @@ use d_engine_core::Result;
 use mockall::automock;
 #[cfg(test)]
 use mockall::predicate::*;
-use tonic::async_trait;
 use tonic::transport::Channel;
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::HealthCheckResponse;

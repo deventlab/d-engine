@@ -10,10 +10,10 @@ use prost::Message;
 use std::sync::Arc;
 
 use crate::storage::adaptors::file::FileStateMachine;
+use async_trait::async_trait;
 use d_engine_core::Error;
 use d_engine_core::storage::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
 use tempfile::TempDir;
-use tonic::async_trait;
 
 /// Builder for FileStateMachine test instances
 struct FileStateMachineBuilder {

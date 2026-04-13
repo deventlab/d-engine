@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use d_engine_proto::common::MembershipChange;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
@@ -6,7 +7,6 @@ use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::NodeMeta;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
-use tonic::async_trait;
 use tonic::transport::Channel;
 use tracing::warn;
 

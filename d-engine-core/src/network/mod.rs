@@ -10,6 +10,7 @@ mod background_snapshot_transfer;
 
 #[cfg(test)]
 mod background_snapshot_transfer_test;
+use async_trait::async_trait;
 pub use background_snapshot_transfer::*;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -23,7 +24,6 @@ use futures::stream::BoxStream;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 use tokio::sync::mpsc;
-use tonic::async_trait;
 
 use crate::BackoffPolicy;
 use crate::NetworkError;

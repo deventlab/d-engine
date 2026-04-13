@@ -91,6 +91,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_core::ApplyResult;
 use d_engine_core::Error;
@@ -114,7 +115,6 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::time::Instant;
-use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::info;

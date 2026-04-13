@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use d_engine_core::AppendResult;
 use d_engine_core::BackgroundSnapshotTransfer;
 use d_engine_core::BackoffPolicy;
@@ -48,7 +49,6 @@ use tokio::sync::oneshot;
 use tokio::task;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::async_trait;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::debug;

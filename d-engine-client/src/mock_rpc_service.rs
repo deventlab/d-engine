@@ -27,7 +27,7 @@ impl MockNode {
         is_ready: bool,
     ) -> std::result::Result<(u16, SocketAddr), tonic::Status> {
         // Return port + address
-        let (mut health_reporter, health_service) = health_reporter();
+        let (health_reporter, health_service) = health_reporter();
         if is_ready {
             health_reporter.set_serving::<RaftClientServiceServer<MockNode>>().await;
             health_reporter.set_serving::<ClusterManagementServiceServer<MockNode>>().await;

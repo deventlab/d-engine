@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
@@ -5,7 +6,6 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
-use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;

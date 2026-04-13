@@ -70,7 +70,7 @@ async-stream = "0.3.6"
 # Test utilities - optional, enabled via __test_support feature
 mockall = { version = "0.12.1", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
-tonic-health = { version = "0.12.3", optional = true }
+tonic-health = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-test = "0.2"
@@ -80,7 +80,7 @@ tokio = { version = "1", features = ["test-util", "process"] }
 parking_lot = "0.12.3"
 nix = { version = "0.30.1", features = ["fs"] }
 mockall = "0.12.1"
-tonic-health = "0.12.3"
+tonic-health = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 

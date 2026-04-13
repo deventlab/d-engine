@@ -2,13 +2,13 @@
 //!
 //! See the [server customization guide](https://github.com/deventlab/d-engine/blob/master/d-engine/src/docs/server_guide/customize-state-machine.md) for details.
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
-use tonic::async_trait;
 
 use crate::Error;
 

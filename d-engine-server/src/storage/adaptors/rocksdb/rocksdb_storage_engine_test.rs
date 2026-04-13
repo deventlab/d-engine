@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_core::Error;
 use d_engine_core::LogStore;
@@ -11,7 +12,6 @@ use d_engine_proto::client::write_command::Insert;
 use d_engine_proto::common::Entry;
 use prost::Message;
 use tempfile::TempDir;
-use tonic::async_trait;
 use tracing::debug;
 use tracing_test::traced_test;
 use uuid::Uuid;

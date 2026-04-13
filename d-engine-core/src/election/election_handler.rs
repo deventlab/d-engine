@@ -2,10 +2,10 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
-use tonic::async_trait;
 use tracing::debug;
 use tracing::error;
 use tracing::trace;
