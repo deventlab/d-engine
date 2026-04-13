@@ -169,10 +169,8 @@ where
         // Note: IO thread is closed inside Raft::run() on shutdown before returning.
         self.start_raft_loop().await?;
 
-        // Shutdown order is reverse of startup order (TiKV convention):
-        // Raft loop has exited → no more applies will be enqueued.
-        // Join sm-worker thread so its Arc<DB> clone is dropped before we return.
-        // This ensures RocksDB LOCK is released before the caller can reopen the DB.
+        // Shutdown in reverse startup order: join sm-worker thread first so its
+        // Arc<DB> clone is dropped before we return, releasing the RocksDB LOCK.
         let handle = self.sm_worker_handle.lock().unwrap().take();
         if let Some(handle) = handle {
             tokio::task::spawn_blocking(move || {

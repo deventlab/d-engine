@@ -10,7 +10,6 @@ use d_engine_proto::server::election::VoteResponse;
 
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotResponse;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
@@ -334,31 +333,9 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             }
 
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
-                // Create ACK channel (follower sends ACKs to leader)
-                let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
-
-                // Spawn ACK handler to send final response.
-                // process_snapshot_stream sends one ACK per chunk; drain all of them and
-                // use the last one as the final status once the sender side is dropped.
-                tokio::spawn(async move {
-                    let mut last_ack: Option<SnapshotAck> = None;
-                    while let Some(ack) = ack_rx.recv().await {
-                        last_ack = Some(ack);
-                    }
-                    match last_ack {
-                        Some(final_ack) => {
-                            let response = SnapshotResponse {
-                                term: my_term,
-                                success: final_ack.status == (ChunkStatus::Accepted as i32),
-                                next_chunk: final_ack.next_requested,
-                            };
-                            let _ = sender.send(Ok(response));
-                        }
-                        None => {
-                            let _ = sender.send(Err(Status::internal("No ACK received")));
-                        }
-                    }
-                });
+                // ack_tx is used internally by process_snapshot_stream for per-chunk
+                // validation only; _ack_rx is intentionally discarded in push mode.
+                let (ack_tx, _ack_rx) = mpsc::channel::<SnapshotAck>(32);
 
                 let snap_result = ctx
                     .handlers
@@ -370,6 +347,17 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         &ctx.node_config.raft.snapshot,
                     )
                     .await;
+
+                // Raft §7: respond success only after snapshot is fully applied.
+                // Using last-chunk ACK status (as before) would report success even when
+                // apply_snapshot_from_file fails, causing the leader to advance match_index
+                // prematurely and stop retrying — leaving the follower permanently behind (#308).
+                let _ = sender.send(Ok(SnapshotResponse {
+                    term: my_term,
+                    success: snap_result.is_ok(),
+                    next_chunk: 0,
+                }));
+
                 match snap_result {
                     Err(e) => {
                         // Transient failure: leader may have crashed mid-transfer.
