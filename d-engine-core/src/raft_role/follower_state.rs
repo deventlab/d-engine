@@ -333,9 +333,12 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             }
 
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
-                // ack_tx is used internally by process_snapshot_stream for per-chunk
-                // validation only; _ack_rx is intentionally discarded in push mode.
-                let (ack_tx, _ack_rx) = mpsc::channel::<SnapshotAck>(32);
+                // ack_tx is passed to process_snapshot_stream for per-chunk validation.
+                // In push mode the receiver is never read, so we drain it in a background
+                // task to prevent backpressure: process_snapshot_stream awaits each send,
+                // and a full bounded channel would block mid-transfer on chunk 33+ (#308).
+                let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
+                tokio::spawn(async move { while ack_rx.recv().await.is_some() {} });
 
                 let snap_result = ctx
                     .handlers
