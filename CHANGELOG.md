@@ -36,6 +36,13 @@ the log size threshold is reached.
 > Note: d-engine does not currently provide a manual snapshot trigger API.
 > Snapshots are created automatically based on the configure: e.g. `log_size_threshold`.
 
+### ⚙️ Operational Notes
+
+- **Minimum recommended CPU: 2 cores per node.**
+  Each node runs a dedicated WAL IO thread (`buffered_raft_log`) plus tokio async workers
+  (defaults to `num_cpus`). On single-core machines all threads share one CPU and latency
+  degrades significantly under write load.
+
 ### ⚠️ Migration Note — WAL Purge After Snapshot
 
 v0.2.4 purges WAL files after each successful snapshot. If you upgrade from v0.2.3 and
