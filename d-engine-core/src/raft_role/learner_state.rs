@@ -15,7 +15,6 @@ use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotResponse;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use tokio::sync::mpsc::{self};
 use tokio::time::Instant;
 use tonic::Status;
@@ -287,34 +286,11 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             }
 
             RaftEvent::InstallSnapshotChunk(stream, sender) => {
-                // Create ACK channel (follower sends ACKs to leader)
-                let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
+                // ack_tx is used internally by process_snapshot_stream for per-chunk
+                // validation only; _ack_rx is intentionally discarded in push mode.
+                let (ack_tx, _ack_rx) = mpsc::channel::<SnapshotAck>(32);
 
-                // Spawn ACK handler to send final response.
-                // Drain ALL ACKs and use the last one — the channel closes only after
-                // apply_snapshot_stream_from_leader returns (success or error), so the
-                // last ACK reflects the true final outcome of the full snapshot install.
-                tokio::spawn(async move {
-                    let mut last_ack: Option<SnapshotAck> = None;
-                    while let Some(ack) = ack_rx.recv().await {
-                        last_ack = Some(ack);
-                    }
-                    match last_ack {
-                        Some(final_ack) => {
-                            let response = SnapshotResponse {
-                                term: my_term,
-                                success: final_ack.status == (ChunkStatus::Accepted as i32),
-                                next_chunk: final_ack.next_requested,
-                            };
-                            let _ = sender.send(Ok(response));
-                        }
-                        None => {
-                            let _ = sender.send(Err(Status::internal("ACK channel closed")));
-                        }
-                    }
-                });
-
-                if let Err(e) = ctx
+                let snap_result = ctx
                     .handlers
                     .state_machine_handler
                     .apply_snapshot_stream_from_leader(
@@ -323,24 +299,42 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         ack_tx,
                         &ctx.node_config.raft.snapshot,
                     )
-                    .await
-                {
-                    error!(?e, "Learner handle  RaftEvent::InstallSnapshotChunk");
-                    return Err(e);
-                }
+                    .await;
 
-                // Advance raft log purge boundary to snapshot's last_included so that
-                // last_log_id() returns the correct position after snapshot install.
-                if let Some(metadata) = ctx.state_machine_handler().get_latest_snapshot_metadata()
-                    && let Some(last_included) = metadata.last_included
-                {
-                    if let Err(e) = ctx.raft_log().purge_logs_up_to(last_included).await {
-                        error!(?e, "Failed to set raft log boundary after snapshot install");
-                    } else {
-                        info!(
-                            ?last_included,
-                            "Learner raft log boundary set after InstallSnapshotChunk"
-                        );
+                // Raft §7: respond success only after snapshot is fully applied.
+                // Using last-chunk ACK status (as before) would report success even when
+                // apply_snapshot_from_file fails, causing the leader to advance match_index
+                // prematurely and stop retrying — leaving the learner permanently behind (#308).
+                let _ = sender.send(Ok(SnapshotResponse {
+                    term: my_term,
+                    success: snap_result.is_ok(),
+                    next_chunk: 0,
+                }));
+
+                match snap_result {
+                    Err(e) => {
+                        error!(?e, "Learner handle RaftEvent::InstallSnapshotChunk");
+                        return Err(e);
+                    }
+                    Ok(()) => {
+                        // Advance raft log purge boundary to snapshot's last_included so that
+                        // last_log_id() returns the correct position after snapshot install.
+                        if let Some(metadata) =
+                            ctx.state_machine_handler().get_latest_snapshot_metadata()
+                            && let Some(last_included) = metadata.last_included
+                        {
+                            if let Err(e) = ctx.raft_log().purge_logs_up_to(last_included).await {
+                                error!(
+                                    ?e,
+                                    "Failed to set raft log boundary after snapshot install"
+                                );
+                            } else {
+                                info!(
+                                    ?last_included,
+                                    "Learner raft log boundary set after InstallSnapshotChunk"
+                                );
+                            }
+                        }
                     }
                 }
             }

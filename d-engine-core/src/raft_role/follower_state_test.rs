@@ -1,3 +1,4 @@
+use crate::test_utils::create_test_snapshot_stream;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::ReadConsistencyPolicy;
@@ -17,6 +18,9 @@ use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use std::sync::Arc;
 use tonic::Code;
 use tonic::Status;
@@ -2478,4 +2482,132 @@ async fn test_follower_commit_index_and_ack_both_sent_immediately() {
     );
     let response = resp_rx.try_recv().expect("ACK must be sent immediately");
     assert!(response.unwrap().is_success());
+}
+
+// ============================================================================
+// InstallSnapshotChunk Tests
+// ============================================================================
+
+/// Follower reports success when snapshot is fully transferred and applied.
+///
+/// # Given
+/// - apply_snapshot_stream_from_leader returns Ok(())
+///
+/// # When
+/// - Leader pushes a snapshot (InstallSnapshotChunk event)
+///
+/// # Then
+/// - Response success: true
+#[tokio::test]
+async fn test_follower_install_snapshot_reports_success_when_apply_succeeds() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_apply_snapshot_stream_from_leader().once().returning(
+        |_term, _stream, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(())
+        },
+    );
+    sm_handler.expect_get_latest_snapshot_metadata().returning(|| None);
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let stream = create_test_snapshot_stream(vec![SnapshotChunk::default()]);
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    state
+        .handle_raft_event(
+            RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx),
+            &context,
+            role_tx,
+        )
+        .await
+        .unwrap();
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s")
+        .expect("recv must not fail")
+        .expect("response must be Ok");
+
+    assert!(
+        response.success,
+        "Follower must report success when apply succeeds"
+    );
+}
+
+/// Follower must NOT report success when apply fails after transfer completes (#308).
+///
+/// # Raft §7 + #308
+/// The previous implementation derived success from the last per-chunk ACK status.
+/// When all chunks are received (last ACK = Accepted) but apply_snapshot_from_file
+/// then fails, the spawned ACK-handler still sends success:true — causing the leader
+/// to advance match_index and stop retrying, leaving the follower permanently behind.
+///
+/// # Given
+/// - apply_snapshot_stream_from_leader: sends Accepted ACK (transfer succeeded),
+///   then returns Err (apply_snapshot_from_file failed)
+///
+/// # When
+/// - Leader pushes a snapshot (InstallSnapshotChunk event)
+///
+/// # Then
+/// - Response MUST be success: false
+#[tokio::test]
+async fn test_follower_install_snapshot_reports_failure_when_apply_fails_after_transfer() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_apply_snapshot_stream_from_leader().once().returning(
+        |_term, _stream, ack_tx, _config| {
+            // Transfer phase succeeds: all chunks accepted
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            // Apply phase fails (apply_snapshot_from_file returned Err)
+            Err(crate::Error::Fatal(
+                "apply_snapshot_from_file failed".into(),
+            ))
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let stream = create_test_snapshot_stream(vec![SnapshotChunk::default()]);
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Follower absorbs the error and continues (does not propagate)
+    let _ = state
+        .handle_raft_event(
+            RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx),
+            &context,
+            role_tx,
+        )
+        .await;
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s")
+        .expect("recv must not fail")
+        .expect("response must be Ok(SnapshotResponse)");
+
+    assert!(
+        !response.success,
+        "Follower must NOT report success when apply failed after transfer (got success:true — #308 bug)"
+    );
 }
