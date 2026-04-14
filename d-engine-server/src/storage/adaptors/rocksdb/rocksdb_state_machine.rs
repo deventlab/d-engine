@@ -562,6 +562,15 @@ impl RocksDBStateMachine {
 
         Ok(export_metadata)
     }
+
+    pub(crate) fn map_snapshot_join_error(e: tokio::task::JoinError) -> StorageError {
+        let msg = if e.is_panic() {
+            format!("snapshot blocking task panicked: {e}")
+        } else {
+            format!("snapshot blocking task was cancelled: {e}")
+        };
+        StorageError::DbError(msg)
+    }
 }
 
 #[async_trait]
@@ -866,42 +875,50 @@ impl StateMachine for RocksDBStateMachine {
         // Export only SM CFs: compact SST-only export, no Raft log data.
         // export_column_family() creates only the final subdirectory (e.g. "sm"), so the parent
         // (new_snapshot_dir) must already exist before calling it.
-        std::fs::create_dir_all(&new_snapshot_dir)?;
-        {
-            let db = self.db.load();
-            let checkpoint = rocksdb::checkpoint::Checkpoint::new(db.as_ref())
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-            let cf_sm = db
-                .cf_handle(STATE_MACHINE_CF)
-                .ok_or_else(|| StorageError::DbError("SM CF not found".to_string()))?;
-            let cf_sm_meta = db
-                .cf_handle(STATE_MACHINE_META_CF)
-                .ok_or_else(|| StorageError::DbError("SM meta CF not found".to_string()))?;
+        //
+        // All blocking RocksDB operations (create_dir_all, flush_cf_opt, export_column_family)
+        // run on tokio's blocking thread pool via spawn_blocking, not on an async worker thread.
+        // This prevents snapshot disk I/O from starving the Raft event loop under concurrent
+        // writes (#315).
+        let db = self.db.load_full(); // Arc<DB>: Send, safe to move into spawn_blocking
+        let dir = new_snapshot_dir.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), Error> {
+            std::fs::create_dir_all(&dir)?;
+            {
+                let checkpoint = rocksdb::checkpoint::Checkpoint::new(db.as_ref())
+                    .map_err(|e| StorageError::DbError(e.to_string()))?;
+                let cf_sm = db
+                    .cf_handle(STATE_MACHINE_CF)
+                    .ok_or_else(|| StorageError::DbError("SM CF not found".to_string()))?;
+                let cf_sm_meta = db
+                    .cf_handle(STATE_MACHINE_META_CF)
+                    .ok_or_else(|| StorageError::DbError("SM meta CF not found".to_string()))?;
 
-            // Flush both CFs before export: export_column_family only captures SST files,
-            // not MemTable data. Without this, small CFs (e.g. sm_meta with only a few
-            // metadata keys) may never have been flushed and would export 0 files.
-            // Synchronous flush (FlushOptions::wait = true by default) is intentional:
-            // we must wait for flush to complete before export or in-flight writes are lost.
-            let flush_opts = rocksdb::FlushOptions::default();
-            db.flush_cf_opt(&cf_sm, &flush_opts)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-            db.flush_cf_opt(&cf_sm_meta, &flush_opts)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
+                // Flush both CFs before export: export_column_family only captures SST files,
+                // not MemTable data. Without this, small CFs (e.g. sm_meta with only a few
+                // metadata keys) may never have been flushed and would export 0 files.
+                // Synchronous flush (FlushOptions::wait = true by default) is intentional:
+                // we must wait for flush to complete before export or in-flight writes are lost.
+                let flush_opts = rocksdb::FlushOptions::default();
+                db.flush_cf_opt(&cf_sm, &flush_opts)
+                    .map_err(|e| StorageError::DbError(e.to_string()))?;
+                db.flush_cf_opt(&cf_sm_meta, &flush_opts)
+                    .map_err(|e| StorageError::DbError(e.to_string()))?;
 
-            let sm_export = checkpoint
-                .export_column_family(&cf_sm, new_snapshot_dir.join("sm"))
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-            let sm_meta_export = checkpoint
-                .export_column_family(&cf_sm_meta, new_snapshot_dir.join("sm_meta"))
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
+                let sm_export = checkpoint
+                    .export_column_family(&cf_sm, dir.join("sm"))
+                    .map_err(|e| StorageError::DbError(e.to_string()))?;
+                let sm_meta_export = checkpoint
+                    .export_column_family(&cf_sm_meta, dir.join("sm_meta"))
+                    .map_err(|e| StorageError::DbError(e.to_string()))?;
 
-            Self::save_cf_export_metadata(&sm_export, &new_snapshot_dir.join("sm_metadata.bin"))?;
-            Self::save_cf_export_metadata(
-                &sm_meta_export,
-                &new_snapshot_dir.join("sm_meta_metadata.bin"),
-            )?;
-        } // checkpoint and CF handles dropped here, before any await
+                Self::save_cf_export_metadata(&sm_export, &dir.join("sm_metadata.bin"))?;
+                Self::save_cf_export_metadata(&sm_meta_export, &dir.join("sm_meta_metadata.bin"))?;
+            } // checkpoint and CF handles dropped here
+            Ok(())
+        })
+        .await
+        .map_err(Self::map_snapshot_join_error)??;
 
         // Persist lease state alongside the export (if configured)
         if let Some(ref lease) = self.lease {
