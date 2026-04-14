@@ -128,6 +128,16 @@ pub async fn create_node_config(
         [raft.persistence]
         strategy = "MemFirst"
         flush_policy = {{ Batch = {{ threshold = 100, idle_flush_interval_ms = 1 }} }}
+
+        [raft.election]
+        election_timeout_min = 300
+        election_timeout_max = 3000
+
+        [retry.election]
+        max_retries = 5
+        timeout_ms = 2000
+        base_delay_ms = 100
+        max_delay_ms = 5000
         "#
     )
 }
@@ -170,6 +180,16 @@ pub async fn create_node_config_with_role(
         [raft.persistence]
         strategy = "MemFirst"
         flush_policy = {{ Batch = {{ threshold = 1, idle_flush_interval_ms = 1 }} }}
+
+        [raft.election]
+        election_timeout_min = 300
+        election_timeout_max = 3000
+
+        [retry.election]
+        max_retries = 5
+        timeout_ms = 2000
+        base_delay_ms = 100
+        max_delay_ms = 5000
         "#
     )
 }
@@ -284,7 +304,7 @@ pub async fn start_node(
     let node = build_node(config, graceful_rx, state_machine, storage_engine).await?;
 
     let node_clone = node.clone();
-    let node_id = node.node_config.cluster.node_id;
+    let node_id = node.node_id();
     let handle = tokio::spawn(async move { run_node(node_id, node_clone).await });
 
     Ok((graceful_tx, handle))
@@ -300,7 +320,7 @@ async fn build_node(
     ClientApiError,
 > {
     // Prepare raft log entries
-    let mut builder = NodeBuilder::init(config.clone(), graceful_rx);
+    let mut builder = NodeBuilder::new(None, graceful_rx).node_config(config.clone());
 
     // Use provided storage engine or create a new one with temp directory
     let storage_engine = if let Some(s) = storage_engine {

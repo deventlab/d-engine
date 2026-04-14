@@ -604,7 +604,7 @@ async fn test_get_linearizable_success() {
 
     let result = client.get_linearizable(key).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().as_ref().map(|r| &r.value), Some(&value));
+    assert_eq!(result.unwrap(), Some(value));
 }
 
 #[tokio::test]
@@ -642,7 +642,7 @@ async fn test_get_lease_success() {
 
     let result = client.get_lease(key).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().as_ref().map(|r| &r.value), Some(&value));
+    assert_eq!(result.unwrap(), Some(value));
 }
 
 #[tokio::test]
@@ -680,7 +680,7 @@ async fn test_get_eventual_success() {
 
     let result = client.get_eventual(key).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().as_ref().map(|r| &r.value), Some(&value));
+    assert_eq!(result.unwrap(), Some(value));
 }
 
 #[tokio::test]
@@ -843,7 +843,7 @@ async fn test_get_consistency_methods_failure() {
     let key = "test_key".to_string().into_bytes();
 
     // Test all convenience methods with network failure
-    let methods: [(&str, ClientApiResult<Option<ClientResult>>); 3] = [
+    let methods: [(&str, ClientApiResult<Option<Bytes>>); 3] = [
         (
             "get_linearizable",
             client.get_linearizable(key.clone()).await,

@@ -152,6 +152,10 @@ impl EmbeddedClient {
     }
 
     /// Store a key-value pair with strong consistency.
+    ///
+    /// # Errors
+    /// Returns an error if the node is not the leader, the channel is closed,
+    /// the operation times out, or the state machine returns a server error.
     pub async fn put(
         &self,
         key: impl AsRef<[u8]>,
@@ -380,7 +384,11 @@ impl EmbeddedClient {
         }
     }
 
-    /// Delete a key-value pair.
+    /// Delete a key-value pair with strong consistency.
+    ///
+    /// # Errors
+    /// Returns an error if the node is not the leader, the channel is closed,
+    /// the operation times out, or the state machine returns a server error.
     pub async fn delete(
         &self,
         key: impl AsRef<[u8]>,
@@ -422,11 +430,6 @@ impl EmbeddedClient {
     /// Returns the configured timeout duration for operations
     pub fn timeout(&self) -> Duration {
         self.timeout
-    }
-
-    /// Returns the node ID for testing purposes
-    pub fn node_id(&self) -> u32 {
-        self.client_id
     }
 
     /// Watch for changes to a specific key

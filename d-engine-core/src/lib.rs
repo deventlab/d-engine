@@ -77,34 +77,54 @@ pub mod storage;
 #[cfg(feature = "watch")]
 pub mod watch;
 
+// ── User-facing public API ──────────────────────────────────────────────────
 pub use client::*;
-pub use commit_handler::*;
 pub use config::*;
-pub use election::*;
 pub use errors::*;
-pub use event::*;
-pub use maybe_clone_oneshot::*;
-pub use membership::*;
-pub use network::*;
-pub use purge::*;
-pub use raft::*;
-pub use raft_context::*;
-pub use replication::*;
-pub use state_machine_handler::*;
 pub use storage::*;
 #[cfg(feature = "watch")]
 pub use watch::*;
 
-#[cfg(test)]
-mod raft_test;
+// Stable extension points — types developers need when implementing custom
+// storage engines, state machines, or transport layers.
+pub use membership::Membership;
+pub use network::Transport;
+pub use purge::PurgeExecutor;
+pub use raft::{LeaderInfo, Raft, SignalParams};
+pub use state_machine_handler::{SnapshotPolicy, StateMachineHandler};
+pub use type_config::TypeConfig;
 
+// ── Internal implementation details (not part of public API) ───────────────
+// These remain accessible to d-engine-server but are hidden from cargo doc.
+// Do not depend on these from external crates.
+#[doc(hidden)]
+pub use commit_handler::*;
+#[doc(hidden)]
+pub use election::*;
+#[doc(hidden)]
+pub use event::*;
+#[doc(hidden)]
+pub use maybe_clone_oneshot::*;
+#[doc(hidden)]
+pub use membership::*;
+#[doc(hidden)]
+pub use network::*;
+#[doc(hidden)]
+pub use purge::*;
+#[doc(hidden)]
+pub use raft_context::*;
 #[doc(hidden)]
 pub use raft_role::*;
-pub(crate) use timer::*;
+#[doc(hidden)]
+pub use replication::*;
+#[doc(hidden)]
+pub use state_machine_handler::*;
 #[doc(hidden)]
 pub use type_config::*;
 #[doc(hidden)]
 pub use utils::*;
+
+pub(crate) use timer::*;
 
 #[cfg(test)]
 mod maybe_clone_oneshot_test;
@@ -160,11 +180,4 @@ pub(crate) fn is_target_log_more_recent(
 ) -> bool {
     (target_last_log_term > my_last_log_term)
         || (target_last_log_term == my_last_log_term && target_last_log_index >= my_last_log_index)
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum QuorumStatus {
-    Confirmed,    // Confirmed by the majority of nodes
-    LostQuorum,   // Unable to obtain majority
-    NetworkError, // Network problem (can be retried)
 }

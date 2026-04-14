@@ -118,20 +118,21 @@ pub use api::StandaloneEngine;
 // -------------------- Error Types --------------------
 /// Unified error type for all d-engine operations
 pub use d_engine_core::Error;
-/// Hard state (Raft persistent state: term, voted_for, log)
-pub use d_engine_core::HardState;
 /// Log storage trait
 pub use d_engine_core::LogStore;
 /// Metadata storage trait
 pub use d_engine_core::MetaStore;
-/// Protocol buffer error type
-pub use d_engine_core::ProstError;
 /// Unified result type (equivalent to Result<T, Error>)
 pub use d_engine_core::Result;
-/// Snapshot operation error type
-pub use d_engine_core::SnapshotError;
 /// Storage-specific error type
 pub use d_engine_core::StorageError;
+// Internal types required by storage implementations — not part of user API
+#[doc(hidden)]
+pub use d_engine_core::HardState;
+#[doc(hidden)]
+pub use d_engine_core::ProstError;
+#[doc(hidden)]
+pub use d_engine_core::SnapshotError;
 // -------------------- Client API --------------------
 pub use api::EmbeddedClient;
 /// Unified client operations trait (put/get/delete/CAS/watch).
@@ -179,9 +180,6 @@ pub mod server_storage {
 mod membership;
 mod network;
 mod utils;
-
-#[doc(hidden)]
-pub use d_engine_core::Raft;
 
 // ==================== Test Utilities ====================
 

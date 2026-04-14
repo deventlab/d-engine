@@ -451,25 +451,21 @@ mod leader_change_tests {
     }
 
     #[tokio::test]
-    async fn test_ready_notifier_independent() {
+    async fn test_rpc_ready_and_leader_election_are_independent() {
         let (node, _shutdown_tx) = create_test_node_arc();
 
-        let mut ready_rx = node.ready_notifier();
         let mut leader_rx = node.leader_change_notifier();
 
         // Initially both should be false/None
-        assert!(!(*ready_rx.borrow()));
+        assert!(!node.is_rpc_ready());
         assert_eq!(*leader_rx.borrow(), None);
 
-        // Set ready
+        // Set RPC ready — leader channel must not be affected
         node.set_rpc_ready(true);
-        ready_rx.changed().await.expect("Should receive ready change");
-        assert!(*ready_rx.borrow());
-
-        // Leader should still be None
+        assert!(node.is_rpc_ready());
         assert_eq!(*leader_rx.borrow(), None);
 
-        // Now set leader
+        // Elect leader — rpc_ready must remain unchanged
         let leader_info = LeaderInfo {
             leader_id: 1,
             term: 1,
@@ -480,9 +476,7 @@ mod leader_change_tests {
         });
         leader_rx.changed().await.expect("Should receive leader change");
         assert_eq!(*leader_rx.borrow(), Some(leader_info));
-
-        // Ready should still be true
-        assert!(*ready_rx.borrow());
+        assert!(node.is_rpc_ready());
     }
 }
 
@@ -505,21 +499,6 @@ mod readiness_tests {
         // Set not ready
         node.set_rpc_ready(false);
         assert!(!node.is_rpc_ready());
-    }
-
-    #[tokio::test]
-    async fn test_ready_notifier_receives_updates() {
-        let (node, _shutdown_tx) = create_test_node();
-
-        let mut ready_rx = node.ready_notifier();
-
-        // Initial state
-        assert!(!(*ready_rx.borrow()));
-
-        // Set ready
-        node.set_rpc_ready(true);
-        ready_rx.changed().await.expect("Should receive update");
-        assert!(*ready_rx.borrow());
     }
 
     #[tokio::test]
