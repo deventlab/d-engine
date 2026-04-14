@@ -562,6 +562,15 @@ impl RocksDBStateMachine {
 
         Ok(export_metadata)
     }
+
+    pub(crate) fn map_snapshot_join_error(e: tokio::task::JoinError) -> StorageError {
+        let msg = if e.is_panic() {
+            format!("snapshot blocking task panicked: {e}")
+        } else {
+            format!("snapshot blocking task was cancelled: {e}")
+        };
+        StorageError::DbError(msg)
+    }
 }
 
 #[async_trait]
@@ -909,7 +918,7 @@ impl StateMachine for RocksDBStateMachine {
             Ok(())
         })
         .await
-        .map_err(|e| StorageError::DbError(format!("snapshot blocking task panicked: {e}")))??;
+        .map_err(Self::map_snapshot_join_error)??;
 
         // Persist lease state alongside the export (if configured)
         if let Some(ref lease) = self.lease {

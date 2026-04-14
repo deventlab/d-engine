@@ -305,3 +305,35 @@ async fn test_apply_chunk_delete_removes_key() {
 
     assert_eq!(sm.get(b"to_delete").unwrap(), None);
 }
+
+/// map_snapshot_join_error produces "panicked" message when the blocking task panics.
+#[tokio::test]
+async fn test_snapshot_join_error_reports_panic() {
+    use super::RocksDBStateMachine;
+    let handle = tokio::task::spawn_blocking(|| -> Result<(), crate::Error> {
+        panic!("intentional test panic");
+    });
+    let join_err = handle.await.unwrap_err();
+    let storage_err = RocksDBStateMachine::map_snapshot_join_error(join_err);
+    assert!(
+        storage_err.to_string().contains("panicked"),
+        "expected 'panicked' in error, got: {storage_err}"
+    );
+}
+
+/// map_snapshot_join_error produces "cancelled" message when the blocking task is aborted.
+#[tokio::test]
+async fn test_snapshot_join_error_reports_cancellation() {
+    use super::RocksDBStateMachine;
+    let handle = tokio::task::spawn_blocking(|| -> Result<(), crate::Error> {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        Ok(())
+    });
+    handle.abort();
+    let join_err = handle.await.unwrap_err();
+    let storage_err = RocksDBStateMachine::map_snapshot_join_error(join_err);
+    assert!(
+        storage_err.to_string().contains("cancelled"),
+        "expected 'cancelled' in error, got: {storage_err}"
+    );
+}
