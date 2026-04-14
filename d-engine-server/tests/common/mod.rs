@@ -128,6 +128,16 @@ pub async fn create_node_config(
         [raft.persistence]
         strategy = "MemFirst"
         flush_policy = {{ Batch = {{ threshold = 100, idle_flush_interval_ms = 1 }} }}
+
+        [raft.election]
+        election_timeout_min = 300
+        election_timeout_max = 3000
+
+        [retry.election]
+        max_retries = 5
+        timeout_ms = 2000
+        base_delay_ms = 100
+        max_delay_ms = 5000
         "#
     )
 }
@@ -170,6 +180,16 @@ pub async fn create_node_config_with_role(
         [raft.persistence]
         strategy = "MemFirst"
         flush_policy = {{ Batch = {{ threshold = 1, idle_flush_interval_ms = 1 }} }}
+
+        [raft.election]
+        election_timeout_min = 300
+        election_timeout_max = 3000
+
+        [retry.election]
+        max_retries = 5
+        timeout_ms = 2000
+        base_delay_ms = 100
+        max_delay_ms = 5000
         "#
     )
 }

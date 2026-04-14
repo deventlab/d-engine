@@ -155,7 +155,7 @@ impl EmbeddedClient {
     ///
     /// # Errors
     /// Returns an error if the node is not the leader, the channel is closed,
-    /// or the operation times out.
+    /// the operation times out, or the state machine returns a server error.
     pub async fn put(
         &self,
         key: impl AsRef<[u8]>,
@@ -388,7 +388,7 @@ impl EmbeddedClient {
     ///
     /// # Errors
     /// Returns an error if the node is not the leader, the channel is closed,
-    /// or the operation times out.
+    /// the operation times out, or the state machine returns a server error.
     pub async fn delete(
         &self,
         key: impl AsRef<[u8]>,

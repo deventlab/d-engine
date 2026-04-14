@@ -15,7 +15,7 @@
 //! ## Example
 //! ```ignore
 //! let (shutdown_tx, shutdown_rx) = watch::channel(());
-//! let node = NodeBuilder::init(config, shutdown_rx)
+//! let node = NodeBuilder::from_node_config(config, shutdown_rx)
 //!     .storage_engine(custom_storage_engine)  // Required component
 //!     .state_machine(custom_state_machine)    // Required component
 //!     .start().await?;
@@ -166,6 +166,30 @@ where
         let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully");
         node_config.cluster = cluster_config;
         let node_config = node_config.validate().expect("Validate node_config successfully");
+        Self::init(node_config, shutdown_signal)
+    }
+
+    /// Constructs NodeBuilder from a fully-built [`RaftNodeConfig`].
+    ///
+    /// Use this when you have already assembled a complete `RaftNodeConfig` and
+    /// want to avoid the implicit `RaftNodeConfig::new()` + `validate()` call
+    /// that [`new`](NodeBuilder::new) performs internally before applying your
+    /// config. That detour can panic in environments where no default config
+    /// file or environment variables are present.
+    ///
+    /// # Arguments
+    /// * `node_config` - Fully assembled and validated node configuration
+    /// * `shutdown_signal` - Watch channel for graceful shutdown signaling
+    ///
+    /// # Usage
+    /// ```ignore
+    /// let config: RaftNodeConfig = /* build and validate your config */;
+    /// let builder = NodeBuilder::from_node_config(config, shutdown_rx);
+    /// ```
+    pub fn from_node_config(
+        node_config: RaftNodeConfig,
+        shutdown_signal: watch::Receiver<()>,
+    ) -> Self {
         Self::init(node_config, shutdown_signal)
     }
 
@@ -661,7 +685,7 @@ where
     ///
     /// # Example
     /// ```ignore
-    /// let node = NodeBuilder::init(config, shutdown_rx)
+    /// let node = NodeBuilder::from_node_config(config, shutdown_rx)
     ///     .storage_engine(storage)
     ///     .state_machine(state_machine)
     ///     .start().await?;

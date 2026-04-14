@@ -265,3 +265,35 @@ fn test_partial_override() {
         "Cluster config should remain unchanged"
     );
 }
+
+#[test]
+fn test_from_node_config_preserves_caller_config() {
+    let (_, shutdown_rx) = watch::channel(());
+    let mut config = RaftNodeConfig::new().unwrap().validate().unwrap();
+    config.cluster.node_id = 99;
+
+    let builder =
+        NodeBuilder::<MockStorageEngine, MockStateMachine>::from_node_config(config, shutdown_rx);
+
+    // Verify caller's config is used directly — no detour through RaftNodeConfig::new() defaults
+    assert_eq!(
+        builder.node_config.cluster.node_id, 99,
+        "from_node_config must use caller's config without going through RaftNodeConfig::new()"
+    );
+}
+
+#[test]
+fn test_node_config_setter_syncs_node_id() {
+    let (_, shutdown_rx) = watch::channel(());
+    let mut config = RaftNodeConfig::new().unwrap().validate().unwrap();
+    config.cluster.node_id = 7;
+
+    let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::new(None, shutdown_rx)
+        .node_config(config);
+
+    // node_config on the builder must reflect the new config after setter
+    assert_eq!(
+        builder.node_config.cluster.node_id, 7,
+        "node_config() setter must sync node_id into both node_config and internal node_id field"
+    );
+}
