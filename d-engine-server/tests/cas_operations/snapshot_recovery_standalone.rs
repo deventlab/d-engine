@@ -133,7 +133,7 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     info!("Step 5: Verifying lock persists after recovery");
     let recovered_holder = client.get_eventual(lock_key).await?;
     assert_eq!(
-        recovered_holder.expect("Lock key should exist").value.as_ref(),
+        recovered_holder.expect("Lock key should exist").as_ref(),
         b"owner_before_snapshot",
         "Lock should persist after snapshot recovery"
     );

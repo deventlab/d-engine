@@ -75,8 +75,7 @@ pub use builder::*;
 pub use config::*;
 pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
 pub use grpc_client::*;
-pub use pool::*;
-pub use utils::*;
+pub(crate) use pool::*;
 
 // ==================== Protocol Types (Essential for Public API) ====================
 
@@ -131,11 +130,11 @@ pub struct Client {
 }
 
 #[derive(Clone)]
-pub struct ClientInner {
-    pool: ConnectionPool,
-    client_id: u32,
-    config: ClientConfig,
-    endpoints: Vec<String>,
+pub(crate) struct ClientInner {
+    pub(crate) pool: ConnectionPool,
+    pub(crate) client_id: u32,
+    pub(crate) config: ClientConfig,
+    pub(crate) endpoints: Vec<String>,
 }
 
 impl std::ops::Deref for Client {

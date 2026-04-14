@@ -40,29 +40,6 @@ impl GrpcClient {
         Self { client_inner }
     }
 
-    // Convenience methods for explicit consistency levels
-    pub async fn get_linearizable(
-        &self,
-        key: impl AsRef<[u8]>,
-    ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
-        self.get_with_policy(key, Some(ReadConsistencyPolicy::LinearizableRead)).await
-    }
-
-    pub async fn get_lease(
-        &self,
-        key: impl AsRef<[u8]>,
-    ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
-        self.get_with_policy(key, Some(ReadConsistencyPolicy::LeaseRead)).await
-    }
-
-    pub async fn get_eventual(
-        &self,
-        key: impl AsRef<[u8]>,
-    ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
-        self.get_with_policy(key, Some(ReadConsistencyPolicy::EventualConsistency))
-            .await
-    }
-
     /// Retrieves a single key's value with explicit consistency policy
     ///
     /// Allows client to override server's default consistency policy for this specific request.

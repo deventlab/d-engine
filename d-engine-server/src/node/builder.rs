@@ -170,7 +170,7 @@ where
     }
 
     /// Core initialization logic shared by all construction paths
-    pub fn init(
+    pub(crate) fn init(
         node_config: RaftNodeConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
@@ -211,6 +211,7 @@ where
         mut self,
         node_config: RaftNodeConfig,
     ) -> Self {
+        self.node_id = node_config.cluster.node_id;
         self.node_config = node_config;
         self
     }
@@ -599,22 +600,18 @@ where
         })
     }
 
-    /// Spawn watch dispatcher as background task.
-    ///
-    /// The dispatcher manages all watch streams for the lifetime of the node.
     /// Sets a custom state machine handler implementation.
     ///
-    /// This allows developers to provide their own implementation of the state machine handler
-    /// which processes committed log entries and applies them to the state machine.
+    /// Allows providing a custom implementation that processes committed log entries
+    /// and applies them to the state machine. If not set, a default implementation
+    /// is used during `build()`.
     ///
     /// # Arguments
-    /// * `handler` - custom state machine handler that must implement the `StateMachineHandler`
-    ///   trait
+    /// * `handler` - custom handler implementing the `StateMachineHandler` trait
     ///
     /// # Notes
-    /// - The handler must be thread-safe as it will be shared across multiple threads
-    /// - If not set, a default implementation will be used during `build()`
-    /// - The handler should properly handle snapshot creation and restoration
+    /// - The handler must be thread-safe (shared across threads via `Arc`)
+    /// - The handler must correctly handle snapshot creation and restoration
     pub fn with_custom_state_machine_handler(
         mut self,
         handler: Arc<SMHOF<RaftTypeConfig<SE, SM>>>,

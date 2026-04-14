@@ -331,3 +331,90 @@ persistence_strategy = "MemFirst"
 ---
 
 **Last Updated:** February 2026
+
+---
+
+## 🚨 For v0.2.3 Users: API Surface Changes in v0.2.4 (#326)
+
+### What Changed
+
+v0.2.4 removes internal implementation details that were accidentally exposed as `pub`.
+All removed items were internal — they were never part of the documented public API.
+
+### Breaking Changes
+
+#### 1. `EmbeddedClient::node_id()` removed
+
+This method returned `client_id` (not a node ID), which was semantically incorrect.
+
+```rust
+// Old (v0.2.3) — broken semantics, removed
+let id = client.node_id();
+
+// New (v0.2.4) — use EmbeddedEngine instead
+let id = engine.node_id();
+```
+
+#### 2. `GrpcClient` convenience methods now require `ClientApi` trait in scope
+
+`get_linearizable()`, `get_lease()`, and `get_eventual()` are now only available via
+the `ClientApi` trait. The return type is unified to `Option<Bytes>` (was `Option<ClientResult>`).
+
+```rust
+// Old (v0.2.3)
+let result = client.get_linearizable("key").await?;
+let value = result.map(|r| r.value); // extra unwrap needed
+
+// New (v0.2.4) — add trait import, get Bytes directly
+use d_engine_client::ClientApi;
+let value = client.get_linearizable("key").await?; // Option<Bytes>
+```
+
+#### 3. `Node::set_rpc_ready()`, `is_rpc_ready()`, `ready_notifier()` removed from public API
+
+These were internal lifecycle methods. Use `EmbeddedEngine::wait_ready()` instead.
+
+```rust
+// Old (v0.2.3)
+node.set_rpc_ready(true);
+let ready = node.is_rpc_ready();
+
+// New (v0.2.4) — use the engine-level API
+engine.wait_ready(Duration::from_secs(5)).await?;
+```
+
+#### 4. `Node::node_config` field is no longer public
+
+```rust
+// Old (v0.2.3)
+let node_id = node.node_config.cluster.node_id;
+
+// New (v0.2.4)
+let node_id = node.node_id();
+```
+
+#### 5. `NodeBuilder::init()` is no longer public
+
+Use the documented constructors instead.
+
+```rust
+// Old (v0.2.3)
+NodeBuilder::init(config, shutdown_rx)
+
+// New (v0.2.4)
+NodeBuilder::new(None, shutdown_rx).node_config(config)
+// or
+NodeBuilder::from_cluster_config(cluster_config, shutdown_rx)
+```
+
+#### 6. `QuorumStatus` removed
+
+This type was defined but never used. Remove any references to it.
+
+#### 7. `ClientInner` and `ConnectionPool` no longer public
+
+These are internal connection pool types. Use `Client` and `ClientBuilder` instead.
+
+---
+
+**Last Updated:** April 2026

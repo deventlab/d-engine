@@ -2,8 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 use d_engine::client::ClientApiError;
-use d_engine::proto::client::ClientResult;
-
+use d_engine::ClientApi;
 use d_engine::ClientBuilder;
 use d_engine::ConvertError;
 
@@ -51,7 +50,6 @@ async fn handle_write(
 ) -> Result<()> {
     println!("Writing key-value({}-{}) pair", key, value);
     client
-        
         .put(safe_kv(key), safe_kv(value))
         .await
         .map(|_| println!("Success"))
@@ -64,7 +62,6 @@ async fn handle_delete(
 ) -> Result<()> {
     println!("Deleting key({})", key);
     client
-        
         .delete(safe_kv(key))
         .await
         .map(|_| println!("Success"))
@@ -76,14 +73,15 @@ async fn handle_read(
     key: u64,
     linearizable: bool,
 ) -> Result<()> {
-    let result = client
-        
-        .get(safe_kv(key), linearizable)
-        .await
-        .map_err(|e: ClientApiError| anyhow::anyhow!("Read error: {:?}", e))?;
+    let result = if linearizable {
+        client.get_linearizable(safe_kv(key)).await
+    } else {
+        client.get_eventual(safe_kv(key)).await
+    }
+    .map_err(|e: ClientApiError| anyhow::anyhow!("Read error: {:?}", e))?;
 
     match result {
-        Some(ClientResult { key: _, value }) => {
+        Some(value) => {
             let value = safe_vk(&value).unwrap();
             println!("{:?}", value);
         }

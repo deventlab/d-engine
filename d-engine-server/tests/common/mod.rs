@@ -284,7 +284,7 @@ pub async fn start_node(
     let node = build_node(config, graceful_rx, state_machine, storage_engine).await?;
 
     let node_clone = node.clone();
-    let node_id = node.node_config.cluster.node_id;
+    let node_id = node.node_id();
     let handle = tokio::spawn(async move { run_node(node_id, node_clone).await });
 
     Ok((graceful_tx, handle))
@@ -300,7 +300,7 @@ async fn build_node(
     ClientApiError,
 > {
     // Prepare raft log entries
-    let mut builder = NodeBuilder::init(config.clone(), graceful_rx);
+    let mut builder = NodeBuilder::new(None, graceful_rx).node_config(config.clone());
 
     // Use provided storage engine or create a new one with temp directory
     let storage_engine = if let Some(s) = storage_engine {

@@ -1,4 +1,4 @@
-use super::*;
+use crate::utils::address_str;
 
 #[test]
 fn test_address_str_no_scheme() {

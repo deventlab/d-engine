@@ -94,7 +94,7 @@ where
     pub(crate) leader_notifier: LeaderNotifier,
 
     /// Raft node config
-    pub node_config: Arc<RaftNodeConfig>,
+    pub(crate) node_config: Arc<RaftNodeConfig>,
 
     /// Optional watch registry for watcher registration
     /// When None, watch functionality is disabled
@@ -261,7 +261,7 @@ where
     ///
     /// # Usage
     /// Called internally after RPC server starts and cluster health check passes.
-    pub fn set_rpc_ready(
+    pub(crate) fn set_rpc_ready(
         &self,
         is_ready: bool,
     ) {
@@ -279,23 +279,8 @@ where
     ///
     /// # Note
     /// This does NOT indicate leader election status. Use `leader_change_notifier()` for that.
-    pub fn is_rpc_ready(&self) -> bool {
+    pub(crate) fn is_rpc_ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
-    }
-
-    /// Returns a receiver for node readiness notifications.
-    ///
-    /// Subscribe to this channel to be notified when the node becomes ready
-    /// to participate in cluster operations (NOT the same as leader election).
-    ///
-    /// # Example
-    /// ```ignore
-    /// let ready_rx = node.ready_notifier();
-    /// ready_rx.wait_for(|&ready| ready).await?;
-    /// // RPC server is now listening
-    /// ```
-    pub fn ready_notifier(&self) -> watch::Receiver<bool> {
-        self.rpc_ready_tx.subscribe()
     }
 
     /// Returns a receiver for leader change notifications.
@@ -319,44 +304,6 @@ where
     /// ```
     pub fn leader_change_notifier(&self) -> watch::Receiver<Option<crate::LeaderInfo>> {
         self.leader_notifier.subscribe()
-    }
-
-    /// Create a Node from a pre-built Raft instance
-    /// This method is designed to support testing and external builders
-    pub fn from_raft(
-        raft: Raft<T>,
-        shutdown_signal: watch::Receiver<()>,
-    ) -> Self {
-        let event_tx = raft.event_sender();
-        let node_config = raft.ctx.node_config();
-        let membership = raft.ctx.membership();
-        let node_id = raft.node_id;
-
-        let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
-        let leader_notifier = LeaderNotifier::new();
-
-        // Create dummy cmd_tx (this path is mainly for testing)
-        let (cmd_tx, _cmd_rx) = mpsc::channel(1024);
-
-        Node {
-            node_id,
-            raft_core: Arc::new(Mutex::new(raft)),
-            membership,
-            event_tx,
-            cmd_tx,
-            ready: AtomicBool::new(false),
-            rpc_ready_tx,
-            leader_notifier,
-            node_config,
-            #[cfg(feature = "watch")]
-            watch_registry: None,
-            #[cfg(feature = "watch")]
-            _watch_dispatcher_handle: None,
-            sm_worker_handle: std::sync::Mutex::new(None),
-            _commit_handler_handle: None,
-            _lease_cleanup_handle: None,
-            shutdown_signal,
-        }
     }
 
     /// Returns this node's unique identifier.

@@ -147,6 +147,7 @@ struct Inner {
     client: Arc<EmbeddedClient>,
     leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
     is_stopped: Mutex<bool>,
+    node_id: u32,
 }
 
 /// Embedded d-engine with automatic lifecycle management.
@@ -351,6 +352,8 @@ impl EmbeddedEngine {
             Arc::new(client)
         };
 
+        let node_id = node.node_id();
+
         // Spawn node.run() in background
         let node_handle = tokio::spawn(async move {
             if let Err(e) = node.run().await {
@@ -370,6 +373,7 @@ impl EmbeddedEngine {
                 client,
                 leader_elected_rx,
                 is_stopped: Mutex::new(false),
+                node_id,
             }),
         })
     }
@@ -503,7 +507,7 @@ impl EmbeddedEngine {
             .leader_elected_rx
             .borrow()
             .as_ref()
-            .map(|info| info.leader_id == self.inner.client.node_id())
+            .map(|info| info.leader_id == self.inner.node_id)
             .unwrap_or(false)
     }
 
@@ -546,7 +550,6 @@ impl EmbeddedEngine {
         Arc::clone(&self.inner.client)
     }
 
-    /// Gracefully stop the embedded engine.
     /// Stop the embedded d-engine gracefully (idempotent).
     ///
     /// This method:
@@ -608,12 +611,9 @@ impl EmbeddedEngine {
         *self.inner.is_stopped.lock().await
     }
 
-    /// Returns the node ID for testing purposes.
-    ///
-    /// Useful in integration tests that need to identify which node
-    /// they're interacting with, especially in multi-node scenarios.
+    /// Returns the unique identifier for this Raft node.
     pub fn node_id(&self) -> u32 {
-        self.inner.client.node_id()
+        self.inner.node_id
     }
 }
 

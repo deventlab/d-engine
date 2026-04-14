@@ -6,6 +6,7 @@
 use anyhow::Result;
 use clap::Parser;
 use d_engine_client::Client;
+use d_engine_client::ClientApi;
 use d_engine_client::protocol::{WatchEventType, WatchResponse};
 use futures::StreamExt;
 use std::time::Duration;
@@ -54,7 +55,7 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Read failed: {e:?}"))?;
     if let Some(result) = current {
-        println!("  {} = {}", cli.key, String::from_utf8_lossy(&result.value));
+        println!("  {} = {}", cli.key, String::from_utf8_lossy(&result));
     } else {
         println!("  {} = (not found)", cli.key);
     }

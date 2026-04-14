@@ -108,7 +108,7 @@ async fn test_distributed_lock_standalone() -> Result<(), ClientApiError> {
     info!("Test 6: Verify new lock holder");
     let new_holder = client.get_linearizable(lock_key).await?;
     assert_eq!(
-        new_holder.map(|result| result.value),
+        new_holder,
         Some(Bytes::from(b"client_b".to_vec())),
         "Lock should be held by client_b"
     );

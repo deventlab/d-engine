@@ -264,6 +264,7 @@ pub enum StorageError {
     NotServing(String),
 }
 
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum IdAllocationError {
     /// ID allocation overflow
@@ -279,6 +280,7 @@ pub enum IdAllocationError {
     NoIdsAvailable,
 }
 
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum FileError {
     #[error("Path does not exist: {0}")]
@@ -304,6 +306,7 @@ pub enum FileError {
 }
 
 /// Error type for value conversion operations
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum ConvertError {
     /// Invalid input length error
@@ -319,6 +322,7 @@ pub enum ConvertError {
     ConversionFailure(String),
 }
 
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum ReadSendError {
     #[error("Network timeout")]
@@ -328,6 +332,7 @@ pub enum ReadSendError {
     Connection(#[from] tonic::transport::Error),
 }
 
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum WriteSendError {
     #[error("Not cluster leader")]
@@ -374,6 +379,7 @@ pub enum SystemError {
 }
 
 // Serialization is classified separately (across protocol layers and system layers)
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum SerializationError {
     #[error("Bincode serialization failed: {0}")]
@@ -381,6 +387,7 @@ pub enum SerializationError {
 }
 
 /// Wrapper for prost encoding/decoding errors
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum ProstError {
     #[error("Encoding failed: {0}")]
@@ -390,6 +397,7 @@ pub enum ProstError {
     Decode(#[from] prost::DecodeError),
 }
 
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum ElectionError {
     /// General election process failure
@@ -425,6 +433,7 @@ pub enum ElectionError {
     NoVotingMemberFound { candidate_id: u32 },
 }
 
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum ReplicationError {
     /// Stale leader detected during AppendEntries RPC
@@ -465,6 +474,7 @@ pub enum ReplicationError {
 }
 
 /// Errors that can occur during ReadIndex batching for linearizable reads
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error, Clone)]
 pub enum ReadIndexError {
     /// This node is no longer the leader
@@ -550,6 +560,7 @@ pub enum MembershipError {
     ClusterMetadataNotInitialized,
 }
 
+#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
     #[error("Snapshot receiver lagging, dropping chunk")]
