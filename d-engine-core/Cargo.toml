@@ -55,7 +55,7 @@ tokio-stream = "0.1.16"
 # Packing/unpacking TAR archives
 astral-tokio-tar = "0.6"
 rand = "0.9"
-lru = "0.16"
+lru = "0.17"
 memmap2 = "0.9.5"
 crc32fast = "1.4.2"
 # used in stream
