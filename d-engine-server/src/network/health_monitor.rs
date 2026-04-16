@@ -52,9 +52,18 @@ impl HealthMonitor for RaftHealthMonitor {
             *count += 1;
             *count
         };
-        // Signal exactly once when the threshold is first crossed.
+        // Signal when the threshold is first crossed, then reset the counter to 0
+        // so that a second batch of failures re-triggers if this signal is lost
+        // (e.g. consumed by a non-leader no-op or dropped due to backpressure).
         if new_count == self.zombie_threshold {
-            let _ = self.zombie_tx.try_send(node_id);
+            // Reset counter via a fresh get_mut (original borrow ended above).
+            // Guard is dropped before the await point to avoid holding it across yield.
+            if let Some(mut c) = self.failure_counts.get_mut(&node_id) {
+                *c = 0;
+            }
+            // send().await: waits for channel space instead of silently dropping.
+            // Only errors on receiver drop (node shutting down), which is harmless.
+            let _ = self.zombie_tx.send(node_id).await;
         }
     }
 
@@ -63,5 +72,19 @@ impl HealthMonitor for RaftHealthMonitor {
         node_id: u32,
     ) {
         self.failure_counts.remove(&node_id);
+    }
+}
+
+impl RaftHealthMonitor {
+    /// Returns true if the zombie signal for `node_id` is still valid.
+    ///
+    /// A zombie is invalid once `record_success` has been called (peer recovered),
+    /// which removes the entry from `failure_counts`. The bridge task uses this
+    /// to drop stale zombie signals before forwarding them to the Raft event loop.
+    pub(crate) fn is_zombie_valid(
+        &self,
+        node_id: u32,
+    ) -> bool {
+        self.failure_counts.contains_key(&node_id)
     }
 }

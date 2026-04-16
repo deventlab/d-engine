@@ -622,6 +622,15 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(())
     }
 
+    async fn handle_zombie_detected(
+        &mut self,
+        node_id: u32,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        self.handle_zombie_node(node_id, role_tx, ctx).await
+    }
+
     fn handle_snapshot_push_completed(
         &mut self,
         peer_id: u32,

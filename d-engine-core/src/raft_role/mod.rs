@@ -367,7 +367,6 @@ impl<T: TypeConfig> RaftRole<T> {
         let _ = self.state_mut().update_next_index(peer_id, match_idx + 1);
     }
 
-    /// Delegate ZombieDetected signal to LeaderState; no-op for non-leader roles.
     pub(crate) async fn handle_zombie_detected(
         &mut self,
         node_id: u32,
@@ -377,10 +376,7 @@ impl<T: TypeConfig> RaftRole<T> {
     where
         T: TypeConfig,
     {
-        if let RaftRole::Leader(state) = self {
-            state.handle_zombie_node(node_id, role_tx, ctx).await?;
-        }
-        Ok(())
+        self.state_mut().handle_zombie_detected(node_id, role_tx, ctx).await
     }
 
     pub(crate) fn handle_snapshot_push_completed(

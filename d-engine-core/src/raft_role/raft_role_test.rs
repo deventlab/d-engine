@@ -1,8 +1,12 @@
 use std::{sync::Arc, thread};
 
 use d_engine_proto::server::election::VotedFor;
+use tokio::sync::{mpsc, watch};
 
 use super::super::*;
+use super::candidate_state::CandidateState;
+use super::follower_state::FollowerState;
+use super::learner_state::LearnerState;
 
 #[test]
 fn test_voted_for_backward_compatibility() {
@@ -685,4 +689,77 @@ fn test_update_voted_for_learner_discovers_leader() {
 
     // Should trigger event (first discovery)
     assert!(is_new, "Learner first leader discovery should return true");
+}
+
+// ============================================================================
+// handle_zombie_detected — non-leader roles must be no-ops
+//
+// Only the leader can propose membership changes (BatchRemove).  When a
+// ZombieDetected signal arrives while the node is a Follower, Candidate, or
+// Learner the call must return Ok(()) immediately without emitting any event on
+// role_tx.  Recovery from the lost signal is handled by the health-monitor
+// counter-reset mechanism (see health_monitor_test).
+// ============================================================================
+
+fn make_test_config() -> Arc<RaftNodeConfig> {
+    Arc::new(
+        RaftNodeConfig::new()
+            .expect("RaftNodeConfig::new")
+            .validate()
+            .expect("RaftNodeConfig::validate"),
+    )
+}
+
+fn make_test_context() -> (RaftContext<MockTypeConfig>, watch::Sender<()>) {
+    let (shutdown_tx, shutdown_rx) = watch::channel(());
+    let ctx = MockBuilder::new(shutdown_rx).build_context();
+    (ctx, shutdown_tx)
+}
+
+#[tokio::test]
+async fn test_handle_zombie_detected_is_noop_on_follower() {
+    let cfg = make_test_config();
+    let mut role = RaftRole::Follower(Box::new(FollowerState::new(1, cfg, None, None)));
+    let (ctx, _shutdown_tx) = make_test_context();
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    let result = role.handle_zombie_detected(42, &role_tx, &ctx).await;
+
+    assert!(result.is_ok(), "Follower must not error on ZombieDetected");
+    assert!(
+        role_rx.try_recv().is_err(),
+        "Follower must not emit any RoleEvent for ZombieDetected"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_zombie_detected_is_noop_on_candidate() {
+    let cfg = make_test_config();
+    let mut role = RaftRole::Candidate(Box::new(CandidateState::new(1, cfg)));
+    let (ctx, _shutdown_tx) = make_test_context();
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    let result = role.handle_zombie_detected(42, &role_tx, &ctx).await;
+
+    assert!(result.is_ok(), "Candidate must not error on ZombieDetected");
+    assert!(
+        role_rx.try_recv().is_err(),
+        "Candidate must not emit any RoleEvent for ZombieDetected"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_zombie_detected_is_noop_on_learner() {
+    let cfg = make_test_config();
+    let mut role = RaftRole::Learner(Box::new(LearnerState::new(1, cfg)));
+    let (ctx, _shutdown_tx) = make_test_context();
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+
+    let result = role.handle_zombie_detected(42, &role_tx, &ctx).await;
+
+    assert!(result.is_ok(), "Learner must not error on ZombieDetected");
+    assert!(
+        role_rx.try_recv().is_err(),
+        "Learner must not emit any RoleEvent for ZombieDetected"
+    );
 }

@@ -748,6 +748,18 @@ where
         )
     }
 
+    /// Returns true if the zombie signal for `node_id` should still be acted on.
+    ///
+    /// Delegates to the inner health monitor. The bridge task calls this before
+    /// forwarding a `ZombieDetected` signal to the Raft event loop so that a
+    /// stale signal (peer already recovered via `record_success`) is dropped.
+    pub(crate) fn is_zombie_valid(
+        &self,
+        node_id: u32,
+    ) -> bool {
+        self.health_monitor.is_zombie_valid(node_id)
+    }
+
     /// Updates a single node atomically
     pub(super) async fn update_single_node(
         &self,

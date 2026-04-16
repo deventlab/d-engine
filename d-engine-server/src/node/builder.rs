@@ -403,11 +403,17 @@ where
 
         // Bridge zombie signals from health monitor → role event loop.
         // Exits naturally when zombie_tx drops with RaftMembership (channel closed → recv None).
+        // Validates each signal against the health monitor before forwarding: if the peer
+        // recovered (record_success called) after the signal was queued, drop the stale signal
+        // to prevent BatchRemove for a healthy node.
         let role_tx_for_zombie = role_tx.clone();
+        let membership_for_zombie = Arc::clone(&membership);
         tokio::spawn(async move {
             let mut zombie_rx = zombie_rx;
             while let Some(node_id) = zombie_rx.recv().await {
-                let _ = role_tx_for_zombie.send(RoleEvent::ZombieDetected(node_id));
+                if membership_for_zombie.is_zombie_valid(node_id) {
+                    let _ = role_tx_for_zombie.send(RoleEvent::ZombieDetected(node_id));
+                }
             }
         });
 
