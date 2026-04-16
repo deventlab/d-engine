@@ -255,7 +255,6 @@ impl BenchFixture {
                 nodes: vec![],
                 current_leader_id: None,
             });
-        membership.expect_get_zombie_candidates().returning(Vec::new);
         membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
         membership.expect_is_single_node_cluster().returning(|| false);
         membership.expect_initial_cluster_size().returning(|| 3);

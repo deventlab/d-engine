@@ -616,7 +616,6 @@ pub(crate) fn mock_membership() -> MockMembership<MockTypeConfig> {
             nodes: vec![],
             current_leader_id: None,
         });
-    membership.expect_get_zombie_candidates().returning(Vec::new);
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
     membership
 }

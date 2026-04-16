@@ -50,6 +50,7 @@ use d_engine_core::RaftRole;
 use d_engine_core::RaftStorageHandles;
 use d_engine_core::ReplicationHandler;
 use d_engine_core::Result;
+use d_engine_core::RoleEvent;
 use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
 use d_engine_core::StateMachineWorker;
@@ -376,13 +377,21 @@ where
                 watch_event_tx,
             ))
         });
-        let membership = Arc::new(self.membership.take().unwrap_or_else(|| {
-            RaftMembership::new(
-                node_id,
-                node_config.cluster.initial_cluster.clone(),
-                node_config.clone(),
-            )
-        }));
+        let (membership_inner, zombie_rx) = self.membership.take().map_or_else(
+            || {
+                RaftMembership::new(
+                    node_id,
+                    node_config.cluster.initial_cluster.clone(),
+                    node_config.clone(),
+                )
+            },
+            // Pre-built membership has no zombie_rx; create a dummy closed channel.
+            |m| {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                (m, rx)
+            },
+        );
+        let membership = Arc::new(membership_inner);
 
         let purge_executor = DefaultPurgeExecutor::new(raft_log.clone());
 
@@ -391,6 +400,16 @@ where
         let (cmd_tx, cmd_rx) = mpsc::channel(node_config.raft.cmd_channel_capacity);
         let event_tx_clone = event_tx.clone(); // used in commit handler
         let role_tx_for_sm = role_tx.clone(); // used in SM worker (ApplyCompleted → P2)
+
+        // Bridge zombie signals from health monitor → role event loop.
+        // Exits naturally when zombie_tx drops with RaftMembership (channel closed → recv None).
+        let role_tx_for_zombie = role_tx.clone();
+        tokio::spawn(async move {
+            let mut zombie_rx = zombie_rx;
+            while let Some(node_id) = zombie_rx.recv().await {
+                let _ = role_tx_for_zombie.send(RoleEvent::ZombieDetected(node_id));
+            }
+        });
 
         let node_config_arc = Arc::new(node_config);
 

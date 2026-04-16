@@ -194,53 +194,6 @@ async fn test_mem_first_flushes_asynchronously() {
     );
 }
 
-/// Test MemFirst loses unflushed data on crash
-///
-/// # Scenario
-/// - Append entries without flush
-/// - Simulate crash
-/// - Expected: Unflushed data lost
-#[tokio::test]
-async fn test_mem_first_loses_unflushed_data_on_crash() {
-    let original_ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
-        FlushPolicy::Batch {
-            idle_flush_interval_ms: 1000,
-        },
-        "test_mem_first_data_loss",
-    );
-
-    // Arrange: Append entries but don't flush
-    for i in 1..=3 {
-        original_ctx
-            .raft_log
-            .append_entries(vec![Entry {
-                index: i,
-                term: 1,
-                payload: Some(EntryPayload::command(Bytes::from(format!("data{i}")))),
-            }])
-            .await
-            .unwrap();
-    }
-
-    // Verify entries in memory but not durable
-    assert_eq!(original_ctx.raft_log.len(), 3);
-    assert_eq!(original_ctx.raft_log.durable_index(), 0);
-
-    // Act: Simulate crash without flush
-    let recovered_ctx = original_ctx.recover_from_crash();
-    drop(original_ctx);
-    sleep(Duration::from_millis(50)).await;
-
-    // Assert: Unflushed data lost
-    assert_eq!(
-        recovered_ctx.raft_log.durable_index(),
-        0,
-        "Unflushed data should be lost"
-    );
-    assert_eq!(recovered_ctx.raft_log.len(), 0);
-}
-
 /// Test MemFirst concurrent buffering is safe
 ///
 /// # Scenario

@@ -111,6 +111,11 @@ pub enum RoleEvent {
         peer_id: u32,
     },
 
+    /// A peer's connection failure count crossed zombie_threshold.
+    /// Emitted by RaftHealthMonitor (server layer) via an injected Sender<u32>.
+    /// Leader responds by proposing a BatchRemove config change for that node.
+    ZombieDetected(u32),
+
     /// Fatal error from SM worker — node must shutdown.
     /// Sent via role_tx (P2) so it is not blocked behind external RPCs on event_tx (P4).
     FatalError {

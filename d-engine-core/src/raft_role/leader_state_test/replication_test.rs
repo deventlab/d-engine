@@ -601,7 +601,6 @@ async fn setup_commit_index_test_context(
             nodes: vec![],
             current_leader_id: None,
         });
-    membership.expect_get_zombie_candidates().returning(Vec::new);
     membership.expect_pre_warm_connections().returning(|| Ok(()));
     if single_voter {
         membership.expect_replication_peers().returning(Vec::new);
@@ -2180,7 +2179,6 @@ async fn test_stale_conflict_ack_does_not_regress_next_index() {
             current_leader_id: None,
         }
     });
-    membership.expect_get_zombie_candidates().returning(Vec::new);
     membership.expect_pre_warm_connections().returning(|| Ok(()));
     membership.expect_replication_peers().returning(|| {
         vec![
