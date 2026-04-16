@@ -54,3 +54,6 @@ mod pending_lease_reads_test;
 
 #[cfg(test)]
 mod single_voter_commit_test;
+
+#[cfg(test)]
+mod stale_learner_deadline_test;

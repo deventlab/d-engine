@@ -451,7 +451,6 @@ async fn test_handle_join_cluster_quorum_failed() {
         .expect_retrieve_cluster_membership_config()
         .returning(|_| ClusterMembership::default());
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_get_zombie_candidates().returning(Vec::new);
     context.membership = Arc::new(membership);
 
     // prepare_batch_requests returns empty → config change is written but never committed
@@ -767,7 +766,6 @@ mod stale_learner_tests {
 
     use crate::MockMembership;
     use crate::MockRaftLog;
-    use crate::RaftContext;
     use crate::raft_role::leader_state::{LeaderState, PendingPromotion};
     use crate::test_utils::mock::MockTypeConfig;
     use crate::test_utils::mock::mock_raft_context;
@@ -781,10 +779,8 @@ mod stale_learner_tests {
     ) -> (LeaderState<MockTypeConfig>, MockMembership<MockTypeConfig>) {
         let mut node_config = node_config(&format!("/tmp/{test_name}"));
         node_config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(30);
-        node_config.raft.membership.promotion.stale_check_interval = Duration::from_secs(60);
 
         let mut leader = LeaderState::new(1, Arc::new(node_config));
-        leader.next_membership_maintenance_check = Instant::now();
 
         // Add pending promotions with specified ages
         let now = Instant::now();
@@ -801,182 +797,6 @@ mod stale_learner_tests {
         membership.expect_can_rejoin().returning(|_, _| Ok(()));
         membership.expect_update_node_status().returning(|_, _| Ok(()));
         (leader, membership)
-    }
-
-    /// Create mock RaftContext with configurable membership
-    fn mock_stale_test_raft_context(
-        test_name: &str,
-        membership: Arc<MockMembership<MockTypeConfig>>,
-        config: Option<Arc<crate::RaftNodeConfig>>,
-    ) -> RaftContext<MockTypeConfig> {
-        let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut ctx = mock_raft_context(&format!("/tmp/{test_name}"), graceful_rx, None);
-        ctx.membership = membership;
-        ctx.node_config =
-            config.unwrap_or_else(|| Arc::new(node_config(&format!("/tmp/{test_name}"))));
-
-        // Mock raft_log for calculate_majority_matched_index
-        let mut raft_log = MockRaftLog::new();
-        raft_log.expect_last_entry_id().returning(|| 0);
-        raft_log.expect_last_log_id().returning(|| None);
-        raft_log.expect_flush().returning(|| Ok(()));
-        raft_log.expect_load_hard_state().returning(|| Ok(None));
-        raft_log.expect_save_hard_state().returning(|_| Ok(()));
-        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(0));
-        ctx.storage.raft_log = Arc::new(raft_log);
-
-        // Mock replication handler to handle BatchRemove operations
-        ctx.handlers
-            .replication_handler
-            .expect_prepare_batch_requests()
-            .times(..)
-            .returning(|_, _, _, _, _| {
-                // Stale learner test: verification returns empty
-                Ok(crate::PrepareResult::default())
-            });
-
-        ctx
-    }
-
-    /// Test lazy staleness sampling optimization (checks only oldest 100 or 2% of queue)
-    #[tokio::test]
-    async fn test_stale_check_optimization() {
-        // Create queue with 200 entries (will only check oldest 100 or 2%)
-        let nodes: Vec<(u32, Duration)> =
-            (1..=200).map(|id| (id, Duration::from_secs(40))).collect();
-
-        let (mut leader, membership) =
-            create_test_leader_state("test_stale_check_optimization", nodes);
-        let mut node_config = node_config("/tmp/test_stale_check_optimization");
-        node_config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(30);
-        node_config.raft.membership.promotion.stale_check_interval = Duration::from_secs(60);
-        let ctx = mock_stale_test_raft_context(
-            "test_stale_check_optimization",
-            Arc::new(membership),
-            Some(Arc::new(node_config)),
-        );
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        // Should only check first 100 entries (out of 200)
-        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
-
-        // Should purge exactly 2 entries (1% of 200 = 2)
-        assert_eq!(leader.pending_promotions.len(), 198);
-    }
-
-    /// Test no purge when pending promotions are fresh (not expired)
-    #[tokio::test]
-    async fn test_no_purge_when_fresh() {
-        let (mut leader, mut membership) = create_test_leader_state(
-            "test_no_purge_when_fresh",
-            vec![
-                (101, Duration::from_secs(15)),
-                (102, Duration::from_secs(20)),
-            ],
-        );
-        // Should do nothing - expect no status updates
-        membership.expect_update_node_status().never();
-
-        let ctx =
-            mock_stale_test_raft_context("test_no_purge_when_fresh", Arc::new(membership), None);
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
-        assert_eq!(leader.pending_promotions.len(), 2);
-    }
-
-    /// Test membership maintenance check scheduling logic
-    #[tokio::test]
-    async fn test_membership_maintenance_scheduling() {
-        let (mut leader, _) =
-            create_test_leader_state("test_membership_maintenance_scheduling", vec![]);
-        let interval = Duration::from_secs(60);
-
-        // First call
-        leader.reset_next_membership_maintenance_check(interval);
-        let next_check1 = leader.next_membership_maintenance_check;
-
-        // Small delay to ensure time progresses
-        tokio::time::sleep(Duration::from_millis(1)).await;
-
-        // Second call
-        leader.reset_next_membership_maintenance_check(interval);
-        let next_check2 = leader.next_membership_maintenance_check;
-
-        // Verify both are in the future
-        assert!(next_check1 > Instant::now());
-        assert!(next_check2 > Instant::now());
-
-        // Verify second call moved the timer forward
-        assert!(next_check2 > next_check1);
-
-        // Verify both are approximately interval in the future
-        let now = Instant::now();
-        assert!(duration_diff(next_check1 - now, interval) < Duration::from_millis(10));
-        assert!(duration_diff(next_check2 - now, interval) < Duration::from_millis(10));
-    }
-
-    fn duration_diff(
-        a: Duration,
-        b: Duration,
-    ) -> Duration {
-        a.abs_diff(b)
-    }
-
-    /// Test system remains responsive during large queues
-    #[tokio::test]
-    async fn test_performance_large_queue() {
-        let nodes: Vec<(u32, Duration)> =
-            (1..=10_000).map(|id| (id, Duration::from_secs(40))).collect();
-
-        let (mut leader, membership) =
-            create_test_leader_state("test_performance_large_queue", nodes);
-        let ctx = mock_stale_test_raft_context(
-            "test_performance_large_queue",
-            Arc::new(membership),
-            None,
-        );
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        // Time the staleness check
-        let start = Instant::now();
-        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
-        let elapsed = start.elapsed();
-
-        // Should take <20ms even for large queues (due to sampling optimization)
-        println!("Staleness check for 10k nodes: {elapsed:?}");
-        assert!(
-            elapsed < Duration::from_millis(20),
-            "Staleness check shouldn't process entire queue"
-        );
-    }
-
-    /// Test promotion timeout threshold edge cases
-    #[tokio::test]
-    async fn test_promotion_timeout_threshold() {
-        let (mut leader, membership) = create_test_leader_state(
-            "test_promotion_timeout_threshold",
-            vec![
-                (101, Duration::from_secs(31)), // 1s over threshold
-                (102, Duration::from_secs(30)), // exactly at threshold
-                (103, Duration::from_secs(29)), // 1s under threshold
-            ],
-        );
-        leader.next_membership_maintenance_check = Instant::now() - Duration::from_secs(1);
-        let mut node_config = node_config("/tmp/test_promotion_timeout_threshold");
-        node_config.raft.membership.promotion.stale_learner_threshold = Duration::from_secs(30);
-        let ctx = mock_stale_test_raft_context(
-            "test_promotion_timeout_threshold",
-            Arc::new(membership),
-            Some(Arc::new(node_config)),
-        );
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        leader.conditionally_purge_stale_learners(&role_tx, &ctx).await.unwrap();
-
-        // Should purge nodes over threshold (node 101, 102) but keep node 103
-        assert_eq!(leader.pending_promotions.len(), 2);
-        assert!(leader.pending_promotions.iter().any(|p| p.node_id == 103));
     }
 
     /// Split from original test_downgrade_affects_replication
@@ -1797,17 +1617,6 @@ mod pending_promotion_tests {
         assert_eq!(queue.lock().len(), 10);
     }
 
-    /// Test: Stale check timing with paused time
-    #[tokio::test(start_paused = true)]
-    async fn test_stale_check_timing() {
-        let node_config = node_config("/tmp/test_stale_check_timing");
-        let mut leader = LeaderState::<MockTypeConfig>::new(1, Arc::new(node_config));
-        leader.reset_next_membership_maintenance_check(Duration::from_secs(60));
-
-        tokio::time::advance(Duration::from_secs(61)).await;
-        assert!(Instant::now() >= leader.next_membership_maintenance_check);
-    }
-
     /// Test: Config propagation to stale handling
     #[test]
     fn test_config_propagation_to_stale_handling() {
@@ -1851,62 +1660,34 @@ mod zombie_purge_tests {
     use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
     use d_engine_proto::server::cluster::NodeMeta;
 
-    /// No zombie candidates → conditionally_purge_zombie_nodes does nothing.
+    // =========================================================================
+    // handle_zombie_node — event-driven path
+    // =========================================================================
+
+    /// ZombieDetected event for a Promotable node → BatchRemove submitted.
+    ///
+    /// # Given
+    /// - Leader receives ZombieDetected(5)
+    /// - Node 5 has status Promotable (non-ReadOnly, non-Active)
+    ///
+    /// # When
+    /// - handle_zombie_node(5) is called
+    ///
+    /// # Then
+    /// - A BatchRemove config change is proposed for node 5
     #[tokio::test]
-    async fn test_purge_zombie_nodes_no_candidates() {
-        let (_graceful_tx, graceful_rx) = watch::channel(());
-        let cfg = node_config("/tmp/test_purge_zombie_nodes_no_candidates");
-        let mut raft_context = MockBuilder::new(graceful_rx).with_node_config(cfg).build_context();
-
-        let mut membership = MockMembership::new();
-        membership.expect_get_zombie_candidates().returning(Vec::new);
-        raft_context.membership = Arc::new(membership);
-
-        let captured_payloads = Arc::new(Mutex::new(Vec::<EntryPayload>::new()));
-        let captured_clone = captured_payloads.clone();
-        raft_context
-            .handlers
-            .replication_handler
-            .expect_prepare_batch_requests()
-            .times(0) // Must NOT be called when there are no candidates
-            .returning(move |payloads, _, _, _, _| {
-                captured_clone.lock().extend(payloads.clone());
-                Ok(crate::PrepareResult::default())
-            });
-
-        let mut raft_log = MockRaftLog::new();
-        raft_log.expect_last_entry_id().returning(|| 10);
-        raft_context.storage.raft_log = Arc::new(raft_log);
-
-        let node_config = raft_context.node_config();
-        let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
-        let result = leader.conditionally_purge_zombie_nodes(&role_tx, &raft_context).await;
-        assert!(result.is_ok());
-        assert!(
-            captured_payloads.lock().is_empty(),
-            "No BatchRemove should be submitted"
-        );
-    }
-
-    /// Zombie candidates with non-Active status → BatchRemove config change submitted.
-    #[tokio::test]
-    async fn test_purge_zombie_nodes_submits_batch_remove() {
+    async fn test_handle_zombie_node_non_readonly_submits_batch_remove() {
         use d_engine_proto::common::membership_change::Change;
 
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut cfg = node_config("/tmp/test_purge_zombie_nodes_submits_batch_remove");
+        let mut cfg = node_config("/tmp/test_handle_zombie_node_non_readonly");
         cfg.raft.membership.verify_leadership_persistent_timeout =
             std::time::Duration::from_millis(50);
         let mut raft_context = MockBuilder::new(graceful_rx).with_node_config(cfg).build_context();
 
         let mut membership = MockMembership::new();
-        // Two zombie candidates: node 5 and node 6
-        membership.expect_get_zombie_candidates().returning(|| vec![5, 6]);
-        // Both are non-Active (Promotable) → both should be removed
+        // Node 5 is Promotable — not ReadOnly, should be removed
         membership.expect_get_node_status().returning(|_| Some(NodeStatus::Promotable));
-        // Membership voter mock needed by execute_request_immediately internals
         membership.expect_voters().returning(|| {
             vec![NodeMeta {
                 id: 1,
@@ -1940,19 +1721,16 @@ mod zombie_purge_tests {
         let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-        let result = leader.conditionally_purge_zombie_nodes(&role_tx, &raft_context).await;
+        let result = leader.handle_zombie_node(5, &role_tx, &raft_context).await;
         assert!(result.is_ok());
 
-        // Verify BatchRemove was submitted for both zombie nodes
         let payloads = captured_payloads.lock();
         assert_eq!(payloads.len(), 1, "Should submit exactly one BatchRemove");
         match &payloads[0].payload {
             Some(d_engine_proto::common::entry_payload::Payload::Config(change)) => {
                 match &change.change {
                     Some(Change::BatchRemove(batch_remove)) => {
-                        let mut ids = batch_remove.node_ids.clone();
-                        ids.sort();
-                        assert_eq!(ids, vec![5, 6], "Should remove both zombie nodes");
+                        assert_eq!(batch_remove.node_ids, vec![5], "Should remove node 5");
                     }
                     _ => panic!("Expected BatchRemove, got: {:?}", change.change),
                 }
@@ -1961,17 +1739,26 @@ mod zombie_purge_tests {
         }
     }
 
-    /// Zombie candidate with Active status → should NOT be removed.
+    /// ZombieDetected event for a ReadOnly node → exempt, no BatchRemove.
+    ///
+    /// # Given
+    /// - Leader receives ZombieDetected(5)
+    /// - Node 5 has status ReadOnly (permanent read replica, must not be auto-removed)
+    ///
+    /// # When
+    /// - handle_zombie_node(5) is called
+    ///
+    /// # Then
+    /// - No config change is proposed (ReadOnly nodes are exempt from zombie auto-removal)
     #[tokio::test]
-    async fn test_purge_zombie_nodes_skips_active_nodes() {
+    async fn test_handle_zombie_node_readonly_is_exempt() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let cfg = node_config("/tmp/test_purge_zombie_nodes_skips_active");
+        let cfg = node_config("/tmp/test_handle_zombie_node_readonly_exempt");
         let mut raft_context = MockBuilder::new(graceful_rx).with_node_config(cfg).build_context();
 
         let mut membership = MockMembership::new();
-        // One zombie candidate: node 7, but it's Active
-        membership.expect_get_zombie_candidates().returning(|| vec![7]);
-        membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
+        // Node 5 is ReadOnly — must never be auto-removed
+        membership.expect_get_node_status().returning(|_| Some(NodeStatus::ReadOnly));
         raft_context.membership = Arc::new(membership);
 
         let captured_payloads = Arc::new(Mutex::new(Vec::<EntryPayload>::new()));
@@ -1980,7 +1767,7 @@ mod zombie_purge_tests {
             .handlers
             .replication_handler
             .expect_prepare_batch_requests()
-            .times(0) // Must NOT be called: Active node is not a zombie to remove
+            .times(0) // Must NOT be called — ReadOnly node is exempt
             .returning(move |payloads, _, _, _, _| {
                 captured_clone.lock().extend(payloads.clone());
                 Ok(crate::PrepareResult::default())
@@ -1994,11 +1781,11 @@ mod zombie_purge_tests {
         let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
-        let result = leader.conditionally_purge_zombie_nodes(&role_tx, &raft_context).await;
+        let result = leader.handle_zombie_node(5, &role_tx, &raft_context).await;
         assert!(result.is_ok());
         assert!(
             captured_payloads.lock().is_empty(),
-            "Active node must not be removed"
+            "ReadOnly node must not be auto-removed"
         );
     }
 }

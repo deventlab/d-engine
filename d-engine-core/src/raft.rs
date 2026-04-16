@@ -601,6 +601,15 @@ where
                 self.role.handle_peer_stream_error(peer_id);
             }
 
+            RoleEvent::ZombieDetected(node_id) => {
+                debug!(%node_id, "ZombieDetected: forwarding to leader for BatchRemove");
+                if let Err(e) =
+                    self.role.handle_zombie_detected(node_id, &self.role_tx, &self.ctx).await
+                {
+                    error!(%node_id, ?e, "handle_zombie_detected failed");
+                }
+            }
+
             RoleEvent::SnapshotPushCompleted { peer_id, success } => {
                 debug!(%peer_id, %success, "SnapshotPushCompleted");
                 if success {

@@ -405,7 +405,6 @@ pub fn mock_membership() -> MockMembership<MockTypeConfig> {
             current_leader_id: None,
         });
     membership.expect_get_cluster_conf_version().returning(|| 1);
-    membership.expect_get_zombie_candidates().returning(Vec::new);
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
 
     // Mock single-node cluster detection (default to multi-node with no peers)

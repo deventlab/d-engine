@@ -122,9 +122,6 @@ cluster_healthcheck_probe_service_name = "d_engine.server.cluster.ClusterManagem
 # Timeout for leader to keep retrying no-op entries to confirm leadership (seconds).
 verify_leadership_persistent_timeout = { secs = 3600 }
 
-# Interval for membership maintenance tasks (seconds).
-membership_maintenance_interval = { secs = 30 }
-
 [raft.membership.zombie]
 # Consecutive connection failures before marking a node as zombie.
 threshold = 3
@@ -135,9 +132,6 @@ purge_interval = { secs = 30 }
 [raft.membership.promotion]
 # Duration after which a learner is considered stale if not promoted (seconds).
 stale_learner_threshold = { secs = 300 }
-
-# Interval for checking stale learners (seconds).
-stale_check_interval = { secs = 30 }
 
 [raft.persistence]
 # Persistence strategy: "MemFirst" — entries written to memory first, flushed to disk async.

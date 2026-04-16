@@ -208,8 +208,6 @@ where
         index: u64,
     );
 
-    async fn get_zombie_candidates(&self) -> Vec<u32>;
-
     /// If new node could rejoin the cluster again
     async fn can_rejoin(
         &self,

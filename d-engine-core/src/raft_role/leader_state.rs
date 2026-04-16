@@ -408,19 +408,16 @@ pub struct LeaderState<T: TypeConfig> {
     pub last_learner_check: Instant,
 
     // -- Stale Learner Handling --
-    /// The next scheduled time to check for stale learners.
+    /// Earliest time the oldest pending learner becomes stale.
     ///
-    /// This is used to implement periodic checking of learners that have been in the promotion
-    /// queue for too long without making progress. The check interval is configurable via the
-    /// node configuration (`node_config.promotion.stale_check_interval`).
+    /// Set to `front().ready_since + stale_learner_threshold` when a learner is enqueued.
+    /// `None` when `pending_promotions` is empty (O(1) short-circuit in tick).
+    /// After `drain_batch`, call `refresh_stale_deadline` to recompute from the new front.
     ///
-    /// When the current time reaches or exceeds this instant, the leader will perform a scan
-    /// of a subset of the pending promotions to detect stale learners. After the scan, the field
-    /// is updated to `current_time + stale_check_interval`.
-    ///
-    /// Rationale: Avoiding frequent full scans improves batching efficiency and reduces CPU spikes
-    /// in high-load environments (particularly crucial for RocketMQ-on-DLedger workflows).
-    pub next_membership_maintenance_check: Instant,
+    /// Design: VecDeque is FIFO so the front is always the oldest entry — no need to
+    /// scan the whole queue. `min()` over all entries would always select the front,
+    /// so we directly bind the deadline to `front().ready_since + threshold`.
+    pub stale_check_deadline: Option<Instant>,
 
     /// Queue of learners that have caught up and are pending promotion to voter.
     pub pending_promotions: VecDeque<PendingPromotion>,
@@ -625,6 +622,15 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(())
     }
 
+    async fn handle_zombie_detected(
+        &mut self,
+        node_id: u32,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        ctx: &RaftContext<T>,
+    ) -> Result<()> {
+        self.handle_zombie_node(node_id, role_tx, ctx).await
+    }
+
     fn handle_snapshot_push_completed(
         &mut self,
         peer_id: u32,
@@ -730,9 +736,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         // Keep syncing leader_id (hot-path: ~5ns atomic store)
         self.shared_state().set_current_leader(self.node_id());
 
-        // 1. Clear expired learners
-        if let Err(e) = self.run_periodic_maintenance(role_tx, ctx).await {
-            error!("Failed to run periodic maintenance: {}", e);
+        // 1. Stale learner O(1) deadline check — None short-circuits immediately
+        if self.stale_check_deadline.is_some_and(|d| now >= d)
+            && let Err(e) = self.check_and_purge_stale_front(role_tx, ctx).await
+        {
+            error!("Stale learner check failed: {}", e);
         }
 
         // 2. Heartbeat trigger check
@@ -2716,9 +2724,14 @@ impl<T: TypeConfig> LeaderState<T> {
             "Learners caught up, adding to pending promotions"
         );
 
+        let threshold = self.node_config.raft.membership.promotion.stale_learner_threshold;
         for node_id in new_promotions {
             self.pending_promotions
                 .push_back(PendingPromotion::new(node_id, Instant::now()));
+        }
+        // Only update deadline if queue was previously empty (new front is the oldest)
+        if self.stale_check_deadline.is_none() {
+            self.refresh_stale_deadline(threshold);
         }
 
         role_tx
@@ -3081,7 +3094,7 @@ impl<T: TypeConfig> LeaderState<T> {
             last_purged_index: None, //TODO
             last_learner_check: Instant::now(),
             snapshot_in_progress: AtomicBool::new(false),
-            next_membership_maintenance_check: Instant::now(),
+            stale_check_deadline: None,
             pending_promotions: VecDeque::new(),
             lease_timestamp: AtomicU64::new(0),
             linearizable_read_buffer: Box::new(BatchBuffer::new(batch_size).with_length_gauge(
@@ -3169,6 +3182,8 @@ impl<T: TypeConfig> LeaderState<T> {
         self.pending_promotions.retain(|entry| {
             now.saturating_duration_since(entry.ready_since) <= config.stale_learner_threshold
         });
+        // Refresh deadline after potential removals
+        self.refresh_stale_deadline(config.stale_learner_threshold);
 
         if self.pending_promotions.is_empty() {
             debug!(
@@ -3229,8 +3244,15 @@ impl<T: TypeConfig> LeaderState<T> {
                 for entry in promotion_entries.into_iter().rev() {
                     self.pending_promotions.push_front(entry);
                 }
+                // Refresh deadline to account for restored entries at front
+                let threshold = config.stale_learner_threshold;
+                self.refresh_stale_deadline(threshold);
                 return Err(e);
             }
+
+            // Refresh stale deadline to reflect the new queue front after successful drain
+            let threshold = config.stale_learner_threshold;
+            self.refresh_stale_deadline(threshold);
 
             info!(
                 "Promotion successful. Cluster members: {:?}",
@@ -3529,137 +3551,105 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    async fn run_periodic_maintenance(
+    /// Recompute `stale_check_deadline` from the current queue front.
+    ///
+    /// Must be called after any push_back or drain_batch that changes the front.
+    /// VecDeque is FIFO so the front is always the oldest entry; the deadline is
+    /// bound to `front().ready_since + threshold`.
+    /// Sets `None` when the queue is empty (O(1) short-circuit in tick).
+    pub fn refresh_stale_deadline(
         &mut self,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-        ctx: &RaftContext<T>,
-    ) -> Result<()> {
-        if let Err(e) = self.conditionally_purge_stale_learners(role_tx, ctx).await {
-            error!("Stale learner purge failed: {}", e);
-        }
-
-        if let Err(e) = self.conditionally_purge_zombie_nodes(role_tx, ctx).await {
-            error!("Zombie node purge failed: {}", e);
-        }
-
-        // Regardless of whether a stale node is found, we set the next check according to a fixed
-        // period
-        self.reset_next_membership_maintenance_check(
-            ctx.node_config().raft.membership.membership_maintenance_interval,
-        );
-        Ok(())
+        threshold: Duration,
+    ) {
+        self.stale_check_deadline =
+            self.pending_promotions.front().map(|front| front.ready_since + threshold);
     }
 
-    /// Periodic check triggered every ~30s in the worst-case scenario
-    /// using priority-based lazy scheduling. Actual average frequency
-    /// is inversely proportional to system load.
-    pub async fn conditionally_purge_stale_learners(
+    /// Called from tick() when `stale_check_deadline` fires.
+    ///
+    /// Pops all front entries whose `ready_since + threshold` has elapsed and
+    /// calls `handle_stale_learner` for each. After draining, refreshes the deadline
+    /// so the next stale check is bound to the new front.
+    pub async fn check_and_purge_stale_front(
         &mut self,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        let config = &ctx.node_config.raft.membership.promotion;
-
-        // Optimization: Skip check 99.9% of the time using scheduled trial method
-        if self.pending_promotions.is_empty()
-            || self.next_membership_maintenance_check > Instant::now()
-        {
-            trace!("Skipping stale learner check");
-            return Ok(());
-        }
-
+        let threshold = ctx.node_config.raft.membership.promotion.stale_learner_threshold;
         let now = Instant::now();
-        let queue_len = self.pending_promotions.len();
+        let mut stale_ids = Vec::new();
 
-        // Inspect only oldest 1% of items or max 100 entries per rules
-        let inspect_count = queue_len.min(100).min(1.max(queue_len / 100));
-        let mut stale_entries = Vec::new();
-
-        trace!("Inspecting {} entries", inspect_count);
-        for _ in 0..inspect_count {
-            if let Some(entry) = self.pending_promotions.pop_front() {
-                trace!(
-                    "Inspecting entry: {:?} - {:?} - {:?}",
-                    entry,
-                    now.saturating_duration_since(entry.ready_since),
-                    &config.stale_learner_threshold
-                );
-                if now.saturating_duration_since(entry.ready_since) > config.stale_learner_threshold
-                {
-                    stale_entries.push(entry);
-                } else {
-                    // Return non-stale entry and stop
-                    self.pending_promotions.push_front(entry);
-                    break;
-                }
+        // Pop all expired front entries (VecDeque is FIFO; front is always oldest)
+        while let Some(entry) = self.pending_promotions.front() {
+            if now >= entry.ready_since + threshold {
+                let entry = self.pending_promotions.pop_front().unwrap();
+                stale_ids.push(entry.node_id);
             } else {
                 break;
             }
         }
 
-        trace!("Stale learner check completed: {:?}", stale_entries);
+        // Refresh deadline to reflect the new front (or None if queue emptied)
+        self.refresh_stale_deadline(threshold);
 
-        // Process collected stale entries
-        for entry in stale_entries {
-            if let Err(e) = self.handle_stale_learner(entry.node_id, role_tx, ctx).await {
-                error!("Failed to handle stale learner: {}", e);
+        for node_id in stale_ids {
+            warn!(
+                node_id,
+                "Stale learner detected: pending promotion threshold exceeded"
+            );
+            metrics::counter!(
+                "membership.stale_learner_removed",
+                &[("node_id", node_id.to_string())]
+            )
+            .increment(1);
+            if let Err(e) = self.handle_stale_learner(node_id, role_tx, ctx).await {
+                error!(node_id, ?e, "Failed to handle stale learner");
             }
         }
 
         Ok(())
     }
 
-    /// Remove non-Active zombie nodes that exceed failure threshold
-    pub(super) async fn conditionally_purge_zombie_nodes(
+    /// Handle a ZombieDetected signal from the health monitor.
+    ///
+    /// ReadOnly nodes are permanent read replicas and must never be auto-removed.
+    /// All other non-Active nodes that repeatedly fail connections are removed via consensus.
+    pub async fn handle_zombie_node(
         &mut self,
+        node_id: u32,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        // Optimize: get membership reference once to reduce lock contention
-        let membership = ctx.membership();
-        let zombie_candidates = membership.get_zombie_candidates().await;
-        let mut nodes_to_remove = Vec::new();
+        let status = ctx.membership().get_node_status(node_id).await;
 
-        for node_id in zombie_candidates {
-            if let Some(status) = membership.get_node_status(node_id).await
-                && status != NodeStatus::Active
-            {
-                nodes_to_remove.push(node_id);
-            }
-        }
-        // Batch removal if we have candidates
-        if !nodes_to_remove.is_empty() {
-            let change = Change::BatchRemove(BatchRemove {
-                node_ids: nodes_to_remove.clone(),
-            });
-
-            info!(
-                "Proposing batch removal of zombie nodes: {:?}",
-                nodes_to_remove
+        if status == Some(NodeStatus::ReadOnly) {
+            debug!(
+                node_id,
+                "Zombie signal ignored: ReadOnly node is exempt from auto-removal"
             );
-
-            // Submit single config change for all nodes (fire-and-forget).
-            self.execute_request_immediately(
-                RaftRequestWithSignal {
-                    id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
-                    payloads: vec![EntryPayload::config(change)],
-                    senders: vec![],
-                    wait_for_apply_event: false,
-                },
-                ctx,
-                role_tx,
-            )
-            .await?;
+            return Ok(());
         }
 
-        Ok(())
-    }
+        warn!(
+            node_id,
+            "Zombie detected: proposing BatchRemove via consensus"
+        );
 
-    pub fn reset_next_membership_maintenance_check(
-        &mut self,
-        membership_maintenance_interval: Duration,
-    ) {
-        self.next_membership_maintenance_check = Instant::now() + membership_maintenance_interval;
+        let change = Change::BatchRemove(BatchRemove {
+            node_ids: vec![node_id],
+        });
+
+        self.execute_request_immediately(
+            RaftRequestWithSignal {
+                id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
+                payloads: vec![EntryPayload::config(change)],
+                senders: vec![],
+                wait_for_apply_event: false,
+            },
+            ctx,
+            role_tx,
+        )
+        .await
     }
 
     /// Remove stalled learner via membership change consensus
@@ -3989,7 +3979,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             last_purged_index: candidate.last_purged_index,
             last_learner_check: Instant::now(),
             snapshot_in_progress: AtomicBool::new(false),
-            next_membership_maintenance_check: Instant::now(),
+            stale_check_deadline: None,
             pending_promotions: VecDeque::new(),
             cluster_metadata: ClusterMetadata {
                 single_voter: false,

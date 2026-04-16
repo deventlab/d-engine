@@ -700,10 +700,6 @@ where
         info!("Config change applied at index {}", index);
     }
 
-    async fn get_zombie_candidates(&self) -> Vec<u32> {
-        self.health_monitor.get_zombie_candidates().await
-    }
-
     async fn can_rejoin(
         &self,
         node_id: u32,
@@ -727,23 +723,41 @@ impl<T> RaftMembership<T>
 where
     T: TypeConfig,
 {
+    /// Returns `(Self, zombie_rx)`. Caller must pass `zombie_rx` to the Raft event loop
+    /// so that `ZombieDetected` signals reach the leader.
     pub(crate) fn new(
         node_id: u32,
         initial_nodes: Vec<NodeMeta>,
         config: RaftNodeConfig,
-    ) -> Self {
+    ) -> (Self, tokio::sync::mpsc::Receiver<u32>) {
         let zombie_threshold = config.raft.membership.zombie.threshold;
         let connection_cache = ConnectionCache::new(config.network.clone());
         let initial_cluster_size = initial_nodes.len();
-        Self {
-            node_id,
-            membership: MembershipGuard::new(initial_nodes, 0),
-            config,
-            initial_cluster_size,
-            _phantom: PhantomData,
-            health_monitor: RaftHealthMonitor::new(zombie_threshold),
-            connection_cache,
-        }
+        let (health_monitor, zombie_rx) = RaftHealthMonitor::new(zombie_threshold);
+        (
+            Self {
+                node_id,
+                membership: MembershipGuard::new(initial_nodes, 0),
+                config,
+                initial_cluster_size,
+                _phantom: PhantomData,
+                health_monitor,
+                connection_cache,
+            },
+            zombie_rx,
+        )
+    }
+
+    /// Returns true if the zombie signal for `node_id` should still be acted on.
+    ///
+    /// Delegates to the inner health monitor. The bridge task calls this before
+    /// forwarding a `ZombieDetected` signal to the Raft event loop so that a
+    /// stale signal (peer already recovered via `record_success`) is dropped.
+    pub(crate) fn is_zombie_valid(
+        &self,
+        node_id: u32,
+    ) -> bool {
+        self.health_monitor.is_zombie_valid(node_id)
     }
 
     /// Updates a single node atomically

@@ -86,6 +86,17 @@ pub trait RaftRoleState: Send + Sync + 'static {
         Err(MembershipError::NotLeader.into())
     }
 
+    /// Handle a ZombieDetected signal. No-op for non-leader roles.
+    async fn handle_zombie_detected(
+        &mut self,
+        _node_id: u32,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _ctx: &RaftContext<Self::T>,
+    ) -> Result<()> {
+        // Default: no-op for non-leader roles
+        Ok(())
+    }
+
     /// Update per-peer snapshot push backoff state and emit an alert when persistent
     /// failures exceed the configured threshold. No-op for non-leader roles.
     fn handle_snapshot_push_completed(

@@ -370,9 +370,6 @@ pub struct MembershipConfig {
     #[serde(default = "default_verify_leadership_persistent_timeout")]
     pub verify_leadership_persistent_timeout: Duration,
 
-    #[serde(default = "default_membership_maintenance_interval")]
-    pub membership_maintenance_interval: Duration,
-
     #[serde(default)]
     pub zombie: ZombieConfig,
 
@@ -385,7 +382,6 @@ impl Default for MembershipConfig {
         Self {
             cluster_healthcheck_probe_service_name: default_probe_service(),
             verify_leadership_persistent_timeout: default_verify_leadership_persistent_timeout(),
-            membership_maintenance_interval: default_membership_maintenance_interval(),
             zombie: ZombieConfig::default(),
             promotion: PromotionConfig::default(),
         }
@@ -393,11 +389,6 @@ impl Default for MembershipConfig {
 }
 fn default_probe_service() -> String {
     "d_engine.server.cluster.ClusterManagementService".to_string()
-}
-
-// 30 seconds
-fn default_membership_maintenance_interval() -> Duration {
-    Duration::from_secs(30)
 }
 
 /// Default timeout for leader to keep verifying its leadership.
@@ -731,15 +722,12 @@ fn default_zombie_purge_interval() -> Duration {
 pub struct PromotionConfig {
     #[serde(default = "default_stale_learner_threshold")]
     pub stale_learner_threshold: Duration,
-    #[serde(default = "default_stale_check_interval")]
-    pub stale_check_interval: Duration,
 }
 
 impl Default for PromotionConfig {
     fn default() -> Self {
         Self {
             stale_learner_threshold: default_stale_learner_threshold(),
-            stale_check_interval: default_stale_check_interval(),
         }
     }
 }
@@ -747,10 +735,6 @@ impl Default for PromotionConfig {
 // 5 minutes
 fn default_stale_learner_threshold() -> Duration {
     Duration::from_secs(300)
-}
-// 30 seconds
-fn default_stale_check_interval() -> Duration {
-    Duration::from_secs(30)
 }
 /// Defines how Raft log entries are persisted and accessed.
 ///

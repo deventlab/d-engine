@@ -249,11 +249,14 @@ pub fn setup_raft_components(
         raft_log: buffered_raft_log,
         state_machine,
         transport: Arc::new(grpc_transport),
-        membership: Arc::new(RaftMembership::new(
-            id,
-            arc_node_config.cluster.initial_cluster.clone(),
-            node_config_clone.clone(),
-        )),
+        membership: Arc::new(
+            RaftMembership::new(
+                id,
+                arc_node_config.cluster.initial_cluster.clone(),
+                node_config_clone.clone(),
+            )
+            .0,
+        ),
         election_handler: ElectionHandler::new(id),
         replication_handler: ReplicationHandler::new(id),
         node_config: node_config_clone,
