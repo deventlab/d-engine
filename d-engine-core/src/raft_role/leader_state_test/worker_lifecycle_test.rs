@@ -10,6 +10,7 @@
 //! actually executes `send_to_worker_or_spawn`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use d_engine_proto::common::{EntryPayload, NodeRole::Follower, NodeStatus};
@@ -347,5 +348,99 @@ async fn test_worker_rebuilt_after_death() {
     assert!(
         matches!(event, RoleEvent::AppendResult { follower_id: 2, .. }),
         "expected AppendResult for peer 2, got {event:?}"
+    );
+}
+
+/// Replication worker exits its inner reconnect loop when the task channel is closed.
+///
+/// # Scenario
+/// - Transport always fails `open_replication_stream` (peer unreachable).
+/// - Worker is spawned via `process_batch`; it enters the inner reconnect loop.
+/// - The `LeaderState` is dropped, which drops `ReplicationWorkerHandle` and closes `task_rx`.
+/// - On the next iteration the worker checks `task_rx.is_closed()` and must exit cleanly
+///   without making further connection attempts.
+///
+/// # Guarantees checked
+/// - After the handle is dropped, `open_replication_stream` call count stops increasing.
+///   This proves the `if task_rx.is_closed() { return; }` guard fires correctly,
+///   preventing an infinite reconnect loop that would flood the Raft event loop with
+///   zombie signals and block heartbeats (regression: zombie detection + dead peer).
+#[tokio::test]
+#[traced_test]
+async fn test_replication_worker_exits_when_handle_dropped() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context(
+        "/tmp/test_replication_worker_exits_when_handle_dropped",
+        graceful_rx,
+        None,
+    );
+
+    ctx.membership = Arc::new(two_peer_membership());
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_request())],
+                snapshot_targets: vec![],
+            })
+        });
+
+    // Transport: open_replication_stream always fails (simulates dead peer).
+    // Counts total invocations so we can assert the worker stopped retrying after drop.
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let call_count_clone = Arc::clone(&call_count);
+    // Notifier fires after the first failure so the test knows the worker has entered the loop.
+    let (first_attempt_tx, mut first_attempt_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+    let mut transport = MockTransport::<MockTypeConfig>::new();
+    transport
+        .expect_send_append_request()
+        .returning(|_, _, _, _, _| Ok(stub_response()));
+    transport.expect_open_replication_stream().returning(move |_, _, _| {
+        let n = call_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == 1 {
+            // Signal test that worker reached the reconnect loop.
+            let _ = first_attempt_tx.try_send(());
+        }
+        Err(crate::NetworkError::ConnectError("peer unreachable".into()).into())
+    });
+    ctx.transport = Arc::new(transport);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+
+    // Wait until the worker has attempted at least one connection (entered inner loop).
+    tokio::time::timeout(std::time::Duration::from_secs(5), first_attempt_rx.recv())
+        .await
+        .expect("timed out waiting for first reconnect attempt");
+
+    // Drop LeaderState — drops all ReplicationWorkerHandles — closes task_rx for all workers.
+    drop(state);
+
+    // Record call count at drop time.
+    let count_at_drop = call_count.load(Ordering::SeqCst);
+
+    // Give the worker enough time to loop back and hit the is_closed() check.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let count_after_wait = call_count.load(Ordering::SeqCst);
+
+    assert_eq!(
+        count_at_drop, count_after_wait,
+        "open_replication_stream must not be called after task channel is closed \
+         (got {} calls at drop, {} after wait — worker did not exit)",
+        count_at_drop, count_after_wait
     );
 }

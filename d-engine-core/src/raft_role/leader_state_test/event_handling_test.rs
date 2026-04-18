@@ -968,3 +968,217 @@ async fn test_step_down_self_removed_sends_become_follower() {
         "Expected BecomeFollower(None), got: {event:?}"
     );
 }
+
+// ============================================================================
+// ClusterConf current_leader_id Correctness Tests
+// ============================================================================
+
+/// Leader must NOT expose its own ID via ClusterConf before noop is committed.
+///
+/// # Problem (root cause of `leader_failover_cas_standalone` flakiness)
+/// After election, `From<CandidateState>` immediately calls `set_current_leader(self.node_id())`.
+/// At this point `noop_log_id = None` — the leader has not yet confirmed quorum readiness.
+/// If ClusterConf returns `current_leader_id = Some(id)` at this point, clients (via
+/// `probe_endpoint`) will route requests to this leader, which then rejects them with
+/// `LeaderNotReady: noop not committed`. The correct behaviour: return `None` until noop commits.
+///
+/// # Contract
+/// `retrieve_cluster_membership_config` must receive `None` when `noop_log_id = None`.
+///
+/// # Test status: FAILS before fix, PASSES after fix
+#[tokio::test]
+#[traced_test]
+async fn test_cluster_conf_hides_leader_id_when_noop_not_committed() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_cluster_conf_hides_leader_id_noop_none",
+        graceful_rx,
+        None,
+    );
+
+    let mut membership = create_mock_membership();
+    // Assert: the argument passed must be None — leader must not expose itself before noop
+    membership
+        .expect_retrieve_cluster_membership_config()
+        .times(1)
+        .with(mockall::predicate::eq(None::<u32>))
+        .returning(|_| ClusterMembership {
+            version: 1,
+            nodes: vec![],
+            current_leader_id: None,
+        });
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    // Simulate what From<CandidateState> does: current_leader set immediately after election
+    state.shared_state.set_current_leader(1);
+    // noop_log_id = None (default) — noop not yet committed
+
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    assert!(
+        state
+            .handle_raft_event(
+                RaftEvent::ClusterConf(MetadataRequest {}, resp_tx),
+                &context,
+                role_tx
+            )
+            .await
+            .is_ok()
+    );
+    let _ = resp_rx.recv().await.unwrap().unwrap();
+    // If mock assertion passes (no panic), the fix is working correctly
+}
+
+/// Leader must expose its own ID via ClusterConf once noop is committed.
+///
+/// After noop commits, `noop_log_id = Some(index)` — the leader has confirmed quorum
+/// and is ready to serve clients. ClusterConf must return `current_leader_id = Some(id)`
+/// so clients can route requests correctly without unnecessary retries.
+///
+/// # Contract
+/// `retrieve_cluster_membership_config` must receive `Some(node_id)` when `noop_log_id = Some(_)`.
+///
+/// # Test status: PASSES before and after fix (this is the expected stable-leader behaviour)
+#[tokio::test]
+#[traced_test]
+async fn test_cluster_conf_exposes_leader_id_after_noop_committed() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_cluster_conf_exposes_leader_id_noop_committed",
+        graceful_rx,
+        None,
+    );
+
+    let mut membership = create_mock_membership();
+    // Assert: once noop is committed the argument must be Some(1)
+    membership
+        .expect_retrieve_cluster_membership_config()
+        .times(1)
+        .with(mockall::predicate::eq(Some(1u32)))
+        .returning(|_| ClusterMembership {
+            version: 1,
+            nodes: vec![],
+            current_leader_id: Some(1),
+        });
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.shared_state.set_current_leader(1);
+    state.noop_log_id = Some(1); // noop committed
+
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    assert!(
+        state
+            .handle_raft_event(
+                RaftEvent::ClusterConf(MetadataRequest {}, resp_tx),
+                &context,
+                role_tx
+            )
+            .await
+            .is_ok()
+    );
+    let m = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(
+        m.current_leader_id,
+        Some(1),
+        "leader must be visible after noop commits"
+    );
+}
+
+/// Leader ClusterConf transitions from hiding to exposing leader ID exactly when noop commits.
+///
+/// Tests the full state machine across two successive ClusterConf calls on the same leader:
+///   1. Pre-noop:  noop_log_id = None    → must pass None    to retrieve_cluster_membership_config
+///   2. Post-noop: noop_log_id = Some(1) → must pass Some(1) to retrieve_cluster_membership_config
+///
+/// This verifies the leader stops hiding its identity exactly at noop commit — not one tick
+/// earlier (causes LeaderNotReady) and not one tick later (causes stale routing).
+///
+/// # Test status: FAILS before fix (first call sends Some(1), not None), PASSES after fix
+#[tokio::test]
+#[traced_test]
+async fn test_cluster_conf_leader_id_transitions_after_noop_commits() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_cluster_conf_leader_id_transitions",
+        graceful_rx,
+        None,
+    );
+
+    let mut seq = mockall::Sequence::new();
+    let mut membership = create_mock_membership();
+
+    // First call (pre-noop): must receive None
+    membership
+        .expect_retrieve_cluster_membership_config()
+        .times(1)
+        .in_sequence(&mut seq)
+        .with(mockall::predicate::eq(None::<u32>))
+        .returning(|_| ClusterMembership {
+            version: 1,
+            nodes: vec![],
+            current_leader_id: None,
+        });
+    // Second call (post-noop): must receive Some(1)
+    membership
+        .expect_retrieve_cluster_membership_config()
+        .times(1)
+        .in_sequence(&mut seq)
+        .with(mockall::predicate::eq(Some(1u32)))
+        .returning(|_| ClusterMembership {
+            version: 1,
+            nodes: vec![],
+            current_leader_id: Some(1),
+        });
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.shared_state.set_current_leader(1);
+
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    // Call 1: noop_log_id = None (pre-noop)
+    let (resp_tx1, mut resp_rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
+    assert!(
+        state
+            .handle_raft_event(
+                RaftEvent::ClusterConf(MetadataRequest {}, resp_tx1),
+                &context,
+                role_tx.clone(),
+            )
+            .await
+            .is_ok()
+    );
+    let m1 = resp_rx1.recv().await.unwrap().unwrap();
+    assert_eq!(
+        m1.current_leader_id, None,
+        "leader must be hidden before noop commits"
+    );
+
+    // Noop commits — leader is now ready
+    state.noop_log_id = Some(1);
+
+    // Call 2: noop_log_id = Some(1) (post-noop)
+    let (resp_tx2, mut resp_rx2) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
+    assert!(
+        state
+            .handle_raft_event(
+                RaftEvent::ClusterConf(MetadataRequest {}, resp_tx2),
+                &context,
+                role_tx,
+            )
+            .await
+            .is_ok()
+    );
+    let m2 = resp_rx2.recv().await.unwrap().unwrap();
+    assert_eq!(
+        m2.current_leader_id,
+        Some(1),
+        "leader must be visible after noop commits"
+    );
+}

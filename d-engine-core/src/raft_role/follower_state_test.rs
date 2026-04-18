@@ -2611,3 +2611,66 @@ async fn test_follower_install_snapshot_reports_failure_when_apply_fails_after_t
         "Follower must NOT report success when apply failed after transfer (got success:true — #308 bug)"
     );
 }
+
+// ============================================================================
+// ClusterConf current_leader_id Correctness Tests
+// ============================================================================
+
+/// Follower ClusterConf always exposes the current known leader ID.
+///
+/// Unlike the leader (which must hide its ID until noop commits — see T1/T3 in
+/// `event_handling_test.rs`), a follower learns the leader ID exclusively via
+/// AppendEntries requests. AppendEntries only arrive after the leader has committed
+/// its noop entry, so a follower's `current_leader` is always safe to expose.
+///
+/// This test documents the intentional asymmetry:
+/// - Leader: hides `current_leader_id` until noop commits
+/// - Follower: always exposes `current_leader_id` if known (safe by construction)
+///
+/// # Contract
+/// `retrieve_cluster_membership_config` must receive `Some(leader_id)` when the
+/// follower has observed at least one AppendEntries from that leader.
+///
+/// # Test status: PASSES before and after fix (follower behaviour is already correct)
+#[tokio::test]
+async fn test_follower_cluster_conf_always_exposes_current_leader() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut membership = MockMembership::new();
+    // Assert: follower passes the known leader ID (Some(3)) — never None when leader is known
+    membership
+        .expect_retrieve_cluster_membership_config()
+        .times(1)
+        .with(eq(Some(3u32)))
+        .returning(|_| ClusterMembership {
+            version: 1,
+            nodes: vec![],
+            current_leader_id: Some(3),
+        });
+    context.membership = Arc::new(membership);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    // Simulate: follower learned about leader 3 via AppendEntries (leader already past noop)
+    state.shared_state.set_current_leader(3);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    assert!(
+        state
+            .handle_raft_event(
+                RaftEvent::ClusterConf(MetadataRequest {}, resp_tx),
+                &context,
+                role_tx
+            )
+            .await
+            .is_ok()
+    );
+    let m = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(
+        m.current_leader_id,
+        Some(3),
+        "follower must expose known leader ID"
+    );
+}

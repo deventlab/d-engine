@@ -1142,10 +1142,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
-                let cluster_conf = ctx
-                    .membership()
-                    .retrieve_cluster_membership_config(self.shared_state().current_leader())
-                    .await;
+                // Hide leader ID until noop commits: before noop, the leader has not confirmed
+                // quorum readiness. Exposing current_leader_id too early causes clients to route
+                // to this leader, which then rejects them with LeaderNotReady.
+                // `Option::and` returns None if noop_log_id is None, Some(id) otherwise.
+                let current_leader = self.noop_log_id.and(self.shared_state().current_leader());
+                let cluster_conf =
+                    ctx.membership().retrieve_cluster_membership_config(current_leader).await;
                 debug!("Leader receive ClusterConf: {:?}", &cluster_conf);
                 if let Err(e) = sender.send(Ok(cluster_conf)) {
                     // Receiver timed out and dropped — this is normal, do not crash the node
@@ -1963,6 +1966,10 @@ impl<T: TypeConfig> LeaderState<T> {
         loop {
             let mut backoff_ms = base_delay_ms;
             let stream = loop {
+                if task_rx.is_closed() {
+                    debug!(peer_id, "Replication worker exiting: task channel closed");
+                    return;
+                }
                 match transport
                     .open_replication_stream(peer_id, membership.clone(), response_compress_enabled)
                     .await
