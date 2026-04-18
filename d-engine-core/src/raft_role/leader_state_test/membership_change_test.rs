@@ -1657,64 +1657,42 @@ mod zombie_purge_tests {
     use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
     use crate::test_utils::node_config;
     use d_engine_proto::common::EntryPayload;
-    use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
-    use d_engine_proto::server::cluster::NodeMeta;
+    use d_engine_proto::common::NodeStatus;
 
     // =========================================================================
-    // handle_zombie_node — event-driven path
+    // handle_zombie_node — warn-only, no auto-removal
     // =========================================================================
 
-    /// ZombieDetected event for a Promotable node → BatchRemove submitted.
+    /// ZombieDetected for an in-cluster node → warn log only, no BatchRemove.
     ///
     /// # Given
-    /// - Leader receives ZombieDetected(5)
-    /// - Node 5 has status Promotable (non-ReadOnly, non-Active)
+    /// - Node 5 is in the cluster (status Promotable)
     ///
     /// # When
     /// - handle_zombie_node(5) is called
     ///
     /// # Then
-    /// - A BatchRemove config change is proposed for node 5
+    /// - Returns Ok, no membership change is proposed
+    ///   (auto-removal is intentionally not performed; operators decide)
     #[tokio::test]
-    async fn test_handle_zombie_node_non_readonly_submits_batch_remove() {
-        use d_engine_proto::common::membership_change::Change;
-
+    async fn test_handle_zombie_node_warns_without_removal() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let mut cfg = node_config("/tmp/test_handle_zombie_node_non_readonly");
-        cfg.raft.membership.verify_leadership_persistent_timeout =
-            std::time::Duration::from_millis(50);
+        let cfg = node_config("/tmp/test_handle_zombie_node_warns_without_removal");
         let mut raft_context = MockBuilder::new(graceful_rx).with_node_config(cfg).build_context();
 
         let mut membership = MockMembership::new();
-        // Node 5 is Promotable — not ReadOnly, should be removed
         membership.expect_get_node_status().returning(|_| Some(NodeStatus::Promotable));
-        membership.expect_voters().returning(|| {
-            vec![NodeMeta {
-                id: 1,
-                address: "addr_1".to_string(),
-                role: Follower.into(),
-                status: NodeStatus::Active as i32,
-            }]
-        });
-        membership.expect_is_single_node_cluster().returning(|| false);
-        membership.expect_can_rejoin().returning(|_, _| Ok(()));
         raft_context.membership = Arc::new(membership);
 
-        let captured_payloads = Arc::new(Mutex::new(Vec::<EntryPayload>::new()));
-        let captured_clone = captured_payloads.clone();
         raft_context
             .handlers
             .replication_handler
             .expect_prepare_batch_requests()
-            .times(..)
-            .returning(move |payloads, _, _, _, _| {
-                captured_clone.lock().extend(payloads.clone());
-                Ok(crate::PrepareResult::default())
-            });
+            .times(0) // Must NOT be called — zombie detection is warn-only
+            .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().returning(|| 10);
-        raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
         raft_context.storage.raft_log = Arc::new(raft_log);
 
         let node_config = raft_context.node_config();
@@ -1722,43 +1700,67 @@ mod zombie_purge_tests {
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
         let result = leader.handle_zombie_node(5, &role_tx, &raft_context).await;
-        assert!(result.is_ok());
-
-        let payloads = captured_payloads.lock();
-        assert_eq!(payloads.len(), 1, "Should submit exactly one BatchRemove");
-        match &payloads[0].payload {
-            Some(d_engine_proto::common::entry_payload::Payload::Config(change)) => {
-                match &change.change {
-                    Some(Change::BatchRemove(batch_remove)) => {
-                        assert_eq!(batch_remove.node_ids, vec![5], "Should remove node 5");
-                    }
-                    _ => panic!("Expected BatchRemove, got: {:?}", change.change),
-                }
-            }
-            _ => panic!("Expected Config payload, got: {:?}", payloads[0].payload),
-        }
+        assert!(result.is_ok(), "handle_zombie_node must not fail");
     }
 
-    /// ZombieDetected event for a ReadOnly node → exempt, no BatchRemove.
+    /// ZombieDetected for a ReadOnly node → warn log only, no BatchRemove.
     ///
     /// # Given
-    /// - Leader receives ZombieDetected(5)
-    /// - Node 5 has status ReadOnly (permanent read replica, must not be auto-removed)
+    /// - Node 5 has status ReadOnly
     ///
     /// # When
     /// - handle_zombie_node(5) is called
     ///
     /// # Then
-    /// - No config change is proposed (ReadOnly nodes are exempt from zombie auto-removal)
+    /// - Returns Ok, no membership change is proposed
     #[tokio::test]
-    async fn test_handle_zombie_node_readonly_is_exempt() {
+    async fn test_handle_zombie_node_readonly_warns_without_removal() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let cfg = node_config("/tmp/test_handle_zombie_node_readonly_exempt");
+        let cfg = node_config("/tmp/test_handle_zombie_node_readonly_warns");
         let mut raft_context = MockBuilder::new(graceful_rx).with_node_config(cfg).build_context();
 
         let mut membership = MockMembership::new();
-        // Node 5 is ReadOnly — must never be auto-removed
         membership.expect_get_node_status().returning(|_| Some(NodeStatus::ReadOnly));
+        raft_context.membership = Arc::new(membership);
+
+        raft_context
+            .handlers
+            .replication_handler
+            .expect_prepare_batch_requests()
+            .times(0)
+            .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 10);
+        raft_context.storage.raft_log = Arc::new(raft_log);
+
+        let node_config = raft_context.node_config();
+        let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
+        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+        let result = leader.handle_zombie_node(5, &role_tx, &raft_context).await;
+        assert!(result.is_ok(), "handle_zombie_node must not fail");
+    }
+
+    /// Stale zombie signal for a node that is no longer in the cluster is silently ignored.
+    ///
+    /// # Given
+    /// - Node 5 has already been removed (get_node_status returns None)
+    ///
+    /// # When
+    /// - handle_zombie_node(5) is called (e.g. stale signal arrived after BatchRemove committed)
+    ///
+    /// # Then
+    /// - No config change is proposed (node is gone; re-proposing BatchRemove would flood the Raft log)
+    #[tokio::test]
+    async fn test_handle_zombie_node_absent_node_is_ignored() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let cfg = node_config("/tmp/test_handle_zombie_node_absent_ignored");
+        let mut raft_context = MockBuilder::new(graceful_rx).with_node_config(cfg).build_context();
+
+        let mut membership = MockMembership::new();
+        // Node 5 is not in the cluster
+        membership.expect_get_node_status().returning(|_| None);
         raft_context.membership = Arc::new(membership);
 
         let captured_payloads = Arc::new(Mutex::new(Vec::<EntryPayload>::new()));
@@ -1767,7 +1769,7 @@ mod zombie_purge_tests {
             .handlers
             .replication_handler
             .expect_prepare_batch_requests()
-            .times(0) // Must NOT be called — ReadOnly node is exempt
+            .times(0) // Must NOT be called — node is already removed
             .returning(move |payloads, _, _, _, _| {
                 captured_clone.lock().extend(payloads.clone());
                 Ok(crate::PrepareResult::default())
@@ -1785,7 +1787,7 @@ mod zombie_purge_tests {
         assert!(result.is_ok());
         assert!(
             captured_payloads.lock().is_empty(),
-            "ReadOnly node must not be auto-removed"
+            "Absent node must not trigger a BatchRemove"
         );
     }
 }

@@ -24,6 +24,12 @@ All notable changes to this project will be documented in this file.
 
 - No runtime behavior change for existing deployments — `unified_db` defaults to `false`
 
+- **Zombie detection no longer auto-removes unreachable nodes** (#327):
+  Previously, a node that failed to connect N times was automatically removed
+  via `BatchRemove`. This was too aggressive and could evict temporarily
+  restarting nodes. Detection now emits a `warn` log only — removal remains
+  a deliberate operator or upper-layer decision.
+
 ### ⚠️ Breaking Change — Snapshot Format
 
 The internal snapshot format changed from RocksDB **checkpoint** (v0.2.3) to

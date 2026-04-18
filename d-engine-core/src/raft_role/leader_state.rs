@@ -3619,44 +3619,30 @@ impl<T: TypeConfig> LeaderState<T> {
 
     /// Handle a ZombieDetected signal from the health monitor.
     ///
-    /// ReadOnly nodes are permanent read replicas and must never be auto-removed.
-    /// All other non-Active nodes that repeatedly fail connections are removed via consensus.
+    /// Emits a warning log only. Membership removal is a high-risk operation that
+    /// must not be automated: a node that fails N connection attempts may simply be
+    /// restarting, and an incorrect BatchRemove would permanently eject it from the
+    /// cluster. Upper-layer tooling or operators should act on these warnings.
     pub async fn handle_zombie_node(
         &mut self,
         node_id: u32,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         let status = ctx.membership().get_node_status(node_id).await;
 
-        if status == Some(NodeStatus::ReadOnly) {
-            debug!(
-                node_id,
-                "Zombie signal ignored: ReadOnly node is exempt from auto-removal"
-            );
+        if status.is_none() {
+            debug!(node_id, "Zombie signal ignored: node not in cluster");
             return Ok(());
         }
 
         warn!(
             node_id,
-            "Zombie detected: proposing BatchRemove via consensus"
+            ?status,
+            "Zombie detected: node is persistently unreachable — manual intervention may be required"
         );
 
-        let change = Change::BatchRemove(BatchRemove {
-            node_ids: vec![node_id],
-        });
-
-        self.execute_request_immediately(
-            RaftRequestWithSignal {
-                id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
-                payloads: vec![EntryPayload::config(change)],
-                senders: vec![],
-                wait_for_apply_event: false,
-            },
-            ctx,
-            role_tx,
-        )
-        .await
+        Ok(())
     }
 
     /// Remove stalled learner via membership change consensus
