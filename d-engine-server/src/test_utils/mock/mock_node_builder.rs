@@ -38,6 +38,7 @@ use tracing::trace;
 
 use super::MockTypeConfig;
 use crate::Node;
+use crate::membership::MembershipSnapshot;
 use crate::network::grpc;
 use crate::node::LeaderNotifier;
 
@@ -317,6 +318,7 @@ impl MockBuilder {
         let membership = raft.ctx.membership.clone();
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
+        let (_membership_tx, membership_rx) = watch::channel(MembershipSnapshot::default());
 
         Node::<MockTypeConfig> {
             node_id: raft.node_id,
@@ -327,6 +329,7 @@ impl MockBuilder {
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,
+            membership_rx,
             node_config,
             #[cfg(feature = "watch")]
             watch_registry: None,
@@ -364,6 +367,7 @@ impl MockBuilder {
         let node_config_arc = Arc::new(node_config);
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
+        let (_membership_tx, membership_rx) = watch::channel(MembershipSnapshot::default());
 
         let node = Arc::new(Node::<MockTypeConfig> {
             node_id: raft.node_id,
@@ -374,6 +378,7 @@ impl MockBuilder {
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,
+            membership_rx,
             node_config: node_config_arc.clone(),
             #[cfg(feature = "watch")]
             watch_registry: None,

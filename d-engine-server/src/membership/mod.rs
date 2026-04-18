@@ -1,6 +1,8 @@
 mod membership_guard;
+mod membership_snapshot;
 mod raft_membership;
 pub(crate) use membership_guard::*;
+pub use membership_snapshot::*;
 pub use raft_membership::*;
 
 #[cfg(test)]

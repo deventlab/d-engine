@@ -215,8 +215,30 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     );
 
     // Phase 5: Verify final lock state
+    //
+    // Same cascading-election resilience as Phase 2+3: a linearizable read requires
+    // the leader to confirm quorum via heartbeat. If a cascading election is still
+    // settling after Phase 4's CAS, that heartbeat quorum confirmation can timeout.
+    // Retry refresh() + get() until a stable leader can serve the read end-to-end.
     info!("Phase 5: Verify final lock state");
-    let final_value = client.get(lock_key).await?;
+    let final_value = loop {
+        client.refresh(None).await?;
+        match client.get(lock_key).await {
+            Ok(value) => break value,
+            Err(ClientApiError::Business {
+                code: ErrorCode::StaleOperation,
+                ..
+            }) => continue,
+            Err(ClientApiError::Network {
+                code: ErrorCode::ConnectionTimeout,
+                ..
+            }) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    };
     assert_eq!(
         final_value,
         Some(b"client_b".to_vec().into()),

@@ -146,6 +146,7 @@ struct Inner {
     shutdown_tx: watch::Sender<()>,
     client: Arc<EmbeddedClient>,
     leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
+    membership_rx: watch::Receiver<crate::membership::MembershipSnapshot>,
     is_stopped: Mutex<bool>,
     node_id: u32,
 }
@@ -325,8 +326,9 @@ impl EmbeddedEngine {
             .start()
             .await?;
 
-        // Get leader change notifier before moving node
+        // Get notifiers before node is moved into the background task.
         let leader_elected_rx = node.leader_change_notifier();
+        let membership_rx = node.membership_change_notifier();
 
         // Create client before spawning
         #[cfg(not(feature = "watch"))]
@@ -372,6 +374,7 @@ impl EmbeddedEngine {
                 shutdown_tx,
                 client,
                 leader_elected_rx,
+                membership_rx,
                 is_stopped: Mutex::new(false),
                 node_id,
             }),
@@ -471,6 +474,37 @@ impl EmbeddedEngine {
     /// ```
     pub fn leader_change_notifier(&self) -> watch::Receiver<Option<crate::LeaderInfo>> {
         self.inner.leader_elected_rx.clone()
+    }
+
+    /// Subscribe to committed membership change notifications.
+    ///
+    /// Returns a `watch::Receiver` that fires whenever a `ConfChange` entry
+    /// (node join, removal, or learner promotion) is committed by a majority.
+    ///
+    /// All nodes — leader, follower, and learner — fire the notification because
+    /// every node walks the same `CommitHandler::apply_config_change()` path.
+    ///
+    /// The first `borrow()` returns the current membership state immediately
+    /// without waiting for a change.
+    ///
+    /// ## Distinguishing this from other notifiers
+    ///
+    /// - [`leader_change_notifier`]: fires on leader election changes, **not** membership changes
+    /// - [`ready_notifier`]: fires when the local RPC server is ready, **not** membership changes
+    ///
+    /// ## Usage
+    /// ```ignore
+    /// let mut rx = engine.watch_membership();
+    /// while rx.changed().await.is_ok() {
+    ///     let snapshot = rx.borrow_and_update().clone();
+    ///     // snapshot.members — current voters
+    ///     // snapshot.learners — current non-voting learners
+    ///     // snapshot.committed_index — idempotency key
+    ///     scheduler.on_membership_changed(snapshot).await;
+    /// }
+    /// ```
+    pub fn watch_membership(&self) -> watch::Receiver<crate::membership::MembershipSnapshot> {
+        self.inner.membership_rx.clone()
     }
 
     /// Returns true if the current node is the Raft leader.

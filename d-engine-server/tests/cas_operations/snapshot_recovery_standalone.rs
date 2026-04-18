@@ -14,6 +14,7 @@ use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
 use crate::common::start_node;
+use crate::common::wait_for_stable_leader;
 use tempfile::TempDir;
 
 /// Test CAS state survives snapshot and recovery (standalone mode)
@@ -122,11 +123,14 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     ctx.graceful_txs[1] = graceful_tx;
     ctx.node_handles[1] = node_handle;
 
-    tokio::time::sleep(Duration::from_secs(WAIT_FOR_NODE_READY_IN_SEC)).await;
+    // Wait for TCP port up, then wait for a stable leader.
+    // Node 2 restart may trigger cascading elections (it rejoins with a stale term and
+    // immediately starts an election, causing the current leader to step down). A TCP
+    // check only confirms the process is listening — wait_for_stable_leader() probes
+    // with a linearizable read, which is the authoritative proof that the cluster has
+    // a leader capable of serving requests end-to-end.
     check_cluster_is_ready(&format!("127.0.0.1:{}", ports[1]), 10).await?;
-
-    // Refresh client so it rediscovers the current leader after node restart
-    client.refresh(None).await.ok();
+    wait_for_stable_leader(&client).await?;
 
     // Step 5: Verify lock persists after restart
     // Use eventual read — goal is to verify data persistence, not consistency

@@ -1,13 +1,10 @@
 #![allow(dead_code)]
 
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
 use bytes::Bytes;
 use bytes::BytesMut;
 use config::Config;
+use d_engine_client::Client;
+use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
 use d_engine_core::alias::SMOF;
 use d_engine_core::alias::SOF;
@@ -23,6 +20,7 @@ use d_engine_core::convert::safe_kv_bytes;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
+use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_server::FileStateMachine;
 use d_engine_server::FileStorageEngine;
@@ -35,6 +33,10 @@ use d_engine_server::NodeBuilder;
 use d_engine_server::StorageEngine;
 use d_engine_server::node::RaftTypeConfig;
 use prost::Message;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::remove_dir_all;
 use tokio::fs::{self};
 use tokio::net::TcpStream;
@@ -539,6 +541,74 @@ pub async fn check_cluster_is_ready(
             let err_msg =
                 format!("Node({peer_addr:?}) did not become ready within {timeout_secs} seconds.");
             Err(std::io::Error::new(std::io::ErrorKind::TimedOut, err_msg))
+        }
+    }
+}
+
+/// Create TOML config for a node rejoining an existing all-voter cluster.
+///
+/// Uses `election_timeout_min = 3000ms` so the rejoining node's election timer
+/// outlasts the replication worker's max reconnect backoff (`max_delay_ms = 1000ms`),
+/// ensuring the leader's first heartbeat arrives before any election fires.
+pub fn create_rejoin_node_config(
+    node_id: u32,
+    port: u16,
+    peers: &[(u32, u16)],
+    db_root_dir: &str,
+) -> String {
+    let cluster_entries = peers
+        .iter()
+        .map(|(id, p)| {
+            format!(
+                "{{ id = {id}, name = 'n{id}', address = '127.0.0.1:{p}', role = 1, status = 3 }}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n    ");
+
+    format!(
+        r#"[cluster]
+node_id = {node_id}
+listen_address = '127.0.0.1:{port}'
+initial_cluster = [
+    {cluster_entries}
+]
+db_root_dir = '{db_root_dir}'
+
+[raft]
+general_raft_timeout_duration_in_ms = 5000
+[raft.election]
+election_timeout_min = 3000
+election_timeout_max = 6000
+"#
+    )
+}
+
+/// Wait until the cluster has a stable leader capable of serving linearizable reads.
+///
+/// After a node restart or failover, cascading elections may occur before a stable
+/// leader emerges. A single `refresh()` is insufficient — the discovered leader may
+/// step down before completing a request. This function is the authoritative check:
+/// a successful linearizable read proves the leader is actively serving end-to-end.
+///
+/// Equivalent to the Phase 2+3 retry loop in `leader_failover_cas_standalone`.
+pub async fn wait_for_stable_leader(client: &Client) -> Result<(), ClientApiError> {
+    loop {
+        client.refresh(None).await.ok();
+        match client.get(b"__stability_probe__").await {
+            Ok(_) => return Ok(()),
+            Err(ClientApiError::Business {
+                code: ErrorCode::StaleOperation,
+                ..
+            }) => continue,
+            Err(ClientApiError::Network {
+                code: ErrorCode::ConnectionTimeout,
+                ..
+            }) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            Err(e) => return Err(e),
         }
     }
 }
