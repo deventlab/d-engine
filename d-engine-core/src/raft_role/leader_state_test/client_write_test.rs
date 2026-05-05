@@ -478,7 +478,7 @@ async fn test_process_raft_request_batching_enabled() {
     let mut test_context = setup_process_raft_request_test_context(
         "test_process_raft_request_batching_enabled",
         100, // batch_threshold: 100 means batching enabled
-        0,   // expect handle_raft_request_in_batch NOT to be called immediately
+        0,   // no prepare_batch_requests call expected (request buffered)
         graceful_rx,
     )
     .await;

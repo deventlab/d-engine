@@ -1,15 +1,12 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_core::AppendResults;
 use d_engine_core::Error;
 use d_engine_core::MockMembership;
 use d_engine_core::MockRaftLog;
 use d_engine_core::MockReplicationCore;
 use d_engine_core::MockTransport;
 use d_engine_core::MockTypeConfig;
-use d_engine_core::PeerUpdate;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::RaftRole;
 use d_engine_core::learner_state::LearnerState;
@@ -50,36 +47,8 @@ async fn test_run_sequence_with_mock_peers() {
 
 fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<MockTypeConfig>) {
     // Initialize the mock object
-    let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
+    let replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     let mut raft_log = MockRaftLog::new();
-
-    //Configure mock behavior
-    replication_handler
-        .expect_handle_raft_request_in_batch()
-        .returning(move |_, _, _, _, _| {
-            Ok(AppendResults {
-                commit_quorum_achieved: true,
-                learner_progress: HashMap::new(),
-                peer_updates: HashMap::from([
-                    (
-                        2,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                    (
-                        3,
-                        PeerUpdate {
-                            match_index: Some(5),
-                            next_index: 6,
-                            success: true,
-                        },
-                    ),
-                ]),
-            })
-        });
 
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     raft_log.expect_last_entry_id().return_const(1_u64);
@@ -570,17 +539,7 @@ mod bootstrap_strategy_tests {
     }
 
     fn prepare_mock_replication() -> MockReplicationCore<MockTypeConfig> {
-        let mut replication = MockReplicationCore::<MockTypeConfig>::new();
-        replication
-            .expect_handle_raft_request_in_batch()
-            .returning(move |_, _, _, _, _| {
-                Ok(d_engine_core::AppendResults {
-                    commit_quorum_achieved: true,
-                    learner_progress: std::collections::HashMap::new(),
-                    peer_updates: std::collections::HashMap::new(),
-                })
-            });
-        replication
+        MockReplicationCore::<MockTypeConfig>::new()
     }
 
     /// Test 1: Learner bootstrap - skip cluster ready check, join cluster

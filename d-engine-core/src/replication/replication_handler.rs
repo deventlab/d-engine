@@ -10,37 +10,30 @@ use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole;
 use d_engine_proto::common::entry_payload::Payload;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
-use d_engine_proto::server::replication::append_entries_response;
 use prost::Message;
 use tracing::debug;
 use tracing::error;
-use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
 use super::AppendResponseWithUpdates;
 use super::PrepareResult;
 use super::ReplicationCore;
-use crate::AppendResults;
 use crate::IdAllocationError;
 use crate::LeaderStateSnapshot;
 use crate::PeerUpdate;
-use crate::RaftContext;
 use crate::RaftLog;
 use crate::ReplicationError;
 use crate::Result;
 use crate::StateSnapshot;
-use crate::Transport;
 use crate::TypeConfig;
 use crate::alias::ROF;
 use crate::scoped_timer::ScopedTimer;
-use crate::utils::cluster::is_majority;
 
 pub struct ReplicationHandler<T>
 where
@@ -130,212 +123,6 @@ where
             append_requests,
             snapshot_targets,
         })
-    }
-
-    async fn handle_raft_request_in_batch(
-        &self,
-        entry_payloads: Vec<EntryPayload>,
-        state_snapshot: StateSnapshot,
-        leader_state_snapshot: LeaderStateSnapshot,
-        cluster_metadata: &crate::raft_role::ClusterMetadata,
-        ctx: &RaftContext<T>,
-    ) -> Result<AppendResults> {
-        let _timer = ScopedTimer::new("handle_raft_request_in_batch");
-
-        debug!("-------- handle_raft_request_in_batch --------");
-
-        // ----------------------
-        // Phase 1: Pre-Checks and Cluster Topology Detection
-        // ----------------------
-        // Use cached replication targets from cluster metadata (zero-cost)
-        let replication_targets = &cluster_metadata.replication_targets;
-
-        // Separate Voters and Learners
-        // Use role (not status) to distinguish: Follower/Candidate are voters, Learner are learners
-        // This is more robust than using status, which can be temporarily non-Active
-        let (voters, learners): (Vec<_>, Vec<_>) = replication_targets
-            .iter()
-            .partition(|node| node.role != NodeRole::Learner as i32);
-
-        if !learners.is_empty() {
-            trace!(
-                "handle_raft_request_in_batch - voters: {:?}, learners: {:?}",
-                voters, learners
-            );
-        }
-
-        // ----------------------
-        // Phase 2: Process Client Commands
-        // ----------------------
-
-        // Record down the last index before new inserts, to avoid duplicated entries, bugfix#48
-        let raft_log = ctx.raft_log();
-        let leader_last_index_before = raft_log.last_entry_id();
-
-        let new_entries = self
-            .generate_new_entries(entry_payloads, state_snapshot.current_term, raft_log)
-            .await?;
-
-        // ----------------------
-        // Phase 3: Prepare Replication Data
-        // ----------------------
-        let replication_data = ReplicationData {
-            leader_last_index_before,
-            current_term: state_snapshot.current_term,
-            commit_index: state_snapshot.commit_index,
-            peer_next_indices: leader_state_snapshot.next_index,
-        };
-
-        let mut entries_per_peer = self.prepare_peer_entries(
-            &new_entries,
-            &replication_data,
-            ctx.node_config.raft.replication.append_entries_max_entries_per_replication,
-            raft_log,
-        );
-
-        // ----------------------
-        // Phase 4: Build Requests
-        // ----------------------
-        let mut requests = Vec::with_capacity(replication_targets.len());
-        for m in replication_targets {
-            requests.push(self.build_append_request(
-                raft_log,
-                m.id,
-                &mut entries_per_peer,
-                &replication_data,
-            ));
-        }
-
-        // ----------------------
-        // Phase 5: Replication
-        // ----------------------
-
-        // No peers: logs already written in Phase 2, return immediately
-        // No replication needed, quorum is automatically achieved (standalone node)
-        if replication_targets.is_empty() {
-            debug!(
-                "Standalone node (leader={}): logs persisted, quorum automatically achieved",
-                self.my_id
-            );
-            return Ok(AppendResults {
-                commit_quorum_achieved: true,
-                peer_updates: HashMap::new(),
-                learner_progress: HashMap::new(),
-            });
-        }
-
-        // Multi-node cluster: perform replication to peers
-        let leader_current_term = state_snapshot.current_term;
-        let mut successes = 1; // Include leader itself
-        let mut peer_updates = HashMap::new();
-        let mut learner_progress = HashMap::new();
-
-        let membership = ctx.membership();
-        match ctx
-            .transport()
-            .send_append_requests(
-                requests,
-                &ctx.node_config.retry,
-                membership,
-                ctx.node_config.raft.rpc_compression.replication_response,
-            )
-            .await
-        {
-            Ok(append_result) => {
-                for response in append_result.responses {
-                    match response {
-                        Ok(append_response) => {
-                            // Skip responses from stale terms
-                            if append_response.term < leader_current_term {
-                                info!(%append_response.term, %leader_current_term, "append_response.term < leader_current_term");
-                                continue;
-                            }
-
-                            match append_response.result {
-                                Some(append_entries_response::Result::Success(success_result)) => {
-                                    // Only count successful responses from Voters
-                                    if voters.iter().any(|n| n.id == append_response.node_id) {
-                                        successes += 1;
-                                    }
-
-                                    let update = self.handle_success_response(
-                                        append_response.node_id,
-                                        append_response.term,
-                                        success_result,
-                                        leader_current_term,
-                                    )?;
-
-                                    // Record Learner progress
-                                    if learners.iter().any(|n| n.id == append_response.node_id) {
-                                        learner_progress
-                                            .insert(append_response.node_id, update.match_index);
-                                    }
-
-                                    peer_updates.insert(append_response.node_id, update);
-                                }
-
-                                Some(append_entries_response::Result::Conflict(
-                                    conflict_result,
-                                )) => {
-                                    let current_next_index = replication_data
-                                        .peer_next_indices
-                                        .get(&append_response.node_id)
-                                        .copied()
-                                        .unwrap_or(1);
-
-                                    let update = self.handle_conflict_response(
-                                        append_response.node_id,
-                                        conflict_result,
-                                        raft_log,
-                                        current_next_index,
-                                    )?;
-
-                                    // Record Learner progress
-                                    if learners.iter().any(|n| n.id == append_response.node_id) {
-                                        learner_progress
-                                            .insert(append_response.node_id, update.match_index);
-                                    }
-
-                                    peer_updates.insert(append_response.node_id, update);
-                                }
-
-                                Some(append_entries_response::Result::HigherTerm(higher_term)) => {
-                                    // Only handle higher term if it's greater than current term
-                                    if higher_term > leader_current_term {
-                                        return Err(
-                                            ReplicationError::HigherTerm(higher_term).into()
-                                        );
-                                    }
-                                }
-
-                                None => {
-                                    error!("TODO: need to figure out the reason of this cluase");
-                                    unreachable!();
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            // Timeouts and network errors are logged but not added to peer_updates
-                            warn!("Peer request failed: {:?}", e);
-                        }
-                    }
-                }
-                let peer_ids = append_result.peer_ids;
-                debug!(
-                    "send_append_requests to: {:?} with succeed number = {}",
-                    &peer_ids, successes
-                );
-
-                let total_voters = voters.len() + 1; // Leader + voter peers
-                let commit_quorum_achieved = is_majority(successes, total_voters);
-                Ok(AppendResults {
-                    commit_quorum_achieved,
-                    peer_updates,
-                    learner_progress,
-                })
-            }
-            Err(e) => return Err(e),
-        }
     }
 
     fn handle_success_response(

@@ -113,9 +113,9 @@ use std::time::Duration;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use d_engine_core::leader_state::{LeaderState, PendingPromotion};
 use d_engine_core::{
-    AppendResults, MockElectionCore, MockMembership, MockPurgeExecutor, MockRaftLog,
-    MockReplicationCore, MockStateMachine, MockStateMachineHandler, MockTransport, MockTypeConfig,
-    PeerUpdate, RaftContext, RaftCoreHandlers, RaftNodeConfig, RaftStorageHandles,
+    MockElectionCore, MockMembership, MockPurgeExecutor, MockRaftLog, MockReplicationCore,
+    MockStateMachine, MockStateMachineHandler, MockTransport, MockTypeConfig, RaftContext,
+    RaftCoreHandlers, RaftNodeConfig, RaftStorageHandles,
 };
 use d_engine_proto::common::{LogId, NodeStatus};
 use d_engine_proto::server::cluster::{ClusterMembership, NodeMeta};
@@ -204,19 +204,7 @@ impl BenchFixture {
             .expect_broadcast_vote_requests()
             .returning(|_, _, _, _, _| Ok(()));
 
-        let mut replication_handler = MockReplicationCore::new();
-        replication_handler
-            .expect_handle_raft_request_in_batch()
-            .returning(|_, _, _, _, _| {
-                Ok(AppendResults {
-                    commit_quorum_achieved: true,
-                    learner_progress: std::collections::HashMap::new(),
-                    peer_updates: std::collections::HashMap::from([
-                        (2, PeerUpdate::success(5, 6)),
-                        (3, PeerUpdate::success(5, 6)),
-                    ]),
-                })
-            });
+        let replication_handler = MockReplicationCore::new();
 
         let mut state_machine_handler = MockStateMachineHandler::new();
         state_machine_handler.expect_update_pending().returning(|_| {});

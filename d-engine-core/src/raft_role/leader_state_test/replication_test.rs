@@ -1478,9 +1478,6 @@ async fn test_merge_batch_to_write_metadata_empty_payload_with_senders() {
 
 /// B1: Two-node cluster achieves quorum when peer responds with success.
 ///
-/// # Previously verified via handle_raft_request_in_batch:
-/// peer_updates[peer2] = PeerUpdate{match_index:Some(3), next_index:4, success:true}
-///
 /// # Given
 /// - 2-node cluster (leader=1, peer=2), initial commit=0, leader_term=1
 /// - Peer 2 responds: success, term=1, match_index=3

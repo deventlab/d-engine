@@ -29,7 +29,6 @@ use tonic::Status;
 
 use super::LeaderStateSnapshot;
 use super::StateSnapshot;
-use crate::AppendResults;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::TypeConfig;
@@ -99,55 +98,6 @@ where
         cluster_metadata: &crate::raft_role::ClusterMetadata,
         ctx: &crate::RaftContext<T>,
     ) -> Result<PrepareResult>;
-
-    /// As Leader, send replications to peers (combines regular heartbeats and client proposals).
-    ///
-    /// Performs peer synchronization checks:
-    /// 1. Verifies if any peer's next_id <= leader's commit_index
-    /// 2. For non-synced peers: retrieves unsynced logs and buffers them
-    /// 3. Prepends unsynced entries to the entries queue
-    ///
-    /// # Returns
-    /// - `Ok(AppendResults)` with aggregated replication outcomes
-    /// - `Err` for unrecoverable errors
-    ///
-    /// # Return Result Semantics
-    /// 1. **Insufficient Quorum**:   Returns `Ok(AppendResults)` with `commit_quorum_achieved =
-    ///    false` when:
-    ///    - Responses received from all nodes but majority acceptance not achieved
-    ///    - Partial timeouts reduce successful responses below majority
-    ///
-    /// 2. **Timeout Handling**:
-    ///    - Partial timeouts: Returns `Ok` with `commit_quorum_achieved = false`
-    ///    - Complete timeout: Returns `Ok` with `commit_quorum_achieved = false`
-    ///    - Timeout peers are EXCLUDED from `peer_updates`
-    ///
-    /// 3. **Error Conditions**:   Returns `Err` ONLY for:
-    ///    - Empty voting members (`ReplicationError::NoPeerFound`)
-    ///    - Log generation failures (`generate_new_entries` errors)
-    ///    - Higher term detected in peer response (`ReplicationError::HigherTerm`)
-    ///    - Critical response handling errors
-    ///
-    /// # Guarantees
-    /// - Only peers with successful responses appear in `peer_updates`
-    /// - Timeouts never cause top-level `Err` (handled as failed responses)
-    /// - Leader self-vote always counted in quorum calculation
-    ///
-    /// # Note
-    /// - Leader state should be updated by LeaderState only(follows SRP).
-    ///
-    /// # Quorum
-    /// - If there are no voters (not even the leader), quorum is not possible.
-    /// - If the leader is the only voter, quorum is always achieved.
-    /// - If all nodes are learners, quorum is not achieved.
-    async fn handle_raft_request_in_batch(
-        &self,
-        entry_payloads: Vec<EntryPayload>,
-        state_snapshot: StateSnapshot,
-        leader_state_snapshot: LeaderStateSnapshot,
-        cluster_metadata: &crate::raft_role::ClusterMetadata,
-        ctx: &crate::RaftContext<T>,
-    ) -> Result<AppendResults>;
 
     /// Handles successful AppendEntries responses
     ///
