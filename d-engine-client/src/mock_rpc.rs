@@ -4,6 +4,8 @@ use std::sync::Arc;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
+use d_engine_proto::client::MembershipSnapshot;
+use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WatchRequest;
 use d_engine_proto::client::WatchResponse;
 use d_engine_proto::client::raft_client_service_server::RaftClientService;
@@ -35,6 +37,9 @@ pub struct MockRpcService {
 
     /// Watch stream events to emit, in order. None means return an error.
     pub expected_watch_events: Option<Result<Vec<WatchResponse>, tonic::Status>>,
+
+    /// Membership watch stream snapshots to emit. None means return an error.
+    pub expected_watch_membership_events: Option<Result<Vec<MembershipSnapshot>, tonic::Status>>,
 }
 impl MockRpcService {
     pub fn with_metadata_response(
@@ -106,6 +111,9 @@ impl ClusterManagementService for MockRpcService {
 impl RaftClientService for MockRpcService {
     type WatchStream = Pin<Box<dyn Stream<Item = Result<WatchResponse, tonic::Status>> + Send>>;
 
+    type WatchMembershipStream =
+        Pin<Box<dyn Stream<Item = Result<MembershipSnapshot, tonic::Status>> + Send>>;
+
     async fn handle_client_write(
         &self,
         _request: tonic::Request<ClientWriteRequest>,
@@ -138,7 +146,6 @@ impl RaftClientService for MockRpcService {
     ) -> std::result::Result<tonic::Response<Self::WatchStream>, tonic::Status> {
         match &self.expected_watch_events {
             Some(Ok(events)) => {
-                // Return a finite stream of pre-configured watch events.
                 let items: Vec<Result<WatchResponse, tonic::Status>> =
                     events.iter().cloned().map(Ok).collect();
                 let stream = futures::stream::iter(items);
@@ -146,6 +153,24 @@ impl RaftClientService for MockRpcService {
             }
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unimplemented("Watch not configured in mock")),
+        }
+    }
+
+    async fn watch_membership(
+        &self,
+        _request: tonic::Request<WatchMembershipRequest>,
+    ) -> std::result::Result<tonic::Response<Self::WatchMembershipStream>, tonic::Status> {
+        match &self.expected_watch_membership_events {
+            Some(Ok(snapshots)) => {
+                let items: Vec<Result<MembershipSnapshot, tonic::Status>> =
+                    snapshots.iter().cloned().map(Ok).collect();
+                let stream = futures::stream::iter(items);
+                Ok(tonic::Response::new(Box::pin(stream)))
+            }
+            Some(Err(status)) => Err(status.clone()),
+            None => Err(tonic::Status::unimplemented(
+                "WatchMembership not configured in mock",
+            )),
         }
     }
 }

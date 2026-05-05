@@ -1142,10 +1142,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             RaftEvent::ClusterConf(_metadata_request, sender) => {
-                let cluster_conf = ctx
-                    .membership()
-                    .retrieve_cluster_membership_config(self.shared_state().current_leader())
-                    .await;
+                // Hide leader ID until noop commits: before noop, the leader has not confirmed
+                // quorum readiness. Exposing current_leader_id too early causes clients to route
+                // to this leader, which then rejects them with LeaderNotReady.
+                // `Option::and` returns None if noop_log_id is None, Some(id) otherwise.
+                let current_leader = self.noop_log_id.and(self.shared_state().current_leader());
+                let cluster_conf =
+                    ctx.membership().retrieve_cluster_membership_config(current_leader).await;
                 debug!("Leader receive ClusterConf: {:?}", &cluster_conf);
                 if let Err(e) = sender.send(Ok(cluster_conf)) {
                     // Receiver timed out and dropped — this is normal, do not crash the node
@@ -1963,6 +1966,10 @@ impl<T: TypeConfig> LeaderState<T> {
         loop {
             let mut backoff_ms = base_delay_ms;
             let stream = loop {
+                if task_rx.is_closed() {
+                    debug!(peer_id, "Replication worker exiting: task channel closed");
+                    return;
+                }
                 match transport
                     .open_replication_stream(peer_id, membership.clone(), response_compress_enabled)
                     .await
@@ -3612,44 +3619,30 @@ impl<T: TypeConfig> LeaderState<T> {
 
     /// Handle a ZombieDetected signal from the health monitor.
     ///
-    /// ReadOnly nodes are permanent read replicas and must never be auto-removed.
-    /// All other non-Active nodes that repeatedly fail connections are removed via consensus.
+    /// Emits a warning log only. Membership removal is a high-risk operation that
+    /// must not be automated: a node that fails N connection attempts may simply be
+    /// restarting, and an incorrect BatchRemove would permanently eject it from the
+    /// cluster. Upper-layer tooling or operators should act on these warnings.
     pub async fn handle_zombie_node(
         &mut self,
         node_id: u32,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
         let status = ctx.membership().get_node_status(node_id).await;
 
-        if status == Some(NodeStatus::ReadOnly) {
-            debug!(
-                node_id,
-                "Zombie signal ignored: ReadOnly node is exempt from auto-removal"
-            );
+        if status.is_none() {
+            debug!(node_id, "Zombie signal ignored: node not in cluster");
             return Ok(());
         }
 
         warn!(
             node_id,
-            "Zombie detected: proposing BatchRemove via consensus"
+            ?status,
+            "Zombie detected: node is persistently unreachable — manual intervention may be required"
         );
 
-        let change = Change::BatchRemove(BatchRemove {
-            node_ids: vec![node_id],
-        });
-
-        self.execute_request_immediately(
-            RaftRequestWithSignal {
-                id: { rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21) },
-                payloads: vec![EntryPayload::config(change)],
-                senders: vec![],
-                wait_for_apply_event: false,
-            },
-            ctx,
-            role_tx,
-        )
-        .await
+        Ok(())
     }
 
     /// Remove stalled learner via membership change consensus

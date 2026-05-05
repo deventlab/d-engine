@@ -74,6 +74,15 @@ where
 
     peer_appenders: Arc<DashMap<u32, PeerAppender>>,
 
+    /// Fire-and-forget channel to report peer stream failures for zombie detection.
+    /// `None` in tests that construct via `GrpcTransport::new(node_id)`.
+    peer_failure_tx: Option<mpsc::Sender<u32>>,
+
+    /// Fire-and-forget channel to report peer stream success for health recovery.
+    /// Resets the failure counter so transient errors don't accumulate into false zombies.
+    /// `None` in tests that construct via `GrpcTransport::new(node_id)`.
+    peer_success_tx: Option<mpsc::Sender<u32>>,
+
     // -- Type System Marker --
     /// Phantom data for type parameter anchoring
     _marker: PhantomData<T>,
@@ -508,10 +517,22 @@ where
                 .send_compressed(CompressionEncoding::Gzip)
                 .accept_compressed(CompressionEncoding::Gzip);
         }
-        let response = client
-            .stream_append_entries(tonic::Request::new(req_stream))
-            .await
-            .map_err(|e| NetworkError::TonicStatusError(Box::new(e)))?;
+        let response = match client.stream_append_entries(tonic::Request::new(req_stream)).await {
+            Ok(r) => {
+                // TCP handshake confirmed: reset failure counter to prevent false zombie signals.
+                if let Some(tx) = &self.peer_success_tx {
+                    let _ = tx.try_send(peer_id);
+                }
+                r
+            }
+            Err(e) => {
+                // Actual TCP failure: notify health monitor so zombie detection can fire.
+                if let Some(tx) = &self.peer_failure_tx {
+                    let _ = tx.try_send(peer_id);
+                }
+                return Err(NetworkError::TonicStatusError(Box::new(e)).into());
+            }
+        };
 
         let receiver = response.into_inner().boxed();
 
@@ -573,10 +594,32 @@ impl<T> GrpcTransport<T>
 where
     T: TypeConfig,
 {
+    #[cfg(test)]
     pub(crate) fn new(node_id: u32) -> Self {
         Self {
             my_id: node_id,
             peer_appenders: Arc::new(DashMap::new()),
+            peer_failure_tx: None,
+            peer_success_tx: None,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Constructs a transport wired to peer-failure and peer-success channels.
+    ///
+    /// `peer_failure_tx` is fired when `stream_append_entries` fails (enables zombie detection).
+    /// `peer_success_tx` is fired on success (resets failure counter, prevents false zombies).
+    /// Use in production builds via `NodeBuilder`; tests use `new()`.
+    pub(crate) fn new_with_channels(
+        node_id: u32,
+        peer_failure_tx: mpsc::Sender<u32>,
+        peer_success_tx: mpsc::Sender<u32>,
+    ) -> Self {
+        Self {
+            my_id: node_id,
+            peer_appenders: Arc::new(DashMap::new()),
+            peer_failure_tx: Some(peer_failure_tx),
+            peer_success_tx: Some(peer_success_tx),
             _marker: PhantomData,
         }
     }

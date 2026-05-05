@@ -93,6 +93,9 @@ where
     /// Notifies when leader is elected (includes leader changes)
     pub(crate) leader_notifier: LeaderNotifier,
 
+    /// Current membership snapshot; fires on every committed ConfChange.
+    pub(crate) membership_rx: watch::Receiver<crate::membership::MembershipSnapshot>,
+
     /// Raft node config
     pub(crate) node_config: Arc<RaftNodeConfig>,
 
@@ -304,6 +307,17 @@ where
     /// ```
     pub fn leader_change_notifier(&self) -> watch::Receiver<Option<crate::LeaderInfo>> {
         self.leader_notifier.subscribe()
+    }
+
+    /// Subscribe to committed membership change notifications.
+    ///
+    /// Returns a `watch::Receiver` that fires whenever a `ConfChange` entry
+    /// commits.  The first `borrow()` returns the current membership state
+    /// without waiting for a change.
+    pub fn membership_change_notifier(
+        &self
+    ) -> watch::Receiver<crate::membership::MembershipSnapshot> {
+        self.membership_rx.clone()
     }
 
     /// Returns this node's unique identifier.

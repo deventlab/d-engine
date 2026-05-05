@@ -100,6 +100,27 @@ message ReadResults {
   repeated ClientResult results = 1;
 }
 
+// Request to start a server-side membership watch stream.
+message WatchMembershipRequest {
+  uint32 client_id = 1;
+}
+
+// Point-in-time snapshot of committed cluster membership.
+//
+// Delivered on every committed ConfChange entry.
+// `committed_index` is strictly monotonically increasing and serves as an
+// idempotency key for schedulers.
+message MembershipSnapshot {
+  // Current voting members (Follower / Leader role).
+  repeated uint32 members = 1;
+
+  // Current non-voting learners.
+  repeated uint32 learners = 2;
+
+  // Raft log index of the ConfChange entry that produced this snapshot.
+  uint64 committed_index = 3;
+}
+
 // Watch event type indicating the type of change that occurred
 enum WatchEventType {
   // A key was inserted or updated
@@ -139,7 +160,7 @@ service RaftClientService {
   rpc HandleClientWrite(ClientWriteRequest) returns (ClientResponse);
   rpc HandleClientRead(ClientReadRequest) returns (ClientResponse);
 
-  // Watch for changes on a specific key
+  // Watch for changes to a specific key.
   //
   // Returns a stream of WatchResponse events whenever the watched key changes.
   // The stream remains open until the client cancels or disconnects.
@@ -152,4 +173,19 @@ service RaftClientService {
   // - If the internal event buffer is full, events may be dropped
   // - Clients should use Read API to re-sync if they detect gaps
   rpc Watch(WatchRequest) returns (stream WatchResponse);
+
+  // Watch for committed cluster membership changes.
+  //
+  // Immediately pushes the current MembershipSnapshot on connect, then pushes
+  // a new snapshot on every committed ConfChange (AddNode, BatchPromote, BatchRemove).
+  // All nodes (leader, follower, learner) emit the event after the entry commits.
+  //
+  // Stream lifecycle:
+  // - Stays open until the client cancels or the server shuts down.
+  // - On server shutdown the stream closes with Status::UNAVAILABLE.
+  //   Clients should reconnect and re-subscribe.
+  //
+  // Idempotency:
+  // - Use `committed_index` as an idempotency key in the receiver.
+  rpc WatchMembership(WatchMembershipRequest) returns (stream MembershipSnapshot);
 }

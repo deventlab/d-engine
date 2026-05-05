@@ -16,6 +16,7 @@ use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
 use crate::common::start_node;
+use crate::common::wait_for_stable_leader;
 
 /// Test 3-node cluster failover: kill leader, verify re-election and data consistency
 #[tokio::test]
@@ -91,11 +92,9 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 
     info!("Node 1 killed. Waiting for re-election");
 
-    // Wait for leader re-election (typically 1-2s)
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // Refresh client to discover new leader
-    client.refresh(None).await?;
+    // Wait for stable leader: killing the leader triggers cascading elections;
+    // only a successful linearizable read proves a leader is actively serving end-to-end.
+    wait_for_stable_leader(&client).await?;
 
     info!("Re-election complete. Verifying cluster still operational");
 

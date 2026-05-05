@@ -10,4 +10,6 @@
 
 mod watch_events_embedded;
 mod watch_events_grpc_standalone;
+mod watch_membership_embedded;
+mod watch_membership_standalone;
 mod watch_performance_gate_embedded;

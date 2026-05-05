@@ -118,6 +118,31 @@ pub struct ReadResults {
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<ClientResult>,
 }
+/// Request to start a server-side membership watch stream.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct WatchMembershipRequest {
+    #[prost(uint32, tag = "1")]
+    pub client_id: u32,
+}
+/// Point-in-time snapshot of committed cluster membership.
+///
+/// Delivered on every committed ConfChange entry.
+/// `committed_index` is strictly monotonically increasing and serves as an
+/// idempotency key for schedulers.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MembershipSnapshot {
+    /// Current voting members (Follower / Leader role).
+    #[prost(uint32, repeated, tag = "1")]
+    pub members: ::prost::alloc::vec::Vec<u32>,
+    /// Current non-voting learners.
+    #[prost(uint32, repeated, tag = "2")]
+    pub learners: ::prost::alloc::vec::Vec<u32>,
+    /// Raft log index of the ConfChange entry that produced this snapshot.
+    #[prost(uint64, tag = "3")]
+    pub committed_index: u64,
+}
 /// Request to watch for changes on a specific key
 ///
 /// In v1, only exact key matching is supported.
@@ -372,7 +397,7 @@ pub mod raft_client_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Watch for changes on a specific key
+        /// Watch for changes to a specific key.
         ///
         /// Returns a stream of WatchResponse events whenever the watched key changes.
         /// The stream remains open until the client cancels or disconnects.
@@ -408,6 +433,48 @@ pub mod raft_client_service_client {
                 .insert(GrpcMethod::new("d_engine.client.RaftClientService", "Watch"));
             self.inner.server_streaming(req, path, codec).await
         }
+        /// Watch for committed cluster membership changes.
+        ///
+        /// Immediately pushes the current MembershipSnapshot on connect, then pushes
+        /// a new snapshot on every committed ConfChange (AddNode, Promote, Remove).
+        /// All nodes (leader, follower, learner) emit the event after the entry commits.
+        ///
+        /// Stream lifecycle:
+        /// - Stays open until the client cancels or the server shuts down.
+        /// - On server shutdown the stream closes with Status::UNAVAILABLE.
+        ///   Clients should reconnect and re-subscribe.
+        ///
+        /// Idempotency:
+        /// - Use `committed_index` as an idempotency key in the receiver.
+        pub async fn watch_membership(
+            &mut self,
+            request: impl tonic::IntoRequest<super::WatchMembershipRequest>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::MembershipSnapshot>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/d_engine.client.RaftClientService/WatchMembership",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "d_engine.client.RaftClientService",
+                        "WatchMembership",
+                    ),
+                );
+            self.inner.server_streaming(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -437,7 +504,7 @@ pub mod raft_client_service_server {
             >
             + std::marker::Send
             + 'static;
-        /// Watch for changes on a specific key
+        /// Watch for changes to a specific key.
         ///
         /// Returns a stream of WatchResponse events whenever the watched key changes.
         /// The stream remains open until the client cancels or disconnects.
@@ -453,6 +520,32 @@ pub mod raft_client_service_server {
             &self,
             request: tonic::Request<super::WatchRequest>,
         ) -> std::result::Result<tonic::Response<Self::WatchStream>, tonic::Status>;
+        /// Server streaming response type for the WatchMembership method.
+        type WatchMembershipStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::MembershipSnapshot, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        /// Watch for committed cluster membership changes.
+        ///
+        /// Immediately pushes the current MembershipSnapshot on connect, then pushes
+        /// a new snapshot on every committed ConfChange (AddNode, Promote, Remove).
+        /// All nodes (leader, follower, learner) emit the event after the entry commits.
+        ///
+        /// Stream lifecycle:
+        /// - Stays open until the client cancels or the server shuts down.
+        /// - On server shutdown the stream closes with Status::UNAVAILABLE.
+        ///   Clients should reconnect and re-subscribe.
+        ///
+        /// Idempotency:
+        /// - Use `committed_index` as an idempotency key in the receiver.
+        async fn watch_membership(
+            &self,
+            request: tonic::Request<super::WatchMembershipRequest>,
+        ) -> std::result::Result<
+            tonic::Response<Self::WatchMembershipStream>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct RaftClientServiceServer<T> {
@@ -659,6 +752,54 @@ pub mod raft_client_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = WatchSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/d_engine.client.RaftClientService/WatchMembership" => {
+                    #[allow(non_camel_case_types)]
+                    struct WatchMembershipSvc<T: RaftClientService>(pub Arc<T>);
+                    impl<
+                        T: RaftClientService,
+                    > tonic::server::ServerStreamingService<
+                        super::WatchMembershipRequest,
+                    > for WatchMembershipSvc<T> {
+                        type Response = super::MembershipSnapshot;
+                        type ResponseStream = T::WatchMembershipStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::WatchMembershipRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as RaftClientService>::watch_membership(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = WatchMembershipSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

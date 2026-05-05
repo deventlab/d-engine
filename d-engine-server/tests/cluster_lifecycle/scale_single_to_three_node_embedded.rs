@@ -6,6 +6,7 @@ use d_engine_server::EmbeddedEngine;
 use tracing::info;
 use tracing_test::traced_test;
 
+use crate::common::create_rejoin_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
 
@@ -566,23 +567,11 @@ election_timeout_max = 6000
     let (node1_storage, node1_state_machine) = RocksDBUnifiedEngine::open(&node1_db_path)?;
 
     // Node 1 config: rejoining as existing follower
-    let node1_config_str = format!(
-        r#"
-[cluster]
-node_id = 1
-listen_address = '127.0.0.1:{}'
-initial_cluster = [
-    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
-    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
-]
-db_root_dir = '{}'
-
-[raft]
-election_timeout_ms = 150
-heartbeat_idle_flush_interval_ms = 50
-"#,
-        ports[0], ports[0], ports[1], ports[2], db_root
+    let node1_config_str = create_rejoin_node_config(
+        1,
+        ports[0],
+        &[(1, ports[0]), (2, ports[1]), (3, ports[2])],
+        &db_root,
     );
 
     let node1_config_path = "/tmp/d-engine-test-node1-phase6.toml".to_string();

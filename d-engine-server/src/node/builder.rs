@@ -325,7 +325,13 @@ where
             log.start(receiver, Some(role_tx.clone()))
         };
 
-        let transport = self.transport.take().unwrap_or(GrpcTransport::new(node_id));
+        // Peer health channels: transport fires try_send(peer_id) on stream failure/success.
+        // Bridge tasks below relay to membership so zombie detection and health recovery both work.
+        let (peer_failure_tx, peer_failure_rx) = mpsc::channel::<u32>(64);
+        let (peer_success_tx, peer_success_rx) = mpsc::channel::<u32>(64);
+        let transport = self.transport.take().unwrap_or_else(|| {
+            GrpcTransport::new_with_channels(node_id, peer_failure_tx, peer_success_tx)
+        });
 
         let snapshot_policy = self.snapshot_policy.take().unwrap_or(LogSizePolicy::new(
             node_config.raft.snapshot.max_log_entries_before_snapshot,
@@ -392,6 +398,8 @@ where
             },
         );
         let membership = Arc::new(membership_inner);
+        // Capture the membership watch receiver before membership is moved into Node.
+        let membership_rx = membership.subscribe_membership();
 
         let purge_executor = DefaultPurgeExecutor::new(raft_log.clone());
 
@@ -414,6 +422,26 @@ where
                 if membership_for_zombie.is_zombie_valid(node_id) {
                     let _ = role_tx_for_zombie.send(RoleEvent::ZombieDetected(node_id));
                 }
+            }
+        });
+
+        // Bridge peer stream failures from transport → health monitor.
+        // Exits naturally when transport (and its peer_failure_tx) drops (channel closed → recv None).
+        let membership_for_peer_failure = Arc::clone(&membership);
+        tokio::spawn(async move {
+            let mut peer_failure_rx = peer_failure_rx;
+            while let Some(failed_peer_id) = peer_failure_rx.recv().await {
+                membership_for_peer_failure.on_peer_stream_failed(failed_peer_id).await;
+            }
+        });
+
+        // Bridge peer stream successes from transport → health monitor.
+        // Resets failure counter so transient errors during failover don't accumulate into false zombies.
+        let membership_for_peer_success = Arc::clone(&membership);
+        tokio::spawn(async move {
+            let mut peer_success_rx = peer_success_rx;
+            while let Some(succeeded_peer_id) = peer_success_rx.recv().await {
+                membership_for_peer_success.on_peer_stream_success(succeeded_peer_id).await;
             }
         });
 
@@ -529,6 +557,7 @@ where
             ready: AtomicBool::new(false),
             rpc_ready_tx,
             leader_notifier,
+            membership_rx,
             node_config: node_config_arc,
             #[cfg(feature = "watch")]
             watch_registry: watch_system.as_ref().map(|(_, reg, _)| Arc::clone(reg)),

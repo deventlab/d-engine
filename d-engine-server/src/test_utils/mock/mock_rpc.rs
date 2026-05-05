@@ -3,6 +3,8 @@ use std::sync::Arc;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
+use d_engine_proto::client::MembershipSnapshot as ProtoMembershipSnapshot;
+use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WatchRequest;
 use d_engine_proto::client::WatchResponse;
 use d_engine_proto::client::raft_client_service_server::RaftClientService;
@@ -168,6 +170,9 @@ impl ClusterManagementService for MockRpcService {
 impl RaftClientService for MockRpcService {
     type WatchStream = tokio_stream::wrappers::ReceiverStream<Result<WatchResponse, tonic::Status>>;
 
+    type WatchMembershipStream =
+        tokio_stream::wrappers::ReceiverStream<Result<ProtoMembershipSnapshot, tonic::Status>>;
+
     async fn handle_client_write(
         &self,
         _request: tonic::Request<ClientWriteRequest>,
@@ -198,11 +203,17 @@ impl RaftClientService for MockRpcService {
         &self,
         _request: tonic::Request<WatchRequest>,
     ) -> std::result::Result<tonic::Response<Self::WatchStream>, tonic::Status> {
-        // Mock implementation: return an empty stream
         let (_tx, rx) = tokio::sync::mpsc::channel(1);
         Ok(tonic::Response::new(
             tokio_stream::wrappers::ReceiverStream::new(rx),
         ))
+    }
+
+    async fn watch_membership(
+        &self,
+        _request: tonic::Request<WatchMembershipRequest>,
+    ) -> std::result::Result<tonic::Response<Self::WatchMembershipStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented("not used in mock"))
     }
 }
 

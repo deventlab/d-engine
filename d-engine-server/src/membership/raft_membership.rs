@@ -12,6 +12,7 @@
 //! by `rpc_peer_channels`) but depends on its correct initialization. All Raft
 //! protocol decisions are made based on the state maintained here.
 
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
@@ -43,6 +44,7 @@ use tracing::info;
 use tracing::warn;
 
 use super::MembershipGuard;
+use super::MembershipSnapshot;
 use crate::network::ConnectionCache;
 use crate::network::HealthChecker;
 use crate::network::HealthCheckerApis;
@@ -62,6 +64,9 @@ where
     initial_cluster_size: usize,
     pub(super) health_monitor: RaftHealthMonitor,
     pub(super) connection_cache: ConnectionCache,
+    /// Sender for committed membership change notifications.
+    /// Fires in `notify_config_applied()` after every ConfChange commit.
+    membership_notifier_tx: tokio::sync::watch::Sender<MembershipSnapshot>,
     _phantom: PhantomData<T>,
 }
 
@@ -436,13 +441,30 @@ where
         info!("Adding learner node: {} with status: {:?}", node_id, status);
         self.membership
             .blocking_write(|guard| {
-                if guard.nodes.contains_key(&node_id) {
+                if let Some(existing) = guard.nodes.get(&node_id) {
+                    if existing.role == Learner as i32 {
+                        // Idempotent: learner already present. This happens when a learner node
+                        // applies its own committed AddNode entry while it already has itself
+                        // in its initial cluster config. The state is correct; no-op.
+                        if existing.address != address {
+                            warn!(
+                                "[node-{}] AddLearner idempotent: node {} address mismatch \
+                                 (stored={}, incoming={}) — keeping stored address",
+                                self.node_id, node_id, existing.address, address
+                            );
+                        } else {
+                            info!(
+                                "[node-{}] AddLearner: node {} already a learner, treating as idempotent",
+                                self.node_id, node_id
+                            );
+                        }
+                        return Ok(());
+                    }
                     error!(
-                        "[node-{}] Adding a learner node failed: node already exists. {}",
-                        self.node_id, node_id
+                        "[node-{}] Adding a learner node failed: node {} already exists as non-learner role={}",
+                        self.node_id, node_id, existing.role
                     );
                     return Err(MembershipError::NodeAlreadyExists(node_id).into());
-                    // return  Ok(());
                 }
                 guard.nodes.insert(
                     node_id,
@@ -592,7 +614,10 @@ where
         // Use cached connection if available
         match self.connection_cache.get_channel(node_id, conn_type, addr).await {
             Ok(channel) => {
-                self.health_monitor.record_success(node_id).await;
+                // Do NOT call record_success here: tonic Endpoint::connect() is lazy and
+                // returns Ok even for stopped peers. Health state must be driven by actual
+                // RPC results, not by channel acquisition. Use on_peer_stream_failed() when
+                // stream_append_entries (or equivalent) fails.
                 Some(channel)
             }
             Err(e) => {
@@ -687,17 +712,28 @@ where
         &self,
         index: u64,
     ) {
-        // TODO:
-        // // Update replication layer
-        // self.config.replication_layer.update_peers(
-        //     self.replication_peers().await
-        // ).await;
-
-        // // Update leader routing
-        // if let Some(leader) = self.get_cluster_conf_version().await {
-        //     self.config.router.update_leader(leader);
-        // }
-        info!("Config change applied at index {}", index);
+        let snapshot = self
+            .membership
+            .blocking_read(|guard| {
+                let mut members = BTreeSet::new();
+                let mut learners = BTreeSet::new();
+                for node in guard.nodes.values() {
+                    if node.role == Learner as i32 {
+                        learners.insert(node.id);
+                    } else {
+                        members.insert(node.id);
+                    }
+                }
+                MembershipSnapshot {
+                    members,
+                    learners,
+                    committed_index: index,
+                }
+            })
+            .await;
+        // send_replace never fails — silently drops the value if all receivers are gone.
+        self.membership_notifier_tx.send_replace(snapshot);
+        info!("Membership change committed at index {}", index);
     }
 
     async fn can_rejoin(
@@ -725,6 +761,9 @@ where
 {
     /// Returns `(Self, zombie_rx)`. Caller must pass `zombie_rx` to the Raft event loop
     /// so that `ZombieDetected` signals reach the leader.
+    ///
+    /// Call [`subscribe_membership`] on the returned `Self` to obtain a
+    /// `watch::Receiver<MembershipSnapshot>` for in-process change notifications.
     pub(crate) fn new(
         node_id: u32,
         initial_nodes: Vec<NodeMeta>,
@@ -734,6 +773,27 @@ where
         let connection_cache = ConnectionCache::new(config.network.clone());
         let initial_cluster_size = initial_nodes.len();
         let (health_monitor, zombie_rx) = RaftHealthMonitor::new(zombie_threshold);
+
+        // Build the initial snapshot from the configured nodes so that the
+        // first `borrow()` on any receiver returns a valid state.
+        let initial_snapshot = {
+            let mut members = BTreeSet::new();
+            let mut learners = BTreeSet::new();
+            for node in &initial_nodes {
+                if node.role == Learner as i32 {
+                    learners.insert(node.id);
+                } else {
+                    members.insert(node.id);
+                }
+            }
+            MembershipSnapshot {
+                members,
+                learners,
+                committed_index: 0,
+            }
+        };
+        let (membership_notifier_tx, _initial_rx) = tokio::sync::watch::channel(initial_snapshot);
+
         (
             Self {
                 node_id,
@@ -743,9 +803,18 @@ where
                 _phantom: PhantomData,
                 health_monitor,
                 connection_cache,
+                membership_notifier_tx,
             },
             zombie_rx,
         )
+    }
+
+    /// Subscribe to committed membership change notifications.
+    ///
+    /// The returned receiver immediately has the current snapshot available
+    /// via `borrow()` — no need to wait for a change event.
+    pub fn subscribe_membership(&self) -> tokio::sync::watch::Receiver<MembershipSnapshot> {
+        self.membership_notifier_tx.subscribe()
     }
 
     /// Returns true if the zombie signal for `node_id` should still be acted on.
@@ -758,6 +827,32 @@ where
         node_id: u32,
     ) -> bool {
         self.health_monitor.is_zombie_valid(node_id)
+    }
+
+    /// Called by the transport layer when `stream_append_entries` succeeds.
+    /// Resets the failure counter so that transient errors don't accumulate into
+    /// a false zombie signal for a healthy peer.
+    ///
+    /// Intentionally NOT on the `Membership` trait — no dyn dispatch.
+    pub(crate) async fn on_peer_stream_success(
+        &self,
+        node_id: u32,
+    ) {
+        self.health_monitor.record_success(node_id).await;
+    }
+
+    /// Called by the transport layer when `stream_append_entries` (or any peer RPC)
+    /// fails. Evicts the stale cached channel and records a health failure so that
+    /// zombie detection can fire at the configured threshold.
+    ///
+    /// Intentionally NOT on the `Membership` trait — this is a concrete-type method
+    /// that keeps health monitoring out of the trait boundary (no dyn dispatch).
+    pub(crate) async fn on_peer_stream_failed(
+        &self,
+        node_id: u32,
+    ) {
+        self.connection_cache.remove_node(node_id);
+        self.health_monitor.record_failure(node_id).await;
     }
 
     /// Updates a single node atomically

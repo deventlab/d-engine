@@ -107,6 +107,10 @@ install-tools: check-env
 		echo "$(YELLOW)Installing cargo-nextest for fast parallel testing...$(NC)"; \
 		cargo install cargo-nextest --locked; \
 	fi
+	@if ! command -v cargo-deny >/dev/null 2>&1; then \
+		echo "$(YELLOW)Installing cargo-deny for supply chain checks...$(NC)"; \
+		cargo install cargo-deny --locked; \
+	fi
 	@echo "$(GREEN)✓ Components installed$(NC)"
 
 ## install              Alias for install-tools
@@ -193,8 +197,8 @@ clippy-fix: install-tools check-workspace
 # CODE QUALITY - COMPREHENSIVE CHECKS
 # ============================================================================
 
-## check                Run all quality checks (fmt, clippy, cargo check)
-check: fmt-check clippy
+## check                Run all quality checks (fmt, clippy, deny, cargo check)
+check: fmt-check clippy deny
 	@echo ""
 	@echo "$(GREEN)╔════════════════════════════════════════╗$(NC)"
 	@echo "$(GREEN)║  ✓ All code quality checks passed!    ║$(NC)"
@@ -321,9 +325,9 @@ audit: check-env
 deny: check-env
 	@echo "$(BLUE)Running cargo deny checks...$(NC)"
 	@if command -v cargo-deny >/dev/null 2>&1; then \
-		cargo deny check; \
+		cargo deny check all; \
 	else \
-		echo "$(YELLOW)Note: cargo-deny not installed. Install with: cargo install cargo-deny$(NC)"; \
+		echo "$(YELLOW)Note: cargo-deny not installed. Run: make install-tools$(NC)"; \
 	fi
 
 # ============================================================================

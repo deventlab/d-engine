@@ -15,6 +15,8 @@ use d_engine_core::TypeConfig;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
+use d_engine_proto::client::MembershipSnapshot as ProtoMembershipSnapshot;
+use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WatchRequest;
 use d_engine_proto::client::raft_client_service_server::RaftClientService;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
@@ -37,7 +39,6 @@ use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
 use futures::Stream;
-#[cfg(feature = "watch")]
 use futures::StreamExt;
 use tokio::select;
 use tokio::sync::mpsc;
@@ -49,7 +50,6 @@ use tonic::Status;
 use tonic::Streaming;
 use tracing::debug;
 use tracing::error;
-#[cfg(feature = "watch")]
 use tracing::info;
 use tracing::warn;
 
@@ -380,6 +380,9 @@ where
     type WatchStream =
         Pin<Box<dyn Stream<Item = Result<d_engine_proto::client::WatchResponse, Status>> + Send>>;
 
+    type WatchMembershipStream =
+        Pin<Box<dyn Stream<Item = Result<ProtoMembershipSnapshot, Status>> + Send>>;
+
     /// Processes client write requests requiring consensus
     /// # Raft Protocol Logic
     /// - Entry point for client proposals (Section 7)
@@ -515,6 +518,43 @@ where
         Err(Status::unimplemented(
             "Watch feature is not compiled in this build",
         ))
+    }
+
+    /// Stream committed membership snapshots to the client.
+    ///
+    /// Sends the current snapshot immediately on connect (via `mark_changed`), then
+    /// one snapshot per committed ConfChange. Closes with UNAVAILABLE on server shutdown
+    /// so clients know to reconnect.
+    async fn watch_membership(
+        &self,
+        _request: tonic::Request<WatchMembershipRequest>,
+    ) -> std::result::Result<tonic::Response<Self::WatchMembershipStream>, tonic::Status> {
+        if !self.is_rpc_ready() {
+            warn!("[watch_membership] Node-{} is not ready", self.node_id);
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let mut rx = self.membership_rx.clone();
+        // Deliver the current snapshot immediately; subsequent items arrive on each ConfChange.
+        rx.mark_changed();
+
+        info!(node_id = self.node_id, "Membership watch stream opened");
+
+        let stream = tokio_stream::wrappers::WatchStream::new(rx)
+            .map(|s| {
+                Ok(ProtoMembershipSnapshot {
+                    members: s.members.into_iter().collect(),
+                    learners: s.learners.into_iter().collect(),
+                    committed_index: s.committed_index,
+                })
+            })
+            .chain(futures::stream::once(async {
+                Err(Status::unavailable(
+                    "Membership watch stream closed: server shut down. Reconnect to re-subscribe.",
+                ))
+            }));
+
+        Ok(tonic::Response::new(Box::pin(stream)))
     }
 }
 

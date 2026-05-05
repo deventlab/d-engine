@@ -1129,14 +1129,72 @@ async fn test_health_monitoring_integration() {
         "ZombieDetected signal should fire for node 100"
     );
 
-    // Test 3: Record success resets failures
-    // Update to valid address (using mock would be better in real impl)
+    // Test 3: get_peer_channel success does NOT reset failure counts.
+    // tonic Endpoint::connect() is lazy — channel creation succeeds even for a stopped peer.
+    // Health state must be driven by RPC results (on_peer_stream_failed), not by channel acquisition.
     let (_tx, rx) = oneshot::channel::<()>();
     let service = MockRpcService::default();
     let (port, _addr) = MockNode::mock_listener(service, rx, true).await.unwrap();
     membership.update_node_address(100, format!("127.0.0.1:{port}")).await.unwrap();
-    membership.get_peer_channel(100, ConnectionType::Control).await; // Should "succeed"
-    assert!(membership.health_monitor.failure_counts.get(&100).is_none());
+    membership.get_peer_channel(100, ConnectionType::Control).await;
+    assert!(
+        membership.health_monitor.failure_counts.get(&100).is_some(),
+        "get_peer_channel success must NOT reset failure counts: health state is driven by RPC results only"
+    );
+}
+
+/// `on_peer_stream_failed` must evict the cached channel AND record a connection failure.
+///
+/// When `stream_append_entries` fails on a tonic lazy channel (which reports Ok at creation
+/// but fails on first RPC), the caller invokes `on_peer_stream_failed` to:
+/// 1. Evict the stale channel so the next attempt creates a fresh one.
+/// 2. Increment the failure count so zombie detection can fire.
+#[tokio::test]
+#[traced_test]
+async fn test_on_peer_stream_failed_evicts_cache_and_records_failure() {
+    let mut config = RaftNodeConfig::default();
+    config.raft.membership.zombie.threshold = 1;
+
+    let (membership, mut zombie_rx) = RaftMembership::<MockTypeConfig>::new(1, vec![], config);
+
+    // Add a node with a live address so get_peer_channel can populate the cache.
+    let (_tx, rx) = oneshot::channel::<()>();
+    let service = MockRpcService::default();
+    let (port, _addr) = MockNode::mock_listener(service, rx, true).await.unwrap();
+    membership
+        .add_learner(200, format!("127.0.0.1:{port}"), NodeStatus::Active)
+        .await
+        .unwrap();
+
+    // Warm the connection cache for node 200.
+    let channel = membership.get_peer_channel(200, ConnectionType::Data).await;
+    assert!(
+        channel.is_some(),
+        "Initial channel acquisition must succeed"
+    );
+    let cached = membership.connection_cache.cache.iter().any(|e| e.key().0 == 200);
+    assert!(
+        cached,
+        "Cache must hold an entry for node 200 after get_peer_channel"
+    );
+
+    // Simulate bidi stream failure (e.g. stream_append_entries returned an error).
+    membership.on_peer_stream_failed(200).await;
+
+    // Cache entry for node 200 must be fully evicted (all connection types).
+    let still_cached = membership.connection_cache.cache.iter().any(|e| e.key().0 == 200);
+    assert!(
+        !still_cached,
+        "on_peer_stream_failed must evict all cached channels for node 200"
+    );
+
+    // record_failure must have been called → with threshold=1 the zombie signal fires immediately.
+    let signal = zombie_rx.try_recv();
+    assert_eq!(
+        signal.ok(),
+        Some(200),
+        "on_peer_stream_failed must trigger zombie signal at threshold=1"
+    );
 }
 
 #[cfg(test)]
