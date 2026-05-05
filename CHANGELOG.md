@@ -14,6 +14,14 @@ All notable changes to this project will be documented in this file.
   - **Experimental**: both paths are supported in v0.2.4; a future release will standardize on one
   - When enabled: data path changes to `db_root_dir/db/` (⚠️ existing `storage/` data not migrated automatically)
 
+- **Cluster membership streaming** (#327, #328): Subscribe to real-time membership changes
+  - `EmbeddedEngine::watch_membership()` — in-process `watch::Receiver<MembershipSnapshot>` (embedded mode)
+  - `GrpcClient::watch_membership()` — gRPC server-side stream of `MembershipSnapshot` (standalone mode)
+  - Stream delivers the current snapshot immediately on connect (no need to wait for the next change)
+  - Each committed ConfChange (AddNode, Promote, Remove) pushes a new snapshot to all subscribers
+  - Stream terminates with `UNAVAILABLE` on server shutdown — callers reconnect and resubscribe
+  - `MembershipSnapshot` carries `members`, `learners`, and `committed_index` (idempotency key for deduplication after reconnect)
+
 ### 🟡 Important Fixes
 
 - **fix(raft) #340**: Candidate correctly steps down on same-term AppendEntries with log conflict

@@ -1431,6 +1431,118 @@ mod cas_operations {
 }
 
 // =============================================================================
+// WatchMembership Tests
+// =============================================================================
+
+mod watch_membership_tests {
+    use super::*;
+    use d_engine_proto::client::MembershipSnapshot;
+    use tokio_stream::StreamExt;
+
+    async fn make_client(port: u16) -> GrpcClient {
+        let endpoints = vec![format!("http://localhost:{}", port)];
+        let config = ClientConfig::default();
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+        GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 42,
+            config,
+            endpoints,
+        })))
+    }
+
+    /// Server rejects the watch_membership call → GrpcClient must propagate the error.
+    ///
+    /// Verifies that transport/server-side errors surface to callers instead of
+    /// being silently swallowed.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_watch_membership_returns_err_when_server_rejects() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) = MockNode::simulate_watch_membership_error_mock_server(
+            rx,
+            tonic::Status::permission_denied("membership watch not allowed"),
+        )
+        .await
+        .unwrap();
+
+        let client = make_client(port).await;
+        let result = client.watch_membership().await;
+
+        assert!(
+            result.is_err(),
+            "Expected Err when server rejects watch_membership"
+        );
+    }
+
+    /// Server emits two snapshots → client stream receives them in order with correct fields.
+    ///
+    /// Validates the full round-trip: proto serialization on the server side and
+    /// deserialization/field mapping on the client side.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_watch_membership_receives_snapshots_in_order() {
+        let snapshots = vec![
+            MembershipSnapshot {
+                members: vec![1, 2, 3],
+                learners: vec![],
+                committed_index: 10,
+            },
+            MembershipSnapshot {
+                members: vec![1, 2, 3, 4],
+                learners: vec![],
+                committed_index: 11,
+            },
+        ];
+
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) =
+            MockNode::simulate_watch_membership_mock_server(rx, snapshots.clone())
+                .await
+                .unwrap();
+
+        let client = make_client(port).await;
+        let mut stream = client.watch_membership().await.expect("watch_membership should succeed");
+
+        let s1 = stream.next().await.expect("expected first snapshot").expect("no error");
+        assert_eq!(s1.members, vec![1, 2, 3]);
+        assert_eq!(s1.committed_index, 10);
+
+        let s2 = stream.next().await.expect("expected second snapshot").expect("no error");
+        assert_eq!(s2.members, vec![1, 2, 3, 4]);
+        assert_eq!(s2.committed_index, 11);
+
+        // Server closed the stream — no more items.
+        assert!(
+            stream.next().await.is_none(),
+            "stream should close after all snapshots"
+        );
+    }
+
+    /// Server sends no snapshots → stream closes immediately without error.
+    ///
+    /// Edge case: a node that has just started may have no membership changes yet.
+    /// The client must not hang waiting for data that will never arrive.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_watch_membership_empty_stream_closes_cleanly() {
+        let (_tx, rx) = oneshot::channel::<()>();
+        let (_channel, port) =
+            MockNode::simulate_watch_membership_mock_server(rx, vec![]).await.unwrap();
+
+        let client = make_client(port).await;
+        let mut stream = client.watch_membership().await.expect("watch_membership should succeed");
+
+        assert!(
+            stream.next().await.is_none(),
+            "empty membership stream should close immediately"
+        );
+    }
+}
+
+// =============================================================================
 // Watch Tests
 // =============================================================================
 

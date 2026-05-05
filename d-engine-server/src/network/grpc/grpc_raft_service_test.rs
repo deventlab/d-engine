@@ -14,6 +14,7 @@ use d_engine_core::convert::safe_kv_bytes;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::raft_client_service_server::RaftClientService;
 use d_engine_proto::common::LogId;
@@ -390,4 +391,73 @@ async fn test_handle_rpc_services_successfully() {
 
     // Assert if the handle client propose result is ok.
     assert!(service_response.is_ok());
+}
+
+// =============================================================================
+// WatchMembership unit tests
+// =============================================================================
+
+/// Node not ready → watch_membership must return UNAVAILABLE immediately.
+///
+/// Guards the readiness check path; without it, clients could subscribe to a
+/// node that hasn't joined the cluster yet and receive stale/empty data.
+#[tokio::test]
+#[traced_test]
+async fn test_watch_membership_returns_unavailable_when_node_not_ready() {
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    let node = mock_node("/tmp/test_watch_membership_not_ready", shutdown_rx, None);
+    node.set_rpc_ready(false);
+
+    let result = node
+        .watch_membership(Request::new(WatchMembershipRequest { client_id: 1 }))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap().code(), Code::Unavailable);
+}
+
+/// Node ready with default (empty) snapshot → stream yields the current snapshot
+/// immediately (via mark_changed), then the sentinel UNAVAILABLE when the sender
+/// is dropped (mock_node drops the membership_tx).
+///
+/// This test validates the two-phase stream lifecycle:
+/// 1. Initial state delivery on connect (mark_changed behavior)
+/// 2. Sentinel error delivery when the server-side channel closes
+#[tokio::test]
+#[traced_test]
+async fn test_watch_membership_yields_current_snapshot_then_sentinel_on_sender_drop() {
+    use tokio_stream::StreamExt;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    let node = mock_node(
+        "/tmp/test_watch_membership_snapshot_then_sentinel",
+        shutdown_rx,
+        None,
+    );
+    node.set_rpc_ready(true);
+
+    let response = node
+        .watch_membership(Request::new(WatchMembershipRequest { client_id: 1 }))
+        .await
+        .expect("watch_membership should succeed when node is ready");
+
+    let mut stream = response.into_inner();
+
+    // First item: current snapshot (mark_changed causes immediate delivery).
+    // mock_node initialises membership_rx with MembershipSnapshot::default().
+    let first = stream.next().await.expect("stream must yield at least one item");
+    assert!(first.is_ok(), "first item must be Ok(snapshot)");
+    let snap = first.unwrap();
+    assert!(snap.members.is_empty(), "default snapshot has no voters");
+    assert!(snap.learners.is_empty(), "default snapshot has no learners");
+    assert_eq!(snap.committed_index, 0, "default committed_index is 0");
+
+    // Second item: sentinel error — mock_node drops the sender, so WatchStream ends
+    // and the chained sentinel fires.
+    let second = stream.next().await.expect("stream must yield sentinel");
+    assert!(second.is_err(), "sentinel must be Err(UNAVAILABLE)");
+    assert_eq!(second.unwrap_err().code(), Code::Unavailable);
+
+    // Stream is exhausted after the sentinel.
+    assert!(stream.next().await.is_none());
 }

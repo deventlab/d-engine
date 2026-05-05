@@ -5,7 +5,9 @@ use bytes::Bytes;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ClientWriteRequest;
+use d_engine_proto::client::MembershipSnapshot;
 use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WatchRequest;
 use d_engine_proto::client::WatchResponse;
 use d_engine_proto::client::WriteCommand;
@@ -162,6 +164,36 @@ impl GrpcClient {
         }
 
         Ok(client)
+    }
+
+    /// Subscribe to committed cluster membership changes.
+    ///
+    /// Immediately yields the current `MembershipSnapshot` on connect, then one
+    /// snapshot per committed ConfChange (AddNode, Promote, Remove).
+    /// The stream ends with `Err(UNAVAILABLE)` when the server shuts down;
+    /// callers should reconnect and re-subscribe.
+    ///
+    /// Use `committed_index` as an idempotency key to deduplicate retries.
+    pub async fn watch_membership(&self) -> ClientApiResult<tonic::Streaming<MembershipSnapshot>> {
+        let client_inner = self.client_inner.load();
+
+        let request = WatchMembershipRequest {
+            client_id: client_inner.client_id,
+        };
+
+        // Any node (leader or follower) emits membership changes after commit.
+        let mut client = self.make_client().await?;
+
+        match client.watch_membership(request).await {
+            Ok(response) => {
+                debug!("Membership watch stream established");
+                Ok(response.into_inner())
+            }
+            Err(status) => {
+                error!("watch_membership request failed: {:?}", status);
+                Err(status.into())
+            }
+        }
     }
 
     /// Watch for changes to a specific key
