@@ -828,7 +828,7 @@ where
         config: &SnapshotConfig,
     ) -> Result<(SnapshotMetadata, PathBuf)> {
         let mut assembler = SnapshotAssembler::new(self.path_mgr.clone()).await?;
-        let chunk_timeout = Duration::from_secs(10);
+        let chunk_timeout = Duration::from_secs(config.receive_chunk_timeout_in_sec);
         let mut last_received = Instant::now();
         let mut term_check = None;
         let mut captured_metadata: Option<SnapshotMetadata> = None;

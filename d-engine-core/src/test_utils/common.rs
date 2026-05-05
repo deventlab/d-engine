@@ -90,5 +90,6 @@ pub fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
         push_timeout_in_ms: 100,
         enable: true,
         snapshots_dir_prefix: "snapshot-".to_string(),
+        receive_chunk_timeout_in_sec: 30,
     }
 }
