@@ -177,7 +177,7 @@ service RaftClientService {
   // Watch for committed cluster membership changes.
   //
   // Immediately pushes the current MembershipSnapshot on connect, then pushes
-  // a new snapshot on every committed ConfChange (AddNode, Promote, Remove).
+  // a new snapshot on every committed ConfChange (AddNode, BatchPromote, BatchRemove).
   // All nodes (leader, follower, learner) emit the event after the entry commits.
   //
   // Stream lifecycle:

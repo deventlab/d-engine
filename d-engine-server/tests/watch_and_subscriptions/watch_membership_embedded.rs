@@ -139,11 +139,11 @@ max_delay_ms = 5000
 }
 
 /// Append a `[raft.membership.zombie]` override so that a single AppendEntries
-/// failure immediately triggers zombie detection and node removal.
+/// failure immediately triggers zombie detection (warn-only; no auto-removal).
 ///
-/// Used only in tests 3 and 7 where we stop a node and wait for `BatchRemove`
-/// to commit via Raft consensus.  Kept separate from `node_toml` to avoid
-/// spurious zombie signals in other tests during startup.
+/// Used only in test 3 (`test_watch_membership_zombie_warns_without_removal`).
+/// Kept separate from `node_toml` to avoid spurious zombie signals in other
+/// tests during startup.
 fn with_fast_zombie(base_toml: &str) -> String {
     format!(
         "{base_toml}
@@ -468,7 +468,7 @@ async fn test_watch_membership_zombie_warns_without_removal()
 /// Test 4: `watch_membership()` fires when a learner is promoted to voter.
 ///
 /// Promotion happens automatically via the `BatchPromote` Raft path:
-/// 1. Learner starts with `status = Promotable (2)` and `role = Learner (4)`.
+/// 1. Learner starts with `status = Promotable (1)` and `role = Learner (4)`.
 /// 2. On boot the learner sends `JoinCluster` RPC → leader commits `AddNode`;
 ///    watch fires with node 3 in `learners` (change 1).
 /// 3. The learner replicates the log.  Within `learner_check_throttle_ms = 100 ms`
@@ -476,7 +476,7 @@ async fn test_watch_membership_zombie_warns_without_removal()
 ///    with node 3 moved from `learners` to `members` (change 2).
 ///
 /// Setup:  2-node voter cluster (nodes 1, 2).  Subscribe on node 1.
-/// Action: start node 3 as Promotable Learner (role=4, status=2).
+/// Action: start node 3 as Promotable Learner (role=4, status=1).
 /// Assert: second `changed()` shows node 3 in `members`, not in `learners`.
 #[tokio::test]
 #[traced_test]
@@ -532,7 +532,7 @@ async fn test_watch_membership_fires_on_learner_promote() -> Result<(), Box<dyn 
     // the subsequent BatchPromote notifications.
     let mut rx = engine1.watch_membership();
 
-    // Node 3 starts as a Promotable Learner.  Its status=2 (Promotable) is read from
+    // Node 3 starts as a Promotable Learner.  Its status=1 (Promotable) is read from
     // initial_cluster and sent to the leader in the JoinRequest.  Once it catches up
     // (gap ≤ learner_catchup_threshold), the leader auto-promotes it via BatchPromote.
     let engine3 = start_engine(

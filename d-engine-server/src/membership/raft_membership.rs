@@ -446,10 +446,18 @@ where
                         // Idempotent: learner already present. This happens when a learner node
                         // applies its own committed AddNode entry while it already has itself
                         // in its initial cluster config. The state is correct; no-op.
-                        info!(
-                            "[node-{}] AddLearner: node {} already a learner, treating as idempotent",
-                            self.node_id, node_id
-                        );
+                        if existing.address != address {
+                            warn!(
+                                "[node-{}] AddLearner idempotent: node {} address mismatch \
+                                 (stored={}, incoming={}) — keeping stored address",
+                                self.node_id, node_id, existing.address, address
+                            );
+                        } else {
+                            info!(
+                                "[node-{}] AddLearner: node {} already a learner, treating as idempotent",
+                                self.node_id, node_id
+                            );
+                        }
                         return Ok(());
                     }
                     error!(

@@ -424,7 +424,8 @@ async fn test_replication_worker_exits_when_handle_dropped() {
     // Wait until the worker has attempted at least one connection (entered inner loop).
     tokio::time::timeout(std::time::Duration::from_secs(5), first_attempt_rx.recv())
         .await
-        .expect("timed out waiting for first reconnect attempt");
+        .expect("timed out waiting for first reconnect attempt")
+        .expect("signal channel closed without a send — worker never entered reconnect loop");
 
     // Drop LeaderState — drops all ReplicationWorkerHandles — closes task_rx for all workers.
     drop(state);
