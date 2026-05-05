@@ -182,3 +182,67 @@ async fn handle_existing_directory_conflict() {
 
     assert!(count > 0, "Backup directory should be created");
 }
+
+/// Simulates the production retry scenario:
+/// 1. First transfer writes partial chunks then fails (drop without finalize)
+/// 2. Stale temp file remains on disk
+/// 3. Leader retries: new SnapshotAssembler on the same path_mgr
+/// 4. Final snapshot must contain ONLY the new transfer data, not old+new appended
+#[tokio::test]
+#[traced_test]
+async fn test_assembler_on_stale_temp_file_does_not_append_old_data() {
+    let dir = tempdir().unwrap();
+    let path_mgr = Arc::new(SnapshotPathManager::new(
+        dir.path().to_path_buf(),
+        "snapshot-".to_string(),
+    ));
+
+    // First transfer: write 3 chunks then drop (simulates timeout / leader change)
+    {
+        let mut assembler = SnapshotAssembler::new(path_mgr.clone()).await.unwrap();
+        for i in 0..3u32 {
+            assembler.write_chunk(i, Bytes::from(vec![0xAAu8; 1024])).await.unwrap();
+        }
+        // Drop without finalize — stale temp file stays on disk with 3 * 1024 bytes
+    }
+
+    let temp_path = path_mgr.temp_assembly_file();
+    assert!(
+        temp_path.exists(),
+        "stale temp file must exist after failed transfer"
+    );
+    let stale_size = tokio::fs::metadata(&temp_path).await.unwrap().len();
+    assert_eq!(
+        stale_size,
+        3 * 1024,
+        "stale file should contain partial data from first transfer"
+    );
+
+    // Leader retry: new assembler on the same path_mgr, fresh complete transfer
+    let mut assembler = SnapshotAssembler::new(path_mgr.clone()).await.unwrap();
+    for i in 0..3u32 {
+        assembler.write_chunk(i, Bytes::from(vec![(i + 1) as u8; 1024])).await.unwrap();
+    }
+    let snapshot_meta = SnapshotMetadata {
+        last_included: Some(LogId { index: 1, term: 1 }),
+        checksum: Bytes::new(),
+    };
+    let final_path = assembler.finalize(&snapshot_meta).await.unwrap();
+    let content = tokio::fs::read(&final_path).await.unwrap();
+
+    // Must be exactly 3 * 1024 bytes — stale 3072 bytes must NOT be prepended
+    assert_eq!(
+        content.len(),
+        3 * 1024,
+        "final snapshot must contain only new transfer data, not stale+new appended ({} bytes)",
+        content.len()
+    );
+    for (i, chunk) in content.chunks(1024).enumerate() {
+        assert_eq!(
+            chunk,
+            vec![(i + 1) as u8; 1024].as_slice(),
+            "chunk {} must contain new transfer data, not stale bytes",
+            i
+        );
+    }
+}

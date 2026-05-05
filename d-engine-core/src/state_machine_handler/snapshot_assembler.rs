@@ -76,7 +76,8 @@ impl SnapshotAssembler {
 
         let file = tokio::fs::OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .truncate(true)
             .open(&temp_file_path)
             .await
             .map_err(StorageError::IoError)?;
