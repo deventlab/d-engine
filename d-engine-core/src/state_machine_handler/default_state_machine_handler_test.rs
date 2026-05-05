@@ -1224,16 +1224,7 @@ async fn get_dir_names(path: &Path) -> Vec<String> {
 //     }
 
 //     // Initializing Shutdown Signal
-//     let mut replication_handler = MockReplicationCore::new();
-//     replication_handler
-//         .expect_handle_raft_request_in_batch()
-//         .returning(|_, _, _, _| {
-//             Ok(AppendResults {
-//                 commit_quorum_achieved: false,
-//                 learner_progress: HashMap::new(),
-//                 peer_updates: HashMap::new(),
-//             })
-//         });
+//     let replication_handler = MockReplicationCore::new();
 //     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
 //     election_handler
 //         .expect_check_vote_request_is_legal()
