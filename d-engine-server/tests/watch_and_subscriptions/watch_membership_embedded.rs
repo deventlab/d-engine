@@ -153,6 +153,32 @@ threshold = 1
     )
 }
 
+/// Poll `rx` until the snapshot contains `node_id` or `dur` elapses.
+///
+/// `changed()` fires for **any** ConfChange, not just the one we're waiting for.
+/// This helper loops until the snapshot actually reflects the expected membership,
+/// making assertions resilient to intermediate notifications.
+async fn wait_for_node_in_snapshot(
+    rx: &mut tokio::sync::watch::Receiver<d_engine_server::MembershipSnapshot>,
+    node_id: u32,
+    dur: Duration,
+) -> Option<d_engine_server::MembershipSnapshot> {
+    tokio::time::timeout(dur, async {
+        loop {
+            let snap = rx.borrow_and_update().clone();
+            if snap.members.contains(&node_id) || snap.learners.contains(&node_id) {
+                return Some(snap);
+            }
+            if rx.changed().await.is_err() {
+                return None;
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Start one `EmbeddedEngine` from a TOML string written to a temp file.
 async fn start_engine(
     toml: &str,
@@ -723,32 +749,19 @@ async fn test_watch_membership_all_nodes_receive_notification()
         "Node 3 (learner) did not receive membership notification"
     );
 
-    // Verify all three nodes agree on the same final membership.
-    let s1 = rx1.borrow_and_update().clone();
-    let s2 = rx2.borrow_and_update().clone();
-    let s3 = rx3.borrow_and_update().clone();
-
-    // Node 4 joined as a learner — all nodes must include it in their view.
-    let has_n4 =
-        |s: &d_engine_server::MembershipSnapshot| s.learners.contains(&4) || s.members.contains(&4);
-    assert!(
-        has_n4(&s1),
-        "Node 1 snapshot missing node 4: members={:?} learners={:?}",
-        s1.members,
-        s1.learners
-    );
-    assert!(
-        has_n4(&s2),
-        "Node 2 snapshot missing node 4: members={:?} learners={:?}",
-        s2.members,
-        s2.learners
-    );
-    assert!(
-        has_n4(&s3),
-        "Node 3 (learner) snapshot missing node 4: members={:?} learners={:?}",
-        s3.members,
-        s3.learners
-    );
+    // Verify all three nodes eventually observe node 4 in their membership snapshot.
+    // changed() above guarantees a notification fired; this loop handles the case where
+    // that notification was for an intermediate ConfChange before node 4's AddNode
+    // propagated to the observer node (common under bidi-streaming AppendEntries).
+    wait_for_node_in_snapshot(&mut rx1, 4, MEMBERSHIP_CHANGE_TIMEOUT)
+        .await
+        .expect("Node 1 did not observe node 4 in membership snapshot within timeout");
+    wait_for_node_in_snapshot(&mut rx2, 4, MEMBERSHIP_CHANGE_TIMEOUT)
+        .await
+        .expect("Node 2 did not observe node 4 in membership snapshot within timeout");
+    wait_for_node_in_snapshot(&mut rx3, 4, MEMBERSHIP_CHANGE_TIMEOUT)
+        .await
+        .expect("Node 3 (learner) did not observe node 4 in membership snapshot within timeout");
 
     engine1.stop().await?;
     engine2.stop().await?;
