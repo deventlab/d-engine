@@ -13,3 +13,5 @@ mod snapshot_concurrent_replication_embedded;
 mod snapshot_concurrent_writes_embedded;
 mod snapshot_follower_generation_embedded;
 mod snapshot_generation_standalone;
+mod snapshot_interrupted_transfer_embedded;
+mod snapshot_leader_change_during_transfer_embedded;
