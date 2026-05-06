@@ -242,7 +242,11 @@ snapshots_dir = '{}'
             "key_{i} is snapshot-only — readable only if snapshot was correctly applied"
         );
     }
-    info!("Snapshot-only entries [0, {}, {}] verified on Learner", snapshot_only_boundary / 2, snapshot_only_boundary - 1);
+    info!(
+        "Snapshot-only entries [0, {}, {}] verified on Learner",
+        snapshot_only_boundary / 2,
+        snapshot_only_boundary - 1
+    );
 
     Ok(())
 }
