@@ -10,6 +10,7 @@
 //!   machines
 //! - [Consistency Tuning](self::consistency_tuning) - Read consistency configuration
 //! - [Watch Feature](self::watch_feature) - Real-time key change notifications
+//! - [Snapshot Guarantees](self::snapshot_guarantees) - Snapshot behavior, limitations, and config
 
 pub mod customize_storage_engine {
     #![doc = include_str!("customize-storage-engine.md")]
@@ -25,4 +26,8 @@ pub mod consistency_tuning {
 
 pub mod watch_feature {
     #![doc = include_str!("watch-feature.md")]
+}
+
+pub mod snapshot_guarantees {
+    #![doc = include_str!("snapshot-guarantees.md")]
 }
