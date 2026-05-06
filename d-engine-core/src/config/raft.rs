@@ -595,6 +595,12 @@ impl SnapshotConfig {
             ))));
         }
 
+        if self.receive_chunk_timeout_in_sec == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "receive_chunk_timeout_in_sec must be greater than 0".into(),
+            )));
+        }
+
         if self.snapshot_push_max_retry < 1 {
             return Err(Error::Config(ConfigError::Message(format!(
                 "snapshot_push_max_retry must be >= 1, (got {})",

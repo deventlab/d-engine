@@ -194,8 +194,32 @@ snapshots_dir = '{}'
     .await?;
     info!("Learner Node 4 started — snapshot transfer should begin shortly");
 
-    // Give the gRPC snapshot stream time to be established before killing the leader
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // Poll until transfer has started (temp file present) but not completed (last_key absent).
+    // A fixed sleep can miss the fault window in both directions; this makes the kill
+    // deterministically mid-transfer.
+    let node4_snap_dir = snapshots_dir.join("node4");
+    let temp_file = node4_snap_dir.join("temp-snapshot.part.tar.gz");
+    let last_key = format!("key_{}", BASELINE_ENTRIES - 1).into_bytes();
+    let mut mid_transfer = false;
+    for _ in 0..60 {
+        let temp_exists = temp_file.exists();
+        let finished = learner_engine
+            .client()
+            .get_eventual(last_key.clone())
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        if temp_exists && !finished {
+            mid_transfer = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        mid_transfer,
+        "never observed mid-transfer state (temp file present + last_key absent) within 6 seconds"
+    );
 
     // Drop the current leader — simulates a crash mid-transfer
     info!("Dropping leader Node {old_leader_id} to simulate crash mid-transfer");
@@ -222,7 +246,6 @@ snapshots_dir = '{}'
     info!("New leader elected: Node {new_leader_id}");
 
     // Wait for Learner to catch up from the new leader
-    let last_key = format!("key_{}", BASELINE_ENTRIES - 1).into_bytes();
     let mut caught_up = false;
     for _ in 0..30 {
         if learner_engine
@@ -244,25 +267,29 @@ snapshots_dir = '{}'
     );
     info!("Learner caught up to all {BASELINE_ENTRIES} entries after leader change");
 
-    // Verify data integrity from new leader
-    let new_leader_engine = engines
-        .iter()
-        .find(|e| e.node_id() == new_leader_id)
-        .expect("new leader engine exists");
-    let new_leader_client = new_leader_engine.client().clone();
-
-    for i in 0..BASELINE_ENTRIES {
-        let actual = new_leader_client
-            .get_linearizable(format!("key_{i}").into_bytes())
+    // Verify snapshot-only entries from Learner directly.
+    // With retained_log_entries = 20 and snapshot_threshold = 50, entries in
+    // 0..(SNAPSHOT_THRESHOLD - RETAINED_LOGS) are purged from the log and exist
+    // only in the snapshot. Readable on the Learner only if the snapshot was correctly
+    // applied — AppendEntries alone cannot account for them.
+    let snapshot_only_boundary = SNAPSHOT_THRESHOLD - RETAINED_LOGS;
+    for i in [0, snapshot_only_boundary / 2, snapshot_only_boundary - 1] {
+        let actual = learner_engine
+            .client()
+            .get_eventual(format!("key_{i}").into_bytes())
             .await?
             .unwrap_or_default();
         assert_eq!(
             actual,
             format!("value_{i}").into_bytes(),
-            "entry {i} must have correct value after leader change"
+            "key_{i} is snapshot-only — readable only if snapshot was correctly applied"
         );
     }
-    info!("All {BASELINE_ENTRIES} entries verified on new Leader Node {new_leader_id}");
+    info!(
+        "Snapshot-only entries [0, {}, {}] verified on Learner Node 4",
+        snapshot_only_boundary / 2,
+        snapshot_only_boundary - 1
+    );
 
     Ok(())
 }

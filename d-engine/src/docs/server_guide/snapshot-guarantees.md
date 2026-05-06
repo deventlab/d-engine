@@ -49,7 +49,7 @@ snapshot instead of log entries.
 ### Chunk timeout
 
 `receive_chunk_timeout_in_sec` (default: 30s) applies per-chunk on the receiver side.
-For slow networks or chunks larger than the default 1 MB, increase this value:
+For slow networks or chunks larger than the default 1 KB, increase this value:
 
 ```toml
 [raft.snapshot]
@@ -67,12 +67,12 @@ disk after a new one is created. Keep at least 2 for rollback and debugging head
 
 | Field | Default | Description |
 |---|---|---|
-| `max_log_entries_before_snapshot` | 10000 | Log entries before snapshot triggers |
-| `retained_log_entries` | 1000 | Log entries to retain after snapshot |
-| `chunk_size` | 1 MB | Size of each transfer chunk in bytes |
+| `max_log_entries_before_snapshot` | 1000 | Log entries before snapshot triggers |
+| `retained_log_entries` | 1 | Log entries to retain after snapshot |
+| `chunk_size` | 1024 (1 KB) | Size of each transfer chunk in bytes |
 | `receive_chunk_timeout_in_sec` | 30 | Per-chunk receive timeout on follower |
 | `transfer_timeout_in_sec` | 600 | Overall transfer timeout |
-| `max_bandwidth_mbps` | 0 (unlimited) | Transfer bandwidth cap |
+| `max_bandwidth_mbps` | 1 | Transfer bandwidth cap (Mbps) |
 | `cleanup_retain_count` | 2 | Number of past snapshot files to keep |
 
 ## Further Reading
