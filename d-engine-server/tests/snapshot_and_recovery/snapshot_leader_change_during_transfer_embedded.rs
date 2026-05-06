@@ -198,9 +198,12 @@ snapshots_dir = '{}'
     // complete at the moment of the kill, the recovery invariant still holds.
     let _ = learner_engine.wait_ready(Duration::from_secs(15)).await;
 
-    // Drop the current leader — simulates a crash during snapshot delivery
-    info!("Dropping leader Node {old_leader_id} to simulate crash during snapshot delivery");
-    engines.remove(leader_idx);
+    // Stop the current leader — simulates a crash during snapshot delivery.
+    // Explicitly awaiting stop() ensures the leader's background tasks are fully
+    // shut down before the surviving nodes proceed to elect a new leader.
+    info!("Stopping leader Node {old_leader_id} to simulate crash during snapshot delivery");
+    let old_leader = engines.remove(leader_idx);
+    old_leader.stop().await?;
 
     // Wait for one of the surviving nodes to become the new leader
     let mut new_leader_id = 0u32;
@@ -268,6 +271,11 @@ snapshots_dir = '{}'
         snapshot_only_boundary / 2,
         snapshot_only_boundary - 1
     );
+
+    for engine in &engines {
+        engine.stop().await?;
+    }
+    learner_engine.stop().await?;
 
     Ok(())
 }

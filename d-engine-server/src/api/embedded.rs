@@ -490,7 +490,7 @@ impl EmbeddedEngine {
     /// ## Distinguishing this from other notifiers
     ///
     /// - [`Self::leader_change_notifier`]: fires on leader election changes, **not** membership changes
-    /// - [`Self::wait_ready`]: fires when the local RPC server is ready, **not** membership changes
+    /// - [`Self::wait_ready`]: resolves when a leader is elected and the cluster is ready, **not** membership changes
     ///
     /// ## Usage
     /// ```ignore

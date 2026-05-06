@@ -248,5 +248,10 @@ snapshots_dir = '{}'
         snapshot_only_boundary - 1
     );
 
+    for engine in &engines {
+        engine.stop().await?;
+    }
+    learner_engine.stop().await?;
+
     Ok(())
 }
