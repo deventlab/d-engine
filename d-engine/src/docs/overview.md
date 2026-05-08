@@ -101,6 +101,7 @@ make start-cluster
 - [Customize State Machine](crate::docs::server_guide::customize_state_machine)
 - [Consistency Tuning](crate::docs::server_guide::consistency_tuning)
 - [Watch Feature](crate::docs::server_guide::watch_feature)
+- [Snapshot Guarantees](crate::docs::server_guide::snapshot_guarantees)
 
 ### Examples & Performance
 

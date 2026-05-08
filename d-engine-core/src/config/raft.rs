@@ -509,6 +509,13 @@ pub struct SnapshotConfig {
 
     #[serde(default = "default_push_timeout_in_ms")]
     pub push_timeout_in_ms: u64,
+
+    /// Maximum duration to wait for a single chunk during snapshot reception.
+    /// Applies per-chunk on the follower side. Increase for slow networks or large chunks.
+    ///
+    /// Default: 30 seconds
+    #[serde(default = "default_receive_chunk_timeout_in_sec")]
+    pub receive_chunk_timeout_in_sec: u64,
 }
 impl Default for SnapshotConfig {
     fn default() -> Self {
@@ -531,6 +538,7 @@ impl Default for SnapshotConfig {
             snapshot_push_backoff_in_ms: default_snapshot_push_backoff_in_ms(),
             snapshot_push_max_retry: default_snapshot_push_max_retry(),
             push_timeout_in_ms: default_push_timeout_in_ms(),
+            receive_chunk_timeout_in_sec: default_receive_chunk_timeout_in_sec(),
             enable: default_snapshot_enabled(),
         }
     }
@@ -585,6 +593,12 @@ impl SnapshotConfig {
                 "push_queue_size must be >= 1, (got {})",
                 self.push_queue_size
             ))));
+        }
+
+        if self.receive_chunk_timeout_in_sec == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "receive_chunk_timeout_in_sec must be greater than 0".into(),
+            )));
         }
 
         if self.snapshot_push_max_retry < 1 {
@@ -689,6 +703,9 @@ fn default_snapshot_push_max_retry() -> u32 {
 }
 fn default_push_timeout_in_ms() -> u64 {
     300_000
+}
+fn default_receive_chunk_timeout_in_sec() -> u64 {
+    30
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

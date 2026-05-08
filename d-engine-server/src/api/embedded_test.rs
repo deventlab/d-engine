@@ -670,9 +670,19 @@ listen_addr = "127.0.0.1:0"
 
             println!("Created storage and SM, TempDir kept alive");
 
-            let engine = EmbeddedEngine::start_custom(storage, sm, None)
-                .await
-                .expect("Failed to start engine");
+            // Default general_raft_timeout_duration_in_ms is 50ms — too tight for CI.
+            // Override to 5000ms so put() doesn't time out on slow machines.
+            let config_path = _temp_dir.path().join("test.toml");
+            std::fs::write(
+                &config_path,
+                "[raft]\ngeneral_raft_timeout_duration_in_ms = 5000\n",
+            )
+            .unwrap();
+
+            let engine =
+                EmbeddedEngine::start_custom(storage, sm, Some(config_path.to_str().unwrap()))
+                    .await
+                    .expect("Failed to start engine");
 
             engine
                 .wait_ready(Duration::from_secs(5))

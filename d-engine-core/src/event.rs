@@ -112,7 +112,7 @@ pub enum RoleEvent {
     },
 
     /// A peer's connection failure count crossed zombie_threshold.
-    /// Emitted by RaftHealthMonitor (server layer) via an injected Sender<u32>.
+    /// Emitted by RaftHealthMonitor (server layer) via an injected `Sender<u32>`.
     /// Leader responds by proposing a BatchRemove config change for that node.
     ZombieDetected(u32),
 

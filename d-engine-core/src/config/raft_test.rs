@@ -2,7 +2,6 @@ use crate::BackpressureConfig;
 use crate::ElectionConfig;
 use crate::RaftConfig;
 use crate::RpcCompressionConfig;
-
 #[test]
 fn test_invalid_election_timeout() {
     let mut config = RaftConfig::default();
@@ -71,6 +70,16 @@ fn test_custom_compression_config() {
     assert!(config.snapshot_response);
     assert!(config.cluster_response);
     assert!(config.client_response);
+}
+
+#[test]
+fn test_snapshot_config_zero_chunk_timeout_is_invalid() {
+    let mut config = RaftConfig::default();
+    config.snapshot.receive_chunk_timeout_in_sec = 0;
+    assert!(
+        config.validate().is_err(),
+        "receive_chunk_timeout_in_sec = 0 must be rejected"
+    );
 }
 
 #[test]
