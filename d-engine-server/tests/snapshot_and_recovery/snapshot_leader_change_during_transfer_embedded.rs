@@ -272,10 +272,18 @@ snapshots_dir = '{}'
         snapshot_only_boundary - 1
     );
 
+    let mut stop_err: Option<Box<dyn std::error::Error>> = None;
     for engine in &engines {
-        engine.stop().await?;
+        if let Err(e) = engine.stop().await {
+            stop_err = Some(e.into());
+        }
     }
-    learner_engine.stop().await?;
+    if let Err(e) = learner_engine.stop().await {
+        stop_err = Some(e.into());
+    }
+    if let Some(e) = stop_err {
+        return Err(e);
+    }
 
     Ok(())
 }
