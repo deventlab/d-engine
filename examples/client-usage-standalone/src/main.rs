@@ -22,6 +22,8 @@ enum Commands {
     Get { key: u64 },
     Sget { key: u64 },
     Lget { key: u64 },
+    /// Atomic compare-and-swap. Prints "true" if swapped, "false" if expected didn't match.
+    Cas { key: u64, expected: u64, new_value: u64 },
 }
 
 #[tokio::main]
@@ -42,6 +44,9 @@ async fn main() -> Result<()> {
         Commands::Get { key } => handle_read(&client, key, "e").await,
         Commands::Sget { key } => handle_read(&client, key, "s").await,
         Commands::Lget { key } => handle_read(&client, key, "l").await,
+        Commands::Cas { key, expected, new_value } => {
+            handle_cas(&client, key, expected, new_value).await
+        }
     }
 }
 
@@ -95,6 +100,20 @@ async fn handle_read(
         None => println!("Key not found"),
     }
 
+    Ok(())
+}
+
+async fn handle_cas(
+    client: &Client,
+    key: u64,
+    expected: u64,
+    new_value: u64,
+) -> Result<()> {
+    let swapped = client
+        .compare_and_swap(safe_kv(key), Some(safe_kv(expected)), safe_kv(new_value))
+        .await
+        .map_err(|e: ClientApiError| anyhow::anyhow!("CAS error: {e:?}"))?;
+    println!("{}", swapped);
     Ok(())
 }
 
