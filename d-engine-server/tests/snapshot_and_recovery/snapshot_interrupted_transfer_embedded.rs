@@ -155,7 +155,7 @@ listen_address = '127.0.0.1:{}'
 initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
-    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 3, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 4, name = 'n4', address = '127.0.0.1:{}', role = 4, status = 2 }}
 ]
 db_root_dir = '{}'
