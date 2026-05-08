@@ -21,8 +21,8 @@ docker build -t demo:1.3 -f docker/Dockerfile .
 # Build monitoring component
 docker build -t prometheus:1.0 -f docker/monitoring/prometheus/Dockerfile .
 
-# Build Jepsen test container
-docker build -t jepsen:1.0 -f docker/jepsen/Dockerfile .
+# Build Jepsen test container (run from d-engine workspace root)
+docker build -t jepsen:1.0 -f examples/three-nodes-standalone/docker/jepsen/Dockerfile .
 ```
 
 ### 3. Start the Cluster

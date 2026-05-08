@@ -3,7 +3,8 @@
 
 # Configurable parameters
 TIME_LIMIT ?= 60
-TEST_COMMAND ?= dengine_ctl
+TEST_COMMAND ?= client-usage-standalone-demo
+WORKLOAD ?= register
 NODE1 ?= node1
 NODE2 ?= node2
 NODE3 ?= node3
@@ -33,7 +34,8 @@ test: restart-stack
 		    --node '"${NODE3}"' \
 		    --endpoints '"${ENDPOINTS}"' \
 		    --time-limit '"${TIME_LIMIT}"' \
-		    --command '"${TEST_COMMAND}"''
+		    --command '"${TEST_COMMAND}"' \
+		    --workload '"${WORKLOAD}"''
 	@echo "Jepsen test finished, checking result..."
 	docker exec docker-jepsen-1 bash -c '\
 		lein trampoline run -m clojure.main -e "\

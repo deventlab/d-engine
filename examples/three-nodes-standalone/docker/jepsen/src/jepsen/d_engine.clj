@@ -17,7 +17,9 @@
    [jepsen.os :as os]
    [knossos.model :as model]
    [slingshot.slingshot :refer [try+]]
-   [clojure.tools.cli :refer [parse-opts]]))
+   [clojure.tools.cli :refer [parse-opts]]
+   [jepsen.d_engine.bank :as bank]
+   [jepsen.d_engine.set :as set-workload]))
 
 ;; ========== Operation Definition ==========
 ;; Update operation commands to match v0.1.4 API
@@ -132,51 +134,66 @@
                                     :algorithm :linear})
      :timeline (timeline/html)})))
 
+(defn register-workload
+  "Original linearizable register workload."
+  [opts]
+  {:client    (client (:command opts) (:endpoints opts))
+   :checker   (independent/checker
+               (checker/compose
+                {:linear   (checker/linearizable {:model     (model/cas-register)
+                                                  :algorithm :auto})
+                 :timeline (timeline/html)}))
+   :generator (independent/concurrent-generator
+               3
+               (range 3)
+               (fn [k]
+                 (->> (gen/mix [r w])
+                      (gen/stagger 1/2)
+                      (gen/limit 40))))})
+
+(defn workload
+  [opts]
+  (case (:workload opts)
+    "bank" (bank/workload opts)
+    "set"  (set-workload/workload opts)
+    (register-workload opts)))
+
 (defn test-spec
   [opts]
   (println "opts:" opts)
   (println "Time limit set to:" (:time-limit opts))
-  (merge tests/noop-test
-         {:name "d-engine"
-          :ssh    {:private-key-path "/root/.ssh/id_rsa"
-                   :strict-host-key-checking false}
-          :client  (client (:command opts) (:endpoints opts))
-          :nemesis (nemesis/partition-random-halves)
-          ;; Final checker definition
-          :checker (independent/checker
-                    (checker/compose
-                     {;; :perf   (checker/perf)
-                      :linear (checker/linearizable {:model     (model/cas-register)
-                                                     :algorithm :auto})
-                      :timeline (timeline/html)
-                      }))
-          :generator (->> (independent/concurrent-generator
-                           3 ; Concurrent 3 independent key spaces
-                           (range 3) ; Keyspace
-                           (fn [k]
-                             (->> (gen/mix [r w]) ; Mixed lread and write
-                                  (gen/stagger 1/2)
-                                  (gen/limit 40))))
-                          ; Fault injection: inject into a partition every 15 seconds
-                          (gen/nemesis
-                           (cycle [(gen/sleep 10)
-                                   {:type :info, :f :start} ; More aggressive partition triggering
-                                   (gen/sleep 5)
-                                   {:type :info, :f :stop}]))
-                          ; Test time limit
-                          (gen/time-limit (:time-limit opts)))}
-         opts))
+  (let [wl (workload opts)]
+    (merge tests/noop-test
+           {:name      (str "d-engine-" (:workload opts "register"))
+            :ssh       {:private-key-path "/root/.ssh/id_rsa"
+                        :strict-host-key-checking false}
+            :client    (:client wl)
+            :nemesis   (nemesis/partition-random-halves)
+            :checker   (:checker wl)
+            :generator (->> (:generator wl)
+                            (gen/stagger 1/10)
+                            (gen/nemesis
+                             (cycle [(gen/sleep 10)
+                                     {:type :info, :f :start}
+                                     (gen/sleep 5)
+                                     {:type :info, :f :stop}]))
+                            (gen/time-limit (:time-limit opts)))}
+           opts)))
 
 (def cli-opts
   "Additional command line options."
-  [["-c" "--command CMD" "dengine_ctl command path"
-    :default "dengine_ctl"  ;; Provide a default value if needed
-    :parse-fn identity      ;; Use `identity` if you want to pass the string as it is
-    :validate [(complement empty?) "command-path cannot be empty."]]
-   ["-e" "--endpoints ENDPOINTS" "The endpoints for the client."
-    :default "http://node1:9080,http://node2:9080,http://node3:9080"  ;; Provide a default value if needed
-    :parse-fn identity                ;; Use `identity` if you want to pass the string as it is
-    :validate [(complement empty?) "Endpoints cannot be empty."]]])
+  [["-c" "--command CMD" "CLI binary path"
+    :default "client-usage-standalone-demo"
+    :parse-fn identity
+    :validate [(complement empty?) "command cannot be empty."]]
+   ["-e" "--endpoints ENDPOINTS" "d-engine gRPC endpoints (comma-separated)"
+    :default "http://node1:9080,http://node2:9080,http://node3:9080"
+    :parse-fn identity
+    :validate [(complement empty?) "endpoints cannot be empty."]]
+   ["-w" "--workload NAME" "Workload to run: register (default), bank, set"
+    :default "register"
+    :parse-fn identity
+    :validate [#{"register" "bank" "set"} "must be one of: register, bank, set"]]])
 
 (defn -main
   "handles command lien arguments"
