@@ -447,7 +447,11 @@ async fn test_watch_membership_zombie_warns_without_removal()
     // Wait for a stable leader among nodes 1 and 2 — this is a prerequisite for
     // AppendEntries being sent to the stopped node 3, which is what feeds the
     // failure counter and eventually fires the "Zombie detected" warning.
-    let deadline = tokio::time::Instant::now() + ELECTION_TIMEOUT;
+    //
+    // Use 20s here instead of ELECTION_TIMEOUT (8s): with election_timeout_max=3000ms,
+    // split-vote livelock between nodes 1 and 2 can produce 3-4 election rounds
+    // (~9-12s worst case) before one node wins a stable majority on slow CI machines.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         if engine1.is_leader() || engine2.is_leader() {
             break;
