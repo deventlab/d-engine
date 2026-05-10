@@ -49,9 +49,11 @@ RUN apt-get update && \
     openssh-server \
     ca-certificates \
     curl \
+    wget \
     unzip \
     sudo \
     iptables \
+    iproute2 \
     libc6 \
     tzdata && \
     rm -rf /var/lib/apt/lists/* && \
