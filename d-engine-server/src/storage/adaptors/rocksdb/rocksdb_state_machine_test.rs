@@ -294,6 +294,41 @@ async fn test_apply_chunk_cas_none_expected_on_existing_key_fails() {
     assert_eq!(sm.get(b"k").unwrap(), Some(Bytes::from("exists")));
 }
 
+/// Two CAS ops targeting the same key in a single apply_chunk must be applied
+/// sequentially: the second CAS must see the first CAS's write, not the stale DB value.
+///
+/// Failure mode without fix: db.get_cf() returns the pre-batch value for both reads,
+/// both report succeeded=true, and CAS2's write silently overwrites CAS1's value,
+/// causing a linearizability violation (acknowledged write disappears).
+#[tokio::test]
+async fn test_apply_chunk_two_cas_same_key_second_must_see_first_write() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(vec![encode_insert(b"k", b"v0", 0)]).await.unwrap();
+
+    // CAS1: v0 → v1  (should succeed)
+    // CAS2: v0 → v2  (must fail — CAS1 already changed value to v1)
+    let results = sm
+        .apply_chunk(vec![
+            encode_cas(b"k", Some(b"v0"), b"v1", 2),
+            encode_cas(b"k", Some(b"v0"), b"v2", 3),
+        ])
+        .await
+        .unwrap();
+
+    assert!(results[0].succeeded, "CAS1 (v0→v1) must succeed");
+    assert!(
+        !results[1].succeeded,
+        "CAS2 (v0→v2) must fail: CAS1 already wrote v1, so expected=v0 no longer matches"
+    );
+    assert_eq!(
+        sm.get(b"k").unwrap(),
+        Some(Bytes::from("v1")),
+        "final value must be v1; CAS2 must not overwrite CAS1's committed write"
+    );
+}
+
 /// delete() removes a key successfully; subsequent get returns None.
 #[tokio::test]
 async fn test_apply_chunk_delete_removes_key() {
