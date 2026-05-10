@@ -1,11 +1,9 @@
 # ------------------------
 # Builder Stage (Optimized for ARM64)
 # ------------------------
-FROM rust:slim-bullseye AS builder
+FROM rust:slim-bookworm AS builder
 
-WORKDIR /usr/src/demo
-
-# Install build dependencies with cleanup
+# Install build dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     pkg-config \
@@ -14,36 +12,48 @@ RUN apt-get update && \
     build-essential \
     ca-certificates \
     curl \
+    clang \
+    libclang-dev \
+    cmake \
     && rm -rf /var/lib/apt/lists/*
 
-# Cache dependencies first
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "" > src/lib.rs && \
-    cargo build --release && \
-    rm -rf src target/release/deps/demo*
+# Build context is the d-engine workspace root.
+# Run: docker build -t demo:v0.2.4 -f examples/three-nodes-standalone/docker/Dockerfile .
+WORKDIR /build
 
-# Copy actual source code
+# Disable sccache: .cargo/config.toml sets rustc-wrapper=sccache for local dev,
+# but sccache is not available in CI/Docker.
+ENV RUSTC_WRAPPER=""
+
+# Copy workspace source (.dockerignore excludes **/target/)
 COPY . .
 
-# Final build
-RUN cargo build --release # --locked
+# Build the three-nodes-standalone demo binary.
+# Cache mounts persist the cargo registry and compiled artifacts across builds:
+# - First build: ~10 min (RocksDB compiles from source)
+# - Subsequent builds: ~30s (only changed Rust code recompiles)
+WORKDIR /build/examples/three-nodes-standalone
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/examples/three-nodes-standalone/target \
+    cargo build --release && \
+    cp target/release/demo /usr/local/bin/demo
 
 # ------------------------
 # Runtime Stage (ARM64 Optimized)
 # ------------------------
 FROM debian:bookworm-slim
 
-# Install runtime dependencies in single layer
+# Install runtime dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     openssh-server \
     ca-certificates \
     curl \
+    wget \
     unzip \
     sudo \
     iptables \
+    iproute2 \
     libc6 \
     tzdata && \
     rm -rf /var/lib/apt/lists/* && \
@@ -65,16 +75,14 @@ RUN curl -LO "https://github.com/grafana/loki/releases/download/v3.0.0/promtail-
     chmod +x /usr/local/bin/promtail && \
     rm promtail-linux-arm64.zip
 
-# Copy built binary
-COPY --from=builder /usr/src/demo/target/release/demo /usr/local/bin/demo
+COPY --from=builder /usr/local/bin/demo /usr/local/bin/demo
 
 # Create directories
 RUN mkdir -p /app/{logs,db,snapshots} /etc/promtail
 
-# Copy configuration
-COPY docker/monitoring/promtail/config.yml /etc/promtail/config.yml
+# Promtail config path relative to workspace root
+COPY examples/three-nodes-standalone/docker/monitoring/promtail/config.yml /etc/promtail/config.yml
 
 WORKDIR /app
 
-# Start services
-CMD ["sh", "-c", "/usr/sbin/sshd -D & CONFIG_PATH=$CONFIG_PATH LOG_DIR=$LOG_DIR METRICS_PORT=$METRICS_PORT RUST_LOG=demo=$LOG_LEVEL,d_engine=$LOG_LEVEL,hyper=warn,sled=warn demo  & promtail --config.file=/etc/promtail/config.yml > /app/logs/promtail.log 2>&1"]
+CMD ["sh", "-c", "/usr/sbin/sshd -D & CONFIG_PATH=$CONFIG_PATH LOG_DIR=$LOG_DIR METRICS_PORT=$METRICS_PORT RUST_LOG=demo=$LOG_LEVEL,d_engine=$LOG_LEVEL,hyper=warn,sled=warn demo & promtail --config.file=/etc/promtail/config.yml > /app/logs/promtail.log 2>&1"]

@@ -51,3 +51,5 @@ CONTEXT
 safe-split-commits.sh
 CLAUDE.md
 .claude/
+.rules
+.github/copilot-instructions.md

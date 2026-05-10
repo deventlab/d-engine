@@ -81,6 +81,7 @@
 //! }
 //! ```
 
+mod bank_transfer_invariant_embedded;
 mod distributed_lock_embedded;
 mod distributed_lock_standalone;
 mod leader_failover_cas_embedded;
