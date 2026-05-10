@@ -28,11 +28,15 @@ docker compose build jepsen
 ### 3. Start the Cluster
 
 ```bash
-# Start the main cluster (from d-engine examples/three-nodes-standalone/docker/)
-docker-compose -f examples/three-nodes-standalone/docker/docker-compose.yml up -d
+# All docker-compose commands must be run from the docker/ directory so that
+# relative volume paths (e.g. ../config) resolve correctly.
+cd examples/three-nodes-standalone/docker/
+
+# Start the main cluster
+docker-compose up -d
 
 # Start the monitoring system
-docker-compose -f examples/three-nodes-standalone/docker/monitoring/docker-compose.yml up -d
+docker-compose -f monitoring/docker-compose.yml up -d
 ```
 
 ### 4. Run Jepsen Tests
