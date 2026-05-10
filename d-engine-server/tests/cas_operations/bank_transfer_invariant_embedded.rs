@@ -26,7 +26,11 @@ fn pack(balances: [u64; 3]) -> [u8; 8] {
 
 fn unpack(bytes: &[u8]) -> [u64; 3] {
     let state = u64::from_be_bytes(bytes.try_into().expect("bank value must be 8 bytes"));
-    [(state >> 42) & 0x1FFFFF, (state >> 21) & 0x1FFFFF, state & 0x1FFFFF]
+    [
+        (state >> 42) & 0x1FFFFF,
+        (state >> 21) & 0x1FFFFF,
+        state & 0x1FFFFF,
+    ]
 }
 
 /// Concurrent CAS transfers maintain bank total invariant under follower failure.
@@ -44,8 +48,8 @@ fn unpack(bytes: &[u8]) -> [u64; 3] {
 #[tokio::test]
 #[traced_test]
 #[serial]
-async fn test_concurrent_transfers_preserve_bank_invariant(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn test_concurrent_transfers_preserve_bank_invariant()
+-> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let db_root_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
@@ -136,14 +140,10 @@ async fn test_concurrent_transfers_preserve_bank_invariant(
                     let new_bytes = pack(balances);
 
                     match client
-                        .compare_and_swap(
-                            BANK_KEY,
-                            Some(current.as_ref()),
-                            new_bytes.as_slice(),
-                        )
+                        .compare_and_swap(BANK_KEY, Some(current.as_ref()), new_bytes.as_slice())
                         .await
                     {
-                        Ok(true) => break,             // committed
+                        Ok(true) => break, // committed
                         Ok(false) => {
                             // Concurrent update; retry without delay.
                             tokio::task::yield_now().await;
@@ -162,7 +162,10 @@ async fn test_concurrent_transfers_preserve_bank_invariant(
     // Fault injection: stop a follower node midway through the transfers.
     let follower_idx = (leader_idx + 1) % 3;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    info!("Stopping follower node {} (2/3 quorum maintained)", follower_idx + 1);
+    info!(
+        "Stopping follower node {} (2/3 quorum maintained)",
+        follower_idx + 1
+    );
     engines[follower_idx].stop().await?;
 
     // Wait for all workers to finish.
