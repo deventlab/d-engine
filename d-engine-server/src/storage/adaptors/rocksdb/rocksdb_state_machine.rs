@@ -33,7 +33,9 @@ use rocksdb::ImportColumnFamilyOptions;
 use rocksdb::IteratorMode;
 use rocksdb::LiveFile;
 use rocksdb::Options;
+use rocksdb::ReadOptions;
 use rocksdb::WriteBatch;
+use rocksdb::WriteBatchWithIndex;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::debug;
@@ -158,6 +160,16 @@ impl RocksDBStateMachine {
         // Mark lease as enabled (immutable after this point)
         self.lease_enabled = true;
         self.lease = Some(lease);
+    }
+
+    /// Replaces the underlying DB with `new_db`. Only available in `#[cfg(test)]`.
+    /// Used to inject a read-only or otherwise broken DB to exercise error paths.
+    #[cfg(test)]
+    pub(super) fn swap_db_for_test(
+        &self,
+        new_db: DB,
+    ) {
+        self.db.store(Arc::new(new_db));
     }
 
     // Injects lease configuration into this state machine.
@@ -651,7 +663,7 @@ impl StateMachine for RocksDBStateMachine {
             .cf_handle(STATE_MACHINE_CF)
             .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
 
-        let mut batch = WriteBatch::default();
+        let mut batch = WriteBatchWithIndex::new(0, true);
         let mut highest_index_entry: Option<LogId> = None;
         let mut results = Vec::with_capacity(chunk.len());
 
@@ -720,11 +732,14 @@ impl StateMachine for RocksDBStateMachine {
                             expected_value,
                             new_value,
                         })) => {
-                            // RocksDB doesn't have native CAS, implement via read-compare-write
-                            // This is safe because apply_chunk is called sequentially per Raft log order
-                            let current_value = db.get_cf(&cf, &key).map_err(|e| {
-                                StorageError::DbError(format!("CAS read failed: {e}"))
-                            })?;
+                            // RocksDB doesn't have native CAS, implement via read-compare-write.
+                            // Read through WriteBatchWithIndex so that earlier CAS writes in the
+                            // same batch are visible, preventing stale-read linearizability violations.
+                            let current_value = batch
+                                .get_from_batch_and_db_cf(&*db, &cf, &key, &ReadOptions::default())
+                                .map_err(|e| {
+                                    StorageError::DbError(format!("CAS read failed: {e}"))
+                                })?;
 
                             let cas_success = match (current_value, &expected_value) {
                                 (Some(current), Some(expected)) => current == expected.as_ref(),
@@ -769,7 +784,10 @@ impl StateMachine for RocksDBStateMachine {
             }
         }
 
-        self.apply_batch(batch)?;
+        self.db
+            .load()
+            .write_wbwi(&batch)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
 
         // Note: Lease cleanup is now handled by:
         // - Lazy strategy: cleanup in get() method

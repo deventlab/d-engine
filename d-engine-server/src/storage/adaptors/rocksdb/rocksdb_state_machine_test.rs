@@ -294,6 +294,41 @@ async fn test_apply_chunk_cas_none_expected_on_existing_key_fails() {
     assert_eq!(sm.get(b"k").unwrap(), Some(Bytes::from("exists")));
 }
 
+/// Two CAS ops targeting the same key in a single apply_chunk must be applied
+/// sequentially: the second CAS must see the first CAS's write, not the stale DB value.
+///
+/// Failure mode without fix: db.get_cf() returns the pre-batch value for both reads,
+/// both report succeeded=true, and CAS2's write silently overwrites CAS1's value,
+/// causing a linearizability violation (acknowledged write disappears).
+#[tokio::test]
+async fn test_apply_chunk_two_cas_same_key_second_must_see_first_write() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(vec![encode_insert(b"k", b"v0", 0)]).await.unwrap();
+
+    // CAS1: v0 → v1  (should succeed)
+    // CAS2: v0 → v2  (must fail — CAS1 already changed value to v1)
+    let results = sm
+        .apply_chunk(vec![
+            encode_cas(b"k", Some(b"v0"), b"v1", 2),
+            encode_cas(b"k", Some(b"v0"), b"v2", 3),
+        ])
+        .await
+        .unwrap();
+
+    assert!(results[0].succeeded, "CAS1 (v0→v1) must succeed");
+    assert!(
+        !results[1].succeeded,
+        "CAS2 (v0→v2) must fail: CAS1 already wrote v1, so expected=v0 no longer matches"
+    );
+    assert_eq!(
+        sm.get(b"k").unwrap(),
+        Some(Bytes::from("v1")),
+        "final value must be v1; CAS2 must not overwrite CAS1's committed write"
+    );
+}
+
 /// delete() removes a key successfully; subsequent get returns None.
 #[tokio::test]
 async fn test_apply_chunk_delete_removes_key() {
@@ -304,6 +339,40 @@ async fn test_apply_chunk_delete_removes_key() {
     sm.apply_chunk(vec![encode_delete(b"to_delete", 2)]).await.unwrap();
 
     assert_eq!(sm.get(b"to_delete").unwrap(), None);
+}
+
+/// apply_chunk returns Err when the underlying DB is replaced with a read-only instance.
+///
+/// This covers the write_wbwi error path that is only reachable when RocksDB itself fails.
+/// Deleting the directory does not work (Unix keeps open FDs valid), so we inject a
+/// read-only DB via swap_db_for_test to reliably trigger the error.
+#[tokio::test]
+async fn test_apply_chunk_returns_error_on_read_only_db() {
+    use rocksdb::{DB, Options};
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let db_path = dir.path().join("rocksdb");
+    let (_storage, sm) = RocksDBUnifiedEngine::open(&db_path).unwrap();
+
+    // Confirm the state machine works normally first
+    sm.apply_chunk(vec![encode_insert(b"k", b"v", 0)]).await.unwrap();
+
+    // Open the same DB as read-only and inject it — writes will now return NotSupported
+    let ro_db = DB::open_cf_for_read_only(
+        &Options::default(),
+        &db_path,
+        [super::STATE_MACHINE_CF, super::STATE_MACHINE_META_CF],
+        false,
+    )
+    .unwrap();
+    sm.swap_db_for_test(ro_db);
+
+    // Write to a read-only DB must fail
+    let result = sm.apply_chunk(vec![encode_insert(b"k2", b"v2", 0)]).await;
+    assert!(
+        result.is_err(),
+        "apply_chunk should return Err when DB is read-only"
+    );
 }
 
 /// map_snapshot_join_error produces "panicked" message when the blocking task panics.
