@@ -348,7 +348,7 @@ async fn test_apply_chunk_delete_removes_key() {
 /// read-only DB via swap_db_for_test to reliably trigger the error.
 #[tokio::test]
 async fn test_apply_chunk_returns_error_on_read_only_db() {
-    use rocksdb::{Options, DB};
+    use rocksdb::{DB, Options};
 
     let dir = tempfile::TempDir::new().unwrap();
     let db_path = dir.path().join("rocksdb");
@@ -361,7 +361,7 @@ async fn test_apply_chunk_returns_error_on_read_only_db() {
     let ro_db = DB::open_cf_for_read_only(
         &Options::default(),
         &db_path,
-        &[super::STATE_MACHINE_CF, super::STATE_MACHINE_META_CF],
+        [super::STATE_MACHINE_CF, super::STATE_MACHINE_META_CF],
         false,
     )
     .unwrap();
@@ -369,7 +369,10 @@ async fn test_apply_chunk_returns_error_on_read_only_db() {
 
     // Write to a read-only DB must fail
     let result = sm.apply_chunk(vec![encode_insert(b"k2", b"v2", 0)]).await;
-    assert!(result.is_err(), "apply_chunk should return Err when DB is read-only");
+    assert!(
+        result.is_err(),
+        "apply_chunk should return Err when DB is read-only"
+    );
 }
 
 /// map_snapshot_join_error produces "panicked" message when the blocking task panics.

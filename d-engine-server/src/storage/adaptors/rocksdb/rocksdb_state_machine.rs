@@ -165,7 +165,10 @@ impl RocksDBStateMachine {
     /// Replaces the underlying DB with `new_db`. Only available in `#[cfg(test)]`.
     /// Used to inject a read-only or otherwise broken DB to exercise error paths.
     #[cfg(test)]
-    pub(super) fn swap_db_for_test(&self, new_db: DB) {
+    pub(super) fn swap_db_for_test(
+        &self,
+        new_db: DB,
+    ) {
         self.db.store(Arc::new(new_db));
     }
 
@@ -734,7 +737,9 @@ impl StateMachine for RocksDBStateMachine {
                             // same batch are visible, preventing stale-read linearizability violations.
                             let current_value = batch
                                 .get_from_batch_and_db_cf(&*db, &cf, &key, &ReadOptions::default())
-                                .map_err(|e| StorageError::DbError(format!("CAS read failed: {e}")))?;
+                                .map_err(|e| {
+                                    StorageError::DbError(format!("CAS read failed: {e}"))
+                                })?;
 
                             let cas_success = match (current_value, &expected_value) {
                                 (Some(current), Some(expected)) => current == expected.as_ref(),
