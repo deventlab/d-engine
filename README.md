@@ -24,7 +24,14 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 
 ## Features
 
-### New in v0.2.3 🎉
+### New in v0.2.4 🎉
+
+- **Async IO Architecture**: Raft event loop is fully non-blocking — WAL writes, state machine apply, and replication all run off the hot path. AppendEntries uses a persistent bidirectional stream per peer; replication is pipelined across followers.
+- **Cluster Membership Streaming**: `EmbeddedEngine::watch_membership()` / `GrpcClient::watch_membership()` — subscribe to real-time membership changes in both embedded and standalone modes
+- **Simpler Startup**: `EmbeddedEngine::start(data_dir)` and `StandaloneEngine::run(data_dir, shutdown_rx)` — no config file required for common cases
+- **Jepsen Validated**: 5 workloads + 6-hour soak test under combined kill/partition/pause faults — see [Correctness Guarantees](https://github.com/deventlab/d-engine-jepsen/blob/main/GUARANTEES.md)
+
+### Previously in v0.2.3
 
 - **CompareAndSwap (CAS)**: Atomic compare-and-swap for distributed locks, leader election, optimistic updates
 - **Drain-based Batching**: Linearizable read +92%, lease/eventual read +62% vs v0.2.2 (embedded mode)
@@ -46,6 +53,7 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 - **Single-Node Start**: Begin with one node, expand to 3-node cluster when needed (zero downtime)
 - **Tunable Persistence**: DiskFirst for durability or MemFirst for lower latency
 - **Pluggable Storage**: Custom backends supported (RocksDB, Sled, Raw File)
+- **Jepsen Validated**: Linearizability, partition tolerance, crash durability, and Watch ordering verified — see [Correctness Guarantees](https://github.com/deventlab/d-engine-jepsen/blob/main/GUARANTEES.md)
 
 ---
 
@@ -92,7 +100,7 @@ d-engine = "0.2"
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
-> **Performance note**: Embedded mode on AWS EC2 3-node cluster achieves **64K writes/sec** and **181K linearizable reads/sec** under high concurrency, with sub-millisecond latency. See [benches/reports/v0.2.3/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) for detailed benchmarks.
+> **Performance note**: Embedded mode on AWS EC2 3-node cluster achieves **64K writes/sec** and **181K linearizable reads/sec** under high concurrency, with sub-millisecond latency. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) for detailed benchmarks.
 
 **→ Examples:**
 
@@ -110,7 +118,7 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 **Use when**: Application and d-engine run as separate processes  
 **Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
 
-> **Performance note**: Standalone mode achieves 36K writes/sec and 51K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (1.8x faster writes, 3.5x faster reads). See [benches/reports/v0.2.3/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) for benchmarks.
+> **Performance note**: Standalone mode achieves 36K writes/sec and 51K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (1.8x faster writes, 3.5x faster reads). See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) for benchmarks.
 
 **Note**: Rust apps can use both modes - embedded for performance, standalone for operational flexibility
 
@@ -228,7 +236,7 @@ Yes. Scale to 3 nodes later with zero downtime (see `examples/single-node-expans
 Implement `StorageEngine` and `StateMachine` traits (see Custom Storage Implementations section).
 
 **Production-ready?**  
-Core Raft engine is production-grade (1000+ tests, Jepsen validated). API is stabilizing toward v1.0. Pre-1.0 versions may introduce breaking changes (documented in [MIGRATION_GUIDE.md](https://github.com/deventlab/d-engine/blob/main/MIGRATION_GUIDE.md)).
+Core Raft engine is production-grade (1000+ tests, [Jepsen validated](https://github.com/deventlab/d-engine-jepsen/blob/main/GUARANTEES.md)). API is stabilizing toward v1.0. Pre-1.0 versions may introduce breaking changes (documented in [MIGRATION_GUIDE.md](https://github.com/deventlab/d-engine/blob/main/MIGRATION_GUIDE.md)).
 
 ## Supported Platforms
 

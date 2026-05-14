@@ -8,11 +8,18 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **Unified RocksDB option** (#295): opt-in via `storage.unified_db = true`.
-  Uses a single RocksDB instance with 4 column families instead of two separate instances.
-  - Reduces memory RSS and file descriptor usage
-  - **Experimental**: both paths are supported in v0.2.4; a future release will standardize on one
-  - When enabled: data path changes to `db_root_dir/db/` (⚠️ existing `storage/` data not migrated automatically)
+- **Simplified startup API** (#303): Pass a data directory directly — no config file required for common cases
+  - `EmbeddedEngine::start(data_dir)` replaces the config-file-only constructor
+  - `StandaloneEngine::run(data_dir, shutdown_rx)` for standalone deployments
+  - Config file path still accepted via existing constructors; new API uses sensible defaults
+
+- **Async IO architecture — pipeline replication** (#334, #341, #342, #343, #345, #349, #350, #351):
+  The Raft event loop is now fully non-blocking under write load
+  - `BufferedRaftLog` runs on a dedicated OS thread — WAL writes never steal tokio worker threads
+  - `StateMachineWorker::apply_batch` is fully async — RocksDB apply no longer blocks the event loop
+  - AppendEntries uses a **persistent bidirectional gRPC stream per peer** — eliminates per-batch connection overhead
+  - Replication is pipelined: leader sends to all followers concurrently without stop-and-wait
+  - Truncate and purge are offloaded from the Raft hot path
 
 - **Cluster membership streaming** (#327, #328): Subscribe to real-time membership changes
   - `EmbeddedEngine::watch_membership()` — in-process `watch::Receiver<MembershipSnapshot>` (embedded mode)
@@ -22,17 +29,44 @@ All notable changes to this project will be documented in this file.
   - Stream terminates with `UNAVAILABLE` on server shutdown — callers reconnect and resubscribe
   - `MembershipSnapshot` carries `members`, `learners`, and `committed_index` (idempotency key for deduplication after reconnect)
 
+- **Unified RocksDB option** (#295): opt-in via `storage.unified_db = true`.
+  Uses a single RocksDB instance with 4 column families instead of two separate instances.
+  - Reduces memory RSS and file descriptor usage
+  - **Experimental**: both paths are supported in v0.2.4; a future release will standardize on one
+  - When enabled: data path changes to `db_root_dir/db/` (⚠️ existing `storage/` data not migrated automatically)
+
 ### 🟡 Important Fixes
+
+- **fix(crash-safety) #329**: Leader now commits against durable index, not in-memory index
+  - Previously, entries could be marked committed before being flushed to disk, risking data loss on leader crash
+  - All acknowledged writes are now guaranteed durable before commit advances
 
 - **fix(raft) #340**: Candidate correctly steps down on same-term AppendEntries with log conflict
   - Eliminates election churn when recovering or newly-joined nodes have lagged logs
   - Aligns with Raft §5.2 (term check takes priority over log matching)
 
+- **fix(snapshot) #315**: Snapshot disk I/O isolated from Raft event loop via `spawn_blocking`
+  - Previously, snapshot transfer competed with consensus and caused `ProposeFailed` (4006) under load
+
+- **fix(snapshot) #308**: Snapshot install success is now driven by the follower's apply confirmation, not the transfer ACK
+  - Prevents leader from advancing `match_index` before the follower has actually applied the snapshot
+
+- **fix(snapshot) #253**: Snapshot stale-file corruption on retry eliminated; configurable chunk transfer timeout added
+
+- **fix(snapshot) #290**: Snapshot cooldown reduced from 1 hour to a practical default; adaptive throttling added
+  - WAL log compaction now triggers reliably in long-running deployments
+
+- **fix(cas) #371**: CAS operations in the same `apply_chunk` no longer read stale values
+  - Root cause: batch apply used a plain `ReadOptions` snapshot taken before the batch started; concurrent CAS ops targeting the same key within one chunk would overwrite each other
+  - Fixed with `WriteBatchWithIndex` — each CAS op in a batch reads its own preceding writes
+
+- **fix(client) #323**: `ClientApi` trait is now correctly exposed in embedded mode without the `client` feature flag
+
 ### Changed
 
 - No runtime behavior change for existing deployments — `unified_db` defaults to `false`
 
-- **Zombie detection no longer auto-removes unreachable nodes** (#327):
+- **Zombie detection no longer auto-removes unreachable nodes** (#365):
   Previously, a node that failed to connect N times was automatically removed
   via `BatchRemove`. This was too aggressive and could evict temporarily
   restarting nodes. Detection now emits a `warn` log only — removal remains
