@@ -10,7 +10,7 @@
 //!
 //! # Usage
 //! ```rust,ignore
-//! let engine = EmbeddedEngine::start().await?;
+//! let engine = EmbeddedEngine::start("./data").await?;
 //! let client = engine.client();
 //! client.put(b"key", b"value").await?;
 //! ```

@@ -346,22 +346,17 @@ mod embedded_engine_tests {
         // to run sequentially and avoid environment variable race conditions
 
         #[tokio::test]
-        #[cfg(debug_assertions)]
         #[serial(tmp_db)]
-        async fn test_start_without_config_path_env_allows_in_debug() {
-            // No CONFIG_PATH env var - uses default config with /tmp/db
-            unsafe {
-                std::env::remove_var("CONFIG_PATH");
-            }
+        async fn test_start_with_tmp_path_warns_but_succeeds() {
+            // /tmp paths warn but are not rejected — caller's choice
+            let tmp_path = std::path::PathBuf::from("/tmp/d-engine-test-start");
+            let _ = std::fs::remove_dir_all(&tmp_path);
 
-            // Clean up /tmp/db before test to avoid corruption from previous runs
-            let _ = std::fs::remove_dir_all("/tmp/db");
-
-            let result = EmbeddedEngine::start().await;
+            let result = EmbeddedEngine::start(&tmp_path).await;
 
             assert!(
                 result.is_ok(),
-                "start() should allow default /tmp/db in debug mode without CONFIG_PATH. Error: {:?}",
+                "start() should succeed with /tmp path (warn only). Error: {:?}",
                 result.as_ref().err()
             );
 
@@ -369,28 +364,31 @@ mod embedded_engine_tests {
                 engine.stop().await.ok();
             }
 
-            // Clean up after test
-            let _ = std::fs::remove_dir_all("/tmp/db");
+            let _ = std::fs::remove_dir_all(&tmp_path);
         }
 
         #[tokio::test]
-        #[cfg(not(debug_assertions))]
         #[serial]
-        async fn test_start_without_config_path_env_rejects_in_release() {
-            // No CONFIG_PATH env var - should reject default /tmp/db in release
-            unsafe {
-                std::env::remove_var("CONFIG_PATH");
-            }
-            let result = EmbeddedEngine::start().await;
+        async fn test_start_creates_directory_if_not_exists() {
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let data_dir = temp_dir.path().join("new-subdir").join("db");
 
             assert!(
-                result.is_err(),
-                "start() should reject default /tmp/db in release mode without CONFIG_PATH"
+                !data_dir.exists(),
+                "Directory should not exist before start"
             );
 
-            if let Err(e) = result {
-                let err_msg = format!("{:?}", e);
-                assert!(err_msg.contains("/tmp/db") || err_msg.contains("db_root_dir"));
+            let result = EmbeddedEngine::start(&data_dir).await;
+
+            assert!(
+                result.is_ok(),
+                "start() should auto-create missing directories. Error: {:?}",
+                result.as_ref().err()
+            );
+            assert!(data_dir.exists(), "Directory should be created by start()");
+
+            if let Ok(engine) = result {
+                engine.stop().await.ok();
             }
         }
 

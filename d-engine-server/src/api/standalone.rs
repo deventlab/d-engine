@@ -19,27 +19,33 @@ use crate::node::NodeBuilder;
 pub struct StandaloneEngine;
 
 impl StandaloneEngine {
-    /// Run server with configuration from environment.
+    /// Run server with an explicit data directory.
     ///
-    /// Reads `CONFIG_PATH` environment variable or uses default configuration.
-    /// Data directory is determined by config's `cluster.db_root_dir` setting.
+    /// `data_dir` has highest priority and always overrides `cluster.db_root_dir` from
+    /// `CONFIG_PATH` or `RAFT__` environment variables. Other configuration (network,
+    /// Raft timeouts, cluster topology) is still read from those sources if set.
+    ///
+    /// The directory is created automatically if it does not exist.
     /// Blocks until shutdown signal is received.
     ///
     /// # Arguments
+    /// * `data_dir` - Path to the data directory
     /// * `shutdown_rx` - Shutdown signal receiver
     ///
     /// # Example
     /// ```ignore
-    /// // Set config path via environment variable
-    /// std::env::set_var("CONFIG_PATH", "/etc/d-engine/production.toml");
-    ///
     /// let (shutdown_tx, shutdown_rx) = watch::channel(());
-    /// StandaloneEngine::run(shutdown_rx).await?;
+    /// StandaloneEngine::run("./data/my-node", shutdown_rx).await?;
     /// ```
     #[cfg(feature = "rocksdb")]
-    pub async fn run(shutdown_rx: watch::Receiver<()>) -> Result<()> {
-        let config = d_engine_core::RaftNodeConfig::new()?.validate()?;
-        let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
+    pub async fn run(
+        data_dir: impl AsRef<std::path::Path>,
+        shutdown_rx: watch::Receiver<()>,
+    ) -> Result<()> {
+        let mut config = d_engine_core::RaftNodeConfig::new()?;
+        config.cluster.db_root_dir = data_dir.as_ref().to_path_buf();
+        let config = config.validate()?;
+        let base_dir = config.cluster.db_root_dir.clone();
 
         tokio::fs::create_dir_all(&base_dir)
             .await
@@ -62,14 +68,13 @@ impl StandaloneEngine {
             (storage, sm)
         };
 
-        // Inject lease if enabled
         let lease_cfg = &config.raft.state_machine.lease;
         if lease_cfg.enabled {
             let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
             sm.set_lease(lease);
         }
 
-        Self::run_custom(Arc::new(storage), Arc::new(sm), shutdown_rx, None).await
+        Self::start_node(config, Arc::new(storage), Arc::new(sm), shutdown_rx).await
     }
 
     /// Run server with explicit configuration file.
@@ -125,13 +130,7 @@ impl StandaloneEngine {
             sm.set_lease(lease);
         }
 
-        Self::run_custom(
-            Arc::new(storage),
-            Arc::new(sm),
-            shutdown_rx,
-            Some(config_path),
-        )
-        .await
+        Self::start_node(config, Arc::new(storage), Arc::new(sm), shutdown_rx).await
     }
 
     /// Run server with custom storage engine and state machine.
@@ -163,20 +162,31 @@ impl StandaloneEngine {
         SE: StorageEngine + std::fmt::Debug + 'static,
         SM: StateMachine + std::fmt::Debug + 'static,
     {
-        let node_config = if let Some(path) = config_path {
+        let config = if let Some(path) = config_path {
             d_engine_core::RaftNodeConfig::default()
                 .with_override_config(path)?
                 .validate()?
         } else {
             d_engine_core::RaftNodeConfig::new()?.validate()?
         };
+        Self::start_node(config, storage_engine, state_machine, shutdown_rx).await
+    }
 
-        let node = NodeBuilder::init(node_config, shutdown_rx)
+    async fn start_node<SE, SM>(
+        config: d_engine_core::RaftNodeConfig,
+        storage_engine: Arc<SE>,
+        state_machine: Arc<SM>,
+        shutdown_rx: watch::Receiver<()>,
+    ) -> Result<()>
+    where
+        SE: StorageEngine + std::fmt::Debug + 'static,
+        SM: StateMachine + std::fmt::Debug + 'static,
+    {
+        let node = NodeBuilder::init(config, shutdown_rx)
             .storage_engine(storage_engine)
             .state_machine(state_machine)
             .start()
             .await?;
-
         node.run().await
     }
 }

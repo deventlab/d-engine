@@ -65,7 +65,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
-    let engine = EmbeddedEngine::start().await.unwrap();
+    let engine = EmbeddedEngine::start("./data").await.unwrap();
     engine.wait_ready(Duration::from_secs(5)).await.unwrap();
 
     let client = engine.client();
@@ -76,8 +76,6 @@ async fn main() {
     engine.stop().await.unwrap();
 }
 ```
-
-> **Note**: Release builds require explicit `db_root_dir` configuration. Set `CONFIG_PATH` env or use `EmbeddedEngine::with_config(...)`. See [Quick Start Guide](https://docs.rs/d-engine/latest/d_engine/docs/quick_start_5min/index.html).
 
 **→ Full example:** [examples/quick-start-embedded](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-embedded)
 
