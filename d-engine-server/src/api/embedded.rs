@@ -15,7 +15,7 @@
 //!
 //! ### Using EmbeddedEngine (High-level API)
 //! ```ignore
-//! let engine = EmbeddedEngine::start().await?;
+//! let engine = EmbeddedEngine::start("./data/my-app").await?;
 //! engine.wait_ready(Duration::from_secs(5)).await?;
 //! let client = engine.client();
 //! engine.stop().await?;
@@ -167,7 +167,7 @@ struct Inner {
 /// use d_engine::EmbeddedEngine;
 /// use std::time::Duration;
 ///
-/// let engine = EmbeddedEngine::start().await?;  // Returns Arc<EmbeddedEngine>
+/// let engine = EmbeddedEngine::start("./data/my-app").await?;
 /// engine.wait_ready(Duration::from_secs(5)).await?;
 ///
 /// let client = engine.client();
@@ -181,53 +181,59 @@ pub struct EmbeddedEngine {
 }
 
 impl EmbeddedEngine {
-    /// Start engine with configuration from environment.
+    /// Start engine with an explicit data directory.
     ///
-    /// Reads `CONFIG_PATH` environment variable or uses default configuration.
-    /// Data directory is determined by config's `cluster.db_root_dir` setting.
+    /// `data_dir` has highest priority and always overrides `cluster.db_root_dir` from
+    /// `CONFIG_PATH` or `RAFT__` environment variables. Other configuration (network,
+    /// Raft timeouts, cluster topology) is still read from those sources if set.
+    ///
+    /// The directory is created automatically if it does not exist.
+    /// If it already contains data the engine opens it in place (idempotent).
     ///
     /// # Example
     /// ```ignore
-    /// // Set config path via environment variable
-    /// std::env::set_var("CONFIG_PATH", "/etc/d-engine/production.toml");
-    ///
-    /// let engine = EmbeddedEngine::start().await?;
+    /// // Minimal — just supply a path
+    /// let engine = EmbeddedEngine::start("./data/my-app").await?;
     /// engine.wait_ready(Duration::from_secs(5)).await?;
+    ///
+    /// // Works with any AsRef<Path>
+    /// let engine = EmbeddedEngine::start(std::path::Path::new("/var/lib/my-app")).await?;
     /// ```
     #[cfg(feature = "rocksdb")]
-    pub async fn start() -> Result<Self> {
-        let config = d_engine_core::RaftNodeConfig::new()?.validate()?;
-        let base_dir = &config.cluster.db_root_dir;
-        tokio::fs::create_dir_all(base_dir)
+    pub async fn start(data_dir: impl AsRef<std::path::Path>) -> Result<Self> {
+        let mut config = d_engine_core::RaftNodeConfig::new()?;
+        config.cluster.db_root_dir = data_dir.as_ref().to_path_buf();
+        let config = config.validate()?;
+
+        let base_dir = config.cluster.db_root_dir.clone();
+        tokio::fs::create_dir_all(&base_dir)
             .await
             .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
 
         let (storage, mut sm) = if config.storage.unified_db {
-            let db_path = std::path::PathBuf::from(base_dir).join("db");
+            let db_path = base_dir.join("db");
             info!(
                 "Starting embedded engine with unified RocksDB at {:?}",
                 db_path
             );
             RocksDBUnifiedEngine::open(&db_path)?
         } else {
-            let base = std::path::PathBuf::from(base_dir);
             info!(
                 "Starting embedded engine with separate RocksDB instances at {:?}",
-                base
+                base_dir
             );
-            let storage = RocksDBStorageEngine::new(base.join("storage"))?;
-            let sm = RocksDBStateMachine::new(base.join("state_machine"))?;
+            let storage = RocksDBStorageEngine::new(base_dir.join("storage"))?;
+            let sm = RocksDBStateMachine::new(base_dir.join("state_machine"))?;
             (storage, sm)
         };
 
-        // Inject lease if enabled
         let lease_cfg = &config.raft.state_machine.lease;
         if lease_cfg.enabled {
             let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
             sm.set_lease(lease);
         }
 
-        Self::start_custom(Arc::new(storage), Arc::new(sm), None).await
+        Self::start_node(config, Arc::new(storage), Arc::new(sm)).await
     }
 
     /// Start engine with explicit configuration file.
@@ -305,12 +311,6 @@ impl EmbeddedEngine {
         SE: StorageEngine + std::fmt::Debug + 'static,
         SM: StateMachine + std::fmt::Debug + 'static,
     {
-        info!("Starting embedded d-engine");
-
-        // Create shutdown channel
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-
-        // Load config or use default
         let node_config = if let Some(path) = config_path {
             d_engine_core::RaftNodeConfig::default()
                 .with_override_config(path)?
@@ -319,18 +319,32 @@ impl EmbeddedEngine {
             d_engine_core::RaftNodeConfig::new()?.validate()?
         };
 
-        // Build node and start RPC server
+        Self::start_node(node_config, storage_engine, state_machine).await
+    }
+
+    /// Build and launch the node from a validated config and pre-built storage.
+    async fn start_node<SE, SM>(
+        node_config: d_engine_core::RaftNodeConfig,
+        storage_engine: Arc<SE>,
+        state_machine: Arc<SM>,
+    ) -> Result<Self>
+    where
+        SE: StorageEngine + std::fmt::Debug + 'static,
+        SM: StateMachine + std::fmt::Debug + 'static,
+    {
+        info!("Starting embedded d-engine");
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+
         let node = NodeBuilder::init(node_config, shutdown_rx)
             .storage_engine(storage_engine)
             .state_machine(state_machine)
             .start()
             .await?;
 
-        // Get notifiers before node is moved into the background task.
         let leader_elected_rx = node.leader_change_notifier();
         let membership_rx = node.membership_change_notifier();
 
-        // Create client before spawning
         #[cfg(not(feature = "watch"))]
         let client = Arc::new(EmbeddedClient::new_internal(
             node.event_tx.clone(),
@@ -356,7 +370,6 @@ impl EmbeddedEngine {
 
         let node_id = node.node_id();
 
-        // Spawn node.run() in background
         let node_handle = tokio::spawn(async move {
             if let Err(e) = node.run().await {
                 error!("Node run error: {:?}", e);
@@ -411,7 +424,7 @@ impl EmbeddedEngine {
     /// # Example
     /// ```ignore
     /// // Single-node development
-    /// let engine = EmbeddedEngine::start().await?;
+    /// let engine = EmbeddedEngine::start("./data/my-app").await?;
     /// let leader = engine.wait_ready(Duration::from_secs(3)).await?;
     ///
     /// // Multi-node production
@@ -575,7 +588,7 @@ impl EmbeddedEngine {
     ///
     /// # Example
     /// ```ignore
-    /// let engine = EmbeddedEngine::start().await?;
+    /// let engine = EmbeddedEngine::start("./data/my-app").await?;
     /// engine.wait_ready(Duration::from_secs(5)).await?;
     /// let client = engine.client();
     /// client.put(b"key", b"value").await?;

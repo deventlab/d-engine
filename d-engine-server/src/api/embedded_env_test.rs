@@ -1,155 +1,113 @@
-//! Sequential tests for EmbeddedEngine that modify global environment variables
+//! Tests for EmbeddedEngine::start(data_dir) behaviour
 //!
-//! These tests must run sequentially (--test-threads=1) to avoid race conditions
-//! from concurrent modifications to process-level CONFIG_PATH environment variable.
+//! Sequential execution required to avoid env-var race conditions.
 
 #[cfg(test)]
 #[cfg(feature = "rocksdb")]
-mod config_env_tests {
+mod start_data_dir_tests {
     use serial_test::serial;
 
     use crate::api::EmbeddedEngine;
 
-    // Tests for start() method with CONFIG_PATH environment variable
-
+    /// data_dir is created automatically when it does not exist.
     #[tokio::test]
-    #[cfg(debug_assertions)]
     #[serial]
-    async fn test_start_with_config_path_env_valid() {
-        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let config_path = _temp_dir.path().join("test_config.toml");
-        let data_dir = _temp_dir.path().join("data");
+    async fn test_start_creates_missing_directory() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().join("auto-created");
 
-        // Create valid config with custom db_root_dir
-        let config_content = format!(
-            r#"
-[cluster]
-node_id = 1
-db_root_dir = "{}"
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
-"#,
-            data_dir.display()
-        );
-        std::fs::write(&config_path, config_content).expect("Failed to write config");
-
-        // Set CONFIG_PATH env var and test
-        unsafe {
-            std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
-        }
-        let result = EmbeddedEngine::start().await;
-        unsafe {
-            std::env::remove_var("CONFIG_PATH");
-        }
-
+        assert!(!data_dir.exists());
+        let result = EmbeddedEngine::start(&data_dir).await;
         assert!(
             result.is_ok(),
-            "start() should succeed with valid CONFIG_PATH"
+            "should create dir automatically: {:?}",
+            result.err()
         );
+        assert!(data_dir.exists());
 
         if let Ok(engine) = result {
             engine.stop().await.ok();
         }
     }
 
+    /// Opening an existing data directory is idempotent (data is preserved).
     #[tokio::test]
-    #[cfg(debug_assertions)]
     #[serial]
-    async fn test_start_with_config_path_env_nonexistent() {
-        // Set CONFIG_PATH to nonexistent file
-        unsafe {
-            std::env::set_var("CONFIG_PATH", "/nonexistent/config.toml");
-        }
-        let result = EmbeddedEngine::start().await;
-        unsafe {
-            std::env::remove_var("CONFIG_PATH");
+    async fn test_start_existing_directory_is_idempotent() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().join("db");
+
+        // First start: write a key
+        {
+            let engine = EmbeddedEngine::start(&data_dir).await.expect("first start");
+            engine.wait_ready(std::time::Duration::from_secs(5)).await.expect("ready");
+            engine.client().put(b"k".to_vec(), b"v".to_vec()).await.expect("put");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            engine.stop().await.ok();
         }
 
-        assert!(
-            result.is_err(),
-            "start() should fail with nonexistent CONFIG_PATH"
-        );
+        // Second start: data must still be there
+        {
+            let engine = EmbeddedEngine::start(&data_dir).await.expect("second start");
+            engine.wait_ready(std::time::Duration::from_secs(5)).await.expect("ready");
+            let val = engine.client().get_linearizable(b"k".to_vec()).await.expect("get");
+            assert_eq!(val.as_deref(), Some(b"v".as_ref()), "data must persist");
+            engine.stop().await.ok();
+        }
     }
 
+    /// data_dir overrides cluster.db_root_dir set in CONFIG_PATH.
     #[tokio::test]
-    #[cfg(debug_assertions)]
+    #[serial]
+    async fn test_start_data_dir_overrides_config_path_db_root_dir() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config_data_dir = temp_dir.path().join("from-config");
+        let explicit_data_dir = temp_dir.path().join("from-arg");
+
+        // Write a config that points at a different directory
+        let config_path = temp_dir.path().join("test.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "[cluster]\ndb_root_dir = \"{}\"\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
+                config_data_dir.display()
+            ),
+        )
+        .expect("write config");
+
+        unsafe { std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap()) };
+
+        let result = EmbeddedEngine::start(&explicit_data_dir).await;
+
+        unsafe { std::env::remove_var("CONFIG_PATH") };
+
+        assert!(result.is_ok(), "should succeed: {:?}", result.err());
+        assert!(explicit_data_dir.exists(), "explicit path must be used");
+        assert!(!config_data_dir.exists(), "config path must be ignored");
+
+        if let Ok(engine) = result {
+            engine.stop().await.ok();
+        }
+    }
+
+    /// /tmp paths emit a warning but are not rejected.
+    #[tokio::test]
     #[serial(tmp_db)]
-    async fn test_start_with_config_path_env_tmp_db_allows_in_debug() {
-        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let config_path = _temp_dir.path().join("test_config.toml");
+    async fn test_start_tmp_path_warns_but_succeeds() {
+        let tmp_path = std::path::PathBuf::from("/tmp/d-engine-env-test");
+        let _ = std::fs::remove_dir_all(&tmp_path);
 
-        // Clean up /tmp/db before test
-        let _ = std::fs::remove_dir_all("/tmp/db");
-
-        // Create config with /tmp/db
-        let config_content = r#"
-[cluster]
-node_id = 1
-db_root_dir = "/tmp/db"
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
-"#;
-        std::fs::write(&config_path, config_content).expect("Failed to write config");
-
-        // In debug mode, should succeed with warning
-        unsafe {
-            std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
-        }
-        let result = EmbeddedEngine::start().await;
-        unsafe {
-            std::env::remove_var("CONFIG_PATH");
-        }
+        let result = EmbeddedEngine::start(&tmp_path).await;
 
         assert!(
             result.is_ok(),
-            "start() should allow /tmp/db in debug mode with CONFIG_PATH"
+            "/tmp path should succeed with warn, not error: {:?}",
+            result.err()
         );
 
         if let Ok(engine) = result {
             engine.stop().await.ok();
         }
-
-        // Clean up after test
-        let _ = std::fs::remove_dir_all("/tmp/db");
-    }
-
-    #[tokio::test]
-    #[cfg(not(debug_assertions))]
-    #[serial]
-    async fn test_start_with_config_path_env_tmp_db_rejects_in_release() {
-        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let config_path = _temp_dir.path().join("test_config.toml");
-
-        // Create config with /tmp/db
-        let config_content = r#"
-[cluster]
-node_id = 1
-db_root_dir = "/tmp/db"
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
-"#;
-        std::fs::write(&config_path, config_content).expect("Failed to write config");
-
-        // In release mode, should reject
-        unsafe {
-            std::env::set_var("CONFIG_PATH", config_path.to_str().unwrap());
-        }
-        let result = EmbeddedEngine::start().await;
-        unsafe {
-            std::env::remove_var("CONFIG_PATH");
-        }
-
-        assert!(
-            result.is_err(),
-            "start() should reject /tmp/db in release mode with CONFIG_PATH"
-        );
-
-        if let Err(e) = result {
-            let err_msg = format!("{:?}", e);
-            assert!(err_msg.contains("/tmp/db") || err_msg.contains("db_root_dir"));
-        }
+        let _ = std::fs::remove_dir_all(&tmp_path);
     }
 }

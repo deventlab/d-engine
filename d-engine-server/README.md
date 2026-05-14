@@ -68,9 +68,8 @@ use tokio::sync::watch;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    std::env::set_var("CONFIG_PATH", "config.toml");
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
-    StandaloneEngine::run(shutdown_rx).await?;
+    StandaloneEngine::run("./data", shutdown_rx).await?;
     Ok(())
 }
 ```

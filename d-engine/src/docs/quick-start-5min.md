@@ -196,8 +196,8 @@ No manual `tokio::spawn()`, no leaked tasks.
 ### EmbeddedEngine
 
 ```rust,ignore
-// Use CONFIG_PATH environment variable
-EmbeddedEngine::start() -> Result<Self>
+// Explicit data directory (highest priority)
+EmbeddedEngine::start(data_dir: impl AsRef<Path>) -> Result<Self>
 
 // Use explicit config file
 EmbeddedEngine::start_with(config_path: &str) -> Result<Self>
@@ -252,11 +252,11 @@ See [complete API documentation](https://docs.rs/d-engine/latest/d_engine/prelud
 
 ## Common Patterns
 
-### Pattern 1: Production (environment variable)
+### Pattern 1: Production (explicit data directory)
 
 ```rust,ignore
-// Reads config path from CONFIG_PATH env var
-let engine = EmbeddedEngine::start().await?;
+// Pass the data directory directly — works in debug and release
+let engine = EmbeddedEngine::start("./data").await?;
 ```
 
 ### Pattern 2: Development (explicit config)
