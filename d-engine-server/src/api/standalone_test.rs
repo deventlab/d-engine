@@ -91,12 +91,13 @@ mod standalone_server_tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         shutdown_tx.send(()).ok();
 
-        unsafe { std::env::remove_var("CONFIG_PATH") };
-
         let result = tokio::time::timeout(Duration::from_secs(5), handle)
             .await
             .expect("server must stop within timeout")
             .expect("server task must not panic");
+
+        unsafe { std::env::remove_var("CONFIG_PATH") };
+
         assert!(result.is_ok(), "should succeed: {:?}", result.err());
         assert!(explicit_data_dir.exists(), "explicit path must be used");
         assert!(!config_data_dir.exists(), "config path must be ignored");
