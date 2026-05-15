@@ -100,7 +100,7 @@ d-engine = "0.2"
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
-> **Performance note**: Embedded mode on AWS EC2 3-node cluster achieves **64K writes/sec** and **181K linearizable reads/sec** under high concurrency, with sub-millisecond latency. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) for detailed benchmarks.
+> **Performance note**: Embedded mode on AWS EC2 3-node cluster achieves **64K writes/sec** and **181K linearizable reads/sec** under high concurrency, with sub-millisecond latency. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4) for detailed benchmarks.
 
 **→ Examples:**
 
@@ -118,7 +118,7 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 **Use when**: Application and d-engine run as separate processes  
 **Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
 
-> **Performance note**: Standalone mode achieves 36K writes/sec and 51K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (1.8x faster writes, 3.5x faster reads). See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3) for benchmarks.
+> **Performance note**: Standalone mode achieves 36K writes/sec and 51K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (1.8x faster writes, 3.5x faster reads). See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4) for benchmarks.
 
 **Note**: Rust apps can use both modes - embedded for performance, standalone for operational flexibility
 
