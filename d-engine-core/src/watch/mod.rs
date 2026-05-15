@@ -18,14 +18,14 @@
 //!        │ notify_change() [~10ns]
 //!        ▼
 //! ┌─────────────────┐
-//! │  Event Queue    │ (crossbeam-channel, lock-free)
-//! │  (bounded 1000) │
+//! │  Event Queue    │ (tokio::sync::broadcast)
+//! │  (bounded 10240)│
 //! └──────┬──────────┘
 //!        │
 //!        ▼
 //! ┌─────────────────┐
-//! │   Dispatcher    │ (background thread)
-//! │   Thread        │
+//! │   Dispatcher    │ (tokio task)
+//! │   Task          │
 //! └──────┬──────────┘
 //!        │ lookup in DashMap (lock-free)
 //!        ▼
@@ -75,7 +75,7 @@
 //!
 //! The watch system is configurable via [`WatchConfig`]:
 //!
-//! - `event_queue_size`: Global event queue buffer (default: 1000)
+//! - `event_queue_size`: Global event queue buffer (default: 10240)
 //! - `watcher_buffer_size`: Per-watcher channel buffer (default: 10)
 //! - `enable_metrics`: Enable detailed logging and metrics (default: false)
 //!
@@ -130,3 +130,18 @@ pub use manager::WatcherHandle;
 
 // Re-export WatchConfig from the unified config system
 pub use crate::config::WatchConfig;
+
+/// Build a CANCELED sentinel event for a given key.
+///
+/// Sent to a watcher's channel immediately before it is unregistered due to
+/// buffer overflow.  The client receives this as the last event on the stream
+/// and should treat it as a signal to re-sync via the Read API and re-register.
+pub(crate) fn make_cancel_event(key: bytes::Bytes) -> WatchEvent {
+    use d_engine_proto::error::ErrorCode;
+    WatchEvent {
+        key,
+        value: bytes::Bytes::new(),
+        event_type: WatchEventType::Canceled as i32,
+        error: ErrorCode::WatchBufferOverflow as i32,
+    }
+}

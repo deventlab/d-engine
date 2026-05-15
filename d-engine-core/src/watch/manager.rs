@@ -151,7 +151,9 @@ impl WatchRegistry {
         key: Bytes,
     ) -> WatcherHandle {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (sender, receiver) = mpsc::channel(self.watcher_buffer_size);
+        // +1 reserves one slot for the CANCELED sentinel so it can always be
+        // delivered even when all watcher_buffer_size normal slots are full.
+        let (sender, receiver) = mpsc::channel(self.watcher_buffer_size + 1);
 
         let watcher = Watcher { id, sender };
 
@@ -279,19 +281,39 @@ impl WatchDispatcher {
             let mut dead_watchers = Vec::new();
 
             for watcher in watchers.iter() {
-                // Non-blocking send
-                if watcher.sender.try_send(event.clone()).is_err() {
-                    // Receiver dropped or full, mark for cleanup
+                let available = watcher.sender.capacity();
+
+                if available <= 1 {
+                    // capacity == 1: exactly the reserved cancel slot remains.
+                    // capacity == 0: defensive — shouldn't happen in normal flow
+                    //   since we check before every normal send, but handle it.
+                    if available == 1 {
+                        warn!(
+                            watcher_id = watcher.id,
+                            key = ?event.key,
+                            buffer_capacity = watcher.sender.max_capacity(),
+                            buffer_len = watcher.sender.max_capacity() - available,
+                            "watcher buffer overflow, sending cancel"
+                        );
+                        let _ = watcher.sender.try_send(crate::watch::make_cancel_event(event.key.clone()));
+                    }
+                    dead_watchers.push(watcher.id);
+                    continue;
+                }
+
+                // Normal send: capacity > 1, reserved slot is untouched.
+                if let Err(mpsc::error::TrySendError::Closed(_)) =
+                    watcher.sender.try_send(event.clone())
+                {
+                    // Receiver dropped: silent cleanup, no cancel needed.
                     dead_watchers.push(watcher.id);
                 }
             }
 
             // Cleanup dead watchers
             drop(watchers);
-            if !dead_watchers.is_empty() {
-                for id in dead_watchers {
-                    self.registry.unregister(id, &event.key);
-                }
+            for id in dead_watchers {
+                self.registry.unregister(id, &event.key);
             }
 
             trace!(key = ?event.key, event_type = ?event.event_type, "Event dispatched");

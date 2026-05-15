@@ -32,6 +32,32 @@ Cluster state or request issues. Handle based on error.
 | `INVALID_REQUEST`     | Bad request format         | Fix request             |
 | `STALE_OPERATION`     | Based on old cluster state | Refresh state and retry |
 
+### Watch Errors (5000-5999)
+
+Watch stream lifecycle errors. Re-sync required.
+
+| Code                    | When                                         | Action                                        |
+| ----------------------- | -------------------------------------------- | --------------------------------------------- |
+| `WATCH_BUFFER_OVERFLOW` | Per-watcher channel full, watcher canceled   | Re-sync via Read API, then re-register watch  |
+
+`WATCH_BUFFER_OVERFLOW` arrives as a `WatchResponse` with `event_type = WATCH_EVENT_TYPE_CANCELED`. After receiving it, no further events will be delivered on that stream. Example handler:
+
+```rust,ignore
+while let Some(event) = stream.next().await {
+    match event {
+        Ok(ev) if ev.event_type == WatchEventType::Canceled as i32 => {
+            // Watcher forcibly canceled by server
+            warn!("Watch canceled (buffer overflow); re-syncing key {:?}", ev.key);
+            let current = client.read(ev.key.clone()).await?;
+            process_current_value(current);
+            stream = client.watch(ev.key).await?; // re-register
+        }
+        Ok(ev) => handle_event(ev),
+        Err(e) => return Err(e),
+    }
+}
+```
+
 ---
 
 ## Handling in Standalone Mode

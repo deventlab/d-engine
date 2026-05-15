@@ -1189,7 +1189,7 @@ fn default_client_compression() -> bool {
 ///
 /// ```toml
 /// [raft.watch]
-/// event_queue_size = 1000
+/// event_queue_size = 10240
 /// watcher_buffer_size = 10
 /// enable_metrics = false
 /// ```

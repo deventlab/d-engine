@@ -337,6 +337,13 @@ impl From<ErrorCode> for ClientApiError {
                 required_action: None,
             },
 
+            // Watch layer errors
+            ErrorCode::WatchBufferOverflow => ClientApiError::Business {
+                code,
+                message: "Watch buffer overflow; watcher canceled".to_string(),
+                required_action: Some("re-sync via Read API and re-register watch".to_string()),
+            },
+
             // Unclassified error
             ErrorCode::General => ClientApiError::General {
                 code,

@@ -233,6 +233,9 @@ pub enum WatchEventType {
     Put = 0,
     /// A key was explicitly deleted
     Delete = 1,
+    /// Watcher forcibly canceled by the server (e.g. buffer overflow).
+    /// Client should re-sync via Read API and re-register the watch.
+    Canceled = 2,
 }
 impl WatchEventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -243,6 +246,7 @@ impl WatchEventType {
         match self {
             Self::Put => "WATCH_EVENT_TYPE_PUT",
             Self::Delete => "WATCH_EVENT_TYPE_DELETE",
+            Self::Canceled => "WATCH_EVENT_TYPE_CANCELED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -250,6 +254,7 @@ impl WatchEventType {
         match value {
             "WATCH_EVENT_TYPE_PUT" => Some(Self::Put),
             "WATCH_EVENT_TYPE_DELETE" => Some(Self::Delete),
+            "WATCH_EVENT_TYPE_CANCELED" => Some(Self::Canceled),
             _ => None,
         }
     }

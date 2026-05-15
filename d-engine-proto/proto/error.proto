@@ -44,6 +44,12 @@ enum ErrorCode {
     RETRY_REQUIRED = 4008;
 
     // ======================
+    // Watch layer error (5000-5999)
+    // ======================
+    // per-watcher channel full; watcher forcibly canceled, client must re-sync
+    WATCH_BUFFER_OVERFLOW = 5001;
+
+    // ======================
     // Unclassified error
     // ======================
     GENERAL = 8888;
