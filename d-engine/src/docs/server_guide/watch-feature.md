@@ -111,7 +111,7 @@ let (id, key, receiver) = watcher.into_receiver();
 - **Order**: FIFO per key (events from StateMachine apply order)
 - **Dropped Events**: When a per-watcher buffer overflows, the watcher receives a `CANCELED` sentinel event and is forcibly unregistered
 - **Lagging**: Broadcast channel drops oldest events when receivers are slow (global buffer)
-- **CANCELED Event**: `WatchEventType::CANCELED` with `ErrorCode::WATCH_BUFFER_OVERFLOW` signals that the watcher was forcibly terminated. Client must re-sync via Read API and re-register.
+- **CANCELED Event**: `WatchEventType::Canceled` with `ErrorCode::WATCH_BUFFER_OVERFLOW` signals that the watcher was forcibly terminated. Client must re-sync via Read API and re-register.
 
 ### Lifecycle
 
@@ -207,7 +207,7 @@ watch(b"config:feature_flags")
 ### `WATCH_BUFFER_OVERFLOW` (ErrorCode 5001)
 
 - **Cause**: Per-watcher channel full — the client is consuming events too slowly
-- **Detection**: Receive an event where `event_type == WatchEventType::CANCELED` and `error == ErrorCode::WATCH_BUFFER_OVERFLOW`
+- **Detection**: Receive an event where `event_type == WatchEventType::Canceled` and `error == ErrorCode::WATCH_BUFFER_OVERFLOW`
 - **Effect**: The watcher is forcibly unregistered server-side; no further events will be delivered on this stream
 - **Solution**:
   1. Re-sync state via the Read API to get the current value
@@ -221,7 +221,7 @@ watch(b"config:feature_flags")
 3. **Idempotent Handlers**: Handle duplicate events gracefully (at-most-once delivery)
 4. **Buffer Tuning**: Monitor lagged events and adjust buffer sizes accordingly
 5. **Reconnect Logic**: Implement automatic reconnection on stream errors
-6. **Handle CANCELED**: Always check for `WatchEventType::CANCELED` — treat it as a forced disconnect. Re-sync via Read API then re-register the watch before processing further events.
+6. **Handle CANCELED**: Always check for `WatchEventType::Canceled` — treat it as a forced disconnect. Re-sync via Read API then re-register the watch before processing further events.
 
 ## Watch Reliability and Reconnection
 
