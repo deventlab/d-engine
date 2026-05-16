@@ -517,7 +517,7 @@ type AddNode struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        uint32                 `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
-	Status        NodeStatus             `protobuf:"varint,3,opt,name=status,proto3,enum=d_engine.common.NodeStatus" json:"status,omitempty"` // Status of the node being added (PROMOTABLE or READ_ONLY)
+	Status        NodeStatus             `protobuf:"varint,3,opt,name=status,proto3,enum=d_engine.common.NodeStatus" json:"status,omitempty"` // Status of the node being added (NODE_STATUS_UNSPECIFIED, NODE_STATUS_PROMOTABLE, or NODE_STATUS_READ_ONLY)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

@@ -10,7 +10,7 @@ Edit `config/base/raft.toml`:
 
 ```toml
 [raft.watch]
-event_queue_size = 1000       # Global broadcast channel buffer
+event_queue_size = 10240      # Global broadcast channel buffer
 watcher_buffer_size = 10      # Per-watcher buffer
 enable_metrics = false        # Detailed logging (default: false)
 ```
@@ -78,13 +78,13 @@ let (id, key, receiver) = watcher.into_receiver();
 ### `event_queue_size`
 
 - **Type**: usize
-- **Default**: `1000`
+- **Default**: `10240`
 - **Description**: Global broadcast channel buffer size. When full, oldest events are dropped (lagging receivers).
-- **Memory**: ~24 bytes per slot (1000 slots ≈ 24KB)
+- **Memory**: ~24 bytes per slot (10240 slots ≈ 246KB)
 - **Tuning**:
-  - Low traffic (< 1K writes/sec): 500-1000
-  - Medium traffic (1K-10K writes/sec): 1000-2000
-  - High traffic (> 10K writes/sec): 2000-5000
+  - Low traffic (< 1K writes/sec): 1000-5000
+  - Medium traffic (1K-10K writes/sec): 5000-20000
+  - High traffic (> 10K writes/sec): 20000-50000
 
 ### `watcher_buffer_size`
 
@@ -109,8 +109,9 @@ let (id, key, receiver) = watcher.into_receiver();
 
 - **Guarantee**: At-most-once delivery
 - **Order**: FIFO per key (events from StateMachine apply order)
-- **Dropped Events**: When buffers are full, events are dropped (non-blocking design)
-- **Lagging**: Broadcast channel drops oldest events when receivers are slow
+- **Dropped Events**: When a per-watcher buffer overflows, the watcher receives a `CANCELED` sentinel event and is forcibly unregistered
+- **Lagging**: Broadcast channel drops oldest events when receivers are slow (global buffer)
+- **CANCELED Event**: `WatchEventType::Canceled` with `ErrorCode::WATCH_BUFFER_OVERFLOW` signals that the watcher was forcibly terminated. Client must re-sync via Read API and re-register.
 
 ### Lifecycle
 
@@ -139,9 +140,9 @@ let (id, key, receiver) = watcher.into_receiver();
 ### Memory Usage
 
 ```text
-Base:    24KB (broadcast channel at default 1000)
-Watchers: 240 bytes × buffer_size × watcher_count
-Example:  100 watchers × 10 buffer = 240KB
+Base:    246KB (broadcast channel at default 10240)
+Watchers: 240 bytes × (buffer_size + 1) × watcher_count
+Example:  100 watchers × 11 slots = 264KB
 ```
 
 ## Disabling Watch
@@ -203,6 +204,16 @@ watch(b"config:feature_flags")
 - **Detection**: `broadcast::RecvError::Lagged(n)` in logs
 - **Solution**: Increase `event_queue_size` or process events faster
 
+### `WATCH_BUFFER_OVERFLOW` (ErrorCode 5001)
+
+- **Cause**: Per-watcher channel full — the client is consuming events too slowly
+- **Detection**: Receive an event where `event_type == WatchEventType::Canceled` and `error == ErrorCode::WATCH_BUFFER_OVERFLOW`
+- **Effect**: The watcher is forcibly unregistered server-side; no further events will be delivered on this stream
+- **Solution**:
+  1. Re-sync state via the Read API to get the current value
+  2. Re-register the watch to receive future changes
+  3. Increase `watcher_buffer_size` to give slow consumers more headroom
+
 ## Best Practices
 
 1. **Start Watch Before Write**: To avoid missing events, start watching before performing writes
@@ -210,6 +221,7 @@ watch(b"config:feature_flags")
 3. **Idempotent Handlers**: Handle duplicate events gracefully (at-most-once delivery)
 4. **Buffer Tuning**: Monitor lagged events and adjust buffer sizes accordingly
 5. **Reconnect Logic**: Implement automatic reconnection on stream errors
+6. **Handle CANCELED**: Always check for `WatchEventType::Canceled` — treat it as a forced disconnect. Re-sync via Read API then re-register the watch before processing further events.
 
 ## Watch Reliability and Reconnection
 
@@ -464,7 +476,7 @@ while let Some(event) = stream.next().await {
 ┌─────────────────────────┐
 │ Broadcast Channel       │
 │ (tokio::sync::broadcast)│
-│ - Capacity: 1000        │
+│ - Capacity: 10240       │
 │ - Overwrites on full    │
 └──────┬──────────────────┘
        │ subscribe

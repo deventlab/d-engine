@@ -98,6 +98,9 @@ fn print_watch_event(
         Some(WatchEventType::Delete) => {
             println!("[DELETE] {key}");
         }
+        Some(WatchEventType::Canceled) => {
+            println!("[CANCELED] {key} — watcher forcibly terminated (buffer overflow); re-sync and re-register");
+        }
         None => {
             let event_type = response.event_type;
             println!("[UNKNOWN] {key} (event_type={event_type})");

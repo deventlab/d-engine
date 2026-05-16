@@ -52,6 +52,11 @@ pub enum ErrorCode {
     TermOutdated = 4007,
     RetryRequired = 4008,
     /// ======================
+    /// Watch layer error (5000-5999)
+    /// ======================
+    /// per-watcher channel full; watcher forcibly canceled, client must re-sync
+    WatchBufferOverflow = 5001,
+    /// ======================
     /// Unclassified error
     /// ======================
     General = 8888,
@@ -84,6 +89,7 @@ impl ErrorCode {
             Self::ProposeFailed => "PROPOSE_FAILED",
             Self::TermOutdated => "TERM_OUTDATED",
             Self::RetryRequired => "RETRY_REQUIRED",
+            Self::WatchBufferOverflow => "WATCH_BUFFER_OVERFLOW",
             Self::General => "GENERAL",
             Self::Uncategorized => "UNCATEGORIZED",
         }
@@ -111,6 +117,7 @@ impl ErrorCode {
             "PROPOSE_FAILED" => Some(Self::ProposeFailed),
             "TERM_OUTDATED" => Some(Self::TermOutdated),
             "RETRY_REQUIRED" => Some(Self::RetryRequired),
+            "WATCH_BUFFER_OVERFLOW" => Some(Self::WatchBufferOverflow),
             "GENERAL" => Some(Self::General),
             "UNCATEGORIZED" => Some(Self::Uncategorized),
             _ => None,

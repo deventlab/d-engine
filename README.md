@@ -22,50 +22,33 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 
 ---
 
-## Features
-
-### New in v0.2.4 🎉
+## New in v0.2.4 🎉
 
 - **Async IO Architecture**: Raft event loop is fully non-blocking — WAL writes, state machine apply, and replication all run off the hot path. AppendEntries uses a persistent bidirectional stream per peer; replication is pipelined across followers.
 - **Cluster Membership Streaming**: `EmbeddedEngine::watch_membership()` / `GrpcClient::watch_membership()` — subscribe to real-time membership changes in both embedded and standalone modes
 - **Simpler Startup**: `EmbeddedEngine::start(data_dir)` and `StandaloneEngine::run(data_dir, shutdown_rx)` — no config file required for common cases
 - **Jepsen Validated**: 5 workloads + 6-hour soak test under combined kill/partition/pause faults — see [Correctness Guarantees](https://github.com/deventlab/d-engine-jepsen/blob/main/GUARANTEES.md)
 
-### Previously in v0.2.3
+---
 
-- **CompareAndSwap (CAS)**: Atomic compare-and-swap for distributed locks, leader election, optimistic updates
-- **Drain-based Batching**: Linearizable read +92%, lease/eventual read +62% vs v0.2.2 (embedded mode)
-- **Client Auto-Recovery**: `Client::refresh()` rediscovers cluster after leader failover
-- **Unified Client API**: Single `ClientApi` trait for KV and cluster operations (replaces `KvClient`)
+## Features
 
-### Core Features (v0.2+)
-
-- **EmbeddedEngine**: Single-node start, scale to 3-node cluster when needed
-- **EmbeddedClient**: Zero-overhead in-process access (<0.1ms latency)
-- **Watch API**: Real-time key change notifications (config updates, service discovery)
+- **Single-Node Start**: Begin with one node, scale to a 3-node cluster with zero downtime
+- **EmbeddedEngine**: Zero-overhead in-process access (<0.1ms latency)
+- **Strong Consistency**: Full Raft protocol — linearizable writes, configurable read consistency
+- **Flexible Read Consistency**: Three-tier model (Linearizable/Lease-Based/Eventual) per request
+- **Watch API**: Real-time key change notifications for config updates, service discovery, and more
 - **TTL/Lease**: Automatic key expiration for distributed locks and session management
-- **Modular Workspace**: Feature flags (`client`/`server`) - depend only on what you need
-
-### Core Capabilities
-
-- **Strong Consistency**: Full Raft protocol implementation for distributed consensus
-- **Flexible Read Consistency**: Three-tier model (Linearizable/Lease-Based/Eventual)
-- **Single-Node Start**: Begin with one node, expand to 3-node cluster when needed (zero downtime)
-- **Tunable Persistence**: DiskFirst for durability or MemFirst for lower latency
-- **Pluggable Storage**: Custom backends supported (RocksDB, Sled, Raw File)
-- **Jepsen Validated**: Linearizability, partition tolerance, crash durability, and Watch ordering verified — see [Correctness Guarantees](https://github.com/deventlab/d-engine-jepsen/blob/main/GUARANTEES.md)
+- **Pluggable Storage**: Custom backends supported (RocksDB default; Sled, Raw File, or your own)
+- **Modular**: Feature flags (`client`/`server`) — depend only on what you need
 
 ---
 
 ## Quick Start (Embedded Mode)
 
-Add d-engine to your `Cargo.toml`:
-
 ```toml
 d-engine = "0.2"
 ```
-
-Example code:
 
 ```rust
 use d_engine::prelude::*;
@@ -91,7 +74,7 @@ async fn main() {
 
 ## Integration Modes
 
-### Embedded Mode - In-Process Deployment
+### Embedded Mode — In-Process
 
 ```toml
 d-engine = "0.2"
@@ -100,16 +83,16 @@ d-engine = "0.2"
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
-> **Performance note**: Embedded mode on AWS EC2 3-node cluster achieves **64K writes/sec** and **181K linearizable reads/sec** under high concurrency, with sub-millisecond latency. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4) for detailed benchmarks.
+> **Performance**: AWS EC2 3-node cluster — **64K writes/sec**, **181K linearizable reads/sec**, sub-millisecond latency. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4) for details.
 
 **→ Examples:**
 
-- [Quick Start Embedded](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-embedded) - Minimal setup
-- [Service Discovery Embedded](https://github.com/deventlab/d-engine/tree/main/examples/service-discovery-embedded) - Watch API with sub-millisecond latency
+- [Quick Start Embedded](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-embedded) — Minimal setup
+- [Service Discovery Embedded](https://github.com/deventlab/d-engine/tree/main/examples/service-discovery-embedded) — Watch API
 
 ---
 
-### Standalone Mode - Separate Service Deployment
+### Standalone Mode — Separate Service
 
 ```toml
 d-engine = { version = "0.2", features = ["client"], default-features = false }
@@ -118,64 +101,35 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 **Use when**: Application and d-engine run as separate processes  
 **Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
 
-> **Performance note**: Standalone mode achieves 36K writes/sec and 51K linearizable reads/sec via gRPC, suitable for multi-language environments. For maximum performance, use embedded mode (1.8x faster writes, 3.5x faster reads). See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4) for benchmarks.
-
-**Note**: Rust apps can use both modes - embedded for performance, standalone for operational flexibility
+> **Performance**: 36K writes/sec, 51K linearizable reads/sec via gRPC. For maximum throughput, embedded mode is 1.8× faster on writes and 3.5× on reads. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4).
 
 **→ Example:** [Quick Start Standalone (Go client)](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-standalone)
 
 ---
 
-## Advanced: Custom Storage Backends
-
-For specific storage requirements (Sled, memory-only, cloud storage):
+### Custom Storage Backends
 
 ```toml
 d-engine = { version = "0.2", features = ["server"], default-features = false }
 ```
 
-Implement custom storage engines and state machines by implementing the respective traits:
+Implement the `StorageEngine` and `StateMachine` traits for custom backends:
 
-- **Custom Storage Engines**: [Implementation Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
-- **Custom State Machines**: [Implementation Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
-- **Example**: [Sled Storage Backend](https://github.com/deventlab/d-engine/tree/main/examples/sled-cluster)
-
----
-
-## Core Concepts
-
-### Data Flow
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Leader
-    participant Raft_Log as Raft Log
-    participant Followers
-    participant State_Machine as State Machine
-
-    Client->>Leader: Propose("SET key=value")
-    Leader->>Raft_Log: Append Entry (Uncommitted)
-    Leader->>Followers: Replicate via AppendEntries RPC
-    Followers-->>Leader: Acknowledge Receipt
-    Leader->>Raft_Log: Mark Entry Committed
-    Leader->>State_Machine: Apply Committed Entry
-    State_Machine-->>Client: Return Result
-```
+- [Storage Engine Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-storage-engines)
+- [State Machine Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/index.html#implementing-custom-state-machines)
+- [Sled Storage Example](https://github.com/deventlab/d-engine/tree/main/examples/sled-cluster)
 
 ---
 
-## Performance Comparison
+## Performance
 
 ### d-engine v0.2.4 vs etcd
 
 ![d-engine vs etcd comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.4/d-engine_comparison_v0.2.4.png)
 
-### d-engine v0.2.4 vs d-engine v0.2.3
+### d-engine v0.2.4 vs v0.2.3
 
 ![d-engine v0.2.4 vs v0.2.3 comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.4/d-engine_v0.2.3_vs_v0.2.4_embedded_mode.png)
-
-### View Benchmarks Detailed Reports
 
 ```bash
 open benches/reports/
@@ -185,58 +139,45 @@ open benches/reports/
 
 ## Maintainer Philosophy
 
-d-engine is maintained by a single author with a clear vision.
-We value quality over quantity:
+d-engine is maintained by a single author with a clear vision. We value quality over quantity:
 
-- **PRs are not guaranteed to be merged** - even good code may be declined
-  if it conflicts with roadmap priorities
-- **Response time varies** - active development takes precedence over PR reviews
-- **Breaking changes are OK pre-1.0** - we prioritize getting it right over
-  backward compatibility
-
-This approach keeps d-engine focused and maintainable.
+- **PRs are not guaranteed to be merged** — even good code may be declined if it conflicts with roadmap priorities
+- **Response time varies** — active development takes precedence over PR reviews
+- **Breaking changes are OK pre-1.0** — we prioritize getting it right over backward compatibility
 
 ---
 
-## Contribution Guide
+## Contributing
 
-d-engine follows the 20/80 rule - solve real production problems, not experiments.
-Read [Contributing Guide](https://github.com/deventlab/d-engine/blob/main/CONTRIBUTING.md) and open an issue before feature PRs.
-Bug fixes are always welcome.
+d-engine follows the 20/80 rule — solve real production problems, not experiments.
+Read [CONTRIBUTING.md](https://github.com/deventlab/d-engine/blob/main/CONTRIBUTING.md) and open an issue before feature PRs. Bug fixes are always welcome.
 
-### Prerequisites
-
-- Rust 1.89+
-- Tokio runtime
-- Protobuf compiler
-
-### Development Workflow
+**Prerequisites**: Rust 1.89+, Tokio runtime, Protobuf compiler
 
 ```bash
 # Run all tests (fast, parallel with nextest)
 make test
 ```
 
+Follow Rust community standards (rustfmt, clippy). Write unit tests for all new features.
+
 ---
-
-## Code Style
-
-Follow Rust community standards (rustfmt, clippy).
-Write unit tests for all new features.
 
 ## FAQ
 
 **Why 3 nodes for HA?**  
-Raft requires majority quorum (N/2 + 1). 3-node cluster tolerates 1 failure.
+Raft requires majority quorum (N/2 + 1). A 3-node cluster tolerates 1 failure.
 
 **Can I start with 1 node?**  
 Yes. Scale to 3 nodes later with zero downtime (see `examples/single-node-expansion/`).
 
 **How do I customize storage?**  
-Implement `StorageEngine` and `StateMachine` traits (see Custom Storage Implementations section).
+Implement the `StorageEngine` and `StateMachine` traits (see Custom Storage Backends above).
 
 **Production-ready?**  
 Core Raft engine is production-grade (1000+ tests, [Jepsen validated](https://github.com/deventlab/d-engine-jepsen/blob/main/GUARANTEES.md)). API is stabilizing toward v1.0. Pre-1.0 versions may introduce breaking changes (documented in [MIGRATION_GUIDE.md](https://github.com/deventlab/d-engine/blob/main/MIGRATION_GUIDE.md)).
+
+---
 
 ## Supported Platforms
 
@@ -245,5 +186,4 @@ Core Raft engine is production-grade (1000+ tests, [Jepsen validated](https://gi
 
 ## License
 
-d-engine is licensed under the terms of the [MIT License](https://en.wikipedia.org/wiki/MIT_License#License_terms)
-or the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0), at your choosing.
+Licensed under [MIT](https://en.wikipedia.org/wiki/MIT_License#License_terms) or [Apache 2.0](http://www.apache.org/licenses/LICENSE-2.0), at your option.

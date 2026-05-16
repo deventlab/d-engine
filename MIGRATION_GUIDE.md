@@ -128,11 +128,12 @@ grep "WAL" /var/log/d-engine.log
 
 ## Timeline
 
-| Version       | WAL Format          | Wire Protocol    | Migration Required                           |
-| ------------- | ------------------- | ---------------- | -------------------------------------------- |
-| v0.1.x        | Relative TTL        | Compatible       | -                                            |
-| v0.2.0–v0.2.2 | Absolute expiration | Compatible       | ✅ Yes (clear WAL from v0.1.x)               |
-| v0.2.3+       | Same as v0.2.0+     | **Incompatible** | ✅ Yes (protobuf enum changes + API changes) |
+| Version       | WAL Format          | Wire Protocol        | Migration Required                                      |
+| ------------- | ------------------- | -------------------- | ------------------------------------------------------- |
+| v0.1.x        | Relative TTL        | Compatible           | -                                                       |
+| v0.2.0–v0.2.2 | Absolute expiration | Compatible           | ✅ Yes (clear WAL from v0.1.x)                          |
+| v0.2.3        | Same as v0.2.0+     | **Incompatible**     | ✅ Yes (protobuf enum changes + API changes)             |
+| v0.2.4        | Same as v0.2.0+     | Compatible (additive)| ✅ Yes (delete `snapshot/` — format changed to CF export)|
 
 ---
 
@@ -417,4 +418,63 @@ These are internal connection pool types. Use `Client` and `ClientBuilder` inste
 
 ---
 
-**Last Updated:** April 2026
+---
+
+## 🚨 For v0.2.3 Users: Snapshot Format Change in v0.2.4
+
+### What Changed
+
+v0.2.4 changes the internal snapshot format from **RocksDB checkpoint** (v0.2.3) to **CF export** (v0.2.4).
+Existing v0.2.3 snapshots cannot be loaded by v0.2.4 nodes.
+
+### Migration Steps
+
+1. **Ensure the cluster is healthy** — all nodes synchronized before upgrading.
+2. **Delete old snapshots before starting the upgraded node**:
+   ```bash
+   rm -rf /path/to/db_root_dir/snapshot/
+   ```
+3. **Upgrade to v0.2.4** — the node replays from WAL on first start.
+4. **A new snapshot is created automatically** once the log-size threshold is reached.
+
+> Ensure sufficient disk space for WAL replay. Nodes that have fallen far behind may trigger a snapshot install from the leader instead of local WAL replay.
+
+---
+
+## For v0.2.3 Users: Watch Behavior Change in v0.2.4 (#294)
+
+### What Changed
+
+Watch buffer overflow is no longer silent. When a per-watcher channel fills up, the server now:
+1. Sends a `CANCELED` sentinel (`event_type = WATCH_EVENT_TYPE_CANCELED`, `error = WATCH_BUFFER_OVERFLOW`)
+2. Unregisters the watcher — no further events are delivered on that stream
+
+Previously, events were silently dropped and the watcher was silently unregistered with no client notification.
+
+### Impact
+
+**Non-breaking** — clients that handle stream close (`None` / `Status::UNAVAILABLE`) continue to work.
+The `CANCELED` event simply provides early notification before the stream closes.
+
+**Recommended**: update watch consumers to handle `CANCELED` for clean re-sync:
+
+```rust
+while let Some(event) = stream.next().await {
+    match event {
+        Ok(ev) if ev.event_type == WatchEventType::Canceled as i32 => {
+            // buffer overflow: re-sync current state then re-register
+            let current = client.read(ev.key.clone()).await?;
+            process_snapshot(current);
+            stream = client.watch(ev.key).await?;
+        }
+        Ok(ev) => handle_event(ev),
+        Err(e) => return Err(e),
+    }
+}
+```
+
+See [Watch Feature Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/watch_feature/index.html) for details.
+
+---
+
+**Last Updated:** May 2026

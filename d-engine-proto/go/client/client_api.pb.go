@@ -98,6 +98,9 @@ const (
 	WatchEventType_WATCH_EVENT_TYPE_PUT WatchEventType = 0
 	// A key was explicitly deleted
 	WatchEventType_WATCH_EVENT_TYPE_DELETE WatchEventType = 1
+	// Watcher forcibly canceled by the server (e.g. buffer overflow).
+	// Client should re-sync via Read API and re-register the watch.
+	WatchEventType_WATCH_EVENT_TYPE_CANCELED WatchEventType = 2
 )
 
 // Enum value maps for WatchEventType.
@@ -105,10 +108,12 @@ var (
 	WatchEventType_name = map[int32]string{
 		0: "WATCH_EVENT_TYPE_PUT",
 		1: "WATCH_EVENT_TYPE_DELETE",
+		2: "WATCH_EVENT_TYPE_CANCELED",
 	}
 	WatchEventType_value = map[string]int32{
-		"WATCH_EVENT_TYPE_PUT":    0,
-		"WATCH_EVENT_TYPE_DELETE": 1,
+		"WATCH_EVENT_TYPE_PUT":      0,
+		"WATCH_EVENT_TYPE_DELETE":   1,
+		"WATCH_EVENT_TYPE_CANCELED": 2,
 	}
 )
 
@@ -593,6 +598,119 @@ func (x *ReadResults) GetResults() []*ClientResult {
 	return nil
 }
 
+// Request to start a server-side membership watch stream.
+type WatchMembershipRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ClientId      uint32                 `protobuf:"varint,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchMembershipRequest) Reset() {
+	*x = WatchMembershipRequest{}
+	mi := &file_proto_client_client_api_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchMembershipRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchMembershipRequest) ProtoMessage() {}
+
+func (x *WatchMembershipRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_client_client_api_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchMembershipRequest.ProtoReflect.Descriptor instead.
+func (*WatchMembershipRequest) Descriptor() ([]byte, []int) {
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *WatchMembershipRequest) GetClientId() uint32 {
+	if x != nil {
+		return x.ClientId
+	}
+	return 0
+}
+
+// Point-in-time snapshot of committed cluster membership.
+//
+// Delivered on every committed ConfChange entry.
+// `committed_index` is strictly monotonically increasing and serves as an
+// idempotency key for schedulers.
+type MembershipSnapshot struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current voting members (Follower / Leader role).
+	Members []uint32 `protobuf:"varint,1,rep,packed,name=members,proto3" json:"members,omitempty"`
+	// Current non-voting learners.
+	Learners []uint32 `protobuf:"varint,2,rep,packed,name=learners,proto3" json:"learners,omitempty"`
+	// Raft log index of the ConfChange entry that produced this snapshot.
+	CommittedIndex uint64 `protobuf:"varint,3,opt,name=committed_index,json=committedIndex,proto3" json:"committed_index,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *MembershipSnapshot) Reset() {
+	*x = MembershipSnapshot{}
+	mi := &file_proto_client_client_api_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MembershipSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MembershipSnapshot) ProtoMessage() {}
+
+func (x *MembershipSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_client_client_api_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MembershipSnapshot.ProtoReflect.Descriptor instead.
+func (*MembershipSnapshot) Descriptor() ([]byte, []int) {
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *MembershipSnapshot) GetMembers() []uint32 {
+	if x != nil {
+		return x.Members
+	}
+	return nil
+}
+
+func (x *MembershipSnapshot) GetLearners() []uint32 {
+	if x != nil {
+		return x.Learners
+	}
+	return nil
+}
+
+func (x *MembershipSnapshot) GetCommittedIndex() uint64 {
+	if x != nil {
+		return x.CommittedIndex
+	}
+	return 0
+}
+
 // Request to watch for changes on a specific key
 //
 // In v1, only exact key matching is supported.
@@ -608,7 +726,7 @@ type WatchRequest struct {
 
 func (x *WatchRequest) Reset() {
 	*x = WatchRequest{}
-	mi := &file_proto_client_client_api_proto_msgTypes[7]
+	mi := &file_proto_client_client_api_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -620,7 +738,7 @@ func (x *WatchRequest) String() string {
 func (*WatchRequest) ProtoMessage() {}
 
 func (x *WatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[7]
+	mi := &file_proto_client_client_api_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -633,7 +751,7 @@ func (x *WatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
 func (*WatchRequest) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{7}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *WatchRequest) GetClientId() uint32 {
@@ -667,7 +785,7 @@ type WatchResponse struct {
 
 func (x *WatchResponse) Reset() {
 	*x = WatchResponse{}
-	mi := &file_proto_client_client_api_proto_msgTypes[8]
+	mi := &file_proto_client_client_api_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -679,7 +797,7 @@ func (x *WatchResponse) String() string {
 func (*WatchResponse) ProtoMessage() {}
 
 func (x *WatchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[8]
+	mi := &file_proto_client_client_api_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -692,7 +810,7 @@ func (x *WatchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchResponse.ProtoReflect.Descriptor instead.
 func (*WatchResponse) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{8}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *WatchResponse) GetKey() []byte {
@@ -736,7 +854,7 @@ type WriteCommand_Insert struct {
 
 func (x *WriteCommand_Insert) Reset() {
 	*x = WriteCommand_Insert{}
-	mi := &file_proto_client_client_api_proto_msgTypes[9]
+	mi := &file_proto_client_client_api_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -748,7 +866,7 @@ func (x *WriteCommand_Insert) String() string {
 func (*WriteCommand_Insert) ProtoMessage() {}
 
 func (x *WriteCommand_Insert) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[9]
+	mi := &file_proto_client_client_api_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -794,7 +912,7 @@ type WriteCommand_Delete struct {
 
 func (x *WriteCommand_Delete) Reset() {
 	*x = WriteCommand_Delete{}
-	mi := &file_proto_client_client_api_proto_msgTypes[10]
+	mi := &file_proto_client_client_api_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -806,7 +924,7 @@ func (x *WriteCommand_Delete) String() string {
 func (*WriteCommand_Delete) ProtoMessage() {}
 
 func (x *WriteCommand_Delete) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[10]
+	mi := &file_proto_client_client_api_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -840,7 +958,7 @@ type WriteCommand_CompareAndSwap struct {
 
 func (x *WriteCommand_CompareAndSwap) Reset() {
 	*x = WriteCommand_CompareAndSwap{}
-	mi := &file_proto_client_client_api_proto_msgTypes[11]
+	mi := &file_proto_client_client_api_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -852,7 +970,7 @@ func (x *WriteCommand_CompareAndSwap) String() string {
 func (*WriteCommand_CompareAndSwap) ProtoMessage() {}
 
 func (x *WriteCommand_CompareAndSwap) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[11]
+	mi := &file_proto_client_client_api_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -930,7 +1048,13 @@ const file_proto_client_client_api_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\"F\n" +
 	"\vReadResults\x127\n" +
-	"\aresults\x18\x01 \x03(\v2\x1d.d_engine.client.ClientResultR\aresults\"=\n" +
+	"\aresults\x18\x01 \x03(\v2\x1d.d_engine.client.ClientResultR\aresults\"5\n" +
+	"\x16WatchMembershipRequest\x12\x1b\n" +
+	"\tclient_id\x18\x01 \x01(\rR\bclientId\"s\n" +
+	"\x12MembershipSnapshot\x12\x18\n" +
+	"\amembers\x18\x01 \x03(\rR\amembers\x12\x1a\n" +
+	"\blearners\x18\x02 \x03(\rR\blearners\x12'\n" +
+	"\x0fcommitted_index\x18\x03 \x01(\x04R\x0ecommittedIndex\"=\n" +
 	"\fWatchRequest\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\rR\bclientId\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\fR\x03key\"\xa8\x01\n" +
@@ -943,14 +1067,16 @@ const file_proto_client_client_api_proto_rawDesc = "" +
 	"\x15ReadConsistencyPolicy\x12&\n" +
 	"\"READ_CONSISTENCY_POLICY_LEASE_READ\x10\x00\x12-\n" +
 	")READ_CONSISTENCY_POLICY_LINEARIZABLE_READ\x10\x01\x120\n" +
-	",READ_CONSISTENCY_POLICY_EVENTUAL_CONSISTENCY\x10\x02*G\n" +
+	",READ_CONSISTENCY_POLICY_EVENTUAL_CONSISTENCY\x10\x02*f\n" +
 	"\x0eWatchEventType\x12\x18\n" +
 	"\x14WATCH_EVENT_TYPE_PUT\x10\x00\x12\x1b\n" +
-	"\x17WATCH_EVENT_TYPE_DELETE\x10\x012\x91\x02\n" +
+	"\x17WATCH_EVENT_TYPE_DELETE\x10\x01\x12\x1d\n" +
+	"\x19WATCH_EVENT_TYPE_CANCELED\x10\x022\xf4\x02\n" +
 	"\x11RaftClientService\x12Y\n" +
 	"\x11HandleClientWrite\x12#.d_engine.client.ClientWriteRequest\x1a\x1f.d_engine.client.ClientResponse\x12W\n" +
 	"\x10HandleClientRead\x12\".d_engine.client.ClientReadRequest\x1a\x1f.d_engine.client.ClientResponse\x12H\n" +
-	"\x05Watch\x12\x1d.d_engine.client.WatchRequest\x1a\x1e.d_engine.client.WatchResponse0\x01B,Z*github.com/deventlab/d-engine/proto/clientb\x06proto3"
+	"\x05Watch\x12\x1d.d_engine.client.WatchRequest\x1a\x1e.d_engine.client.WatchResponse0\x01\x12a\n" +
+	"\x0fWatchMembership\x12'.d_engine.client.WatchMembershipRequest\x1a#.d_engine.client.MembershipSnapshot0\x01B,Z*github.com/deventlab/d-engine/proto/clientb\x06proto3"
 
 var (
 	file_proto_client_client_api_proto_rawDescOnce sync.Once
@@ -965,7 +1091,7 @@ func file_proto_client_client_api_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_client_client_api_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_client_client_api_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_proto_client_client_api_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_proto_client_client_api_proto_goTypes = []any{
 	(ReadConsistencyPolicy)(0),          // 0: d_engine.client.ReadConsistencyPolicy
 	(WatchEventType)(0),                 // 1: d_engine.client.WatchEventType
@@ -976,35 +1102,39 @@ var file_proto_client_client_api_proto_goTypes = []any{
 	(*ClientResponse)(nil),              // 6: d_engine.client.ClientResponse
 	(*ClientResult)(nil),                // 7: d_engine.client.ClientResult
 	(*ReadResults)(nil),                 // 8: d_engine.client.ReadResults
-	(*WatchRequest)(nil),                // 9: d_engine.client.WatchRequest
-	(*WatchResponse)(nil),               // 10: d_engine.client.WatchResponse
-	(*WriteCommand_Insert)(nil),         // 11: d_engine.client.WriteCommand.Insert
-	(*WriteCommand_Delete)(nil),         // 12: d_engine.client.WriteCommand.Delete
-	(*WriteCommand_CompareAndSwap)(nil), // 13: d_engine.client.WriteCommand.CompareAndSwap
-	(error1.ErrorCode)(0),               // 14: d_engine.error.ErrorCode
-	(*error1.ErrorMetadata)(nil),        // 15: d_engine.error.ErrorMetadata
+	(*WatchMembershipRequest)(nil),      // 9: d_engine.client.WatchMembershipRequest
+	(*MembershipSnapshot)(nil),          // 10: d_engine.client.MembershipSnapshot
+	(*WatchRequest)(nil),                // 11: d_engine.client.WatchRequest
+	(*WatchResponse)(nil),               // 12: d_engine.client.WatchResponse
+	(*WriteCommand_Insert)(nil),         // 13: d_engine.client.WriteCommand.Insert
+	(*WriteCommand_Delete)(nil),         // 14: d_engine.client.WriteCommand.Delete
+	(*WriteCommand_CompareAndSwap)(nil), // 15: d_engine.client.WriteCommand.CompareAndSwap
+	(error1.ErrorCode)(0),               // 16: d_engine.error.ErrorCode
+	(*error1.ErrorMetadata)(nil),        // 17: d_engine.error.ErrorMetadata
 }
 var file_proto_client_client_api_proto_depIdxs = []int32{
-	11, // 0: d_engine.client.WriteCommand.insert:type_name -> d_engine.client.WriteCommand.Insert
-	12, // 1: d_engine.client.WriteCommand.delete:type_name -> d_engine.client.WriteCommand.Delete
-	13, // 2: d_engine.client.WriteCommand.compare_and_swap:type_name -> d_engine.client.WriteCommand.CompareAndSwap
+	13, // 0: d_engine.client.WriteCommand.insert:type_name -> d_engine.client.WriteCommand.Insert
+	14, // 1: d_engine.client.WriteCommand.delete:type_name -> d_engine.client.WriteCommand.Delete
+	15, // 2: d_engine.client.WriteCommand.compare_and_swap:type_name -> d_engine.client.WriteCommand.CompareAndSwap
 	2,  // 3: d_engine.client.ClientWriteRequest.command:type_name -> d_engine.client.WriteCommand
 	0,  // 4: d_engine.client.ClientReadRequest.consistency_policy:type_name -> d_engine.client.ReadConsistencyPolicy
-	14, // 5: d_engine.client.ClientResponse.error:type_name -> d_engine.error.ErrorCode
+	16, // 5: d_engine.client.ClientResponse.error:type_name -> d_engine.error.ErrorCode
 	5,  // 6: d_engine.client.ClientResponse.write_result:type_name -> d_engine.client.WriteResult
 	8,  // 7: d_engine.client.ClientResponse.read_data:type_name -> d_engine.client.ReadResults
-	15, // 8: d_engine.client.ClientResponse.metadata:type_name -> d_engine.error.ErrorMetadata
+	17, // 8: d_engine.client.ClientResponse.metadata:type_name -> d_engine.error.ErrorMetadata
 	7,  // 9: d_engine.client.ReadResults.results:type_name -> d_engine.client.ClientResult
 	1,  // 10: d_engine.client.WatchResponse.event_type:type_name -> d_engine.client.WatchEventType
-	14, // 11: d_engine.client.WatchResponse.error:type_name -> d_engine.error.ErrorCode
+	16, // 11: d_engine.client.WatchResponse.error:type_name -> d_engine.error.ErrorCode
 	3,  // 12: d_engine.client.RaftClientService.HandleClientWrite:input_type -> d_engine.client.ClientWriteRequest
 	4,  // 13: d_engine.client.RaftClientService.HandleClientRead:input_type -> d_engine.client.ClientReadRequest
-	9,  // 14: d_engine.client.RaftClientService.Watch:input_type -> d_engine.client.WatchRequest
-	6,  // 15: d_engine.client.RaftClientService.HandleClientWrite:output_type -> d_engine.client.ClientResponse
-	6,  // 16: d_engine.client.RaftClientService.HandleClientRead:output_type -> d_engine.client.ClientResponse
-	10, // 17: d_engine.client.RaftClientService.Watch:output_type -> d_engine.client.WatchResponse
-	15, // [15:18] is the sub-list for method output_type
-	12, // [12:15] is the sub-list for method input_type
+	11, // 14: d_engine.client.RaftClientService.Watch:input_type -> d_engine.client.WatchRequest
+	9,  // 15: d_engine.client.RaftClientService.WatchMembership:input_type -> d_engine.client.WatchMembershipRequest
+	6,  // 16: d_engine.client.RaftClientService.HandleClientWrite:output_type -> d_engine.client.ClientResponse
+	6,  // 17: d_engine.client.RaftClientService.HandleClientRead:output_type -> d_engine.client.ClientResponse
+	12, // 18: d_engine.client.RaftClientService.Watch:output_type -> d_engine.client.WatchResponse
+	10, // 19: d_engine.client.RaftClientService.WatchMembership:output_type -> d_engine.client.MembershipSnapshot
+	16, // [16:20] is the sub-list for method output_type
+	12, // [12:16] is the sub-list for method input_type
 	12, // [12:12] is the sub-list for extension type_name
 	12, // [12:12] is the sub-list for extension extendee
 	0,  // [0:12] is the sub-list for field type_name
@@ -1025,14 +1155,14 @@ func file_proto_client_client_api_proto_init() {
 		(*ClientResponse_WriteResult)(nil),
 		(*ClientResponse_ReadData)(nil),
 	}
-	file_proto_client_client_api_proto_msgTypes[11].OneofWrappers = []any{}
+	file_proto_client_client_api_proto_msgTypes[13].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_client_client_api_proto_rawDesc), len(file_proto_client_client_api_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   12,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
