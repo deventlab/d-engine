@@ -58,6 +58,11 @@ const (
 	ErrorCode_TERM_OUTDATED       ErrorCode = 4007
 	ErrorCode_RETRY_REQUIRED      ErrorCode = 4008
 	// ======================
+	// Watch layer error (5000-5999)
+	// ======================
+	// per-watcher channel full; watcher forcibly canceled, client must re-sync
+	ErrorCode_WATCH_BUFFER_OVERFLOW ErrorCode = 5001
+	// ======================
 	// Unclassified error
 	// ======================
 	ErrorCode_GENERAL       ErrorCode = 8888
@@ -87,6 +92,7 @@ var (
 		4006: "PROPOSE_FAILED",
 		4007: "TERM_OUTDATED",
 		4008: "RETRY_REQUIRED",
+		5001: "WATCH_BUFFER_OVERFLOW",
 		8888: "GENERAL",
 		9999: "UNCATEGORIZED",
 	}
@@ -111,6 +117,7 @@ var (
 		"PROPOSE_FAILED":            4006,
 		"TERM_OUTDATED":             4007,
 		"RETRY_REQUIRED":            4008,
+		"WATCH_BUFFER_OVERFLOW":     5001,
 		"GENERAL":                   8888,
 		"UNCATEGORIZED":             9999,
 	}
@@ -228,7 +235,7 @@ const file_proto_error_proto_rawDesc = "" +
 	"\n" +
 	"_leader_idB\x11\n" +
 	"\x0f_leader_addressB\x10\n" +
-	"\x0e_debug_message*\xd6\x03\n" +
+	"\x0e_debug_message*\xf2\x03\n" +
 	"\tErrorCode\x12\v\n" +
 	"\aSUCCESS\x10\x00\x12\x17\n" +
 	"\x12CONNECTION_TIMEOUT\x10\xe9\a\x12\x14\n" +
@@ -251,7 +258,8 @@ const file_proto_error_proto_rawDesc = "" +
 	"\x13CLUSTER_UNAVAILABLE\x10\xa5\x1f\x12\x13\n" +
 	"\x0ePROPOSE_FAILED\x10\xa6\x1f\x12\x12\n" +
 	"\rTERM_OUTDATED\x10\xa7\x1f\x12\x13\n" +
-	"\x0eRETRY_REQUIRED\x10\xa8\x1f\x12\f\n" +
+	"\x0eRETRY_REQUIRED\x10\xa8\x1f\x12\x1a\n" +
+	"\x15WATCH_BUFFER_OVERFLOW\x10\x89'\x12\f\n" +
 	"\aGENERAL\x10\xb8E\x12\x12\n" +
 	"\rUNCATEGORIZED\x10\x8fNB+Z)github.com/deventlab/d-engine/proto/errorb\x06proto3"
 

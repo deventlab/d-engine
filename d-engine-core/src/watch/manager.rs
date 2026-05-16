@@ -295,7 +295,9 @@ impl WatchDispatcher {
                             buffer_len = watcher.sender.max_capacity() - available,
                             "watcher buffer overflow, sending cancel"
                         );
-                        let _ = watcher.sender.try_send(crate::watch::make_cancel_event(event.key.clone()));
+                        let _ = watcher
+                            .sender
+                            .try_send(crate::watch::make_cancel_event(event.key.clone()));
                     }
                     dead_watchers.push(watcher.id);
                     continue;

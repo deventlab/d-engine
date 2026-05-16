@@ -8,11 +8,6 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **Simplified startup API** (#303): Pass a data directory directly — no config file required for common cases
-  - `EmbeddedEngine::start(data_dir)` replaces the config-file-only constructor
-  - `StandaloneEngine::run(data_dir, shutdown_rx)` for standalone deployments
-  - Config file path still accepted via existing constructors; new API uses sensible defaults
-
 - **Async IO architecture — pipeline replication** (#334, #341, #342, #343, #345, #349, #350, #351):
   The Raft event loop is now fully non-blocking under write load
   - `BufferedRaftLog` runs on a dedicated OS thread — WAL writes never steal tokio worker threads
@@ -35,6 +30,11 @@ All notable changes to this project will be documented in this file.
   - **Experimental**: both paths are supported in v0.2.4; a future release will standardize on one
   - When enabled: data path changes to `db_root_dir/db/` (⚠️ existing `storage/` data not migrated automatically)
 
+- **Simplified startup API** (#303): Pass a data directory directly — no config file required for common cases
+  - `EmbeddedEngine::start(data_dir)` replaces the config-file-only constructor
+  - `StandaloneEngine::run(data_dir, shutdown_rx)` for standalone deployments
+  - Config file path still accepted via existing constructors; new API uses sensible defaults
+
 ### 🟡 Important Fixes
 
 - **fix(crash-safety) #329**: Leader now commits against durable index, not in-memory index
@@ -55,6 +55,12 @@ All notable changes to this project will be documented in this file.
 
 - **fix(snapshot) #290**: Snapshot cooldown reduced from 1 hour to a practical default; adaptive throttling added
   - WAL log compaction now triggers reliably in long-running deployments
+
+- **fix(watch) #294**: Watch buffer overflow now sends a `CANCELED` sentinel instead of silently dropping events
+  - Per-watcher channel capacity is `watcher_buffer_size + 1`; the +1 slot is reserved exclusively for the CANCELED event
+  - Clients receive `event_type = CANCELED` with `error = WATCH_BUFFER_OVERFLOW (5001)` and must re-sync via Read API then re-register
+  - `TrySendError::Closed` (receiver dropped) is now handled separately — silent cleanup, no CANCELED sent
+  - Proto: added `WATCH_EVENT_TYPE_CANCELED = 2` and `ErrorCode::WATCH_BUFFER_OVERFLOW = 5001`
 
 - **fix(cas) #371**: CAS operations in the same `apply_chunk` no longer read stale values
   - Root cause: batch apply used a plain `ReadOptions` snapshot taken before the batch started; concurrent CAS ops targeting the same key within one chunk would overwrite each other

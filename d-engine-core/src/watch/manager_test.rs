@@ -441,8 +441,7 @@ async fn test_normal_events_precede_cancel_in_channel() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut events: Vec<WatchEvent> = Vec::new();
-    while let Ok(Some(ev)) =
-        timeout(Duration::from_millis(50), handle.receiver_mut().recv()).await
+    while let Ok(Some(ev)) = timeout(Duration::from_millis(50), handle.receiver_mut().recv()).await
     {
         events.push(ev);
     }
@@ -456,7 +455,7 @@ async fn test_normal_events_precede_cancel_in_channel() {
     }
     // v4 must NOT appear (watcher was dead when v4 was dispatched)
     assert!(
-        !events.iter().any(|e| e.value == Bytes::from("v4")),
+        !events.iter().any(|e| e.value == "v4"),
         "v4 delivered to dead watcher"
     );
 }
@@ -501,11 +500,7 @@ async fn test_slow_watcher_overflow_does_not_affect_healthy_watcher() {
         broadcast_tx.send(put_event(&key, &format!("v{i}"))).unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         // drain fast so it never overflows
-        let _ = timeout(
-            Duration::from_millis(50),
-            fast.receiver_mut().recv(),
-        )
-        .await;
+        let _ = timeout(Duration::from_millis(50), fast.receiver_mut().recv()).await;
     }
 
     // This event: slow capacity==1 → CANCELED; fast receives normally
@@ -526,7 +521,11 @@ async fn test_slow_watcher_overflow_does_not_affect_healthy_watcher() {
     }
 
     // fast: still alive, registry count == 1
-    assert_eq!(registry.watcher_count(&key), 1, "fast watcher should remain");
+    assert_eq!(
+        registry.watcher_count(&key),
+        1,
+        "fast watcher should remain"
+    );
 
     // Drain the "overflow_trigger" event that fast also received
     let _ = timeout(Duration::from_millis(100), fast.receiver_mut().recv()).await;
