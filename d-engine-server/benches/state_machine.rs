@@ -87,7 +87,7 @@ fn register_watchers(
     let mut handles = Vec::with_capacity(count);
     for i in 0..count {
         let key = format!("{key_prefix}{i}");
-        handles.push(registry.register(key.into()));
+        handles.push(registry.register(key.into()).expect("register watcher"));
     }
     handles
 }
@@ -353,6 +353,7 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
                                 value: insert.value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
                                 error: 0,
+                                revision: 0,
                             };
                             let _ = broadcast_tx.send(event);
                         }
@@ -362,6 +363,7 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
                                 value: bytes::Bytes::new(),
                                 event_type: d_engine_proto::client::WatchEventType::Delete as i32,
                                 error: 0,
+                                revision: 0,
                             };
                             let _ = broadcast_tx.send(event);
                         }
@@ -371,6 +373,7 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
                                 value: cas.new_value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
                                 error: 0,
+                                revision: 0,
                             };
                             let _ = broadcast_tx.send(event);
                         }
@@ -414,6 +417,7 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
                                 value: insert.value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
                                 error: 0,
+                                revision: 0,
                             };
                             let _ = broadcast_tx.send(event);
                         }
@@ -423,6 +427,7 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
                                 value: bytes::Bytes::new(),
                                 event_type: d_engine_proto::client::WatchEventType::Delete as i32,
                                 error: 0,
+                                revision: 0,
                             };
                             let _ = broadcast_tx.send(event);
                         }
@@ -432,6 +437,7 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
                                 value: cas.new_value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
                                 error: 0,
+                                revision: 0,
                             };
                             let _ = broadcast_tx.send(event);
                         }
@@ -475,6 +481,7 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
                                 value: insert.value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
                                 error: 0,
+                                revision: 0,
                             };
                             let _ = broadcast_tx.send(event);
                         }
@@ -484,6 +491,7 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
                                 value: bytes::Bytes::new(),
                                 event_type: d_engine_proto::client::WatchEventType::Delete as i32,
                                 error: 0,
+                                revision: 0,
                             };
                             let _ = broadcast_tx.send(event);
                         }
@@ -493,6 +501,7 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
                                 value: cas.new_value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
                                 error: 0,
+                                revision: 0,
                             };
                             let _ = broadcast_tx.send(event);
                         }
@@ -519,7 +528,7 @@ fn bench_watch_e2e_latency(c: &mut Criterion) {
             let value = Bytes::from("test_value");
 
             // Register a watcher
-            let mut watcher = registry.register(key.clone());
+            let mut watcher = registry.register(key.clone()).expect("register watcher");
 
             // Measure time from broadcast to receive
             let start = tokio::time::Instant::now();
@@ -529,7 +538,8 @@ fn bench_watch_e2e_latency(c: &mut Criterion) {
                 key: key.clone(),
                 value: value.clone(),
                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
-                error: 0, // No error
+                error: 0,
+                revision: 0,
             };
             let _ = broadcast_tx.send(event);
 

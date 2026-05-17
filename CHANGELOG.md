@@ -24,6 +24,15 @@ All notable changes to this project will be documented in this file.
   - Stream terminates with `UNAVAILABLE` on server shutdown — callers reconnect and resubscribe
   - `MembershipSnapshot` carries `members`, `learners`, and `committed_index` (idempotency key for deduplication after reconnect)
 
+- **Watch: prefix watch and watcher limits** (#300):
+  - `watch_prefix(prefix)` API for both embedded and gRPC clients — one watcher covers an entire key namespace (e.g. `/services/payment/`) without registering a per-key watcher
+  - Prefix semantics: prefix must start and end with `/`; matching uses slash-boundary decomposition so `/services/payment/node1` matches `/services/payment/` but not `/services/payment`
+  - `WatchConfig.max_watcher_count` — hard cap on total active watchers (exact + prefix); `register()` / `watch_prefix()` return `LimitExceeded` error once reached (default: effectively unlimited)
+  - `WatchConfig.watcher_buffer_size` default raised from 10 → 256, reducing spurious `CANCELED` events under burst load
+  - Every `WatchEvent` carries `revision: u64` (Raft applied index) — use it to detect missed events after reconnection
+  - Architecture: two separate `DashMap`s (exact and prefix) — O(1) exact lookup, O(depth) prefix dispatch; no linear scan
+  - Proto: added `prefix: bool` to `WatchRequest`; added `revision: uint64` to `WatchResponse`
+
 - **Unified RocksDB option** (#295): opt-in via `storage.unified_db = true`.
   Uses a single RocksDB instance with 4 column families instead of two separate instances.
   - Reduces memory RSS and file descriptor usage

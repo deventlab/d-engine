@@ -13,6 +13,7 @@ use crate::common::start_node;
 use d_engine_client::ClientBuilder;
 use d_engine_core::ClientApi;
 use d_engine_proto::client::WatchResponse;
+use d_engine_proto::error::ErrorCode;
 use d_engine_server::FileStateMachine;
 use d_engine_server::FileStorageEngine;
 use futures::StreamExt;
@@ -346,5 +347,47 @@ async fn test_watch_node_crash_standalone_mode() -> Result<(), Box<dyn std::erro
     // Test passes - cleanup was successful and new watcher works
     test_ctx.shutdown().await?;
 
+    Ok(())
+}
+
+/// #300 / fix: watch_prefix over gRPC must return INVALID_ARGUMENT when the
+/// prefix format is malformed. Exercises the `WatchError::InvalidPrefix` →
+/// `Status::invalid_argument` match arm in grpc_raft_service.rs and the
+/// error path in GrpcClient::watch_prefix.
+#[tokio::test]
+async fn test_grpc_watch_prefix_invalid_format_returns_invalid_argument()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (client, test_ctx, _temp_dir) = setup_standalone_cluster().await?;
+
+    // Missing trailing slash — server must reject with INVALID_ARGUMENT
+    let result = client.watch_prefix(b"/config").await;
+    assert!(
+        result.is_err(),
+        "watch_prefix without trailing slash must fail"
+    );
+    assert_eq!(
+        result.unwrap_err().code(),
+        ErrorCode::InvalidRequest,
+        "server must return INVALID_ARGUMENT for malformed prefix"
+    );
+
+    // Missing leading slash
+    let result2 = client.watch_prefix(b"config/").await;
+    assert!(
+        result2.is_err(),
+        "watch_prefix without leading slash must fail"
+    );
+    assert_eq!(
+        result2.unwrap_err().code(),
+        ErrorCode::InvalidRequest,
+        "server must return INVALID_ARGUMENT for malformed prefix"
+    );
+
+    // A valid prefix must still work
+    let stream = client.watch_prefix(b"/config/").await;
+    assert!(stream.is_ok(), "valid prefix must succeed");
+    drop(stream);
+
+    test_ctx.shutdown().await?;
     Ok(())
 }

@@ -5,8 +5,8 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use d_engine_client::Client;
-use d_engine_client::ClientApi;
+use d_engine::Client;
+use d_engine::ClientApi;
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -75,8 +75,8 @@ async fn main() -> Result<()> {
             instance,
             endpoint,
         } => {
-            // Key format: services/{service_name}/{instance_id}
-            let key = format!("services/{name}/{instance}");
+            // Key format: /services/{service_name}/{instance_id}
+            let key = format!("/services/{name}/{instance}");
 
             client
                 .put(&key, &endpoint)
@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Unregister { name, instance } => {
-            let key = format!("services/{name}/{instance}");
+            let key = format!("/services/{name}/{instance}");
 
             client.delete(&key).await.map_err(|e| anyhow::anyhow!("Delete failed: {e:?}"))?;
 
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
             println!("Workaround: Maintain an index key like 'services/{name}_index'");
 
             // Try to read index if exists
-            let index_key = format!("services/{name}_index");
+            let index_key = format!("/services/{name}_index");
             let result =
                 client.get(&index_key).await.map_err(|e| anyhow::anyhow!("Get failed: {e:?}"))?;
             if let Some(result) = result {

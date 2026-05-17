@@ -111,20 +111,39 @@ Ports are customizable via CLI arguments:
 
 ### Business API
 
-**Write operation:**
+**Writes must go to the leader.** Find it first via the health check endpoints:
 
 ```bash
-curl -X POST http://localhost:8081/kv \
-  -H "Content-Type: application/json" \
-  -d '{"key": "username", "value": "alice"}'
+# Find the leader (health port returns 200 only on the leader node)
+for port in 10001 10002 10003; do
+  code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$port/primary)
+  echo "health:$port → $code"
+done
+# health:10001 → 503
+# health:10002 → 200  ← leader is on business port 8082
+# health:10003 → 503
 ```
 
-**Read operation:**
+**Write operation (to the leader):**
+
+```bash
+curl -X POST http://localhost:8082/kv \
+  -H "Content-Type: application/json" \
+  -d '{"key": "username", "value": "alice"}'
+# Response: {}
+```
+
+Writing to a follower returns `503 Service Unavailable` with `{"error":"not_leader"}`.
+
+**Read operation (any node):**
 
 ```bash
 curl http://localhost:8081/kv/username
 # Response: {"value":"alice"}
 ```
+
+Reads use `get_eventual()` — they serve from the local state machine. A freshly
+replicated write may take a few milliseconds to appear on follower nodes.
 
 ### Health Check API
 
@@ -174,7 +193,8 @@ done
 ### Test Write Operations
 
 ```bash
-# Write to any node (will forward internally if not leader)
+# Must write to leader — follower writes return 503 {"error":"not_leader"}
+# Use GET /primary on port 8091/8092/8093 to find the current leader first.
 curl -X POST http://localhost:8081/kv \
   -H "Content-Type: application/json" \
   -d '{"key": "test", "value": "hello"}'

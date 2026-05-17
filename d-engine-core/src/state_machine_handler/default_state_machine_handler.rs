@@ -658,12 +658,14 @@ where
                         value: insert.value,
                         event_type: WatchEventType::Put as i32,
                         error: 0,
+                        revision: entry.index,
                     }),
                     Some(Operation::Delete(delete)) => Some(WatchResponse {
                         key: delete.key,
                         value: bytes::Bytes::new(),
                         event_type: WatchEventType::Delete as i32,
                         error: 0,
+                        revision: entry.index,
                     }),
                     Some(Operation::CompareAndSwap(cas)) => {
                         // Only broadcast if CAS actually mutated the value.
@@ -674,6 +676,7 @@ where
                                 value: cas.new_value,
                                 event_type: WatchEventType::Put as i32,
                                 error: 0,
+                                revision: entry.index,
                             })
                         } else {
                             None

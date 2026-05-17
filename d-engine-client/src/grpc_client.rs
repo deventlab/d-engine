@@ -221,6 +221,7 @@ impl GrpcClient {
         let request = WatchRequest {
             client_id: client_inner.client_id,
             key: Bytes::copy_from_slice(key.as_ref()),
+            prefix: false,
         };
 
         // Watch can connect to any node (leader or follower)
@@ -233,6 +234,36 @@ impl GrpcClient {
             }
             Err(status) => {
                 error!("Watch request failed: {:?}", status);
+                Err(status.into())
+            }
+        }
+    }
+
+    /// Watch all keys under a path prefix.
+    ///
+    /// `prefix` must start with '/' and end with '/', e.g. `b"/services/"`.
+    /// Returns a stream of events for any key whose path begins with the prefix.
+    pub async fn watch_prefix(
+        &self,
+        prefix: impl AsRef<[u8]>,
+    ) -> ClientApiResult<tonic::Streaming<WatchResponse>> {
+        let client_inner = self.client_inner.load();
+
+        let request = WatchRequest {
+            client_id: client_inner.client_id,
+            key: Bytes::copy_from_slice(prefix.as_ref()),
+            prefix: true,
+        };
+
+        let mut client = self.make_client().await?;
+
+        match client.watch(request).await {
+            Ok(response) => {
+                debug!("Prefix watch stream established");
+                Ok(response.into_inner())
+            }
+            Err(status) => {
+                error!("Prefix watch request failed: {:?}", status);
                 Err(status.into())
             }
         }

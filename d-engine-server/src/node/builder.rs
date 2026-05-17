@@ -351,8 +351,9 @@ where
             let (unregister_tx, unregister_rx) = mpsc::unbounded_channel();
 
             // Create shared registry
-            let registry = Arc::new(WatchRegistry::new(
+            let registry = Arc::new(WatchRegistry::new_with_limits(
                 node_config.raft.watch.watcher_buffer_size,
+                node_config.raft.watch.max_watcher_count,
                 unregister_tx,
             ));
 

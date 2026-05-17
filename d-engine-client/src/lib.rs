@@ -74,6 +74,7 @@ mod utils;
 pub use builder::*;
 pub use config::*;
 pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
+pub use d_engine_proto::error::ErrorCode;
 pub use grpc_client::*;
 pub(crate) use pool::*;
 

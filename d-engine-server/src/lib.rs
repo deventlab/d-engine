@@ -142,6 +142,10 @@ pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
 ///
 /// Implement this trait to create your own storage engine.
 pub use d_engine_core::{StateMachine, StorageEngine};
+/// Error code discriminator returned by [`ClientApiError::code()`].
+/// Use this to pattern-match error categories without inspecting message strings:
+/// `e.code() == ErrorCode::NotLeader`
+pub use d_engine_proto::error::ErrorCode;
 pub use node::Node;
 pub use node::NodeBuilder;
 // Re-export storage implementations
@@ -151,6 +155,16 @@ pub use d_engine_core::ApplyResult;
 // Conditional RocksDB exports
 #[cfg(feature = "rocksdb")]
 pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, RocksDBUnifiedEngine};
+
+// -------------------- Watch API Types --------------------
+/// Watch event types and handles — available when the `watch` feature is enabled.
+///
+/// Use these when implementing embedded watch handlers:
+/// ```rust,ignore
+/// use d_engine::{WatchEventType, WatcherHandle, WatchEvent};
+/// ```
+#[cfg(feature = "watch")]
+pub use d_engine_core::{WatchError, WatchEvent, WatchEventType, WatcherHandle};
 
 // -------------------- Data Types --------------------
 
@@ -182,6 +196,26 @@ mod network;
 mod utils;
 
 // ==================== Test Utilities ====================
+
+/// Standardized test suite for custom [`StateMachine`] implementations.
+///
+/// Enable the `__test_support` feature in your `[dev-dependencies]` to access this module:
+/// ```toml
+/// [dev-dependencies]
+/// d-engine = { version = "...", features = ["server", "__test_support"] }
+/// ```
+#[cfg(feature = "__test_support")]
+pub use d_engine_core::state_machine_test;
+
+/// Standardized test suite for custom [`StorageEngine`] implementations.
+///
+/// Enable the `__test_support` feature in your `[dev-dependencies]` to access this module:
+/// ```toml
+/// [dev-dependencies]
+/// d-engine = { version = "...", features = ["server", "__test_support"] }
+/// ```
+#[cfg(feature = "__test_support")]
+pub use d_engine_core::storage_engine_test;
 
 /// Test utilities for d-engine-server
 ///

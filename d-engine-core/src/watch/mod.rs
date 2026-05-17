@@ -83,10 +83,10 @@
 //! use d_engine_core::watch::WatchConfig;
 //!
 //! let config = WatchConfig {
-//!     enabled: true,
 //!     event_queue_size: 2000,
-//!     watcher_buffer_size: 20,
+//!     watcher_buffer_size: 256,
 //!     enable_metrics: true,
+//!     max_watcher_count: 5000,
 //! };
 //! ```
 //!
@@ -123,6 +123,7 @@ mod manager;
 mod manager_test;
 
 pub use manager::WatchDispatcher;
+pub use manager::WatchError;
 pub use manager::WatchEvent;
 pub use manager::WatchEventType;
 pub use manager::WatchRegistry;
@@ -143,5 +144,6 @@ pub(crate) fn make_cancel_event(key: bytes::Bytes) -> WatchEvent {
         value: bytes::Bytes::new(),
         event_type: WatchEventType::Canceled as i32,
         error: ErrorCode::WatchBufferOverflow as i32,
+        revision: 0,
     }
 }
