@@ -448,10 +448,10 @@ async fn test_watch_membership_zombie_warns_without_removal()
     // AppendEntries being sent to the stopped node 3, which is what feeds the
     // failure counter and eventually fires the "Zombie detected" warning.
     //
-    // Use 20s here instead of ELECTION_TIMEOUT (8s): with election_timeout_max=3000ms,
-    // split-vote livelock between nodes 1 and 2 can produce 3-4 election rounds
-    // (~9-12s worst case) before one node wins a stable majority on slow CI machines.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    // Use 35s here: with election_timeout_max=3000ms, split-vote livelock between
+    // nodes 1 and 2 can produce multiple election rounds (~9-12s typical, up to ~25s
+    // observed on slow CI machines). 35s provides a safe upper bound.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(35);
     loop {
         if engine1.is_leader() || engine2.is_leader() {
             break;

@@ -8,7 +8,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use d_engine::EmbeddedEngine;
+use d_engine::{ClientApiError, EmbeddedEngine};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -198,13 +198,31 @@ async fn start_business_server(
         .expect("Business server failed");
 }
 
+fn is_not_leader(e: &ClientApiError) -> bool {
+    match e {
+        ClientApiError::Network { message, .. } => message.contains("Not leader"),
+        ClientApiError::Business { message, .. } => message.contains("Not leader"),
+        _ => false,
+    }
+}
+
 async fn handle_put(
     State(engine): State<Arc<EmbeddedEngine>>,
     Json(req): Json<PutRequest>,
-) -> StatusCode {
+) -> (StatusCode, Json<serde_json::Value>) {
     match engine.client().put(req.key.into_bytes(), req.value.into_bytes()).await {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({}))),
+        Err(e) if is_not_leader(&e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "not_leader",
+                "hint": "Use GET /primary on the health port to find the leader, then retry the write there."
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e:?}") })),
+        ),
     }
 }
 
