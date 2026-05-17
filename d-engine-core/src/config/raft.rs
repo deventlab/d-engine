@@ -1190,8 +1190,9 @@ fn default_client_compression() -> bool {
 /// ```toml
 /// [raft.watch]
 /// event_queue_size = 10240
-/// watcher_buffer_size = 10
+/// watcher_buffer_size = 256
 /// enable_metrics = false
+/// max_watcher_count = 10000
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WatchConfig {
@@ -1242,6 +1243,16 @@ pub struct WatchConfig {
     /// **Default**: false (minimal overhead in production)
     #[serde(default = "default_enable_watch_metrics")]
     pub enable_metrics: bool,
+
+    /// Hard cap on total active watchers (exact + prefix combined).
+    ///
+    /// `register()` and `register_prefix()` return `WatchError::LimitExceeded`
+    /// once this count is reached.  Leave at the default (effectively unlimited)
+    /// or set to a finite value to prevent runaway watcher growth.
+    ///
+    /// **Default**: i64::MAX (effectively unlimited)
+    #[serde(default = "default_max_watcher_count")]
+    pub max_watcher_count: usize,
 }
 
 impl Default for WatchConfig {
@@ -1250,6 +1261,7 @@ impl Default for WatchConfig {
             event_queue_size: default_event_queue_size(),
             watcher_buffer_size: default_watcher_buffer_size(),
             enable_metrics: default_enable_watch_metrics(),
+            max_watcher_count: default_max_watcher_count(),
         }
     }
 }
@@ -1294,11 +1306,17 @@ const fn default_event_queue_size() -> usize {
 }
 
 const fn default_watcher_buffer_size() -> usize {
-    10
+    256
 }
 
 const fn default_enable_watch_metrics() -> bool {
     false
+}
+
+const fn default_max_watcher_count() -> usize {
+    // i64::MAX — the config crate uses signed 64-bit internally, so usize::MAX overflows it.
+    // This value is effectively unlimited for any realistic deployment.
+    9_223_372_036_854_775_807
 }
 
 /// Performance metrics configuration

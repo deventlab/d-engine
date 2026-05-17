@@ -1594,12 +1594,14 @@ mod watch_tests {
                 value: Bytes::from("owner-a"),
                 event_type: WatchEventType::Put as i32,
                 error: 0,
+                revision: 0,
             },
             WatchResponse {
                 key: Bytes::from("lock"),
                 value: Bytes::new(),
                 event_type: WatchEventType::Delete as i32,
                 error: 0,
+                revision: 0,
             },
         ];
 

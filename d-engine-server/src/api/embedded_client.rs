@@ -470,7 +470,34 @@ impl EmbeddedClient {
         })?;
 
         let key_bytes = Bytes::copy_from_slice(key.as_ref());
-        Ok(registry.register(key_bytes))
+        registry.register(key_bytes).map_err(|e| ClientApiError::Business {
+            code: ErrorCode::Uncategorized,
+            message: e.to_string(),
+            required_action: None,
+        })
+    }
+
+    /// Register a prefix watcher — notified on every key under the given path prefix.
+    ///
+    /// `prefix` must start with '/' and end with '/'.  E.g. `b"/services/"` watches
+    /// all keys whose path begins with `/services/`.
+    #[cfg(feature = "watch")]
+    pub fn watch_prefix(
+        &self,
+        prefix: impl AsRef<[u8]>,
+    ) -> ClientApiResult<d_engine_core::watch::WatcherHandle> {
+        let registry = self.watch_registry.as_ref().ok_or_else(|| ClientApiError::Business {
+            code: ErrorCode::Uncategorized,
+            message: "Watch feature disabled (WatchRegistry not initialized)".to_string(),
+            required_action: None,
+        })?;
+
+        let prefix_bytes = Bytes::copy_from_slice(prefix.as_ref());
+        registry.register_prefix(prefix_bytes).map_err(|e| ClientApiError::Business {
+            code: ErrorCode::Uncategorized,
+            message: e.to_string(),
+            required_action: None,
+        })
     }
 
     /// Internal helper: Get cluster membership via ClusterConf event

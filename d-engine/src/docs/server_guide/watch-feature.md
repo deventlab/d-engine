@@ -11,8 +11,9 @@ Edit `config/base/raft.toml`:
 ```toml
 [raft.watch]
 event_queue_size = 10240      # Global broadcast channel buffer
-watcher_buffer_size = 10      # Per-watcher buffer
+watcher_buffer_size = 256     # Per-watcher buffer (raised from 10 in v0.2.4)
 enable_metrics = false        # Detailed logging (default: false)
+max_watcher_count = 10000     # Hard cap on total active watchers (optional)
 ```
 
 > **Note**: Watch feature is controlled by the `watch` feature flag in `Cargo.toml` at compile time. If compiled with the feature, it's always enabled.
@@ -34,18 +35,26 @@ let client = Client::builder(vec![
 .build()
 .await?;
 
-// Watch connects to any available node
-let mut stream = client.watch("my_key").await?;
+// Exact-key watch — reacts to changes on a single key
+let mut stream = client.watch("/config/timeout").await?;
 
-// Receive events
 while let Some(event) = stream.next().await {
     match event {
         Ok(event) => {
-            println!("Event: {:?} Key: {:?} Value: {:?}",
-                event.event_type, event.key, event.value);
+            println!("revision={} type={:?} key={:?} value={:?}",
+                event.revision, event.event_type, event.key, event.value);
         }
         Err(e) => eprintln!("Watch error: {:?}", e),
     }
+}
+
+// Prefix watch — reacts to any key under a namespace
+// prefix must start and end with '/'
+let mut stream = client.watch_prefix("/services/payment/").await?;
+
+while let Some(event) = stream.next().await {
+    // event.key is the specific child key that changed, e.g. "/services/payment/node1"
+    // event.revision is the Raft applied index — use it to detect gaps on reconnect
 }
 ```
 
@@ -71,6 +80,74 @@ tokio::spawn(async move {
 
 // Or use into_receiver() for long-lived streams (disables auto-cleanup)
 let (id, key, receiver) = watcher.into_receiver();
+
+// Prefix watch (embedded) — same API as exact-key, but registers on a namespace
+let prefix_watcher = engine.client().watch_prefix(b"/services/payment/")?;
+let (_, _, mut prefix_rx) = prefix_watcher.into_receiver();
+tokio::spawn(async move {
+    while let Some(event) = prefix_rx.recv().await {
+        // event.key is the specific child key that changed
+        // event.revision is the Raft applied index
+        println!("child key changed: {:?} revision={}", event.key, event.revision);
+    }
+});
+```
+
+## Prefix Watch
+
+Prefix watch fires for every key whose path begins with a given prefix.
+The prefix must start and end with `/`, e.g. `/services/payment/`.
+
+### Slash-boundary semantics
+
+```text
+prefix = "/services/payment/"
+
+FIRES for:
+  /services/payment/node1      ✅ child key
+  /services/payment/node2      ✅ child key
+  /services/payment/node1/sub  ✅ deeper child
+
+DOES NOT fire for:
+  /services/payment            ❌ missing trailing slash - exact key, not a child
+  /services/                   ❌ different prefix level
+  /services/paymentextra/node  ❌ different namespace
+```
+
+### Reconnection pattern
+
+On disconnect or `CANCELED` (buffer overflow), re-sync current state before re-watching:
+
+```rust,ignore
+loop {
+    // 1. Read current namespace state (scan_prefix coming in ticket #301)
+    //    For now: read known keys individually or accept a brief gap
+    let mut watcher = client.watch_prefix("/services/payment/").await?;
+
+    while let Some(event) = watcher.next().await {
+        match event {
+            Ok(e) if e.event_type == WatchEventType::Canceled as i32 => {
+                // Buffer overflow — events were dropped. Re-sync and reconnect.
+                resync_from_read_api().await;
+                break;
+            }
+            Ok(e) => apply_to_registry(e),
+            Err(_) => break,  // network error — reconnect
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+}
+```
+
+### Revision field
+
+Every `WatchEvent` carries `revision: u64` — the Raft applied index when the write was committed.
+Use it to detect gaps after reconnection:
+
+```rust,ignore
+let last_revision = event.revision;
+// After reconnect: if new events arrive with revision > last_revision + 1,
+// events were dropped — trigger a full re-sync.
 ```
 
 ## Configuration
@@ -89,13 +166,19 @@ let (id, key, receiver) = watcher.into_receiver();
 ### `watcher_buffer_size`
 
 - **Type**: usize
-- **Default**: `10`
+- **Default**: `256` (raised from 10 in v0.2.4 — reduces spurious CANCELED events under burst load)
 - **Description**: Per-watcher channel buffer. Each watcher gets its own mpsc channel.
-- **Memory**: ~240 bytes per slot per watcher (10 slots × 100 watchers ≈ 240KB)
+- **Memory**: ~240 bytes per slot per watcher (256 slots × 100 watchers ≈ 6MB)
 - **Tuning**:
-  - Fast consumers (< 1ms): 5-10
-  - Normal consumers (1-10ms): 10-20
-  - Slow consumers (> 10ms): 20-50
+  - Fast consumers (< 1ms): 64-256
+  - Normal consumers (1-10ms): 256-512
+  - Slow consumers (> 10ms): 512-1024
+
+### `max_watcher_count`
+
+- **Type**: usize
+- **Default**: `i64::MAX` (effectively unlimited)
+- **Description**: Hard cap on total active watchers (exact + prefix combined). `register()` and `watch_prefix()` return an error once this limit is reached. Set to a finite value to prevent runaway watcher growth in multi-tenant deployments.
 
 ### `enable_metrics`
 
@@ -119,11 +202,13 @@ let (id, key, receiver) = watcher.into_receiver();
 - **Cleanup**: Watcher is automatically unregistered when handle is dropped
 - **No History**: Watch only receives future events (not historical changes)
 
-### Limitations (v1)
+### Limitations
 
-- **Exact Key Match Only**: Prefix/range watch not supported
-- **No Persistence**: Watchers lost on server restart
-- **No Replay**: Cannot receive historical events
+- **No Persistence**: Watchers lost on server restart — re-register on reconnect
+- **No Replay**: Watch delivers future events only; use the Read API to re-sync current state after reconnect
+- **Prefix format**: Prefix must start and end with `/` — arbitrary byte-range watch is not supported
+- **No prev_kv**: Events do not include the previous value (planned for a future release)
+- **No heartbeat**: The stream is silent when no events occur — implement an application-level keepalive if needed (planned for a future release)
 
 ## Performance
 
@@ -468,7 +553,7 @@ while let Some(event) = stream.next().await {
 
 ```text
 ┌─────────────┐
-│ StateMachine│
+│ StateMachine│  revision = Raft applied index
 │  apply()    │
 └──────┬──────┘
        │ broadcast::send (fire-and-forget, <10ns)
@@ -481,13 +566,16 @@ while let Some(event) = stream.next().await {
 └──────┬──────────────────┘
        │ subscribe
        ▼
-┌─────────────────────────┐
-│  WatchDispatcher        │
-│  (tokio task)           │
-│  - Recv from broadcast  │
-│  - Match key in DashMap │
-│  - Send to mpsc         │
-└──────┬──────────────────┘
+┌──────────────────────────────────────────────┐
+│  WatchDispatcher  (single tokio task)        │
+│                                              │
+│  1. exact  DashMap<key, Vec<Watcher>>        │
+│     O(1) lookup per event                   │
+│                                              │
+│  2. prefix DashMap<prefix, Vec<Watcher>>     │
+│     prefix_segments(key) → O(depth) lookups │
+│     depth = number of '/' in key            │
+└──────┬───────────────────────────────────────┘
        │
        ├─► Per-Watcher mpsc Channel ──► Embedded Client (Rust struct)
        │
@@ -497,8 +585,9 @@ while let Some(event) = stream.next().await {
 **Key Design Points**:
 
 - **StateMachine Decoupling**: Broadcast is fire-and-forget, never blocks apply
-- **Unified Path**: Embedded and Standalone share same WatchRegistry/Dispatcher
-- **Lock-Free**: DashMap for concurrent registration, no global mutex
+- **Two DashMaps**: Exact and prefix watchers are stored separately for O(1) exact lookup and O(depth) prefix dispatch — no linear scan over all registered prefixes
+- **Unified Path**: Embedded and Standalone share the same WatchRegistry/Dispatcher
+- **Lock-Free**: DashMap sharding, no global mutex
 
 ## See Also
 

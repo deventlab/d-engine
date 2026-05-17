@@ -2,19 +2,21 @@
 //!
 //! Demonstrates using d-engine in embedded mode for service discovery.
 //! Features:
-//! - In-process Watch API (zero network overhead)
-//! - EmbeddedClient (zero serialization overhead)
+//! - Exact-key Watch: react to changes on a single specific key
+//! - Prefix Watch: maintain a live registry of all nodes in a service namespace
+//! - In-process Watch API (zero network overhead, zero serialization overhead)
 //! - Automatic lifecycle management
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use d_engine::EmbeddedEngine;
 use d_engine_core::watch::WatchEventType;
-use std::error::Error;
-use std::time::Duration;
 use tokio::signal;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize logging
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -24,120 +26,177 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting embedded d-engine for service discovery...\n");
 
-    // Start embedded engine with explicit config file
-    // This automatically handles node startup, storage creation, and background tasks
     let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
 
-    // Wait for leader election (single-node cluster elects itself immediately)
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;
     println!(
-        "✓ Cluster is ready: leader {} (term {})",
+        "✓ Cluster ready: leader {} (term {})\n",
         leader.leader_id, leader.term
     );
 
-    // Get local client (zero-overhead)
     let client = engine.client();
 
-    // --- DEMO: In-process Watch ---
+    // -----------------------------------------------------------------------
+    // DEMO 1: Exact-key watch
+    //
+    // Use case: a sidecar process watching its own config key.
+    // One watcher, one key, reacts to PUT and DELETE on that specific key.
+    // -----------------------------------------------------------------------
 
-    let service_key = "services/payment-service/node1";
-    println!("\n=== Starting In-process Watcher ===");
-    println!("Watching key: {service_key}");
+    let config_key = b"/config/payment-service/timeout";
+    println!("=== Demo 1: Exact-key Watch ===");
+    println!("Key: {}", String::from_utf8_lossy(config_key));
 
-    // Register watcher directly on the engine
-    let watcher = engine.client().watch(service_key)?;
+    let exact_watcher = engine.client().watch(config_key)?;
+    let (_, _, mut exact_rx) = exact_watcher.into_receiver();
 
-    // Spawn a background task to process watch events
-    // This simulates the "Watcher" component running inside the same process
     tokio::spawn(async move {
-        // Get the event receiver from the handle
-        let (_, _, mut receiver) = watcher.into_receiver();
-
-        while let Some(event) = receiver.recv().await {
-            let value = String::from_utf8_lossy(&event.value);
+        while let Some(event) = exact_rx.recv().await {
+            let key = String::from_utf8_lossy(&event.key);
             match event.event_type {
                 e if e == WatchEventType::Put as i32 => {
+                    let value = String::from_utf8_lossy(&event.value);
                     println!(
-                        "\n[WATCHER] Service Updated: {} -> {}",
-                        String::from_utf8_lossy(&event.key),
-                        value
+                        "[exact-watch] config changed: {key} = {value}  (revision={})",
+                        event.revision
                     );
                 }
                 e if e == WatchEventType::Delete as i32 => {
                     println!(
-                        "\n[WATCHER] Service Removed: {}",
-                        String::from_utf8_lossy(&event.key)
+                        "[exact-watch] config deleted: {key}  (revision={})",
+                        event.revision
                     );
                 }
-                _ => {
-                    eprintln!("[WATCHER] Unknown event type: {}", event.event_type);
-                }
+                _ => {}
             }
         }
     });
 
-    // --- DEMO: Service Registration (Write) ---
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
-    println!("\n=== Registering Service (Write) ===");
-    let endpoint = "10.0.0.5:8080";
-    println!("Registering: {service_key} -> {endpoint}");
+    client.put(config_key, b"30s").await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Perform local write (direct to Raft core)
-    client.put(service_key, endpoint).await?;
+    client.put(config_key, b"60s").await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Verify write with linearizable read (guarantees we see the latest write)
-    match client.get_linearizable(service_key).await? {
-        Some(value) => {
-            let stored = String::from_utf8_lossy(&value);
-            println!("✓ Verified: {service_key} -> {stored}");
-            assert_eq!(stored, endpoint, "Read value must match written value");
+    // -----------------------------------------------------------------------
+    // DEMO 2: Prefix watch — live load-balancer registry
+    //
+    // Use case: an API Gateway needs a live view of all payment-service nodes.
+    // When any node registers, updates its endpoint, or deregisters, the
+    // gateway's in-memory routing table updates instantly — no polling.
+    //
+    // One prefix watcher on "/services/payment/" replaces N per-node watchers.
+    // The registry is a shared HashMap updated by the background task and read
+    // by the main routing loop.
+    // -----------------------------------------------------------------------
+
+    let service_prefix = b"/services/payment/";
+    println!("\n=== Demo 2: Prefix Watch — Live Load-Balancer Registry ===");
+    println!("Namespace: {}", String::from_utf8_lossy(service_prefix));
+
+    // Shared registry: key → endpoint, readable from any thread
+    let registry: Arc<Mutex<HashMap<Vec<u8>, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let registry_bg = Arc::clone(&registry);
+
+    let prefix_watcher = engine.client().watch_prefix(service_prefix)?;
+    let (_, _, mut prefix_rx) = prefix_watcher.into_receiver();
+
+    tokio::spawn(async move {
+        while let Some(event) = prefix_rx.recv().await {
+            let key_str = String::from_utf8_lossy(&event.key).to_string();
+            let mut reg = registry_bg.lock().unwrap();
+
+            match event.event_type {
+                e if e == WatchEventType::Put as i32 => {
+                    let value = String::from_utf8_lossy(&event.value).to_string();
+                    println!(
+                        "[prefix-watch] node up:   {key_str} → {value}  (revision={})",
+                        event.revision
+                    );
+                    reg.insert(event.key.to_vec(), value);
+                }
+                e if e == WatchEventType::Delete as i32 => {
+                    println!(
+                        "[prefix-watch] node down: {key_str}  (revision={})",
+                        event.revision
+                    );
+                    reg.remove(event.key.as_ref());
+                }
+                e if e == WatchEventType::Canceled as i32 => {
+                    // Buffer overflow: registry may be stale.
+                    // Production code: re-scan the prefix then re-watch (ticket #301).
+                    println!(
+                        "[prefix-watch] CANCELED — buffer overflow on {key_str}; registry may be stale"
+                    );
+                    reg.clear();
+                }
+                _ => {}
+            }
+
+            // Print current routing table after every change
+            print_registry(&reg);
         }
-        None => {
-            panic!("❌ BUG: get_linearizable returned None immediately after PUT!");
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Simulate three nodes coming online
+    println!("\n--- Three nodes registering ---");
+    client
+        .put(b"/services/payment/node1", b"10.0.0.1:8080")
+        .await?;
+    client
+        .put(b"/services/payment/node2", b"10.0.0.2:8080")
+        .await?;
+    client
+        .put(b"/services/payment/node3", b"10.0.0.3:8080")
+        .await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Simulate node2 updating its endpoint (rolling restart)
+    println!("\n--- node2 rolling restart: endpoint changes ---");
+    client
+        .put(b"/services/payment/node2", b"10.0.0.2:9090")
+        .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Simulate node1 crashing (TTL expiry or explicit deregister)
+    println!("\n--- node1 deregisters (crash / graceful shutdown) ---");
+    client.delete(b"/services/payment/node1").await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Show final registry state via a direct read (what routing would use)
+    {
+        let reg = registry.lock().unwrap();
+        println!("\n✓ Final routing table ({} nodes):", reg.len());
+        let mut entries: Vec<_> = reg.iter().collect();
+        entries.sort_by_key(|(k, _)| (*k).clone());
+        for (k, v) in entries {
+            println!("    {} → {}", String::from_utf8_lossy(k), v);
         }
     }
 
-    // Give time for watcher to print
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // --- DEMO: Service Update ---
-
-    println!("\n=== Updating Service ===");
-    let new_endpoint = "10.0.0.5:9090";
-    println!("Updating: {service_key} -> {new_endpoint}");
-    client.put(service_key, new_endpoint).await?;
-
-    // Verify update with linearizable read
-    match client.get_linearizable(service_key).await? {
-        Some(value) => {
-            let stored = String::from_utf8_lossy(&value);
-            println!("✓ Verified: {service_key} -> {stored}");
-            assert_eq!(stored, new_endpoint, "Read value must match updated value");
-        }
-        None => {
-            panic!("❌ BUG: get_linearizable returned None immediately after UPDATE!");
-        }
-    }
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // --- DEMO: Service Unregistration ---
-
-    println!("\n=== Unregistering Service ===");
-    client.delete(service_key).await?;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    println!("\n=== Demo Complete ===");
-    println!("Press Ctrl+C to exit...");
-
-    // Wait for shutdown signal
+    println!("\n=== Demo complete. Press Ctrl+C to exit. ===");
     signal::ctrl_c().await?;
 
-    // Graceful shutdown
     println!("\nShutting down...");
     engine.stop().await?;
     println!("Done");
 
     Ok(())
+}
+
+fn print_registry(reg: &HashMap<Vec<u8>, String>) {
+    if reg.is_empty() {
+        println!("  routing table: (empty)");
+    } else {
+        println!("  routing table ({} nodes):", reg.len());
+        let mut entries: Vec<_> = reg.iter().collect();
+        entries.sort_by_key(|(k, _)| (*k).clone());
+        for (k, v) in entries {
+            println!("    {} → {}", String::from_utf8_lossy(k), v);
+        }
+    }
 }

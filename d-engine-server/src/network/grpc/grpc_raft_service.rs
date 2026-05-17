@@ -486,14 +486,22 @@ where
             Status::unavailable("Watch feature is disabled in server configuration")
         })?;
 
+        let is_prefix = watch_request.prefix;
         info!(
             node_id = self.node_id,
             key = ?key,
+            is_prefix,
             "Registering watch for key"
         );
 
-        // Register watcher and get receiver
-        let handle = registry.register(key);
+        // Register watcher (exact or prefix) and get receiver
+        let handle = if is_prefix {
+            registry
+                .register_prefix(key)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?
+        } else {
+            registry.register(key).map_err(|e| Status::resource_exhausted(e.to_string()))?
+        };
         let (_watcher_id, _key, receiver) = handle.into_receiver();
 
         // Convert mpsc::Receiver -> Boxed Stream with sentinel error on close

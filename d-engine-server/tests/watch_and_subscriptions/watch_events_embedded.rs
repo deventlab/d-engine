@@ -419,3 +419,195 @@ watcher_buffer_size = 10
 
     Ok(())
 }
+
+// ==================== #300: Prefix watch integration tests ====================
+
+/// #300: Prefix watcher must fire for every child key under the prefix, regardless
+/// of which specific child key is written.  Clients use this to watch an entire
+/// namespace (e.g. "/services/") without registering per-key watchers.
+#[tokio::test]
+async fn test_embedded_prefix_watch_receives_child_key_events()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (engine, _temp_dir) = setup_engine().await?;
+
+    let mut watcher = engine.client().watch_prefix(b"/config/")?;
+
+    let handle = tokio::spawn(async move {
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            if let Some(event) = watcher.receiver_mut().recv().await {
+                events.push(event);
+            }
+        }
+        events
+    });
+
+    sleep(Duration::from_millis(50)).await;
+
+    engine.client().put(b"/config/host", b"localhost").await?;
+    engine.client().put(b"/config/port", b"8080").await?;
+
+    let events = tokio::time::timeout(Duration::from_secs(5), handle).await??;
+    assert_eq!(
+        events.len(),
+        2,
+        "prefix watcher must receive both child key events"
+    );
+
+    let keys: Vec<&[u8]> = events.iter().map(|e| e.key.as_ref()).collect();
+    assert!(
+        keys.contains(&b"/config/host".as_ref()),
+        "must see /config/host"
+    );
+    assert!(
+        keys.contains(&b"/config/port".as_ref()),
+        "must see /config/port"
+    );
+
+    engine.stop().await?;
+    Ok(())
+}
+
+/// #300: A key that shares the prefix string but is not a child (e.g. "/config" with no
+/// trailing slash) must NOT be delivered to a "/config/" prefix watcher.  The slash
+/// boundary is the contract boundary for namespace isolation.
+#[tokio::test]
+async fn test_embedded_prefix_watch_does_not_fire_for_parent_key()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (engine, _temp_dir) = setup_engine().await?;
+
+    let mut prefix_watcher = engine.client().watch_prefix(b"/config/")?;
+    let mut exact_watcher = engine.client().watch(b"/config")?;
+
+    sleep(Duration::from_millis(50)).await;
+
+    engine.client().put(b"/config", b"v").await?;
+
+    // Exact watcher must fire
+    let exact_event =
+        tokio::time::timeout(Duration::from_secs(3), exact_watcher.receiver_mut().recv()).await?;
+    assert!(exact_event.is_some(), "exact watcher must fire for /config");
+
+    // Prefix watcher must NOT fire within a short window
+    let no_event = tokio::time::timeout(
+        Duration::from_millis(200),
+        prefix_watcher.receiver_mut().recv(),
+    )
+    .await;
+    assert!(
+        no_event.is_err(),
+        "prefix watcher /config/ must not fire for key /config (no trailing slash)"
+    );
+
+    engine.stop().await?;
+    Ok(())
+}
+
+/// #300: Root prefix "/" must match every key written (since all paths start with "/").
+/// Useful for administrative observers that need a full-namespace view.
+#[tokio::test]
+async fn test_embedded_root_prefix_watch_receives_all_keys()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (engine, _temp_dir) = setup_engine().await?;
+
+    let mut watcher = engine.client().watch_prefix(b"/")?;
+
+    let handle = tokio::spawn(async move {
+        let mut events = Vec::new();
+        for _ in 0..3 {
+            if let Some(event) = watcher.receiver_mut().recv().await {
+                events.push(event);
+            }
+        }
+        events
+    });
+
+    sleep(Duration::from_millis(50)).await;
+
+    engine.client().put(b"/a", b"1").await?;
+    engine.client().put(b"/b/c", b"2").await?;
+    engine.client().put(b"/x/y/z", b"3").await?;
+
+    let events = tokio::time::timeout(Duration::from_secs(5), handle).await??;
+    assert_eq!(
+        events.len(),
+        3,
+        "root prefix watcher must see all three writes"
+    );
+
+    engine.stop().await?;
+    Ok(())
+}
+
+/// #300: `revision` in each WatchEvent must be a positive Raft applied index —
+/// it increases monotonically with each committed write.  Clients depend on this
+/// to detect gaps and decide whether to re-sync.
+#[tokio::test]
+async fn test_embedded_watch_event_revision_is_positive_and_increases()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (engine, _temp_dir) = setup_engine().await?;
+
+    let mut watcher = engine.client().watch(b"/rev-test")?;
+
+    let handle = tokio::spawn(async move {
+        let mut revisions = Vec::new();
+        for _ in 0..2 {
+            if let Some(event) = watcher.receiver_mut().recv().await {
+                revisions.push(event.revision);
+            }
+        }
+        revisions
+    });
+
+    sleep(Duration::from_millis(50)).await;
+
+    engine.client().put(b"/rev-test", b"first").await?;
+    engine.client().put(b"/rev-test", b"second").await?;
+
+    let revisions = tokio::time::timeout(Duration::from_secs(5), handle).await??;
+    assert_eq!(revisions.len(), 2);
+    assert!(
+        revisions[0] > 0,
+        "revision must be a positive Raft index, got 0"
+    );
+    assert!(
+        revisions[1] > revisions[0],
+        "revision must increase monotonically: {} -> {}",
+        revisions[0],
+        revisions[1]
+    );
+
+    engine.stop().await?;
+    Ok(())
+}
+
+/// #300: Prefix watcher handle must be automatically cleaned up when dropped, just
+/// like exact-key watchers.  No zombie entries left in the registry.
+#[tokio::test]
+async fn test_embedded_prefix_watch_handle_drop_cleanup() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (engine, _temp_dir) = setup_engine().await?;
+
+    {
+        let _watcher = engine.client().watch_prefix(b"/services/")?;
+    } // ← drop triggers unregister
+
+    sleep(Duration::from_millis(100)).await;
+
+    // After drop, a fresh registration must receive events normally.
+    let mut fresh = engine.client().watch_prefix(b"/services/")?;
+    let handle = tokio::spawn(async move { fresh.receiver_mut().recv().await });
+
+    sleep(Duration::from_millis(50)).await;
+
+    engine.client().put(b"/services/api", b"running").await?;
+
+    let event = tokio::time::timeout(Duration::from_secs(3), handle).await??;
+    assert!(
+        event.is_some(),
+        "fresh prefix watcher must receive event after stale handle dropped"
+    );
+
+    engine.stop().await?;
+    Ok(())
+}

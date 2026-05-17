@@ -134,15 +134,19 @@ enum WatchEventType {
   WATCH_EVENT_TYPE_CANCELED = 2;
 }
 
-// Request to watch for changes on a specific key
-//
-// In v1, only exact key matching is supported.
-// Prefix watching may be added in future versions.
+// Request to watch for changes on a key or key prefix.
 message WatchRequest {
   uint32 client_id = 1;
 
-  // Exact key to watch for changes
+  // Key to watch.
+  // prefix=false: exact key match.
+  // prefix=true:  prefix match — key must start with "/" and end with "/".
+  //               e.g. "/config/" watches all keys under /config/.
   bytes key = 2;
+
+  // When true, key is treated as a path prefix (must end with "/").
+  // Default false preserves backwards-compatible exact-match behaviour.
+  bool prefix = 3;
 }
 
 // Response containing a watch event notification
@@ -158,6 +162,11 @@ message WatchResponse {
 
   // Error information if watch failed
   d_engine.error.ErrorCode error = 4;
+
+  // Raft applied index at the time this event was produced.
+  // Monotonically increasing. Clients use this as an anchor after receiving
+  // CANCELED: re-read state, then re-register watching from revision+1.
+  uint64 revision = 5;
 }
 
 service RaftClientService {

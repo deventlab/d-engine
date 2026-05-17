@@ -143,18 +143,22 @@ pub struct MembershipSnapshot {
     #[prost(uint64, tag = "3")]
     pub committed_index: u64,
 }
-/// Request to watch for changes on a specific key
-///
-/// In v1, only exact key matching is supported.
-/// Prefix watching may be added in future versions.
+/// Request to watch for changes on a key or key prefix.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WatchRequest {
     #[prost(uint32, tag = "1")]
     pub client_id: u32,
-    /// Exact key to watch for changes
+    /// Key to watch.
+    /// prefix=false: exact key match.
+    /// prefix=true:  prefix match — key must start with "/" and end with "/".
+    ///                e.g. "/config/" watches all keys under /config/.
     #[prost(bytes = "bytes", tag = "2")]
     pub key: ::prost::bytes::Bytes,
+    /// When true, key is treated as a path prefix (must end with "/").
+    /// Default false preserves backwards-compatible exact-match behaviour.
+    #[prost(bool, tag = "3")]
+    pub prefix: bool,
 }
 /// Response containing a watch event notification
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -172,6 +176,11 @@ pub struct WatchResponse {
     /// Error information if watch failed
     #[prost(enumeration = "super::error::ErrorCode", tag = "4")]
     pub error: i32,
+    /// Raft applied index at the time this event was produced.
+    /// Monotonically increasing. Clients use this as an anchor after receiving
+    /// CANCELED: re-read state, then re-register watching from revision+1.
+    #[prost(uint64, tag = "5")]
+    pub revision: u64,
 }
 /// Read consistency policy for controlling read operation guarantees
 ///
