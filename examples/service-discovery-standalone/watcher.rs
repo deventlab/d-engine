@@ -172,8 +172,13 @@ async fn run_prefix_watch(
         while let Some(event_result) = stream.next().await {
             match event_result {
                 Ok(response) => {
-                    apply_event_to_registry(&response, &mut registry);
+                    let canceled = apply_event_to_registry(&response, &mut registry);
                     print_registry(&registry);
+                    if canceled {
+                        // CANCELED sentinel received: do not wait for server to close the stream.
+                        // Break immediately so the outer loop reconnects deterministically.
+                        break;
+                    }
                 }
                 Err(e) => {
                     eprintln!("[stream error] {e:?} — reconnecting in 1s");
@@ -188,10 +193,11 @@ async fn run_prefix_watch(
     }
 }
 
+/// Returns `true` if the event was `CANCELED` (caller should break and reconnect).
 fn apply_event_to_registry(
     response: &WatchResponse,
     registry: &mut HashMap<Vec<u8>, String>,
-) {
+) -> bool {
     let key = response.key.to_vec();
     let key_str = String::from_utf8_lossy(&response.key);
     let event_type = WatchEventType::try_from(response.event_type).ok();
@@ -204,22 +210,26 @@ fn apply_event_to_registry(
                 response.revision
             );
             registry.insert(key, value);
+            false
         }
         Some(WatchEventType::Delete) => {
             println!("[DELETE] {key_str}  (revision={})", response.revision);
             registry.remove(&key);
+            false
         }
         Some(WatchEventType::Canceled) => {
             // Buffer overflow: missed events after this revision.
-            // Break → reconnect → re-sync.
+            // Return true → caller breaks inner loop → reconnects.
             println!(
                 "[CANCELED] buffer overflow — missed events after revision {}; reconnecting",
                 response.revision
             );
             registry.clear();
+            true
         }
         None => {
             println!("[UNKNOWN] {key_str} (event_type={})", response.event_type);
+            false
         }
     }
 }

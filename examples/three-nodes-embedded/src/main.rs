@@ -221,7 +221,7 @@ async fn handle_put(
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("{e:?}") })),
+            Json(serde_json::json!({ "error": format!("{e}") })),
         ),
     }
 }

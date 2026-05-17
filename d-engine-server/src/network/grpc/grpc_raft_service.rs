@@ -12,6 +12,8 @@ use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
 use d_engine_core::StreamResponseSender;
 use d_engine_core::TypeConfig;
+#[cfg(feature = "watch")]
+use d_engine_core::WatchError;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
@@ -496,9 +498,10 @@ where
 
         // Register watcher (exact or prefix) and get receiver
         let handle = if is_prefix {
-            registry
-                .register_prefix(key)
-                .map_err(|e| Status::invalid_argument(e.to_string()))?
+            registry.register_prefix(key).map_err(|e| match e {
+                WatchError::LimitExceeded(_) => Status::resource_exhausted(e.to_string()),
+                WatchError::InvalidPrefix => Status::invalid_argument(e.to_string()),
+            })?
         } else {
             registry.register(key).map_err(|e| Status::resource_exhausted(e.to_string()))?
         };

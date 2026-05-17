@@ -12,7 +12,7 @@ in-process exact-key config watch and a prefix-based live load-balancer registry
 
 ## Architecture
 
-```
+```text
 ┌──────────────────────────────────────────────────────────┐
 │  Application Process                                     │
 │                                                          │
@@ -52,7 +52,7 @@ No cluster setup needed — the demo starts a single-node embedded engine automa
 A background task watches `/config/payment-service/timeout`.
 The main thread writes two updates; the task prints each change as it arrives.
 
-```
+```text
 [exact-watch] config changed: /config/payment-service/timeout = 30s  (revision=1)
 [exact-watch] config changed: /config/payment-service/timeout = 60s  (revision=2)
 ```
@@ -66,7 +66,7 @@ A background task watches `/services/payment/` and maintains a `HashMap<key, end
 The main thread simulates three nodes registering, one updating its endpoint (rolling
 restart), and one deregistering (crash). The routing table is printed after every event.
 
-```
+```text
 [prefix-watch] node up:   /services/payment/node1 → 10.0.0.1:8080  (revision=3)
   routing table (1 nodes):
     /services/payment/node1 → 10.0.0.1:8080

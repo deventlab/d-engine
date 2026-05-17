@@ -123,6 +123,7 @@ mod manager;
 mod manager_test;
 
 pub use manager::WatchDispatcher;
+pub use manager::WatchError;
 pub use manager::WatchEvent;
 pub use manager::WatchEventType;
 pub use manager::WatchRegistry;

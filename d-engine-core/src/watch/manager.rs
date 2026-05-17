@@ -235,7 +235,11 @@ impl WatchRegistry {
         key: Bytes,
         is_prefix: bool,
     ) -> Result<WatcherHandle, WatchError> {
-        if self.total_count.load(Ordering::Relaxed) >= self.max_watcher_count {
+        // Reserve the slot first, then check. This eliminates the TOCTOU window
+        // between a load-check and a separate fetch_add under concurrent registration.
+        let prev = self.total_count.fetch_add(1, Ordering::Relaxed);
+        if prev >= self.max_watcher_count {
+            self.total_count.fetch_sub(1, Ordering::Relaxed);
             return Err(WatchError::LimitExceeded(self.max_watcher_count));
         }
 
@@ -249,8 +253,6 @@ impl WatchRegistry {
         } else {
             self.exact.entry(key.clone()).or_default().push(watcher);
         }
-
-        self.total_count.fetch_add(1, Ordering::Relaxed);
         trace!(watcher_id = id, key = ?key, is_prefix, "Watcher registered");
 
         Ok(WatcherHandle {

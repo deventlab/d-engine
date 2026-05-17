@@ -193,7 +193,8 @@ done
 ### Test Write Operations
 
 ```bash
-# Write to any node (will forward internally if not leader)
+# Must write to leader — follower writes return 503 {"error":"not_leader"}
+# Use GET /primary on port 8091/8092/8093 to find the current leader first.
 curl -X POST http://localhost:8081/kv \
   -H "Content-Type: application/json" \
   -d '{"key": "test", "value": "hello"}'

@@ -12,7 +12,7 @@ using the gRPC client against a running d-engine cluster.
 
 ## Architecture
 
-```
+```text
 ┌────────────────────────────────────────────────────────┐
 │                     d-engine Cluster                   │
 │  (stores service registry: /services/{name}/{node})    │
@@ -23,10 +23,10 @@ using the gRPC client against a running d-engine cluster.
     ┌─────▼─────┐             ┌─────▼──────────────────┐
     │   admin   │             │        watcher          │
     │  (writes) │             │                         │
-    │           │             │  --key /svc/pay/node1   │
+    │           │             │  --key /services/payment/node1  │
     │ register  │             │  exact-key watch        │
     │ unregister│             │  ── or ──               │
-    └───────────┘             │  --key /services/pay/   │
+    └───────────┘             │  --key /services/payment/  │
                               │  --prefix               │
                               │  prefix watch           │
                               │  (live registry HashMap)│
@@ -59,7 +59,7 @@ make unregister
 
 Expected watcher output:
 
-```
+```text
 === Current State ===
   /services/payment/node1 = (not found)
 
@@ -88,7 +88,7 @@ make unregister-node2   # node2 crashes
 
 Expected watcher output:
 
-```
+```text
 [PUT   ] /services/payment/node1 = 10.0.0.1:8080  (revision=3)
   registry (1 nodes):
     /services/payment/node1 → 10.0.0.1:8080
