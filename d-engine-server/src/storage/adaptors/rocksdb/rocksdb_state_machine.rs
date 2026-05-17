@@ -9,6 +9,7 @@ use bytes::Bytes;
 use d_engine_core::ApplyResult;
 use d_engine_core::Error;
 use d_engine_core::Lease;
+use d_engine_core::ScanResult;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
@@ -28,6 +29,7 @@ use async_trait::async_trait;
 use rocksdb::Cache;
 use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::DB;
+use rocksdb::Direction;
 use rocksdb::ExportImportFilesMetaData;
 use rocksdb::ImportColumnFamilyOptions;
 use rocksdb::IteratorMode;
@@ -582,6 +584,46 @@ impl RocksDBStateMachine {
             format!("snapshot blocking task was cancelled: {e}")
         };
         StorageError::DbError(msg)
+    }
+
+    /// Scans all entries whose key starts with `prefix`.
+    ///
+    /// Uses `set_iterate_upper_bound(prefix_successor)` so RocksDB stops at the
+    /// block level — O(results), not O(total keys). No `prefix_extractor` needed.
+    /// `revision` in the result equals `last_applied_index` — the watch-filter anchor.
+    pub fn scan_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<ScanResult, Error> {
+        let mut upper = prefix.to_vec();
+        match upper.last_mut() {
+            Some(b) => *b = b.wrapping_add(1),
+            None => {
+                let revision = self.last_applied_index.load(Ordering::SeqCst);
+                return Ok(ScanResult {
+                    entries: vec![],
+                    revision,
+                });
+            }
+        }
+
+        let mut opts = ReadOptions::default();
+        opts.set_iterate_upper_bound(upper);
+
+        let db = self.db.load();
+        let cf = db
+            .cf_handle(STATE_MACHINE_CF)
+            .ok_or_else(|| StorageError::DbError("STATE_MACHINE_CF not found".into()))?;
+        let iter = db.iterator_cf_opt(&cf, opts, IteratorMode::From(prefix, Direction::Forward));
+
+        let mut entries = Vec::new();
+        for item in iter {
+            let (k, v) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            entries.push((Bytes::copy_from_slice(&k), Bytes::copy_from_slice(&v)));
+        }
+
+        let revision = self.last_applied_index.load(Ordering::SeqCst);
+        Ok(ScanResult { entries, revision })
     }
 }
 

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
 use d_engine::{
-    ApplyResult, Result, SnapshotError, StateMachine, StorageError,
+    ApplyResult, Result, ScanResult, SnapshotError, StateMachine, StorageError,
     client::{
         WriteCommand,
         write_command::{CompareAndSwap, Delete, Insert, Operation},
@@ -551,6 +551,20 @@ impl StateMachine for SledStateMachine {
         // SledStateMachine example doesn't implement lease support
         // Return empty vector (no cleanup performed)
         Ok(vec![])
+    }
+
+    fn scan_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<ScanResult> {
+        let tree = self.current_tree();
+        let mut entries = Vec::new();
+        for result in tree.scan_prefix(prefix) {
+            let (k, v) = result.map_err(|e| StorageError::DbError(e.to_string()))?;
+            entries.push((Bytes::copy_from_slice(&k), Bytes::copy_from_slice(&v)));
+        }
+        let revision = self.last_applied_index.load(Ordering::SeqCst);
+        Ok(ScanResult { entries, revision })
     }
 }
 

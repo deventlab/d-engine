@@ -118,6 +118,41 @@ pub struct ReadResults {
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<ClientResult>,
 }
+/// A single key-value pair returned by a prefix scan.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KvEntry {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub key: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub value: ::prost::bytes::Bytes,
+}
+/// Request to scan all keys under a namespace prefix.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ScanRequest {
+    #[prost(uint32, tag = "1")]
+    pub client_id: u32,
+    /// Prefix to scan. Must start with '/'. e.g. b"/services/".
+    #[prost(bytes = "bytes", tag = "2")]
+    pub prefix: ::prost::bytes::Bytes,
+    /// Optional consistency policy.
+    /// Omit to use the cluster default (linearizable, recommended for watch reconnection).
+    #[prost(enumeration = "ReadConsistencyPolicy", optional, tag = "3")]
+    pub consistency_policy: ::core::option::Option<i32>,
+}
+/// Response from a prefix scan.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ScanResponse {
+    /// All (key, value) pairs whose key starts with the requested prefix.
+    #[prost(message, repeated, tag = "1")]
+    pub entries: ::prost::alloc::vec::Vec<KvEntry>,
+    /// Raft applied index at the moment of the scan.
+    /// Use as the watch-event filter anchor: skip events where event.revision <= revision.
+    #[prost(uint64, tag = "2")]
+    pub revision: u64,
+}
 /// Request to start a server-side membership watch stream.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
@@ -411,6 +446,32 @@ pub mod raft_client_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn handle_client_scan(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ScanRequest>,
+        ) -> std::result::Result<tonic::Response<super::ScanResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/d_engine.client.RaftClientService/HandleClientScan",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "d_engine.client.RaftClientService",
+                        "HandleClientScan",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Watch for changes to a specific key.
         ///
         /// Returns a stream of WatchResponse events whenever the watched key changes.
@@ -512,6 +573,10 @@ pub mod raft_client_service_server {
             &self,
             request: tonic::Request<super::ClientReadRequest>,
         ) -> std::result::Result<tonic::Response<super::ClientResponse>, tonic::Status>;
+        async fn handle_client_scan(
+            &self,
+            request: tonic::Request<super::ScanRequest>,
+        ) -> std::result::Result<tonic::Response<super::ScanResponse>, tonic::Status>;
         /// Server streaming response type for the Watch method.
         type WatchStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::WatchResponse, tonic::Status>,
@@ -720,6 +785,55 @@ pub mod raft_client_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = HandleClientReadSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/d_engine.client.RaftClientService/HandleClientScan" => {
+                    #[allow(non_camel_case_types)]
+                    struct HandleClientScanSvc<T: RaftClientService>(pub Arc<T>);
+                    impl<
+                        T: RaftClientService,
+                    > tonic::server::UnaryService<super::ScanRequest>
+                    for HandleClientScanSvc<T> {
+                        type Response = super::ScanResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ScanRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as RaftClientService>::handle_client_scan(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = HandleClientScanSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

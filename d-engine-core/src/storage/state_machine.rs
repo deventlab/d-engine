@@ -11,6 +11,18 @@ use d_engine_proto::server::storage::SnapshotMetadata;
 use mockall::automock;
 
 use crate::Error;
+use crate::StorageError;
+
+/// All `(key, value)` pairs returned by a prefix scan, plus the revision anchor.
+///
+/// `revision` equals `last_applied_index` at scan time — clients use it as the
+/// filter threshold when draining a watch buffer: skip events where
+/// `event.revision <= scan_result.revision` to avoid double-applying.
+#[derive(Debug, Clone)]
+pub struct ScanResult {
+    pub entries: Vec<(Bytes, Bytes)>,
+    pub revision: u64,
+}
 
 /// Result of applying a single log entry to the state machine
 ///
@@ -212,6 +224,26 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Resets the state machine to its initial state.
     /// Async operation as it may involve cleaning up files and data.
     async fn reset(&self) -> Result<(), Error>;
+
+    /// Returns all `(key, value)` pairs whose key starts with `prefix`, plus
+    /// the `last_applied_index` at the time of the scan.
+    ///
+    /// Clients use `revision` as the filter anchor when draining watch events
+    /// after reconnection: skip events where `event.revision <= revision`.
+    ///
+    /// # Default implementation
+    /// Returns an error. Implementations that support prefix scan must override.
+    fn scan_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<ScanResult, Error> {
+        let _ = prefix;
+        Err(Error::System(crate::SystemError::Storage(
+            StorageError::StateMachineError(
+                "scan_prefix not supported by this state machine".into(),
+            ),
+        )))
+    }
 
     /// Background lease cleanup hook.
     ///

@@ -110,7 +110,7 @@ Expected watcher output:
 | Scope | One specific key | All keys under a namespace |
 | Typical use | Own config entry, distributed lock | API gateway routing table, load balancer |
 | Watchers registered | N (one per node) | 1 |
-| Reconnection | Re-read + re-watch the key | Re-scan prefix + re-watch (ticket #301) |
+| Reconnection | Re-read + re-watch the key | Re-scan prefix + re-watch (#378) |
 
 ### `revision` field
 

@@ -291,6 +291,9 @@ pub trait RaftRoleState: Send + Sync + 'static {
                 let status = tonic::Status::failed_precondition("Not leader");
                 let _ = sender.send(Err(status));
             }
+            ClientCmd::Scan(_, sender) => {
+                let _ = sender.send(Err(tonic::Status::failed_precondition("Not leader")));
+            }
             ClientCmd::Read(req, sender) => {
                 // Determine effective read policy, mirroring leader_state logic:
                 // 1. If client specified a policy AND server allows override, use client policy.

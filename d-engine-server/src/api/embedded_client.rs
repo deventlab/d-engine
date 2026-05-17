@@ -24,6 +24,7 @@ use bytes::Bytes;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
+use d_engine_core::ScanResult;
 use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
@@ -500,6 +501,33 @@ impl EmbeddedClient {
         })
     }
 
+    /// Scan all keys under `prefix` with linearizable consistency.
+    ///
+    /// Returns a `ScanResult` containing all matching `(key, value)` pairs and the
+    /// `revision` (applied index) at scan time. Use `revision` to filter watch events
+    /// during reconnection: skip events where `event.revision <= revision`.
+    pub async fn scan_prefix(
+        &self,
+        prefix: impl AsRef<[u8]>,
+    ) -> ClientApiResult<ScanResult> {
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        self.cmd_tx
+            .send(d_engine_core::ClientCmd::Scan(
+                Bytes::copy_from_slice(prefix.as_ref()),
+                resp_tx,
+            ))
+            .await
+            .map_err(|_| channel_closed_error())?;
+
+        let result = tokio::time::timeout(self.timeout, resp_rx)
+            .await
+            .map_err(|_| timeout_error(self.timeout))?
+            .map_err(|_| channel_closed_error())?;
+
+        result.map_err(|status| server_error(format!("RPC error: {}", status.message())))
+    }
+
     /// Internal helper: Get cluster membership via ClusterConf event
     async fn get_cluster_membership(
         &self
@@ -692,5 +720,12 @@ impl ClientApi for EmbeddedClient {
         key: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<Option<Bytes>> {
         self.get_eventual(key).await
+    }
+
+    async fn scan_prefix(
+        &self,
+        prefix: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<ScanResult> {
+        self.scan_prefix(prefix).await
     }
 }

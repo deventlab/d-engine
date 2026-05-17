@@ -100,6 +100,34 @@ message ReadResults {
   repeated ClientResult results = 1;
 }
 
+// A single key-value pair returned by a prefix scan.
+message KvEntry {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+// Request to scan all keys under a namespace prefix.
+message ScanRequest {
+  uint32 client_id = 1;
+
+  // Prefix to scan. Must start with '/'. e.g. b"/services/".
+  bytes prefix = 2;
+
+  // Optional consistency policy.
+  // Omit to use the cluster default (linearizable, recommended for watch reconnection).
+  optional ReadConsistencyPolicy consistency_policy = 3;
+}
+
+// Response from a prefix scan.
+message ScanResponse {
+  // All (key, value) pairs whose key starts with the requested prefix.
+  repeated KvEntry entries = 1;
+
+  // Raft applied index at the moment of the scan.
+  // Use as the watch-event filter anchor: skip events where event.revision <= revision.
+  uint64 revision = 2;
+}
+
 // Request to start a server-side membership watch stream.
 message WatchMembershipRequest {
   uint32 client_id = 1;
@@ -172,6 +200,7 @@ message WatchResponse {
 service RaftClientService {
   rpc HandleClientWrite(ClientWriteRequest) returns (ClientResponse);
   rpc HandleClientRead(ClientReadRequest) returns (ClientResponse);
+  rpc HandleClientScan(ScanRequest) returns (ScanResponse);
 
   // Watch for changes to a specific key.
   //

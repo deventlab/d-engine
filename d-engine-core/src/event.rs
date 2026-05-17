@@ -25,6 +25,7 @@ use tonic::Status;
 use crate::ApplyResult;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
+use crate::ScanResult;
 use crate::StreamResponseSender;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +46,10 @@ pub enum ClientCmd {
     Read(
         ClientReadRequest,
         MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+    ),
+    Scan(
+        bytes::Bytes,
+        MaybeCloneOneshotSender<std::result::Result<ScanResult, Status>>,
     ),
 }
 

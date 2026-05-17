@@ -25,8 +25,10 @@
 //! # Reconnection pattern
 //!
 //! When the stream ends (server restart, buffer overflow CANCELED event), this
-//! example restarts: re-establish the watch stream. In production, pair this
-//! with a Scan of current state first (see ticket #301).
+//! example demonstrates the zero-race-window reconnect pattern:
+//! 1. Register watch FIRST (server buffers events immediately)
+//! 2. Scan current state
+//! 3. Drain watch buffer, skipping events at revision ≤ scan revision
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -34,7 +36,7 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Parser;
 use d_engine::protocol::{WatchEventType, WatchResponse};
-use d_engine::{Client, ClientApi};
+use d_engine::{Client, ClientApi, ScanResult};
 use futures::StreamExt;
 
 #[derive(Parser)]
@@ -134,7 +136,7 @@ async fn run_exact_watch(
 }
 
 // ---------------------------------------------------------------------------
-// Prefix watch — live service registry (namespace observer pattern)
+// Prefix watch — live service registry (zero race-window reconnect pattern)
 // ---------------------------------------------------------------------------
 //
 // Business scenario: an API Gateway needs a live view of all nodes belonging
@@ -143,40 +145,56 @@ async fn run_exact_watch(
 //
 // One prefix watcher replaces N per-node exact-key watchers.
 //
-// Reconnection strategy:
-//   On CANCELED (buffer overflow) or stream error → break inner loop →
-//   reconnect. In production, precede reconnect with a full namespace Scan
-//   to recover any events missed during the gap (see ticket #301).
+// Reconnection strategy (zero race window):
+//   1. Register watch FIRST — server starts buffering events immediately
+//   2. scan_prefix() — linearizable snapshot at revision R
+//   3. Drain watch buffer, skip events where event.revision <= R
+//   On CANCELED (buffer overflow) or stream error → restart from step 1
 
 async fn run_prefix_watch(
     client: &Client,
     prefix: &str,
 ) -> Result<()> {
-    // In-memory registry: key → endpoint value.
-    // Maintained entirely from watch events in this demo.
-    // In production, populate it first with scan_prefix() (ticket #301).
-    let mut registry: HashMap<Vec<u8>, String> = HashMap::new();
-
     println!("=== Prefix Watch: Live Service Registry ===");
     println!("Namespace: {prefix}");
     println!("Events update the in-memory registry in real time.\n");
 
     loop {
+        // Step 1: register watch FIRST — server buffers events from this moment
         let mut stream = client
             .watch_prefix(prefix)
             .await
             .map_err(|e| anyhow::anyhow!("Prefix watch failed: {e:?}"))?;
 
-        println!("[connected] watching {prefix}");
+        // Step 2: linearizable scan — any write before/during scan is in the snapshot
+        let snapshot: ScanResult = match client.scan_prefix(prefix).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[scan error] {e:?} — reconnecting in 1s");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        let scan_revision = snapshot.revision;
+        let mut registry: HashMap<Vec<u8>, String> = snapshot
+            .entries
+            .into_iter()
+            .map(|entry| (entry.0.to_vec(), String::from_utf8_lossy(&entry.1).to_string()))
+            .collect();
 
+        println!("[connected] watching {prefix} (scan_revision={scan_revision})");
+        print_registry(&registry);
+
+        // Step 3: drain watch buffer, skip events already captured by the scan
         while let Some(event_result) = stream.next().await {
             match event_result {
                 Ok(response) => {
+                    if response.revision <= scan_revision {
+                        continue; // already in scan snapshot
+                    }
                     let canceled = apply_event_to_registry(&response, &mut registry);
                     print_registry(&registry);
                     if canceled {
-                        // CANCELED sentinel received: do not wait for server to close the stream.
-                        // Break immediately so the outer loop reconnects deterministically.
                         break;
                     }
                 }

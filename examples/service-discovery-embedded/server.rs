@@ -126,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 e if e == WatchEventType::Canceled as i32 => {
                     // Buffer overflow: registry may be stale.
-                    // Production code: re-scan the prefix then re-watch (ticket #301).
+                    // Production code: re-watch then scan_prefix (see ADR-003 reconnect pattern).
                     println!(
                         "[prefix-watch] CANCELED — buffer overflow on {key_str}; registry may be stale"
                     );

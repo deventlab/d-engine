@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
+use d_engine_core::ScanResult;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::MembershipSnapshot;
 use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_proto::client::ScanRequest;
 use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WatchRequest;
 use d_engine_proto::client::WatchResponse;
@@ -515,5 +517,34 @@ impl ClientApi for GrpcClient {
             Ok(None) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    async fn scan_prefix(
+        &self,
+        prefix: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<ScanResult> {
+        let client_inner = self.client_inner.load();
+        let mut client = self.make_leader_client().await?;
+
+        let request = ScanRequest {
+            client_id: client_inner.client_id,
+            prefix: Bytes::copy_from_slice(prefix.as_ref()),
+            consistency_policy: None,
+        };
+
+        let response = client
+            .handle_client_scan(request)
+            .await
+            .map_err(|status| ClientApiError::Business {
+                code: d_engine_proto::error::ErrorCode::Uncategorized,
+                message: format!("scan_prefix RPC failed: {}", status.message()),
+                required_action: None,
+            })?
+            .into_inner();
+
+        Ok(ScanResult {
+            entries: response.entries.into_iter().map(|e| (e.key, e.value)).collect(),
+            revision: response.revision,
+        })
     }
 }
