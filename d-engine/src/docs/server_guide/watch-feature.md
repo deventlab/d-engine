@@ -23,7 +23,7 @@ max_watcher_count = 10000     # Hard cap on total active watchers (optional)
 **Key Insight**: Watch works on **any node** (Leader or Follower) because events trigger after Raft consensus → `StateMachine.apply()`.
 
 ```rust,ignore
-use d_engine_client::Client;
+use d_engine::{Client, ClientApi};
 use futures::StreamExt;
 
 // Multi-node connection (recommended for high availability)

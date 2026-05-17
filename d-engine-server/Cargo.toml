@@ -26,6 +26,9 @@ rocksdb = ["dep:rocksdb"]
 # Experimental: Watch API for key change notifications
 # WARNING: This feature is under active development and not production-ready
 watch = ["d-engine-core/watch"]
+# Re-exports StateMachine and StorageEngine test suites via `d_engine::state_machine_test` /
+# `d_engine::storage_engine_test`.  Enable this in `[dev-dependencies]` only.
+__test_support = ["d-engine-core/__test_support"]
 
 [dependencies]
 d-engine-proto = { workspace = true }

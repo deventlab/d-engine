@@ -13,6 +13,7 @@ use crate::common::start_node;
 use d_engine_client::ClientBuilder;
 use d_engine_core::ClientApi;
 use d_engine_proto::client::WatchResponse;
+use d_engine_proto::error::ErrorCode;
 use d_engine_server::FileStateMachine;
 use d_engine_server::FileStorageEngine;
 use futures::StreamExt;
@@ -364,12 +365,22 @@ async fn test_grpc_watch_prefix_invalid_format_returns_invalid_argument()
         result.is_err(),
         "watch_prefix without trailing slash must fail"
     );
+    assert_eq!(
+        result.unwrap_err().code(),
+        ErrorCode::InvalidRequest,
+        "server must return INVALID_ARGUMENT for malformed prefix"
+    );
 
     // Missing leading slash
     let result2 = client.watch_prefix(b"config/").await;
     assert!(
         result2.is_err(),
         "watch_prefix without leading slash must fail"
+    );
+    assert_eq!(
+        result2.unwrap_err().code(),
+        ErrorCode::InvalidRequest,
+        "server must return INVALID_ARGUMENT for malformed prefix"
     );
 
     // A valid prefix must still work

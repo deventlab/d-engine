@@ -33,8 +33,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
-use d_engine_client::protocol::{WatchEventType, WatchResponse};
-use d_engine_client::{Client, ClientApi};
+use d_engine::protocol::{WatchEventType, WatchResponse};
+use d_engine::{Client, ClientApi};
 use futures::StreamExt;
 
 #[derive(Parser)]

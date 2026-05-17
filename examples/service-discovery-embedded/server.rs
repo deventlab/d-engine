@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use d_engine::EmbeddedEngine;
-use d_engine_core::watch::WatchEventType;
+use d_engine::WatchEventType;
 use tokio::signal;
 
 #[tokio::main]

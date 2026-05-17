@@ -33,6 +33,9 @@ client = ["dep:d-engine-client"]
 server = ["dep:d-engine-server"]
 rocksdb = ["server", "d-engine-server/rocksdb"]
 watch = ["server", "d-engine-server/watch"]
+# Enables `d_engine::state_machine_test` and `d_engine::storage_engine_test`.
+# Add to `[dev-dependencies]` when implementing and testing custom state machines or storage engines.
+__test_support = ["server", "d-engine-server/__test_support"]
 
 [dependencies]
 d-engine-client = { workspace = true, optional = true }

@@ -154,7 +154,7 @@ async fn test_custom_state_machine() -> Result<(), Error> {
 Use `run_performance_tests()` to detect performance regressions:
 
 ```rust,ignore
-use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
+use d_engine::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
 
 #[tokio::test]
 #[ignore] // Run with: cargo test -- --ignored

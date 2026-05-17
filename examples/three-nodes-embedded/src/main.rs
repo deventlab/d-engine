@@ -8,7 +8,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use d_engine::{ClientApiError, EmbeddedEngine};
+use d_engine::{ClientApiError, EmbeddedEngine, ErrorCode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -199,11 +199,7 @@ async fn start_business_server(
 }
 
 fn is_not_leader(e: &ClientApiError) -> bool {
-    match e {
-        ClientApiError::Network { message, .. } => message.contains("Not leader"),
-        ClientApiError::Business { message, .. } => message.contains("Not leader"),
-        _ => false,
-    }
+    e.code() == ErrorCode::NotLeader
 }
 
 async fn handle_put(
