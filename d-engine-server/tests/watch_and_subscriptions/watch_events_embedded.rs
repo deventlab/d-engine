@@ -611,3 +611,30 @@ async fn test_embedded_prefix_watch_handle_drop_cleanup() -> Result<(), Box<dyn 
     engine.stop().await?;
     Ok(())
 }
+
+/// #300 / fix: watch_prefix must reject prefixes that don't start and end with '/'.
+/// `InvalidPrefix` maps to an immediate `Err` at the embedded-client layer;
+/// no partial state must be left in the registry.
+#[tokio::test]
+async fn test_embedded_watch_prefix_invalid_format_returns_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (engine, _temp_dir) = setup_engine().await?;
+
+    // Missing trailing slash
+    let r1 = engine.client().watch_prefix(b"/config");
+    assert!(r1.is_err(), "prefix without trailing slash must fail");
+
+    // Missing leading slash
+    let r2 = engine.client().watch_prefix(b"config/");
+    assert!(r2.is_err(), "prefix without leading slash must fail");
+
+    // Empty string
+    let r3 = engine.client().watch_prefix(b"");
+    assert!(r3.is_err(), "empty prefix must fail");
+
+    // Valid prefix must still work (sanity check no side-effects from errors above)
+    let _valid = engine.client().watch_prefix(b"/config/")?;
+
+    engine.stop().await?;
+    Ok(())
+}

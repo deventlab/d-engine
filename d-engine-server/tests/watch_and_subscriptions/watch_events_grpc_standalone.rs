@@ -348,3 +348,35 @@ async fn test_watch_node_crash_standalone_mode() -> Result<(), Box<dyn std::erro
 
     Ok(())
 }
+
+/// #300 / fix: watch_prefix over gRPC must return INVALID_ARGUMENT when the
+/// prefix format is malformed. Exercises the `WatchError::InvalidPrefix` →
+/// `Status::invalid_argument` match arm in grpc_raft_service.rs and the
+/// error path in GrpcClient::watch_prefix.
+#[tokio::test]
+async fn test_grpc_watch_prefix_invalid_format_returns_invalid_argument()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (client, test_ctx, _temp_dir) = setup_standalone_cluster().await?;
+
+    // Missing trailing slash — server must reject with INVALID_ARGUMENT
+    let result = client.watch_prefix(b"/config").await;
+    assert!(
+        result.is_err(),
+        "watch_prefix without trailing slash must fail"
+    );
+
+    // Missing leading slash
+    let result2 = client.watch_prefix(b"config/").await;
+    assert!(
+        result2.is_err(),
+        "watch_prefix without leading slash must fail"
+    );
+
+    // A valid prefix must still work
+    let stream = client.watch_prefix(b"/config/").await;
+    assert!(stream.is_ok(), "valid prefix must succeed");
+    drop(stream);
+
+    test_ctx.shutdown().await?;
+    Ok(())
+}

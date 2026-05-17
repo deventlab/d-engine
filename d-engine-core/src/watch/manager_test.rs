@@ -1114,3 +1114,78 @@ async fn test_max_watcher_count_rejects_registration_when_exceeded() {
         "register must fail when max_watcher_count=2 is reached"
     );
 }
+
+/// #300: prefix watchers consume the same shared cap as exact watchers.
+/// Verifies that `register_prefix` is rejected once `max_watcher_count` is hit.
+#[tokio::test]
+async fn test_prefix_watcher_cap_enforced() {
+    let (_, registry, _handle) = setup_watch_system_with_max(10, 2);
+
+    let _h1 = registry.register_prefix(Bytes::from("/a/")).unwrap();
+    let _h2 = registry.register_prefix(Bytes::from("/b/")).unwrap();
+    let h3 = registry.register_prefix(Bytes::from("/c/"));
+
+    assert!(
+        h3.is_err(),
+        "register_prefix must fail when max_watcher_count=2 is reached"
+    );
+}
+
+/// #300: exact and prefix watchers share a single cap counter.
+/// After 1 exact + 1 prefix fill the cap, a third registration of either
+/// kind must be rejected.
+#[tokio::test]
+async fn test_mixed_exact_and_prefix_watchers_share_cap() {
+    let (_, registry, _handle) = setup_watch_system_with_max(10, 2);
+
+    let _h1 = registry.register(Bytes::from("/exact/key")).unwrap();
+    let _h2 = registry.register_prefix(Bytes::from("/prefix/")).unwrap();
+
+    let h3_exact = registry.register(Bytes::from("/exact/other"));
+    assert!(
+        h3_exact.is_err(),
+        "exact register must fail after mixed cap is reached"
+    );
+
+    let h3_prefix = registry.register_prefix(Bytes::from("/prefix2/"));
+    assert!(
+        h3_prefix.is_err(),
+        "prefix register must fail after mixed cap is reached"
+    );
+}
+
+/// #300 / fix: the TOCTOU fix in do_register must prevent the watcher count
+/// from ever exceeding max_watcher_count under concurrent registration.
+///
+/// The old load-check-then-fetch_add pattern lets N threads all pass the check
+/// before any increment, so all N insert and the count overshoots.
+/// The reserve-first pattern (fetch_add → check → rollback if over) is race-free.
+#[tokio::test]
+async fn test_concurrent_registrations_never_exceed_cap() {
+    let max = 5usize;
+    let (_, registry, _handle) = setup_watch_system_with_max(10, max);
+    let registry = Arc::clone(&registry);
+
+    // Launch 4× more tasks than the cap; only exactly `max` must succeed.
+    let handles: Vec<_> = (0..20)
+        .map(|i| {
+            let registry = Arc::clone(&registry);
+            tokio::spawn(async move {
+                let key = Bytes::from(format!("/key/{i}"));
+                registry.register(key).is_ok()
+            })
+        })
+        .collect();
+
+    let mut success_count = 0usize;
+    for handle in handles {
+        if handle.await.unwrap() {
+            success_count += 1;
+        }
+    }
+
+    assert_eq!(
+        success_count, max,
+        "exactly max_watcher_count registrations must succeed under concurrent load, got {success_count}"
+    );
+}
