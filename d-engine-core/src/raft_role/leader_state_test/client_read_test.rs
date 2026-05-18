@@ -13,9 +13,12 @@ use crate::test_utils::node_config;
 use crate::{Error, MockRaftLog, MockReplicationCore, RaftNodeConfig};
 use bytes::Bytes;
 use d_engine_proto::client::ClientReadRequest;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
 use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::NodeMeta;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -2044,6 +2047,152 @@ async fn test_lease_read_empty_payload_verification_hangs_in_multi_node() {
         state.pending_client_writes.len(),
         0,
         "pending_client_writes must be empty"
+    );
+}
+
+// ============================================================================
+// Regression test: Ticket #381
+// LinearizableRead must NOT be served without quorum in a multi-voter cluster
+// ============================================================================
+
+/// REGRESSION (#381): LinearizableRead served without quorum in minority partition.
+///
+/// ## Why existing tests miss this bug
+///
+/// The "quorum success" tests either:
+/// - use empty voter lists (`single_voter = true`) — self is the quorum, safe to serve
+/// - call `handle_apply_completed` directly — bypasses the missing quorum step entirely
+///
+/// None test a multi-voter cluster where `flush_cmd_buffers` is called with a pure
+/// read (no concurrent write) and no follower ever responds.
+///
+/// ## Bug path in `execute_and_process_raft_rpc`
+///
+/// ```
+/// Phase 3: if last_applied >= read_index {
+///     execute_pending_reads(read_batch, ctx);  // ← IMMEDIATE SERVE, no quorum check
+/// }
+/// Phase 4: if append_requests.is_empty() { return Ok(()); }  // ← no peers → bail
+/// Phase 5: // never reached
+/// ```
+///
+/// For a pure read (no writes), `prepare_batch_requests` returns an empty
+/// `PrepareResult`. Phase 4 bails immediately — no AppendEntries is sent to
+/// any follower. Phase 3 has already responded to the client.
+///
+/// ## Preconditions that trigger the fast-path
+///
+/// - `noop_log_id = Some(0)` — noop guard (`is_none()` check) does not fire
+/// - `commit_index = 0`, `last_applied = 0` (defaults) → `read_index = 0`
+/// - `last_applied(0) >= read_index(0)` is **true** → fast-path executes
+///
+/// ## Expected correct behavior (Raft §8)
+///
+/// `flush_cmd_buffers` returns immediately (non-blocking) AND the response
+/// channel stays **empty**. The read must be deferred until an AppendEntries
+/// heartbeat is sent and a quorum ACK confirms the node is still the leader.
+///
+/// ## Current behavior (bug)
+///
+/// `resp_rx.try_recv()` returns `Ok(...)` immediately after `flush_cmd_buffers`.
+/// No follower was contacted. A leader isolated by a network partition will
+/// return data that may have been overwritten by the new leader's commits.
+///
+/// **This test FAILS with the current code.**
+/// It must PASS after the fix for Ticket #381.
+#[tokio::test]
+#[traced_test]
+async fn test_linearizable_read_served_without_quorum_in_minority_partition() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+
+    let mut node_config = RaftNodeConfig::default();
+    node_config.raft.read_consistency.allow_client_override = true;
+    node_config.raft.batching.max_batch_size = 1;
+    node_config.raft.general_raft_timeout_duration_in_ms = 2000;
+
+    let ctx = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_linearizable_read_without_quorum_partition")
+        .with_replication_handler(replication_handler)
+        .with_node_config(node_config)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.noop_log_id = Some(0);
+
+    let mut membership = MockMembership::new();
+    membership.expect_voters().returning(|| {
+        vec![
+            NodeMeta {
+                id: 2,
+                address: "".into(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+            NodeMeta {
+                id: 3,
+                address: "".into(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+        ]
+    });
+    membership.expect_replication_peers().returning(|| {
+        vec![
+            NodeMeta {
+                id: 2,
+                address: "".into(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+            NodeMeta {
+                id: 3,
+                address: "".into(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+        ]
+    });
+    state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+    assert!(
+        !state.cluster_metadata.single_voter,
+        "precondition: multi-voter cluster"
+    );
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    let req = ClientReadRequest {
+        client_id: 1,
+        keys: vec![safe_kv_bytes(1)],
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(ClientCmd::Read(req, resp_tx), &ctx);
+
+    tokio::time::timeout(
+        Duration::from_millis(200),
+        state.flush_cmd_buffers(&ctx, &role_tx),
+    )
+    .await
+    .expect("flush_cmd_buffers must not block")
+    .expect("flush must succeed");
+
+    assert_eq!(
+        state.pending_reads.len(),
+        1,
+        "read must be queued in pending_reads awaiting quorum confirmation"
+    );
+    assert!(
+        resp_rx.try_recv().is_err(),
+        "BUG #381: LinearizableRead was served immediately in Phase 3 without any \
+         quorum confirmation. A partitioned leader can return stale data. \
+         The read must be deferred until handle_append_result confirms quorum \
+         (same as the LeaseRead expired path in process_lease_read)."
     );
 }
 
