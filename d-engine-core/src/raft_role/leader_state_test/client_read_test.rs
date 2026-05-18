@@ -2182,6 +2182,11 @@ async fn test_linearizable_read_served_without_quorum_in_minority_partition() {
     .expect("flush_cmd_buffers must not block")
     .expect("flush must succeed");
 
+    assert_eq!(
+        state.pending_reads.len(),
+        1,
+        "read must be queued in pending_reads awaiting quorum confirmation"
+    );
     assert!(
         resp_rx.try_recv().is_err(),
         "BUG #381: LinearizableRead was served immediately in Phase 3 without any \
