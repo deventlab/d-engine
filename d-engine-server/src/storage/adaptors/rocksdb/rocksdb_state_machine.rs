@@ -1095,6 +1095,13 @@ impl StateMachine for RocksDBStateMachine {
 
         Ok(expired_keys)
     }
+
+    fn scan_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<ScanResult, Error> {
+        self.scan_prefix(prefix)
+    }
 }
 impl Drop for RocksDBStateMachine {
     fn drop(&mut self) {
