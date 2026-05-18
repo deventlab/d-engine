@@ -344,10 +344,19 @@ max_batch_size = 1
                 3,
                 "exactly 3 /services/ keys expected"
             );
-            let keys: Vec<_> = result.entries.iter().map(|(k, _)| k.clone()).collect();
-            assert!(keys.contains(&bytes::Bytes::from("/services/node1")));
-            assert!(keys.contains(&bytes::Bytes::from("/services/node2")));
-            assert!(keys.contains(&bytes::Bytes::from("/services/node3")));
+            let map: std::collections::HashMap<_, _> = result.entries.iter().cloned().collect();
+            assert_eq!(
+                map.get(&bytes::Bytes::from("/services/node1")),
+                Some(&bytes::Bytes::from("10.0.0.1"))
+            );
+            assert_eq!(
+                map.get(&bytes::Bytes::from("/services/node2")),
+                Some(&bytes::Bytes::from("10.0.0.2"))
+            );
+            assert_eq!(
+                map.get(&bytes::Bytes::from("/services/node3")),
+                Some(&bytes::Bytes::from("10.0.0.3"))
+            );
             assert!(
                 result.revision >= 4,
                 "revision must reflect at least 4 applied entries"

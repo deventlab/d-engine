@@ -1705,6 +1705,16 @@ mod scan_tests {
 
         assert_eq!(result.revision, 7);
         assert_eq!(result.entries.len(), 2);
+
+        let map: std::collections::HashMap<_, _> = result.entries.into_iter().collect();
+        assert_eq!(
+            map.get(&Bytes::from("/services/node1")),
+            Some(&Bytes::from("10.0.0.1"))
+        );
+        assert_eq!(
+            map.get(&Bytes::from("/services/node2")),
+            Some(&Bytes::from("10.0.0.2"))
+        );
     }
 
     #[tokio::test]
