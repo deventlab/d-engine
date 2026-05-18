@@ -529,17 +529,12 @@ impl ClientApi for GrpcClient {
         let request = ScanRequest {
             client_id: client_inner.client_id,
             prefix: Bytes::copy_from_slice(prefix.as_ref()),
-            consistency_policy: None,
         };
 
         let response = client
             .handle_client_scan(request)
             .await
-            .map_err(|status| ClientApiError::Business {
-                code: d_engine_proto::error::ErrorCode::Uncategorized,
-                message: format!("scan_prefix RPC failed: {}", status.message()),
-                required_action: None,
-            })?
+            .map_err(ClientApiError::from)?
             .into_inner();
 
         Ok(ScanResult {

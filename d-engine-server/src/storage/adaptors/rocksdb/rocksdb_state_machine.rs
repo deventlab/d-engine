@@ -101,6 +101,28 @@ pub struct RocksDBStateMachine {
     lease_enabled: bool,
 }
 
+/// Returns the lexicographic successor of `prefix` for use as an iterator upper bound.
+///
+/// Trims trailing 0xFF bytes (which would wrap to 0x00 on increment), then increments
+/// the last remaining byte. Returns None when all bytes are 0xFF (no upper bound needed;
+/// caller must use a starts_with guard instead).
+///
+/// Examples:
+///   [0x61, 0xFF] → Some([0x62])   — carry propagates past the 0xFF
+///   [0xFF, 0xFF] → None           — all-0xFF prefix, scan to end of keyspace
+///   [0x2F]       → Some([0x30])   — '/' (0x2F) → '0' (0x30), normal slash-prefix
+fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    while upper.last() == Some(&0xFF) {
+        upper.pop();
+    }
+    if upper.is_empty() {
+        return None;
+    }
+    *upper.last_mut().unwrap() += 1;
+    Some(upper)
+}
+
 impl RocksDBStateMachine {
     /// Opens (or creates) a dedicated RocksDB instance for state machine storage.
     ///
@@ -595,20 +617,17 @@ impl RocksDBStateMachine {
         &self,
         prefix: &[u8],
     ) -> Result<ScanResult, Error> {
-        let mut upper = prefix.to_vec();
-        match upper.last_mut() {
-            Some(b) => *b = b.wrapping_add(1),
-            None => {
-                let revision = self.last_applied_index.load(Ordering::SeqCst);
-                return Ok(ScanResult {
-                    entries: vec![],
-                    revision,
-                });
-            }
+        if prefix.is_empty() {
+            let revision = self.last_applied_index.load(Ordering::SeqCst);
+            return Ok(ScanResult { entries: vec![], revision });
         }
 
         let mut opts = ReadOptions::default();
-        opts.set_iterate_upper_bound(upper);
+        // prefix_successor handles 0xFF carry: [0x61,0xFF] → [0x62], all-0xFF → None.
+        // When None, no upper bound is set and a starts_with guard terminates the scan.
+        if let Some(upper) = prefix_successor(prefix) {
+            opts.set_iterate_upper_bound(upper);
+        }
 
         let db = self.db.load();
         let cf = db
@@ -619,6 +638,9 @@ impl RocksDBStateMachine {
         let mut entries = Vec::new();
         for item in iter {
             let (k, v) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            if !k.starts_with(prefix) {
+                break;
+            }
             entries.push((Bytes::copy_from_slice(&k), Bytes::copy_from_slice(&v)));
         }
 

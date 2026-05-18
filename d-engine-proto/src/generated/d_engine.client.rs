@@ -128,6 +128,8 @@ pub struct KvEntry {
     pub value: ::prost::bytes::Bytes,
 }
 /// Request to scan all keys under a namespace prefix.
+/// Scan is served from the leader's state machine at last_applied.
+/// consistency_policy is not supported; tracked in #381.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScanRequest {
@@ -136,10 +138,6 @@ pub struct ScanRequest {
     /// Prefix to scan. Must start with '/'. e.g. b"/services/".
     #[prost(bytes = "bytes", tag = "2")]
     pub prefix: ::prost::bytes::Bytes,
-    /// Optional consistency policy.
-    /// Omit to use the cluster default (linearizable, recommended for watch reconnection).
-    #[prost(enumeration = "ReadConsistencyPolicy", optional, tag = "3")]
-    pub consistency_policy: ::core::option::Option<i32>,
 }
 /// Response from a prefix scan.
 #[derive(serde::Serialize, serde::Deserialize)]

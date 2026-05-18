@@ -160,11 +160,17 @@ async fn run_prefix_watch(
     println!("Events update the in-memory registry in real time.\n");
 
     loop {
-        // Step 1: register watch FIRST — server buffers events from this moment
-        let mut stream = client
-            .watch_prefix(prefix)
-            .await
-            .map_err(|e| anyhow::anyhow!("Prefix watch failed: {e:?}"))?;
+        // Step 1: register watch FIRST — server buffers events from this moment.
+        // On transient errors (leader change, startup race) continue the loop rather
+        // than propagating — the reconnect pattern must be resilient to watch setup failure.
+        let mut stream = match client.watch_prefix(prefix).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[watch error] {e:?} — reconnecting in 1s");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
 
         // Step 2: linearizable scan — any write before/during scan is in the snapshot
         let snapshot: ScanResult = match client.scan_prefix(prefix).await {

@@ -107,15 +107,13 @@ message KvEntry {
 }
 
 // Request to scan all keys under a namespace prefix.
+// Scan is served from the leader's state machine at last_applied.
+// consistency_policy is not supported; tracked in #381.
 message ScanRequest {
   uint32 client_id = 1;
 
   // Prefix to scan. Must start with '/'. e.g. b"/services/".
   bytes prefix = 2;
-
-  // Optional consistency policy.
-  // Omit to use the cluster default (linearizable, recommended for watch reconnection).
-  optional ReadConsistencyPolicy consistency_policy = 3;
 }
 
 // Response from a prefix scan.

@@ -267,6 +267,36 @@ async fn test_scan_prefix_revision_reflects_applied_index() {
     );
 }
 
+/// scan_prefix correctly handles a prefix whose last byte is 0xFF.
+///
+/// The naive `last_byte + 1` implementation wraps 0xFF → 0x00, producing an upper
+/// bound that is lexicographically *less than* the prefix itself — RocksDB's iterator
+/// stops immediately and returns no rows. prefix_successor must propagate the carry:
+/// [0x2F, 0xFF] (b"/\xFF") → [0x30] (b"0"), ensuring the scan covers all matching keys.
+#[tokio::test]
+async fn test_scan_prefix_0xff_suffix_carry_propagation() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    // Key: b"/\xFF/node1" — prefix b"/\xFF/" ends with 0xFF then 0x2F
+    // Use a simpler case: prefix = b"a\xFF", key = b"a\xFFnode"
+    let prefix: &[u8] = b"\x61\xFF";
+    let key: &[u8] = b"\x61\xFFnode";
+    let decoy: &[u8] = b"\x62decoy"; // sits above [0x62], must not appear
+
+    sm.apply_chunk(vec![
+        encode_insert_at(key, b"value", 1),
+        encode_insert_at(decoy, b"must_not_appear", 2),
+    ])
+    .await
+    .unwrap();
+
+    let result = sm.scan_prefix(prefix).unwrap();
+
+    assert_eq!(result.entries.len(), 1, "only key under 0xFF prefix should appear");
+    assert_eq!(result.entries[0].0, Bytes::copy_from_slice(key));
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn encode_insert(
