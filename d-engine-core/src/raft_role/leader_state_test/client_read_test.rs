@@ -2046,3 +2046,82 @@ async fn test_lease_read_empty_payload_verification_hangs_in_multi_node() {
         "pending_client_writes must be empty"
     );
 }
+
+// ============================================================================
+// ClientCmd::Scan handler tests
+// ============================================================================
+
+/// Test: LeaderState::push_client_cmd with ClientCmd::Scan delivers the
+/// state-machine result directly to the caller.
+///
+/// Unlike reads, Scan is not buffered — the leader immediately calls
+/// `state_machine().scan_prefix()` and sends the result back.  This test
+/// verifies the happy path: the mock SM returns entries and the caller
+/// receives them.
+#[tokio::test]
+#[traced_test]
+async fn test_scan_cmd_leader_delivers_result() {
+    use crate::ScanResult;
+    use crate::test_utils::mock_state_machine;
+
+    let mut sm = mock_state_machine();
+    sm.expect_scan_prefix().returning(|_prefix| {
+        Ok(ScanResult {
+            entries: vec![],
+            revision: 42,
+        })
+    });
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_scan_cmd_leader_delivers_result")
+        .with_state_machine(sm)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(
+        ClientCmd::Scan(Bytes::from("/services/"), resp_tx),
+        &context,
+    );
+
+    let result = resp_rx.recv().await.expect("channel not closed").expect("scan succeeded");
+    assert_eq!(result.revision, 42);
+    assert!(result.entries.is_empty());
+}
+
+/// Test: LeaderState::push_client_cmd with ClientCmd::Scan propagates state-
+/// machine errors as tonic Status::internal to the caller.
+#[tokio::test]
+#[traced_test]
+async fn test_scan_cmd_leader_propagates_sm_error() {
+    use crate::test_utils::mock_state_machine;
+    use crate::{Error, StorageError};
+
+    let mut sm = mock_state_machine();
+    sm.expect_scan_prefix().returning(|_prefix| {
+        Err(Error::System(crate::SystemError::Storage(
+            StorageError::StateMachineError("scan failed".into()),
+        )))
+    });
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_scan_cmd_leader_propagates_sm_error")
+        .with_state_machine(sm)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(
+        ClientCmd::Scan(Bytes::from("/services/"), resp_tx),
+        &context,
+    );
+
+    let err = resp_rx.recv().await.expect("channel not closed").unwrap_err();
+    // The tonic Status is created from e.to_string() which renders as "Storage operation
+    // failed" (the outer SystemError::Storage variant). Verify it's Internal.
+    assert_eq!(err.code(), Code::Internal);
+}

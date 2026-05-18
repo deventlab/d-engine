@@ -1049,6 +1049,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     }
                 }
             }
+            ClientCmd::Scan(prefix, sender) => {
+                let result = ctx.state_machine().scan_prefix(&prefix);
+                let _ = sender.send(result.map_err(|e| Status::internal(e.to_string())));
+            }
         }
     }
 

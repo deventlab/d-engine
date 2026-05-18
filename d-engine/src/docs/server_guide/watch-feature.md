@@ -114,30 +114,34 @@ DOES NOT fire for:
   /services/paymentextra/node  ❌ different namespace
 ```
 
-### Reconnection pattern
+### Reconnection pattern (zero race window)
 
-On disconnect or `CANCELED` (buffer overflow), re-sync current state before re-watching:
+On disconnect or `CANCELED` (buffer overflow), use **watch-first, scan-second** to eliminate the race window:
 
 ```rust,ignore
 loop {
-    // 1. Read current namespace state (scan_prefix coming in ticket #301)
-    //    For now: read known keys individually or accept a brief gap
+    // Step 1: register watch FIRST — server buffers events from this moment
     let mut watcher = client.watch_prefix("/services/payment/").await?;
 
+    // Step 2: linearizable scan — any write before/during scan is in the snapshot
+    let snapshot = client.scan_prefix("/services/payment/").await?;
+    let scan_revision = snapshot.revision;
+    let mut registry: HashMap<Bytes, Bytes> = snapshot.entries.into_iter().collect();
+
+    // Step 3: drain watch buffer, skip events already captured by the scan
     while let Some(event) = watcher.next().await {
         match event {
-            Ok(e) if e.event_type == WatchEventType::Canceled as i32 => {
-                // Buffer overflow — events were dropped. Re-sync and reconnect.
-                resync_from_read_api().await;
-                break;
-            }
-            Ok(e) => apply_to_registry(e),
-            Err(_) => break,  // network error — reconnect
+            Ok(e) if e.revision <= scan_revision => continue, // already in snapshot
+            Ok(e) if e.event_type == WatchEventType::Canceled as i32 => break,
+            Ok(e) => apply_to_registry(e, &mut registry),
+            Err(_) => break,
         }
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
 }
 ```
+
+**Why this is race-free:** any write before the watch registered appears in the scan; any write after watch registered (even during the scan) is buffered. The two sets are non-overlapping when filtered by `revision ≤ scan_revision`.
 
 ### Revision field
 

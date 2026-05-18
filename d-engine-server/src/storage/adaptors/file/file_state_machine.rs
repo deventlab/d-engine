@@ -96,6 +96,7 @@ use bytes::Bytes;
 use d_engine_core::ApplyResult;
 use d_engine_core::Error;
 use d_engine_core::Lease;
+use d_engine_core::ScanResult;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
@@ -1552,5 +1553,19 @@ impl StateMachine for FileStateMachine {
         );
 
         Ok(expired_keys)
+    }
+
+    fn scan_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<ScanResult, Error> {
+        let data = self.data.read();
+        let entries: Vec<(Bytes, Bytes)> = data
+            .iter()
+            .filter(|(k, _)| k.starts_with(prefix))
+            .map(|(k, (v, _))| (k.clone(), v.clone()))
+            .collect();
+        let revision = self.last_applied_index.load(Ordering::SeqCst);
+        Ok(ScanResult { entries, revision })
     }
 }

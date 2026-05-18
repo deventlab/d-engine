@@ -156,6 +156,208 @@ async fn test_get_rejected_when_not_serving() {
     );
 }
 
+// ── scan_prefix tests (#378) ──────────────────────────────────────────────────
+
+/// scan_prefix returns exactly the entries whose key starts with the given prefix,
+/// excluding all keys from other namespaces.
+///
+/// This is the core correctness guarantee: prefix matching must be exact —
+/// no adjacent namespace keys may leak through even if they share a substring.
+#[tokio::test]
+async fn test_scan_prefix_returns_only_matching_keys() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(vec![
+        encode_insert_at(b"/services/node1", b"10.0.0.1", 1),
+        encode_insert_at(b"/services/node2", b"10.0.0.2", 2),
+        encode_insert_at(b"/other/key", b"must_not_appear", 3),
+    ])
+    .await
+    .unwrap();
+
+    let result = sm.scan_prefix(b"/services/").unwrap();
+
+    assert_eq!(
+        result.entries.len(),
+        2,
+        "only /services/ keys should be returned"
+    );
+    let keys: Vec<&Bytes> = result.entries.iter().map(|(k, _)| k).collect();
+    assert!(keys.contains(&&Bytes::from_static(b"/services/node1")));
+    assert!(keys.contains(&&Bytes::from_static(b"/services/node2")));
+}
+
+/// scan_prefix stops at prefix_successor (last byte + 1), not at the first
+/// key that does not share the prefix string — these are different.
+///
+/// Without set_iterate_upper_bound, a hand-rolled break would stop at the first
+/// non-matching key after the prefix range, but RocksDB's block-level skipping
+/// would not apply, making the scan O(total_keys) in the worst case.
+/// This test verifies that a key in a lexicographically adjacent namespace
+/// (/t/ > /s/) is not returned and that the upper-bound mechanism is effective.
+#[tokio::test]
+async fn test_scan_prefix_upper_bound_excludes_adjacent_namespace() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(vec![
+        encode_insert_at(b"/services/last", b"v", 1),
+        // '/t' > '/s' in byte order — sits right after '/services/' in the keyspace
+        encode_insert_at(b"/t/trap", b"must_not_appear", 2),
+    ])
+    .await
+    .unwrap();
+
+    let result = sm.scan_prefix(b"/services/").unwrap();
+
+    assert_eq!(
+        result.entries.len(),
+        1,
+        "/t/trap must not appear in /services/ scan"
+    );
+    assert_eq!(result.entries[0].0, Bytes::from_static(b"/services/last"));
+}
+
+/// scan_prefix on a prefix with no matching keys returns an empty entries list,
+/// not an error. An empty namespace is a valid business state (e.g. no services
+/// registered yet), and callers must not need to distinguish it from an error.
+#[tokio::test]
+async fn test_scan_prefix_empty_namespace_returns_empty_vec() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(vec![encode_insert_at(b"/other/key", b"v", 1)]).await.unwrap();
+
+    let result = sm.scan_prefix(b"/missing/").unwrap();
+
+    assert!(
+        result.entries.is_empty(),
+        "missing prefix must return empty entries, not an error"
+    );
+}
+
+/// scan_prefix revision is >= the applied index at the time of the call.
+///
+/// This is the linearizability anchor for the watch→scan pattern:
+/// after scan returns revision=R, callers filter watch events with
+/// event.revision <= R (already in the snapshot) vs > R (must be applied).
+/// If revision were stale, the filter boundary would be wrong and events
+/// would be silently double-applied or missed.
+#[tokio::test]
+async fn test_scan_prefix_revision_reflects_applied_index() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    // Apply 3 entries as a single chunk; last_applied_index becomes 3
+    sm.apply_chunk(vec![
+        encode_insert_at(b"/s/a", b"1", 1),
+        encode_insert_at(b"/s/b", b"2", 2),
+        encode_insert_at(b"/s/c", b"3", 3),
+    ])
+    .await
+    .unwrap();
+
+    let result = sm.scan_prefix(b"/s/").unwrap();
+
+    assert_eq!(result.entries.len(), 3);
+    assert_eq!(
+        result.revision, 3,
+        "revision must equal the applied index after the writes"
+    );
+}
+
+/// scan_prefix correctly handles a prefix whose last byte is 0xFF.
+///
+/// The naive `last_byte + 1` implementation wraps 0xFF → 0x00, producing an upper
+/// bound that is lexicographically *less than* the prefix itself — RocksDB's iterator
+/// stops immediately and returns no rows. prefix_successor must propagate the carry:
+/// [0x2F, 0xFF] (b"/\xFF") → [0x30] (b"0"), ensuring the scan covers all matching keys.
+#[tokio::test]
+async fn test_scan_prefix_0xff_suffix_carry_propagation() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    // Key: b"/\xFF/node1" — prefix b"/\xFF/" ends with 0xFF then 0x2F
+    // Use a simpler case: prefix = b"a\xFF", key = b"a\xFFnode"
+    let prefix: &[u8] = b"\x61\xFF";
+    let key: &[u8] = b"\x61\xFFnode";
+    let decoy: &[u8] = b"\x62decoy"; // sits above [0x62], must not appear
+
+    sm.apply_chunk(vec![
+        encode_insert_at(key, b"value", 1),
+        encode_insert_at(decoy, b"must_not_appear", 2),
+    ])
+    .await
+    .unwrap();
+
+    let result = sm.scan_prefix(prefix).unwrap();
+
+    assert_eq!(
+        result.entries.len(),
+        1,
+        "only key under 0xFF prefix should appear"
+    );
+    assert_eq!(result.entries[0].0, Bytes::copy_from_slice(key));
+}
+
+/// scan_prefix with an empty prefix returns an empty result immediately.
+///
+/// An empty prefix would otherwise match every key in the database, which
+/// is an unsafe operation for an arbitrarily large keyspace. The implementation
+/// short-circuits and returns `ScanResult { entries: vec![], revision }` so
+/// callers receive a well-defined result without iterating the whole DB.
+#[tokio::test]
+async fn test_scan_prefix_empty_prefix_returns_empty() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(vec![encode_insert_at(b"/services/node1", b"v", 1)])
+        .await
+        .unwrap();
+
+    let result = sm.scan_prefix(b"").unwrap();
+
+    assert!(
+        result.entries.is_empty(),
+        "empty prefix should return empty entries (not all keys)"
+    );
+}
+
+/// scan_prefix with an all-0xFF prefix has no successor, so no upper bound is
+/// set and the iterator uses the starts_with guard to exclude non-matching keys.
+///
+/// prefix_successor([0xFF, 0xFF]) returns None because all bytes are 0xFF —
+/// there is no lexicographically larger byte string that could serve as an
+/// upper bound.  The scan must still return all keys that start with the prefix
+/// and exclude everything else.
+#[tokio::test]
+async fn test_scan_prefix_all_0xff_no_upper_bound() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    // Key that starts with [0xFF, 0xFF] — sits at the very top of the keyspace.
+    let prefix: &[u8] = b"\xFF\xFF";
+    let key: &[u8] = b"\xFF\xFF\x01";
+    let decoy: &[u8] = b"\xFE\xAA"; // lexicographically below the prefix
+
+    sm.apply_chunk(vec![
+        encode_insert_at(key, b"top_value", 1),
+        encode_insert_at(decoy, b"must_not_appear", 2),
+    ])
+    .await
+    .unwrap();
+
+    let result = sm.scan_prefix(prefix).unwrap();
+
+    assert_eq!(
+        result.entries.len(),
+        1,
+        "only key under all-0xFF prefix should appear"
+    );
+    assert_eq!(result.entries[0].0, Bytes::copy_from_slice(key));
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn encode_insert(
@@ -171,6 +373,23 @@ fn encode_insert(
         })),
     };
     encode_entry(cmd, 1, 1)
+}
+
+/// Like encode_insert but with an explicit log index, required when placing
+/// multiple entries in a single apply_chunk call (indices must be strictly increasing).
+fn encode_insert_at(
+    key: &[u8],
+    value: &[u8],
+    index: u64,
+) -> Entry {
+    let cmd = WriteCommand {
+        operation: Some(Operation::Insert(Insert {
+            key: key.to_vec().into(),
+            value: value.to_vec().into(),
+            ttl_secs: 0,
+        })),
+    };
+    encode_entry(cmd, index, 1)
 }
 
 fn encode_delete(

@@ -9,6 +9,7 @@ use bytes::Bytes;
 use d_engine_core::ApplyResult;
 use d_engine_core::Error;
 use d_engine_core::Lease;
+use d_engine_core::ScanResult;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::client::WriteCommand;
@@ -28,6 +29,7 @@ use async_trait::async_trait;
 use rocksdb::Cache;
 use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::DB;
+use rocksdb::Direction;
 use rocksdb::ExportImportFilesMetaData;
 use rocksdb::ImportColumnFamilyOptions;
 use rocksdb::IteratorMode;
@@ -97,6 +99,28 @@ pub struct RocksDBStateMachine {
     /// Invariant: lease_enabled == true ⟹ lease.is_some()
     /// Performance: Allows safe unwrap_unchecked in hot paths
     lease_enabled: bool,
+}
+
+/// Returns the lexicographic successor of `prefix` for use as an iterator upper bound.
+///
+/// Trims trailing 0xFF bytes (which would wrap to 0x00 on increment), then increments
+/// the last remaining byte. Returns None when all bytes are 0xFF (no upper bound needed;
+/// caller must use a starts_with guard instead).
+///
+/// Examples:
+///   [0x61, 0xFF] → Some([0x62])   — carry propagates past the 0xFF
+///   [0xFF, 0xFF] → None           — all-0xFF prefix, scan to end of keyspace
+///   [0x2F]       → Some([0x30])   — '/' (0x2F) → '0' (0x30), normal slash-prefix
+fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    while upper.last() == Some(&0xFF) {
+        upper.pop();
+    }
+    if upper.is_empty() {
+        return None;
+    }
+    *upper.last_mut().unwrap() += 1;
+    Some(upper)
 }
 
 impl RocksDBStateMachine {
@@ -583,6 +607,49 @@ impl RocksDBStateMachine {
         };
         StorageError::DbError(msg)
     }
+
+    /// Scans all entries whose key starts with `prefix`.
+    ///
+    /// Uses `set_iterate_upper_bound(prefix_successor)` so RocksDB stops at the
+    /// block level — O(results), not O(total keys). No `prefix_extractor` needed.
+    /// `revision` in the result equals `last_applied_index` — the watch-filter anchor.
+    pub fn scan_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<ScanResult, Error> {
+        if prefix.is_empty() {
+            let revision = self.last_applied_index.load(Ordering::SeqCst);
+            return Ok(ScanResult {
+                entries: vec![],
+                revision,
+            });
+        }
+
+        let mut opts = ReadOptions::default();
+        // prefix_successor handles 0xFF carry: [0x61,0xFF] → [0x62], all-0xFF → None.
+        // When None, no upper bound is set and a starts_with guard terminates the scan.
+        if let Some(upper) = prefix_successor(prefix) {
+            opts.set_iterate_upper_bound(upper);
+        }
+
+        let db = self.db.load();
+        let cf = db
+            .cf_handle(STATE_MACHINE_CF)
+            .ok_or_else(|| StorageError::DbError("STATE_MACHINE_CF not found".into()))?;
+        let iter = db.iterator_cf_opt(&cf, opts, IteratorMode::From(prefix, Direction::Forward));
+
+        let mut entries = Vec::new();
+        for item in iter {
+            let (k, v) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+            if !k.starts_with(prefix) {
+                break;
+            }
+            entries.push((Bytes::copy_from_slice(&k), Bytes::copy_from_slice(&v)));
+        }
+
+        let revision = self.last_applied_index.load(Ordering::SeqCst);
+        Ok(ScanResult { entries, revision })
+    }
 }
 
 #[async_trait]
@@ -1052,6 +1119,13 @@ impl StateMachine for RocksDBStateMachine {
         );
 
         Ok(expired_keys)
+    }
+
+    fn scan_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<ScanResult, Error> {
+        self.scan_prefix(prefix)
     }
 }
 impl Drop for RocksDBStateMachine {

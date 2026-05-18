@@ -1648,3 +1648,91 @@ mod watch_tests {
         );
     }
 }
+
+// =============================================================================
+// scan_prefix tests
+// =============================================================================
+
+mod scan_tests {
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
+    use bytes::Bytes;
+    use d_engine_core::ClientApi;
+    use tokio::sync::oneshot;
+    use tracing_test::traced_test;
+
+    use crate::mock_rpc_service::MockNode;
+    use crate::{ClientConfig, ClientInner, ConnectionPool, GrpcClient};
+
+    async fn make_client(port: u16) -> GrpcClient {
+        let endpoints = vec![format!("http://localhost:{port}")];
+        let config = ClientConfig::default();
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+        GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 42,
+            config,
+            endpoints,
+        })))
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_scan_prefix_success() {
+        use d_engine_proto::client::{KvEntry, ScanResponse};
+
+        let (_tx, rx) = oneshot::channel::<()>();
+        let response = ScanResponse {
+            entries: vec![
+                KvEntry {
+                    key: Bytes::from("/services/node1"),
+                    value: Bytes::from("10.0.0.1"),
+                },
+                KvEntry {
+                    key: Bytes::from("/services/node2"),
+                    value: Bytes::from("10.0.0.2"),
+                },
+            ],
+            revision: 7,
+        };
+        let (_channel, port) = MockNode::simulate_scan_mock_server(rx, response).await.unwrap();
+
+        let client = make_client(port).await;
+        let result = client.scan_prefix(b"/services/").await.expect("scan should succeed");
+
+        assert_eq!(result.revision, 7);
+        assert_eq!(result.entries.len(), 2);
+
+        let map: std::collections::HashMap<_, _> = result.entries.into_iter().collect();
+        assert_eq!(
+            map.get(&Bytes::from("/services/node1")),
+            Some(&Bytes::from("10.0.0.1"))
+        );
+        assert_eq!(
+            map.get(&Bytes::from("/services/node2")),
+            Some(&Bytes::from("10.0.0.2"))
+        );
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_scan_prefix_empty_result() {
+        use d_engine_proto::client::ScanResponse;
+
+        let (_tx, rx) = oneshot::channel::<()>();
+        let response = ScanResponse {
+            entries: vec![],
+            revision: 3,
+        };
+        let (_channel, port) = MockNode::simulate_scan_mock_server(rx, response).await.unwrap();
+
+        let client = make_client(port).await;
+        let result = client.scan_prefix(b"/missing/").await.expect("scan should succeed");
+
+        assert_eq!(result.revision, 3);
+        assert!(result.entries.is_empty());
+    }
+}

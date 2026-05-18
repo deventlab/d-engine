@@ -110,7 +110,7 @@ tokio::spawn(async move { while let Some(e) = rx.recv().await { ... } });
 
 If the per-watcher buffer overflows, d-engine sends a `CANCELED` sentinel.
 In production, respond by clearing the local registry, re-scanning with `scan_prefix`
-(ticket #301), and re-watching.
+(#378), and re-watching.
 
 ## Key Differences from Standalone
 

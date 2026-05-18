@@ -124,6 +124,8 @@ pub use d_engine_core::LogStore;
 pub use d_engine_core::MetaStore;
 /// Unified result type (equivalent to Result<T, Error>)
 pub use d_engine_core::Result;
+/// Prefix scan result: matching entries + revision anchor for watch deduplication
+pub use d_engine_core::ScanResult;
 /// Storage-specific error type
 pub use d_engine_core::StorageError;
 // Internal types required by storage implementations — not part of user API

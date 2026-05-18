@@ -25,6 +25,7 @@
 //! }
 //! ```
 
+use crate::ScanResult;
 use crate::client::client_api_error::ClientApiResult;
 use bytes::Bytes;
 use d_engine_proto::client::ReadConsistencyPolicy;
@@ -363,4 +364,28 @@ pub trait ClientApi: Send + Sync {
         &self,
         key: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<Option<Bytes>>;
+
+    /// Returns all `(key, value)` pairs whose key starts with `prefix`, plus
+    /// a `revision` that anchors watch event deduplication.
+    ///
+    /// Use as the second step of the reliable watch reconnection pattern:
+    /// `watch_prefix` first, then `scan_prefix`, then drain watch events
+    /// filtering by `event.revision <= scan_result.revision`.
+    ///
+    /// Linearizable by default — must see the latest committed state to avoid
+    /// silent gaps when used for watch reconnection.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// loop {
+    ///     let watcher = client.watch_prefix("/services/").await?;
+    ///     let snapshot = client.scan_prefix("/services/").await?;
+    ///     // apply snapshot, then drain watcher filtering by snapshot.revision
+    /// }
+    /// ```
+    async fn scan_prefix(
+        &self,
+        prefix: impl AsRef<[u8]> + Send,
+    ) -> ClientApiResult<ScanResult>;
 }

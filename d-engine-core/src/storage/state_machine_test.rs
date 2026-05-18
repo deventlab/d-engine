@@ -931,3 +931,163 @@ fn create_cas_entry(
         }),
     }
 }
+
+// ============================================================================
+// Default scan_prefix implementation test
+// ============================================================================
+//
+// The default scan_prefix on the trait returns an error because not all state
+// machines support prefix scans.  This test exercises that code path through a
+// minimal concrete type that delegates everything else but does NOT override
+// scan_prefix, ensuring the default arm is reachable and exercised.
+#[cfg(test)]
+mod default_scan_prefix_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use d_engine_proto::common::{Entry, LogId};
+    use d_engine_proto::server::storage::SnapshotMetadata;
+
+    use crate::Error;
+    use crate::storage::state_machine::{ApplyResult, StateMachine};
+
+    struct MinimalSm {
+        running: AtomicBool,
+    }
+
+    #[async_trait]
+    impl StateMachine for MinimalSm {
+        async fn start(&self) -> Result<(), Error> {
+            self.running.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn stop(&self) -> Result<(), Error> {
+            self.running.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn is_running(&self) -> bool {
+            self.running.load(Ordering::SeqCst)
+        }
+
+        fn get(
+            &self,
+            _key_buffer: &[u8],
+        ) -> Result<Option<Bytes>, Error> {
+            Ok(None)
+        }
+
+        fn entry_term(
+            &self,
+            _entry_id: u64,
+        ) -> Option<u64> {
+            None
+        }
+
+        async fn apply_chunk(
+            &self,
+            _chunk: Vec<Entry>,
+        ) -> Result<Vec<ApplyResult>, Error> {
+            Ok(vec![])
+        }
+
+        fn len(&self) -> usize {
+            0
+        }
+
+        fn update_last_applied(
+            &self,
+            _last_applied: LogId,
+        ) {
+        }
+
+        fn last_applied(&self) -> LogId {
+            LogId::default()
+        }
+
+        fn persist_last_applied(
+            &self,
+            _last_applied: LogId,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn update_last_snapshot_metadata(
+            &self,
+            _snapshot_metadata: &SnapshotMetadata,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
+            None
+        }
+
+        fn persist_last_snapshot_metadata(
+            &self,
+            _snapshot_metadata: &SnapshotMetadata,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn apply_snapshot_from_file(
+            &self,
+            _metadata: &SnapshotMetadata,
+            _snapshot_path: std::path::PathBuf,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn generate_snapshot_data(
+            &self,
+            _new_snapshot_dir: std::path::PathBuf,
+            _last_included: LogId,
+        ) -> Result<Bytes, Error> {
+            Ok(Bytes::new())
+        }
+
+        fn save_hard_state(&self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn flush(&self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn flush_async(&self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn reset(&self) -> Result<(), Error> {
+            Ok(())
+        }
+        // scan_prefix intentionally omitted → exercises the trait default implementation
+    }
+
+    /// Test that the default scan_prefix returns an error.
+    ///
+    /// State machines that do not support prefix scans must return an error so
+    /// callers can surface a clear message instead of panicking.
+    #[tokio::test]
+    async fn test_scan_prefix_default_returns_error() {
+        let sm = MinimalSm {
+            running: AtomicBool::new(true),
+        };
+
+        let result = sm.scan_prefix(b"/test/prefix/");
+
+        assert!(
+            result.is_err(),
+            "default scan_prefix must return Err; got Ok unexpectedly"
+        );
+        // The error type is StateMachineError — check the Debug representation which
+        // includes the nested message (Display only shows the outermost variant).
+        let err_debug = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_debug.contains("scan_prefix not supported"),
+            "error should mention 'scan_prefix not supported', got: {err_debug}"
+        );
+    }
+}
