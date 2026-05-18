@@ -1122,6 +1122,33 @@ async fn test_handle_client_write_request_redirects_to_leader() {
     assert!(err.message().contains("Not leader"));
 }
 
+/// Test: FollowerState rejects ClientCmd::Scan with NotLeader error
+///
+/// Scan reads require linearizable prefix enumeration from the leader.
+/// Followers must reject immediately with FailedPrecondition so the client
+/// can redirect to the current leader.
+#[tokio::test]
+async fn test_scan_cmd_follower_rejects_with_not_leader() {
+    use bytes::Bytes;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let cmd = ClientCmd::Scan(Bytes::from("/services/"), resp_tx);
+
+    state.push_client_cmd(cmd, &context);
+
+    let result = resp_rx.recv().await.expect("channel should not be closed");
+    assert!(result.is_err(), "Scan on follower should return error");
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(err.message().contains("Not leader"));
+}
+
 /// Test: FollowerState rejects ClientReadRequest with LinearizableRead policy
 ///
 /// Scenario:

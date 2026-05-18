@@ -320,4 +320,58 @@ max_batch_size = 1
             engine.stop().await.expect("Failed to stop engine");
         }
     }
+
+    mod scan_prefix_operations {
+        use super::*;
+
+        /// scan_prefix returns all keys that start with the prefix and their
+        /// values, plus the revision (last-applied-index) at scan time.
+        #[tokio::test]
+        async fn test_scan_prefix_returns_matching_entries() {
+            let (engine, _temp_dir) = create_test_engine().await;
+            let client = engine.client();
+
+            // Write three keys under /services/ and one decoy key
+            client.put(b"/services/node1".to_vec(), b"10.0.0.1".to_vec()).await.unwrap();
+            client.put(b"/services/node2".to_vec(), b"10.0.0.2".to_vec()).await.unwrap();
+            client.put(b"/services/node3".to_vec(), b"10.0.0.3".to_vec()).await.unwrap();
+            client.put(b"/other/key".to_vec(), b"decoy".to_vec()).await.unwrap();
+
+            let result = client.scan_prefix(b"/services/").await.expect("scan should succeed");
+
+            assert_eq!(
+                result.entries.len(),
+                3,
+                "exactly 3 /services/ keys expected"
+            );
+            let keys: Vec<_> = result.entries.iter().map(|(k, _)| k.clone()).collect();
+            assert!(keys.contains(&bytes::Bytes::from("/services/node1")));
+            assert!(keys.contains(&bytes::Bytes::from("/services/node2")));
+            assert!(keys.contains(&bytes::Bytes::from("/services/node3")));
+            assert!(
+                result.revision >= 4,
+                "revision must reflect at least 4 applied entries"
+            );
+
+            engine.stop().await.expect("Failed to stop engine");
+        }
+
+        /// scan_prefix on a missing prefix returns an empty result, not an error.
+        #[tokio::test]
+        async fn test_scan_prefix_missing_namespace_returns_empty() {
+            let (engine, _temp_dir) = create_test_engine().await;
+            let client = engine.client();
+
+            client.put(b"/other/key".to_vec(), b"v".to_vec()).await.unwrap();
+
+            let result = client.scan_prefix(b"/missing/").await.expect("scan should succeed");
+
+            assert!(
+                result.entries.is_empty(),
+                "missing prefix must return empty entries"
+            );
+
+            engine.stop().await.expect("Failed to stop engine");
+        }
+    }
 }

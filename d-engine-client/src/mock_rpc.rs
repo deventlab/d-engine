@@ -42,6 +42,9 @@ pub struct MockRpcService {
 
     /// Membership watch stream snapshots to emit. None means return an error.
     pub expected_watch_membership_events: Option<Result<Vec<MembershipSnapshot>, tonic::Status>>,
+
+    /// Scan response. None means return unimplemented.
+    pub expected_client_scan_response: Option<Result<ScanResponse, tonic::Status>>,
 }
 impl MockRpcService {
     pub fn with_metadata_response(
@@ -180,6 +183,10 @@ impl RaftClientService for MockRpcService {
         &self,
         _request: tonic::Request<ScanRequest>,
     ) -> std::result::Result<tonic::Response<ScanResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("not used in mock"))
+        match &self.expected_client_scan_response {
+            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Err(status)) => Err(status.clone()),
+            None => Err(tonic::Status::unimplemented("Scan not configured in mock")),
+        }
     }
 }

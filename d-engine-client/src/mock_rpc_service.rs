@@ -341,4 +341,33 @@ impl MockNode {
         let channel = Self::mock_channel_with_port(port).await;
         Ok((channel, port))
     }
+
+    /// Simulate a scan server that returns the given ScanResponse.
+    pub(crate) async fn simulate_scan_mock_server(
+        rx: oneshot::Receiver<()>,
+        response: d_engine_proto::client::ScanResponse,
+    ) -> std::result::Result<(Channel, u16), tonic::Status> {
+        let builder = Box::new(|port: u16| {
+            Ok(ClusterMembership {
+                version: 1,
+                nodes: vec![NodeMeta {
+                    id: 1,
+                    role: NodeRole::Leader as i32,
+                    address: format!("127.0.0.1:{port}"),
+                    status: NodeStatus::Active.into(),
+                }],
+                current_leader_id: Some(1),
+            })
+        });
+
+        let mock_service = crate::mock_rpc::MockRpcService {
+            expected_metadata_response: Some(Arc::new(builder)),
+            expected_client_scan_response: Some(Ok(response)),
+            ..Default::default()
+        };
+
+        let (port, _addr) = Self::mock_listener(mock_service, rx, true).await?;
+        let channel = Self::mock_channel_with_port(port).await;
+        Ok((channel, port))
+    }
 }

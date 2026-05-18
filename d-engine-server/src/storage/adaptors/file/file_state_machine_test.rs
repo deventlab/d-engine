@@ -151,3 +151,153 @@ async fn test_wal_replay_after_crash() {
         Some(Bytes::from("value3"))
     );
 }
+
+// ── scan_prefix tests ─────────────────────────────────────────────────────────
+
+/// scan_prefix returns only keys that start with the prefix, not all keys.
+#[tokio::test]
+async fn test_file_sm_scan_prefix_returns_matching_keys() {
+    use d_engine_core::StateMachine;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
+
+    let entries = vec![
+        Entry {
+            index: 1,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Command(
+                    WriteCommand {
+                        operation: Some(Operation::Insert(Insert {
+                            key: Bytes::from("/services/node1"),
+                            value: Bytes::from("10.0.0.1"),
+                            ttl_secs: 0,
+                        })),
+                    }
+                    .encode_to_vec()
+                    .into(),
+                )),
+            }),
+        },
+        Entry {
+            index: 2,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Command(
+                    WriteCommand {
+                        operation: Some(Operation::Insert(Insert {
+                            key: Bytes::from("/services/node2"),
+                            value: Bytes::from("10.0.0.2"),
+                            ttl_secs: 0,
+                        })),
+                    }
+                    .encode_to_vec()
+                    .into(),
+                )),
+            }),
+        },
+        Entry {
+            index: 3,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Command(
+                    WriteCommand {
+                        operation: Some(Operation::Insert(Insert {
+                            key: Bytes::from("/other/key"),
+                            value: Bytes::from("must_not_appear"),
+                            ttl_secs: 0,
+                        })),
+                    }
+                    .encode_to_vec()
+                    .into(),
+                )),
+            }),
+        },
+    ];
+
+    sm.apply_chunk(entries).await.unwrap();
+
+    let result = sm.scan_prefix(b"/services/").unwrap();
+
+    assert_eq!(
+        result.entries.len(),
+        2,
+        "only /services/ keys should appear"
+    );
+    let keys: Vec<_> = result.entries.iter().map(|(k, _)| k.clone()).collect();
+    assert!(keys.contains(&Bytes::from("/services/node1")));
+    assert!(keys.contains(&Bytes::from("/services/node2")));
+}
+
+/// scan_prefix on a missing prefix returns empty entries, not an error.
+#[tokio::test]
+async fn test_file_sm_scan_prefix_empty_namespace() {
+    use d_engine_core::StateMachine;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
+
+    sm.apply_chunk(vec![Entry {
+        index: 1,
+        term: 1,
+        payload: Some(EntryPayload {
+            payload: Some(Payload::Command(
+                WriteCommand {
+                    operation: Some(Operation::Insert(Insert {
+                        key: Bytes::from("/other/key"),
+                        value: Bytes::from("v"),
+                        ttl_secs: 0,
+                    })),
+                }
+                .encode_to_vec()
+                .into(),
+            )),
+        }),
+    }])
+    .await
+    .unwrap();
+
+    let result = sm.scan_prefix(b"/missing/").unwrap();
+
+    assert!(
+        result.entries.is_empty(),
+        "missing prefix should return empty entries"
+    );
+}
+
+/// scan_prefix revision equals last_applied_index at scan time.
+#[tokio::test]
+async fn test_file_sm_scan_prefix_revision_reflects_applied_index() {
+    use d_engine_core::StateMachine;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
+
+    let entries: Vec<Entry> = (1u64..=3)
+        .map(|i| Entry {
+            index: i,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Command(
+                    WriteCommand {
+                        operation: Some(Operation::Insert(Insert {
+                            key: Bytes::from(format!("/s/{i}")),
+                            value: Bytes::from(format!("{i}")),
+                            ttl_secs: 0,
+                        })),
+                    }
+                    .encode_to_vec()
+                    .into(),
+                )),
+            }),
+        })
+        .collect();
+
+    sm.apply_chunk(entries).await.unwrap();
+
+    let result = sm.scan_prefix(b"/s/").unwrap();
+
+    assert_eq!(result.entries.len(), 3);
+    assert_eq!(result.revision, 3, "revision must equal last_applied_index");
+}

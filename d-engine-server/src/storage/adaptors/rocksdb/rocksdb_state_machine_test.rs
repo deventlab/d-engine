@@ -293,7 +293,68 @@ async fn test_scan_prefix_0xff_suffix_carry_propagation() {
 
     let result = sm.scan_prefix(prefix).unwrap();
 
-    assert_eq!(result.entries.len(), 1, "only key under 0xFF prefix should appear");
+    assert_eq!(
+        result.entries.len(),
+        1,
+        "only key under 0xFF prefix should appear"
+    );
+    assert_eq!(result.entries[0].0, Bytes::copy_from_slice(key));
+}
+
+/// scan_prefix with an empty prefix returns an empty result immediately.
+///
+/// An empty prefix would otherwise match every key in the database, which
+/// is an unsafe operation for an arbitrarily large keyspace. The implementation
+/// short-circuits and returns `ScanResult { entries: vec![], revision }` so
+/// callers receive a well-defined result without iterating the whole DB.
+#[tokio::test]
+async fn test_scan_prefix_empty_prefix_returns_empty() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(vec![encode_insert_at(b"/services/node1", b"v", 1)])
+        .await
+        .unwrap();
+
+    let result = sm.scan_prefix(b"").unwrap();
+
+    assert!(
+        result.entries.is_empty(),
+        "empty prefix should return empty entries (not all keys)"
+    );
+}
+
+/// scan_prefix with an all-0xFF prefix has no successor, so no upper bound is
+/// set and the iterator uses the starts_with guard to exclude non-matching keys.
+///
+/// prefix_successor([0xFF, 0xFF]) returns None because all bytes are 0xFF —
+/// there is no lexicographically larger byte string that could serve as an
+/// upper bound.  The scan must still return all keys that start with the prefix
+/// and exclude everything else.
+#[tokio::test]
+async fn test_scan_prefix_all_0xff_no_upper_bound() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    // Key that starts with [0xFF, 0xFF] — sits at the very top of the keyspace.
+    let prefix: &[u8] = b"\xFF\xFF";
+    let key: &[u8] = b"\xFF\xFF\x01";
+    let decoy: &[u8] = b"\xFE\xAA"; // lexicographically below the prefix
+
+    sm.apply_chunk(vec![
+        encode_insert_at(key, b"top_value", 1),
+        encode_insert_at(decoy, b"must_not_appear", 2),
+    ])
+    .await
+    .unwrap();
+
+    let result = sm.scan_prefix(prefix).unwrap();
+
+    assert_eq!(
+        result.entries.len(),
+        1,
+        "only key under all-0xFF prefix should appear"
+    );
     assert_eq!(result.entries[0].0, Bytes::copy_from_slice(key));
 }
 

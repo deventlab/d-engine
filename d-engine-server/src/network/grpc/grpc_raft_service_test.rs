@@ -461,3 +461,55 @@ async fn test_watch_membership_yields_current_snapshot_then_sentinel_on_sender_d
     // Stream is exhausted after the sentinel.
     assert!(stream.next().await.is_none());
 }
+
+// =============================================================================
+// handle_client_scan unit tests
+// =============================================================================
+
+/// Node not ready → handle_client_scan must return UNAVAILABLE immediately.
+///
+/// The readiness guard fires before the request reaches the Raft command
+/// channel, so the channel stays untouched and no goroutine is wasted.
+#[tokio::test]
+#[traced_test]
+async fn test_handle_client_scan_not_ready_returns_unavailable() {
+    use d_engine_proto::client::ScanRequest;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let node = mock_node("/tmp/test_handle_client_scan_not_ready", graceful_rx, None);
+    node.set_rpc_ready(false);
+
+    let result = node
+        .handle_client_scan(Request::new(ScanRequest {
+            client_id: 1,
+            prefix: bytes::Bytes::from("/services/"),
+        }))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), Code::Unavailable);
+}
+
+/// Node ready but no Raft loop → handle_client_scan must timeout.
+///
+/// With no Raft actor draining the command channel the response never arrives,
+/// so the RPC must return an error within the configured timeout rather than
+/// blocking indefinitely.
+#[tokio::test]
+#[traced_test]
+async fn test_handle_client_scan_timeout() {
+    use d_engine_proto::client::ScanRequest;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let node = mock_node("/tmp/test_handle_client_scan_timeout", graceful_rx, None);
+    node.set_rpc_ready(true);
+
+    let result = node
+        .handle_client_scan(Request::new(ScanRequest {
+            client_id: 1,
+            prefix: bytes::Bytes::from("/services/"),
+        }))
+        .await;
+
+    assert!(result.is_err(), "scan must error when Raft actor is absent");
+}

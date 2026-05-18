@@ -619,7 +619,10 @@ impl RocksDBStateMachine {
     ) -> Result<ScanResult, Error> {
         if prefix.is_empty() {
             let revision = self.last_applied_index.load(Ordering::SeqCst);
-            return Ok(ScanResult { entries: vec![], revision });
+            return Ok(ScanResult {
+                entries: vec![],
+                revision,
+            });
         }
 
         let mut opts = ReadOptions::default();
