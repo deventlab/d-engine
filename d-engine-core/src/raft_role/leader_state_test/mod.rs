@@ -57,3 +57,6 @@ mod single_voter_commit_test;
 
 #[cfg(test)]
 mod stale_learner_deadline_test;
+
+#[cfg(test)]
+mod pending_reads_test;

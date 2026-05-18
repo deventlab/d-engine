@@ -1885,6 +1885,18 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 // introduced when drain_commit_actions became async.
                 self.update_lease_timestamp();
                 self.drain_pending_lease_reads(ctx);
+                // Path A drain (Bug #381 fix): serve linearizable reads that have been
+                // waiting for quorum confirmation. Pure-read batches never advance
+                // commit_index, so handle_apply_completed (Path B) would never fire for
+                // them. Drain here once leadership is confirmed and SM is ready.
+                let last_applied = ctx.state_machine().last_applied().index;
+                let to_serve: Vec<u64> =
+                    self.pending_reads.range(..=last_applied).map(|(k, _)| *k).collect();
+                for idx in to_serve {
+                    if let Some(batch) = self.pending_reads.remove(&idx) {
+                        self.execute_pending_reads(batch.requests, ctx);
+                    }
+                }
             }
         }
 
@@ -3438,11 +3450,21 @@ impl<T: TypeConfig> LeaderState<T> {
             }
         }
 
-        // Phase 3: handle reads (same logic as previous slow path — defer to SM apply callback).
+        // Phase 3: route linearizable reads.
+        //
+        // single_voter: self IS the quorum. Serve immediately when SM is ready;
+        // otherwise fall through to the queue (slow path, SM catching up).
+        //
+        // multi_voter: quorum confirmation is required (Raft §8 step 2).
+        // Always queue — even when last_applied >= read_index — so the read is
+        // only served after a quorum ACK arrives via handle_append_result (Path A)
+        // or after a new commit drives SM apply via handle_apply_completed (Path B).
+        // Serving immediately here without a network round-trip would violate
+        // linearizability when the leader is in a minority partition (Bug #381).
         if let Some(read_batch) = read_batch {
             let read_index = self.calculate_read_index();
             let last_applied = ctx.state_machine().last_applied().index;
-            if last_applied >= read_index {
+            if self.cluster_metadata.single_voter && last_applied >= read_index {
                 self.execute_pending_reads(read_batch, ctx);
             } else {
                 let deadline = Instant::now()
