@@ -1253,6 +1253,19 @@ pub struct WatchConfig {
     /// **Default**: i64::MAX (effectively unlimited)
     #[serde(default = "default_max_watcher_count")]
     pub max_watcher_count: usize,
+
+    /// Heartbeat interval in milliseconds for progress notifications.
+    ///
+    /// The dispatcher broadcasts a `Progress` event to all active watchers on
+    /// each tick so clients can confirm the stream is alive even during quiet
+    /// periods.  Set to 0 to disable heartbeats entirely.
+    ///
+    /// Use milliseconds (not seconds) so tests can set short intervals (e.g. 50ms)
+    /// without sleeping for a full second.
+    ///
+    /// **Default**: 30_000 (30 seconds)
+    #[serde(default = "default_heartbeat_interval_ms")]
+    pub heartbeat_interval_ms: u64,
 }
 
 impl Default for WatchConfig {
@@ -1262,6 +1275,7 @@ impl Default for WatchConfig {
             watcher_buffer_size: default_watcher_buffer_size(),
             enable_metrics: default_enable_watch_metrics(),
             max_watcher_count: default_max_watcher_count(),
+            heartbeat_interval_ms: default_heartbeat_interval_ms(),
         }
     }
 }
@@ -1317,6 +1331,10 @@ const fn default_max_watcher_count() -> usize {
     // i64::MAX — the config crate uses signed 64-bit internally, so usize::MAX overflows it.
     // This value is effectively unlimited for any realistic deployment.
     9_223_372_036_854_775_807
+}
+
+const fn default_heartbeat_interval_ms() -> u64 {
+    30_000
 }
 
 /// Performance metrics configuration

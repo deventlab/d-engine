@@ -1748,7 +1748,7 @@ mod broadcast_watch_events_tests {
             }),
         );
 
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from(&b"key1"[..]));
@@ -1768,7 +1768,7 @@ mod broadcast_watch_events_tests {
             }),
         );
 
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from(&b"key1"[..]));
@@ -1791,7 +1791,7 @@ mod broadcast_watch_events_tests {
             }),
         );
 
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from(&b"lock"[..]));
@@ -1814,7 +1814,7 @@ mod broadcast_watch_events_tests {
             }),
         );
 
-        handler.broadcast_watch_events(&[entry], &[failed(1)], &tx);
+        handler.broadcast_watch_events(&[entry], &[failed(1)], &tx, None);
 
         // Channel must be empty — no event should have been sent
         assert!(
@@ -1857,7 +1857,7 @@ mod broadcast_watch_events_tests {
         ];
         let results = vec![succeeded(1), failed(2), succeeded(3)];
 
-        handler.broadcast_watch_events(&entries, &results, &tx);
+        handler.broadcast_watch_events(&entries, &results, &tx, None);
 
         // k1 succeeded → Put event
         let event1 = rx.recv().await.unwrap();
@@ -1907,7 +1907,7 @@ mod broadcast_watch_events_tests {
         ];
         let results = vec![succeeded(1), failed(2), succeeded(3)];
 
-        handler.broadcast_watch_events(&entries, &results, &tx);
+        handler.broadcast_watch_events(&entries, &results, &tx, None);
 
         // Insert event
         let event1 = rx.recv().await.unwrap();
@@ -1952,7 +1952,7 @@ mod broadcast_watch_events_tests {
         // results[1] = succeeded (aligns with chunk[1] = key-b)
         let results = vec![failed(10), succeeded(11)];
 
-        handler.broadcast_watch_events(&entries, &results, &tx);
+        handler.broadcast_watch_events(&entries, &results, &tx, None);
 
         // Only key-b event should arrive
         let event = rx.recv().await.unwrap();
@@ -1977,10 +1977,181 @@ mod broadcast_watch_events_tests {
             }),
         );
 
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx);
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         // Should still receive valid event
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from(&b"key1"[..]));
+    }
+}
+
+// =============================================================================
+// #379: prev_kv — apply_chunk integration with prev_kv_watcher_count
+// =============================================================================
+
+#[cfg(feature = "watch")]
+mod prev_kv_apply_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use bytes::Bytes;
+    use d_engine_proto::client::{
+        WriteCommand,
+        write_command::{Insert, Operation},
+    };
+    use d_engine_proto::common::{Entry, EntryPayload, entry_payload::Payload};
+    use prost::Message;
+
+    use super::*;
+    use crate::test_utils::snapshot_config;
+    use crate::{ApplyResult, MockSnapshotPolicy, MockStateMachine, MockTypeConfig};
+
+    fn insert_entry(
+        index: u64,
+        key: &[u8],
+        value: &[u8],
+    ) -> Entry {
+        let write_cmd = WriteCommand {
+            operation: Some(Operation::Insert(Insert {
+                key: Bytes::copy_from_slice(key),
+                value: Bytes::copy_from_slice(value),
+                ttl_secs: 0,
+            })),
+        };
+        let mut buf = Vec::new();
+        write_cmd.encode(&mut buf).unwrap();
+        Entry {
+            index,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Command(Bytes::from(buf))),
+            }),
+        }
+    }
+
+    /// #379 P5: When prev_kv_watcher_count == 0, apply_chunk must NOT call
+    /// state_machine.get() at all.  The mock will panic if get() is called.
+    ///
+    /// This validates the performance optimization: zero extra RocksDB reads
+    /// when no watcher has opted in to prev_kv.
+    #[tokio::test]
+    async fn test_apply_chunk_skips_get_when_no_prev_kv_watchers() {
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk().returning(|_| {
+            Ok(vec![ApplyResult {
+                index: 1,
+                succeeded: true,
+            }])
+        });
+        // DO NOT set up expect_get() → mockall panics if get() is called unexpectedly
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(10);
+        let prev_kv_count = Arc::new(AtomicUsize::new(0)); // no prev_kv watchers
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_config(std::path::PathBuf::from(
+                "/tmp/test_skip_get_when_no_prev_kv",
+            )),
+            MockSnapshotPolicy::new(),
+            Some(tx),
+            prev_kv_count,
+        );
+
+        let entry = insert_entry(1, b"k", b"v");
+        handler.apply_chunk(vec![entry]).await.unwrap();
+        // If get() were called, mockall would have panicked above.
+    }
+
+    /// #379 P6: When prev_kv_watcher_count > 0, apply_chunk reads the old value
+    /// from the state machine and includes it in the broadcast WatchResponse.
+    ///
+    /// This validates the end-to-end prev_kv path: state machine read → broadcast event.
+    #[tokio::test]
+    async fn test_apply_chunk_reads_and_broadcasts_prev_value_when_count_nonzero() {
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk().returning(|_| {
+            Ok(vec![ApplyResult {
+                index: 1,
+                succeeded: true,
+            }])
+        });
+        // Expect exactly one get() call for the insert key
+        sm.expect_get().times(1).returning(|_| Ok(Some(Bytes::from("old_val"))));
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let prev_kv_count = Arc::new(AtomicUsize::new(1)); // one prev_kv watcher active
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_config(std::path::PathBuf::from(
+                "/tmp/test_reads_prev_value_when_nonzero",
+            )),
+            MockSnapshotPolicy::new(),
+            Some(tx),
+            prev_kv_count,
+        );
+
+        let entry = insert_entry(1, b"k", b"new_val");
+        handler.apply_chunk(vec![entry]).await.unwrap();
+
+        let event = rx.recv().await.expect("expected broadcast event");
+        assert_eq!(
+            event.prev_value,
+            Bytes::from("old_val"),
+            "broadcast event must carry the prev_value read before apply"
+        );
+        assert_eq!(event.value, Bytes::from("new_val"));
+    }
+
+    /// #379 P6b: After the last prev_kv watcher unregisters (count drops to 0),
+    /// apply_chunk must NOT call state_machine.get() on the next apply.
+    ///
+    /// Tests the dynamic 1→0 transition: first apply with count=1 calls get()
+    /// exactly once; then count is set to 0 and second apply must NOT call get().
+    #[tokio::test]
+    async fn test_apply_chunk_stops_reading_prev_value_after_count_drops_to_zero() {
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk().times(2).returning(|_| {
+            Ok(vec![ApplyResult {
+                index: 1,
+                succeeded: true,
+            }])
+        });
+        // Expect exactly one get(): during the first apply (count=1).
+        // The second apply (count=0) must not call get().
+        // mockall verifies `times(1)` at drop — fails if called 0 or 2 times.
+        sm.expect_get().times(1).returning(|_| Ok(Some(Bytes::from("old"))));
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(10);
+        let prev_kv_count = Arc::new(AtomicUsize::new(1)); // one prev_kv watcher active
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_config(std::path::PathBuf::from(
+                "/tmp/test_stops_reading_after_count_zero",
+            )),
+            MockSnapshotPolicy::new(),
+            Some(tx),
+            prev_kv_count.clone(),
+        );
+
+        // First apply: count=1 → get() is called
+        let entry1 = insert_entry(1, b"k", b"v1");
+        handler.apply_chunk(vec![entry1]).await.unwrap();
+
+        // Simulate last prev_kv watcher unregistering
+        prev_kv_count.store(0, Ordering::SeqCst);
+
+        // Second apply: count=0 → get() must NOT be called
+        let entry2 = insert_entry(2, b"k", b"v2");
+        handler.apply_chunk(vec![entry2]).await.unwrap();
+        // mockall verifies on drop: exactly 1 get() call was made
     }
 }

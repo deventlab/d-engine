@@ -532,29 +532,32 @@ where
         })?;
 
         let is_prefix = watch_request.prefix;
+        let prev_kv = watch_request.prev_kv;
         info!(
             node_id = self.node_id,
             key = ?key,
             is_prefix,
+            prev_kv,
             "Registering watch for key"
         );
 
         // Register watcher (exact or prefix) and get receiver
         let handle = if is_prefix {
-            registry.register_prefix(key).map_err(|e| match e {
+            registry.register_prefix(key, prev_kv).map_err(|e| match e {
                 WatchError::LimitExceeded(_) => Status::resource_exhausted(e.to_string()),
                 WatchError::InvalidPrefix => Status::invalid_argument(e.to_string()),
             })?
         } else {
-            registry.register(key).map_err(|e| Status::resource_exhausted(e.to_string()))?
+            registry
+                .register(key, prev_kv)
+                .map_err(|e| Status::resource_exhausted(e.to_string()))?
         };
         let (_watcher_id, _key, receiver) = handle.into_receiver();
 
-        // Convert mpsc::Receiver -> Boxed Stream with sentinel error on close
-        // When the stream ends (receiver closed), send an UNAVAILABLE error to help clients
-        // detect server shutdown/restart and implement reconnection logic
+        // Convert mpsc::Receiver<WatchEvent> -> Boxed Stream<WatchResponse> for gRPC.
+        // WatchEvent (opaque) is converted back to proto WatchResponse at this boundary.
         let stream = tokio_stream::wrappers::ReceiverStream::new(receiver)
-            .map(Ok)
+            .map(|e| Ok(d_engine_proto::client::WatchResponse::from(&e)))
             .chain(futures::stream::once(async {
                 Err(Status::unavailable(
                     "Watch stream closed: server may have shut down or restarted. Please reconnect and re-register the watcher."

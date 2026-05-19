@@ -4,6 +4,7 @@
 //! Features:
 //! - Exact-key Watch: react to changes on a single specific key
 //! - Prefix Watch: maintain a live registry of all nodes in a service namespace
+//! - prev_kv Watch: receive the previous value on each mutation (audit log pattern)
 //! - In-process Watch API (zero network overhead, zero serialization overhead)
 //! - Automatic lifecycle management
 
@@ -54,20 +55,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(event) = exact_rx.recv().await {
             let key = String::from_utf8_lossy(&event.key);
             match event.event_type {
-                e if e == WatchEventType::Put as i32 => {
+                WatchEventType::Put => {
                     let value = String::from_utf8_lossy(&event.value);
                     println!(
                         "[exact-watch] config changed: {key} = {value}  (revision={})",
                         event.revision
                     );
                 }
-                e if e == WatchEventType::Delete as i32 => {
+                WatchEventType::Delete => {
                     println!(
                         "[exact-watch] config deleted: {key}  (revision={})",
                         event.revision
                     );
                 }
-                _ => {}
+                WatchEventType::Canceled => {
+                    println!("[exact-watch] CANCELED — buffer overflow on {key}; re-register watch");
+                    break;
+                }
+                WatchEventType::Progress => {}
             }
         }
     });
@@ -109,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut reg = registry_bg.lock().unwrap();
 
             match event.event_type {
-                e if e == WatchEventType::Put as i32 => {
+                WatchEventType::Put => {
                     let value = String::from_utf8_lossy(&event.value).to_string();
                     println!(
                         "[prefix-watch] node up:   {key_str} → {value}  (revision={})",
@@ -117,14 +122,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     reg.insert(event.key.to_vec(), value);
                 }
-                e if e == WatchEventType::Delete as i32 => {
+                WatchEventType::Delete => {
                     println!(
                         "[prefix-watch] node down: {key_str}  (revision={})",
                         event.revision
                     );
                     reg.remove(event.key.as_ref());
                 }
-                e if e == WatchEventType::Canceled as i32 => {
+                WatchEventType::Canceled => {
                     // Buffer overflow: registry may be stale.
                     // Production code: re-watch then scan_prefix (see ADR-003 reconnect pattern).
                     println!(
@@ -177,6 +182,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("    {} → {}", String::from_utf8_lossy(k), v);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // DEMO 3: prev_kv — audit log for endpoint changes
+    //
+    // Use case: compliance teams need to know the previous endpoint value
+    // every time a service node updates its address (e.g. rolling restart).
+    // watch_with_options(..., prev_kv: true) populates event.prev_value
+    // so you can log "was X, now Y" without an extra Read round-trip.
+    //
+    // Cost: when at least one prev_kv watcher is active, the state machine
+    // reads the old value from storage before each write batch. Cost scales
+    // with write rate, not watcher count — acceptable for audit workloads.
+    // -----------------------------------------------------------------------
+    println!("\n=== Demo 3: prev_kv — Endpoint Change Audit Log ===");
+
+    let audit_watcher = engine.client().watch_prefix_with_options(b"/audit/", true)?;
+    let (_, _, mut audit_rx) = audit_watcher.into_receiver();
+
+    tokio::spawn(async move {
+        while let Some(event) = audit_rx.recv().await {
+            let key = String::from_utf8_lossy(&event.key);
+            match event.event_type {
+                WatchEventType::Put => {
+                    let prev = match event.prev_value.as_deref() {
+                        None | Some(b"") => "(new key)".to_string(),
+                        Some(v) => String::from_utf8_lossy(v).to_string(),
+                    };
+                    println!(
+                        "[audit] {} : {} → {}  (revision={})",
+                        key,
+                        prev,
+                        String::from_utf8_lossy(&event.value),
+                        event.revision
+                    );
+                }
+                WatchEventType::Delete => {
+                    let was = event
+                        .prev_value
+                        .as_deref()
+                        .map(|v| String::from_utf8_lossy(v).to_string())
+                        .unwrap_or_default();
+                    println!(
+                        "[audit] {} deleted (was: {})  (revision={})",
+                        key, was, event.revision
+                    );
+                }
+                WatchEventType::Canceled => {
+                    println!("[audit] CANCELED — re-register watch");
+                    break;
+                }
+                WatchEventType::Progress => {}
+            }
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    client.put(b"/audit/svc-a", b"10.0.1.1:8080").await?;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.put(b"/audit/svc-a", b"10.0.1.2:8080").await?; // rolling restart
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.delete(b"/audit/svc-a").await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     println!("\n=== Demo complete. Press Ctrl+C to exit. ===");
     signal::ctrl_c().await?;

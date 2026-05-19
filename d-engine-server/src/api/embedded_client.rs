@@ -464,6 +464,66 @@ impl EmbeddedClient {
         &self,
         key: impl AsRef<[u8]>,
     ) -> ClientApiResult<d_engine_core::watch::WatcherHandle> {
+        self.watch_with_options(key, false)
+    }
+
+    /// Watch a key and opt in to receiving the previous value on each mutation.
+    ///
+    /// This is the lower-level form of [`watch`](Self::watch). Use it when you need
+    /// `event.prev_value` — for example to detect what a key held before a write, or
+    /// to implement an audit log.
+    ///
+    /// # Arguments
+    ///
+    /// * `key`     - The exact key to watch.
+    /// * `prev_kv` - When `true`, every `Put` and `Delete` event carries the value the
+    ///   key held **before** the mutation in `event.prev_value`. When
+    ///   `false` (the default via [`watch`](Self::watch)), `prev_value` is
+    ///   always empty.
+    ///
+    /// # Performance note
+    ///
+    /// When at least one watcher has `prev_kv = true`, the state machine reads the old
+    /// value from storage before each `apply_chunk`.  The read is amortised across the
+    /// whole write batch — cost scales with **write rate**, not watcher count.  Disable
+    /// when you don't need the previous value.
+    ///
+    /// # `prev_value` is empty in these cases
+    ///
+    /// - The watcher was registered with `prev_kv = false`.
+    /// - The event type is `Progress` or `Canceled` (not a data mutation).
+    /// - The key did not exist before a `Put` (i.e. it was a fresh insert).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Distributed-lock audit: know who held the lock before it changed hands.
+    /// let watcher = client.watch_with_options(b"lock/resource_a", true)?;
+    /// let (_, _, mut rx) = watcher.into_receiver();
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Some(event) = rx.recv().await {
+    ///         match event.event_type {
+    ///             WatchEventType::Put => println!(
+    ///                 "lock acquired by {:?}, was held by {:?}",
+    ///                 event.value, event.prev_value
+    ///             ),
+    ///             WatchEventType::Delete => println!(
+    ///                 "lock released, was held by {:?}",
+    ///                 event.prev_value
+    ///             ),
+    ///             WatchEventType::Canceled => { /* re-register */ break; }
+    ///             WatchEventType::Progress => {}
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    #[cfg(feature = "watch")]
+    pub fn watch_with_options(
+        &self,
+        key: impl AsRef<[u8]>,
+        prev_kv: bool,
+    ) -> ClientApiResult<d_engine_core::watch::WatcherHandle> {
         let registry = self.watch_registry.as_ref().ok_or_else(|| ClientApiError::Business {
             code: ErrorCode::Uncategorized,
             message: "Watch feature disabled (WatchRegistry not initialized)".to_string(),
@@ -471,7 +531,7 @@ impl EmbeddedClient {
         })?;
 
         let key_bytes = Bytes::copy_from_slice(key.as_ref());
-        registry.register(key_bytes).map_err(|e| ClientApiError::Business {
+        registry.register(key_bytes, prev_kv).map_err(|e| ClientApiError::Business {
             code: ErrorCode::Uncategorized,
             message: e.to_string(),
             required_action: None,
@@ -487,6 +547,47 @@ impl EmbeddedClient {
         &self,
         prefix: impl AsRef<[u8]>,
     ) -> ClientApiResult<d_engine_core::watch::WatcherHandle> {
+        self.watch_prefix_with_options(prefix, false)
+    }
+
+    /// Register a prefix watcher and opt in to receiving the previous value on each mutation.
+    ///
+    /// Prefix form of [`watch_with_options`](Self::watch_with_options).  Every key whose
+    /// path starts with `prefix` triggers an event; `event.key` is the full child key.
+    ///
+    /// See [`watch_with_options`](Self::watch_with_options) for the `prev_kv` semantics,
+    /// performance note, and the cases where `prev_value` is empty.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Track every endpoint change under /services/ together with the old address.
+    /// let watcher = client.watch_prefix_with_options(b"/services/", true)?;
+    /// let (_, _, mut rx) = watcher.into_receiver();
+    ///
+    /// tokio::spawn(async move {
+    ///     while let Some(event) = rx.recv().await {
+    ///         match event.event_type {
+    ///             WatchEventType::Put => println!(
+    ///                 "{:?} moved from {:?} → {:?}",
+    ///                 event.key, event.prev_value, event.value
+    ///             ),
+    ///             WatchEventType::Delete => println!(
+    ///                 "{:?} removed (was {:?})",
+    ///                 event.key, event.prev_value
+    ///             ),
+    ///             WatchEventType::Canceled => { /* buffer overflow — re-register */ break; }
+    ///             WatchEventType::Progress => {}
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    #[cfg(feature = "watch")]
+    pub fn watch_prefix_with_options(
+        &self,
+        prefix: impl AsRef<[u8]>,
+        prev_kv: bool,
+    ) -> ClientApiResult<d_engine_core::watch::WatcherHandle> {
         let registry = self.watch_registry.as_ref().ok_or_else(|| ClientApiError::Business {
             code: ErrorCode::Uncategorized,
             message: "Watch feature disabled (WatchRegistry not initialized)".to_string(),
@@ -494,11 +595,13 @@ impl EmbeddedClient {
         })?;
 
         let prefix_bytes = Bytes::copy_from_slice(prefix.as_ref());
-        registry.register_prefix(prefix_bytes).map_err(|e| ClientApiError::Business {
-            code: ErrorCode::Uncategorized,
-            message: e.to_string(),
-            required_action: None,
-        })
+        registry
+            .register_prefix(prefix_bytes, prev_kv)
+            .map_err(|e| ClientApiError::Business {
+                code: ErrorCode::Uncategorized,
+                message: e.to_string(),
+                required_action: None,
+            })
     }
 
     /// Scan all keys under `prefix` with linearizable consistency.

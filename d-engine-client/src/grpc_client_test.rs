@@ -1592,6 +1592,7 @@ mod watch_tests {
             WatchResponse {
                 key: Bytes::from("lock"),
                 value: Bytes::from("owner-a"),
+                prev_value: Bytes::new(),
                 event_type: WatchEventType::Put as i32,
                 error: 0,
                 revision: 0,
@@ -1599,6 +1600,7 @@ mod watch_tests {
             WatchResponse {
                 key: Bytes::from("lock"),
                 value: Bytes::new(),
+                prev_value: Bytes::new(),
                 event_type: WatchEventType::Delete as i32,
                 error: 0,
                 revision: 0,

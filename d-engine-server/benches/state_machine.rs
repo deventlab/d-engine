@@ -67,7 +67,14 @@ fn create_watch_system(
     let registry = Arc::new(WatchRegistry::new(watcher_buffer_size, unregister_tx));
 
     // Spawn dispatcher
-    let dispatcher = WatchDispatcher::new(Arc::clone(&registry), broadcast_rx, unregister_rx);
+    let last_applied = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let dispatcher = WatchDispatcher::new(
+        Arc::clone(&registry),
+        broadcast_rx,
+        unregister_rx,
+        last_applied,
+        0,
+    );
     tokio::spawn(async move {
         dispatcher.run().await;
     });
@@ -87,7 +94,7 @@ fn register_watchers(
     let mut handles = Vec::with_capacity(count);
     for i in 0..count {
         let key = format!("{key_prefix}{i}");
-        handles.push(registry.register(key.into()).expect("register watcher"));
+        handles.push(registry.register(key.into(), false).expect("register watcher"));
     }
     handles
 }
@@ -352,6 +359,7 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
                                 key: insert.key.clone(),
                                 value: insert.value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                                prev_value: bytes::Bytes::new(),
                                 error: 0,
                                 revision: 0,
                             };
@@ -362,6 +370,7 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
                                 key: delete.key.clone(),
                                 value: bytes::Bytes::new(),
                                 event_type: d_engine_proto::client::WatchEventType::Delete as i32,
+                                prev_value: bytes::Bytes::new(),
                                 error: 0,
                                 revision: 0,
                             };
@@ -372,6 +381,7 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
                                 key: cas.key.clone(),
                                 value: cas.new_value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                                prev_value: bytes::Bytes::new(),
                                 error: 0,
                                 revision: 0,
                             };
@@ -416,6 +426,7 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
                                 key: insert.key.clone(),
                                 value: insert.value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                                prev_value: bytes::Bytes::new(),
                                 error: 0,
                                 revision: 0,
                             };
@@ -426,6 +437,7 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
                                 key: delete.key.clone(),
                                 value: bytes::Bytes::new(),
                                 event_type: d_engine_proto::client::WatchEventType::Delete as i32,
+                                prev_value: bytes::Bytes::new(),
                                 error: 0,
                                 revision: 0,
                             };
@@ -436,6 +448,7 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
                                 key: cas.key.clone(),
                                 value: cas.new_value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                                prev_value: bytes::Bytes::new(),
                                 error: 0,
                                 revision: 0,
                             };
@@ -480,6 +493,7 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
                                 key: insert.key.clone(),
                                 value: insert.value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                                prev_value: bytes::Bytes::new(),
                                 error: 0,
                                 revision: 0,
                             };
@@ -490,6 +504,7 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
                                 key: delete.key.clone(),
                                 value: bytes::Bytes::new(),
                                 event_type: d_engine_proto::client::WatchEventType::Delete as i32,
+                                prev_value: bytes::Bytes::new(),
                                 error: 0,
                                 revision: 0,
                             };
@@ -500,6 +515,7 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
                                 key: cas.key.clone(),
                                 value: cas.new_value.clone(),
                                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                                prev_value: bytes::Bytes::new(),
                                 error: 0,
                                 revision: 0,
                             };
@@ -528,7 +544,7 @@ fn bench_watch_e2e_latency(c: &mut Criterion) {
             let value = Bytes::from("test_value");
 
             // Register a watcher
-            let mut watcher = registry.register(key.clone()).expect("register watcher");
+            let mut watcher = registry.register(key.clone(), false).expect("register watcher");
 
             // Measure time from broadcast to receive
             let start = tokio::time::Instant::now();
@@ -538,6 +554,7 @@ fn bench_watch_e2e_latency(c: &mut Criterion) {
                 key: key.clone(),
                 value: value.clone(),
                 event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                prev_value: bytes::Bytes::new(),
                 error: 0,
                 revision: 0,
             };

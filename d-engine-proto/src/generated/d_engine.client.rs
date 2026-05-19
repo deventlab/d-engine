@@ -192,6 +192,11 @@ pub struct WatchRequest {
     /// Default false preserves backwards-compatible exact-match behaviour.
     #[prost(bool, tag = "3")]
     pub prefix: bool,
+    /// When true, each WatchResponse includes the value that existed before
+    /// the mutation (prev_value). Default false; server skips the extra read
+    /// when no watcher requests it.
+    #[prost(bool, tag = "4")]
+    pub prev_kv: bool,
 }
 /// Response containing a watch event notification
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -214,6 +219,12 @@ pub struct WatchResponse {
     /// CANCELED: re-read state, then re-register watching from revision+1.
     #[prost(uint64, tag = "5")]
     pub revision: u64,
+    /// Value before this mutation. Empty when:
+    ///    - key did not exist before the write
+    ///    - event_type is PROGRESS or CANCELED
+    ///    - watcher was registered with prev_kv = false
+    #[prost(bytes = "bytes", tag = "6")]
+    pub prev_value: ::prost::bytes::Bytes,
 }
 /// Read consistency policy for controlling read operation guarantees
 ///
@@ -278,6 +289,9 @@ pub enum WatchEventType {
     /// Watcher forcibly canceled by the server (e.g. buffer overflow).
     /// Client should re-sync via Read API and re-register the watch.
     Canceled = 2,
+    /// Periodic heartbeat with no data change.
+    /// Carries current revision so clients can confirm the stream is alive.
+    Progress = 3,
 }
 impl WatchEventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -289,6 +303,7 @@ impl WatchEventType {
             Self::Put => "WATCH_EVENT_TYPE_PUT",
             Self::Delete => "WATCH_EVENT_TYPE_DELETE",
             Self::Canceled => "WATCH_EVENT_TYPE_CANCELED",
+            Self::Progress => "WATCH_EVENT_TYPE_PROGRESS",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -297,6 +312,7 @@ impl WatchEventType {
             "WATCH_EVENT_TYPE_PUT" => Some(Self::Put),
             "WATCH_EVENT_TYPE_DELETE" => Some(Self::Delete),
             "WATCH_EVENT_TYPE_CANCELED" => Some(Self::Canceled),
+            "WATCH_EVENT_TYPE_PROGRESS" => Some(Self::Progress),
             _ => None,
         }
     }

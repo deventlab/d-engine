@@ -357,23 +357,41 @@ where
                 unregister_tx,
             ));
 
+            // Shared last_applied for Progress event revision; written by handler, read by dispatcher.
+            let last_applied_ref = Arc::new(std::sync::atomic::AtomicU64::new(last_applied_index));
+
             // Create dispatcher
-            let dispatcher =
-                WatchDispatcher::new(Arc::clone(&registry), broadcast_rx, unregister_rx);
+            let dispatcher = WatchDispatcher::new(
+                Arc::clone(&registry),
+                broadcast_rx,
+                unregister_rx,
+                Arc::clone(&last_applied_ref),
+                node_config.raft.watch.heartbeat_interval_ms,
+            );
 
             // Explicitly spawn dispatcher task (resource allocation visible)
             let dispatcher_handle = tokio::spawn(async move {
                 dispatcher.run().await;
             });
 
-            Some((broadcast_tx, registry, dispatcher_handle))
+            Some((broadcast_tx, registry, dispatcher_handle, last_applied_ref))
         };
 
         let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
             #[cfg(feature = "watch")]
-            let watch_event_tx = watch_system.as_ref().map(|(tx, _, _)| tx.clone());
+            let watch_event_tx = watch_system.as_ref().map(|(tx, _, _, _)| tx.clone());
+
+            // Share the registry's live prev_kv counter Arc so the handler sees real-time updates.
+            #[cfg(feature = "watch")]
+            let prev_kv_count = watch_system
+                .as_ref()
+                .map(|(_, registry, _, _)| registry.prev_kv_watcher_count_arc())
+                .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+
             #[cfg(not(feature = "watch"))]
-            let watch_event_tx = None;
+            let watch_event_tx: Option<
+                tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
+            > = None;
 
             Arc::new(DefaultStateMachineHandler::new(
                 node_id,
@@ -381,7 +399,14 @@ where
                 state_machine.clone(),
                 node_config.raft.snapshot.clone(),
                 snapshot_policy,
+                #[cfg(feature = "watch")]
                 watch_event_tx,
+                #[cfg(not(feature = "watch"))]
+                watch_event_tx,
+                #[cfg(feature = "watch")]
+                prev_kv_count,
+                #[cfg(not(feature = "watch"))]
+                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             ))
         });
         let (membership_inner, zombie_rx) = self.membership.take().map_or_else(
@@ -561,9 +586,9 @@ where
             membership_rx,
             node_config: node_config_arc,
             #[cfg(feature = "watch")]
-            watch_registry: watch_system.as_ref().map(|(_, reg, _)| Arc::clone(reg)),
+            watch_registry: watch_system.as_ref().map(|(_, reg, _, _)| Arc::clone(reg)),
             #[cfg(feature = "watch")]
-            _watch_dispatcher_handle: watch_system.map(|(_, _, handle)| handle),
+            _watch_dispatcher_handle: watch_system.map(|(_, _, handle, _)| handle),
             sm_worker_handle: std::sync::Mutex::new(Some(sm_worker_handle)),
             _commit_handler_handle: Some(commit_handler_handle),
             _lease_cleanup_handle: lease_cleanup_handle,

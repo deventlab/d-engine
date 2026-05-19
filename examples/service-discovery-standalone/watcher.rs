@@ -251,6 +251,7 @@ fn apply_event_to_registry(
             registry.clear();
             true
         }
+        Some(WatchEventType::Progress) => false,
         None => {
             println!("[UNKNOWN] {key_str} (event_type={})", response.event_type);
             false
@@ -284,10 +285,9 @@ fn print_event(response: &WatchResponse) {
             println!("[DELETE] {key}  (revision={})", response.revision);
         }
         Some(WatchEventType::Canceled) => {
-            println!(
-                "[CANCELED] {key} — buffer overflow; re-sync and re-register"
-            );
+            println!("[CANCELED] {key} — buffer overflow; re-sync and re-register");
         }
+        Some(WatchEventType::Progress) => {}
         None => {
             println!("[UNKNOWN] {key} (event_type={})", response.event_type);
         }

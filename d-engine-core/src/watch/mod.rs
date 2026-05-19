@@ -138,12 +138,11 @@ pub use crate::config::WatchConfig;
 /// buffer overflow.  The client receives this as the last event on the stream
 /// and should treat it as a signal to re-sync via the Read API and re-register.
 pub(crate) fn make_cancel_event(key: bytes::Bytes) -> WatchEvent {
-    use d_engine_proto::error::ErrorCode;
     WatchEvent {
         key,
         value: bytes::Bytes::new(),
-        event_type: WatchEventType::Canceled as i32,
-        error: ErrorCode::WatchBufferOverflow as i32,
+        prev_value: None,
+        event_type: WatchEventType::Canceled,
         revision: 0,
     }
 }
