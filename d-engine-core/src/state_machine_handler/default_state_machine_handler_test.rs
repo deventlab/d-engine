@@ -1992,7 +1992,7 @@ mod broadcast_watch_events_tests {
 #[cfg(feature = "watch")]
 mod prev_kv_apply_tests {
     use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use bytes::Bytes;
     use d_engine_proto::client::{
@@ -2111,23 +2111,24 @@ mod prev_kv_apply_tests {
     /// #379 P6b: After the last prev_kv watcher unregisters (count drops to 0),
     /// apply_chunk must NOT call state_machine.get() on the next apply.
     ///
-    /// Tests the dynamic transition: count was 1 → externally set to 0 →
-    /// next apply skips read.  This matches what happens when the last watcher
-    /// using prev_kv=true unregisters in production.
+    /// Tests the dynamic 1→0 transition: first apply with count=1 calls get()
+    /// exactly once; then count is set to 0 and second apply must NOT call get().
     #[tokio::test]
     async fn test_apply_chunk_stops_reading_prev_value_after_count_drops_to_zero() {
         let mut sm = MockStateMachine::new();
-        sm.expect_apply_chunk().returning(|_| {
+        sm.expect_apply_chunk().times(2).returning(|_| {
             Ok(vec![ApplyResult {
                 index: 1,
                 succeeded: true,
             }])
         });
-        // After count → 0, get() must NOT be called
-        // (Not setting up expect_get → mockall panics if called)
+        // Expect exactly one get(): during the first apply (count=1).
+        // The second apply (count=0) must not call get().
+        // mockall verifies `times(1)` at drop — fails if called 0 or 2 times.
+        sm.expect_get().times(1).returning(|_| Ok(Some(Bytes::from("old"))));
 
         let (tx, _rx) = tokio::sync::broadcast::channel(10);
-        let prev_kv_count = Arc::new(AtomicUsize::new(0)); // already 0 (last watcher gone)
+        let prev_kv_count = Arc::new(AtomicUsize::new(1)); // one prev_kv watcher active
 
         let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
             1,
@@ -2141,10 +2142,16 @@ mod prev_kv_apply_tests {
             prev_kv_count.clone(),
         );
 
-        // Simulate: count was 1 (watcher registered), now it's 0 (watcher gone)
-        // The Arc is already at 0 — handler should skip read on next apply.
-        let entry = insert_entry(1, b"k", b"v");
-        handler.apply_chunk(vec![entry]).await.unwrap();
-        // No panic → get() was not called → optimization active.
+        // First apply: count=1 → get() is called
+        let entry1 = insert_entry(1, b"k", b"v1");
+        handler.apply_chunk(vec![entry1]).await.unwrap();
+
+        // Simulate last prev_kv watcher unregistering
+        prev_kv_count.store(0, Ordering::SeqCst);
+
+        // Second apply: count=0 → get() must NOT be called
+        let entry2 = insert_entry(2, b"k", b"v2");
+        handler.apply_chunk(vec![entry2]).await.unwrap();
+        // mockall verifies on drop: exactly 1 get() call was made
     }
 }

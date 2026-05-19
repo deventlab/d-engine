@@ -650,32 +650,64 @@ where
         sm: &dyn crate::StateMachine,
         chunk: &[Entry],
     ) -> Vec<Option<bytes::Bytes>> {
+        use std::collections::HashMap;
+
         use d_engine_proto::client::WriteCommand;
         use d_engine_proto::client::write_command::Operation;
         use d_engine_proto::common::entry_payload::Payload;
         use prost::Message;
 
-        chunk
-            .iter()
-            .map(|entry| {
+        // Tracks the value each key would hold after each processed entry.
+        // None = key was deleted by an earlier entry in this batch.
+        // Ensures that two writes to the same key in one chunk produce correct
+        // prev_values: the second write sees the first write's value, not the
+        // pre-batch SM state.
+        let mut overlay: HashMap<bytes::Bytes, Option<bytes::Bytes>> = HashMap::new();
+        let mut result = Vec::with_capacity(chunk.len());
+
+        for entry in chunk {
+            let prev = (|| -> Option<bytes::Bytes> {
                 let payload = entry.payload.as_ref()?;
-                let Some(Payload::Command(bytes)) = &payload.payload else {
+                let Some(Payload::Command(cmd_bytes)) = &payload.payload else {
                     return None;
                 };
-                let Ok(write_cmd) = WriteCommand::decode(bytes.as_ref()) else {
+                let Ok(write_cmd) = WriteCommand::decode(cmd_bytes.as_ref()) else {
                     return None;
                 };
+                let op = write_cmd.operation?;
 
-                let key: Option<&[u8]> = match &write_cmd.operation {
-                    Some(Operation::Insert(ins)) => Some(&ins.key),
-                    Some(Operation::Delete(del)) => Some(&del.key),
-                    Some(Operation::CompareAndSwap(cas)) => Some(&cas.key),
-                    None => None,
+                let key: bytes::Bytes = match &op {
+                    Operation::Insert(ins) => ins.key.clone(),
+                    Operation::Delete(del) => del.key.clone(),
+                    Operation::CompareAndSwap(cas) => cas.key.clone(),
                 };
 
-                key.map(|k| sm.get(k).ok().flatten().unwrap_or_default())
-            })
-            .collect()
+                // Check overlay first (reflects mutations earlier in this batch),
+                // then fall back to the SM's pre-batch state.
+                let prev = if let Some(v) = overlay.get(&key) {
+                    v.clone()
+                } else {
+                    sm.get(&key).ok().flatten()
+                };
+
+                // Update overlay so later entries in this batch see the updated state.
+                // CAS outcome is unknown before apply, so we conservatively skip it;
+                // same-key CAS-pairs in one batch are rare and semantically ambiguous.
+                match op {
+                    Operation::Insert(ins) => {
+                        overlay.insert(key, Some(ins.value));
+                    }
+                    Operation::Delete(_) => {
+                        overlay.insert(key, None);
+                    }
+                    Operation::CompareAndSwap(_) => {}
+                }
+
+                Some(prev.unwrap_or_default())
+            })();
+            result.push(prev);
+        }
+        result
     }
 
     /// Broadcast watch events for applied chunk entries (fire-and-forget)

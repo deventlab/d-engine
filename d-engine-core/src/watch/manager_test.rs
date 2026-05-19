@@ -1163,11 +1163,10 @@ async fn test_prev_kv_false_watcher_receives_empty_prev_value() {
 
     assert_eq!(event.event_type, WatchEventType::Put);
     assert_eq!(event.value, Bytes::from("new_val"));
-    // prev_kv=false → dispatcher zeroes out prev_value before delivery
+    // prev_kv=false → dispatcher sets prev_value to None
     assert_eq!(
-        event.prev_value,
-        Bytes::new(),
-        "prev_kv=false watcher must receive empty prev_value"
+        event.prev_value, None,
+        "prev_kv=false watcher must receive None prev_value"
     );
 }
 
@@ -1200,7 +1199,7 @@ async fn test_prev_kv_true_watcher_receives_prev_value() {
     assert_eq!(event.event_type, WatchEventType::Put);
     assert_eq!(
         event.prev_value,
-        Bytes::from("old_val"),
+        Some(Bytes::from("old_val")),
         "prev_kv=true watcher must receive prev_value"
     );
 }
@@ -1244,13 +1243,12 @@ async fn test_prev_kv_per_watcher_isolation() {
     .expect("closed");
 
     assert_eq!(
-        ev_no.prev_value,
-        Bytes::new(),
-        "prev_kv=false must receive empty prev_value"
+        ev_no.prev_value, None,
+        "prev_kv=false must receive None prev_value"
     );
     assert_eq!(
         ev_yes.prev_value,
-        Bytes::from("old"),
+        Some(Bytes::from("old")),
         "prev_kv=true must receive prev_value"
     );
 }
@@ -1333,7 +1331,9 @@ async fn test_progress_heartbeat_delivered_to_watcher() {
 #[tokio::test]
 async fn test_no_progress_events_when_heartbeat_disabled() {
     // heartbeat disabled (interval = 0)
-    let (_, registry, _handle) = setup_watch_system_with_heartbeat(10, 0);
+    // Keep _broadcast_tx alive: dropping it closes the channel and the dispatcher exits,
+    // which would cause the timeout to succeed for the wrong reason.
+    let (_broadcast_tx, registry, _handle) = setup_watch_system_with_heartbeat(10, 0);
     let key = Bytes::from("/watch/key");
     let mut watcher = registry.register(key.clone(), false).unwrap();
 

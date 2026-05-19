@@ -26,6 +26,8 @@
 //! - **Proto boundary**: WatchResponse (proto) lives only in the broadcast channel and handler;
 //!   WatchEvent (opaque) is what callers see — no proto import required.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -53,15 +55,19 @@ pub enum WatchEventType {
 /// Opaque watch event delivered to callers.
 ///
 /// All fields use standard Rust types — callers never need to import proto types.
-/// `prev_value` is populated only when the watcher was registered with `prev_kv = true`
-/// and the event is a data mutation (Put / Delete); it is empty for Progress / Canceled.
+///
+/// `prev_value` semantics:
+/// - `None` — watcher was registered with `prev_kv = false`, or the event is
+///   `Progress` / `Canceled` (not a data mutation).
+/// - `Some(Bytes::new())` — watcher has `prev_kv = true` and the key did not exist
+///   before this write (fresh insert).
+/// - `Some(v)` — watcher has `prev_kv = true` and `v` is the previous value.
 #[derive(Debug, Clone)]
 pub struct WatchEvent {
     pub event_type: WatchEventType,
     pub key: Bytes,
     pub value: Bytes,
-    /// Value before this mutation.  Empty when key did not exist, or prev_kv = false.
-    pub prev_value: Bytes,
+    pub prev_value: Option<Bytes>,
     pub revision: u64,
 }
 
@@ -90,10 +96,12 @@ fn proto_to_event(
         event_type,
         key: proto.key.clone(),
         value: proto.value.clone(),
+        // None when prev_kv = false so callers can distinguish "not requested" from
+        // "key didn't exist" (Some(empty)).
         prev_value: if prev_kv {
-            proto.prev_value.clone()
+            Some(proto.prev_value.clone())
         } else {
-            Bytes::new()
+            None
         },
         revision: proto.revision,
     }
@@ -106,7 +114,8 @@ impl From<&WatchEvent> for WatchResponse {
         WatchResponse {
             key: e.key.clone(),
             value: e.value.clone(),
-            prev_value: e.prev_value.clone(),
+            // Proto transport uses bytes (no optional); None collapses to empty.
+            prev_value: e.prev_value.clone().unwrap_or_default(),
             event_type: match e.event_type {
                 WatchEventType::Put => ProtoType::Put as i32,
                 WatchEventType::Delete => ProtoType::Delete as i32,
@@ -492,25 +501,33 @@ impl WatchDispatcher {
 
         // Build optional heartbeat future.  When interval_ms == 0 the future
         // is a pending sleep that never fires, adding zero overhead.
-        let heartbeat_enabled = self.heartbeat_interval_ms > 0;
-        let base_ms = self.heartbeat_interval_ms;
-
-        // ±10% jitter on first tick to spread restarts across the interval window.
-        let first_tick_ms = if heartbeat_enabled {
+        // Build the heartbeat interval only when enabled.
+        // Constructing `interval_at(now + Duration::from_millis(u64::MAX), ...)` panics on
+        // overflow, so we must skip interval creation entirely when heartbeat is off.
+        let mut heartbeat: Option<tokio::time::Interval> = if self.heartbeat_interval_ms > 0 {
+            let base_ms = self.heartbeat_interval_ms;
             let jitter = (base_ms / 10).max(1);
-            // Deterministic pseudo-random from current thread-id bits.
-            let tid_bits = format!("{:?}", std::thread::current().id());
-            let seed: u64 = tid_bits.bytes().fold(0u64, |a, b| a.wrapping_add(b as u64));
+            // Mix thread ID and wall-clock nanoseconds into a single hash so that nodes
+            // started simultaneously (e.g. k8s rolling restart within the same millisecond)
+            // still get different offsets.  No external crate needed.
+            let mut h = DefaultHasher::new();
+            std::thread::current().id().hash(&mut h);
+            std::time::SystemTime::now().hash(&mut h);
+            let seed = h.finish();
             let offset = seed % (jitter * 2);
-            base_ms.saturating_sub(jitter) + offset
+            let first_tick_ms = base_ms.saturating_sub(jitter) + offset;
+            let mut interval = tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_millis(first_tick_ms),
+                Duration::from_millis(base_ms),
+            );
+            // Skip missed ticks: heartbeat is a liveness signal, not a counter.
+            // Bursting N progress events after a slow-watcher stall would mislead clients
+            // into thinking the stream was alive during the stall period.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            Some(interval)
         } else {
-            u64::MAX
+            None
         };
-
-        let mut heartbeat = tokio::time::interval_at(
-            tokio::time::Instant::now() + Duration::from_millis(first_tick_ms),
-            Duration::from_millis(if heartbeat_enabled { base_ms } else { u64::MAX }),
-        );
 
         loop {
             tokio::select! {
@@ -531,7 +548,8 @@ impl WatchDispatcher {
                         }
                     }
                 }
-                _ = heartbeat.tick(), if heartbeat_enabled => {
+                Some(t) = async { if let Some(ref mut hb) = heartbeat { Some(hb.tick().await) } else { std::future::pending().await } } => {
+                    let _ = t;
                     self.broadcast_progress().await;
                 }
             }

@@ -459,7 +459,6 @@ impl EmbeddedClient {
     ///     println!("Value changed: {:?}", event);
     /// }
     /// ```
-    /// `prev_kv`: when true each WatchEvent carries the value before the mutation.
     #[cfg(feature = "watch")]
     pub fn watch(
         &self,

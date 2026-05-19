@@ -141,7 +141,7 @@ pub(crate) fn make_cancel_event(key: bytes::Bytes) -> WatchEvent {
     WatchEvent {
         key,
         value: bytes::Bytes::new(),
-        prev_value: bytes::Bytes::new(),
+        prev_value: None,
         event_type: WatchEventType::Canceled,
         revision: 0,
     }

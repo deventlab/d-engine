@@ -205,10 +205,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let key = String::from_utf8_lossy(&event.key);
             match event.event_type {
                 WatchEventType::Put => {
-                    let prev = if event.prev_value.is_empty() {
-                        "(new key)".to_string()
-                    } else {
-                        String::from_utf8_lossy(&event.prev_value).to_string()
+                    let prev = match event.prev_value.as_deref() {
+                        None | Some(b"") => "(new key)".to_string(),
+                        Some(v) => String::from_utf8_lossy(v).to_string(),
                     };
                     println!(
                         "[audit] {} : {} → {}  (revision={})",
@@ -218,12 +217,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         event.revision
                     );
                 }
-                WatchEventType::Delete => println!(
-                    "[audit] {} deleted (was: {})  (revision={})",
-                    key,
-                    String::from_utf8_lossy(&event.prev_value),
-                    event.revision
-                ),
+                WatchEventType::Delete => {
+                    let was = event
+                        .prev_value
+                        .as_deref()
+                        .map(|v| String::from_utf8_lossy(v).to_string())
+                        .unwrap_or_default();
+                    println!(
+                        "[audit] {} deleted (was: {})  (revision={})",
+                        key, was, event.revision
+                    );
+                }
                 WatchEventType::Canceled => {
                     println!("[audit] CANCELED — re-register watch");
                     break;

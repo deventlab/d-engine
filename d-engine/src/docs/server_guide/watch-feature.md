@@ -205,7 +205,7 @@ let last_revision = event.revision;
 - **Order**: FIFO per key (events from StateMachine apply order)
 - **Dropped Events**: When a per-watcher buffer overflows, the watcher receives a `CANCELED` sentinel event and is forcibly unregistered
 - **Lagging**: Broadcast channel drops oldest events when receivers are slow (global buffer)
-- **CANCELED Event**: `WatchEventType::Canceled` with `ErrorCode::WATCH_BUFFER_OVERFLOW` signals that the watcher was forcibly terminated. Client must re-sync via Read API and re-register.
+- **CANCELED Event**: `WatchEventType::Canceled` signals that the watcher was forcibly terminated. Client must re-sync via Read API and re-register. In the gRPC API the event also carries `error == ErrorCode::WATCH_BUFFER_OVERFLOW`; in the embedded API the `error` field is `0` — check `event_type` alone.
 
 ### Lifecycle
 
@@ -219,7 +219,7 @@ When registering a watcher with `prev_kv: true` (embedded API) or `prev_kv: true
 
 ```rust,ignore
 // Embedded: request previous value on every event
-let watcher = engine.client().watch_with_prev_kv(b"my_key")?;
+let watcher = engine.client().watch_with_options(b"my_key", true)?;
 while let Some(event) = watcher.receiver_mut().recv().await {
     if event.event_type == WatchEventType::Put {
         println!("was: {:?}, now: {:?}", event.prev_value, event.value);
@@ -339,7 +339,7 @@ watch(b"config:feature_flags")
 ### `WATCH_BUFFER_OVERFLOW` (ErrorCode 5001)
 
 - **Cause**: Per-watcher channel full — the client is consuming events too slowly
-- **Detection**: Receive an event where `event_type == WatchEventType::Canceled` and `error == ErrorCode::WATCH_BUFFER_OVERFLOW`
+- **Detection**: Receive an event where `event_type == WatchEventType::Canceled`. In the gRPC API the event also sets `error == ErrorCode::WATCH_BUFFER_OVERFLOW`; in the embedded API check `event_type` alone (`error` is `0`).
 - **Effect**: The watcher is forcibly unregistered server-side; no further events will be delivered on this stream
 - **Solution**:
   1. Re-sync state via the Read API to get the current value
