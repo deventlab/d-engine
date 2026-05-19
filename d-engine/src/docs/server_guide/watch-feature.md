@@ -132,7 +132,7 @@ loop {
     while let Some(event) = watcher.next().await {
         match event {
             Ok(e) if e.revision <= scan_revision => continue, // already in snapshot
-            Ok(e) if e.event_type == WatchEventType::Canceled as i32 => break,
+            Ok(e) if e.event_type == WatchEventType::Canceled => break,
             Ok(e) => apply_to_registry(e, &mut registry),
             Err(_) => break,
         }
@@ -184,6 +184,13 @@ let last_revision = event.revision;
 - **Default**: `i64::MAX` (effectively unlimited)
 - **Description**: Hard cap on total active watchers (exact + prefix combined). `register()` and `watch_prefix()` return an error once this limit is reached. Set to a finite value to prevent runaway watcher growth in multi-tenant deployments.
 
+### `heartbeat_interval_ms`
+
+- **Type**: u64
+- **Default**: `0` (disabled)
+- **Description**: If non-zero, the `WatchDispatcher` sends a `Progress` heartbeat event to all active watchers at this interval (±10% jitter). Useful for detecting a silent stream that has stalled due to no writes. Set to `0` to rely on application-level keepalives instead.
+- **Recommended**: `5000` (5 seconds) for long-lived connections; `0` for write-heavy workloads where events are frequent.
+
 ### `enable_metrics`
 
 - **Type**: boolean
@@ -198,7 +205,7 @@ let last_revision = event.revision;
 - **Order**: FIFO per key (events from StateMachine apply order)
 - **Dropped Events**: When a per-watcher buffer overflows, the watcher receives a `CANCELED` sentinel event and is forcibly unregistered
 - **Lagging**: Broadcast channel drops oldest events when receivers are slow (global buffer)
-- **CANCELED Event**: `WatchEventType::CANCELED` with `ErrorCode::WATCH_BUFFER_OVERFLOW` signals that the watcher was forcibly terminated. Client must re-sync via Read API and re-register.
+- **CANCELED Event**: `WatchEventType::Canceled` with `ErrorCode::WATCH_BUFFER_OVERFLOW` signals that the watcher was forcibly terminated. Client must re-sync via Read API and re-register.
 
 ### Lifecycle
 
@@ -206,13 +213,49 @@ let last_revision = event.revision;
 - **Cleanup**: Watcher is automatically unregistered when handle is dropped
 - **No History**: Watch only receives future events (not historical changes)
 
+### prev_kv (Previous Value)
+
+When registering a watcher with `prev_kv: true` (embedded API) or `prev_kv: true` in the gRPC `WatchRequest`, each `Put` and `Delete` event carries the **value the key held before the write** in `event.prev_value`. Watchers registered with `prev_kv: false` (the default) always receive an empty `prev_value`.
+
+```rust,ignore
+// Embedded: request previous value on every event
+let watcher = engine.client().watch_with_prev_kv(b"my_key")?;
+while let Some(event) = watcher.receiver_mut().recv().await {
+    if event.event_type == WatchEventType::Put {
+        println!("was: {:?}, now: {:?}", event.prev_value, event.value);
+    }
+}
+```
+
+**Cost**: When at least one `prev_kv` watcher is active, the state machine reads the old value from storage before each `apply_chunk`. This is a single point-in-time read per write batch — not per watcher — so the overhead scales with write rate, not watcher count.
+
+### Progress Heartbeat
+
+When `heartbeat_interval_ms > 0` in config, the dispatcher periodically sends a `WatchEventType::Progress` event to every active watcher. The event carries the current `revision` (Raft applied index) but empty `key` and `value`. Use it to:
+
+- Detect a silent stream that is alive but has no writes
+- Confirm your client's channel is still open before a long idle period
+- Drive time-based state machine logic without polling
+
+```rust,ignore
+match event.event_type {
+    WatchEventType::Put    => handle_put(&event),
+    WatchEventType::Delete => handle_delete(&event),
+    WatchEventType::Canceled => { re_register(); break; }
+    WatchEventType::Progress => {
+        // Stream is alive; revision is current applied index
+        println!("heartbeat revision={}", event.revision);
+    }
+}
+```
+
+**Jitter**: The interval has ±10% random jitter to avoid thundering-herd when many watchers share the same interval.
+
 ### Limitations
 
 - **No Persistence**: Watchers lost on server restart — re-register on reconnect
 - **No Replay**: Watch delivers future events only; use the Read API to re-sync current state after reconnect
 - **Prefix format**: Prefix must start and end with `/` — arbitrary byte-range watch is not supported
-- **No prev_kv**: Events do not include the previous value (planned for a future release)
-- **No heartbeat**: The stream is silent when no events occur — implement an application-level keepalive if needed (planned for a future release)
 
 ## Performance
 
@@ -296,7 +339,7 @@ watch(b"config:feature_flags")
 ### `WATCH_BUFFER_OVERFLOW` (ErrorCode 5001)
 
 - **Cause**: Per-watcher channel full — the client is consuming events too slowly
-- **Detection**: Receive an event where `event_type == WatchEventType::CANCELED` and `error == ErrorCode::WATCH_BUFFER_OVERFLOW`
+- **Detection**: Receive an event where `event_type == WatchEventType::Canceled` and `error == ErrorCode::WATCH_BUFFER_OVERFLOW`
 - **Effect**: The watcher is forcibly unregistered server-side; no further events will be delivered on this stream
 - **Solution**:
   1. Re-sync state via the Read API to get the current value
@@ -310,7 +353,8 @@ watch(b"config:feature_flags")
 3. **Idempotent Handlers**: Handle duplicate events gracefully (at-most-once delivery)
 4. **Buffer Tuning**: Monitor lagged events and adjust buffer sizes accordingly
 5. **Reconnect Logic**: Implement automatic reconnection on stream errors
-6. **Handle CANCELED**: Always check for `WatchEventType::CANCELED` — treat it as a forced disconnect. Re-sync via Read API then re-register the watch before processing further events.
+6. **Handle CANCELED**: Always check for `WatchEventType::Canceled` — treat it as a forced disconnect. Re-sync via Read API then re-register the watch before processing further events.
+7. **Handle Progress**: If `heartbeat_interval_ms > 0`, your event handler must have an arm for `WatchEventType::Progress` (non-exhaustive match will fail to compile otherwise). Silently ignore it or use the `revision` field for liveness tracking.
 
 ## Watch Reliability and Reconnection
 

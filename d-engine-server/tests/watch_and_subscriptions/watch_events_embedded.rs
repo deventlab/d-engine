@@ -86,7 +86,7 @@ async fn test_embedded_watch_receives_put_events() -> Result<(), Box<dyn std::er
 
     // Verify event
     let event = handle.await?.expect("Should receive PUT event");
-    assert_eq!(event.event_type, WatchEventType::Put as i32);
+    assert_eq!(event.event_type, WatchEventType::Put);
     assert_eq!(&event.key[..], key);
     assert_eq!(&event.value[..], b"value1");
 
@@ -226,7 +226,7 @@ async fn test_embedded_watch_receives_delete_events() -> Result<(), Box<dyn std:
 
     // Verify event
     let event = handle.await?.expect("Should receive DELETE event");
-    assert_eq!(event.event_type, WatchEventType::Delete as i32);
+    assert_eq!(event.event_type, WatchEventType::Delete);
     assert_eq!(&event.key[..], key);
     assert!(
         event.value.is_empty(),
@@ -280,7 +280,7 @@ async fn test_embedded_watch_handle_drop_cleanup() -> Result<(), Box<dyn std::er
         }
         match tokio::time::timeout(remaining, watcher.receiver_mut().recv()).await {
             Ok(Some(event)) => {
-                if event.event_type == WatchEventType::Put as i32 && *event.value == *b"value2" {
+                if event.event_type == WatchEventType::Put && *event.value == *b"value2" {
                     found = true;
                     break;
                 }
@@ -327,7 +327,7 @@ async fn test_embedded_watch_multiple_watchers_same_key() -> Result<(), Box<dyn 
 
     // Verify all events are identical
     for event in &[&event1, &event2, &event3] {
-        assert_eq!(event.event_type, WatchEventType::Put as i32);
+        assert_eq!(event.event_type, WatchEventType::Put);
         assert_eq!(&event.key[..], key);
         assert_eq!(&event.value[..], b"shared_value");
     }
@@ -404,13 +404,13 @@ watcher_buffer_size = 10
 
     // Verify PUT
     let put_event = &events[0];
-    assert_eq!(put_event.event_type, WatchEventType::Put as i32);
+    assert_eq!(put_event.event_type, WatchEventType::Put);
     assert_eq!(put_event.key, key.as_bytes());
     assert_eq!(&put_event.value[..], b"value1");
 
     // Verify DELETE
     let delete_event = &events[1];
-    assert_eq!(delete_event.event_type, WatchEventType::Delete as i32);
+    assert_eq!(delete_event.event_type, WatchEventType::Delete);
     assert_eq!(delete_event.key, key.as_bytes());
     assert!(delete_event.value.is_empty());
 

@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb"))]
 mod tests {
     use std::collections::HashMap;
 
@@ -106,7 +106,7 @@ mod tests {
 // Integration Tests (require EmbeddedEngine)
 // =============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb"))]
 mod integration_tests {
     use std::time::Duration;
 

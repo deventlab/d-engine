@@ -724,11 +724,7 @@ async fn test_watch_receives_put_event() {
         .expect("timed out waiting for Put watch event")
         .expect("watch channel should not be closed");
 
-    assert_eq!(
-        event.event_type,
-        WatchEventType::Put as i32,
-        "expected Put event"
-    );
+    assert_eq!(event.event_type, WatchEventType::Put, "expected Put event");
     assert_eq!(event.key, Bytes::from("w-key"));
     assert_eq!(event.value, Bytes::from("w-val"));
 }
@@ -755,7 +751,7 @@ async fn test_watch_receives_delete_event() {
 
     assert_eq!(
         event.event_type,
-        WatchEventType::Delete as i32,
+        WatchEventType::Delete,
         "expected Delete event"
     );
     assert_eq!(event.key, Bytes::from("d-key"));

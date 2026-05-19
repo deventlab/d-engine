@@ -106,6 +106,11 @@ where
     /// StateMachine sends events here without blocking on watchers
     #[cfg(feature = "watch")]
     watch_event_tx: Option<tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>>,
+
+    /// Number of active watchers that opted in to prev_kv.
+    /// When > 0, apply_chunk reads old values before applying each write.
+    #[cfg(feature = "watch")]
+    prev_kv_watcher_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone)]
@@ -217,6 +222,17 @@ where
 
         let sm = self.state_machine.clone();
 
+        // Read prev values before applying if any watcher requested prev_kv.
+        // Must happen BEFORE apply_chunk so old values are still in the state machine.
+        #[cfg(feature = "watch")]
+        let prev_values: Option<Vec<Option<bytes::Bytes>>> = if self.watch_event_tx.is_some()
+            && self.prev_kv_watcher_count.load(std::sync::atomic::Ordering::Relaxed) > 0
+        {
+            Some(Self::read_prev_values(&*sm, &chunk))
+        } else {
+            None
+        };
+
         // Apply the chunk and track errors
         let apply_result = sm.apply_chunk(chunk.clone()).await;
 
@@ -225,7 +241,7 @@ where
         if let Ok(ref results) = apply_result
             && let Some(ref tx) = self.watch_event_tx
         {
-            self.broadcast_watch_events(&chunk, results, tx);
+            self.broadcast_watch_events(&chunk, results, tx, prev_values.as_deref());
         }
 
         // Record latency and chunk size histogram *after* the operation
@@ -624,14 +640,52 @@ impl<T> DefaultStateMachineHandler<T>
 where
     T: TypeConfig,
 {
+    /// Read the current value for every write operation in `chunk`, before applying.
+    ///
+    /// Returns one `Option<Bytes>` per entry in the same order:
+    /// - `Some(value)` for Insert / Delete / CAS entries (empty Bytes if key didn't exist)
+    /// - `None` for Noop / Config entries (no prev_value needed)
+    #[cfg(feature = "watch")]
+    fn read_prev_values(
+        sm: &dyn crate::StateMachine,
+        chunk: &[Entry],
+    ) -> Vec<Option<bytes::Bytes>> {
+        use d_engine_proto::client::WriteCommand;
+        use d_engine_proto::client::write_command::Operation;
+        use d_engine_proto::common::entry_payload::Payload;
+        use prost::Message;
+
+        chunk
+            .iter()
+            .map(|entry| {
+                let payload = entry.payload.as_ref()?;
+                let Some(Payload::Command(bytes)) = &payload.payload else {
+                    return None;
+                };
+                let Ok(write_cmd) = WriteCommand::decode(bytes.as_ref()) else {
+                    return None;
+                };
+
+                let key: Option<&[u8]> = match &write_cmd.operation {
+                    Some(Operation::Insert(ins)) => Some(&ins.key),
+                    Some(Operation::Delete(del)) => Some(&del.key),
+                    Some(Operation::CompareAndSwap(cas)) => Some(&cas.key),
+                    None => None,
+                };
+
+                key.map(|k| sm.get(k).ok().flatten().unwrap_or_default())
+            })
+            .collect()
+    }
+
     /// Broadcast watch events for applied chunk entries (fire-and-forget)
     ///
-    /// Parses chunk entries and broadcasts WatchEvent via tokio::broadcast channel.
+    /// Parses chunk entries and broadcasts WatchResponse via tokio::broadcast channel.
     /// Non-blocking: if channel is full, oldest events are dropped (lagging receivers).
-    /// Decoupled from WatchManager: only sends signal, doesn't care who listens.
     ///
     /// `results` must have the same length as `chunk` (enforced by StateMachineHandler contract).
     /// CAS entries where `results[i].succeeded == false` are skipped — no mutation occurred.
+    /// `prev_values`: optional slice of pre-apply values (None = no prev_kv watcher active).
     #[cfg(feature = "watch")]
     #[inline]
     pub(super) fn broadcast_watch_events(
@@ -639,6 +693,7 @@ where
         chunk: &[Entry],
         results: &[ApplyResult],
         tx: &tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
+        prev_values: Option<&[Option<bytes::Bytes>]>,
     ) {
         use d_engine_proto::client::WatchEventType;
         use d_engine_proto::client::WatchResponse;
@@ -652,10 +707,16 @@ where
                 && let Some(Payload::Command(bytes)) = &payload.payload
                 && let Ok(write_cmd) = WriteCommand::decode(bytes.as_ref())
             {
+                let prev_value = prev_values
+                    .and_then(|pv| pv.get(i))
+                    .and_then(|v| v.clone())
+                    .unwrap_or_default();
+
                 let event = match write_cmd.operation {
                     Some(Operation::Insert(insert)) => Some(WatchResponse {
                         key: insert.key,
                         value: insert.value,
+                        prev_value,
                         event_type: WatchEventType::Put as i32,
                         error: 0,
                         revision: entry.index,
@@ -663,6 +724,7 @@ where
                     Some(Operation::Delete(delete)) => Some(WatchResponse {
                         key: delete.key,
                         value: bytes::Bytes::new(),
+                        prev_value,
                         event_type: WatchEventType::Delete as i32,
                         error: 0,
                         revision: entry.index,
@@ -674,6 +736,7 @@ where
                             Some(WatchResponse {
                                 key: cas.key,
                                 value: cas.new_value,
+                                prev_value,
                                 event_type: WatchEventType::Put as i32,
                                 error: 0,
                                 revision: entry.index,
@@ -707,6 +770,9 @@ where
         #[cfg_attr(not(feature = "watch"), allow(unused_variables))] watch_event_tx: Option<
             tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
         >,
+        #[cfg_attr(not(feature = "watch"), allow(unused_variables))] prev_kv_watcher_count: Arc<
+            std::sync::atomic::AtomicUsize,
+        >,
     ) -> Self {
         let (applied_notify_tx, applied_notify_rx) =
             tokio::sync::watch::channel(last_applied_index);
@@ -729,12 +795,12 @@ where
             applied_notify_rx,
             #[cfg(feature = "watch")]
             watch_event_tx,
+            #[cfg(feature = "watch")]
+            prev_kv_watcher_count,
         }
     }
 
     /// Convenience constructor for tests without watch
-    ///
-    /// Backward-compatible wrapper that calls `new()` with None for watch_event_tx.
     #[cfg(test)]
     pub(crate) fn new_without_watch(
         node_id: u32,
@@ -749,7 +815,8 @@ where
             state_machine,
             snapshot_config,
             snapshot_policy,
-            None, // No watch event tx for tests
+            None,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         )
     }
 

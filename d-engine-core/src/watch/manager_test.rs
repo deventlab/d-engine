@@ -8,8 +8,10 @@
 //! - Dispatcher event distribution
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use bytes::Bytes;
+use d_engine_proto::client::WatchResponse;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
@@ -19,11 +21,23 @@ use tokio::time::timeout;
 
 use super::*;
 
-/// Helper to create test watch system components
+/// Helper to create test watch system components.
+/// `heartbeat_interval_ms` = 0 disables heartbeat (avoids Progress noise in most tests).
 fn setup_watch_system(
     buffer_size: usize
 ) -> (
-    broadcast::Sender<WatchEvent>,
+    broadcast::Sender<WatchResponse>,
+    Arc<WatchRegistry>,
+    tokio::task::JoinHandle<()>,
+) {
+    setup_watch_system_with_heartbeat(buffer_size, 0)
+}
+
+fn setup_watch_system_with_heartbeat(
+    buffer_size: usize,
+    heartbeat_interval_ms: u64,
+) -> (
+    broadcast::Sender<WatchResponse>,
     Arc<WatchRegistry>,
     tokio::task::JoinHandle<()>,
 ) {
@@ -31,7 +45,14 @@ fn setup_watch_system(
     let (unregister_tx, unregister_rx) = mpsc::unbounded_channel();
 
     let registry = Arc::new(WatchRegistry::new(buffer_size, unregister_tx));
-    let dispatcher = WatchDispatcher::new(Arc::clone(&registry), broadcast_rx, unregister_rx);
+    let last_applied = Arc::new(AtomicU64::new(0));
+    let dispatcher = WatchDispatcher::new(
+        Arc::clone(&registry),
+        broadcast_rx,
+        unregister_rx,
+        last_applied,
+        heartbeat_interval_ms,
+    );
 
     let handle = tokio::spawn(async move {
         dispatcher.run().await;
@@ -40,12 +61,42 @@ fn setup_watch_system(
     (broadcast_tx, registry, handle)
 }
 
+// Convenience: build a WatchResponse with the proto event type int.
+fn proto_put_response(
+    key: &Bytes,
+    value: &str,
+    revision: u64,
+) -> WatchResponse {
+    WatchResponse {
+        key: key.clone(),
+        value: Bytes::from(value.to_owned()),
+        prev_value: Bytes::new(),
+        event_type: d_engine_proto::client::WatchEventType::Put as i32,
+        error: 0,
+        revision,
+    }
+}
+
+fn proto_delete_response(
+    key: &Bytes,
+    revision: u64,
+) -> WatchResponse {
+    WatchResponse {
+        key: key.clone(),
+        value: Bytes::new(),
+        prev_value: Bytes::new(),
+        event_type: d_engine_proto::client::WatchEventType::Delete as i32,
+        error: 0,
+        revision,
+    }
+}
+
 #[tokio::test]
 async fn test_register_single_watcher() {
     let (_, registry, _dispatcher_handle) = setup_watch_system(10);
 
     let key = Bytes::from("test_key");
-    let _handle = registry.register(key.clone()).unwrap();
+    let _handle = registry.register(key.clone(), false).unwrap();
 
     assert_eq!(registry.watcher_count(&key), 1);
     assert_eq!(registry.watched_key_count(), 1);
@@ -57,9 +108,9 @@ async fn test_register_multiple_watchers_same_key() {
 
     let key = Bytes::from("shared_key");
 
-    let _handle1 = registry.register(key.clone()).unwrap();
-    let _handle2 = registry.register(key.clone()).unwrap();
-    let _handle3 = registry.register(key.clone()).unwrap();
+    let _handle1 = registry.register(key.clone(), false).unwrap();
+    let _handle2 = registry.register(key.clone(), false).unwrap();
+    let _handle3 = registry.register(key.clone(), false).unwrap();
 
     assert_eq!(registry.watcher_count(&key), 3);
     assert_eq!(registry.watched_key_count(), 1); // Only 1 unique key
@@ -72,7 +123,7 @@ async fn test_watcher_auto_cleanup_on_drop() {
     let key = Bytes::from("cleanup_key");
 
     {
-        let _handle = registry.register(key.clone()).unwrap();
+        let _handle = registry.register(key.clone(), false).unwrap();
         assert_eq!(registry.watcher_count(&key), 1);
         // Handle dropped here
     }
@@ -91,20 +142,12 @@ async fn test_dispatcher_dispatch_to_matching_watcher() {
     let key = Bytes::from("test_key");
     let value = Bytes::from("test_value");
 
-    let mut handle = registry.register(key.clone()).unwrap();
+    let mut handle = registry.register(key.clone(), false).unwrap();
 
     // Small delay to ensure dispatcher is ready
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Send event via broadcast
-    let event = WatchEvent {
-        key: key.clone(),
-        value: value.clone(),
-        event_type: WatchEventType::Put as i32,
-        error: 0,
-        revision: 0,
-    };
-    broadcast_tx.send(event).unwrap();
+    broadcast_tx.send(proto_put_response(&key, "test_value", 0)).unwrap();
 
     // Watcher should receive event
     let received = timeout(Duration::from_millis(100), handle.receiver_mut().recv())
@@ -114,7 +157,7 @@ async fn test_dispatcher_dispatch_to_matching_watcher() {
 
     assert_eq!(received.key, key);
     assert_eq!(received.value, value);
-    assert_eq!(received.event_type, WatchEventType::Put as i32);
+    assert_eq!(received.event_type, WatchEventType::Put);
 }
 
 #[tokio::test]
@@ -124,19 +167,11 @@ async fn test_dispatcher_ignores_non_matching_key() {
     let watched_key = Bytes::from("key1");
     let other_key = Bytes::from("key2");
 
-    let mut handle = registry.register(watched_key.clone()).unwrap();
+    let mut handle = registry.register(watched_key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Send event for different key
-    let event = WatchEvent {
-        key: other_key,
-        value: Bytes::from("value"),
-        event_type: WatchEventType::Put as i32,
-        error: 0,
-        revision: 0,
-    };
-    broadcast_tx.send(event).unwrap();
+    broadcast_tx.send(proto_put_response(&other_key, "value", 0)).unwrap();
 
     // Should timeout (no event received)
     let result = timeout(Duration::from_millis(100), handle.receiver_mut().recv()).await;
@@ -153,23 +188,15 @@ async fn test_multiple_watchers_all_receive_event() {
     let key = Bytes::from("shared_key");
     let value = Bytes::from("shared_value");
 
-    let mut handle1 = registry.register(key.clone()).unwrap();
-    let mut handle2 = registry.register(key.clone()).unwrap();
-    let mut handle3 = registry.register(key.clone()).unwrap();
+    let mut handle1 = registry.register(key.clone(), false).unwrap();
+    let mut handle2 = registry.register(key.clone(), false).unwrap();
+    let mut handle3 = registry.register(key.clone(), false).unwrap();
 
     assert_eq!(registry.watcher_count(&key), 3);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Broadcast once
-    let event = WatchEvent {
-        key: key.clone(),
-        value: value.clone(),
-        event_type: WatchEventType::Put as i32,
-        error: 0,
-        revision: 0,
-    };
-    broadcast_tx.send(event).unwrap();
+    broadcast_tx.send(proto_put_response(&key, "shared_value", 0)).unwrap();
 
     // All 3 should receive
     for handle in [&mut handle1, &mut handle2, &mut handle3].iter_mut() {
@@ -188,26 +215,18 @@ async fn test_watcher_delete_event() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(10);
 
     let key = Bytes::from("test_key");
-    let mut handle = registry.register(key.clone()).unwrap();
+    let mut handle = registry.register(key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Send DELETE event
-    let event = WatchEvent {
-        key: key.clone(),
-        value: Bytes::new(),
-        event_type: WatchEventType::Delete as i32,
-        error: 0,
-        revision: 0,
-    };
-    broadcast_tx.send(event).unwrap();
+    broadcast_tx.send(proto_delete_response(&key, 0)).unwrap();
 
     let received = timeout(Duration::from_millis(100), handle.receiver_mut().recv())
         .await
         .expect("Timeout")
         .expect("Channel closed");
 
-    assert_eq!(received.event_type, WatchEventType::Delete as i32);
+    assert_eq!(received.event_type, WatchEventType::Delete);
     assert_eq!(received.value, Bytes::new());
 }
 
@@ -216,40 +235,13 @@ async fn test_multiple_events_sequential() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(10);
 
     let key = Bytes::from("test_key");
-    let mut handle = registry.register(key.clone()).unwrap();
+    let mut handle = registry.register(key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Send 3 events
-    broadcast_tx
-        .send(WatchEvent {
-            key: key.clone(),
-            value: Bytes::from("value1"),
-            event_type: WatchEventType::Put as i32,
-            error: 0,
-            revision: 0,
-        })
-        .unwrap();
-
-    broadcast_tx
-        .send(WatchEvent {
-            key: key.clone(),
-            value: Bytes::from("value2"),
-            event_type: WatchEventType::Put as i32,
-            error: 0,
-            revision: 0,
-        })
-        .unwrap();
-
-    broadcast_tx
-        .send(WatchEvent {
-            key: key.clone(),
-            value: Bytes::new(),
-            event_type: WatchEventType::Delete as i32,
-            error: 0,
-            revision: 0,
-        })
-        .unwrap();
+    broadcast_tx.send(proto_put_response(&key, "value1", 0)).unwrap();
+    broadcast_tx.send(proto_put_response(&key, "value2", 0)).unwrap();
+    broadcast_tx.send(proto_delete_response(&key, 0)).unwrap();
 
     // Receive all in order
     let event1 = handle.receiver_mut().recv().await.unwrap();
@@ -259,7 +251,7 @@ async fn test_multiple_events_sequential() {
     assert_eq!(event2.value, Bytes::from("value2"));
 
     let event3 = handle.receiver_mut().recv().await.unwrap();
-    assert_eq!(event3.event_type, WatchEventType::Delete as i32);
+    assert_eq!(event3.event_type, WatchEventType::Delete);
 }
 
 #[tokio::test]
@@ -268,9 +260,9 @@ async fn test_watcher_count_after_partial_cleanup() {
 
     let key = Bytes::from("count_key");
 
-    let handle1 = registry.register(key.clone()).unwrap();
-    let _handle2 = registry.register(key.clone()).unwrap();
-    let _handle3 = registry.register(key.clone()).unwrap();
+    let handle1 = registry.register(key.clone(), false).unwrap();
+    let _handle2 = registry.register(key.clone(), false).unwrap();
+    let _handle3 = registry.register(key.clone(), false).unwrap();
 
     assert_eq!(registry.watcher_count(&key), 3);
 
@@ -287,21 +279,12 @@ async fn test_different_keys_isolated() {
     let key1 = Bytes::from("key1");
     let key2 = Bytes::from("key2");
 
-    let mut handle1 = registry.register(key1.clone()).unwrap();
-    let mut handle2 = registry.register(key2.clone()).unwrap();
+    let mut handle1 = registry.register(key1.clone(), false).unwrap();
+    let mut handle2 = registry.register(key2.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Send event only for key1
-    broadcast_tx
-        .send(WatchEvent {
-            key: key1.clone(),
-            value: Bytes::from("value1"),
-            event_type: WatchEventType::Put as i32,
-            error: 0,
-            revision: 0,
-        })
-        .unwrap();
+    broadcast_tx.send(proto_put_response(&key1, "value1", 0)).unwrap();
 
     // handle1 should receive
     let event = timeout(Duration::from_millis(100), handle1.receiver_mut().recv())
@@ -318,26 +301,21 @@ async fn test_different_keys_isolated() {
 // ---------------------------------------------------------------------------
 // #294: overflow protection — buffer overflow → CANCELED notification
 //
-// Requires proto additions before these compile:
-//   WatchEventType::Canceled = 2        (client_api.proto)
-//   ErrorCode::WatchBufferOverflow = 5001  (error.proto)
-//
 // With buffer_size=N, channel capacity=N+1 (1 slot reserved for cancel).
 // Dispatch checks capacity() before each normal event:
 //   capacity > 1 → send normally
 //   capacity == 1 → send CANCELED to the reserved slot, mark dead
 // ---------------------------------------------------------------------------
 
-use d_engine_proto::error::ErrorCode;
-
 fn put_event(
     key: &Bytes,
     value: &str,
-) -> WatchEvent {
-    WatchEvent {
+) -> WatchResponse {
+    WatchResponse {
         key: key.clone(),
         value: Bytes::from(value.to_owned()),
-        event_type: WatchEventType::Put as i32,
+        prev_value: Bytes::new(),
+        event_type: d_engine_proto::client::WatchEventType::Put as i32,
         error: 0,
         revision: 0,
     }
@@ -351,7 +329,7 @@ fn put_event(
 async fn test_watcher_buffer_overflow_sends_cancel_event() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(2);
     let key = Bytes::from("overflow_key");
-    let mut handle = registry.register(key.clone()).unwrap();
+    let mut handle = registry.register(key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -366,22 +344,22 @@ async fn test_watcher_buffer_overflow_sends_cancel_event() {
         .await
         .expect("timeout e1")
         .expect("channel closed e1");
-    assert_eq!(e1.event_type, WatchEventType::Put as i32);
+    assert_eq!(e1.event_type, WatchEventType::Put);
 
     let e2 = timeout(Duration::from_millis(100), handle.receiver_mut().recv())
         .await
         .expect("timeout e2")
         .expect("channel closed e2");
-    assert_eq!(e2.event_type, WatchEventType::Put as i32);
+    assert_eq!(e2.event_type, WatchEventType::Put);
 
     let cancel = timeout(Duration::from_millis(100), handle.receiver_mut().recv())
         .await
         .expect("timeout cancel")
         .expect("channel closed cancel");
-    assert_eq!(cancel.event_type, WatchEventType::Canceled as i32);
+    assert_eq!(cancel.event_type, WatchEventType::Canceled);
 
     // Channel drained, no further events. After unregistration the sender is
-    // dropped, so recv() returns None (Ok(None)) rather than timing out.
+    // dropped, so recv() returns None rather than timing out.
     let nothing = timeout(Duration::from_millis(50), handle.receiver_mut().recv()).await;
     assert!(
         matches!(nothing, Err(_) | Ok(None)),
@@ -390,12 +368,12 @@ async fn test_watcher_buffer_overflow_sends_cancel_event() {
     );
 }
 
-// CANCELED must carry the correct key, empty value, and WATCH_BUFFER_OVERFLOW error.
+// CANCELED must carry the correct key and empty value.
 #[tokio::test]
 async fn test_cancel_event_has_correct_fields() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(1);
     let key = Bytes::from("field_check_key");
-    let mut handle = registry.register(key.clone()).unwrap();
+    let mut handle = registry.register(key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -411,8 +389,7 @@ async fn test_cancel_event_has_correct_fields() {
         .expect("timeout")
         .expect("channel closed");
 
-    assert_eq!(cancel.event_type, WatchEventType::Canceled as i32);
-    assert_eq!(cancel.error, ErrorCode::WatchBufferOverflow as i32);
+    assert_eq!(cancel.event_type, WatchEventType::Canceled);
     assert_eq!(cancel.key, key);
     assert_eq!(cancel.value, Bytes::new());
 }
@@ -422,7 +399,7 @@ async fn test_cancel_event_has_correct_fields() {
 async fn test_overflow_removes_watcher_from_registry() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(1);
     let key = Bytes::from("registry_key");
-    let _handle = registry.register(key.clone()).unwrap();
+    let _handle = registry.register(key.clone(), false).unwrap();
 
     assert_eq!(registry.watcher_count(&key), 1);
 
@@ -441,7 +418,7 @@ async fn test_overflow_removes_watcher_from_registry() {
 async fn test_normal_events_precede_cancel_in_channel() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(2);
     let key = Bytes::from("order_key");
-    let mut handle = registry.register(key.clone()).unwrap();
+    let mut handle = registry.register(key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -460,9 +437,9 @@ async fn test_normal_events_precede_cancel_in_channel() {
     // Last event must be CANCELED, everything before must be PUT
     assert!(!events.is_empty());
     let last = events.last().unwrap();
-    assert_eq!(last.event_type, WatchEventType::Canceled as i32);
+    assert_eq!(last.event_type, WatchEventType::Canceled);
     for ev in &events[..events.len() - 1] {
-        assert_eq!(ev.event_type, WatchEventType::Put as i32);
+        assert_eq!(ev.event_type, WatchEventType::Put);
     }
     // v4 must NOT appear (watcher was dead when v4 was dispatched)
     assert!(
@@ -477,7 +454,7 @@ async fn test_normal_events_precede_cancel_in_channel() {
 async fn test_closed_receiver_cleaned_up_silently() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(10);
     let key = Bytes::from("closed_key");
-    let handle = registry.register(key.clone()).unwrap();
+    let handle = registry.register(key.clone(), false).unwrap();
 
     assert_eq!(registry.watcher_count(&key), 1);
 
@@ -500,8 +477,8 @@ async fn test_slow_watcher_overflow_does_not_affect_healthy_watcher() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(2);
     let key = Bytes::from("isolation_key");
 
-    let mut slow = registry.register(key.clone()).unwrap(); // never consumed
-    let mut fast = registry.register(key.clone()).unwrap(); // consumed between dispatches
+    let mut slow = registry.register(key.clone(), false).unwrap(); // never consumed
+    let mut fast = registry.register(key.clone(), false).unwrap(); // consumed between dispatches
 
     tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -525,7 +502,7 @@ async fn test_slow_watcher_overflow_does_not_affect_healthy_watcher() {
             .ok()
             .flatten();
         match ev {
-            Some(e) if e.event_type == WatchEventType::Canceled as i32 => break,
+            Some(e) if e.event_type == WatchEventType::Canceled => break,
             Some(_) => continue,
             None => panic!("slow watcher closed without CANCELED"),
         }
@@ -556,7 +533,7 @@ async fn test_slow_watcher_overflow_does_not_affect_healthy_watcher() {
 async fn test_healthy_watcher_no_false_cancel() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(2);
     let key = Bytes::from("healthy_key");
-    let mut handle = registry.register(key.clone()).unwrap();
+    let mut handle = registry.register(key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -572,7 +549,7 @@ async fn test_healthy_watcher_no_false_cancel() {
 
         assert_ne!(
             ev.event_type,
-            WatchEventType::Canceled as i32,
+            WatchEventType::Canceled,
             "false cancel on event {i}"
         );
     }
@@ -588,7 +565,7 @@ async fn test_healthy_watcher_no_false_cancel() {
 async fn test_buffer_size_1_overflows_on_second_event() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(1);
     let key = Bytes::from("tiny_buffer_key");
-    let mut handle = registry.register(key.clone()).unwrap();
+    let mut handle = registry.register(key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -600,18 +577,16 @@ async fn test_buffer_size_1_overflows_on_second_event() {
         .await
         .expect("timeout e1")
         .expect("closed e1");
-    assert_eq!(e1.event_type, WatchEventType::Put as i32);
+    assert_eq!(e1.event_type, WatchEventType::Put);
     assert_eq!(e1.value, Bytes::from("v1"));
 
     let cancel = timeout(Duration::from_millis(100), handle.receiver_mut().recv())
         .await
         .expect("timeout cancel")
         .expect("closed cancel");
-    assert_eq!(cancel.event_type, WatchEventType::Canceled as i32);
-    assert_eq!(cancel.error, ErrorCode::WatchBufferOverflow as i32);
+    assert_eq!(cancel.event_type, WatchEventType::Canceled);
 
-    // Exactly 2 items (buffer_size + 1), no more. The sender is dropped
-    // when the watcher is unregistered, so recv() returns None immediately.
+    // Exactly 2 items (buffer_size + 1), no more.
     let nothing = timeout(Duration::from_millis(50), handle.receiver_mut().recv()).await;
     assert!(
         matches!(nothing, Err(_) | Ok(None)),
@@ -626,7 +601,7 @@ async fn test_buffer_size_1_overflows_on_second_event() {
 async fn test_events_not_delivered_after_overflow() {
     let (broadcast_tx, registry, _dispatcher_handle) = setup_watch_system(1);
     let key = Bytes::from("post_overflow_key");
-    let _handle = registry.register(key.clone()).unwrap();
+    let _handle = registry.register(key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -652,7 +627,7 @@ async fn test_into_receiver_disables_cleanup() {
     let (_, registry, _dispatcher_handle) = setup_watch_system(10);
 
     let key = Bytes::from("test_key");
-    let handle = registry.register(key.clone()).unwrap();
+    let handle = registry.register(key.clone(), false).unwrap();
 
     assert_eq!(registry.watcher_count(&key), 1);
 
@@ -664,7 +639,6 @@ async fn test_into_receiver_disables_cleanup() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Watcher still registered (cleanup was disabled)
-    // Note: In real usage, receiver drop will eventually trigger cleanup via send failure
     assert_eq!(registry.watcher_count(&key), 1);
 }
 
@@ -679,7 +653,7 @@ async fn test_concurrent_register_unregister() {
         let reg = Arc::clone(&registry);
         let k = key.clone();
         let handle = tokio::spawn(async move {
-            let watcher = reg.register(k);
+            let watcher = reg.register(k, false);
             tokio::time::sleep(Duration::from_millis(10)).await;
             drop(watcher);
             // Yield to ensure drop completes
@@ -708,7 +682,7 @@ async fn test_dispatcher_shutdown_on_broadcast_close() {
     let (broadcast_tx, registry, dispatcher_handle) = setup_watch_system(10);
 
     let key = Bytes::from("test_key");
-    let _handle = registry.register(key.clone()).unwrap();
+    let _handle = registry.register(key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -731,7 +705,7 @@ fn setup_watch_system_with_max(
     buffer_size: usize,
     max_watcher_count: usize,
 ) -> (
-    broadcast::Sender<WatchEvent>,
+    broadcast::Sender<WatchResponse>,
     Arc<WatchRegistry>,
     tokio::task::JoinHandle<()>,
 ) {
@@ -742,7 +716,14 @@ fn setup_watch_system_with_max(
         max_watcher_count,
         unregister_tx,
     ));
-    let dispatcher = WatchDispatcher::new(Arc::clone(&registry), broadcast_rx, unregister_rx);
+    let last_applied = Arc::new(AtomicU64::new(0));
+    let dispatcher = WatchDispatcher::new(
+        Arc::clone(&registry),
+        broadcast_rx,
+        unregister_rx,
+        last_applied,
+        0,
+    );
     let handle = tokio::spawn(async move { dispatcher.run().await });
     (broadcast_tx, registry, handle)
 }
@@ -750,9 +731,6 @@ fn setup_watch_system_with_max(
 // --- prefix_segments() unit tests (pure function) ---
 
 /// #300: prefix_segments is the core of O(depth) dispatch.
-/// Verifies that a multi-level path is decomposed into all slash-terminated
-/// prefix candidates so the dispatcher can do O(1) DashMap lookups per level
-/// instead of scanning every registered prefix.
 #[test]
 fn test_prefix_segments_decomposes_path_correctly() {
     let key = Bytes::from("/config/db/host");
@@ -767,9 +745,6 @@ fn test_prefix_segments_decomposes_path_correctly() {
     );
 }
 
-/// #300: "/" is both a valid key and the root prefix.
-/// prefix_segments must return ["/"] so that a watcher registered on "/"
-/// is notified when the root key itself changes.
 #[test]
 fn test_prefix_segments_root_key() {
     let key = Bytes::from("/");
@@ -777,9 +752,6 @@ fn test_prefix_segments_root_key() {
     assert_eq!(segments, vec![Bytes::from("/")]);
 }
 
-/// #300: A single-level key like "/config" (no trailing slash) has exactly
-/// one ancestor prefix: "/". Ensures prefix watchers on "/" are notified
-/// for top-level keys even when those keys are not directories.
 #[test]
 fn test_prefix_segments_single_level() {
     let key = Bytes::from("/config");
@@ -787,9 +759,6 @@ fn test_prefix_segments_single_level() {
     assert_eq!(segments, vec![Bytes::from("/")]);
 }
 
-/// #300: A key ending with "/" (directory-style) must include itself as a
-/// prefix segment. This matters for service-discovery patterns where both
-/// the namespace key and its children can be watched.
 #[test]
 fn test_prefix_segments_trailing_slash_included() {
     let key = Bytes::from("/config/");
@@ -799,22 +768,20 @@ fn test_prefix_segments_trailing_slash_included() {
 
 // --- prefix watch: basic dispatch ---
 
-/// #300: Core use case — a client watching an entire namespace receives
-/// events for any key that falls under that namespace. Without prefix watch,
-/// clients must register one watcher per key, which is impractical for
-/// dynamic service-discovery or config namespaces.
+/// #300: Core use case — a client watching an entire namespace receives events.
 #[tokio::test]
 async fn test_prefix_watch_matches_child_key() {
     let (broadcast_tx, registry, _handle) = setup_watch_system(10);
-    let mut watcher = registry.register_prefix(Bytes::from("/config/")).unwrap();
+    let mut watcher = registry.register_prefix(Bytes::from("/config/"), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     broadcast_tx
-        .send(WatchEvent {
+        .send(WatchResponse {
             key: Bytes::from("/config/db/host"),
             value: Bytes::from("10.0.0.1"),
-            event_type: WatchEventType::Put as i32,
+            prev_value: Bytes::new(),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
             error: 0,
             revision: 1,
         })
@@ -827,21 +794,20 @@ async fn test_prefix_watch_matches_child_key() {
     assert_eq!(received.key, Bytes::from("/config/db/host"));
 }
 
-/// #300: Prefix isolation — a watcher on "/config/" must not receive events
-/// for unrelated namespaces like "/dns/". Noisy cross-namespace delivery
-/// would break multi-tenant deployments where each tenant owns a prefix.
+/// #300: Prefix isolation — a watcher on "/config/" must not receive events for "/dns/".
 #[tokio::test]
 async fn test_prefix_watch_does_not_match_unrelated_key() {
     let (broadcast_tx, registry, _handle) = setup_watch_system(10);
-    let mut watcher = registry.register_prefix(Bytes::from("/config/")).unwrap();
+    let mut watcher = registry.register_prefix(Bytes::from("/config/"), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     broadcast_tx
-        .send(WatchEvent {
+        .send(WatchResponse {
             key: Bytes::from("/dns/xyz"),
             value: Bytes::from("1.1.1.1"),
-            event_type: WatchEventType::Put as i32,
+            prev_value: Bytes::new(),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
             error: 0,
             revision: 1,
         })
@@ -851,22 +817,20 @@ async fn test_prefix_watch_does_not_match_unrelated_key() {
     assert!(result.is_err(), "/config/ prefix must not match /dns/xyz");
 }
 
-/// #300: Slash boundary — "/config/" is a namespace prefix; "/config" is a
-/// distinct key at the parent level. A watcher on the namespace must not
-/// fire for the parent key. This matches etcd semantics and prevents
-/// accidental cross-boundary notifications.
+/// #300: Slash boundary — "/config/" must not fire for the parent key "/config".
 #[tokio::test]
 async fn test_prefix_watch_slash_boundary_not_matched() {
     let (broadcast_tx, registry, _handle) = setup_watch_system(10);
-    let mut watcher = registry.register_prefix(Bytes::from("/config/")).unwrap();
+    let mut watcher = registry.register_prefix(Bytes::from("/config/"), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     broadcast_tx
-        .send(WatchEvent {
+        .send(WatchResponse {
             key: Bytes::from("/config"),
             value: Bytes::from("val"),
-            event_type: WatchEventType::Put as i32,
+            prev_value: Bytes::new(),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
             error: 0,
             revision: 1,
         })
@@ -879,21 +843,20 @@ async fn test_prefix_watch_slash_boundary_not_matched() {
     );
 }
 
-/// #300: The root prefix "/" acts as a global watch — useful for audit
-/// logging or debugging where a single watcher must see all key changes
-/// across all namespaces.
+/// #300: The root prefix "/" acts as a global watch.
 #[tokio::test]
 async fn test_root_prefix_matches_child_keys() {
     let (broadcast_tx, registry, _handle) = setup_watch_system(10);
-    let mut watcher = registry.register_prefix(Bytes::from("/")).unwrap();
+    let mut watcher = registry.register_prefix(Bytes::from("/"), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     broadcast_tx
-        .send(WatchEvent {
+        .send(WatchResponse {
             key: Bytes::from("/services/api"),
             value: Bytes::from("up"),
-            event_type: WatchEventType::Put as i32,
+            prev_value: Bytes::new(),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
             error: 0,
             revision: 1,
         })
@@ -906,21 +869,20 @@ async fn test_root_prefix_matches_child_keys() {
     assert_eq!(received.key, Bytes::from("/services/api"));
 }
 
-/// #300: Edge case fix — when the event key IS "/" (root key itself),
-/// prefix_segments("/") = ["/"], so a watcher on prefix "/" must be notified.
-/// Without the fix (i < key.len()-1 guard), this event was silently dropped.
+/// #300: Edge case fix — when the event key IS "/" (root key itself).
 #[tokio::test]
 async fn test_root_prefix_matches_root_key_itself() {
     let (broadcast_tx, registry, _handle) = setup_watch_system(10);
-    let mut watcher = registry.register_prefix(Bytes::from("/")).unwrap();
+    let mut watcher = registry.register_prefix(Bytes::from("/"), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     broadcast_tx
-        .send(WatchEvent {
+        .send(WatchResponse {
             key: Bytes::from("/"),
             value: Bytes::from("root"),
-            event_type: WatchEventType::Put as i32,
+            prev_value: Bytes::new(),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
             error: 0,
             revision: 1,
         })
@@ -933,24 +895,23 @@ async fn test_root_prefix_matches_root_key_itself() {
     assert_eq!(received.key, Bytes::from("/"));
 }
 
-/// #300: Exact and prefix watchers are independent and must both fire for
-/// the same event. A client watching a specific key for fast reaction AND a
-/// monitoring client watching the whole namespace must not block each other.
+/// #300: Exact and prefix watchers are independent and must both fire.
 #[tokio::test]
 async fn test_exact_and_prefix_both_notified_on_same_event() {
     let (broadcast_tx, registry, _handle) = setup_watch_system(10);
     let key = Bytes::from("/config/db/host");
 
-    let mut exact_watcher = registry.register(key.clone()).unwrap();
-    let mut prefix_watcher = registry.register_prefix(Bytes::from("/config/")).unwrap();
+    let mut exact_watcher = registry.register(key.clone(), false).unwrap();
+    let mut prefix_watcher = registry.register_prefix(Bytes::from("/config/"), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     broadcast_tx
-        .send(WatchEvent {
+        .send(WatchResponse {
             key: key.clone(),
             value: Bytes::from("10.0.0.1"),
-            event_type: WatchEventType::Put as i32,
+            prev_value: Bytes::new(),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
             error: 0,
             revision: 5,
         })
@@ -977,53 +938,48 @@ async fn test_exact_and_prefix_both_notified_on_same_event() {
 
 // --- register_prefix: validation ---
 
-/// #300: Prefix format is enforced at registration time to prevent silent
-/// mismatches at dispatch time. A prefix without a leading slash would never
-/// match any key (all keys start with "/"). A prefix without a trailing slash
-/// is semantically ambiguous with an exact key — reject early with a clear error.
 #[test]
 fn test_register_prefix_rejects_missing_trailing_slash() {
     let (unregister_tx, _) = mpsc::unbounded_channel();
     let registry = WatchRegistry::new(10, unregister_tx);
 
     assert!(
-        registry.register_prefix(Bytes::from("/config")).is_err(),
+        registry.register_prefix(Bytes::from("/config"), false).is_err(),
         "/config must be rejected — no trailing slash"
     );
     assert!(
-        registry.register_prefix(Bytes::from("config/")).is_err(),
+        registry.register_prefix(Bytes::from("config/"), false).is_err(),
         "config/ must be rejected — no leading slash"
     );
 }
 
 // --- prefix watcher: overflow sends CANCELED ---
 
-/// #300: Prefix watchers are subject to the same overflow protection as exact
-/// watchers (#294). A slow consumer watching a high-traffic namespace must
-/// receive CANCELED (not silently die) so it can re-sync via the Read API.
-/// Without this, the client has no signal that it missed events.
+/// #300: Prefix watchers are subject to the same overflow protection as exact watchers.
 #[tokio::test]
 async fn test_prefix_watcher_overflow_sends_cancel() {
     let (broadcast_tx, registry, _handle) = setup_watch_system(1); // buffer_size=1
-    let mut watcher = registry.register_prefix(Bytes::from("/config/")).unwrap();
+    let mut watcher = registry.register_prefix(Bytes::from("/config/"), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     // 2 events fill buffer + trigger overflow (capacity = buffer_size+1 = 2)
     broadcast_tx
-        .send(WatchEvent {
+        .send(WatchResponse {
             key: Bytes::from("/config/key1"),
             value: Bytes::from("v1"),
-            event_type: WatchEventType::Put as i32,
+            prev_value: Bytes::new(),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
             error: 0,
             revision: 1,
         })
         .unwrap();
     broadcast_tx
-        .send(WatchEvent {
+        .send(WatchResponse {
             key: Bytes::from("/config/key2"),
             value: Bytes::from("v2"),
-            event_type: WatchEventType::Put as i32,
+            prev_value: Bytes::new(),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
             error: 0,
             revision: 2,
         })
@@ -1036,22 +992,19 @@ async fn test_prefix_watcher_overflow_sends_cancel() {
         .await
         .expect("timeout")
         .expect("closed");
-    assert_eq!(cancel.event_type, WatchEventType::Canceled as i32);
-    assert_eq!(cancel.error, ErrorCode::WatchBufferOverflow as i32);
+    assert_eq!(cancel.event_type, WatchEventType::Canceled);
 }
 
 // --- prefix watcher: auto-cleanup on drop ---
 
-/// #300: Prefix watcher handles follow the same RAII cleanup contract as
-/// exact watchers. A leaked prefix watcher would continue consuming dispatch
-/// CPU on every matching event even after the client is gone.
+/// #300: Prefix watcher handles follow the same RAII cleanup contract as exact watchers.
 #[tokio::test]
 async fn test_prefix_watcher_cleanup_on_drop() {
     let (_, registry, _handle) = setup_watch_system(10);
     let prefix = Bytes::from("/config/");
 
     {
-        let _watcher = registry.register_prefix(prefix.clone()).unwrap();
+        let _watcher = registry.register_prefix(prefix.clone(), false).unwrap();
         assert_eq!(registry.prefix_watcher_count(&prefix), 1);
     }
 
@@ -1061,23 +1014,21 @@ async fn test_prefix_watcher_cleanup_on_drop() {
 
 // --- revision field ---
 
-/// #300: The revision field (= Raft applied index) is the client's only
-/// mechanism to detect event gaps after a CANCELED notification. Without it,
-/// the client cannot tell the Read API "give me the state as of revision N"
-/// and must perform a full blind re-read with no consistency anchor.
+/// #300: The revision field (= Raft applied index) is the client's consistency anchor.
 #[tokio::test]
 async fn test_revision_field_passed_through_to_watcher() {
     let (broadcast_tx, registry, _handle) = setup_watch_system(10);
     let key = Bytes::from("/config/host");
-    let mut watcher = registry.register(key.clone()).unwrap();
+    let mut watcher = registry.register(key.clone(), false).unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     broadcast_tx
-        .send(WatchEvent {
+        .send(WatchResponse {
             key: key.clone(),
             value: Bytes::from("val"),
-            event_type: WatchEventType::Put as i32,
+            prev_value: Bytes::new(),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
             error: 0,
             revision: 42,
         })
@@ -1095,19 +1046,16 @@ async fn test_revision_field_passed_through_to_watcher() {
 
 // --- max_watcher_count limit ---
 
-/// #300: The dispatcher runs in a single task and does O(N) work per event
-/// across all matched watchers. Without a hard cap, an unbounded number of
-/// watchers degrades write latency for all clients. The limit forces operators
-/// to make an explicit capacity decision rather than discovering the ceiling
-/// in production under load.
+/// #300: The dispatcher runs in a single task and does O(N) work per event.
+/// Without a hard cap, an unbounded number of watchers degrades write latency.
 #[tokio::test]
 async fn test_max_watcher_count_rejects_registration_when_exceeded() {
     let (_, registry, _handle) = setup_watch_system_with_max(10, 2);
     let key = Bytes::from("/config/host");
 
-    let _h1 = registry.register(key.clone()).unwrap();
-    let _h2 = registry.register(key.clone()).unwrap();
-    let h3 = registry.register(key.clone());
+    let _h1 = registry.register(key.clone(), false).unwrap();
+    let _h2 = registry.register(key.clone(), false).unwrap();
+    let h3 = registry.register(key.clone(), false);
 
     assert!(
         h3.is_err(),
@@ -1116,14 +1064,13 @@ async fn test_max_watcher_count_rejects_registration_when_exceeded() {
 }
 
 /// #300: prefix watchers consume the same shared cap as exact watchers.
-/// Verifies that `register_prefix` is rejected once `max_watcher_count` is hit.
 #[tokio::test]
 async fn test_prefix_watcher_cap_enforced() {
     let (_, registry, _handle) = setup_watch_system_with_max(10, 2);
 
-    let _h1 = registry.register_prefix(Bytes::from("/a/")).unwrap();
-    let _h2 = registry.register_prefix(Bytes::from("/b/")).unwrap();
-    let h3 = registry.register_prefix(Bytes::from("/c/"));
+    let _h1 = registry.register_prefix(Bytes::from("/a/"), false).unwrap();
+    let _h2 = registry.register_prefix(Bytes::from("/b/"), false).unwrap();
+    let h3 = registry.register_prefix(Bytes::from("/c/"), false);
 
     assert!(
         h3.is_err(),
@@ -1132,34 +1079,27 @@ async fn test_prefix_watcher_cap_enforced() {
 }
 
 /// #300: exact and prefix watchers share a single cap counter.
-/// After 1 exact + 1 prefix fill the cap, a third registration of either
-/// kind must be rejected.
 #[tokio::test]
 async fn test_mixed_exact_and_prefix_watchers_share_cap() {
     let (_, registry, _handle) = setup_watch_system_with_max(10, 2);
 
-    let _h1 = registry.register(Bytes::from("/exact/key")).unwrap();
-    let _h2 = registry.register_prefix(Bytes::from("/prefix/")).unwrap();
+    let _h1 = registry.register(Bytes::from("/exact/key"), false).unwrap();
+    let _h2 = registry.register_prefix(Bytes::from("/prefix/"), false).unwrap();
 
-    let h3_exact = registry.register(Bytes::from("/exact/other"));
+    let h3_exact = registry.register(Bytes::from("/exact/other"), false);
     assert!(
         h3_exact.is_err(),
         "exact register must fail after mixed cap is reached"
     );
 
-    let h3_prefix = registry.register_prefix(Bytes::from("/prefix2/"));
+    let h3_prefix = registry.register_prefix(Bytes::from("/prefix2/"), false);
     assert!(
         h3_prefix.is_err(),
         "prefix register must fail after mixed cap is reached"
     );
 }
 
-/// #300 / fix: the TOCTOU fix in do_register must prevent the watcher count
-/// from ever exceeding max_watcher_count under concurrent registration.
-///
-/// The old load-check-then-fetch_add pattern lets N threads all pass the check
-/// before any increment, so all N insert and the count overshoots.
-/// The reserve-first pattern (fetch_add → check → rollback if over) is race-free.
+/// #300 / fix: the TOCTOU fix must prevent concurrent registrations from exceeding cap.
 #[tokio::test]
 async fn test_concurrent_registrations_never_exceed_cap() {
     let max = 5usize;
@@ -1172,7 +1112,7 @@ async fn test_concurrent_registrations_never_exceed_cap() {
             let registry = Arc::clone(&registry);
             tokio::spawn(async move {
                 let key = Bytes::from(format!("/key/{i}"));
-                registry.register(key).is_ok()
+                registry.register(key, false).is_ok()
             })
         })
         .collect();
@@ -1187,5 +1127,224 @@ async fn test_concurrent_registrations_never_exceed_cap() {
     assert_eq!(
         success_count, max,
         "exactly max_watcher_count registrations must succeed under concurrent load, got {success_count}"
+    );
+}
+
+// =============================================================================
+// #379: prev_kv + Progress Heartbeat
+// =============================================================================
+
+/// #379: A watcher registered with prev_kv=false receives empty prev_value,
+/// even when the broadcast WatchResponse carries a non-empty prev_value.
+/// This ensures watchers that didn't opt in never see prev_kv data.
+#[tokio::test]
+async fn test_prev_kv_false_watcher_receives_empty_prev_value() {
+    let (broadcast_tx, registry, _handle) = setup_watch_system(10);
+    let key = Bytes::from("/k");
+    let mut watcher = registry.register(key.clone(), false).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    broadcast_tx
+        .send(WatchResponse {
+            key: key.clone(),
+            value: Bytes::from("new_val"),
+            prev_value: Bytes::from("old_val"), // handler populated this
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
+            error: 0,
+            revision: 1,
+        })
+        .unwrap();
+
+    let event = timeout(Duration::from_millis(100), watcher.receiver_mut().recv())
+        .await
+        .expect("timeout")
+        .expect("closed");
+
+    assert_eq!(event.event_type, WatchEventType::Put);
+    assert_eq!(event.value, Bytes::from("new_val"));
+    // prev_kv=false → dispatcher zeroes out prev_value before delivery
+    assert_eq!(
+        event.prev_value,
+        Bytes::new(),
+        "prev_kv=false watcher must receive empty prev_value"
+    );
+}
+
+/// #379: A watcher registered with prev_kv=true receives the prev_value
+/// that was populated in the broadcast WatchResponse by the handler.
+#[tokio::test]
+async fn test_prev_kv_true_watcher_receives_prev_value() {
+    let (broadcast_tx, registry, _handle) = setup_watch_system(10);
+    let key = Bytes::from("/k");
+    let mut watcher = registry.register(key.clone(), true).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    broadcast_tx
+        .send(WatchResponse {
+            key: key.clone(),
+            value: Bytes::from("new_val"),
+            prev_value: Bytes::from("old_val"),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
+            error: 0,
+            revision: 1,
+        })
+        .unwrap();
+
+    let event = timeout(Duration::from_millis(100), watcher.receiver_mut().recv())
+        .await
+        .expect("timeout")
+        .expect("closed");
+
+    assert_eq!(event.event_type, WatchEventType::Put);
+    assert_eq!(
+        event.prev_value,
+        Bytes::from("old_val"),
+        "prev_kv=true watcher must receive prev_value"
+    );
+}
+
+/// #379: Two watchers on the same key with different prev_kv flags each get
+/// their respective behavior — per-watcher isolation, not global toggle.
+#[tokio::test]
+async fn test_prev_kv_per_watcher_isolation() {
+    let (broadcast_tx, registry, _handle) = setup_watch_system(10);
+    let key = Bytes::from("/shared");
+
+    let mut watcher_no_prev = registry.register(key.clone(), false).unwrap();
+    let mut watcher_with_prev = registry.register(key.clone(), true).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    broadcast_tx
+        .send(WatchResponse {
+            key: key.clone(),
+            value: Bytes::from("new"),
+            prev_value: Bytes::from("old"),
+            event_type: d_engine_proto::client::WatchEventType::Put as i32,
+            error: 0,
+            revision: 1,
+        })
+        .unwrap();
+
+    let ev_no = timeout(
+        Duration::from_millis(100),
+        watcher_no_prev.receiver_mut().recv(),
+    )
+    .await
+    .expect("timeout no_prev")
+    .expect("closed");
+    let ev_yes = timeout(
+        Duration::from_millis(100),
+        watcher_with_prev.receiver_mut().recv(),
+    )
+    .await
+    .expect("timeout with_prev")
+    .expect("closed");
+
+    assert_eq!(
+        ev_no.prev_value,
+        Bytes::new(),
+        "prev_kv=false must receive empty prev_value"
+    );
+    assert_eq!(
+        ev_yes.prev_value,
+        Bytes::from("old"),
+        "prev_kv=true must receive prev_value"
+    );
+}
+
+/// #379: prev_kv_watcher_count tracks registrations and unregistrations correctly.
+/// This counter is shared with the state machine handler to gate RocksDB reads.
+#[tokio::test]
+async fn test_prev_kv_watcher_count_tracks_registration() {
+    // Keep _broadcast_tx alive: dropping it closes the channel, dispatcher exits,
+    // and subsequent unregister messages would never be processed.
+    let (_broadcast_tx, registry, _handle) = setup_watch_system(10);
+
+    assert_eq!(registry.prev_kv_watcher_count(), 0, "starts at 0");
+
+    let h1 = registry.register(Bytes::from("/k1"), true).unwrap();
+    assert_eq!(
+        registry.prev_kv_watcher_count(),
+        1,
+        "after first prev_kv=true"
+    );
+
+    let _h2 = registry.register(Bytes::from("/k2"), false).unwrap();
+    assert_eq!(
+        registry.prev_kv_watcher_count(),
+        1,
+        "prev_kv=false does not increment"
+    );
+
+    let h3 = registry.register(Bytes::from("/k3"), true).unwrap();
+    assert_eq!(
+        registry.prev_kv_watcher_count(),
+        2,
+        "after second prev_kv=true"
+    );
+
+    drop(h1);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(registry.prev_kv_watcher_count(), 1, "after dropping h1");
+
+    drop(h3);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        registry.prev_kv_watcher_count(),
+        0,
+        "after all prev_kv watchers unregistered"
+    );
+}
+
+/// #379: Progress heartbeat — dispatcher sends periodic Progress events to all watchers.
+/// Watchers can use these to detect stream liveness without waiting for key mutations.
+#[tokio::test]
+async fn test_progress_heartbeat_delivered_to_watcher() {
+    // 50ms interval so the test completes quickly.
+    // Keep _broadcast_tx alive so the dispatcher does not exit early.
+    let (_broadcast_tx, registry, _handle) = setup_watch_system_with_heartbeat(10, 50);
+    let key = Bytes::from("/watch/key");
+    let mut watcher = registry.register(key.clone(), false).unwrap();
+
+    // Wait long enough for at least one heartbeat tick
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Drain events: at least one must be Progress
+    let mut got_progress = false;
+    while let Ok(Some(ev)) = timeout(Duration::from_millis(50), watcher.receiver_mut().recv()).await
+    {
+        if ev.event_type == WatchEventType::Progress {
+            got_progress = true;
+            break;
+        }
+    }
+
+    assert!(
+        got_progress,
+        "no Progress event received within 200ms with 50ms heartbeat interval"
+    );
+}
+
+/// #379: When heartbeat_interval_ms = 0, no Progress events are ever sent.
+/// Clients that don't need liveness pings should not receive unsolicited events.
+#[tokio::test]
+async fn test_no_progress_events_when_heartbeat_disabled() {
+    // heartbeat disabled (interval = 0)
+    let (_, registry, _handle) = setup_watch_system_with_heartbeat(10, 0);
+    let key = Bytes::from("/watch/key");
+    let mut watcher = registry.register(key.clone(), false).unwrap();
+
+    // Wait — if heartbeat were enabled with any short interval we'd see events
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // No events at all should arrive (nothing was broadcast)
+    let result = timeout(Duration::from_millis(30), watcher.receiver_mut().recv()).await;
+    assert!(
+        result.is_err(),
+        "received unexpected event with heartbeat disabled: {:?}",
+        result
     );
 }

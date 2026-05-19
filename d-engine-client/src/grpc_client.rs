@@ -224,6 +224,7 @@ impl GrpcClient {
             client_id: client_inner.client_id,
             key: Bytes::copy_from_slice(key.as_ref()),
             prefix: false,
+            prev_kv: false,
         };
 
         // Watch can connect to any node (leader or follower)
@@ -255,6 +256,7 @@ impl GrpcClient {
             client_id: client_inner.client_id,
             key: Bytes::copy_from_slice(prefix.as_ref()),
             prefix: true,
+            prev_kv: false,
         };
 
         let mut client = self.make_client().await?;

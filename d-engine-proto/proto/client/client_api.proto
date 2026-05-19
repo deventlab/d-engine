@@ -158,6 +158,10 @@ enum WatchEventType {
   // Watcher forcibly canceled by the server (e.g. buffer overflow).
   // Client should re-sync via Read API and re-register the watch.
   WATCH_EVENT_TYPE_CANCELED = 2;
+
+  // Periodic heartbeat with no data change.
+  // Carries current revision so clients can confirm the stream is alive.
+  WATCH_EVENT_TYPE_PROGRESS = 3;
 }
 
 // Request to watch for changes on a key or key prefix.
@@ -173,6 +177,11 @@ message WatchRequest {
   // When true, key is treated as a path prefix (must end with "/").
   // Default false preserves backwards-compatible exact-match behaviour.
   bool prefix = 3;
+
+  // When true, each WatchResponse includes the value that existed before
+  // the mutation (prev_value). Default false; server skips the extra read
+  // when no watcher requests it.
+  bool prev_kv = 4;
 }
 
 // Response containing a watch event notification
@@ -193,6 +202,12 @@ message WatchResponse {
   // Monotonically increasing. Clients use this as an anchor after receiving
   // CANCELED: re-read state, then re-register watching from revision+1.
   uint64 revision = 5;
+
+  // Value before this mutation. Empty when:
+  //   - key did not exist before the write
+  //   - event_type is PROGRESS or CANCELED
+  //   - watcher was registered with prev_kv = false
+  bytes prev_value = 6;
 }
 
 service RaftClientService {
