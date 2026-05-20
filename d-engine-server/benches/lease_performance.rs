@@ -10,6 +10,7 @@
 //! 3. Batch operations with TTL
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use criterion::BenchmarkId;
@@ -124,9 +125,11 @@ fn bench_ttl_registration(c: &mut Criterion) {
     // Scenario 1: No TTL (baseline)
     let (sm_no_ttl, _temp1) = rt.block_on(create_sm_background());
 
+    let idx1 = AtomicU64::new(1);
     group.bench_function("no_ttl_baseline", |b| {
         b.to_async(&rt).iter(|| async {
-            let entry = create_entry_with_ttl(1, 1, b"key", b"value", 0);
+            let i = idx1.fetch_add(1, Ordering::Relaxed);
+            let entry = create_entry_with_ttl(i, 1, b"key", b"value", 0);
             sm_no_ttl.apply_chunk(&[entry]).await.unwrap();
         });
     });
@@ -137,9 +140,11 @@ fn bench_ttl_registration(c: &mut Criterion) {
     // Scenario 2: With TTL (lease enabled)
     let (sm_ttl, _temp2) = rt.block_on(create_sm_background());
 
+    let idx2 = AtomicU64::new(1);
     group.bench_function("with_ttl_background", |b| {
         b.to_async(&rt).iter(|| async {
-            let entry = create_entry_with_ttl(1, 1, b"key", b"value", 3600);
+            let i = idx2.fetch_add(1, Ordering::Relaxed);
+            let entry = create_entry_with_ttl(i, 1, b"key", b"value", 3600);
             sm_ttl.apply_chunk(&[entry]).await.unwrap();
         });
     });
@@ -159,16 +164,18 @@ fn bench_batch_ttl_operations(c: &mut Criterion) {
     for batch_size in [10, 100, 1000].iter() {
         // Create fresh StateMachine for each batch size to avoid state pollution
         let (sm_bg, _temp_bg) = rt.block_on(create_sm_background());
+        let idx = AtomicU64::new(1);
 
         group.bench_with_input(
             BenchmarkId::new("background", batch_size),
             batch_size,
             |b, &size| {
                 b.to_async(&rt).iter(|| async {
+                    let start = idx.fetch_add(size as u64, Ordering::Relaxed);
                     let entries: Vec<ApplyEntry> = (0..size)
                         .map(|i| {
                             create_entry_with_ttl(
-                                1 + i as u64,
+                                start + i as u64,
                                 1,
                                 format!("key_{i}").as_bytes(),
                                 b"value",

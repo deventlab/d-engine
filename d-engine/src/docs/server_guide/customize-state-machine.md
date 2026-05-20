@@ -53,19 +53,29 @@ impl StateMachine for CustomStateMachine {
         // The framework pre-decodes proto bytes — match on Command directly, no prost needed.
         let mut results = Vec::with_capacity(chunk.len());
         for entry in chunk {
-            match &entry.command {
+            let result = match &entry.command {
                 Command::Insert { key, value, ttl_secs } => {
                     self.backend.put(key, value, *ttl_secs)?;
+                    ApplyResult::success(entry.index)
                 }
                 Command::Delete { key } => {
                     self.backend.delete(key)?;
+                    ApplyResult::success(entry.index)
                 }
                 Command::CompareAndSwap { key, expected, value } => {
-                    self.backend.cas(key, expected.as_deref(), value)?;
+                    // CAS must return failure when the comparison does not match.
+                    // Callers (e.g. client CAS requests) inspect ApplyResult::succeeded
+                    // to determine whether the swap actually took effect.
+                    let succeeded = self.backend.cas(key, expected.as_deref(), value)?;
+                    if succeeded {
+                        ApplyResult::success(entry.index)
+                    } else {
+                        ApplyResult::failure(entry.index)
+                    }
                 }
-                Command::Noop => {}
-            }
-            results.push(ApplyResult::success(entry.index));
+                Command::Noop => ApplyResult::success(entry.index),
+            };
+            results.push(result);
         }
         Ok(results)
     }

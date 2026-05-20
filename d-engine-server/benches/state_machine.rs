@@ -22,6 +22,7 @@ use d_engine_core::watch::WatcherHandle;
 use d_engine_core::{ApplyEntry, Command, StateMachine};
 use d_engine_server::storage::FileStateMachine;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::broadcast;
@@ -143,10 +144,12 @@ fn bench_apply_without_ttl(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_without_ttl", |b| {
         b.to_async(&runtime).iter(|| async {
-            let entries = create_entries_without_ttl(1, 1);
+            let start = idx.fetch_add(1, Ordering::Relaxed);
+            let entries = create_entries_without_ttl(1, start);
             sm.apply_chunk(&entries).await.unwrap();
             black_box(());
         });
@@ -159,10 +162,12 @@ fn bench_apply_with_ttl(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_with_ttl", |b| {
         b.to_async(&runtime).iter(|| async {
-            let entries = create_entries_with_ttl(1, 1, 3600); // 1 hour TTL
+            let start = idx.fetch_add(1, Ordering::Relaxed);
+            let entries = create_entries_with_ttl(1, start, 3600); // 1 hour TTL
             sm.apply_chunk(&entries).await.unwrap();
             black_box(());
         });
@@ -246,11 +251,13 @@ fn bench_batch_apply(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_apply");
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let entries = create_entries_without_ttl(size, 1);
+                let start = idx.fetch_add(size as u64, Ordering::Relaxed);
+                let entries = create_entries_without_ttl(size, start);
                 sm.apply_chunk(&entries).await.unwrap();
                 black_box(());
             });
@@ -266,11 +273,13 @@ fn bench_batch_apply_with_ttl(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_apply_with_ttl");
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let entries = create_entries_with_ttl(size, 1, 3600);
+                let start = idx.fetch_add(size as u64, Ordering::Relaxed);
+                let entries = create_entries_with_ttl(size, start, 3600);
                 sm.apply_chunk(&entries).await.unwrap();
                 black_box(());
             });
@@ -287,10 +296,12 @@ fn bench_apply_without_watch(c: &mut Criterion) {
 
     // Initialize state machine once outside the iteration loop
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_without_watch", |b| {
         b.to_async(&runtime).iter(|| async {
-            let entries = create_entries_without_ttl(100, 1);
+            let start = idx.fetch_add(100, Ordering::Relaxed);
+            let entries = create_entries_without_ttl(100, start);
             sm.apply_chunk(&entries).await.unwrap();
             black_box(());
         });
@@ -303,6 +314,7 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_with_1_watcher", |b| {
         b.to_async(&runtime).iter(|| async {
@@ -311,7 +323,8 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
             // Register 1 watcher (keep handle alive to prevent unregistration)
             let _watchers = register_watchers(&registry, 1, "key_");
 
-            let entries = create_entries_without_ttl(100, 1);
+            let start = idx.fetch_add(100, Ordering::Relaxed);
+            let entries = create_entries_without_ttl(100, start);
 
             for entry in &entries {
                 match &entry.command {
@@ -361,6 +374,7 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_with_10_watchers", |b| {
         b.to_async(&runtime).iter(|| async {
@@ -369,7 +383,8 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
             // Register 10 watchers (keep handles alive to prevent unregistration)
             let _watchers = register_watchers(&registry, 10, "key_");
 
-            let entries = create_entries_without_ttl(100, 1);
+            let start = idx.fetch_add(100, Ordering::Relaxed);
+            let entries = create_entries_without_ttl(100, start);
 
             for entry in &entries {
                 match &entry.command {
@@ -419,6 +434,7 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_with_100_watchers", |b| {
         b.to_async(&runtime).iter(|| async {
@@ -427,7 +443,8 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
             // Register 100 watchers (keep handles alive to prevent unregistration)
             let _watchers = register_watchers(&registry, 100, "key_");
 
-            let entries = create_entries_without_ttl(100, 1);
+            let start = idx.fetch_add(100, Ordering::Relaxed);
+            let entries = create_entries_without_ttl(100, start);
 
             for entry in &entries {
                 match &entry.command {

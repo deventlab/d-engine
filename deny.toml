@@ -218,6 +218,11 @@ skip = [
     { crate = "windows-sys@0.52.0", reason = "transitive dep of ring 0.17 and socket2 0.5" },
     # bindgen (rocksdb build dep) pins itertools 0.13
     { crate = "itertools@0.13.0", reason = "bindgen (rocksdb build dep) pins itertools 0.13" },
+    # tempfile/uuid pull getrandom 0.4.x while rand_core 0.9 still requires 0.3.x
+    { crate = "getrandom@0.4.2", reason = "tempfile 3.27 and uuid 1.x use getrandom 0.4; rand_core 0.9 pins 0.3" },
+    # getrandom 0.3.x→wasip2 and 0.4.x→wasip3 pull different wit-bindgen versions
+    { crate = "wit-bindgen@0.51.0", reason = "transitive dep of getrandom 0.4.x via wasip3" },
+    { crate = "wit-bindgen@0.57.1", reason = "transitive dep of getrandom 0.3.x via wasip2" },
 ]
 # Similarly to `skip` allows you to skip certain crates during duplicate
 # detection. Unlike skip, it also includes the entire tree of transitive

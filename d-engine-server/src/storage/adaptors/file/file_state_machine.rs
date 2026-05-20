@@ -606,15 +606,16 @@ impl FileStateMachine {
                         debug!("Replayed DELETE: key={:?}", key);
                     }
                     WalOpCode::CompareAndSwap => {
-                        // CAS during replay: Just apply the new_value if present
-                        // The comparison was already done before crash, and succeeded
-                        // (otherwise this entry wouldn't be in WAL)
+                        // Legacy WAL format from before the CAS outcome fix.
+                        // Current code writes CAS results as Insert (success) or Noop (failure),
+                        // so this branch is only reached when replaying WAL files created before
+                        // the fix. Apply new_value unconditionally as best-effort.
                         if let Some(new_value) = value {
                             data.insert(key.clone(), (new_value, term));
                             applied_count += 1;
-                            debug!("Replayed CAS: key={:?}", key);
+                            debug!("Replayed legacy CAS: key={:?}", key);
                         } else {
-                            warn!("CAS operation without new_value in WAL");
+                            warn!("Legacy CAS WAL entry missing new_value");
                         }
                     }
                     WalOpCode::Noop | WalOpCode::Config => {
@@ -875,9 +876,14 @@ impl FileStateMachine {
         Ok(())
     }
 
-    /// Batch WAL writes with proper durability guarantees
+    /// Batch WAL writes with proper durability guarantees.
+    ///
+    /// `cas_outcomes[i]` is consulted only when `entries[i].command` is
+    /// `CompareAndSwap`. Successful CAS is recorded as `Insert`; failed CAS as
+    /// `Noop`, so replay never applies a CAS that failed at runtime.
     ///
     /// Format per entry:
+    ///
     /// - 8 bytes: entry index (big-endian u64)
     /// - 8 bytes: entry term (big-endian u64)
     /// - 1 byte: operation code (0=NOOP, 1=INSERT, 2=DELETE, 3=CONFIG)
@@ -888,6 +894,7 @@ impl FileStateMachine {
     pub(crate) async fn append_to_wal(
         &self,
         entries: &[ApplyEntry],
+        cas_outcomes: &[bool],
     ) -> Result<(), Error> {
         if entries.is_empty() {
             return Ok(());
@@ -898,30 +905,28 @@ impl FileStateMachine {
         let mut file =
             OpenOptions::new().write(true).create(true).append(true).open(&wal_path).await?;
 
-        // Pre-allocate buffer with estimated size
+        // Pre-allocate buffer: CAS success = Insert size, CAS failure = Noop size
         let estimated_size: usize = entries
             .iter()
-            .map(|entry| {
-                let key_len = match &entry.command {
-                    Command::Noop => 0,
-                    Command::Insert { key, .. }
-                    | Command::Delete { key }
-                    | Command::CompareAndSwap { key, .. } => key.len(),
-                };
-                let val_len = match &entry.command {
-                    Command::Insert { value, .. } | Command::CompareAndSwap { value, .. } => {
-                        value.len()
+            .enumerate()
+            .map(|(i, entry)| match &entry.command {
+                Command::Noop => 41,
+                Command::Insert { key, value, .. } => 41 + key.len() + value.len(),
+                Command::Delete { key } => 41 + key.len(),
+                Command::CompareAndSwap { key, value, .. } => {
+                    if cas_outcomes[i] {
+                        41 + key.len() + value.len()
+                    } else {
+                        41
                     }
-                    _ => 0,
-                };
-                8 + 8 + 1 + 8 + key_len + 8 + val_len + 8
+                }
             })
             .sum();
 
         // Single batched write instead of multiple small writes
         let mut batch_buffer = Vec::with_capacity(estimated_size);
 
-        for entry in entries {
+        for (i, entry) in entries.iter().enumerate() {
             batch_buffer.extend_from_slice(&entry.index.to_be_bytes());
             batch_buffer.extend_from_slice(&entry.term.to_be_bytes());
 
@@ -962,12 +967,21 @@ impl FileStateMachine {
                     batch_buffer.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
                 }
                 Command::CompareAndSwap { key, value, .. } => {
-                    batch_buffer.push(WalOpCode::CompareAndSwap as u8);
-                    batch_buffer.extend_from_slice(&(key.len() as u64).to_be_bytes());
-                    batch_buffer.extend_from_slice(key);
-                    batch_buffer.extend_from_slice(&(value.len() as u64).to_be_bytes());
-                    batch_buffer.extend_from_slice(value);
-                    batch_buffer.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
+                    if cas_outcomes[i] {
+                        // CAS succeeded: store as Insert so replay applies it unconditionally
+                        batch_buffer.push(WalOpCode::Insert as u8);
+                        batch_buffer.extend_from_slice(&(key.len() as u64).to_be_bytes());
+                        batch_buffer.extend_from_slice(key);
+                        batch_buffer.extend_from_slice(&(value.len() as u64).to_be_bytes());
+                        batch_buffer.extend_from_slice(value);
+                        batch_buffer.extend_from_slice(&0u64.to_be_bytes()); // no TTL
+                    } else {
+                        // CAS failed: store as Noop so replay skips it
+                        batch_buffer.push(WalOpCode::Noop as u8);
+                        batch_buffer.extend_from_slice(&0u64.to_be_bytes()); // key_len = 0
+                        batch_buffer.extend_from_slice(&0u64.to_be_bytes()); // val_len = 0
+                        batch_buffer.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
+                    }
                 }
             }
         }
@@ -1075,14 +1089,37 @@ impl StateMachine for FileStateMachine {
             info!("COMMITTED_LOG_METRIC: {}", entry.index);
         }
 
-        // PHASE 2: Batch WAL writes (minimize I/O latency)
-        self.append_to_wal(chunk).await?;
+        // PRE-PHASE: Evaluate CAS conditions before WAL write.
+        // WAL must record outcomes, not intents — a failed CAS written as-intent
+        // would be applied unconditionally on replay, corrupting data.
+        let cas_outcomes: Vec<bool> = {
+            let data = self.data.read();
+            chunk
+                .iter()
+                .map(|entry| match &entry.command {
+                    Command::CompareAndSwap { key, expected, .. } => {
+                        let current = data.get(key.as_ref());
+                        match (current, expected) {
+                            (Some((c, _)), Some(e)) => c.as_ref() == e.as_ref(),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                    }
+                    _ => false, // non-CAS: value unused in append_to_wal
+                })
+                .collect()
+        };
+
+        // PHASE 2: Batch WAL writes with outcomes known.
+        // Successful CAS → WalOpCode::Insert; failed CAS → WalOpCode::Noop.
+        self.append_to_wal(chunk, &cas_outcomes).await?;
 
         // PHASE 3: Fast in-memory updates with minimal lock time
+        // (CAS uses pre-computed outcomes — no re-evaluation under write lock)
         {
             let mut data = self.data.write();
 
-            for entry in chunk {
+            for (entry, &cas_success) in chunk.iter().zip(cas_outcomes.iter()) {
                 match &entry.command {
                     Command::Noop => {
                         results.push(ApplyResult::success(entry.index));
@@ -1117,15 +1154,9 @@ impl StateMachine for FileStateMachine {
                     }
                     Command::CompareAndSwap {
                         key,
-                        expected,
                         value: new_value,
+                        ..
                     } => {
-                        let current_value = data.get(key.as_ref());
-                        let cas_success = match (current_value, expected) {
-                            (Some((current, _)), Some(exp)) => current.as_ref() == exp.as_ref(),
-                            (None, None) => true,
-                            _ => false,
-                        };
                         debug!(
                             "CAS at index {}: key={:?}, success={}",
                             entry.index,

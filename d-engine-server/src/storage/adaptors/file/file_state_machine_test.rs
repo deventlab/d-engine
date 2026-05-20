@@ -101,7 +101,8 @@ async fn test_wal_replay_after_crash() {
             ttl_secs: None,
         },
     }];
-    sm.append_to_wal(&crash_entries).await.unwrap();
+    let dummy_outcomes = vec![false; crash_entries.len()]; // non-CAS entries: outcome unused
+    sm.append_to_wal(&crash_entries, &dummy_outcomes).await.unwrap();
 
     // Don't call flush - simulate crash before persistence
     drop(sm);
@@ -121,6 +122,112 @@ async fn test_wal_replay_after_crash() {
     assert_eq!(
         sm_recovered.get(b"key3").unwrap(),
         Some(Bytes::from("value3"))
+    );
+}
+
+// ── CAS WAL crash-safety tests ────────────────────────────────────────────────
+
+/// A failed CAS must NOT corrupt data when the node crashes and replays WAL.
+///
+/// Before the fix, apply_chunk wrote all entries (including CAS) to WAL before
+/// evaluating the comparison. On replay the CAS was applied unconditionally,
+/// overwriting data that should never have changed.
+#[tokio::test]
+async fn test_cas_failure_wal_replay_does_not_corrupt_data() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let data_dir = temp_dir.path().to_path_buf();
+    let sm = FileStateMachine::new(data_dir.clone()).await.unwrap();
+
+    // Establish initial value
+    sm.apply_chunk(&[ApplyEntry {
+        index: 1,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::from("k"),
+            value: Bytes::from("original"),
+            ttl_secs: None,
+        },
+    }])
+    .await
+    .unwrap();
+
+    // CAS with wrong expected value — must fail at runtime
+    let results = sm
+        .apply_chunk(&[ApplyEntry {
+            index: 2,
+            term: 1,
+            command: Command::CompareAndSwap {
+                key: Bytes::from("k"),
+                expected: Some(Bytes::from("wrong_expected")),
+                value: Bytes::from("should_not_appear"),
+            },
+        }])
+        .await
+        .unwrap();
+
+    assert!(
+        !results[0].succeeded,
+        "CAS should fail when expected != current"
+    );
+    assert_eq!(sm.get(b"k").unwrap(), Some(Bytes::from("original")));
+
+    // Simulate crash + WAL replay
+    drop(sm);
+    let sm2 = FileStateMachine::new(data_dir).await.unwrap();
+
+    assert_eq!(
+        sm2.get(b"k").unwrap(),
+        Some(Bytes::from("original")),
+        "WAL replay of failed CAS must not corrupt data"
+    );
+}
+
+/// A successful CAS must be correctly applied after WAL replay.
+#[tokio::test]
+async fn test_cas_success_wal_replay_applies_new_value() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let data_dir = temp_dir.path().to_path_buf();
+    let sm = FileStateMachine::new(data_dir.clone()).await.unwrap();
+
+    sm.apply_chunk(&[ApplyEntry {
+        index: 1,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::from("k"),
+            value: Bytes::from("v1"),
+            ttl_secs: None,
+        },
+    }])
+    .await
+    .unwrap();
+
+    let results = sm
+        .apply_chunk(&[ApplyEntry {
+            index: 2,
+            term: 1,
+            command: Command::CompareAndSwap {
+                key: Bytes::from("k"),
+                expected: Some(Bytes::from("v1")),
+                value: Bytes::from("v2"),
+            },
+        }])
+        .await
+        .unwrap();
+
+    assert!(
+        results[0].succeeded,
+        "CAS should succeed when expected matches"
+    );
+    assert_eq!(sm.get(b"k").unwrap(), Some(Bytes::from("v2")));
+
+    // Simulate crash + WAL replay
+    drop(sm);
+    let sm2 = FileStateMachine::new(data_dir).await.unwrap();
+
+    assert_eq!(
+        sm2.get(b"k").unwrap(),
+        Some(Bytes::from("v2")),
+        "Successful CAS must survive WAL replay"
     );
 }
 

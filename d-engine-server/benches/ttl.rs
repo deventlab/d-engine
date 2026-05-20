@@ -8,6 +8,7 @@
 //! - TTL registration: < 100ns per entry
 //! - Expired check: < 50ns per key
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -151,10 +152,12 @@ fn bench_batch_ttl_registration(c: &mut Criterion) {
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
 
+    let idx = AtomicU64::new(1);
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let entries = create_entries_with_ttl(size, 1, 3600);
+                let start = idx.fetch_add(size as u64, Ordering::Relaxed);
+                let entries = create_entries_with_ttl(size, start, 3600);
                 sm.apply_chunk(&entries).await.unwrap();
                 black_box(());
             });
@@ -190,10 +193,11 @@ fn bench_mixed_ttl_workload(c: &mut Criterion) {
         (sm, temp_dir)
     });
 
+    let noop_idx = AtomicU64::new(101); // setup applied 1..=100
     group.bench_function("cleanup_mixed", |b| {
         b.to_async(&runtime).iter(|| async {
-            // Only measure the cleanup operation
-            let noop = create_noop_entry(10000);
+            let i = noop_idx.fetch_add(1, Ordering::Relaxed);
+            let noop = create_noop_entry(i);
             sm.apply_chunk(&[noop]).await.unwrap();
             black_box(());
         });
@@ -215,15 +219,15 @@ fn bench_piggyback_high_frequency(c: &mut Criterion) {
         (temp_dir, sm)
     });
 
+    let idx = AtomicU64::new(1);
     group.bench_function("cleanup_with_expired_entries", |b| {
         b.to_async(&runtime).iter(|| async {
-            // Setup: Populate 100 expired entries (not measured)
-            let entries = create_entries_with_ttl(100, 1, 1);
+            let start = idx.fetch_add(101, Ordering::Relaxed);
+            let entries = create_entries_with_ttl(100, start, 1);
             sm.apply_chunk(&entries).await.unwrap();
             tokio::time::sleep(Duration::from_secs(2)).await;
 
-            // Measure: Trigger cleanup via noop entry
-            let noop = create_noop_entry(10000);
+            let noop = create_noop_entry(start + 100);
             sm.apply_chunk(&[noop]).await.unwrap();
             black_box(());
         });
@@ -241,6 +245,7 @@ fn bench_varying_ttl_durations(c: &mut Criterion) {
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
 
     // Test with different TTL durations
+    let idx = AtomicU64::new(1);
     for ttl_secs in [60, 3600, 86400].iter() {
         // 1 min, 1 hour, 1 day
         group.bench_with_input(
@@ -248,7 +253,8 @@ fn bench_varying_ttl_durations(c: &mut Criterion) {
             ttl_secs,
             |b, &ttl_secs| {
                 b.to_async(&runtime).iter(|| async {
-                    let entries = create_entries_with_ttl(100, 1, ttl_secs);
+                    let start = idx.fetch_add(100, Ordering::Relaxed);
+                    let entries = create_entries_with_ttl(100, start, ttl_secs);
                     sm.apply_chunk(&entries).await.unwrap();
                     black_box(());
                 });
@@ -281,15 +287,15 @@ fn bench_worst_case_all_expired(c: &mut Criterion) {
         (sm, temp_dir)
     });
 
+    let idx = AtomicU64::new(1);
     group.bench_function("cleanup_all_expired", |b| {
         b.to_async(&runtime).iter(|| async {
-            // Repopulate expired entries before each measurement
-            let entries = create_entries_with_ttl(1000, 1, 1);
+            let start = idx.fetch_add(1001, Ordering::Relaxed);
+            let entries = create_entries_with_ttl(1000, start, 1);
             sm.apply_chunk(&entries).await.unwrap();
             tokio::time::sleep(Duration::from_secs(2)).await;
 
-            // Measure: Trigger cleanup via noop entry
-            let noop = create_noop_entry(10000);
+            let noop = create_noop_entry(start + 1000);
             sm.apply_chunk(&[noop]).await.unwrap();
             black_box(());
         });
@@ -317,10 +323,11 @@ fn bench_best_case_no_expired(c: &mut Criterion) {
         (sm, temp_dir)
     });
 
+    let noop_idx = AtomicU64::new(1001); // setup applied 1..=1000
     group.bench_function("cleanup_no_expired", |b| {
         b.to_async(&runtime).iter(|| async {
-            // Only measure the cleanup operation
-            let noop = create_noop_entry(10000);
+            let i = noop_idx.fetch_add(1, Ordering::Relaxed);
+            let noop = create_noop_entry(i);
             sm.apply_chunk(&[noop]).await.unwrap();
             black_box(());
         });
