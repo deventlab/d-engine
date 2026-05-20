@@ -4,19 +4,12 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::CompareAndSwap;
-use d_engine_proto::client::write_command::Delete;
-use d_engine_proto::client::write_command::Insert;
-use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
-use d_engine_proto::common::entry_payload::Payload;
 use d_engine_proto::server::storage::SnapshotMetadata;
-use prost::Message;
 use tempfile::TempDir;
 
+use crate::ApplyEntry;
+use crate::Command;
 use crate::Error;
 use crate::storage::StateMachine;
 
@@ -97,7 +90,7 @@ impl StateMachineTestSuite {
             Bytes::from(test_key.to_vec()),
             test_value.clone(),
         )];
-        state_machine.apply_chunk(entries).await?;
+        state_machine.apply_chunk(&entries).await?;
 
         // Verify the value was inserted
         match state_machine.get(test_key)? {
@@ -107,7 +100,7 @@ impl StateMachineTestSuite {
 
         // Create a delete entry
         let entries = vec![create_delete_entry(2, Bytes::from(test_key.to_vec()))];
-        state_machine.apply_chunk(entries).await?;
+        state_machine.apply_chunk(&entries).await?;
 
         // Verify the value was deleted
         assert!(state_machine.get(test_key)?.is_none());
@@ -121,7 +114,7 @@ impl StateMachineTestSuite {
 
         // Test 1: CAS on non-existent key (expected None)
         let entry1 = create_cas_entry(1, b"lock".to_vec().into(), None, b"owner1".to_vec().into());
-        sm.apply_chunk(vec![entry1]).await?;
+        sm.apply_chunk(&[entry1]).await?;
         assert_eq!(sm.get(b"lock")?, Some(b"owner1".to_vec().into()));
 
         // Test 2: CAS success (expected matches)
@@ -131,7 +124,7 @@ impl StateMachineTestSuite {
             Some(b"owner1".to_vec().into()),
             b"owner2".to_vec().into(),
         );
-        sm.apply_chunk(vec![entry2]).await?;
+        sm.apply_chunk(&[entry2]).await?;
         assert_eq!(sm.get(b"lock")?, Some(b"owner2".to_vec().into()));
 
         // Test 3: CAS failure (expected mismatch) - value should not change
@@ -141,7 +134,7 @@ impl StateMachineTestSuite {
             Some(b"wrong".to_vec().into()),
             b"owner3".to_vec().into(),
         );
-        sm.apply_chunk(vec![entry3]).await?;
+        sm.apply_chunk(&[entry3]).await?;
         assert_eq!(sm.get(b"lock")?, Some(b"owner2".to_vec().into())); // Still owner2
 
         sm.stop()?;
@@ -172,7 +165,7 @@ impl StateMachineTestSuite {
             ),
         ];
 
-        state_machine.apply_chunk(entries).await?;
+        state_machine.apply_chunk(&entries).await?;
 
         // Verify the final state
         assert!(state_machine.get(b"key1")?.is_none());
@@ -216,7 +209,7 @@ impl StateMachineTestSuite {
             ),
         ];
 
-        state_machine.apply_chunk(entries).await?;
+        state_machine.apply_chunk(&entries).await?;
         assert_eq!(state_machine.last_applied(), LogId { index: 3, term: 1 });
 
         Ok(())
@@ -244,7 +237,7 @@ impl StateMachineTestSuite {
                 Bytes::from(b"value3".to_vec()),
             ),
         ];
-        state_machine.apply_chunk(entries).await?;
+        state_machine.apply_chunk(&entries).await?;
 
         // Create a temporary directory for the snapshot
         let temp_dir = TempDir::new()?;
@@ -294,7 +287,7 @@ impl StateMachineTestSuite {
                 Bytes::from(b"old_value3".to_vec()),
             ),
         ];
-        state_machine.apply_chunk(entries).await?;
+        state_machine.apply_chunk(&entries).await?;
 
         state_machine.apply_snapshot_from_file(&metadata, snapshot_dir).await?;
 
@@ -333,7 +326,7 @@ impl StateMachineTestSuite {
                 Bytes::from(b"value2".to_vec()),
             ),
         ];
-        state_machine.apply_chunk(entries).await?;
+        state_machine.apply_chunk(&entries).await?;
 
         // Update last applied
         let last_applied = LogId { index: 2, term: 1 };
@@ -370,7 +363,7 @@ impl StateMachineTestSuite {
             .collect();
 
         let start = Instant::now();
-        state_machine.apply_chunk(entries).await?;
+        state_machine.apply_chunk(&entries).await?;
         let elapsed = start.elapsed();
 
         assert!(
@@ -400,7 +393,7 @@ impl StateMachineTestSuite {
             .collect();
 
         let start_small = Instant::now();
-        state_machine.apply_chunk(small_entries).await?;
+        state_machine.apply_chunk(&small_entries).await?;
         let elapsed_small = start_small.elapsed();
 
         // Large batch: 1000 entries
@@ -415,7 +408,7 @@ impl StateMachineTestSuite {
             .collect();
 
         let start_large = Instant::now();
-        state_machine.apply_chunk(large_entries).await?;
+        state_machine.apply_chunk(&large_entries).await?;
         let elapsed_large = start_large.elapsed();
 
         // Verify linear scalability: 1000 entries should be 5x-15x slower (not 100x)
@@ -470,7 +463,7 @@ impl StateMachineTestSuite {
                 Bytes::from(b"drop_test_value2".to_vec()),
             ),
         ];
-        sm.apply_chunk(entries).await?;
+        sm.apply_chunk(&entries).await?;
 
         // Verify data exists in memory
         assert_eq!(
@@ -545,7 +538,7 @@ impl StateMachineTestSuite {
                     Bytes::from(b"drop_meta_value3".to_vec()),
                 ),
             ];
-            sm.apply_chunk(entries).await?;
+            sm.apply_chunk(&entries).await?;
 
             // Verify last_applied in memory
             assert_eq!(
@@ -624,7 +617,7 @@ impl StateMachineTestSuite {
                     Bytes::from(b"reopen_value3".to_vec()),
                 ),
             ];
-            sm.apply_chunk(entries).await?;
+            sm.apply_chunk(&entries).await?;
 
             last_applied_before = sm.last_applied();
             assert_eq!(last_applied_before.index, 3);
@@ -703,7 +696,7 @@ impl StateMachineTestSuite {
                 Bytes::from(b"crash_value2".to_vec()),
             ),
         ];
-        sm.apply_chunk(entries).await?;
+        sm.apply_chunk(&entries).await?;
 
         // Verify data exists in memory
         assert!(sm.get(b"crash_key1")?.is_some());
@@ -776,7 +769,7 @@ impl StateMachineTestSuite {
                 Bytes::from(b"value3".to_vec()),
             ),
         ];
-        state_machine.apply_chunk(entries).await?;
+        state_machine.apply_chunk(&entries).await?;
 
         // Verify data exists
         assert_eq!(
@@ -826,7 +819,7 @@ impl StateMachineTestSuite {
                 Bytes::from(b"new_value2".to_vec()),
             ),
         ];
-        state_machine.apply_chunk(new_entries).await?;
+        state_machine.apply_chunk(&new_entries).await?;
 
         // Verify new data exists
         assert_eq!(
@@ -843,92 +836,50 @@ impl StateMachineTestSuite {
     }
 }
 
-/// Helper function to create an insert entry
+/// Helper function to create an Insert ApplyEntry
 fn create_insert_entry(
     index: u64,
     key: Bytes,
     value: Bytes,
-) -> Entry {
-    // 1. Build the WriteCommand
-    let insert = Insert {
-        key,
-        value,
-        ttl_secs: 0,
-    };
-    let operation = Operation::Insert(insert);
-    let write_cmd = WriteCommand {
-        operation: Some(operation),
-    };
-
-    // 2. Serialize WriteCommand to Bytes
-    let mut buf = Vec::new();
-    write_cmd.encode(&mut buf).expect("Failed to encode WriteCommand");
-    let cmd_bytes = Bytes::from(buf); // convert Vec<u8> to Bytes
-
-    // 3. Wrap in Payload::Command
-    let payload = EntryPayload {
-        payload: Some(Payload::Command(cmd_bytes)),
-    };
-
-    // 4. Build the Entry
-    Entry {
+) -> ApplyEntry {
+    ApplyEntry {
         index,
         term: 1,
-        payload: Some(payload),
+        command: Command::Insert {
+            key,
+            value,
+            ttl_secs: None,
+        },
     }
 }
 
-/// Helper function to create a delete entry
+/// Helper function to create a Delete ApplyEntry
 fn create_delete_entry(
     index: u64,
     key: Bytes,
-) -> Entry {
-    let delete = Delete { key };
-    let operation = Operation::Delete(delete);
-    let write_cmd = WriteCommand {
-        operation: Some(operation),
-    };
-
-    let mut buf = Vec::new();
-    write_cmd.encode(&mut buf).expect("Failed to encode WriteCommand");
-    let cmd_bytes = Bytes::from(buf);
-
-    Entry {
+) -> ApplyEntry {
+    ApplyEntry {
         index,
         term: 1,
-        payload: Some(EntryPayload {
-            payload: Some(Payload::Command(cmd_bytes)),
-        }),
+        command: Command::Delete { key },
     }
 }
 
-/// Helper function to create a CAS entry
+/// Helper function to create a CAS ApplyEntry
 fn create_cas_entry(
     index: u64,
     key: Bytes,
-    expected_value: Option<Bytes>,
-    new_value: Bytes,
-) -> Entry {
-    let cas = CompareAndSwap {
-        key,
-        expected_value,
-        new_value,
-    };
-    let operation = Operation::CompareAndSwap(cas);
-    let write_cmd = WriteCommand {
-        operation: Some(operation),
-    };
-
-    let mut buf = Vec::new();
-    write_cmd.encode(&mut buf).expect("Failed to encode WriteCommand");
-    let cmd_bytes = Bytes::from(buf);
-
-    Entry {
+    expected: Option<Bytes>,
+    value: Bytes,
+) -> ApplyEntry {
+    ApplyEntry {
         index,
         term: 1,
-        payload: Some(EntryPayload {
-            payload: Some(Payload::Command(cmd_bytes)),
-        }),
+        command: Command::CompareAndSwap {
+            key,
+            expected,
+            value,
+        },
     }
 }
 
@@ -946,11 +897,11 @@ mod default_scan_prefix_tests {
 
     use async_trait::async_trait;
     use bytes::Bytes;
-    use d_engine_proto::common::{Entry, LogId};
+    use d_engine_proto::common::LogId;
     use d_engine_proto::server::storage::SnapshotMetadata;
 
-    use crate::Error;
     use crate::storage::state_machine::{ApplyResult, StateMachine};
+    use crate::{ApplyEntry, Error};
 
     struct MinimalSm {
         running: AtomicBool,
@@ -988,7 +939,7 @@ mod default_scan_prefix_tests {
 
         async fn apply_chunk(
             &self,
-            _chunk: Vec<Entry>,
+            _chunk: &[ApplyEntry],
         ) -> Result<Vec<ApplyResult>, Error> {
             Ok(vec![])
         }

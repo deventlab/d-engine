@@ -5,16 +5,11 @@ use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
 use d_engine::{
-    ApplyResult, Result, ScanResult, SnapshotError, StateMachine, StorageError,
-    client::{
-        WriteCommand,
-        write_command::{CompareAndSwap, Delete, Insert, Operation},
-    },
-    common::{Entry, LogId, entry_payload::Payload},
+    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotError, StateMachine, StorageError,
+    common::LogId,
     server_storage::SnapshotMetadata,
 };
 use parking_lot::Mutex;
-use prost::Message;
 use sled::Batch;
 use std::path::Path;
 use std::path::PathBuf;
@@ -29,7 +24,6 @@ use tracing::error;
 use tracing::info;
 use tracing::instrument;
 use tracing::trace;
-use tracing::warn;
 
 use crate::compute_checksum_from_folder_path;
 use crate::{safe_kv, safe_vk, safe_vk_ivec};
@@ -188,20 +182,15 @@ impl StateMachine for SledStateMachine {
         }
     }
 
-    async fn apply_chunk(
-        &self,
-        chunk: Vec<Entry>,
-    ) -> Result<Vec<ApplyResult>> {
+    async fn apply_chunk(&self, chunk: &[ApplyEntry]) -> Result<Vec<ApplyResult>> {
         trace!("Applying chunk: {} entries", chunk.len());
 
-        let mut highest_index_entry: Option<LogId> = None;
+        let mut highest_log_id: Option<LogId> = None;
         let mut batch = Batch::default();
         let mut results = Vec::with_capacity(chunk.len());
 
         for entry in chunk {
-            assert!(entry.payload.is_some(), "Entry payload should not be None!");
-
-            if let Some(prev) = highest_index_entry {
+            if let Some(prev) = &highest_log_id {
                 assert!(
                     entry.index > prev.index,
                     "apply_chunk: received unordered entry at index {} (prev={})",
@@ -209,83 +198,51 @@ impl StateMachine for SledStateMachine {
                     prev.index
                 );
             }
-            highest_index_entry = Some(LogId {
-                index: entry.index,
-                term: entry.term,
-            });
+            highest_log_id = Some(LogId { index: entry.index, term: entry.term });
 
-            match entry.payload.unwrap().payload {
-                Some(Payload::Noop(_)) => {
+            match &entry.command {
+                Command::Noop => {
                     debug!("NOOP at index {}", entry.index);
                     results.push(ApplyResult::success(entry.index));
                 }
-                Some(Payload::Command(data)) => {
-                    match WriteCommand::decode(&data[..]) {
-                        Ok(write_cmd) => match write_cmd.operation {
-                            Some(Operation::Insert(Insert {
-                                key,
-                                value,
-                                ttl_secs: _,
-                            })) => {
-                                batch.insert(key.as_ref(), value.as_ref());
-                                results.push(ApplyResult::success(entry.index));
-                            }
-                            Some(Operation::Delete(Delete { key })) => {
-                                batch.remove(key.as_ref());
-                                results.push(ApplyResult::success(entry.index));
-                            }
-                            Some(Operation::CompareAndSwap(CompareAndSwap {
-                                key,
-                                expected_value,
-                                new_value,
-                            })) => {
-                                // Flush pending batch before CAS (Sled batch doesn't support atomic CAS)
-                                self.apply_batch(std::mem::take(&mut batch))?;
-
-                                // Perform native Sled CAS
-                                let tree = self.current_tree();
-                                let old = expected_value.as_ref().map(|v| v.as_ref());
-
-                                let cas_success = match tree.compare_and_swap(
-                                    &key,
-                                    old,
-                                    Some(new_value.as_ref()),
-                                ) {
-                                    Ok(Ok(_)) => true,
-                                    Ok(Err(_)) => false,
-                                    Err(e) => {
-                                        error!("CAS error at index {}: {:?}", entry.index, e);
-                                        return Err(StorageError::DbError(e.to_string()).into());
-                                    }
-                                };
-
-                                results.push(if cas_success {
-                                    ApplyResult::success(entry.index)
-                                } else {
-                                    ApplyResult::failure(entry.index)
-                                });
-
-                                debug!(
-                                    "CAS at index {}: key={:?}, success={}",
-                                    entry.index,
-                                    String::from_utf8_lossy(&key),
-                                    cas_success
-                                );
-                            }
-                            None => {
-                                warn!("WriteCommand without operation at index {}", entry.index);
-                            }
-                        },
-                        Err(e) => {
-                            error!("Decode error at index {}: {}", entry.index, e);
-                            return Err(StorageError::SerializationError(e.to_string()).into());
-                        }
-                    }
+                Command::Insert { key, value, .. } => {
+                    batch.insert(key.as_ref(), value.as_ref());
+                    results.push(ApplyResult::success(entry.index));
                 }
-                Some(Payload::Config(_)) => {
-                    debug!("Config change at index {} (ignored)", entry.index);
+                Command::Delete { key } => {
+                    batch.remove(key.as_ref());
+                    results.push(ApplyResult::success(entry.index));
                 }
-                None => panic!("Entry payload should not be None!"),
+                Command::CompareAndSwap { key, expected, value: new_value } => {
+                    // Flush pending batch before CAS (Sled batch doesn't support atomic CAS)
+                    self.apply_batch(std::mem::take(&mut batch))?;
+
+                    // Perform native Sled CAS
+                    let tree = self.current_tree();
+                    let old = expected.as_ref().map(|v| v.as_ref());
+
+                    let cas_success =
+                        match tree.compare_and_swap(key.as_ref(), old, Some(new_value.as_ref())) {
+                            Ok(Ok(_)) => true,
+                            Ok(Err(_)) => false,
+                            Err(e) => {
+                                error!("CAS error at index {}: {:?}", entry.index, e);
+                                return Err(StorageError::DbError(e.to_string()).into());
+                            }
+                        };
+
+                    debug!(
+                        "CAS at index {}: key={:?}, success={}",
+                        entry.index,
+                        String::from_utf8_lossy(key),
+                        cas_success
+                    );
+                    results.push(if cas_success {
+                        ApplyResult::success(entry.index)
+                    } else {
+                        ApplyResult::failure(entry.index)
+                    });
+                }
             }
         }
 
@@ -293,7 +250,7 @@ impl StateMachine for SledStateMachine {
         self.apply_batch(batch)?;
 
         // Update last applied index
-        if let Some(log_id) = highest_index_entry {
+        if let Some(log_id) = highest_log_id {
             self.update_last_applied(log_id);
         }
 
@@ -392,38 +349,26 @@ impl StateMachine for SledStateMachine {
         let mut batch = sled::Batch::default();
         let mut counter = 0;
 
+        // Copy all current data. Keys are arbitrary bytes — we cannot interpret them
+        // as log indices. The SM already reflects state at last_included.index, so
+        // all current entries are valid snapshot content.
         for item in exist_db_tree.iter() {
             let (k, v) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-
-            let key_num = match safe_vk(&k) {
-                Ok(v) => v,
-                Err(e) => {
-                    error!(?e, "generate_snapshot_data::safe_vk");
-                    return Err(e.into());
-                }
-            };
-            if key_num > last_included.index {
-                break; // Stop applying further entries as they will all be greater
-            }
 
             batch.insert(k, v);
             counter += 1;
 
-            // Perform a batch insert every 100 records
             if counter % 100 == 0 {
                 new_state_machine_tree
                     .apply_batch(batch)
                     .map_err(|e| StorageError::DbError(e.to_string()))?;
-                batch = sled::Batch::default(); // Reset the batch object
+                batch = sled::Batch::default();
             }
         }
 
-        // Process the remaining data (the tail data of less than 100 records)
-        if counter % 100 != 0 {
-            new_state_machine_tree
-                .apply_batch(batch)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-        }
+        new_state_machine_tree
+            .apply_batch(batch)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
 
         // Make sure flush into disk
         new_db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
@@ -543,7 +488,17 @@ impl StateMachine for SledStateMachine {
 
     async fn reset(&self) -> Result<()> {
         let db = self.db.load();
-        db.clear().map_err(|e| StorageError::DbError(e.to_string()))?;
+        for tree_name in &[STATE_MACHINE_TREE, STATE_MACHINE_META_NAMESPACE, STATE_SNAPSHOT_METADATA_TREE] {
+            db.open_tree(tree_name)
+                .map_err(|e| StorageError::DbError(e.to_string()))?
+                .clear()
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+        }
+        self.last_applied_index.store(0, Ordering::SeqCst);
+        self.last_applied_term.store(0, Ordering::SeqCst);
+        self.last_included_index.store(0, Ordering::SeqCst);
+        self.last_included_term.store(0, Ordering::SeqCst);
+        *self.last_snapshot_checksum.lock() = None;
         Ok(())
     }
 

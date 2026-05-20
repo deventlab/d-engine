@@ -16,17 +16,8 @@ use criterion::Criterion;
 use criterion::black_box;
 use criterion::criterion_group;
 use criterion::criterion_main;
-use d_engine_core::Lease;
-use d_engine_core::StateMachine;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::Insert;
-use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::Noop;
-use d_engine_proto::common::entry_payload::Payload;
+use d_engine_core::{ApplyEntry, Command, Lease, StateMachine};
 use d_engine_server::storage::FileStateMachine;
-use prost::Message;
 use tempfile::TempDir;
 
 /// Helper to create a temporary state machine for benchmarking
@@ -58,41 +49,30 @@ fn create_entries_with_ttl(
     count: usize,
     start_index: u64,
     ttl_secs: u64,
-) -> Vec<Entry> {
+) -> Vec<ApplyEntry> {
     (0..count)
         .map(|i| {
             let key = format!("key_ttl_{}", start_index + i as u64);
             let value = format!("value_ttl_{}", start_index + i as u64);
-
-            let insert = Insert {
-                key: Bytes::from(key),
-                value: Bytes::from(value),
-                ttl_secs,
-            };
-            let write_cmd = WriteCommand {
-                operation: Some(Operation::Insert(insert)),
-            };
-            let payload = Payload::Command(write_cmd.encode_to_vec().into());
-
-            Entry {
+            ApplyEntry {
                 index: start_index + i as u64,
                 term: 1,
-                payload: Some(EntryPayload {
-                    payload: Some(payload),
-                }),
+                command: Command::Insert {
+                    key: Bytes::from(key),
+                    value: Bytes::from(value),
+                    ttl_secs: if ttl_secs > 0 { Some(ttl_secs) } else { None },
+                },
             }
         })
         .collect()
 }
 
 /// Helper to create a no-op entry (for triggering piggyback cleanup)
-fn create_noop_entry(index: u64) -> Entry {
-    Entry {
+fn create_noop_entry(index: u64) -> ApplyEntry {
+    ApplyEntry {
         index,
         term: 1,
-        payload: Some(EntryPayload {
-            payload: Some(Payload::Noop(Noop {})),
-        }),
+        command: Command::Noop,
     }
 }
 
@@ -175,8 +155,7 @@ fn bench_batch_ttl_registration(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
                 let entries = create_entries_with_ttl(size, 1, 3600);
-
-                sm.apply_chunk(entries).await.unwrap();
+                sm.apply_chunk(&entries).await.unwrap();
                 black_box(());
             });
         });
@@ -199,11 +178,11 @@ fn bench_mixed_ttl_workload(c: &mut Criterion) {
 
         // Insert 50 entries with short TTL (will expire)
         let expired_entries = create_entries_with_ttl(50, 1, 1);
-        sm.apply_chunk(expired_entries).await.unwrap();
+        sm.apply_chunk(&expired_entries).await.unwrap();
 
         // Insert 50 entries with long TTL (will remain active)
         let active_entries = create_entries_with_ttl(50, 51, 3600);
-        sm.apply_chunk(active_entries).await.unwrap();
+        sm.apply_chunk(&active_entries).await.unwrap();
 
         // Wait for first batch to expire
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -215,7 +194,7 @@ fn bench_mixed_ttl_workload(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             // Only measure the cleanup operation
             let noop = create_noop_entry(10000);
-            sm.apply_chunk(vec![noop]).await.unwrap();
+            sm.apply_chunk(&[noop]).await.unwrap();
             black_box(());
         });
     });
@@ -240,12 +219,12 @@ fn bench_piggyback_high_frequency(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             // Setup: Populate 100 expired entries (not measured)
             let entries = create_entries_with_ttl(100, 1, 1);
-            sm.apply_chunk(entries).await.unwrap();
+            sm.apply_chunk(&entries).await.unwrap();
             tokio::time::sleep(Duration::from_secs(2)).await;
 
             // Measure: Trigger cleanup via noop entry
             let noop = create_noop_entry(10000);
-            sm.apply_chunk(vec![noop]).await.unwrap();
+            sm.apply_chunk(&[noop]).await.unwrap();
             black_box(());
         });
     });
@@ -270,8 +249,7 @@ fn bench_varying_ttl_durations(c: &mut Criterion) {
             |b, &ttl_secs| {
                 b.to_async(&runtime).iter(|| async {
                     let entries = create_entries_with_ttl(100, 1, ttl_secs);
-
-                    sm.apply_chunk(entries).await.unwrap();
+                    sm.apply_chunk(&entries).await.unwrap();
                     black_box(());
                 });
             },
@@ -295,7 +273,7 @@ fn bench_worst_case_all_expired(c: &mut Criterion) {
 
         // Insert 1000 entries with very short TTL
         let entries = create_entries_with_ttl(1000, 1, 1);
-        sm.apply_chunk(entries).await.unwrap();
+        sm.apply_chunk(&entries).await.unwrap();
 
         // Wait for all to expire
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -307,12 +285,12 @@ fn bench_worst_case_all_expired(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             // Repopulate expired entries before each measurement
             let entries = create_entries_with_ttl(1000, 1, 1);
-            sm.apply_chunk(entries).await.unwrap();
+            sm.apply_chunk(&entries).await.unwrap();
             tokio::time::sleep(Duration::from_secs(2)).await;
 
             // Measure: Trigger cleanup via noop entry
             let noop = create_noop_entry(10000);
-            sm.apply_chunk(vec![noop]).await.unwrap();
+            sm.apply_chunk(&[noop]).await.unwrap();
             black_box(());
         });
     });
@@ -334,7 +312,7 @@ fn bench_best_case_no_expired(c: &mut Criterion) {
 
         // Insert 1000 entries with very long TTL
         let entries = create_entries_with_ttl(1000, 1, 86400); // 1 day
-        sm.apply_chunk(entries).await.unwrap();
+        sm.apply_chunk(&entries).await.unwrap();
 
         (sm, temp_dir)
     });
@@ -343,7 +321,7 @@ fn bench_best_case_no_expired(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             // Only measure the cleanup operation
             let noop = create_noop_entry(10000);
-            sm.apply_chunk(vec![noop]).await.unwrap();
+            sm.apply_chunk(&[noop]).await.unwrap();
             black_box(());
         });
     });
@@ -362,5 +340,4 @@ criterion_group!(
     bench_worst_case_all_expired,
     bench_best_case_no_expired,
 );
-
 criterion_main!(benches);

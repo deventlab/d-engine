@@ -104,14 +104,7 @@ mod file_state_machine_tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use d_engine_core::StateMachine;
-    use d_engine_proto::client::WriteCommand;
-    use d_engine_proto::client::write_command::Insert;
-    use d_engine_proto::client::write_command::Operation;
-    use d_engine_proto::common::Entry;
-    use d_engine_proto::common::EntryPayload;
-    use d_engine_proto::common::entry_payload::Payload;
-    use prost::Message;
+    use d_engine_core::{ApplyEntry, Command, StateMachine};
     use tempfile::TempDir;
     use tokio::time::sleep;
 
@@ -130,30 +123,21 @@ mod file_state_machine_tests {
         sm
     }
 
-    /// Helper to create an entry with Insert command
     fn create_insert_entry(
         index: u64,
         term: u64,
         key: &[u8],
         value: &[u8],
         ttl_secs: u64,
-    ) -> Entry {
-        let insert = Insert {
-            key: Bytes::from(key.to_vec()),
-            value: Bytes::from(value.to_vec()),
-            ttl_secs,
-        };
-        let write_cmd = WriteCommand {
-            operation: Some(Operation::Insert(insert)),
-        };
-        let payload = Payload::Command(write_cmd.encode_to_vec().into());
-
-        Entry {
+    ) -> ApplyEntry {
+        ApplyEntry {
             index,
             term,
-            payload: Some(EntryPayload {
-                payload: Some(payload),
-            }),
+            command: Command::Insert {
+                key: Bytes::copy_from_slice(key),
+                value: Bytes::copy_from_slice(value),
+                ttl_secs: if ttl_secs > 0 { Some(ttl_secs) } else { None },
+            },
         }
     }
 
@@ -170,7 +154,7 @@ mod file_state_machine_tests {
 
         // Insert key with 2 second TTL
         let entry = create_insert_entry(1, 1, b"ttl_key", b"ttl_value", 2);
-        sm.apply_chunk(vec![entry]).await.unwrap();
+        sm.apply_chunk(&[entry]).await.unwrap();
 
         // Key should exist immediately
         let value = sm.get(b"ttl_key").unwrap();
@@ -203,7 +187,7 @@ mod file_state_machine_tests {
 
         // Insert key with 3600 second TTL (won't expire during test)
         let entry = create_insert_entry(1, 1, b"persistent_key", b"persistent_value", 3600);
-        sm.apply_chunk(vec![entry]).await.unwrap();
+        sm.apply_chunk(&[entry]).await.unwrap();
 
         // Create snapshot
         let snapshot_dir = temp_dir.path().join("snapshot");
@@ -257,7 +241,7 @@ mod file_state_machine_tests {
             let entry2 = create_insert_entry(2, 1, b"long_ttl_key", b"value2", 3600);
             let entry3 = create_insert_entry(3, 1, b"no_ttl_key", b"value3", 0);
 
-            sm.apply_chunk(vec![entry1, entry2, entry3]).await.unwrap();
+            sm.apply_chunk(&[entry1, entry2, entry3]).await.unwrap();
 
             // Verify all keys exist
             assert_eq!(
@@ -322,11 +306,11 @@ mod file_state_machine_tests {
 
         // Insert key with 2 second TTL
         let entry1 = create_insert_entry(1, 1, b"update_key", b"value1", 2);
-        sm.apply_chunk(vec![entry1]).await.unwrap();
+        sm.apply_chunk(&[entry1]).await.unwrap();
 
         // Immediately update with longer TTL
         let entry2 = create_insert_entry(2, 1, b"update_key", b"value2", 10);
-        sm.apply_chunk(vec![entry2]).await.unwrap();
+        sm.apply_chunk(&[entry2]).await.unwrap();
 
         // Wait past original TTL
         sleep(Duration::from_secs(3)).await;
@@ -364,7 +348,7 @@ mod file_state_machine_tests {
             // Insert key with no TTL
             let entry3 = create_insert_entry(3, 1, b"permanent_key", b"value3", 0);
 
-            sm.apply_chunk(vec![entry1, entry2, entry3]).await.unwrap();
+            sm.apply_chunk(&[entry1, entry2, entry3]).await.unwrap();
 
             // Verify all keys exist immediately after write
             assert_eq!(sm.get(b"expired_key").unwrap(), Some(Bytes::from("value1")));
@@ -613,7 +597,7 @@ mod file_state_machine_tests {
         for i in 0..20 {
             let key = format!("bg_key_{}", i);
             let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 1);
-            sm.apply_chunk(vec![entry]).await.unwrap();
+            sm.apply_chunk(&[entry]).await.unwrap();
         }
 
         // All keys should exist immediately
@@ -666,7 +650,7 @@ mod file_state_machine_tests {
         for i in 0..100 {
             let key = format!("duration_key_{}", i);
             let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 1);
-            sm.apply_chunk(vec![entry]).await.unwrap();
+            sm.apply_chunk(&[entry]).await.unwrap();
         }
 
         // Wait for expiration
@@ -698,15 +682,7 @@ mod rocksdb_state_machine_tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use d_engine_core::StateMachine;
-    use d_engine_proto::client::WriteCommand;
-    use d_engine_proto::client::write_command::Delete;
-    use d_engine_proto::client::write_command::Insert;
-    use d_engine_proto::client::write_command::Operation;
-    use d_engine_proto::common::Entry;
-    use d_engine_proto::common::EntryPayload;
-    use d_engine_proto::common::entry_payload::Payload;
-    use prost::Message;
+    use d_engine_core::{ApplyEntry, Command, StateMachine};
     use tempfile::TempDir;
     use tokio::time::sleep;
 
@@ -727,53 +703,35 @@ mod rocksdb_state_machine_tests {
         (storage, sm)
     }
 
-    /// Helper to create an entry with Insert command
     fn create_insert_entry(
         index: u64,
         term: u64,
         key: &[u8],
         value: &[u8],
         ttl_secs: u64,
-    ) -> Entry {
-        let insert = Insert {
-            key: Bytes::from(key.to_vec()),
-            value: Bytes::from(value.to_vec()),
-            ttl_secs,
-        };
-        let write_cmd = WriteCommand {
-            operation: Some(Operation::Insert(insert)),
-        };
-        let payload = Payload::Command(write_cmd.encode_to_vec().into());
-
-        Entry {
+    ) -> ApplyEntry {
+        ApplyEntry {
             index,
             term,
-            payload: Some(EntryPayload {
-                payload: Some(payload),
-            }),
+            command: Command::Insert {
+                key: Bytes::copy_from_slice(key),
+                value: Bytes::copy_from_slice(value),
+                ttl_secs: if ttl_secs > 0 { Some(ttl_secs) } else { None },
+            },
         }
     }
 
-    /// Helper to create an entry with Delete command
     fn create_delete_entry(
         index: u64,
         term: u64,
         key: &[u8],
-    ) -> Entry {
-        let delete = Delete {
-            key: Bytes::from(key.to_vec()),
-        };
-        let write_cmd = WriteCommand {
-            operation: Some(Operation::Delete(delete)),
-        };
-        let payload = Payload::Command(write_cmd.encode_to_vec().into());
-
-        Entry {
+    ) -> ApplyEntry {
+        ApplyEntry {
             index,
             term,
-            payload: Some(EntryPayload {
-                payload: Some(payload),
-            }),
+            command: Command::Delete {
+                key: Bytes::copy_from_slice(key),
+            },
         }
     }
 
@@ -791,7 +749,7 @@ mod rocksdb_state_machine_tests {
 
         // Insert key with 2 second TTL
         let entry = create_insert_entry(1, 1, b"ttl_key", b"ttl_value", 2);
-        sm.apply_chunk(vec![entry]).await.unwrap();
+        sm.apply_chunk(&[entry]).await.unwrap();
 
         // Key should exist immediately
         let value = sm.get(b"ttl_key").unwrap();
@@ -825,7 +783,7 @@ mod rocksdb_state_machine_tests {
 
         // Insert key with 3600 second TTL (won't expire during test)
         let entry = create_insert_entry(1, 1, b"persistent_key", b"persistent_value", 3600);
-        sm.apply_chunk(vec![entry]).await.unwrap();
+        sm.apply_chunk(&[entry]).await.unwrap();
 
         // Create snapshot
         let snapshot_dir = temp_dir.path().join("snapshot");
@@ -877,18 +835,18 @@ mod rocksdb_state_machine_tests {
 
         // Insert key with 2 second TTL
         let entry1 = create_insert_entry(1, 1, b"update_key", b"value1", 2);
-        sm.apply_chunk(vec![entry1]).await.unwrap();
+        sm.apply_chunk(&[entry1]).await.unwrap();
 
         // Immediately update with longer TTL
         let entry2 = create_insert_entry(2, 1, b"update_key", b"value2", 10);
-        sm.apply_chunk(vec![entry2]).await.unwrap();
+        sm.apply_chunk(&[entry2]).await.unwrap();
 
         // Wait past original TTL
         sleep(Duration::from_secs(3)).await;
 
         // Trigger expiration check
         let entry3 = create_insert_entry(3, 1, b"trigger", b"trigger", 0);
-        sm.apply_chunk(vec![entry3]).await.unwrap();
+        sm.apply_chunk(&[entry3]).await.unwrap();
 
         // Key should still exist (new TTL not expired)
         let value = sm.get(b"update_key").unwrap();
@@ -909,11 +867,11 @@ mod rocksdb_state_machine_tests {
 
         // Insert key with TTL
         let entry1 = create_insert_entry(1, 1, b"delete_key", b"delete_value", 3600);
-        sm.apply_chunk(vec![entry1]).await.unwrap();
+        sm.apply_chunk(&[entry1]).await.unwrap();
 
         // Delete the key
         let entry2 = create_delete_entry(2, 1, b"delete_key");
-        sm.apply_chunk(vec![entry2]).await.unwrap();
+        sm.apply_chunk(&[entry2]).await.unwrap();
 
         // Key should not exist
         let value = sm.get(b"delete_key").unwrap();
@@ -922,7 +880,7 @@ mod rocksdb_state_machine_tests {
         // Even after waiting, no expiration should occur (TTL was unregistered)
         sleep(Duration::from_secs(2)).await;
         let entry3 = create_insert_entry(3, 1, b"trigger", b"trigger", 0);
-        sm.apply_chunk(vec![entry3]).await.unwrap();
+        sm.apply_chunk(&[entry3]).await.unwrap();
     }
 
     #[tokio::test]
@@ -942,7 +900,7 @@ mod rocksdb_state_machine_tests {
         let entry2 = create_insert_entry(2, 1, b"key_5sec", b"value2", 5);
         let entry3 = create_insert_entry(3, 1, b"key_no_ttl", b"value3", 0);
 
-        sm.apply_chunk(vec![entry1, entry2, entry3]).await.unwrap();
+        sm.apply_chunk(&[entry1, entry2, entry3]).await.unwrap();
 
         // All keys should exist initially
         assert_eq!(sm.get(b"key_1sec").unwrap(), Some(Bytes::from("value1")));
@@ -995,7 +953,7 @@ mod rocksdb_state_machine_tests {
             let entry2 = create_insert_entry(2, 1, b"long_ttl_key", b"value2", 3600);
             let entry3 = create_insert_entry(3, 1, b"no_ttl_key", b"value3", 0);
 
-            sm.apply_chunk(vec![entry1, entry2, entry3]).await.unwrap();
+            sm.apply_chunk(&[entry1, entry2, entry3]).await.unwrap();
 
             // Verify all keys exist
             assert_eq!(
@@ -1063,7 +1021,7 @@ mod rocksdb_state_machine_tests {
         // Insert keys with TTL
         let entry1 = create_insert_entry(1, 1, b"key1", b"value1", 3600);
         let entry2 = create_insert_entry(2, 1, b"key2", b"value2", 7200);
-        sm.apply_chunk(vec![entry1, entry2]).await.unwrap();
+        sm.apply_chunk(&[entry1, entry2]).await.unwrap();
 
         // Reset the state machine
         sm.reset().await.unwrap();
@@ -1088,7 +1046,7 @@ mod rocksdb_state_machine_tests {
     //
     //         // Insert key with 1 second TTL
     //         let entry = create_insert_entry(1, 1, b"passive_key", b"passive_value", 1);
-    //         sm.apply_chunk(vec![entry]).await.unwrap();
+    //         sm.apply_chunk(&[entry]).await.unwrap();
     //
     //         // Key should exist immediately
     //         let value = sm.get(b"passive_key").unwrap();
@@ -1119,13 +1077,13 @@ mod rocksdb_state_machine_tests {
     //         for i in 0..10 {
     //             let key = format!("no_ttl_key_{i}");
     //             let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 0);
-    //             sm.apply_chunk(vec![entry]).await.unwrap();
+    //             sm.apply_chunk(&[entry]).await.unwrap();
     //         }
     //
     //         // Apply 150 more entries (should trigger piggyback cleanup check)
     //         for i in 10..160 {
     //             let entry = create_insert_entry(i + 1, 1, b"dummy", b"dummy", 0);
-    //             sm.apply_chunk(vec![entry]).await.unwrap();
+    //             sm.apply_chunk(&[entry]).await.unwrap();
     //         }
     //
     //         // All keys should still exist (no TTL, lazy activation should skip cleanup)

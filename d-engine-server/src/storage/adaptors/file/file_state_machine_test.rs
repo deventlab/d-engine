@@ -1,12 +1,5 @@
 use bytes::Bytes;
-use d_engine_core::StateMachine;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::Insert;
-use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::entry_payload::Payload;
-use prost::Message;
+use d_engine_core::{ApplyEntry, Command, StateMachine};
 use std::sync::Arc;
 
 use crate::storage::adaptors::file::FileStateMachine;
@@ -70,66 +63,45 @@ async fn test_wal_replay_after_crash() {
 
     let sm = FileStateMachine::new(data_dir.clone()).await.unwrap();
 
-    // Create proper Raft entries with payloads
     let entries = vec![
-        Entry {
+        ApplyEntry {
             index: 1,
             term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Command(
-                    WriteCommand {
-                        operation: Some(Operation::Insert(Insert {
-                            ttl_secs: 0,
-                            key: Bytes::from("key1"),
-                            value: Bytes::from("value1"),
-                        })),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                )),
-            }),
+            command: Command::Insert {
+                key: Bytes::from("key1"),
+                value: Bytes::from("value1"),
+                ttl_secs: None,
+            },
         },
-        Entry {
+        ApplyEntry {
             index: 2,
             term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Command(
-                    WriteCommand {
-                        operation: Some(Operation::Insert(Insert {
-                            ttl_secs: 0,
-                            key: Bytes::from("key2"),
-                            value: Bytes::from("value2"),
-                        })),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                )),
-            }),
+            command: Command::Insert {
+                key: Bytes::from("key2"),
+                value: Bytes::from("value2"),
+                ttl_secs: None,
+            },
         },
     ];
 
     // Apply entries (this writes WAL + updates memory)
-    sm.apply_chunk(entries).await.unwrap();
+    sm.apply_chunk(&entries).await.unwrap();
 
     // Verify data is in memory
     assert_eq!(sm.get(b"key1").unwrap(), Some(Bytes::from("value1")));
     assert_eq!(sm.get(b"key2").unwrap(), Some(Bytes::from("value2")));
 
-    // Now test crash recovery with WAL
-
-    // Manually append to WAL without updating memory (simulate partial write)
-    let crash_entries = vec![(
-        Entry {
-            index: 3,
-            term: 1,
-            payload: None,
+    // Manually append to WAL without updating memory (simulate partial write before crash)
+    let crash_entries = vec![ApplyEntry {
+        index: 3,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::from("key3"),
+            value: Bytes::from("value3"),
+            ttl_secs: None,
         },
-        "INSERT".to_string(),
-        Bytes::from("key3"),
-        Some(Bytes::from("value3")),
-        0, // No TTL
-    )];
-    sm.append_to_wal(crash_entries).await.unwrap();
+    }];
+    sm.append_to_wal(&crash_entries).await.unwrap();
 
     // Don't call flush - simulate crash before persistence
     drop(sm);
@@ -157,66 +129,40 @@ async fn test_wal_replay_after_crash() {
 /// scan_prefix returns only keys that start with the prefix, not all keys.
 #[tokio::test]
 async fn test_file_sm_scan_prefix_returns_matching_keys() {
-    use d_engine_core::StateMachine;
-
     let temp_dir = tempfile::tempdir().unwrap();
     let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
 
     let entries = vec![
-        Entry {
+        ApplyEntry {
             index: 1,
             term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Command(
-                    WriteCommand {
-                        operation: Some(Operation::Insert(Insert {
-                            key: Bytes::from("/services/node1"),
-                            value: Bytes::from("10.0.0.1"),
-                            ttl_secs: 0,
-                        })),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                )),
-            }),
+            command: Command::Insert {
+                key: Bytes::from("/services/node1"),
+                value: Bytes::from("10.0.0.1"),
+                ttl_secs: None,
+            },
         },
-        Entry {
+        ApplyEntry {
             index: 2,
             term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Command(
-                    WriteCommand {
-                        operation: Some(Operation::Insert(Insert {
-                            key: Bytes::from("/services/node2"),
-                            value: Bytes::from("10.0.0.2"),
-                            ttl_secs: 0,
-                        })),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                )),
-            }),
+            command: Command::Insert {
+                key: Bytes::from("/services/node2"),
+                value: Bytes::from("10.0.0.2"),
+                ttl_secs: None,
+            },
         },
-        Entry {
+        ApplyEntry {
             index: 3,
             term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Command(
-                    WriteCommand {
-                        operation: Some(Operation::Insert(Insert {
-                            key: Bytes::from("/other/key"),
-                            value: Bytes::from("must_not_appear"),
-                            ttl_secs: 0,
-                        })),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                )),
-            }),
+            command: Command::Insert {
+                key: Bytes::from("/other/key"),
+                value: Bytes::from("must_not_appear"),
+                ttl_secs: None,
+            },
         },
     ];
 
-    sm.apply_chunk(entries).await.unwrap();
+    sm.apply_chunk(&entries).await.unwrap();
 
     let result = sm.scan_prefix(b"/services/").unwrap();
 
@@ -233,27 +179,17 @@ async fn test_file_sm_scan_prefix_returns_matching_keys() {
 /// scan_prefix on a missing prefix returns empty entries, not an error.
 #[tokio::test]
 async fn test_file_sm_scan_prefix_empty_namespace() {
-    use d_engine_core::StateMachine;
-
     let temp_dir = tempfile::tempdir().unwrap();
     let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
 
-    sm.apply_chunk(vec![Entry {
+    sm.apply_chunk(&[ApplyEntry {
         index: 1,
         term: 1,
-        payload: Some(EntryPayload {
-            payload: Some(Payload::Command(
-                WriteCommand {
-                    operation: Some(Operation::Insert(Insert {
-                        key: Bytes::from("/other/key"),
-                        value: Bytes::from("v"),
-                        ttl_secs: 0,
-                    })),
-                }
-                .encode_to_vec()
-                .into(),
-            )),
-        }),
+        command: Command::Insert {
+            key: Bytes::from("/other/key"),
+            value: Bytes::from("v"),
+            ttl_secs: None,
+        },
     }])
     .await
     .unwrap();
@@ -269,32 +205,22 @@ async fn test_file_sm_scan_prefix_empty_namespace() {
 /// scan_prefix revision equals last_applied_index at scan time.
 #[tokio::test]
 async fn test_file_sm_scan_prefix_revision_reflects_applied_index() {
-    use d_engine_core::StateMachine;
-
     let temp_dir = tempfile::tempdir().unwrap();
     let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
 
-    let entries: Vec<Entry> = (1u64..=3)
-        .map(|i| Entry {
+    let entries: Vec<ApplyEntry> = (1u64..=3)
+        .map(|i| ApplyEntry {
             index: i,
             term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Command(
-                    WriteCommand {
-                        operation: Some(Operation::Insert(Insert {
-                            key: Bytes::from(format!("/s/{i}")),
-                            value: Bytes::from(format!("{i}")),
-                            ttl_secs: 0,
-                        })),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                )),
-            }),
+            command: Command::Insert {
+                key: Bytes::from(format!("/s/{i}")),
+                value: Bytes::from(format!("{i}")),
+                ttl_secs: None,
+            },
         })
         .collect();
 
-    sm.apply_chunk(entries).await.unwrap();
+    sm.apply_chunk(&entries).await.unwrap();
 
     let result = sm.scan_prefix(b"/s/").unwrap();
 

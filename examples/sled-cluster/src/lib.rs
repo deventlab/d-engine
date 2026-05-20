@@ -12,6 +12,8 @@ use tokio::fs;
 
 #[cfg(test)]
 mod sled_engine_test;
+#[cfg(test)]
+mod state_machine;
 
 pub(crate) async fn compute_checksum_from_folder_path(
     folder_path: &Path

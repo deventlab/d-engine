@@ -28,6 +28,7 @@ sha2 = "0.10"
 uuid = { version = "1.4", features = ["v4"] }
 
 [dev-dependencies]
+d-engine = { path = "../../d-engine", features = ["server", "__test_support"], default-features = false }
 tempfile = "3.19"
 mockall = "0.12"
 tracing-test = "0.2"

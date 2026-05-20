@@ -47,7 +47,11 @@ use super::SnapshotAssembler;
 use super::SnapshotContext;
 use super::SnapshotPolicy;
 use super::StateMachineHandler;
+#[cfg(feature = "watch")]
+use crate::ApplyEntry;
 use crate::ApplyResult;
+#[cfg(feature = "watch")]
+use crate::Command;
 use crate::NewCommitData;
 use crate::Result;
 use crate::SnapshotConfig;
@@ -60,6 +64,7 @@ use crate::TypeConfig;
 use crate::alias::SMOF;
 use crate::alias::SNP;
 use crate::convert::classify_error;
+use crate::decode_entries;
 use crate::file_io::validate_checksum;
 use crate::file_io::validate_compressed_format;
 use crate::scoped_timer::ScopedTimer;
@@ -214,6 +219,8 @@ where
         )
         .increment(1);
 
+        // Capture last_index before decode: Config entries are dropped by decode_entries,
+        // but last_applied must still advance to the original commit index.
         let last_index = chunk.last().map(|entry| entry.index);
         trace!(
             "[node-{}] apply_chunk::entry={:?} last_index: {:?}",
@@ -222,26 +229,30 @@ where
 
         let sm = self.state_machine.clone();
 
+        // Decode proto bytes → ApplyEntry exactly once here.
+        // State machine receives clean Rust types; never touches proto or wire format.
+        let apply_entries = decode_entries(chunk)?;
+
         // Read prev values before applying if any watcher requested prev_kv.
         // Must happen BEFORE apply_chunk so old values are still in the state machine.
         #[cfg(feature = "watch")]
         let prev_values: Option<Vec<Option<bytes::Bytes>>> = if self.watch_event_tx.is_some()
             && self.prev_kv_watcher_count.load(std::sync::atomic::Ordering::Relaxed) > 0
         {
-            Some(Self::read_prev_values(&*sm, &chunk))
+            Some(Self::read_prev_values(&*sm, &apply_entries))
         } else {
             None
         };
 
         // Apply the chunk and track errors
-        let apply_result = sm.apply_chunk(chunk.clone()).await;
+        let apply_result = sm.apply_chunk(&apply_entries).await;
 
         // Fire-and-forget watch events on success (non-blocking)
         #[cfg(feature = "watch")]
         if let Ok(ref results) = apply_result
             && let Some(ref tx) = self.watch_event_tx
         {
-            self.broadcast_watch_events(&chunk, results, tx, prev_values.as_deref());
+            self.broadcast_watch_events(&apply_entries, results, tx, prev_values.as_deref());
         }
 
         // Record latency and chunk size histogram *after* the operation
@@ -644,75 +655,52 @@ where
     ///
     /// Returns one `Option<Bytes>` per entry in the same order:
     /// - `Some(value)` for Insert / Delete / CAS entries (empty Bytes if key didn't exist)
-    /// - `None` for Noop / Config entries (no prev_value needed)
+    /// - `None` for Noop entries (no prev_value needed)
+    ///
+    /// Uses a per-batch overlay so two writes to the same key within one chunk produce
+    /// correct prev_values: the second write sees the first write's value, not the
+    /// pre-batch SM state.
     #[cfg(feature = "watch")]
     fn read_prev_values(
         sm: &dyn crate::StateMachine,
-        chunk: &[Entry],
+        chunk: &[ApplyEntry],
     ) -> Vec<Option<bytes::Bytes>> {
         use std::collections::HashMap;
 
-        use d_engine_proto::client::WriteCommand;
-        use d_engine_proto::client::write_command::Operation;
-        use d_engine_proto::common::entry_payload::Payload;
-        use prost::Message;
-
-        // Tracks the value each key would hold after each processed entry.
-        // None = key was deleted by an earlier entry in this batch.
-        // Ensures that two writes to the same key in one chunk produce correct
-        // prev_values: the second write sees the first write's value, not the
-        // pre-batch SM state.
         let mut overlay: HashMap<bytes::Bytes, Option<bytes::Bytes>> = HashMap::new();
         let mut result = Vec::with_capacity(chunk.len());
 
         for entry in chunk {
-            let prev = (|| -> Option<bytes::Bytes> {
-                let payload = entry.payload.as_ref()?;
-                let Some(Payload::Command(cmd_bytes)) = &payload.payload else {
-                    return None;
-                };
-                let Ok(write_cmd) = WriteCommand::decode(cmd_bytes.as_ref()) else {
-                    return None;
-                };
-                let op = write_cmd.operation?;
-
-                let key: bytes::Bytes = match &op {
-                    Operation::Insert(ins) => ins.key.clone(),
-                    Operation::Delete(del) => del.key.clone(),
-                    Operation::CompareAndSwap(cas) => cas.key.clone(),
-                };
-
-                // Check overlay first (reflects mutations earlier in this batch),
-                // then fall back to the SM's pre-batch state.
-                let prev = if let Some(v) = overlay.get(&key) {
-                    v.clone()
-                } else {
-                    sm.get(&key).ok().flatten()
-                };
-
-                // Update overlay so later entries in this batch see the updated state.
-                // CAS outcome is unknown before apply, so we conservatively skip it;
-                // same-key CAS-pairs in one batch are rare and semantically ambiguous.
-                match op {
-                    Operation::Insert(ins) => {
-                        overlay.insert(key, Some(ins.value));
-                    }
-                    Operation::Delete(_) => {
-                        overlay.insert(key, None);
-                    }
-                    Operation::CompareAndSwap(_) => {}
+            let prev = match &entry.command {
+                Command::Insert { key, value, .. } => {
+                    let prev =
+                        overlay.get(key).cloned().unwrap_or_else(|| sm.get(key).ok().flatten());
+                    overlay.insert(key.clone(), Some(value.clone()));
+                    Some(prev.unwrap_or_default())
                 }
-
-                Some(prev.unwrap_or_default())
-            })();
+                Command::Delete { key } => {
+                    let prev =
+                        overlay.get(key).cloned().unwrap_or_else(|| sm.get(key).ok().flatten());
+                    overlay.insert(key.clone(), None);
+                    Some(prev.unwrap_or_default())
+                }
+                Command::CompareAndSwap { key, .. } => {
+                    let prev =
+                        overlay.get(key).cloned().unwrap_or_else(|| sm.get(key).ok().flatten());
+                    // CAS outcome is unknown before apply; skip overlay update.
+                    // Same-key CAS pairs in one batch are rare and semantically ambiguous.
+                    Some(prev.unwrap_or_default())
+                }
+                Command::Noop => None,
+            };
             result.push(prev);
         }
         result
     }
 
-    /// Broadcast watch events for applied chunk entries (fire-and-forget)
+    /// Broadcast watch events for applied chunk entries (fire-and-forget).
     ///
-    /// Parses chunk entries and broadcasts WatchResponse via tokio::broadcast channel.
+    /// Receives already-decoded `&[ApplyEntry]` — no proto decode happens here.
     /// Non-blocking: if channel is full, oldest events are dropped (lagging receivers).
     ///
     /// `results` must have the same length as `chunk` (enforced by StateMachineHandler contract).
@@ -722,68 +710,57 @@ where
     #[inline]
     pub(super) fn broadcast_watch_events(
         &self,
-        chunk: &[Entry],
+        chunk: &[ApplyEntry],
         results: &[ApplyResult],
         tx: &tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
         prev_values: Option<&[Option<bytes::Bytes>]>,
     ) {
         use d_engine_proto::client::WatchEventType;
         use d_engine_proto::client::WatchResponse;
-        use d_engine_proto::client::WriteCommand;
-        use d_engine_proto::client::write_command::Operation;
-        use d_engine_proto::common::entry_payload::Payload;
-        use prost::Message;
 
         for (i, entry) in chunk.iter().enumerate() {
-            if let Some(ref payload) = entry.payload
-                && let Some(Payload::Command(bytes)) = &payload.payload
-                && let Ok(write_cmd) = WriteCommand::decode(bytes.as_ref())
-            {
-                let prev_value = prev_values
-                    .and_then(|pv| pv.get(i))
-                    .and_then(|v| v.clone())
-                    .unwrap_or_default();
+            let prev_value =
+                prev_values.and_then(|pv| pv.get(i)).and_then(|v| v.clone()).unwrap_or_default();
 
-                let event = match write_cmd.operation {
-                    Some(Operation::Insert(insert)) => Some(WatchResponse {
-                        key: insert.key,
-                        value: insert.value,
-                        prev_value,
-                        event_type: WatchEventType::Put as i32,
-                        error: 0,
-                        revision: entry.index,
-                    }),
-                    Some(Operation::Delete(delete)) => Some(WatchResponse {
-                        key: delete.key,
-                        value: bytes::Bytes::new(),
-                        prev_value,
-                        event_type: WatchEventType::Delete as i32,
-                        error: 0,
-                        revision: entry.index,
-                    }),
-                    Some(Operation::CompareAndSwap(cas)) => {
-                        // Only broadcast if CAS actually mutated the value.
-                        // A failed CAS leaves the key unchanged — no watch event.
-                        if results.get(i).is_some_and(|r| r.succeeded) {
-                            Some(WatchResponse {
-                                key: cas.key,
-                                value: cas.new_value,
-                                prev_value,
-                                event_type: WatchEventType::Put as i32,
-                                error: 0,
-                                revision: entry.index,
-                            })
-                        } else {
-                            None
-                        }
+            let event = match &entry.command {
+                Command::Insert { key, value, .. } => Some(WatchResponse {
+                    key: key.clone(),
+                    value: value.clone(),
+                    prev_value,
+                    event_type: WatchEventType::Put as i32,
+                    error: 0,
+                    revision: entry.index,
+                }),
+                Command::Delete { key } => Some(WatchResponse {
+                    key: key.clone(),
+                    value: bytes::Bytes::new(),
+                    prev_value,
+                    event_type: WatchEventType::Delete as i32,
+                    error: 0,
+                    revision: entry.index,
+                }),
+                Command::CompareAndSwap { key, value, .. } => {
+                    // Only broadcast if CAS actually mutated the value.
+                    // A failed CAS leaves the key unchanged — no watch event.
+                    if results.get(i).is_some_and(|r| r.succeeded) {
+                        Some(WatchResponse {
+                            key: key.clone(),
+                            value: value.clone(),
+                            prev_value,
+                            event_type: WatchEventType::Put as i32,
+                            error: 0,
+                            revision: entry.index,
+                        })
+                    } else {
+                        None
                     }
-                    None => None,
-                };
-
-                if let Some(ev) = event {
-                    // Fire-and-forget: ignore send errors (no receivers or lagging)
-                    let _ = tx.send(ev);
                 }
+                Command::Noop => None,
+            };
+
+            if let Some(ev) = event {
+                // Fire-and-forget: ignore send errors (no receivers or lagging)
+                let _ = tx.send(ev);
             }
         }
     }

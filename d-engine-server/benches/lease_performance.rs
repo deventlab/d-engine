@@ -17,15 +17,9 @@ use criterion::Criterion;
 use criterion::black_box;
 use criterion::criterion_group;
 use criterion::criterion_main;
-use d_engine_core::StateMachine;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::entry_payload::Payload;
+use d_engine_core::{ApplyEntry, Command, StateMachine};
 use d_engine_server::storage::DefaultLease;
 use d_engine_server::storage::FileStateMachine;
-use prost::Message;
 use tempfile::TempDir;
 
 /// Create FileStateMachine with Background strategy (lease enabled)
@@ -64,26 +58,15 @@ fn create_entry_with_ttl(
     key: &[u8],
     value: &[u8],
     ttl_secs: u64,
-) -> Entry {
-    let insert = d_engine_proto::client::write_command::Insert {
-        key: Bytes::copy_from_slice(key),
-        value: Bytes::copy_from_slice(value),
-        ttl_secs,
-    };
-
-    let write_cmd = WriteCommand {
-        operation: Some(Operation::Insert(insert)),
-    };
-
-    let mut buf = Vec::new();
-    write_cmd.encode(&mut buf).unwrap();
-
-    Entry {
+) -> ApplyEntry {
+    ApplyEntry {
         index,
         term,
-        payload: Some(EntryPayload {
-            payload: Some(Payload::Command(Bytes::from(buf))),
-        }),
+        command: Command::Insert {
+            key: Bytes::copy_from_slice(key),
+            value: Bytes::copy_from_slice(value),
+            ttl_secs: if ttl_secs > 0 { Some(ttl_secs) } else { None },
+        },
     }
 }
 
@@ -98,7 +81,7 @@ fn bench_get_performance(c: &mut Criterion) {
     // Insert key without TTL
     rt.block_on(async {
         let entry = create_entry_with_ttl(1, 1, b"bench_key", b"bench_value", 0);
-        sm.apply_chunk(vec![entry]).await.unwrap();
+        sm.apply_chunk(&[entry]).await.unwrap();
     });
 
     group.bench_function("no_lease_baseline", |b| {
@@ -116,7 +99,7 @@ fn bench_get_performance(c: &mut Criterion) {
 
     rt.block_on(async {
         let entry = create_entry_with_ttl(1, 1, b"bg_key", b"bg_value", 3600);
-        sm_bg.apply_chunk(vec![entry]).await.unwrap();
+        sm_bg.apply_chunk(&[entry]).await.unwrap();
     });
 
     group.bench_function("background_strategy", |b| {
@@ -144,7 +127,7 @@ fn bench_ttl_registration(c: &mut Criterion) {
     group.bench_function("no_ttl_baseline", |b| {
         b.to_async(&rt).iter(|| async {
             let entry = create_entry_with_ttl(1, 1, b"key", b"value", 0);
-            sm_no_ttl.apply_chunk(vec![entry]).await.unwrap();
+            sm_no_ttl.apply_chunk(&[entry]).await.unwrap();
         });
     });
 
@@ -157,7 +140,7 @@ fn bench_ttl_registration(c: &mut Criterion) {
     group.bench_function("with_ttl_background", |b| {
         b.to_async(&rt).iter(|| async {
             let entry = create_entry_with_ttl(1, 1, b"key", b"value", 3600);
-            sm_ttl.apply_chunk(vec![entry]).await.unwrap();
+            sm_ttl.apply_chunk(&[entry]).await.unwrap();
         });
     });
 
@@ -182,7 +165,7 @@ fn bench_batch_ttl_operations(c: &mut Criterion) {
             batch_size,
             |b, &size| {
                 b.to_async(&rt).iter(|| async {
-                    let entries: Vec<Entry> = (0..size)
+                    let entries: Vec<ApplyEntry> = (0..size)
                         .map(|i| {
                             create_entry_with_ttl(
                                 1 + i as u64,
@@ -193,7 +176,7 @@ fn bench_batch_ttl_operations(c: &mut Criterion) {
                             )
                         })
                         .collect();
-                    sm_bg.apply_chunk(entries).await.unwrap();
+                    sm_bg.apply_chunk(&entries).await.unwrap();
                 });
             },
         );

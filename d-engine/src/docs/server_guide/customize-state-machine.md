@@ -12,7 +12,7 @@ d-engine supports **pluggable state machines** through the `StateMachine` trait.
 ## 1. Implement the Trait
 
 ```rust,ignore
-use d_engine::{StateMachine, Result, Entry, LogId, SnapshotMetadata};
+use d_engine::{ApplyEntry, ApplyResult, Command, Error, LogId, SnapshotMetadata, StateMachine};
 use async_trait::async_trait;
 
 struct CustomStateMachine {
@@ -49,13 +49,25 @@ impl StateMachine for CustomStateMachine {
         Some(1)
     }
 
-    async fn apply_chunk(&self, chunk: Vec<Entry>) -> Result<()> {
-        // Deserialize and process entries
+    async fn apply_chunk(&self, chunk: &[ApplyEntry]) -> Result<Vec<ApplyResult>, Error> {
+        // The framework pre-decodes proto bytes — match on Command directly, no prost needed.
+        let mut results = Vec::with_capacity(chunk.len());
         for entry in chunk {
-            let cmd: AppCommand = bincode::deserialize(&entry.data)?;
-            self.backend.execute(cmd)?;
+            match &entry.command {
+                Command::Insert { key, value, ttl_secs } => {
+                    self.backend.put(key, value, *ttl_secs)?;
+                }
+                Command::Delete { key } => {
+                    self.backend.delete(key)?;
+                }
+                Command::CompareAndSwap { key, expected, value } => {
+                    self.backend.cas(key, expected.as_deref(), value)?;
+                }
+                Command::Noop => {}
+            }
+            results.push(ApplyResult::success(entry.index));
         }
-        Ok(())
+        Ok(results)
     }
 
     fn len(&self) -> usize {
@@ -135,7 +147,7 @@ async fn test_custom_state_machine() -> Result<(), Error> {
 
     // Test apply_chunk with sample entries
     let entries = vec![create_test_entry(1, 1)];
-    sm.apply_chunk(entries).await?;
+    sm.apply_chunk(&entries).await?;
     assert_eq!(sm.len(), 1);
 
     // Test snapshot operations
