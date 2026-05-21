@@ -975,6 +975,11 @@ impl FileStateMachine {
         entries: &[ApplyEntry],
         cas_outcomes: &[bool],
     ) -> Result<(), Error> {
+        assert_eq!(
+            entries.len(),
+            cas_outcomes.len(),
+            "cas_outcomes must have the same length as entries"
+        );
         if entries.is_empty() {
             return Ok(());
         }

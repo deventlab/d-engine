@@ -287,7 +287,7 @@ fn bench_worst_case_all_expired(c: &mut Criterion) {
         (sm, temp_dir)
     });
 
-    let idx = AtomicU64::new(1);
+    let idx = AtomicU64::new(1001); // setup applied 1..=1000
     group.bench_function("cleanup_all_expired", |b| {
         b.to_async(&runtime).iter(|| async {
             let start = idx.fetch_add(1001, Ordering::Relaxed);
