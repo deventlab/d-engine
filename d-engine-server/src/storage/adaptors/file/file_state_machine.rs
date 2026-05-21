@@ -81,7 +81,7 @@
 //! - **Background Cleanup**: Periodic async worker scans and deletes expired keys
 //! - **Zero Overhead**: When TTL feature is disabled, no lease components are initialized
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -93,23 +93,17 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
+use d_engine_core::Command;
 use d_engine_core::Error;
 use d_engine_core::Lease;
 use d_engine_core::ScanResult;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::CompareAndSwap;
-use d_engine_proto::client::write_command::Delete;
-use d_engine_proto::client::write_command::Insert;
-use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-use d_engine_proto::common::entry_payload::Payload;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
-use prost::Message;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::fs::OpenOptions;
@@ -134,26 +128,101 @@ enum WalOpCode {
     Delete = 2,
     Config = 3,
     CompareAndSwap = 4,
+    CasFailed = 5,
 }
 
 impl WalOpCode {
-    fn from_str(s: &str) -> Self {
+    #[allow(dead_code)]
+    fn from_str(s: &str) -> Option<Self> {
         match s {
-            "INSERT" => Self::Insert,
-            "DELETE" => Self::Delete,
-            "CONFIG" => Self::Config,
-            "CAS" => Self::CompareAndSwap,
-            _ => Self::Noop,
+            "NOOP" => Some(Self::Noop),
+            "INSERT" => Some(Self::Insert),
+            "DELETE" => Some(Self::Delete),
+            "CONFIG" => Some(Self::Config),
+            "CAS" => Some(Self::CompareAndSwap),
+            "CAS_FAILED" => Some(Self::CasFailed),
+            _ => None,
         }
     }
 
-    fn from_u8(byte: u8) -> Self {
+    fn from_u8(byte: u8) -> Option<Self> {
         match byte {
-            1 => Self::Insert,
-            2 => Self::Delete,
-            3 => Self::Config,
-            4 => Self::CompareAndSwap,
-            _ => Self::Noop,
+            0 => Some(Self::Noop),
+            1 => Some(Self::Insert),
+            2 => Some(Self::Delete),
+            3 => Some(Self::Config),
+            4 => Some(Self::CompareAndSwap),
+            5 => Some(Self::CasFailed),
+            _ => None,
+        }
+    }
+}
+
+/// Encodes a single WAL entry into `buf`.
+///
+/// For `CompareAndSwap`, `cas_success` determines whether to write
+/// `Insert` (success, replay applies unconditionally) or
+/// `CasFailed` (failure, replay skips).
+fn encode_wal_entry(
+    buf: &mut Vec<u8>,
+    entry: &ApplyEntry,
+    cas_success: bool,
+) {
+    buf.extend_from_slice(&entry.index.to_be_bytes());
+    buf.extend_from_slice(&entry.term.to_be_bytes());
+    match &entry.command {
+        Command::Noop => {
+            buf.push(WalOpCode::Noop as u8);
+            buf.extend_from_slice(&0u64.to_be_bytes());
+            buf.extend_from_slice(&0u64.to_be_bytes());
+            buf.extend_from_slice(&0u64.to_be_bytes());
+        }
+        Command::Insert {
+            key,
+            value,
+            ttl_secs,
+        } => {
+            buf.push(WalOpCode::Insert as u8);
+            buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
+            buf.extend_from_slice(key);
+            buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            buf.extend_from_slice(value);
+            // expire_at is computed at WAL-encode time, not at apply time. Any delay
+            // between Raft commit and WAL write (e.g. slow I/O) causes a small under-count
+            // (key expires slightly earlier than intended). This is a known, accepted
+            // trade-off: TTL precision is best-effort, not a hard guarantee.
+            let expire_at_secs = if let Some(ttl) = ttl_secs {
+                let expire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(*ttl);
+                expire_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            buf.extend_from_slice(&expire_at_secs.to_be_bytes());
+        }
+        Command::Delete { key } => {
+            buf.push(WalOpCode::Delete as u8);
+            buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
+            buf.extend_from_slice(key);
+            buf.extend_from_slice(&0u64.to_be_bytes()); // val_len = 0
+            buf.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
+        }
+        Command::CompareAndSwap { key, value, .. } => {
+            if cas_success {
+                buf.push(WalOpCode::Insert as u8);
+                buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
+                buf.extend_from_slice(key);
+                buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
+                buf.extend_from_slice(value);
+                buf.extend_from_slice(&0u64.to_be_bytes()); // no TTL
+            } else {
+                buf.push(WalOpCode::CasFailed as u8);
+                buf.extend_from_slice(&0u64.to_be_bytes()); // key_len = 0
+                buf.extend_from_slice(&0u64.to_be_bytes()); // val_len = 0
+                buf.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
+            }
         }
     }
 }
@@ -456,7 +525,10 @@ impl FileStateMachine {
             pos += 8;
 
             // Read operation code (1 byte)
-            let op_code = WalOpCode::from_u8(buffer[pos]);
+            let op_code =
+                WalOpCode::from_u8(buffer[pos]).ok_or_else(|| StorageError::DataCorruption {
+                    location: format!("WAL opcode {} at byte offset {}", buffer[pos], pos),
+                })?;
             pos += 1;
 
             // Check if we have enough bytes for key length
@@ -523,19 +595,19 @@ impl FileStateMachine {
             // 1. Gracefully stop the old version (persists state.data + ttl_state.bin)
             // 2. Upgrade to v0.2.0+
             // 3. Start the new version (loads from persisted state, not WAL)
-            let expire_at_secs = if pos + 8 <= buffer.len() {
-                let secs = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
-                pos += 8;
-                if secs > 0 { Some(secs) } else { None }
-            } else {
-                // Incomplete WAL entry - log and skip
-                // This indicates corrupted WAL or incomplete write before crash
-                debug!(
-                    "No expiration time field at position {}, assuming no TTL (incomplete WAL entry)",
+            // Truncated tail: stop here rather than continuing with garbage bytes.
+            // A partial write at the WAL tail is expected on a crash; entries after
+            // the truncation point are discarded and will be re-applied via Raft.
+            if pos + 8 > buffer.len() {
+                warn!(
+                    "Incomplete WAL entry at byte offset {} (expected expire_at field), truncating replay here",
                     pos
                 );
-                None
-            };
+                break;
+            }
+            let secs = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+            let expire_at_secs = if secs > 0 { Some(secs) } else { None };
 
             operations.push((op_code, key, value, term, expire_at_secs));
             replayed_count += 1;
@@ -611,18 +683,19 @@ impl FileStateMachine {
                         debug!("Replayed DELETE: key={:?}", key);
                     }
                     WalOpCode::CompareAndSwap => {
-                        // CAS during replay: Just apply the new_value if present
-                        // The comparison was already done before crash, and succeeded
-                        // (otherwise this entry wouldn't be in WAL)
+                        // Legacy WAL format from before the CAS outcome fix.
+                        // Current code writes CAS results as Insert (success) or Noop (failure),
+                        // so this branch is only reached when replaying WAL files created before
+                        // the fix. Apply new_value unconditionally as best-effort.
                         if let Some(new_value) = value {
                             data.insert(key.clone(), (new_value, term));
                             applied_count += 1;
-                            debug!("Replayed CAS: key={:?}", key);
+                            debug!("Replayed legacy CAS: key={:?}", key);
                         } else {
-                            warn!("CAS operation without new_value in WAL");
+                            warn!("Legacy CAS WAL entry missing new_value");
                         }
                     }
-                    WalOpCode::Noop | WalOpCode::Config => {
+                    WalOpCode::Noop | WalOpCode::Config | WalOpCode::CasFailed => {
                         // No data modification needed
                         applied_count += 1;
                         debug!("Replayed {:?} operation", op_code);
@@ -636,14 +709,15 @@ impl FileStateMachine {
             replayed_count, applied_count, skipped_expired
         );
 
-        // Clear WAL only if replay was successful
-        if applied_count > 0 {
-            self.clear_wal_async().await?;
-            debug!(
-                "Cleared WAL after successful replay of {} operations",
-                applied_count
-            );
-        }
+        // Unconditionally clear WAL after replay. load_data() already restored the last
+        // checkpoint; WAL is only the post-checkpoint delta. Even if 0 entries were applied
+        // (e.g. truncated tail only), the WAL is stale. Keeping it would cause infinite
+        // replay-of-the-same-truncated-entry on every subsequent startup.
+        self.clear_wal_async().await?;
+        debug!(
+            "Cleared WAL after replay ({} operations applied)",
+            applied_count
+        );
 
         Ok(())
     }
@@ -880,9 +954,14 @@ impl FileStateMachine {
         Ok(())
     }
 
-    /// Batch WAL writes with proper durability guarantees
+    /// Batch WAL writes with proper durability guarantees.
+    ///
+    /// `cas_outcomes[i]` is consulted only when `entries[i].command` is
+    /// `CompareAndSwap`. Successful CAS is recorded as `Insert`; failed CAS as
+    /// `Noop`, so replay never applies a CAS that failed at runtime.
     ///
     /// Format per entry:
+    ///
     /// - 8 bytes: entry index (big-endian u64)
     /// - 8 bytes: entry term (big-endian u64)
     /// - 1 byte: operation code (0=NOOP, 1=INSERT, 2=DELETE, 3=CONFIG)
@@ -890,66 +969,28 @@ impl FileStateMachine {
     /// - N bytes: key data
     /// - 8 bytes: value length (big-endian u64, 0 if no value)
     /// - M bytes: value data (only if length > 0)
+    #[cfg(test)]
     pub(crate) async fn append_to_wal(
         &self,
-        entries: Vec<(Entry, String, Bytes, Option<Bytes>, u64)>,
+        entries: &[ApplyEntry],
+        cas_outcomes: &[bool],
     ) -> Result<(), Error> {
+        assert_eq!(
+            entries.len(),
+            cas_outcomes.len(),
+            "cas_outcomes must have the same length as entries"
+        );
         if entries.is_empty() {
             return Ok(());
         }
 
         let wal_path = self.data_dir.join("wal.log");
-
         let mut file =
             OpenOptions::new().write(true).create(true).append(true).open(&wal_path).await?;
 
-        // Pre-allocate buffer with estimated size
-        let estimated_size: usize = entries
-            .iter()
-            .map(|(_, _, key, value, _)| {
-                8 + 8 + 1 + 8 + key.len() + 8 + value.as_ref().map_or(0, |v| v.len()) + 8
-            })
-            .sum();
-
-        // Single batched write instead of multiple small writes
-        let mut batch_buffer = Vec::with_capacity(estimated_size);
-
-        for (entry, operation, key, value, ttl_secs) in entries {
-            // Write entry index and term (16 bytes total)
-            batch_buffer.extend_from_slice(&entry.index.to_be_bytes());
-            batch_buffer.extend_from_slice(&entry.term.to_be_bytes());
-
-            // Write operation code (1 byte)
-            let op_code = WalOpCode::from_str(&operation);
-            batch_buffer.push(op_code as u8);
-
-            // Write key length and data (8 + N bytes)
-            batch_buffer.extend_from_slice(&(key.len() as u64).to_be_bytes());
-            batch_buffer.extend_from_slice(&key);
-
-            // Write value length and data (8 + M bytes)
-            // Always write length field for consistent format
-            if let Some(value_data) = value {
-                batch_buffer.extend_from_slice(&(value_data.len() as u64).to_be_bytes());
-                batch_buffer.extend_from_slice(&value_data);
-            } else {
-                // Write 0 length for operations without value
-                batch_buffer.extend_from_slice(&0u64.to_be_bytes());
-            }
-
-            // Write absolute expiration time (8 bytes) - 0 means no TTL
-            // Store UNIX timestamp (seconds since epoch) for crash-safe expiration
-            let expire_at_secs = if ttl_secs > 0 {
-                let expire_at =
-                    std::time::SystemTime::now() + std::time::Duration::from_secs(ttl_secs);
-                expire_at
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            batch_buffer.extend_from_slice(&expire_at_secs.to_be_bytes());
+        let mut batch_buffer = Vec::with_capacity(entries.len() * 64);
+        for (i, entry) in entries.iter().enumerate() {
+            encode_wal_entry(&mut batch_buffer, entry, cas_outcomes[i]);
         }
 
         file.write_all(&batch_buffer).await?;
@@ -1032,21 +1073,15 @@ impl StateMachine for FileStateMachine {
     /// Thread-safe: called serially by single-task CommitHandler
     async fn apply_chunk(
         &self,
-        chunk: Vec<Entry>,
+        chunk: &[ApplyEntry],
     ) -> Result<Vec<ApplyResult>, Error> {
         let chunk_len = chunk.len();
-        let mut highest_index_entry: Option<LogId> = None;
-        let mut batch_operations = Vec::new();
         let mut results = Vec::with_capacity(chunk_len);
+        let mut highest_log_id: Option<LogId> = None;
 
-        // PHASE 1: Decode all operations and prepare WAL entries
+        // Validate ordering — Command is already decoded, no proto work here
         for entry in chunk {
-            let entry_index = entry.index;
-
-            assert!(entry.payload.is_some(), "Entry payload should not be None!");
-
-            // Ensure entries are processed in order
-            if let Some(prev) = &highest_index_entry {
+            if let Some(prev) = &highest_log_id {
                 assert!(
                     entry.index > prev.index,
                     "apply_chunk: received unordered entry at index {} (prev={})",
@@ -1054,174 +1089,159 @@ impl StateMachine for FileStateMachine {
                     prev.index
                 );
             }
-            highest_index_entry = Some(LogId {
+            highest_log_id = Some(LogId {
                 index: entry.index,
                 term: entry.term,
             });
-
-            // Decode operations without holding locks
-            match entry.payload.as_ref().unwrap().payload.as_ref() {
-                Some(Payload::Noop(_)) => {
-                    let entry_index = entry.index;
-                    debug!("Handling NOOP command at index {}", entry_index);
-                    batch_operations.push((entry, "NOOP", Bytes::new(), None, 0));
-                    results.push(ApplyResult::success(entry_index));
-                }
-                Some(Payload::Command(bytes)) => match WriteCommand::decode(&bytes[..]) {
-                    Ok(write_cmd) => {
-                        // Extract operation data for batch processing
-                        match write_cmd.operation {
-                            Some(Operation::Insert(Insert {
-                                key,
-                                value,
-                                ttl_secs,
-                            })) => {
-                                let entry_index = entry.index;
-                                batch_operations.push((
-                                    entry,
-                                    "INSERT",
-                                    key,
-                                    Some(value),
-                                    ttl_secs,
-                                ));
-                                results.push(ApplyResult::success(entry_index));
-                            }
-                            Some(Operation::Delete(Delete { key })) => {
-                                let entry_index = entry.index;
-                                batch_operations.push((entry, "DELETE", key, None, 0));
-                                results.push(ApplyResult::success(entry_index));
-                            }
-                            Some(Operation::CompareAndSwap(CompareAndSwap {
-                                key,
-                                expected_value: _,
-                                new_value,
-                            })) => {
-                                batch_operations.push((entry, "CAS", key, Some(new_value), 0));
-                                // Note: CAS result will be pushed in PHASE 3 after comparison
-                            }
-                            None => {
-                                warn!("WriteCommand without operation at index {}", entry.index);
-                                batch_operations.push((entry, "NOOP", Bytes::new(), None, 0));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed to decode WriteCommand at index {}: {:?}",
-                            entry.index, e
-                        );
-                        return Err(StorageError::SerializationError(e.to_string()).into());
-                    }
-                },
-                Some(Payload::Config(_config_change)) => {
-                    debug!("Ignoring config change at index {}", entry.index);
-                    batch_operations.push((entry, "CONFIG", Bytes::new(), None, 0));
-                }
-                None => panic!("Entry payload variant should not be None!"),
-            }
-
-            info!("COMMITTED_LOG_METRIC: {}", entry_index);
+            info!("COMMITTED_LOG_METRIC: {}", entry.index);
         }
 
-        // PHASE 2: Batch WAL writes (minimize I/O latency)
-        let mut wal_entries = Vec::new();
-        for (entry, operation, key, value, ttl_secs) in &batch_operations {
-            // Prepare WAL data without immediate I/O - include TTL for crash recovery
-            wal_entries.push((
-                entry.clone(),
-                operation.to_string(),
-                key.clone(),
-                value.clone(),
-                *ttl_secs, // ttl_secs is now u64 (0 = no TTL) from protobuf
-            ));
-        }
+        // PRE-PHASE + PHASE 2 combined: evaluate outcomes and encode WAL in one pass.
+        //
+        // WAL records outcomes, not intents. We simulate in chunk order so earlier
+        // entries are visible to later CAS — matching Raft's serial apply semantics.
+        //
+        // Key-scoped snapshot: only CAS entries need to read the current value.
+        // We fetch only CAS-referenced keys from self.data (read lock held briefly)
+        // and track chunk-level mutations in a small `delta` map, avoiding a full
+        // HashMap clone regardless of data set size.
+        //
+        // Encoding happens in the same loop as evaluation, eliminating the second
+        // pass over chunk that a separate append_to_wal call would require.
+        let (cas_outcomes, wal_buf) = {
+            // Collect keys that any CAS in this chunk will compare against.
+            let cas_keys: HashSet<&Bytes> = chunk
+                .iter()
+                .filter_map(|e| match &e.command {
+                    Command::CompareAndSwap { key, .. } => Some(key),
+                    _ => None,
+                })
+                .collect();
 
-        // Single batch WAL write (reduces I/O overhead)
-        self.append_to_wal(wal_entries).await?;
+            // Fetch only those keys; read lock released at end of this block.
+            let base: HashMap<Bytes, (Bytes, u64)> = {
+                let guard = self.data.read();
+                cas_keys
+                    .iter()
+                    .filter_map(|k| guard.get(k.as_ref()).map(|v| ((*k).clone(), v.clone())))
+                    .collect()
+            };
 
-        // PHASE 3: Fast in-memory updates with minimal lock time (ZERO-COPY)
-        {
-            let mut data = self.data.write();
+            // delta tracks mutations made by earlier entries in this chunk.
+            // None = deleted by an earlier Delete in the same chunk.
+            let mut delta: HashMap<Bytes, Option<(Bytes, u64)>> = HashMap::new();
+            let mut wal_buf: Vec<u8> = Vec::with_capacity(chunk.len() * 64);
 
-            // Process all operations without any awaits inside the lock
-            for (entry, operation, key, value, ttl_secs) in batch_operations {
-                match operation {
-                    "NOOP" => {
-                        // NOOP result already pushed in PHASE 1
-                    }
-                    "INSERT" => {
-                        if let Some(value) = value {
-                            // ZERO-COPY: Use existing Bytes without cloning if possible
-                            data.insert(key.clone(), (value, entry.term));
-
-                            // Register lease if TTL specified
-                            if ttl_secs > 0 {
-                                // Validate lease is enabled before accepting TTL requests
-                                if !self.lease_enabled {
-                                    return Err(StorageError::FeatureNotEnabled(
-                                        "TTL feature is not enabled on this server. \
-                                         Enable it in config: [raft.state_machine.lease] enabled = true".into()
-                                    ).into());
-                                }
-
-                                // Safety: lease_enabled invariant ensures lease.is_some()
-                                let lease = unsafe { self.lease.as_ref().unwrap_unchecked() };
-                                lease.register(key, ttl_secs);
-                            }
+            let outcomes: Vec<bool> = chunk
+                .iter()
+                .map(|entry| {
+                    let success = match &entry.command {
+                        Command::Insert { key, value, .. } => {
+                            delta.insert(key.clone(), Some((value.clone(), entry.term)));
+                            false
                         }
-                        // Result already pushed in PHASE 1
-                    }
-                    "DELETE" => {
-                        data.remove(&key);
-                        if let Some(ref lease) = self.lease {
-                            lease.unregister(&key);
+                        Command::Delete { key } => {
+                            delta.insert(key.clone(), None);
+                            false
                         }
-                        // Result already pushed in PHASE 1
-                    }
-                    "CAS" => {
-                        // Extract expected_value from original entry
-                        if let Some(Payload::Command(bytes)) =
-                            entry.payload.as_ref().unwrap().payload.as_ref()
-                            && let Ok(write_cmd) = WriteCommand::decode(&bytes[..])
-                            && let Some(Operation::CompareAndSwap(CompareAndSwap {
-                                expected_value,
-                                ..
-                            })) = write_cmd.operation
-                        {
-                            // Read-compare-write is safe due to sequential apply
-                            let current_value = data.get(&key);
-
-                            let cas_success = match (current_value, &expected_value) {
-                                (Some((current, _)), Some(expected)) => {
-                                    current.as_ref() == expected.as_ref()
-                                }
+                        Command::CompareAndSwap {
+                            key,
+                            expected,
+                            value: new_value,
+                        } => {
+                            // Look up current value: delta (this chunk) takes precedence over base.
+                            let current =
+                                delta.get(key).map(|v| v.as_ref()).unwrap_or_else(|| base.get(key));
+                            let success = match (current, expected) {
+                                (Some((c, _)), Some(e)) => c.as_ref() == e.as_ref(),
                                 (None, None) => true,
                                 _ => false,
                             };
-
-                            // Store CAS result for client response
-                            results.push(if cas_success {
-                                ApplyResult::success(entry.index)
-                            } else {
-                                ApplyResult::failure(entry.index)
-                            });
-
-                            debug!(
-                                "CAS at index {}: key={:?}, success={}",
-                                entry.index,
-                                String::from_utf8_lossy(&key),
-                                cas_success
-                            );
-
-                            if cas_success && let Some(new_value) = value {
-                                data.insert(key, (new_value, entry.term));
+                            if success {
+                                delta.insert(key.clone(), Some((new_value.clone(), entry.term)));
                             }
+                            success
+                        }
+                        Command::Noop => false,
+                    };
+                    encode_wal_entry(&mut wal_buf, entry, success);
+                    success
+                })
+                .collect();
+
+            (outcomes, wal_buf)
+        };
+
+        // PHASE 2: single fsync with buffer built during evaluation above.
+        // Successful CAS → WalOpCode::Insert; failed CAS → WalOpCode::CasFailed.
+        // Note: wal_buf is never empty here in practice — every entry encodes at least
+        // 41 bytes — but the guard is kept as a cheap defensive check.
+        if !wal_buf.is_empty() {
+            let wal_path = self.data_dir.join("wal.log");
+            let mut file =
+                OpenOptions::new().write(true).create(true).append(true).open(&wal_path).await?;
+            file.write_all(&wal_buf).await?;
+            file.flush().await?;
+        }
+
+        // PHASE 3: Fast in-memory updates with minimal lock time
+        // (CAS uses pre-computed outcomes — no re-evaluation under write lock)
+        {
+            let mut data = self.data.write();
+
+            for (entry, &cas_success) in chunk.iter().zip(cas_outcomes.iter()) {
+                match &entry.command {
+                    Command::Noop => {
+                        results.push(ApplyResult::success(entry.index));
+                    }
+                    Command::Insert {
+                        key,
+                        value,
+                        ttl_secs,
+                    } => {
+                        data.insert(key.clone(), (value.clone(), entry.term));
+                        if let Some(ttl) = ttl_secs {
+                            if !self.lease_enabled {
+                                return Err(StorageError::FeatureNotEnabled(
+                                    "TTL feature is not enabled on this server. \
+                                     Enable it in config: [raft.state_machine.lease] enabled = true"
+                                        .into(),
+                                )
+                                .into());
+                            }
+                            // Safety: lease_enabled invariant ensures lease.is_some()
+                            let lease = unsafe { self.lease.as_ref().unwrap_unchecked() };
+                            lease.register(key.clone(), *ttl);
+                        }
+                        results.push(ApplyResult::success(entry.index));
+                    }
+                    Command::Delete { key } => {
+                        data.remove(key.as_ref());
+                        if let Some(ref lease) = self.lease {
+                            lease.unregister(key);
+                        }
+                        results.push(ApplyResult::success(entry.index));
+                    }
+                    Command::CompareAndSwap {
+                        key,
+                        value: new_value,
+                        ..
+                    } => {
+                        debug!(
+                            "CAS at index {}: key={:?}, success={}",
+                            entry.index,
+                            String::from_utf8_lossy(key),
+                            cas_success
+                        );
+                        results.push(if cas_success {
+                            ApplyResult::success(entry.index)
+                        } else {
+                            ApplyResult::failure(entry.index)
+                        });
+                        if cas_success {
+                            data.insert(key.clone(), (new_value.clone(), entry.term));
                         }
                     }
-                    "CONFIG" => {
-                        // No data modification needed
-                    }
-                    _ => warn!("Unknown operation: {}", operation),
                 }
             }
         } // Lock released immediately - no awaits inside!
@@ -1229,7 +1249,7 @@ impl StateMachine for FileStateMachine {
         // PHASE 4: Update last applied index and conditionally checkpoint.
         // WAL (written in PHASE 2) is the primary crash-safety path.
         // Checkpoint snapshots full data periodically to bound WAL replay time on recovery.
-        if let Some(log_id) = highest_index_entry {
+        if let Some(log_id) = highest_log_id {
             debug!("State machine - updated last_applied: {:?}", log_id);
             self.update_last_applied(log_id);
         }

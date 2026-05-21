@@ -42,6 +42,7 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use d_engine_core::DefaultStateMachineHandler;
 use d_engine_core::ElectionHandler;
 use d_engine_core::FlushPolicy;
@@ -61,6 +62,7 @@ use d_engine_core::alias::SMOF;
 use d_engine_core::alias::TROF;
 use d_engine_core::generate_delete_commands;
 use d_engine_core::generate_insert_commands;
+use d_engine_core::{ApplyEntry, Command};
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::NodeRole::Follower;
@@ -323,14 +325,17 @@ pub(crate) async fn insert_state_machine(
 ) {
     let mut entries = Vec::new();
     for id in ids {
-        let log = Entry {
+        entries.push(ApplyEntry {
             index: id,
             term,
-            payload: Some(EntryPayload::command(generate_insert_commands(vec![id]))),
-        };
-        entries.push(log);
+            command: Command::Insert {
+                key: Bytes::from(id.to_be_bytes().to_vec()),
+                value: Bytes::from(id.to_be_bytes().to_vec()),
+                ttl_secs: None,
+            },
+        });
     }
-    if let Err(e) = state_machine.apply_chunk(entries).await {
+    if let Err(e) = state_machine.apply_chunk(&entries).await {
         panic!("error: {e:?}");
     }
 }

@@ -54,6 +54,7 @@
 //! - [Customize State Machine](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/customize_state_machine/index.html)
 
 pub mod client;
+pub mod command;
 mod commit_handler;
 pub mod config;
 mod election;
@@ -79,6 +80,7 @@ pub mod watch;
 
 // ── User-facing public API ──────────────────────────────────────────────────
 pub use client::*;
+pub use command::*;
 pub use config::*;
 pub use errors::*;
 pub use storage::*;
@@ -126,6 +128,8 @@ pub use utils::*;
 
 pub(crate) use timer::*;
 
+#[cfg(test)]
+mod command_test;
 #[cfg(test)]
 mod maybe_clone_oneshot_test;
 

@@ -20,16 +20,9 @@ use criterion::Criterion;
 use criterion::black_box;
 use criterion::criterion_group;
 use criterion::criterion_main;
-use d_engine_core::StateMachine;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::Insert;
-use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::entry_payload::Payload;
+use d_engine_core::{ApplyEntry, Command, StateMachine};
 use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::EmbeddedEngine;
-use prost::Message;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
@@ -59,29 +52,19 @@ fn get_op_timeout() -> Duration {
 fn create_test_entries(
     count: usize,
     start_index: u64,
-) -> Vec<Entry> {
+) -> Vec<ApplyEntry> {
     let mut entries = Vec::new();
     for i in 0..count {
         let key = format!("key_{i}");
         let value = format!("value_{i}");
-
-        let write_cmd = WriteCommand {
-            operation: Some(Operation::Insert(Insert {
-                key: Bytes::from(key.into_bytes()),
-                value: Bytes::from(value.into_bytes()),
-                ttl_secs: 0,
-            })),
-        };
-
-        let mut buf = Vec::new();
-        write_cmd.encode(&mut buf).unwrap();
-
-        entries.push(Entry {
+        entries.push(ApplyEntry {
             index: start_index + i as u64,
             term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Command(Bytes::from(buf))),
-            }),
+            command: Command::Insert {
+                key: Bytes::from(key.into_bytes()),
+                value: Bytes::from(value.into_bytes()),
+                ttl_secs: None,
+            },
         });
     }
     entries
@@ -354,7 +337,7 @@ fn bench_apply_chunk_baseline(c: &mut Criterion) {
 
             // Benchmark: apply 100 entries
             let start = std::time::Instant::now();
-            state_machine.apply_chunk(entries).await.expect("apply_chunk failed");
+            state_machine.apply_chunk(&entries).await.expect("apply_chunk failed");
             let elapsed = start.elapsed();
 
             black_box(elapsed);

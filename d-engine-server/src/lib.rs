@@ -154,6 +154,7 @@ pub use node::NodeBuilder;
 pub use storage::{FileStateMachine, FileStorageEngine};
 // Re-export core types needed by applications
 pub use d_engine_core::ApplyResult;
+pub use d_engine_core::{ApplyEntry, Command};
 // Conditional RocksDB exports
 #[cfg(feature = "rocksdb")]
 pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, RocksDBUnifiedEngine};

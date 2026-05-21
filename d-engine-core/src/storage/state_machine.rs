@@ -4,9 +4,10 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
+
+use crate::ApplyEntry;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 
@@ -102,17 +103,17 @@ pub trait StateMachine: Send + Sync + 'static {
         entry_id: u64,
     ) -> Option<u64>;
 
-    /// Applies a chunk of log entries to the state machine.
+    /// Applies a batch of decoded log entries to the state machine.
     ///
-    /// Returns a result for each entry in the same order as the input chunk.
-    /// The returned vector MUST have the same length as the input chunk.
+    /// Receives `&[ApplyEntry]` (already decoded by the framework) instead of raw
+    /// proto `Entry`.  The framework decodes `bytes → Command` exactly once in
+    /// `DefaultStateMachineHandler`; implementors never touch proto or wire format.
     ///
-    /// # Performance Note
-    /// This is a hot path - implementations should minimize allocations.
-    /// Pre-allocate the result vector with `Vec::with_capacity(chunk.len())`.
+    /// The returned `Vec` MUST have the same length as `chunk` and preserve order.
+    /// Pre-allocate with `Vec::with_capacity(chunk.len())` on the hot path.
     async fn apply_chunk(
         &self,
-        chunk: Vec<Entry>,
+        chunk: &[ApplyEntry],
     ) -> Result<Vec<ApplyResult>, Error>;
 
     /// Returns the number of entries in the state machine.

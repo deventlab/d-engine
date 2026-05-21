@@ -16,19 +16,13 @@ use criterion::Criterion;
 use criterion::black_box;
 use criterion::criterion_group;
 use criterion::criterion_main;
-use d_engine_core::StateMachine;
 use d_engine_core::watch::WatchDispatcher;
 use d_engine_core::watch::WatchRegistry;
 use d_engine_core::watch::WatcherHandle;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::Insert;
-use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::entry_payload::Payload;
+use d_engine_core::{ApplyEntry, Command, StateMachine};
 use d_engine_server::storage::FileStateMachine;
-use prost::Message;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::broadcast;
@@ -103,28 +97,19 @@ fn register_watchers(
 fn create_entries_without_ttl(
     count: usize,
     start_index: u64,
-) -> Vec<Entry> {
+) -> Vec<ApplyEntry> {
     (0..count)
         .map(|i| {
             let key = format!("key_{}", start_index + i as u64);
             let value = format!("value_{}", start_index + i as u64);
-
-            let insert = Insert {
-                key: Bytes::from(key),
-                value: Bytes::from(value),
-                ttl_secs: 0,
-            };
-            let write_cmd = WriteCommand {
-                operation: Some(Operation::Insert(insert)),
-            };
-            let payload = Payload::Command(write_cmd.encode_to_vec().into());
-
-            Entry {
+            ApplyEntry {
                 index: start_index + i as u64,
                 term: 1,
-                payload: Some(EntryPayload {
-                    payload: Some(payload),
-                }),
+                command: Command::Insert {
+                    key: Bytes::from(key),
+                    value: Bytes::from(value),
+                    ttl_secs: None,
+                },
             }
         })
         .collect()
@@ -135,28 +120,19 @@ fn create_entries_with_ttl(
     count: usize,
     start_index: u64,
     ttl_secs: u64,
-) -> Vec<Entry> {
+) -> Vec<ApplyEntry> {
     (0..count)
         .map(|i| {
             let key = format!("key_ttl_{}", start_index + i as u64);
             let value = format!("value_ttl_{}", start_index + i as u64);
-
-            let insert = Insert {
-                key: Bytes::from(key),
-                value: Bytes::from(value),
-                ttl_secs,
-            };
-            let write_cmd = WriteCommand {
-                operation: Some(Operation::Insert(insert)),
-            };
-            let payload = Payload::Command(write_cmd.encode_to_vec().into());
-
-            Entry {
+            ApplyEntry {
                 index: start_index + i as u64,
                 term: 1,
-                payload: Some(EntryPayload {
-                    payload: Some(payload),
-                }),
+                command: Command::Insert {
+                    key: Bytes::from(key),
+                    value: Bytes::from(value),
+                    ttl_secs: if ttl_secs > 0 { Some(ttl_secs) } else { None },
+                },
             }
         })
         .collect()
@@ -168,13 +144,13 @@ fn bench_apply_without_ttl(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_without_ttl", |b| {
         b.to_async(&runtime).iter(|| async {
-            let entries = create_entries_without_ttl(1, 1);
-
-            // Measure pure apply performance
-            sm.apply_chunk(entries).await.unwrap();
+            let start = idx.fetch_add(1, Ordering::Relaxed);
+            let entries = create_entries_without_ttl(1, start);
+            sm.apply_chunk(&entries).await.unwrap();
             black_box(());
         });
     });
@@ -186,13 +162,13 @@ fn bench_apply_with_ttl(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_with_ttl", |b| {
         b.to_async(&runtime).iter(|| async {
-            let entries = create_entries_with_ttl(1, 1, 3600); // 1 hour TTL
-
-            // Measure apply with TTL registration
-            sm.apply_chunk(entries).await.unwrap();
+            let start = idx.fetch_add(1, Ordering::Relaxed);
+            let entries = create_entries_with_ttl(1, start, 3600); // 1 hour TTL
+            sm.apply_chunk(&entries).await.unwrap();
             black_box(());
         });
     });
@@ -207,7 +183,7 @@ fn bench_get_without_ttl(c: &mut Criterion) {
     let (sm, _temp_dir) = runtime.block_on(async {
         let (sm, temp_dir) = create_test_state_machine().await;
         let entries = create_entries_without_ttl(100, 1);
-        sm.apply_chunk(entries).await.unwrap();
+        sm.apply_chunk(&entries).await.unwrap();
         (sm, temp_dir)
     });
 
@@ -229,7 +205,7 @@ fn bench_get_with_ttl_check(c: &mut Criterion) {
     let (sm, _temp_dir) = runtime.block_on(async {
         let (sm, temp_dir) = create_test_state_machine().await;
         let entries = create_entries_with_ttl(100, 1, 3600); // Long TTL
-        sm.apply_chunk(entries).await.unwrap();
+        sm.apply_chunk(&entries).await.unwrap();
         (sm, temp_dir)
     });
 
@@ -251,7 +227,7 @@ fn bench_get_expired_ttl(c: &mut Criterion) {
     let (sm, _temp_dir) = runtime.block_on(async {
         let (sm, temp_dir) = create_test_state_machine().await;
         let entries = create_entries_with_ttl(100, 1, 1); // 1 second TTL
-        sm.apply_chunk(entries).await.unwrap();
+        sm.apply_chunk(&entries).await.unwrap();
 
         // Wait for expiration
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -275,13 +251,14 @@ fn bench_batch_apply(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_apply");
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let entries = create_entries_without_ttl(size, 1);
-
-                sm.apply_chunk(entries).await.unwrap();
+                let start = idx.fetch_add(size as u64, Ordering::Relaxed);
+                let entries = create_entries_without_ttl(size, start);
+                sm.apply_chunk(&entries).await.unwrap();
                 black_box(());
             });
         });
@@ -296,13 +273,14 @@ fn bench_batch_apply_with_ttl(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_apply_with_ttl");
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.to_async(&runtime).iter(|| async {
-                let entries = create_entries_with_ttl(size, 1, 3600);
-
-                sm.apply_chunk(entries).await.unwrap();
+                let start = idx.fetch_add(size as u64, Ordering::Relaxed);
+                let entries = create_entries_with_ttl(size, start, 3600);
+                sm.apply_chunk(&entries).await.unwrap();
                 black_box(());
             });
         });
@@ -318,13 +296,13 @@ fn bench_apply_without_watch(c: &mut Criterion) {
 
     // Initialize state machine once outside the iteration loop
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_without_watch", |b| {
         b.to_async(&runtime).iter(|| async {
-            let entries = create_entries_without_ttl(100, 1);
-
-            // Measure pure apply performance without watch
-            sm.apply_chunk(entries).await.unwrap();
+            let start = idx.fetch_add(100, Ordering::Relaxed);
+            let entries = create_entries_without_ttl(100, start);
+            sm.apply_chunk(&entries).await.unwrap();
             black_box(());
         });
     });
@@ -336,6 +314,7 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_with_1_watcher", |b| {
         b.to_async(&runtime).iter(|| async {
@@ -344,54 +323,46 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
             // Register 1 watcher (keep handle alive to prevent unregistration)
             let _watchers = register_watchers(&registry, 1, "key_");
 
-            let entries = create_entries_without_ttl(100, 1);
+            let start = idx.fetch_add(100, Ordering::Relaxed);
+            let entries = create_entries_without_ttl(100, start);
 
-            // Simulate notify_watchers call for each entry
             for entry in &entries {
-                if let Some(payload) = &entry.payload
-                    && let Some(Payload::Command(cmd_bytes)) = &payload.payload
-                    && let Ok(write_cmd) = WriteCommand::decode(cmd_bytes.as_ref())
-                    && let Some(op) = write_cmd.operation
-                {
-                    match op {
-                        Operation::Insert(insert) => {
-                            let event = d_engine_proto::client::WatchResponse {
-                                key: insert.key.clone(),
-                                value: insert.value.clone(),
-                                event_type: d_engine_proto::client::WatchEventType::Put as i32,
-                                prev_value: bytes::Bytes::new(),
-                                error: 0,
-                                revision: 0,
-                            };
-                            let _ = broadcast_tx.send(event);
-                        }
-                        Operation::Delete(delete) => {
-                            let event = d_engine_proto::client::WatchResponse {
-                                key: delete.key.clone(),
-                                value: bytes::Bytes::new(),
-                                event_type: d_engine_proto::client::WatchEventType::Delete as i32,
-                                prev_value: bytes::Bytes::new(),
-                                error: 0,
-                                revision: 0,
-                            };
-                            let _ = broadcast_tx.send(event);
-                        }
-                        Operation::CompareAndSwap(cas) => {
-                            let event = d_engine_proto::client::WatchResponse {
-                                key: cas.key.clone(),
-                                value: cas.new_value.clone(),
-                                event_type: d_engine_proto::client::WatchEventType::Put as i32,
-                                prev_value: bytes::Bytes::new(),
-                                error: 0,
-                                revision: 0,
-                            };
-                            let _ = broadcast_tx.send(event);
-                        }
+                match &entry.command {
+                    Command::Insert { key, value, .. } => {
+                        let _ = broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                            key: key.clone(),
+                            value: value.clone(),
+                            event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                            prev_value: bytes::Bytes::new(),
+                            error: 0,
+                            revision: 0,
+                        });
                     }
+                    Command::Delete { key } => {
+                        let _ = broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                            key: key.clone(),
+                            value: bytes::Bytes::new(),
+                            event_type: d_engine_proto::client::WatchEventType::Delete as i32,
+                            prev_value: bytes::Bytes::new(),
+                            error: 0,
+                            revision: 0,
+                        });
+                    }
+                    Command::CompareAndSwap { key, value, .. } => {
+                        let _ = broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                            key: key.clone(),
+                            value: value.clone(),
+                            event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                            prev_value: bytes::Bytes::new(),
+                            error: 0,
+                            revision: 0,
+                        });
+                    }
+                    Command::Noop => {}
                 }
             }
 
-            sm.apply_chunk(entries).await.unwrap();
+            sm.apply_chunk(&entries).await.unwrap();
             black_box(());
         });
     });
@@ -403,6 +374,7 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_with_10_watchers", |b| {
         b.to_async(&runtime).iter(|| async {
@@ -411,54 +383,46 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
             // Register 10 watchers (keep handles alive to prevent unregistration)
             let _watchers = register_watchers(&registry, 10, "key_");
 
-            let entries = create_entries_without_ttl(100, 1);
+            let start = idx.fetch_add(100, Ordering::Relaxed);
+            let entries = create_entries_without_ttl(100, start);
 
-            // Simulate notify_watchers call for each entry
             for entry in &entries {
-                if let Some(payload) = &entry.payload
-                    && let Some(Payload::Command(cmd_bytes)) = &payload.payload
-                    && let Ok(write_cmd) = WriteCommand::decode(cmd_bytes.as_ref())
-                    && let Some(op) = write_cmd.operation
-                {
-                    match op {
-                        Operation::Insert(insert) => {
-                            let event = d_engine_proto::client::WatchResponse {
-                                key: insert.key.clone(),
-                                value: insert.value.clone(),
-                                event_type: d_engine_proto::client::WatchEventType::Put as i32,
-                                prev_value: bytes::Bytes::new(),
-                                error: 0,
-                                revision: 0,
-                            };
-                            let _ = broadcast_tx.send(event);
-                        }
-                        Operation::Delete(delete) => {
-                            let event = d_engine_proto::client::WatchResponse {
-                                key: delete.key.clone(),
-                                value: bytes::Bytes::new(),
-                                event_type: d_engine_proto::client::WatchEventType::Delete as i32,
-                                prev_value: bytes::Bytes::new(),
-                                error: 0,
-                                revision: 0,
-                            };
-                            let _ = broadcast_tx.send(event);
-                        }
-                        Operation::CompareAndSwap(cas) => {
-                            let event = d_engine_proto::client::WatchResponse {
-                                key: cas.key.clone(),
-                                value: cas.new_value.clone(),
-                                event_type: d_engine_proto::client::WatchEventType::Put as i32,
-                                prev_value: bytes::Bytes::new(),
-                                error: 0,
-                                revision: 0,
-                            };
-                            let _ = broadcast_tx.send(event);
-                        }
+                match &entry.command {
+                    Command::Insert { key, value, .. } => {
+                        let _ = broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                            key: key.clone(),
+                            value: value.clone(),
+                            event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                            prev_value: bytes::Bytes::new(),
+                            error: 0,
+                            revision: 0,
+                        });
                     }
+                    Command::Delete { key } => {
+                        let _ = broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                            key: key.clone(),
+                            value: bytes::Bytes::new(),
+                            event_type: d_engine_proto::client::WatchEventType::Delete as i32,
+                            prev_value: bytes::Bytes::new(),
+                            error: 0,
+                            revision: 0,
+                        });
+                    }
+                    Command::CompareAndSwap { key, value, .. } => {
+                        let _ = broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                            key: key.clone(),
+                            value: value.clone(),
+                            event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                            prev_value: bytes::Bytes::new(),
+                            error: 0,
+                            revision: 0,
+                        });
+                    }
+                    Command::Noop => {}
                 }
             }
 
-            sm.apply_chunk(entries).await.unwrap();
+            sm.apply_chunk(&entries).await.unwrap();
             black_box(());
         });
     });
@@ -470,6 +434,7 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     let (sm, _temp_dir) = runtime.block_on(async { create_test_state_machine().await });
+    let idx = AtomicU64::new(1);
 
     c.bench_function("apply_with_100_watchers", |b| {
         b.to_async(&runtime).iter(|| async {
@@ -478,54 +443,46 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
             // Register 100 watchers (keep handles alive to prevent unregistration)
             let _watchers = register_watchers(&registry, 100, "key_");
 
-            let entries = create_entries_without_ttl(100, 1);
+            let start = idx.fetch_add(100, Ordering::Relaxed);
+            let entries = create_entries_without_ttl(100, start);
 
-            // Simulate notify_watchers call for each entry
             for entry in &entries {
-                if let Some(payload) = &entry.payload
-                    && let Some(Payload::Command(cmd_bytes)) = &payload.payload
-                    && let Ok(write_cmd) = WriteCommand::decode(cmd_bytes.as_ref())
-                    && let Some(op) = write_cmd.operation
-                {
-                    match op {
-                        Operation::Insert(insert) => {
-                            let event = d_engine_proto::client::WatchResponse {
-                                key: insert.key.clone(),
-                                value: insert.value.clone(),
-                                event_type: d_engine_proto::client::WatchEventType::Put as i32,
-                                prev_value: bytes::Bytes::new(),
-                                error: 0,
-                                revision: 0,
-                            };
-                            let _ = broadcast_tx.send(event);
-                        }
-                        Operation::Delete(delete) => {
-                            let event = d_engine_proto::client::WatchResponse {
-                                key: delete.key.clone(),
-                                value: bytes::Bytes::new(),
-                                event_type: d_engine_proto::client::WatchEventType::Delete as i32,
-                                prev_value: bytes::Bytes::new(),
-                                error: 0,
-                                revision: 0,
-                            };
-                            let _ = broadcast_tx.send(event);
-                        }
-                        Operation::CompareAndSwap(cas) => {
-                            let event = d_engine_proto::client::WatchResponse {
-                                key: cas.key.clone(),
-                                value: cas.new_value.clone(),
-                                event_type: d_engine_proto::client::WatchEventType::Put as i32,
-                                prev_value: bytes::Bytes::new(),
-                                error: 0,
-                                revision: 0,
-                            };
-                            let _ = broadcast_tx.send(event);
-                        }
+                match &entry.command {
+                    Command::Insert { key, value, .. } => {
+                        let _ = broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                            key: key.clone(),
+                            value: value.clone(),
+                            event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                            prev_value: bytes::Bytes::new(),
+                            error: 0,
+                            revision: 0,
+                        });
                     }
+                    Command::Delete { key } => {
+                        let _ = broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                            key: key.clone(),
+                            value: bytes::Bytes::new(),
+                            event_type: d_engine_proto::client::WatchEventType::Delete as i32,
+                            prev_value: bytes::Bytes::new(),
+                            error: 0,
+                            revision: 0,
+                        });
+                    }
+                    Command::CompareAndSwap { key, value, .. } => {
+                        let _ = broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                            key: key.clone(),
+                            value: value.clone(),
+                            event_type: d_engine_proto::client::WatchEventType::Put as i32,
+                            prev_value: bytes::Bytes::new(),
+                            error: 0,
+                            revision: 0,
+                        });
+                    }
+                    Command::Noop => {}
                 }
             }
 
-            sm.apply_chunk(entries).await.unwrap();
+            sm.apply_chunk(&entries).await.unwrap();
             black_box(());
         });
     });

@@ -12,7 +12,7 @@ d-engine supports **pluggable state machines** through the `StateMachine` trait.
 ## 1. Implement the Trait
 
 ```rust,ignore
-use d_engine::{StateMachine, Result, Entry, LogId, SnapshotMetadata};
+use d_engine::{ApplyEntry, ApplyResult, Command, Error, LogId, SnapshotMetadata, StateMachine};
 use async_trait::async_trait;
 
 struct CustomStateMachine {
@@ -49,13 +49,35 @@ impl StateMachine for CustomStateMachine {
         Some(1)
     }
 
-    async fn apply_chunk(&self, chunk: Vec<Entry>) -> Result<()> {
-        // Deserialize and process entries
+    async fn apply_chunk(&self, chunk: &[ApplyEntry]) -> Result<Vec<ApplyResult>, Error> {
+        // The framework pre-decodes proto bytes — match on Command directly, no prost needed.
+        let mut results = Vec::with_capacity(chunk.len());
         for entry in chunk {
-            let cmd: AppCommand = bincode::deserialize(&entry.data)?;
-            self.backend.execute(cmd)?;
+            let result = match &entry.command {
+                Command::Insert { key, value, ttl_secs } => {
+                    self.backend.put(key, value, *ttl_secs)?;
+                    ApplyResult::success(entry.index)
+                }
+                Command::Delete { key } => {
+                    self.backend.delete(key)?;
+                    ApplyResult::success(entry.index)
+                }
+                Command::CompareAndSwap { key, expected, value } => {
+                    // CAS must return failure when the comparison does not match.
+                    // Callers (e.g. client CAS requests) inspect ApplyResult::succeeded
+                    // to determine whether the swap actually took effect.
+                    let succeeded = self.backend.cas(key, expected.as_deref(), value)?;
+                    if succeeded {
+                        ApplyResult::success(entry.index)
+                    } else {
+                        ApplyResult::failure(entry.index)
+                    }
+                }
+                Command::Noop => ApplyResult::success(entry.index),
+            };
+            results.push(result);
         }
-        Ok(())
+        Ok(results)
     }
 
     fn len(&self) -> usize {
@@ -135,7 +157,7 @@ async fn test_custom_state_machine() -> Result<(), Error> {
 
     // Test apply_chunk with sample entries
     let entries = vec![create_test_entry(1, 1)];
-    sm.apply_chunk(entries).await?;
+    sm.apply_chunk(&entries).await?;
     assert_eq!(sm.len(), 1);
 
     // Test snapshot operations

@@ -4,11 +4,7 @@ use crate::{Error, StateMachine};
 use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::{CompareAndSwap, Delete, Insert, Operation};
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::entry_payload::Payload;
-use prost::Message;
+use d_engine_core::{ApplyEntry, Command};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -102,26 +98,17 @@ async fn test_get_rejected_when_not_serving() {
     let test_key = b"test_key";
     let test_value = b"test_value";
 
-    let write_cmd = WriteCommand {
-        operation: Some(Operation::Insert(Insert {
-            key: test_key.to_vec().into(),
-            value: test_value.to_vec().into(),
-            ttl_secs: 0,
-        })),
-    };
-
-    let mut buf = Vec::new();
-    write_cmd.encode(&mut buf).expect("Failed to encode");
-
-    let entry = Entry {
+    let entry = ApplyEntry {
         index: 1,
         term: 1,
-        payload: Some(d_engine_proto::common::EntryPayload {
-            payload: Some(Payload::Command(buf.into())),
-        }),
+        command: Command::Insert {
+            key: Bytes::from(test_key.to_vec()),
+            value: Bytes::from(test_value.to_vec()),
+            ttl_secs: None,
+        },
     };
 
-    state_machine.apply_chunk(vec![entry]).await.expect("Failed to apply entry");
+    state_machine.apply_chunk(&[entry]).await.expect("Failed to apply entry");
 
     // Verify data exists before stopping
     let value = state_machine.get(test_key).expect("Failed to get");
@@ -168,10 +155,10 @@ async fn test_scan_prefix_returns_only_matching_keys() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(vec![
-        encode_insert_at(b"/services/node1", b"10.0.0.1", 1),
-        encode_insert_at(b"/services/node2", b"10.0.0.2", 2),
-        encode_insert_at(b"/other/key", b"must_not_appear", 3),
+    sm.apply_chunk(&[
+        insert_at(b"/services/node1", b"10.0.0.1", 1),
+        insert_at(b"/services/node2", b"10.0.0.2", 2),
+        insert_at(b"/other/key", b"must_not_appear", 3),
     ])
     .await
     .unwrap();
@@ -201,10 +188,10 @@ async fn test_scan_prefix_upper_bound_excludes_adjacent_namespace() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(vec![
-        encode_insert_at(b"/services/last", b"v", 1),
+    sm.apply_chunk(&[
+        insert_at(b"/services/last", b"v", 1),
         // '/t' > '/s' in byte order — sits right after '/services/' in the keyspace
-        encode_insert_at(b"/t/trap", b"must_not_appear", 2),
+        insert_at(b"/t/trap", b"must_not_appear", 2),
     ])
     .await
     .unwrap();
@@ -227,7 +214,7 @@ async fn test_scan_prefix_empty_namespace_returns_empty_vec() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(vec![encode_insert_at(b"/other/key", b"v", 1)]).await.unwrap();
+    sm.apply_chunk(&[insert_at(b"/other/key", b"v", 1)]).await.unwrap();
 
     let result = sm.scan_prefix(b"/missing/").unwrap();
 
@@ -250,10 +237,10 @@ async fn test_scan_prefix_revision_reflects_applied_index() {
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
     // Apply 3 entries as a single chunk; last_applied_index becomes 3
-    sm.apply_chunk(vec![
-        encode_insert_at(b"/s/a", b"1", 1),
-        encode_insert_at(b"/s/b", b"2", 2),
-        encode_insert_at(b"/s/c", b"3", 3),
+    sm.apply_chunk(&[
+        insert_at(b"/s/a", b"1", 1),
+        insert_at(b"/s/b", b"2", 2),
+        insert_at(b"/s/c", b"3", 3),
     ])
     .await
     .unwrap();
@@ -284,9 +271,9 @@ async fn test_scan_prefix_0xff_suffix_carry_propagation() {
     let key: &[u8] = b"\x61\xFFnode";
     let decoy: &[u8] = b"\x62decoy"; // sits above [0x62], must not appear
 
-    sm.apply_chunk(vec![
-        encode_insert_at(key, b"value", 1),
-        encode_insert_at(decoy, b"must_not_appear", 2),
+    sm.apply_chunk(&[
+        insert_at(key, b"value", 1),
+        insert_at(decoy, b"must_not_appear", 2),
     ])
     .await
     .unwrap();
@@ -312,9 +299,7 @@ async fn test_scan_prefix_empty_prefix_returns_empty() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(vec![encode_insert_at(b"/services/node1", b"v", 1)])
-        .await
-        .unwrap();
+    sm.apply_chunk(&[insert_at(b"/services/node1", b"v", 1)]).await.unwrap();
 
     let result = sm.scan_prefix(b"").unwrap();
 
@@ -341,9 +326,9 @@ async fn test_scan_prefix_all_0xff_no_upper_bound() {
     let key: &[u8] = b"\xFF\xFF\x01";
     let decoy: &[u8] = b"\xFE\xAA"; // lexicographically below the prefix
 
-    sm.apply_chunk(vec![
-        encode_insert_at(key, b"top_value", 1),
-        encode_insert_at(decoy, b"must_not_appear", 2),
+    sm.apply_chunk(&[
+        insert_at(key, b"top_value", 1),
+        insert_at(decoy, b"must_not_appear", 2),
     ])
     .await
     .unwrap();
@@ -360,79 +345,66 @@ async fn test_scan_prefix_all_0xff_no_upper_bound() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn encode_insert(
+fn insert_at(
+    key: &[u8],
+    value: &[u8],
+    index: u64,
+) -> ApplyEntry {
+    ApplyEntry {
+        index,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::copy_from_slice(key),
+            value: Bytes::copy_from_slice(value),
+            ttl_secs: None,
+        },
+    }
+}
+
+fn insert_with_ttl(
     key: &[u8],
     value: &[u8],
     ttl_secs: u64,
-) -> Entry {
-    let cmd = WriteCommand {
-        operation: Some(Operation::Insert(Insert {
-            key: key.to_vec().into(),
-            value: value.to_vec().into(),
-            ttl_secs,
-        })),
-    };
-    encode_entry(cmd, 1, 1)
-}
-
-/// Like encode_insert but with an explicit log index, required when placing
-/// multiple entries in a single apply_chunk call (indices must be strictly increasing).
-fn encode_insert_at(
-    key: &[u8],
-    value: &[u8],
     index: u64,
-) -> Entry {
-    let cmd = WriteCommand {
-        operation: Some(Operation::Insert(Insert {
-            key: key.to_vec().into(),
-            value: value.to_vec().into(),
-            ttl_secs: 0,
-        })),
-    };
-    encode_entry(cmd, index, 1)
+) -> ApplyEntry {
+    ApplyEntry {
+        index,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::copy_from_slice(key),
+            value: Bytes::copy_from_slice(value),
+            ttl_secs: if ttl_secs > 0 { Some(ttl_secs) } else { None },
+        },
+    }
 }
 
-fn encode_delete(
+fn delete_at(
     key: &[u8],
     index: u64,
-) -> Entry {
-    let cmd = WriteCommand {
-        operation: Some(Operation::Delete(Delete {
-            key: key.to_vec().into(),
-        })),
-    };
-    encode_entry(cmd, index, 1)
+) -> ApplyEntry {
+    ApplyEntry {
+        index,
+        term: 1,
+        command: Command::Delete {
+            key: Bytes::copy_from_slice(key),
+        },
+    }
 }
 
-fn encode_cas(
+fn cas_at(
     key: &[u8],
     expected: Option<&[u8]>,
     new_value: &[u8],
     index: u64,
-) -> Entry {
-    let cmd = WriteCommand {
-        operation: Some(Operation::CompareAndSwap(CompareAndSwap {
-            key: key.to_vec().into(),
-            expected_value: expected.map(|v| v.to_vec().into()),
-            new_value: new_value.to_vec().into(),
-        })),
-    };
-    encode_entry(cmd, index, 1)
-}
-
-fn encode_entry(
-    cmd: WriteCommand,
-    index: u64,
-    term: u64,
-) -> Entry {
-    let mut buf = Vec::new();
-    cmd.encode(&mut buf).expect("encode");
-    Entry {
+) -> ApplyEntry {
+    ApplyEntry {
         index,
-        term,
-        payload: Some(d_engine_proto::common::EntryPayload {
-            payload: Some(Payload::Command(buf.into())),
-        }),
+        term: 1,
+        command: Command::CompareAndSwap {
+            key: Bytes::copy_from_slice(key),
+            expected: expected.map(Bytes::copy_from_slice),
+            value: Bytes::copy_from_slice(new_value),
+        },
     }
 }
 
@@ -446,10 +418,10 @@ async fn test_apply_chunk_cas_match_succeeds_and_writes_new_value() {
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
     // Pre-populate key
-    sm.apply_chunk(vec![encode_insert(b"k", b"old", 0)]).await.unwrap();
+    sm.apply_chunk(&[insert_with_ttl(b"k", b"old", 0, 1)]).await.unwrap();
 
     // CAS with matching expected value
-    let results = sm.apply_chunk(vec![encode_cas(b"k", Some(b"old"), b"new", 2)]).await.unwrap();
+    let results = sm.apply_chunk(&[cas_at(b"k", Some(b"old"), b"new", 2)]).await.unwrap();
 
     assert!(
         results[0].succeeded,
@@ -465,10 +437,10 @@ async fn test_apply_chunk_cas_mismatch_returns_failure_and_preserves_value() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(vec![encode_insert(b"k", b"current", 0)]).await.unwrap();
+    sm.apply_chunk(&[insert_with_ttl(b"k", b"current", 0, 1)]).await.unwrap();
 
     let results = sm
-        .apply_chunk(vec![encode_cas(b"k", Some(b"wrong_expected"), b"new", 2)])
+        .apply_chunk(&[cas_at(b"k", Some(b"wrong_expected"), b"new", 2)])
         .await
         .unwrap();
 
@@ -486,7 +458,7 @@ async fn test_apply_chunk_cas_none_expected_on_absent_key_succeeds() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    let results = sm.apply_chunk(vec![encode_cas(b"new_key", None, b"value", 1)]).await.unwrap();
+    let results = sm.apply_chunk(&[cas_at(b"new_key", None, b"value", 1)]).await.unwrap();
 
     assert!(
         results[0].succeeded,
@@ -501,9 +473,9 @@ async fn test_apply_chunk_cas_none_expected_on_existing_key_fails() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(vec![encode_insert(b"k", b"exists", 0)]).await.unwrap();
+    sm.apply_chunk(&[insert_with_ttl(b"k", b"exists", 0, 1)]).await.unwrap();
 
-    let results = sm.apply_chunk(vec![encode_cas(b"k", None, b"new", 2)]).await.unwrap();
+    let results = sm.apply_chunk(&[cas_at(b"k", None, b"new", 2)]).await.unwrap();
 
     assert!(
         !results[0].succeeded,
@@ -524,14 +496,14 @@ async fn test_apply_chunk_two_cas_same_key_second_must_see_first_write() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(vec![encode_insert(b"k", b"v0", 0)]).await.unwrap();
+    sm.apply_chunk(&[insert_with_ttl(b"k", b"v0", 0, 1)]).await.unwrap();
 
     // CAS1: v0 → v1  (should succeed)
     // CAS2: v0 → v2  (must fail — CAS1 already changed value to v1)
     let results = sm
-        .apply_chunk(vec![
-            encode_cas(b"k", Some(b"v0"), b"v1", 2),
-            encode_cas(b"k", Some(b"v0"), b"v2", 3),
+        .apply_chunk(&[
+            cas_at(b"k", Some(b"v0"), b"v1", 2),
+            cas_at(b"k", Some(b"v0"), b"v2", 3),
         ])
         .await
         .unwrap();
@@ -554,8 +526,8 @@ async fn test_apply_chunk_delete_removes_key() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(vec![encode_insert(b"to_delete", b"v", 0)]).await.unwrap();
-    sm.apply_chunk(vec![encode_delete(b"to_delete", 2)]).await.unwrap();
+    sm.apply_chunk(&[insert_with_ttl(b"to_delete", b"v", 0, 1)]).await.unwrap();
+    sm.apply_chunk(&[delete_at(b"to_delete", 2)]).await.unwrap();
 
     assert_eq!(sm.get(b"to_delete").unwrap(), None);
 }
@@ -574,7 +546,7 @@ async fn test_apply_chunk_returns_error_on_read_only_db() {
     let (_storage, sm) = RocksDBUnifiedEngine::open(&db_path).unwrap();
 
     // Confirm the state machine works normally first
-    sm.apply_chunk(vec![encode_insert(b"k", b"v", 0)]).await.unwrap();
+    sm.apply_chunk(&[insert_with_ttl(b"k", b"v", 0, 1)]).await.unwrap();
 
     // Open the same DB as read-only and inject it — writes will now return NotSupported
     let ro_db = DB::open_cf_for_read_only(
@@ -587,7 +559,7 @@ async fn test_apply_chunk_returns_error_on_read_only_db() {
     sm.swap_db_for_test(ro_db);
 
     // Write to a read-only DB must fail
-    let result = sm.apply_chunk(vec![encode_insert(b"k2", b"v2", 0)]).await;
+    let result = sm.apply_chunk(&[insert_with_ttl(b"k2", b"v2", 0, 2)]).await;
     assert!(
         result.is_err(),
         "apply_chunk should return Err when DB is read-only"

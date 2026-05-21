@@ -153,7 +153,17 @@ fn test_pending_range_case3() {
 #[cfg(test)]
 mod apply_chunk_test {
 
+    use d_engine_proto::common::EntryPayload;
+
     use super::*;
+
+    fn noop_entry(index: u64) -> Entry {
+        Entry {
+            index,
+            term: 1,
+            payload: Some(EntryPayload::noop()),
+        }
+    }
 
     fn create_test_handler(
         path: &str,
@@ -185,27 +195,11 @@ mod apply_chunk_test {
             None,
         );
 
-        // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
 
-        // Create a test chunk with index 100
-        let chunk: Vec<Entry> = vec![
-            Entry {
-                index: 90,
-                term: 1,
-                payload: None,
-            },
-            Entry {
-                index: 100,
-                term: 1,
-                payload: None,
-            },
-        ];
-
-        // Apply the chunk
+        let chunk = vec![noop_entry(90), noop_entry(100)];
         let result = handler.apply_chunk(chunk).await;
 
-        // Verify last_applied was updated
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 100);
     }
@@ -218,59 +212,27 @@ mod apply_chunk_test {
             None,
         );
 
-        // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
 
-        // Create a test chunk with index 50
-        let chunk = vec![
-            Entry {
-                index: 50,
-                term: 1,
-                payload: None,
-            },
-            Entry {
-                index: 70,
-                term: 1,
-                payload: None,
-            },
-        ];
-
-        // Apply the chunk
+        let chunk = vec![noop_entry(50), noop_entry(70)];
         let result = handler.apply_chunk(chunk).await;
 
-        // Verify last_applied was updated to the higher index
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 70);
     }
+
     #[tokio::test]
     async fn test_apply_chunk_handles_empty_chunk() {
         let handler =
             create_test_handler("/tmp/test_apply_chunk_handles_empty_chunk", false, Some(2));
 
-        // Initial last_applied value
-        let chunk = vec![
-            Entry {
-                index: 1,
-                term: 1,
-                payload: None,
-            },
-            Entry {
-                index: 2,
-                term: 1,
-                payload: None,
-            },
-        ];
+        let chunk = vec![noop_entry(1), noop_entry(2)];
         let result = handler.apply_chunk(chunk).await;
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 2);
 
-        // Create an empty chunk
-        let chunk = vec![];
-
-        // Apply the empty chunk
-        let result = handler.apply_chunk(chunk).await;
-
-        // Verify last_applied was updated
+        // Empty chunk: last_applied must not regress
+        let result = handler.apply_chunk(vec![]).await;
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 2);
     }
@@ -283,20 +245,178 @@ mod apply_chunk_test {
             None,
         );
 
-        // Initial last_applied value
         assert_eq!(handler.last_applied(), 0);
 
-        // Create first chunk with index 50
-        let chunk1 = vec![Entry {
-            index: 50,
+        let result = handler.apply_chunk(vec![noop_entry(50)]).await;
+        assert!(result.is_err());
+        assert_eq!(handler.last_applied(), 0);
+    }
+}
+
+/// Verifies the decode boundary: raw proto `Entry` → `ApplyEntry` transition happens inside
+/// `DefaultStateMachineHandler::apply_chunk`, not inside the state machine.
+///
+/// The state machine mock's `apply_chunk` receives `&[ApplyEntry]` with fully decoded `Command`
+/// variants. It never sees raw proto bytes.
+#[cfg(test)]
+mod decode_boundary_tests {
+    use bytes::Bytes;
+    use d_engine_proto::client::WriteCommand;
+    use d_engine_proto::client::write_command::{Insert, Operation};
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::entry_payload::Payload;
+    use prost::Message;
+
+    use super::*;
+    use crate::test_utils::snapshot_config;
+    use crate::{ApplyResult, Command, MockSnapshotPolicy, MockStateMachine, MockTypeConfig};
+
+    fn noop_entry(index: u64) -> Entry {
+        Entry {
+            index,
             term: 1,
-            payload: None,
-        }];
+            payload: Some(EntryPayload::noop()),
+        }
+    }
 
-        // Apply first chunk
-        let result1 = handler.apply_chunk(chunk1).await;
-        assert!(result1.is_err());
-        assert_eq!(handler.last_applied(), 0);
+    fn insert_entry(
+        index: u64,
+        key: &[u8],
+        value: &[u8],
+    ) -> Entry {
+        let cmd = WriteCommand {
+            operation: Some(Operation::Insert(Insert {
+                key: Bytes::copy_from_slice(key),
+                value: Bytes::copy_from_slice(value),
+                ttl_secs: 0,
+            })),
+        };
+        let mut buf = Vec::new();
+        cmd.encode(&mut buf).unwrap();
+        Entry {
+            index,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Command(Bytes::from(buf))),
+            }),
+        }
+    }
+
+    fn config_entry(index: u64) -> Entry {
+        use d_engine_proto::common::AddNode;
+        use d_engine_proto::common::membership_change::Change;
+        Entry {
+            index,
+            term: 1,
+            payload: Some(EntryPayload::config(Change::AddNode(AddNode {
+                node_id: 1,
+                address: "127.0.0.1:4000".to_string(),
+                status: 0,
+            }))),
+        }
+    }
+
+    /// SM receives `ApplyEntry` with `Command::Insert` — the handler decoded the proto bytes.
+    #[tokio::test]
+    async fn test_handler_decodes_insert_before_sm_receives_it() {
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk()
+            .withf(|entries| {
+                entries.len() == 1
+                    && matches!(
+                        &entries[0].command,
+                        Command::Insert { key, .. } if key == &Bytes::from_static(b"mykey")
+                    )
+            })
+            .returning(|chunk| Ok(vec![ApplyResult::success(chunk[0].index)]));
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_config(std::path::PathBuf::from("/tmp/test_decode_insert_boundary")),
+            MockSnapshotPolicy::new(),
+        );
+
+        let result = handler.apply_chunk(vec![insert_entry(5, b"mykey", b"myval")]).await;
+        assert!(result.is_ok());
+        assert_eq!(handler.last_applied(), 5);
+    }
+
+    /// Noop entries reach the SM as `Command::Noop` — index continuity is preserved.
+    #[tokio::test]
+    async fn test_handler_noop_reaches_sm_as_command_noop() {
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk()
+            .withf(|entries| entries.len() == 1 && matches!(entries[0].command, Command::Noop))
+            .returning(|chunk| Ok(vec![ApplyResult::success(chunk[0].index)]));
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_config(std::path::PathBuf::from("/tmp/test_decode_noop_boundary")),
+            MockSnapshotPolicy::new(),
+        );
+
+        let result = handler.apply_chunk(vec![noop_entry(3)]).await;
+        assert!(result.is_ok());
+        assert_eq!(handler.last_applied(), 3);
+    }
+
+    /// Config entries become Command::Noop — SM receives a Noop at the config index.
+    /// This ensures sm.last_applied advances to the config index, so ReadIndex drain works.
+    #[tokio::test]
+    async fn test_handler_config_entry_becomes_noop_last_applied_advances() {
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk()
+            .withf(|entries| entries.len() == 1 && matches!(entries[0].command, Command::Noop))
+            .returning(|chunk| Ok(chunk.iter().map(|e| ApplyResult::success(e.index)).collect()));
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_config(std::path::PathBuf::from("/tmp/test_decode_config_boundary")),
+            MockSnapshotPolicy::new(),
+        );
+
+        let result = handler.apply_chunk(vec![config_entry(7)]).await;
+        assert!(result.is_ok());
+        // last_applied must reach 7 — Config was at commit index 7.
+        assert_eq!(handler.last_applied(), 7);
+    }
+
+    /// Mixed batch: noop + config + insert. Config becomes Noop; SM receives 3 entries in order.
+    #[tokio::test]
+    async fn test_handler_mixed_batch_config_becomes_noop_order_preserved() {
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk()
+            .withf(|entries| {
+                entries.len() == 3
+                    && matches!(entries[0].command, Command::Noop)
+                    && matches!(entries[1].command, Command::Noop) // config → noop
+                    && matches!(&entries[2].command, Command::Insert { .. })
+            })
+            .returning(|chunk| Ok(chunk.iter().map(|e| ApplyResult::success(e.index)).collect()));
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_config(std::path::PathBuf::from("/tmp/test_decode_mixed_boundary")),
+            MockSnapshotPolicy::new(),
+        );
+
+        // indices: 10=noop, 11=config(→noop), 12=insert — all 3 forwarded to SM
+        let chunk = vec![
+            noop_entry(10),
+            config_entry(11),
+            insert_entry(12, b"k", b"v"),
+        ];
+        let result = handler.apply_chunk(chunk).await;
+        assert!(result.is_ok());
+        assert_eq!(handler.last_applied(), 12);
     }
 }
 
@@ -1688,35 +1808,22 @@ mod mmap_tests {
 
 #[cfg(feature = "watch")]
 mod broadcast_watch_events_tests {
+    use bytes::Bytes;
+    use d_engine_proto::client::WatchEventType;
+
     use super::*;
+    use crate::{ApplyEntry, ApplyResult, Command};
 
-    use d_engine_proto::{
-        client::{
-            WatchEventType, WriteCommand,
-            write_command::{CompareAndSwap, Delete, Insert, Operation},
-        },
-        common::{EntryPayload, entry_payload::Payload},
-    };
-    use prost::Message;
-
-    use crate::ApplyResult;
-
-    fn create_entry(
+    /// Build an `ApplyEntry` directly from a `Command` — no proto encoding needed.
+    /// `broadcast_watch_events` receives already-decoded entries; tests mirror that reality.
+    fn apply_entry(
         index: u64,
-        operation: Operation,
-    ) -> Entry {
-        let write_cmd = WriteCommand {
-            operation: Some(operation),
-        };
-        let mut buf = Vec::new();
-        write_cmd.encode(&mut buf).unwrap();
-
-        Entry {
+        command: Command,
+    ) -> ApplyEntry {
+        ApplyEntry {
             index,
             term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Command(Bytes::from(buf))),
-            }),
+            command,
         }
     }
 
@@ -1739,20 +1846,20 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
         let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
-        let entry = create_entry(
+        let entry = apply_entry(
             1,
-            Operation::Insert(Insert {
-                key: b"key1".to_vec().into(),
-                value: b"value1".to_vec().into(),
-                ttl_secs: 0,
-            }),
+            Command::Insert {
+                key: Bytes::from_static(b"key1"),
+                value: Bytes::from_static(b"value1"),
+                ttl_secs: None,
+            },
         );
 
         handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event = rx.recv().await.unwrap();
-        assert_eq!(event.key, Bytes::from(&b"key1"[..]));
-        assert_eq!(event.value, Bytes::from(&b"value1"[..]));
+        assert_eq!(event.key, Bytes::from_static(b"key1"));
+        assert_eq!(event.value, Bytes::from_static(b"value1"));
         assert_eq!(event.event_type, WatchEventType::Put as i32);
     }
 
@@ -1761,17 +1868,17 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
         let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
-        let entry = create_entry(
+        let entry = apply_entry(
             1,
-            Operation::Delete(Delete {
-                key: b"key1".to_vec().into(),
-            }),
+            Command::Delete {
+                key: Bytes::from_static(b"key1"),
+            },
         );
 
         handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event = rx.recv().await.unwrap();
-        assert_eq!(event.key, Bytes::from(&b"key1"[..]));
+        assert_eq!(event.key, Bytes::from_static(b"key1"));
         assert_eq!(event.value, Bytes::new());
         assert_eq!(event.event_type, WatchEventType::Delete as i32);
     }
@@ -1782,20 +1889,20 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
         let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
-        let entry = create_entry(
+        let entry = apply_entry(
             1,
-            Operation::CompareAndSwap(CompareAndSwap {
-                key: b"lock".to_vec().into(),
-                expected_value: Some(b"owner1".to_vec().into()),
-                new_value: b"owner2".to_vec().into(),
-            }),
+            Command::CompareAndSwap {
+                key: Bytes::from_static(b"lock"),
+                expected: Some(Bytes::from_static(b"owner1")),
+                value: Bytes::from_static(b"owner2"),
+            },
         );
 
         handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event = rx.recv().await.unwrap();
-        assert_eq!(event.key, Bytes::from(&b"lock"[..]));
-        assert_eq!(event.value, Bytes::from(&b"owner2"[..]));
+        assert_eq!(event.key, Bytes::from_static(b"lock"));
+        assert_eq!(event.value, Bytes::from_static(b"owner2"));
         assert_eq!(event.event_type, WatchEventType::Put as i32);
     }
 
@@ -1805,18 +1912,17 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
         let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
-        let entry = create_entry(
+        let entry = apply_entry(
             1,
-            Operation::CompareAndSwap(CompareAndSwap {
-                key: b"lock".to_vec().into(),
-                expected_value: Some(b"wrong_owner".to_vec().into()),
-                new_value: b"owner2".to_vec().into(),
-            }),
+            Command::CompareAndSwap {
+                key: Bytes::from_static(b"lock"),
+                expected: Some(Bytes::from_static(b"wrong_owner")),
+                value: Bytes::from_static(b"owner2"),
+            },
         );
 
         handler.broadcast_watch_events(&[entry], &[failed(1)], &tx, None);
 
-        // Channel must be empty — no event should have been sent
         assert!(
             rx.try_recv().is_err(),
             "Expected no watch event for failed CAS"
@@ -1830,29 +1936,29 @@ mod broadcast_watch_events_tests {
         let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
         let entries = vec![
-            create_entry(
+            apply_entry(
                 1,
-                Operation::CompareAndSwap(CompareAndSwap {
-                    key: b"k1".to_vec().into(),
-                    expected_value: Some(b"v0".to_vec().into()),
-                    new_value: b"v1".to_vec().into(),
-                }),
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"k1"),
+                    expected: Some(Bytes::from_static(b"v0")),
+                    value: Bytes::from_static(b"v1"),
+                },
             ),
-            create_entry(
+            apply_entry(
                 2,
-                Operation::CompareAndSwap(CompareAndSwap {
-                    key: b"k2".to_vec().into(),
-                    expected_value: Some(b"wrong".to_vec().into()),
-                    new_value: b"v2".to_vec().into(),
-                }),
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"k2"),
+                    expected: Some(Bytes::from_static(b"wrong")),
+                    value: Bytes::from_static(b"v2"),
+                },
             ),
-            create_entry(
+            apply_entry(
                 3,
-                Operation::CompareAndSwap(CompareAndSwap {
-                    key: b"k3".to_vec().into(),
-                    expected_value: None,
-                    new_value: b"v3".to_vec().into(),
-                }),
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"k3"),
+                    expected: None,
+                    value: Bytes::from_static(b"v3"),
+                },
             ),
         ];
         let results = vec![succeeded(1), failed(2), succeeded(3)];
@@ -1861,17 +1967,16 @@ mod broadcast_watch_events_tests {
 
         // k1 succeeded → Put event
         let event1 = rx.recv().await.unwrap();
-        assert_eq!(event1.key, Bytes::from(&b"k1"[..]));
-        assert_eq!(event1.value, Bytes::from(&b"v1"[..]));
+        assert_eq!(event1.key, Bytes::from_static(b"k1"));
+        assert_eq!(event1.value, Bytes::from_static(b"v1"));
         assert_eq!(event1.event_type, WatchEventType::Put as i32);
 
         // k3 succeeded → Put event (k2 failed, skipped)
         let event2 = rx.recv().await.unwrap();
-        assert_eq!(event2.key, Bytes::from(&b"k3"[..]));
-        assert_eq!(event2.value, Bytes::from(&b"v3"[..]));
+        assert_eq!(event2.key, Bytes::from_static(b"k3"));
+        assert_eq!(event2.value, Bytes::from_static(b"v3"));
         assert_eq!(event2.event_type, WatchEventType::Put as i32);
 
-        // No more events
         assert!(rx.try_recv().is_err(), "Expected no further events");
     }
 
@@ -1882,106 +1987,90 @@ mod broadcast_watch_events_tests {
         let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
         let entries = vec![
-            create_entry(
+            apply_entry(
                 1,
-                Operation::Insert(Insert {
-                    key: b"k1".to_vec().into(),
-                    value: b"v1".to_vec().into(),
-                    ttl_secs: 0,
-                }),
+                Command::Insert {
+                    key: Bytes::from_static(b"k1"),
+                    value: Bytes::from_static(b"v1"),
+                    ttl_secs: None,
+                },
             ),
-            create_entry(
+            apply_entry(
                 2,
-                Operation::CompareAndSwap(CompareAndSwap {
-                    key: b"k2".to_vec().into(),
-                    expected_value: Some(b"wrong".to_vec().into()),
-                    new_value: b"v2".to_vec().into(),
-                }),
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"k2"),
+                    expected: Some(Bytes::from_static(b"wrong")),
+                    value: Bytes::from_static(b"v2"),
+                },
             ),
-            create_entry(
+            apply_entry(
                 3,
-                Operation::Delete(Delete {
-                    key: b"k3".to_vec().into(),
-                }),
+                Command::Delete {
+                    key: Bytes::from_static(b"k3"),
+                },
             ),
         ];
         let results = vec![succeeded(1), failed(2), succeeded(3)];
 
         handler.broadcast_watch_events(&entries, &results, &tx, None);
 
-        // Insert event
         let event1 = rx.recv().await.unwrap();
-        assert_eq!(event1.key, Bytes::from(&b"k1"[..]));
+        assert_eq!(event1.key, Bytes::from_static(b"k1"));
         assert_eq!(event1.event_type, WatchEventType::Put as i32);
 
-        // Delete event (failed CAS at index 1 was skipped)
         let event2 = rx.recv().await.unwrap();
-        assert_eq!(event2.key, Bytes::from(&b"k3"[..]));
+        assert_eq!(event2.key, Bytes::from_static(b"k3"));
         assert_eq!(event2.event_type, WatchEventType::Delete as i32);
 
-        // No more events
         assert!(rx.try_recv().is_err(), "Expected no further events");
     }
 
-    // Verifies results[i] aligns with chunk[i] by index position, not by ApplyResult.index
+    // results[i] aligns with chunk[i] by position, not by ApplyResult.index
     #[tokio::test]
     async fn test_broadcast_cas_results_index_alignment() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
         let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
-        // chunk[0] = CAS failed, chunk[1] = CAS succeeded
         let entries = vec![
-            create_entry(
+            apply_entry(
                 10,
-                Operation::CompareAndSwap(CompareAndSwap {
-                    key: b"key-a".to_vec().into(),
-                    expected_value: Some(b"old".to_vec().into()),
-                    new_value: b"new-a".to_vec().into(),
-                }),
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"key-a"),
+                    expected: Some(Bytes::from_static(b"old")),
+                    value: Bytes::from_static(b"new-a"),
+                },
             ),
-            create_entry(
+            apply_entry(
                 11,
-                Operation::CompareAndSwap(CompareAndSwap {
-                    key: b"key-b".to_vec().into(),
-                    expected_value: Some(b"old".to_vec().into()),
-                    new_value: b"new-b".to_vec().into(),
-                }),
+                Command::CompareAndSwap {
+                    key: Bytes::from_static(b"key-b"),
+                    expected: Some(Bytes::from_static(b"old")),
+                    value: Bytes::from_static(b"new-b"),
+                },
             ),
         ];
-        // results[0] = failed (aligns with chunk[0] = key-a)
-        // results[1] = succeeded (aligns with chunk[1] = key-b)
         let results = vec![failed(10), succeeded(11)];
 
         handler.broadcast_watch_events(&entries, &results, &tx, None);
 
-        // Only key-b event should arrive
         let event = rx.recv().await.unwrap();
-        assert_eq!(event.key, Bytes::from(&b"key-b"[..]));
-        assert_eq!(event.value, Bytes::from(&b"new-b"[..]));
+        assert_eq!(event.key, Bytes::from_static(b"key-b"));
+        assert_eq!(event.value, Bytes::from_static(b"new-b"));
         assert_eq!(event.event_type, WatchEventType::Put as i32);
 
         assert!(rx.try_recv().is_err(), "key-a should not emit an event");
     }
 
+    // Noop entries in chunk produce no watch events
     #[tokio::test]
-    async fn test_broadcast_ignores_invalid_entries() {
+    async fn test_broadcast_noop_produces_no_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
+        let handler = create_test_handler(Path::new("/tmp/test_watch_noop"), Some(0));
 
-        let entry = create_entry(
-            1,
-            Operation::Insert(Insert {
-                key: b"key1".to_vec().into(),
-                value: b"value1".to_vec().into(),
-                ttl_secs: 0,
-            }),
-        );
-
+        let entry = apply_entry(1, Command::Noop);
         handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
-        // Should still receive valid event
-        let event = rx.recv().await.unwrap();
-        assert_eq!(event.key, Bytes::from(&b"key1"[..]));
+        assert!(rx.try_recv().is_err(), "Noop must not emit a watch event");
     }
 }
 

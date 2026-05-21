@@ -6,23 +6,17 @@ use std::time::SystemTime;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
+use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
+use d_engine_core::Command;
 use d_engine_core::Error;
 use d_engine_core::Lease;
 use d_engine_core::ScanResult;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::CompareAndSwap;
-use d_engine_proto::client::write_command::Delete;
-use d_engine_proto::client::write_command::Insert;
-use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
-use d_engine_proto::common::entry_payload::Payload;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
-use prost::Message;
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -723,7 +717,7 @@ impl StateMachine for RocksDBStateMachine {
     #[instrument(skip(self, chunk))]
     async fn apply_chunk(
         &self,
-        chunk: Vec<Entry>,
+        chunk: &[ApplyEntry],
     ) -> Result<Vec<ApplyResult>, Error> {
         let db = self.db.load();
         let cf = db
@@ -735,8 +729,6 @@ impl StateMachine for RocksDBStateMachine {
         let mut results = Vec::with_capacity(chunk.len());
 
         for entry in chunk {
-            assert!(entry.payload.is_some(), "Entry payload should not be None!");
-
             if let Some(prev) = highest_index_entry {
                 assert!(
                     entry.index > prev.index,
@@ -750,104 +742,76 @@ impl StateMachine for RocksDBStateMachine {
                 term: entry.term,
             });
 
-            match entry.payload.unwrap().payload {
-                Some(Payload::Noop(_)) => {
+            match &entry.command {
+                Command::Noop => {
                     debug!("Handling NOOP command at index {}", entry.index);
-                    // NOOP always succeeds
                     results.push(ApplyResult::success(entry.index));
                 }
-                Some(Payload::Command(data)) => match WriteCommand::decode(&data[..]) {
-                    Ok(write_cmd) => match write_cmd.operation {
-                        Some(Operation::Insert(Insert {
-                            key,
-                            value,
-                            ttl_secs,
-                        })) => {
-                            batch.put_cf(&cf, &key, &value);
+                Command::Insert {
+                    key,
+                    value,
+                    ttl_secs,
+                } => {
+                    batch.put_cf(&cf, key, value);
 
-                            // Register lease if TTL specified
-                            if ttl_secs > 0 {
-                                // Validate lease is enabled before accepting TTL requests
-                                if !self.lease_enabled {
-                                    return Err(StorageError::FeatureNotEnabled(
-                                        "TTL feature is not enabled on this server. \
-                                         Enable it in config: [raft.state_machine.lease] enabled = true".into()
-                                    ).into());
-                                }
-
-                                // Safety: lease_enabled invariant ensures lease.is_some()
-                                let lease = unsafe { self.lease.as_ref().unwrap_unchecked() };
-                                lease.register(key.clone(), ttl_secs);
-                            }
-
-                            // PUT always succeeds (errors returned as Err)
-                            results.push(ApplyResult::success(entry.index));
+                    if let Some(ttl) = ttl_secs {
+                        if !self.lease_enabled {
+                            return Err(StorageError::FeatureNotEnabled(
+                                "TTL feature is not enabled on this server. \
+                                 Enable it in config: [raft.state_machine.lease] enabled = true"
+                                    .into(),
+                            )
+                            .into());
                         }
-                        Some(Operation::Delete(Delete { key })) => {
-                            batch.delete_cf(&cf, &key);
-
-                            // Unregister TTL for deleted key
-                            if let Some(ref lease) = self.lease {
-                                lease.unregister(&key);
-                            }
-
-                            // DELETE always succeeds (errors returned as Err)
-                            results.push(ApplyResult::success(entry.index));
-                        }
-                        Some(Operation::CompareAndSwap(CompareAndSwap {
-                            key,
-                            expected_value,
-                            new_value,
-                        })) => {
-                            // RocksDB doesn't have native CAS, implement via read-compare-write.
-                            // Read through WriteBatchWithIndex so that earlier CAS writes in the
-                            // same batch are visible, preventing stale-read linearizability violations.
-                            let current_value = batch
-                                .get_from_batch_and_db_cf(&*db, &cf, &key, &ReadOptions::default())
-                                .map_err(|e| {
-                                    StorageError::DbError(format!("CAS read failed: {e}"))
-                                })?;
-
-                            let cas_success = match (current_value, &expected_value) {
-                                (Some(current), Some(expected)) => current == expected.as_ref(),
-                                (None, None) => true,
-                                _ => false,
-                            };
-
-                            if cas_success {
-                                batch.put_cf(&cf, &key, &new_value);
-                            }
-
-                            // Store CAS result for client response
-                            results.push(if cas_success {
-                                ApplyResult::success(entry.index)
-                            } else {
-                                ApplyResult::failure(entry.index)
-                            });
-
-                            debug!(
-                                "CAS at index {}: key={:?}, success={}",
-                                entry.index,
-                                String::from_utf8_lossy(&key),
-                                cas_success
-                            );
-                        }
-                        None => {
-                            warn!("WriteCommand without operation at index {}", entry.index);
-                        }
-                    },
-                    Err(e) => {
-                        error!(
-                            "Failed to decode WriteCommand at index {}: {:?}",
-                            entry.index, e
-                        );
-                        return Err(StorageError::SerializationError(e.to_string()).into());
+                        // Safety: lease_enabled invariant ensures lease.is_some()
+                        let lease = unsafe { self.lease.as_ref().unwrap_unchecked() };
+                        lease.register(key.clone(), *ttl);
                     }
-                },
-                Some(Payload::Config(_config_change)) => {
-                    debug!("Ignoring config change at index {}", entry.index);
+
+                    results.push(ApplyResult::success(entry.index));
                 }
-                None => panic!("Entry payload variant should not be None!"),
+                Command::Delete { key } => {
+                    batch.delete_cf(&cf, key);
+                    if let Some(ref lease) = self.lease {
+                        lease.unregister(key);
+                    }
+                    results.push(ApplyResult::success(entry.index));
+                }
+                Command::CompareAndSwap {
+                    key,
+                    expected,
+                    value: new_value,
+                } => {
+                    // RocksDB doesn't have native CAS; implement via read-compare-write.
+                    // Read through WriteBatchWithIndex so earlier writes in this batch
+                    // are visible, preventing stale-read linearizability violations.
+                    let current_value = batch
+                        .get_from_batch_and_db_cf(&*db, &cf, key, &ReadOptions::default())
+                        .map_err(|e| StorageError::DbError(format!("CAS read failed: {e}")))?;
+
+                    let cas_success = match (current_value, expected) {
+                        (Some(current), Some(exp)) => current == exp.as_ref(),
+                        (None, None) => true,
+                        _ => false,
+                    };
+
+                    if cas_success {
+                        batch.put_cf(&cf, key, new_value);
+                    }
+
+                    results.push(if cas_success {
+                        ApplyResult::success(entry.index)
+                    } else {
+                        ApplyResult::failure(entry.index)
+                    });
+
+                    debug!(
+                        "CAS at index {}: key={:?}, success={}",
+                        entry.index,
+                        String::from_utf8_lossy(key),
+                        cas_success
+                    );
+                }
             }
         }
 
@@ -856,12 +820,6 @@ impl StateMachine for RocksDBStateMachine {
             .write_wbwi(&batch)
             .map_err(|e| StorageError::DbError(e.to_string()))?;
 
-        // Note: Lease cleanup is now handled by:
-        // - Lazy strategy: cleanup in get() method
-        // - Background strategy: dedicated async task
-        // This avoids blocking the Raft apply hot path
-
-        // Update last_applied after successful batch write
         if let Some(highest) = highest_index_entry {
             self.update_last_applied(highest);
         }
