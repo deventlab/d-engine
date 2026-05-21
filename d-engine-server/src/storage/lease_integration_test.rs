@@ -419,21 +419,22 @@ mod file_state_machine_tests {
         }
     }
 
-    /// Test: WAL replay handles incomplete entries gracefully
+    /// WAL replay stops at the first truncated entry and discards the tail.
     ///
-    /// Verifies that if WAL file is corrupted or has incomplete entries (e.g., missing
-    /// expiration field), the system doesn't crash and treats the entry as permanent (no TTL).
+    /// A WAL tail truncation is the expected outcome of a crash mid-write. Per the same
+    /// principle used by etcd and TiKV, replay stops at the first incomplete entry rather
+    /// than continuing with garbage bytes or silently loading a partial entry with wrong TTL.
+    /// Complete entries before the truncation point are applied; the truncated entry and
+    /// anything after it are dropped.
     #[tokio::test]
     async fn test_wal_replay_handles_incomplete_entries() {
         let temp_dir = TempDir::new().unwrap();
         let state_machine_path = temp_dir.path().to_path_buf();
 
-        // Manually create a WAL file with incomplete entry (missing expire_at field)
-        // Format: [op_code(1), term(8), key_len(8), key, value_len(8), value, (missing expire_at)]
         let wal_path = state_machine_path.join("wal.log");
         let mut wal_data = Vec::new();
 
-        // Complete entry first
+        // Complete entry — must survive replay
         wal_data.extend_from_slice(&1u64.to_be_bytes()); // index
         wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
         wal_data.push(1u8); // Insert
@@ -443,7 +444,7 @@ mod file_state_machine_tests {
         wal_data.extend_from_slice(b"value1"); // value
         wal_data.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0 (no TTL)
 
-        // Incomplete entry (missing expire_at field)
+        // Truncated entry: missing expire_at — must be discarded, replay stops here
         wal_data.extend_from_slice(&2u64.to_be_bytes()); // index
         wal_data.extend_from_slice(&1u64.to_be_bytes()); // term
         wal_data.push(1u8); // Insert
@@ -451,20 +452,22 @@ mod file_state_machine_tests {
         wal_data.extend_from_slice(b"incomplete"); // key
         wal_data.extend_from_slice(&6u64.to_be_bytes()); // value_len
         wal_data.extend_from_slice(b"value2"); // value
-        // Missing expire_at field (should be 8 bytes)
+        // expire_at deliberately omitted — simulates crash mid-write
 
         std::fs::write(&wal_path, wal_data).unwrap();
 
-        // Create new state machine instance to trigger WAL replay
+        // Replay must succeed (truncated tail is not a fatal error)
         let sm = FileStateMachine::new(state_machine_path.clone()).await.unwrap();
 
-        // Should have loaded the complete entry
-        let result = sm.get(b"complete").unwrap();
-        assert_eq!(result, Some(Bytes::from("value1")));
+        // Complete entry is applied
+        assert_eq!(sm.get(b"complete").unwrap(), Some(Bytes::from("value1")));
 
-        // Incomplete entry should be loaded as permanent (no TTL) rather than being skipped
-        let result = sm.get(b"incomplete").unwrap();
-        assert_eq!(result, Some(Bytes::from("value2")));
+        // Truncated entry is dropped — replay stopped before applying it
+        assert_eq!(
+            sm.get(b"incomplete").unwrap(),
+            None,
+            "Truncated WAL tail must be discarded, not loaded with assumed TTL"
+        );
     }
 
     /// Test: WAL replay with only expired entries results in empty state
