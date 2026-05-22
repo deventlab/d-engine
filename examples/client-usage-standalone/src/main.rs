@@ -3,7 +3,7 @@ use clap::Parser;
 use clap::Subcommand;
 use d_engine::{
     Client, ClientApi, ClientApiError, ClientBuilder,
-    protocol::{ClientResult, ReadConsistencyPolicy},
+    protocol::{KvEntry, ReadConsistencyPolicy},
 };
 
 #[derive(Parser)]
@@ -93,7 +93,7 @@ async fn handle_read(
         .map_err(|e: ClientApiError| anyhow::anyhow!("Read error: {e:?}"))?;
 
     match result {
-        Some(ClientResult { key: _, value }) => {
+        Some(KvEntry { key: _, value }) => {
             let value = safe_vk(&value).unwrap();
             println!("{value:?}");
         }

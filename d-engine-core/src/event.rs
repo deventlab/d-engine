@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
-use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::client::ClientWriteRequest;
+use crate::client::{ClientReadRequest, ClientResponse, ClientWriteRequest};
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;

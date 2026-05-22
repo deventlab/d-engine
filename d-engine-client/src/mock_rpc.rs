@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use d_engine_core::client::ClientResponse as CoreClientResponse;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
@@ -28,8 +29,8 @@ pub struct MockRpcService {
     // Expected responses for each method
     pub expected_update_cluster_conf_response:
         Option<Result<ClusterConfUpdateResponse, tonic::Status>>,
-    pub expected_client_propose_response: Option<Result<ClientResponse, tonic::Status>>,
-    pub expected_client_read_response: Option<Result<ClientResponse, tonic::Status>>,
+    pub expected_client_propose_response: Option<Result<CoreClientResponse, tonic::Status>>,
+    pub expected_client_read_response: Option<Result<CoreClientResponse, tonic::Status>>,
 
     #[allow(clippy::type_complexity)]
     pub expected_metadata_response:
@@ -60,6 +61,49 @@ impl MockRpcService {
         port: u16,
     ) {
         self.server_port = Some(port);
+    }
+}
+
+/// Convert core `ClientResponse` to the proto wire type for test mock gRPC handlers.
+/// Both `ErrorCode` enums are `#[repr(i32)]` with identical discriminants.
+fn core_to_proto_response(r: CoreClientResponse) -> ClientResponse {
+    use d_engine_core::client::{ClientResponsePayload, WriteResult};
+    use d_engine_proto::client::{
+        ClientResult, ReadResults as ProtoReadResults, WriteResult as ProtoWriteResult,
+        client_response::SuccessResult,
+    };
+    use d_engine_proto::error::ErrorMetadata;
+
+    let error_code = r.error as i32;
+    let metadata = if r.leader_hint.is_some() || r.retry_after_ms.is_some() {
+        Some(ErrorMetadata {
+            retry_after_ms: r.retry_after_ms,
+            leader_id: r.leader_hint.as_ref().map(|h| h.leader_id.to_string()),
+            leader_address: r.leader_hint.map(|h| h.address),
+            debug_message: None,
+        })
+    } else {
+        None
+    };
+    let success_result = r.result.map(|payload| match payload {
+        ClientResponsePayload::Write(WriteResult { succeeded }) => {
+            SuccessResult::WriteResult(ProtoWriteResult { succeeded })
+        }
+        ClientResponsePayload::Read(rd) => SuccessResult::ReadData(ProtoReadResults {
+            results: rd
+                .entries
+                .into_iter()
+                .map(|e| ClientResult {
+                    key: e.key,
+                    value: e.value,
+                })
+                .collect(),
+        }),
+    });
+    ClientResponse {
+        error: error_code,
+        metadata,
+        success_result,
     }
 }
 
@@ -124,7 +168,9 @@ impl RaftClientService for MockRpcService {
         _request: tonic::Request<ClientWriteRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         match &self.expected_client_propose_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Ok(response)) => Ok(tonic::Response::new(core_to_proto_response(
+                response.clone(),
+            ))),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown(
                 "No mock handle_client_write response set",
@@ -137,7 +183,9 @@ impl RaftClientService for MockRpcService {
         _request: tonic::Request<ClientReadRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         match &self.expected_client_read_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Ok(response)) => Ok(tonic::Response::new(core_to_proto_response(
+                response.clone(),
+            ))),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown(
                 "No mock handle_client_read response set",

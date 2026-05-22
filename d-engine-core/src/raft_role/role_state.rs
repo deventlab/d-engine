@@ -1,5 +1,5 @@
+use crate::client::{ClientReadRequest, ClientResponse, KvEntry, LeaderHint};
 use async_trait::async_trait;
-use d_engine_proto::client::ClientResponse;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
@@ -283,7 +283,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         ctx: &RaftContext<Self::T>,
     ) {
         use crate::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
-        use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
+        use crate::config::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
 
         match cmd {
             ClientCmd::Propose(_, sender) => {
@@ -298,10 +298,10 @@ pub trait RaftRoleState: Send + Sync + 'static {
                 // Determine effective read policy, mirroring leader_state logic:
                 // 1. If client specified a policy AND server allows override, use client policy.
                 // 2. Otherwise (no policy, or override disabled), use server default.
-                let effective_policy = if req.has_consistency_policy()
+                let effective_policy = if let Some(ref policy) = req.consistency_policy
                     && ctx.node_config().raft.read_consistency.allow_client_override
                 {
-                    match req.consistency_policy() {
+                    match policy {
                         ClientReadConsistencyPolicy::EventualConsistency => {
                             ServerReadConsistencyPolicy::EventualConsistency
                         }
@@ -337,16 +337,12 @@ pub trait RaftRoleState: Send + Sync + 'static {
     /// May return stale data but provides best read performance and availability.
     fn process_eventual_read_local(
         &self,
-        req: d_engine_proto::client::ClientReadRequest,
-        sender: crate::MaybeCloneOneshotSender<
-            std::result::Result<d_engine_proto::client::ClientResponse, tonic::Status>,
-        >,
+        req: ClientReadRequest,
+        sender: crate::MaybeCloneOneshotSender<std::result::Result<ClientResponse, tonic::Status>>,
         ctx: &RaftContext<Self::T>,
     ) {
-        use d_engine_proto::client::ClientResponse;
-
         // Read directly from local state machine without any consistency checks
-        let results = ctx
+        let results: Vec<KvEntry> = ctx
             .state_machine_handler()
             .read_from_state_machine(req.keys)
             .unwrap_or_default();
@@ -431,15 +427,15 @@ pub trait RaftRoleState: Send + Sync + 'static {
             let leader_node = members.iter().find(|n| n.id == lid);
 
             if let Some(leader) = leader_node {
-                return ClientResponse::not_leader(
-                    Some(lid.to_string()),
-                    Some(leader.address.clone()),
-                );
+                return ClientResponse::not_leader(Some(LeaderHint {
+                    leader_id: lid,
+                    address: leader.address.clone(),
+                }));
             }
         }
 
         // No leader info available, return basic NOT_LEADER error
-        ClientResponse::not_leader(None, None)
+        ClientResponse::not_leader(None)
     }
 
     /// When a Follower receives an AppendEntries request, it performs the following logic (as

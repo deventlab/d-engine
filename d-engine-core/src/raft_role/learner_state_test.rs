@@ -8,6 +8,12 @@ use crate::NewCommitData;
 use crate::RaftEvent;
 use crate::RaftOneshot;
 use crate::RoleEvent;
+use crate::client::ClientReadRequest;
+use crate::client::ClientResponsePayload;
+use crate::client::ClientWriteRequest;
+use crate::client::KvEntry;
+use crate::client::WriteOperation;
+use crate::config::ReadConsistencyPolicy;
 use crate::raft_role::learner_state::LearnerState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::create_test_snapshot_stream;
@@ -15,7 +21,6 @@ use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::mock_raft_context_with_temp;
 use crate::test_utils::node_config;
-use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
 use d_engine_proto::common::NodeStatus;
@@ -474,9 +479,11 @@ async fn test_learner_rejects_client_write_request() {
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Propose(
-        d_engine_proto::client::ClientWriteRequest {
+        ClientWriteRequest {
             client_id: 1,
-            command: Some(WriteCommand::default()),
+            command: Some(WriteOperation::Delete {
+                key: bytes::Bytes::new(),
+            }),
         },
         resp_tx,
     );
@@ -508,7 +515,7 @@ async fn test_learner_rejects_client_read_request() {
 
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
-    let client_read_request = d_engine_proto::client::ClientReadRequest {
+    let client_read_request = ClientReadRequest {
         client_id: 1,
         consistency_policy: None,
         keys: vec![],
@@ -1463,7 +1470,7 @@ async fn test_learner_serves_eventual_read_locally() {
         .times(1)
         .withf(|keys| keys.len() == 1 && keys[0] == "eventual_key")
         .returning(|_| {
-            Some(vec![d_engine_proto::client::ClientResult {
+            Some(vec![KvEntry {
                 key: bytes::Bytes::from("eventual_key"),
                 value: bytes::Bytes::from("eventual_value"),
             }])
@@ -1474,12 +1481,10 @@ async fn test_learner_serves_eventual_read_locally() {
 
     // Send EventualConsistency read request
     let (response_tx, mut response_rx) = MaybeCloneOneshot::new();
-    let read_req = d_engine_proto::client::ClientReadRequest {
+    let read_req = ClientReadRequest {
         client_id: 1,
         keys: vec![bytes::Bytes::from("eventual_key")],
-        consistency_policy: Some(
-            d_engine_proto::client::ReadConsistencyPolicy::EventualConsistency as i32,
-        ),
+        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency),
     };
 
     let start = tokio::time::Instant::now();
@@ -1504,18 +1509,16 @@ async fn test_learner_serves_eventual_read_locally() {
     if let Ok(response) = result {
         match response {
             Ok(read_response) => {
-                // Check success_result for ReadResults
-                match read_response.success_result {
-                    Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
-                        read_data,
-                    )) => {
-                        assert!(!read_data.results.is_empty(), "Should have read results");
+                // Check result for ReadResults
+                match read_response.result {
+                    Some(ClientResponsePayload::Read(read_data)) => {
+                        assert!(!read_data.entries.is_empty(), "Should have read results");
                         assert_eq!(
-                            read_data.results[0].value,
+                            read_data.entries[0].value,
                             bytes::Bytes::from("eventual_value")
                         );
                     }
-                    other => panic!("Expected ReadData variant, got: {other:?}"),
+                    other => panic!("Expected Read variant, got: {other:?}"),
                 }
             }
             Err(e) => {

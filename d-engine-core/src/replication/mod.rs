@@ -15,8 +15,8 @@ pub mod replication_handler_test;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::client::ClientResponse;
 use async_trait::async_trait;
-use d_engine_proto::client::ClientResponse;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::server::replication::AppendEntriesRequest;

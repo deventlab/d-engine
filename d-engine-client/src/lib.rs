@@ -73,8 +73,8 @@ mod utils;
 
 pub use builder::*;
 pub use config::*;
+pub use d_engine_core::client::ErrorCode;
 pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
-pub use d_engine_proto::error::ErrorCode;
 pub use grpc_client::*;
 pub(crate) use pool::*;
 
@@ -83,12 +83,12 @@ pub(crate) use pool::*;
 /// Protocol types needed for client operations
 ///
 /// These types are used in the public API and must be imported for client usage:
-/// - `ClientResult`: Response type from read operations
+/// - `KvEntry`: Key-value pair returned by read operations
 /// - `ReadConsistencyPolicy`: Consistency guarantees for reads
 /// - `WriteCommand`: Write operation specifications
 pub mod protocol {
-    pub use d_engine_proto::client::ClientResult;
-    pub use d_engine_proto::client::ReadConsistencyPolicy;
+    pub use d_engine_core::client::KvEntry;
+    pub use d_engine_core::config::ReadConsistencyPolicy;
     pub use d_engine_proto::client::WatchEventType;
     pub use d_engine_proto::client::WatchRequest;
     pub use d_engine_proto::client::WatchResponse;

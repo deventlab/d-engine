@@ -1,11 +1,11 @@
+use crate::client::ClientReadRequest;
+use crate::client::ClientWriteRequest;
+use crate::client::ErrorCode;
+use crate::client::WriteOperation;
+use crate::config::ReadConsistencyPolicy;
 use crate::test_utils::create_test_snapshot_stream;
-use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::client::ClientWriteRequest;
-use d_engine_proto::client::ReadConsistencyPolicy;
-use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
-use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::ClusterMembership;
@@ -1106,7 +1106,9 @@ async fn test_handle_client_write_request_redirects_to_leader() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
-            command: Some(WriteCommand::default()),
+            command: Some(WriteOperation::Delete {
+                key: bytes::Bytes::new(),
+            }),
         },
         resp_tx,
     );
@@ -1173,7 +1175,7 @@ async fn test_handle_client_read_request_linearizable_redirects_to_leader() {
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         keys: vec![],
     };
 
@@ -1226,7 +1228,7 @@ async fn test_handle_client_read_request_eventual_consistency_succeeds() {
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency),
         keys: vec![],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1239,7 +1241,7 @@ async fn test_handle_client_read_request_eventual_consistency_succeeds() {
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(
         response.error,
-        ErrorCode::Success as i32,
+        ErrorCode::Success,
         "EventualConsistency read should succeed on follower"
     );
 }
@@ -1761,8 +1763,8 @@ mod handle_client_read_request {
     use super::*;
     use crate::RaftNodeConfig;
     use crate::config::ReadConsistencyPolicy as ServerPolicy;
+    use crate::config::ReadConsistencyPolicy as ClientPolicy;
     use crate::convert::safe_kv_bytes;
-    use d_engine_proto::client::ReadConsistencyPolicy as ClientPolicy;
 
     /// Test: Follower rejects LeaseRead policy
     ///
@@ -1791,7 +1793,7 @@ mod handle_client_read_request {
 
         let client_read_request = ClientReadRequest {
             client_id: 1,
-            consistency_policy: Some(ClientPolicy::LeaseRead as i32),
+            consistency_policy: Some(ClientPolicy::LeaseRead),
             keys: vec![safe_kv_bytes(1)],
         };
 
@@ -1899,7 +1901,7 @@ mod handle_client_read_request {
         let response = resp_rx.recv().await.unwrap().unwrap();
         assert_eq!(
             response.error,
-            ErrorCode::Success as i32,
+            ErrorCode::Success,
             "EventualConsistency read should succeed on follower"
         );
     }
@@ -1937,7 +1939,7 @@ mod handle_client_read_request {
         // Client requests LinearizableRead but server will ignore it
         let client_read_request = ClientReadRequest {
             client_id: 1,
-            consistency_policy: Some(ClientPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ClientPolicy::LinearizableRead),
             keys: vec![safe_kv_bytes(1)],
         };
 
@@ -1950,7 +1952,7 @@ mod handle_client_read_request {
         let response = resp_rx.recv().await.unwrap().unwrap();
         assert_eq!(
             response.error,
-            ErrorCode::Success as i32,
+            ErrorCode::Success,
             "Follower should serve read using server default EventualConsistency, ignoring client LinearizableRead"
         );
     }
@@ -1988,7 +1990,7 @@ mod handle_client_read_request {
         // Client requests EventualConsistency but server will ignore it
         let client_read_request = ClientReadRequest {
             client_id: 1,
-            consistency_policy: Some(ClientPolicy::EventualConsistency as i32),
+            consistency_policy: Some(ClientPolicy::EventualConsistency),
             keys: vec![safe_kv_bytes(1)],
         };
 
@@ -2286,7 +2288,7 @@ async fn test_follower_rejects_strong_consistency_reads() {
         let read_req = ClientReadRequest {
             client_id: 1,
             keys: vec![bytes::Bytes::from("lease_key")],
-            consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
         };
 
         let start = tokio::time::Instant::now();
@@ -2326,7 +2328,7 @@ async fn test_follower_rejects_strong_consistency_reads() {
         let read_req = ClientReadRequest {
             client_id: 1,
             keys: vec![bytes::Bytes::from("linear_key")],
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         };
 
         let start = tokio::time::Instant::now();

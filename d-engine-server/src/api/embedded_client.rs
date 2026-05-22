@@ -25,13 +25,11 @@ use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
 use d_engine_core::ScanResult;
-use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
-use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::client::ClientWriteRequest;
-use d_engine_proto::client::ReadConsistencyPolicy;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::common::LeaderHint;
-use d_engine_proto::error::ErrorCode;
+use d_engine_core::client::{
+    ClientApi, ClientApiError, ClientApiResult, ClientReadRequest, ClientResponsePayload,
+    ClientWriteRequest, ErrorCode, LeaderHint, WriteOperation,
+};
+use d_engine_core::config::ReadConsistencyPolicy;
 use tokio::sync::mpsc;
 
 #[cfg(feature = "watch")]
@@ -134,21 +132,20 @@ impl EmbeddedClient {
         self
     }
 
-    /// Map ErrorCode and ErrorMetadata to ClientApiError
     fn map_error_response(
-        error_code: i32,
-        metadata: Option<d_engine_proto::error::ErrorMetadata>,
+        error: ErrorCode,
+        leader_hint: Option<LeaderHint>,
     ) -> ClientApiError {
-        match ErrorCode::try_from(error_code) {
-            Ok(ErrorCode::NotLeader) => {
-                let (leader_id, leader_address) = if let Some(meta) = metadata {
-                    (meta.leader_id, meta.leader_address)
+        match error {
+            ErrorCode::NotLeader => {
+                let (leader_id, leader_address) = if let Some(hint) = leader_hint {
+                    (Some(hint.leader_id.to_string()), Some(hint.address))
                 } else {
                     (None, None)
                 };
                 not_leader_error(leader_id, leader_address)
             }
-            _ => server_error(format!("Error code: {error_code}")),
+            _ => server_error(format!("Error code: {error:?}")),
         }
     }
 
@@ -162,14 +159,13 @@ impl EmbeddedClient {
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> ClientApiResult<()> {
-        let command = WriteCommand::insert(
-            Bytes::copy_from_slice(key.as_ref()),
-            Bytes::copy_from_slice(value.as_ref()),
-        );
-
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(command),
+            command: Some(WriteOperation::Insert {
+                key: Bytes::copy_from_slice(key.as_ref()),
+                value: Bytes::copy_from_slice(value.as_ref()),
+                ttl_secs: None,
+            }),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -187,8 +183,11 @@ impl EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+            ));
         }
 
         Ok(())
@@ -270,7 +269,7 @@ impl EmbeddedClient {
         let request = ClientReadRequest {
             client_id: self.client_id,
             keys: vec![Bytes::copy_from_slice(key.as_ref())],
-            consistency_policy: Some(consistency as i32),
+            consistency_policy: Some(consistency),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -288,17 +287,16 @@ impl EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+            ));
         }
 
-        match response.success_result {
-            Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
-                read_results,
-            )) => {
-                // If results list is empty, key doesn't exist
-                // Otherwise, return the value (even if empty bytes)
-                Ok(read_results.results.first().map(|r| r.value.clone()))
+        match response.result {
+            Some(ClientResponsePayload::Read(read_results)) => {
+                Ok(read_results.entries.first().map(|e| e.value.clone()))
             }
             _ => Ok(None),
         }
@@ -347,7 +345,7 @@ impl EmbeddedClient {
         let request = ClientReadRequest {
             client_id: self.client_id,
             keys: keys.to_vec(),
-            consistency_policy: Some(consistency as i32),
+            consistency_policy: Some(consistency),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -365,19 +363,20 @@ impl EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+            ));
         }
 
-        match response.success_result {
-            Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
-                read_results,
-            )) => {
+        match response.result {
+            Some(ClientResponsePayload::Read(read_results)) => {
                 // Reconstruct result vector in requested key order.
                 // Server only returns results for keys that exist, so we must
                 // map by key to preserve positional correspondence with input.
                 let results_by_key: std::collections::HashMap<_, _> =
-                    read_results.results.into_iter().map(|r| (r.key, r.value)).collect();
+                    read_results.entries.into_iter().map(|e| (e.key, e.value)).collect();
 
                 Ok(keys.iter().map(|k| results_by_key.get(k).cloned()).collect())
             }
@@ -394,11 +393,11 @@ impl EmbeddedClient {
         &self,
         key: impl AsRef<[u8]>,
     ) -> ClientApiResult<()> {
-        let command = WriteCommand::delete(Bytes::copy_from_slice(key.as_ref()));
-
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(command),
+            command: Some(WriteOperation::Delete {
+                key: Bytes::copy_from_slice(key.as_ref()),
+            }),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -416,8 +415,11 @@ impl EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+            ));
         }
 
         Ok(())
@@ -682,15 +684,13 @@ impl ClientApi for EmbeddedClient {
         value: impl AsRef<[u8]> + Send,
         ttl_secs: u64,
     ) -> ClientApiResult<()> {
-        let command = WriteCommand::insert_with_ttl(
-            Bytes::copy_from_slice(key.as_ref()),
-            Bytes::copy_from_slice(value.as_ref()),
-            ttl_secs,
-        );
-
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(command),
+            command: Some(WriteOperation::Insert {
+                key: Bytes::copy_from_slice(key.as_ref()),
+                value: Bytes::copy_from_slice(value.as_ref()),
+                ttl_secs: Some(ttl_secs),
+            }),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -708,8 +708,11 @@ impl ClientApi for EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+            ));
         }
 
         Ok(())
@@ -742,15 +745,13 @@ impl ClientApi for EmbeddedClient {
         expected_value: Option<impl AsRef<[u8]> + Send>,
         new_value: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<bool> {
-        let command = WriteCommand::compare_and_swap(
-            Bytes::copy_from_slice(key.as_ref()),
-            expected_value.map(|v| Bytes::copy_from_slice(v.as_ref())),
-            Bytes::copy_from_slice(new_value.as_ref()),
-        );
-
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(command),
+            command: Some(WriteOperation::CompareAndSwap {
+                key: Bytes::copy_from_slice(key.as_ref()),
+                expected: expected_value.map(|v| Bytes::copy_from_slice(v.as_ref())),
+                new_value: Bytes::copy_from_slice(new_value.as_ref()),
+            }),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -768,14 +769,15 @@ impl ClientApi for EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+            ));
         }
 
-        match response.success_result {
-            Some(d_engine_proto::client::client_response::SuccessResult::WriteResult(result)) => {
-                Ok(result.succeeded)
-            }
+        match response.result {
+            Some(ClientResponsePayload::Write(result)) => Ok(result.succeeded),
             _ => Err(server_error("Invalid CAS response".to_string())),
         }
     }
@@ -795,11 +797,12 @@ impl ClientApi for EmbeddedClient {
     async fn get_multi_with_policy(
         &self,
         keys: &[Bytes],
-        consistency_policy: Option<ReadConsistencyPolicy>,
+        consistency_policy: Option<d_engine_core::config::ReadConsistencyPolicy>,
     ) -> ClientApiResult<Vec<Option<Bytes>>> {
         self.get_multi_with_consistency(
             keys,
-            consistency_policy.unwrap_or(ReadConsistencyPolicy::LinearizableRead),
+            consistency_policy
+                .unwrap_or(d_engine_core::config::ReadConsistencyPolicy::LinearizableRead),
         )
         .await
     }

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use d_engine_proto::error::ErrorCode;
+use d_engine_core::client::ErrorCode;
 use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::MetadataRequest;
 use d_engine_proto::server::cluster::NodeMeta;

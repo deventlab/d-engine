@@ -4,9 +4,9 @@ use crate::MockBuilder;
 use crate::RaftOneshot;
 use crate::RaftRole;
 use crate::RoleEvent;
+use crate::client::ClientWriteRequest;
+use crate::client::WriteOperation;
 use crate::raft_role::role_state::RaftRoleState;
-use d_engine_proto::client::ClientWriteRequest;
-use d_engine_proto::client::WriteCommand;
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -68,18 +68,13 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
             let (response_tx, response_rx) = MaybeCloneOneshot::new();
             response_receivers.push(response_rx);
 
-            let write_cmd = WriteCommand {
-                operation: Some(d_engine_proto::client::write_command::Operation::Insert(
-                    d_engine_proto::client::write_command::Insert {
-                        key: bytes::Bytes::from(format!("key_{i}")),
-                        value: bytes::Bytes::from(format!("value_{i}")),
-                        ttl_secs: 0,
-                    },
-                )),
-            };
             let write_req = ClientWriteRequest {
                 client_id: 1,
-                command: Some(write_cmd),
+                command: Some(WriteOperation::Insert {
+                    key: bytes::Bytes::from(format!("key_{i}")),
+                    value: bytes::Bytes::from(format!("value_{i}")),
+                    ttl_secs: None,
+                }),
             };
 
             let cmd = ClientCmd::Propose(write_req, response_tx);
@@ -154,18 +149,13 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
     // Verify: New Follower rejects subsequent writes
     if let RaftRole::Follower(ref mut follower) = raft.role {
         let (response_tx, mut response_rx) = MaybeCloneOneshot::new();
-        let write_cmd = WriteCommand {
-            operation: Some(d_engine_proto::client::write_command::Operation::Insert(
-                d_engine_proto::client::write_command::Insert {
-                    key: bytes::Bytes::from("new_key"),
-                    value: bytes::Bytes::from("new_value"),
-                    ttl_secs: 0,
-                },
-            )),
-        };
         let write_req = ClientWriteRequest {
             client_id: 1,
-            command: Some(write_cmd),
+            command: Some(WriteOperation::Insert {
+                key: bytes::Bytes::from("new_key"),
+                value: bytes::Bytes::from("new_value"),
+                ttl_secs: None,
+            }),
         };
 
         let cmd = ClientCmd::Propose(write_req, response_tx);

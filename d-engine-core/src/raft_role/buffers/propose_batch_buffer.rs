@@ -23,7 +23,7 @@
 use rand::distr::SampleString;
 use std::sync::Arc;
 
-use d_engine_proto::client::ClientResponse;
+use crate::client::ClientResponse;
 use d_engine_proto::common::EntryPayload;
 use tokio::time::Instant;
 use tonic::Status;

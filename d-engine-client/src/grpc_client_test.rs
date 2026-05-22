@@ -5,12 +5,12 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use d_engine_core::ClientApi;
 use d_engine_core::client::ClientApiResult;
-use d_engine_proto::client::ClientResponse;
-use d_engine_proto::client::ClientResult;
-use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_core::client::ClientResponse;
+use d_engine_core::client::ErrorCode;
+use d_engine_core::client::KvEntry;
+use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_proto::client::WatchEventType;
 use d_engine_proto::client::WatchResponse;
-use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterMembership;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
@@ -219,7 +219,7 @@ async fn test_get_success() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: key.clone(),
             value: value.clone(),
         }]),
@@ -369,7 +369,7 @@ async fn test_get_multi_success_linear() {
     // Create a single response containing all key-value pairs
     let mut client_results = Vec::new();
     for (i, key) in keys.iter().enumerate() {
-        client_results.push(ClientResult {
+        client_results.push(KvEntry {
             key: key.clone(),
             value: values[i].clone(),
         });
@@ -438,7 +438,7 @@ async fn test_get_multi_success_non_linear() {
     // Create a single response containing all key-value pairs
     let mut client_results = Vec::new();
     for (i, key) in keys.iter().enumerate() {
-        client_results.push(ClientResult {
+        client_results.push(KvEntry {
             key: key.clone(),
             value: match &values[i] {
                 Some(value) => value.clone(),
@@ -580,7 +580,7 @@ async fn test_get_linearizable_success() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: key.clone(),
             value: value.clone(),
         }]),
@@ -618,7 +618,7 @@ async fn test_get_lease_success() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: key.clone(),
             value: value.clone(),
         }]),
@@ -656,7 +656,7 @@ async fn test_get_eventual_success() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: key.clone(),
             value: value.clone(),
         }]),
@@ -699,7 +699,7 @@ async fn test_get_multi_success() {
 
     let mut client_results = Vec::new();
     for (i, key) in keys.iter().enumerate() {
-        client_results.push(ClientResult {
+        client_results.push(KvEntry {
             key: key.clone(),
             value: values[i].clone(),
         });
@@ -752,11 +752,11 @@ async fn test_get_multi_with_mixed_results() {
 
     // Only key1 and key3 exist, key2 is missing
     let client_results = vec![
-        ClientResult {
+        KvEntry {
             key: keys[0].clone(),
             value: Bytes::from("value1".to_string()),
         },
-        ClientResult {
+        KvEntry {
             key: keys[2].clone(),
             value: Bytes::from("value3".to_string()),
         },
@@ -882,7 +882,7 @@ async fn test_client_refresh_with_new_endpoints() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: Bytes::from("key1"),
             value: Bytes::from("value1"),
         }]),
@@ -920,7 +920,7 @@ async fn test_client_refresh_with_new_endpoints() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: Bytes::from("key2"),
             value: Bytes::from("value2"),
         }]),
@@ -951,7 +951,7 @@ async fn test_client_refresh_with_none_endpoints() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: Bytes::from("key1"),
             value: Bytes::from("value1"),
         }]),
@@ -1003,7 +1003,7 @@ async fn test_client_refresh_with_multiple_endpoints() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: Bytes::from("key1"),
             value: Bytes::from("value1"),
         }]),
@@ -1017,7 +1017,7 @@ async fn test_client_refresh_with_multiple_endpoints() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: Bytes::from("key2"),
             value: Bytes::from("value2"),
         }]),
@@ -1077,7 +1077,7 @@ async fn test_client_refresh_failure_invalid_endpoints() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: Bytes::from("key1"),
             value: Bytes::from("value1"),
         }]),
@@ -1134,7 +1134,7 @@ async fn test_client_refresh_preserves_kv_and_cluster_clients() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: Bytes::from("key1"),
             value: Bytes::from("value1"),
         }]),
@@ -1168,7 +1168,7 @@ async fn test_client_refresh_preserves_kv_and_cluster_clients() {
         None::<
             Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
         >,
-        ClientResponse::read_results(vec![ClientResult {
+        ClientResponse::read_results(vec![KvEntry {
             key: Bytes::from("key2"),
             value: Bytes::from("value2"),
         }]),
@@ -1737,4 +1737,92 @@ mod scan_tests {
         assert_eq!(result.revision, 3);
         assert!(result.entries.is_empty());
     }
+}
+
+// ─── Type boundary tests: get_with_policy / get_multi_with_policy must return KvEntry ──────
+
+#[tokio::test]
+#[traced_test]
+async fn test_get_with_policy_returns_native_kv_entry() {
+    let key = Bytes::from("kv_key");
+    let value = Bytes::from("kv_value");
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (_channel, port) = MockNode::simulate_client_read_mock_server(
+        rx,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+        ClientResponse::read_results(vec![KvEntry {
+            key: key.clone(),
+            value: value.clone(),
+        }]),
+    )
+    .await
+    .unwrap();
+
+    let endpoints = vec![format!("http://localhost:{}", port)];
+    let config = ClientConfig::default();
+    let pool = ConnectionPool::create(endpoints.clone(), config.clone()).await.unwrap();
+    let client = GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+        pool,
+        client_id: 1,
+        config,
+        endpoints,
+    })));
+
+    // Explicit type annotation: return type must be KvEntry, not proto::ClientResult
+    let entry: Option<KvEntry> = client
+        .get_with_policy(key.clone(), Some(ReadConsistencyPolicy::LinearizableRead))
+        .await
+        .unwrap();
+
+    assert_eq!(entry, Some(KvEntry { key, value }));
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_get_multi_with_policy_returns_native_kv_entries() {
+    let k1 = Bytes::from("mk1");
+    let v1 = Bytes::from("mv1");
+    let k2 = Bytes::from("mk2");
+    let v2 = Bytes::from("mv2");
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (_channel, port) = MockNode::simulate_client_read_mock_server(
+        rx,
+        None::<
+            Box<dyn Fn(u16) -> std::result::Result<ClusterMembership, tonic::Status> + Send + Sync>,
+        >,
+        ClientResponse::read_results(vec![
+            KvEntry {
+                key: k1.clone(),
+                value: v1.clone(),
+            },
+            KvEntry {
+                key: k2.clone(),
+                value: v2.clone(),
+            },
+        ]),
+    )
+    .await
+    .unwrap();
+
+    let endpoints = vec![format!("http://localhost:{}", port)];
+    let config = ClientConfig::default();
+    let pool = ConnectionPool::create(endpoints.clone(), config.clone()).await.unwrap();
+    let client = GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+        pool,
+        client_id: 1,
+        config,
+        endpoints,
+    })));
+
+    // Explicit type annotation: must be Vec<Option<KvEntry>>, not Vec<Option<ClientResult>>
+    let results: Vec<Option<KvEntry>> = client
+        .get_multi_with_policy(vec![k1.clone(), k2.clone()].into_iter(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], Some(KvEntry { key: k1, value: v1 }));
+    assert_eq!(results[1], Some(KvEntry { key: k2, value: v2 }));
 }

@@ -41,12 +41,11 @@ use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::TROF;
+use crate::client::{ClientReadRequest, ClientResponse, ErrorCode};
 use crate::event::ClientCmd;
 use crate::network::Transport;
 use crate::stream::create_production_snapshot_stream;
 use async_trait::async_trait;
-use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::client::ClientResponse;
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::BatchPromote;
 use d_engine_proto::common::BatchRemove;
@@ -55,7 +54,6 @@ use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::common::membership_change::Change;
-use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::JoinRequest;
 use d_engine_proto::server::cluster::JoinResponse;
@@ -945,7 +943,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                 // Convert command to payload (will be merged in drain_batch)
                 if let Some(cmd) = req.command {
-                    let payload = client_command_to_entry_payloads(vec![cmd])
+                    let payload = client_command_to_entry_payloads(vec![write_op_to_proto(cmd)])
                         .into_iter()
                         .next()
                         .expect("client_command_to_entry_payloads should return 1 element");
@@ -3862,12 +3860,12 @@ impl<T: TypeConfig> LeaderState<T> {
         &self,
         req: &ClientReadRequest,
     ) -> ServerReadConsistencyPolicy {
-        use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
+        use crate::config::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
 
-        if req.has_consistency_policy() {
+        if let Some(policy) = &req.consistency_policy {
             // Client explicitly specified policy
             if self.node_config.raft.read_consistency.allow_client_override {
-                match req.consistency_policy() {
+                match policy {
                     ClientReadConsistencyPolicy::LeaseRead => {
                         ServerReadConsistencyPolicy::LeaseRead
                     }
@@ -4061,5 +4059,44 @@ pub fn calculate_safe_batch_size(
         // We can only promote (available - 1) to keep the invariant
         // But if available - 1 == 0, then we cannot promote any?
         available.saturating_sub(1)
+    }
+}
+
+// Serialize a native WriteOperation to a proto WriteCommand for Raft log encoding.
+// Proto bytes in the log must remain stable; this conversion is the only place
+// that touches prost types on the write path.
+#[inline]
+pub(crate) fn write_op_to_proto(
+    op: crate::client::WriteOperation
+) -> d_engine_proto::client::WriteCommand {
+    use crate::client::WriteOperation;
+    use d_engine_proto::client::WriteCommand;
+    use d_engine_proto::client::write_command::{CompareAndSwap, Delete, Insert, Operation};
+    match op {
+        WriteOperation::Insert {
+            key,
+            value,
+            ttl_secs,
+        } => WriteCommand {
+            operation: Some(Operation::Insert(Insert {
+                key,
+                value,
+                ttl_secs: ttl_secs.unwrap_or(0),
+            })),
+        },
+        WriteOperation::Delete { key } => WriteCommand {
+            operation: Some(Operation::Delete(Delete { key })),
+        },
+        WriteOperation::CompareAndSwap {
+            key,
+            expected,
+            new_value,
+        } => WriteCommand {
+            operation: Some(Operation::CompareAndSwap(CompareAndSwap {
+                key,
+                expected_value: expected,
+                new_value,
+            })),
+        },
     }
 }

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::client::ClientWriteRequest;
-use d_engine_proto::client::ReadConsistencyPolicy;
-use d_engine_proto::client::WriteCommand;
+use crate::client::ClientReadRequest;
+use crate::client::ClientWriteRequest;
+use crate::client::ErrorCode;
+use crate::client::WriteOperation;
+use crate::config::ReadConsistencyPolicy;
 use d_engine_proto::common::LogId;
-use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::ClusterMembership;
@@ -849,7 +849,9 @@ async fn test_handle_client_write_returns_not_leader() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
-            command: Some(WriteCommand::default()),
+            command: Some(WriteOperation::Delete {
+                key: bytes::Bytes::new(),
+            }),
         },
         resp_tx,
     );
@@ -1072,7 +1074,7 @@ mod handle_client_read_request {
         let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
         let client_read_request = ClientReadRequest {
             client_id: 1,
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
             keys: vec![],
         };
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1108,7 +1110,7 @@ mod handle_client_read_request {
 
         let client_read_request = ClientReadRequest {
             client_id: 1,
-            consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency),
             keys: vec![],
         };
         let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1117,7 +1119,7 @@ mod handle_client_read_request {
         state.push_client_cmd(cmd, &context);
 
         let response = resp_rx.recv().await.unwrap().unwrap();
-        assert_eq!(response.error, ErrorCode::Success as i32);
+        assert_eq!(response.error, ErrorCode::Success);
     }
 }
 
@@ -1248,18 +1250,13 @@ async fn test_new_leader_initializes_empty_buffers() {
     // Send first write request to new Leader
     if let crate::RaftRole::Leader(ref mut leader) = raft.role {
         let (response_tx, _response_rx) = crate::MaybeCloneOneshot::new();
-        let write_cmd = d_engine_proto::client::WriteCommand {
-            operation: Some(d_engine_proto::client::write_command::Operation::Insert(
-                d_engine_proto::client::write_command::Insert {
-                    key: bytes::Bytes::from("first_key"),
-                    value: bytes::Bytes::from("first_value"),
-                    ttl_secs: 0,
-                },
-            )),
-        };
-        let write_req = d_engine_proto::client::ClientWriteRequest {
+        let write_req = ClientWriteRequest {
             client_id: 1,
-            command: Some(write_cmd),
+            command: Some(WriteOperation::Insert {
+                key: bytes::Bytes::from("first_key"),
+                value: bytes::Bytes::from("first_value"),
+                ttl_secs: None,
+            }),
         };
 
         let cmd = crate::ClientCmd::Propose(write_req, response_tx);

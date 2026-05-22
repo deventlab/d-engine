@@ -1,7 +1,7 @@
+use d_engine_core::client::ErrorCode;
+use d_engine_core::client::KvEntry;
 use d_engine_proto::client::ClientResponse;
-use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::client_response::SuccessResult;
-use d_engine_proto::error::ErrorCode;
 use tracing::error;
 
 use crate::ClientApiError;
@@ -19,13 +19,17 @@ pub trait ClientResponseExt {
     ///
     /// # Returns
     /// Vector of optional key-value pairs wrapped in Result
-    fn into_read_results(self) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError>;
+    fn into_read_results(self) -> std::result::Result<Vec<Option<KvEntry>>, ClientApiError>;
 
     /// Validate error code in response header
     ///
     /// # Internal Logic
     /// Converts numeric error code to enum variant
     fn validate_error(&self) -> std::result::Result<(), ClientApiError>;
+
+    /// Returns true if this is a successful write with `succeeded = true`.
+    #[allow(dead_code)]
+    fn is_write_success(&self) -> bool;
 }
 
 impl ClientResponseExt for ClientResponse {
@@ -49,7 +53,7 @@ impl ClientResponseExt for ClientResponse {
                     "Unexpected response type for write operation: expected WriteResult, found {found}"
                 );
                 Err(ClientApiError::Protocol {
-                    code: d_engine_proto::error::ErrorCode::InvalidResponse,
+                    code: ErrorCode::InvalidResponse,
                     message: format!(
                         "Unexpected response type: expected WriteResult, found {found}"
                     ),
@@ -63,7 +67,7 @@ impl ClientResponseExt for ClientResponse {
     ///
     /// # Returns
     /// Vector of optional key-value pairs wrapped in Result
-    fn into_read_results(self) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
+    fn into_read_results(self) -> std::result::Result<Vec<Option<KvEntry>>, ClientApiError> {
         self.validate_error()?;
         match &self.success_result {
             Some(SuccessResult::ReadData(data)) => data
@@ -71,7 +75,7 @@ impl ClientResponseExt for ClientResponse {
                 .clone()
                 .into_iter()
                 .map(|item| {
-                    Ok(Some(ClientResult {
+                    Ok(Some(KvEntry {
                         key: item.key,
                         value: item.value,
                     }))
@@ -88,7 +92,7 @@ impl ClientResponseExt for ClientResponse {
                     found
                 );
                 Err(ClientApiError::Protocol {
-                    code: d_engine_proto::error::ErrorCode::InvalidResponse,
+                    code: ErrorCode::InvalidResponse,
                     message: format!("Unexpected response type: expected ReadData, found {found}",),
                     supported_versions: None,
                 })
@@ -105,5 +109,10 @@ impl ClientResponseExt for ClientResponse {
             ErrorCode::Success => Ok(()),
             e => Err(e.into()),
         }
+    }
+
+    fn is_write_success(&self) -> bool {
+        self.error == ErrorCode::Success as i32
+            && matches!(&self.success_result, Some(SuccessResult::WriteResult(w)) if w.succeeded)
     }
 }

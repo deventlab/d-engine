@@ -1,4 +1,4 @@
-use d_engine_proto::error::ErrorCode;
+use d_engine_core::client::ErrorCode;
 use tonic::Code;
 use tonic::Status;
 

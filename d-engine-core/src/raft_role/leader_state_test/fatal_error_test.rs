@@ -10,12 +10,12 @@ use crate::MockTypeConfig;
 use crate::RaftEvent;
 use crate::ReadConsistencyPolicy;
 use crate::RoleEvent;
+use crate::client::ClientReadRequest;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use bytes::Bytes;
-use d_engine_proto::client::ClientReadRequest;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tonic::Code;
@@ -145,7 +145,7 @@ async fn test_fatal_error_drains_all_pending_queues() {
     let lin_req = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"k1")],
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
     };
     leader.push_client_cmd(ClientCmd::Read(lin_req, lin_tx), &ctx);
     assert_eq!(
@@ -159,7 +159,7 @@ async fn test_fatal_error_drains_all_pending_queues() {
     let lease_req = ClientReadRequest {
         client_id: 2,
         keys: vec![Bytes::from_static(b"k2")],
-        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
     };
     leader.test_update_lease_timestamp();
     leader.push_client_cmd(ClientCmd::Read(lease_req, lease_tx), &ctx);
@@ -174,7 +174,7 @@ async fn test_fatal_error_drains_all_pending_queues() {
     let ev_req = ClientReadRequest {
         client_id: 3,
         keys: vec![Bytes::from_static(b"k3")],
-        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency),
     };
     leader.push_client_cmd(ClientCmd::Read(ev_req, ev_tx), &ctx);
     assert_eq!(

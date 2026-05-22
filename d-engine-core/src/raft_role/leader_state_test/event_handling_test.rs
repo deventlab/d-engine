@@ -3,7 +3,7 @@
 //! This module tests the `handle_raft_event` method for various Raft events
 //! including vote requests, append entries, client operations, and more.
 
-use d_engine_proto::client::WriteCommand;
+use crate::client::WriteOperation;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tonic::Code;
@@ -14,7 +14,9 @@ use crate::Error;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
+use crate::client::{ClientReadRequest, ClientWriteRequest};
 use crate::config::RaftNodeConfig;
+use crate::config::ReadConsistencyPolicy;
 use crate::event::RaftEvent;
 use crate::event::{NewCommitData, RoleEvent};
 use crate::maybe_clone_oneshot::RaftOneshot;
@@ -24,8 +26,6 @@ use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
 use crate::test_utils::{create_test_chunk, create_test_snapshot_stream};
 use crate::utils::convert::safe_kv_bytes;
-use d_engine_proto::client::ReadConsistencyPolicy;
-use d_engine_proto::client::{ClientReadRequest, ClientWriteRequest};
 use d_engine_proto::server::cluster::{
     ClusterConfChangeRequest, ClusterMembership, MetadataRequest,
 };
@@ -519,7 +519,9 @@ async fn test_handle_client_propose_success() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
-            command: Some(WriteCommand::default()),
+            command: Some(WriteOperation::Delete {
+                key: bytes::Bytes::new(),
+            }),
         },
         resp_tx,
     );
@@ -576,7 +578,7 @@ async fn test_handle_client_read_linearizable_failure() {
     let client_read_request = ClientReadRequest {
         client_id: 1,
         keys,
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
@@ -666,7 +668,7 @@ async fn test_handle_client_read_linearizable_success() {
     let keys = vec![safe_kv_bytes(1)];
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         keys,
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
@@ -756,7 +758,7 @@ async fn test_handle_client_read_encounters_higher_term() {
     let keys = vec![safe_kv_bytes(1)];
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         keys,
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
@@ -896,12 +898,10 @@ async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(
-        d_engine_proto::client::ClientReadRequest {
+        ClientReadRequest {
             client_id: 1,
             keys: vec![safe_kv_bytes(1)],
-            consistency_policy: Some(
-                d_engine_proto::client::ReadConsistencyPolicy::LinearizableRead as i32,
-            ),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         },
         resp_tx,
     );
