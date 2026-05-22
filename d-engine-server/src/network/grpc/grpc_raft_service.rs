@@ -412,8 +412,12 @@ where
 
         let request_future = async move {
             let proto_req: ClientWriteRequest = request.into_inner();
-            if proto_req.command.is_none() {
-                return Err(Status::invalid_argument("Command cannot be empty"));
+            let operation_present =
+                proto_req.command.as_ref().and_then(|c| c.operation.as_ref()).is_some();
+            if !operation_present {
+                return Err(Status::invalid_argument(
+                    "WriteCommand must contain an operation",
+                ));
             }
             let core_req = proto_convert::to_core_write_req(proto_req);
 

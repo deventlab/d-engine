@@ -4,9 +4,37 @@ use super::types::*;
 
 // ─── ErrorCode ────────────────────────────────────────────────────────────────
 
-/// Every ErrorCode variant must be reachable via an exhaustive match.
-/// If a variant is added to proto without being added here, this test catches it
-/// (because the proto ↔ core conversion will fail to compile).
+/// Compile-time exhaustiveness guard: adding a new ErrorCode variant without
+/// updating this match is a compile error, not a runtime surprise.
+#[allow(dead_code)]
+fn _assert_error_code_match_is_exhaustive(code: ErrorCode) {
+    match code {
+        ErrorCode::Success => {}
+        ErrorCode::ConnectionTimeout => {}
+        ErrorCode::InvalidAddress => {}
+        ErrorCode::LeaderChanged => {}
+        ErrorCode::JoinError => {}
+        ErrorCode::InvalidResponse => {}
+        ErrorCode::VersionMismatch => {}
+        ErrorCode::DiskFull => {}
+        ErrorCode::DataCorruption => {}
+        ErrorCode::StorageIoError => {}
+        ErrorCode::StoragePermissionDenied => {}
+        ErrorCode::KeyNotExist => {}
+        ErrorCode::NotLeader => {}
+        ErrorCode::StaleOperation => {}
+        ErrorCode::InvalidRequest => {}
+        ErrorCode::RateLimited => {}
+        ErrorCode::ClusterUnavailable => {}
+        ErrorCode::ProposeFailed => {}
+        ErrorCode::TermOutdated => {}
+        ErrorCode::RetryRequired => {}
+        ErrorCode::WatchBufferOverflow => {}
+        ErrorCode::General => {}
+        ErrorCode::Uncategorized => {}
+    }
+}
+
 #[test]
 fn test_error_code_all_variants_are_exhaustive() {
     let codes = [
@@ -34,7 +62,6 @@ fn test_error_code_all_variants_are_exhaustive() {
         ErrorCode::General,
         ErrorCode::Uncategorized,
     ];
-    // 23 variants total — if the count changes, update this assertion and the proto .proto file
     assert_eq!(codes.len(), 23);
 }
 

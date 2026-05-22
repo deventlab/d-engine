@@ -31,9 +31,9 @@ use d_engine_proto::error::{ErrorCode as ProtoErrorCode, ErrorMetadata};
 
 /// Convert a proto `WriteCommand` to a core `WriteOperation`.
 ///
-/// Callers **must** validate that the command is non-empty before calling this
-/// (i.e. `wc.operation.is_some()`).  An empty operation is a server-side bug,
-/// not a client error, and will panic.
+/// Panics if `wc.operation` is `None`.  Callers must validate the nested
+/// operation field before calling — the gRPC handler does this at the network
+/// boundary via an explicit `invalid_argument` check.
 #[inline]
 pub(crate) fn write_command_to_op(wc: proto_client::WriteCommand) -> WriteOperation {
     match wc.operation {
