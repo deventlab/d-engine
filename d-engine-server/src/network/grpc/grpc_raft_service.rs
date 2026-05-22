@@ -458,7 +458,16 @@ where
             return Err(Status::unavailable("Service is not ready"));
         }
 
-        let core_req = proto_convert::to_core_read_req(request.into_inner());
+        let proto_req = request.into_inner();
+        if let Some(raw) = proto_req.consistency_policy
+            && d_engine_proto::client::ReadConsistencyPolicy::try_from(raw).is_err()
+        {
+            warn!(
+                raw_value = raw,
+                "Unknown consistency_policy value received, degrading to cluster default"
+            );
+        }
+        let core_req = proto_convert::to_core_read_req(proto_req);
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.cmd_tx
             .send(d_engine_core::ClientCmd::Read(core_req, resp_tx))
