@@ -217,4 +217,5 @@ make start-cluster
 
 Historical benchmark reports are available for reference:
 
+- [v0.2.4 Benchmark Report](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4/bench_report_v0.2.4.md) (Embedded & Standalone, AWS EC2 c5.2xlarge 3-node, May 2026)
 - [v0.2.3 Benchmark Report](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.3/bench_report_v0.2.3.md) (Embedded & Standalone)

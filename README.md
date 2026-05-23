@@ -24,6 +24,7 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 
 ## New in v0.2.4 🎉
 
+- **Linearizable Read Lease Fast Path**: Reads served locally when leader holds a valid lease — no consensus round-trip required. Combined with the async IO pipeline, linearizable read throughput reaches **327K ops/sec** on AWS EC2 3-node.
 - **Async IO Architecture**: Raft event loop is fully non-blocking — WAL writes, state machine apply, and replication all run off the hot path. AppendEntries uses a persistent bidirectional stream per peer; replication is pipelined across followers.
 - **Cluster Membership Streaming**: `EmbeddedEngine::watch_membership()` / `GrpcClient::watch_membership()` — subscribe to real-time membership changes in both embedded and standalone modes
 - **Simpler Startup**: `EmbeddedEngine::start(data_dir)` and `StandaloneEngine::run(data_dir, shutdown_rx)` — no config file required for common cases
@@ -83,7 +84,7 @@ d-engine = "0.2"
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
-> **Performance**: AWS EC2 3-node cluster — **64K writes/sec**, **181K linearizable reads/sec**, sub-millisecond latency. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4) for details.
+> **Performance**: AWS EC2 3-node cluster — **110K writes/sec**, **327K linearizable reads/sec**, sub-millisecond latency. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4) for details.
 
 **→ Examples:**
 
@@ -101,7 +102,7 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 **Use when**: Application and d-engine run as separate processes  
 **Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
 
-> **Performance**: 36K writes/sec, 51K linearizable reads/sec via gRPC. For maximum throughput, embedded mode is 1.8× faster on writes and 3.5× on reads. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4).
+> **Performance**: 59K writes/sec, 77K linearizable reads/sec via gRPC. For maximum throughput, embedded mode is 1.9× faster on writes and 4.2× on reads. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4).
 
 **→ Example:** [Quick Start Standalone (Go client)](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-standalone)
 

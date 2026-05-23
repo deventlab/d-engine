@@ -4,9 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [v0.2.4] - TBD
+## [v0.2.4] - 2026-05-23
 
 ### Added
+
+- **Linearizable read lease fast path** (#390): When the leader holds a valid lease, `LinearizableRead` is served locally without a consensus round-trip. Raft lease clock fixed from `SystemTime` (wall-clock drift) to `Instant` (monotonic).
+
+- **Watch: `prev_kv` + progress heartbeat** (#379): `WatchEvent.prev_kv` carries the pre-change value. Idle streams receive periodic `WatchEventType::Progress` events to confirm liveness without a key change.
+
+- **`scan_prefix` API** (#378): `ClientApi::scan_prefix(prefix)` returns all KV pairs matching a prefix in a single read — intended for zero-race-window state re-sync after watch reconnection.
 
 - **Async IO architecture — pipeline replication** (#334, #341, #342, #343, #345, #349, #350, #351):
   The Raft event loop is now fully non-blocking under write load
@@ -71,6 +77,8 @@ All notable changes to this project will be documented in this file.
   - `TrySendError::Closed` (receiver dropped) is now handled separately — silent cleanup, no CANCELED sent
   - Proto: added `WATCH_EVENT_TYPE_CANCELED = 2` and `ErrorCode::WATCH_BUFFER_OVERFLOW = 5001`
 
+- **fix(read) #381**: Linearizable reads in multi-voter clusters now require quorum before serving. Previously a partitioned leader could serve stale reads.
+
 - **fix(cas) #371**: CAS operations in the same `apply_chunk` no longer read stale values
   - Root cause: batch apply used a plain `ReadOptions` snapshot taken before the batch started; concurrent CAS ops targeting the same key within one chunk would overwrite each other
   - Fixed with `WriteBatchWithIndex` — each CAS op in a batch reads its own preceding writes
@@ -78,6 +86,8 @@ All notable changes to this project will be documented in this file.
 - **fix(client) #323**: `ClientApi` trait is now correctly exposed in embedded mode without the `client` feature flag
 
 ### Changed
+
+- **`StateMachine::apply_chunk` signature** (#388): parameter changed from `Vec<Entry>` to `&[ApplyEntry]`. Custom state machine implementors must update their `impl`. `ApplyEntry` carries the decoded key/value/TTL directly — no proto parsing needed.
 
 - No runtime behavior change for existing deployments — `unified_db` defaults to `false`
 

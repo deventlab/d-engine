@@ -335,6 +335,22 @@ persistence_strategy = "MemFirst"
 
 ---
 
+## 🚨 For v0.2.3 Users: `StateMachine::apply_chunk` Signature Change (#388)
+
+If you implemented a **custom `StateMachine`**, update `apply_chunk`:
+
+```rust
+// Old (v0.2.3)
+fn apply_chunk(&mut self, entries: Vec<Entry>) -> Result<(), ...>
+
+// New (v0.2.4) — slice of ApplyEntry (decoded key/value/TTL)
+fn apply_chunk(&mut self, entries: &[ApplyEntry]) -> Result<(), ...>
+```
+
+`ApplyEntry` carries decoded fields directly — no proto parsing needed in your impl.
+
+---
+
 ## 🚨 For v0.2.3 Users: API Surface Changes in v0.2.4 (#326)
 
 ### What Changed
