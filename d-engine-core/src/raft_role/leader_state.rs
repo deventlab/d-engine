@@ -73,9 +73,9 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -420,9 +420,10 @@ pub struct LeaderState<T: TypeConfig> {
     /// Queue of learners that have caught up and are pending promotion to voter.
     pub pending_promotions: VecDeque<PendingPromotion>,
 
-    /// Lease timestamp for LeaseRead policy
-    /// Tracks when leadership was last confirmed with quorum
-    pub(super) lease_timestamp: AtomicU64,
+    /// Monotonic instant of the last quorum ACK, used to check lease validity.
+    /// `None` until the first ACK; replaced on every subsequent quorum confirmation.
+    /// Must be `Instant` (not `SystemTime`) — wall clock can move backward under NTP.
+    pub(super) lease_instant: Mutex<Option<Instant>>,
 
     // -- Cluster Topology Cache --
     /// Cached cluster metadata (updated on membership changes)
@@ -3117,7 +3118,7 @@ impl<T: TypeConfig> LeaderState<T> {
             snapshot_in_progress: AtomicBool::new(false),
             stale_check_deadline: None,
             pending_promotions: VecDeque::new(),
-            lease_timestamp: AtomicU64::new(0),
+            lease_instant: Mutex::new(None),
             linearizable_read_buffer: Box::new(BatchBuffer::new(batch_size).with_length_gauge(
                 node_id,
                 "linearizable",
@@ -3450,19 +3451,25 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Phase 3: route linearizable reads.
         //
-        // single_voter: self IS the quorum. Serve immediately when SM is ready;
-        // otherwise fall through to the queue (slow path, SM catching up).
+        // single_voter: self IS the quorum. Serve immediately when SM is ready.
         //
-        // multi_voter: quorum confirmation is required (Raft §8 step 2).
-        // Always queue — even when last_applied >= read_index — so the read is
-        // only served after a quorum ACK arrives via handle_append_result (Path A)
-        // or after a new commit drives SM apply via handle_apply_completed (Path B).
-        // Serving immediately here without a network round-trip would violate
-        // linearizability when the leader is in a minority partition (Bug #381).
+        // multi_voter, lease valid: is_lease_valid() proves no higher-term leader
+        // exists (Raft §6.4 — majority ACKed within lease_duration_ms).
+        // last_applied >= read_index proves SM is current. Serve without RTT.
+        // Config validation enforces lease_duration < election_timeout, making
+        // "lease valid" and "new leader elected" mutually exclusive on the timeline.
+        //
+        // multi_voter, lease expired: quorum confirmation required (Raft §8 step 2).
+        // Queue the read; drain via Path A (handle_append_result quorum ACK) or
+        // Path B (handle_apply_completed when a concurrent write commits). An expired
+        // lease signals potential minority partition — serving here would violate
+        // linearizability (Bug #381).
         if let Some(read_batch) = read_batch {
             let read_index = self.calculate_read_index();
             let last_applied = ctx.state_machine().last_applied().index;
-            if self.cluster_metadata.single_voter && last_applied >= read_index {
+            if (self.cluster_metadata.single_voter || self.is_lease_valid(ctx))
+                && last_applied >= read_index
+            {
                 self.execute_pending_reads(read_batch, ctx);
             } else {
                 let deadline = Instant::now()
@@ -3702,40 +3709,25 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    /// Check if current lease is still valid for LeaseRead policy
+    /// Returns true if the leader's lease is still within its validity window.
+    ///
+    /// Uses a monotonic `Instant` so NTP clock adjustments cannot extend the lease.
+    /// Returns false if no quorum ACK has been received yet (lease_instant is None).
     pub fn is_lease_valid(
         &self,
         ctx: &RaftContext<T>,
     ) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
-        let last_confirmed = self.lease_timestamp.load(std::sync::atomic::Ordering::Acquire);
-        let lease_duration = ctx.node_config().raft.read_consistency.lease_duration_ms;
-
-        if now < last_confirmed {
-            // Clock moved backwards: system clock issue, treat lease as invalid
-            error!("Clock moved backwards: Now {now}, Last Confirmed {last_confirmed}");
-            return false;
+        let lease_duration_ms = ctx.node_config().raft.read_consistency.lease_duration_ms;
+        match *self.lease_instant.lock().expect("lease_instant poisoned") {
+            Some(t) => (t.elapsed().as_millis() as u64) < lease_duration_ms,
+            None => false,
         }
-
-        // Allow multiple requests within the same millisecond (now == last_confirmed)
-        if now == last_confirmed {
-            return true;
-        }
-        (now - last_confirmed) < lease_duration
     }
 
-    /// Update lease timestamp after successful leadership verification
+    /// Records the current monotonic instant as the last quorum-confirmed timestamp.
+    /// Called after every quorum ACK (handle_append_result, handle_log_flushed).
     fn update_lease_timestamp(&self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
-        self.lease_timestamp.store(now, std::sync::atomic::Ordering::Release);
+        *self.lease_instant.lock().expect("lease_instant poisoned") = Some(Instant::now());
     }
 
     /// Unified write + linearizable read: single RPC for both (2*RTT → 1*RTT).
@@ -4003,7 +3995,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
                 total_voters: 0,
                 replication_targets: vec![],
             },
-            lease_timestamp: AtomicU64::new(0),
+            lease_instant: Mutex::new(None),
             linearizable_read_buffer: Box::new(
                 BatchBuffer::new(candidate.node_config.raft.batching.max_batch_size)
                     .with_length_gauge(

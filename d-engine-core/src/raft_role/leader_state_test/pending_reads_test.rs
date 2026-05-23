@@ -534,3 +534,202 @@ async fn test_pending_reads_cleared_on_stepdown() {
         );
     }
 }
+
+// ============================================================================
+// N1 — Lease fast path: valid lease + SM current → serve immediately (#390)
+// ============================================================================
+
+/// A multi-voter leader with a valid lease and an up-to-date state machine must
+/// serve a LinearizableRead directly in Phase 3 without queuing or AppendEntries RTT.
+///
+/// ## Background
+/// #390 adds a lease fast path: when `is_lease_valid()` is true and
+/// `last_applied >= read_index`, the leader can safely serve the read inline.
+/// `is_lease_valid()` proves no higher-term leader exists (Raft §6.4);
+/// `last_applied >= read_index` proves the state machine is current.
+/// Config validation enforces `lease_duration < election_timeout`, making
+/// "lease valid" and "new leader elected" mutually exclusive on the timeline.
+///
+/// ## Setup
+/// - 3-voter cluster (leader=1, peers=2,3)
+/// - Lease is valid: `test_update_lease_timestamp()` called immediately before flush
+/// - `commit_index=0`, `noop_log_id=Some(0)` → `read_index=0`
+/// - `last_applied=0` → `last_applied(0) >= read_index(0)` satisfied
+///
+/// ## Expected behavior
+/// Phase 3 takes the lease fast path: `execute_pending_reads` is called inline.
+/// `pending_reads` is empty after flush; client receives a successful response.
+#[tokio::test]
+#[traced_test]
+async fn test_linearizable_read_served_immediately_with_valid_lease_in_multi_voter() {
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+
+    let (mut state, context, role_tx, _role_rx) = setup_multi_voter(
+        "/tmp/test_linearizable_read_served_immediately_with_valid_lease_in_multi_voter",
+        replication,
+        raft_log_no_quorum(),
+        0, // last_applied = 0
+    )
+    .await;
+
+    state.noop_log_id = Some(0); // read_index = max(commit_index=0, noop=0) = 0
+
+    // Refresh the lease immediately before the flush — simulates steady-state
+    // operation where the leader received a quorum ACK within lease_duration_ms.
+    state.test_update_lease_timestamp();
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(linear_read_cmd(resp_tx), &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush must succeed");
+
+    // Fast path taken: read must NOT be queued.
+    assert_eq!(
+        state.pending_reads.len(),
+        0,
+        "valid lease + SM current: read must be served inline, not queued"
+    );
+
+    // Client must receive a response immediately (no quorum round-trip needed).
+    let result = resp_rx.try_recv();
+    assert!(
+        result.is_ok(),
+        "client must receive a response immediately via lease fast path"
+    );
+    assert!(
+        result.unwrap().is_ok(),
+        "lease fast path response must be Ok"
+    );
+}
+
+// ============================================================================
+// N2 — Lease fast path: SM behind → queue despite valid lease (#390)
+// ============================================================================
+
+/// A multi-voter leader with a valid lease must still queue a LinearizableRead
+/// when `last_applied < read_index` — the state machine has not yet applied all
+/// entries up to the read's consistency point.
+///
+/// ## Why this matters
+/// `is_lease_valid()` alone is not sufficient to serve the read safely.
+/// The additional `last_applied >= read_index` guard ensures the state machine
+/// reflects all committed entries at the time of the read.  Skipping this check
+/// would return stale data even with a valid lease.
+///
+/// ## Setup
+/// - 3-voter cluster, valid lease
+/// - `noop_log_id = Some(5)` → `read_index = 5`
+/// - `last_applied = 0` → `last_applied(0) < read_index(5)` → SM is behind
+///
+/// ## Expected behavior
+/// The lease fast path condition is not fully satisfied.  The read is queued in
+/// `pending_reads[5]` and will be drained once the SM applies up to index 5
+/// (Path B) or a quorum ACK arrives (Path A).
+#[tokio::test]
+#[traced_test]
+async fn test_linearizable_read_queued_when_sm_behind_despite_valid_lease() {
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+
+    let (mut state, context, role_tx, _role_rx) = setup_multi_voter(
+        "/tmp/test_linearizable_read_queued_when_sm_behind_despite_valid_lease",
+        replication,
+        raft_log_no_quorum(),
+        0, // last_applied = 0 — SM is behind
+    )
+    .await;
+
+    // read_index = max(commit_index=0, noop=5) = 5; last_applied = 0 < 5
+    state.noop_log_id = Some(5);
+
+    // Lease is valid — but SM is behind, so the fast path must not trigger.
+    state.test_update_lease_timestamp();
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(linear_read_cmd(resp_tx), &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush must succeed");
+
+    // SM not caught up: read must be queued regardless of lease validity.
+    assert_eq!(
+        state.pending_reads.len(),
+        1,
+        "read must be queued when last_applied < read_index even with a valid lease"
+    );
+    assert!(
+        resp_rx.try_recv().is_err(),
+        "client must not receive a response before SM catches up"
+    );
+}
+
+// ============================================================================
+// N3 — Protocol safety: expired lease → slow path, no stale read (#390)
+// ============================================================================
+
+/// A multi-voter leader with an expired (or never-set) lease must NOT serve a
+/// LinearizableRead via the lease fast path, even when `last_applied >= read_index`.
+///
+/// ## Protocol safety argument
+/// The lease fast path requires `is_lease_valid()` as leadership proof (Raft §6.4).
+/// Without a valid lease, the leader may be in a minority partition: it cannot
+/// renew its lease because majority ACKs stopped arriving. Serving the read inline
+/// here would violate linearizability (the same bug that #381 fixed for the
+/// original code path).
+///
+/// The safety invariant is enforced by the timeline constraint:
+///   `lease_duration < election_timeout - max_clock_drift`
+/// When the lease has expired, a new leader *may* already exist and have committed
+/// new entries unknown to this node.  The read must wait for explicit quorum
+/// confirmation (Path A or B) before being served.
+///
+/// ## Setup
+/// - 3-voter cluster, lease never refreshed (default: expired / None)
+/// - `last_applied=0 >= read_index=0` — the fast-path condition for `last_applied`
+///   is satisfied, but `is_lease_valid()` is false
+///
+/// ## Expected behavior
+/// The lease fast path is NOT taken.  The read is queued in `pending_reads` and
+/// will only be served after quorum confirmation arrives.
+#[tokio::test]
+#[traced_test]
+async fn test_linearizable_read_not_served_when_lease_expired_in_multi_voter() {
+    let mut replication = MockReplicationCore::new();
+    replication
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+
+    let (mut state, context, role_tx, _role_rx) = setup_multi_voter(
+        "/tmp/test_linearizable_read_not_served_when_lease_expired_in_multi_voter",
+        replication,
+        raft_log_no_quorum(),
+        0, // last_applied = 0
+    )
+    .await;
+
+    // read_index = 0, last_applied = 0 → the `last_applied >= read_index` condition
+    // is satisfied, but no lease has been set — is_lease_valid() returns false.
+    state.noop_log_id = Some(0);
+    // Intentionally do NOT call test_update_lease_timestamp() — simulates a
+    // partitioned leader that has not received a majority ACK recently.
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    state.push_client_cmd(linear_read_cmd(resp_tx), &context);
+    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush must succeed");
+
+    // Expired lease → slow path: read must be queued, not served inline.
+    assert_eq!(
+        state.pending_reads.len(),
+        1,
+        "expired lease must not trigger fast path: read must be queued for quorum confirmation"
+    );
+    assert!(
+        resp_rx.try_recv().is_err(),
+        "client must not receive a response when lease is expired (partition safety)"
+    );
+}
