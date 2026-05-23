@@ -546,7 +546,7 @@ async fn test_put_with_ttl_readable_immediately() {
 /// LeaseRead should behave identically to LinearizableRead.
 #[tokio::test]
 async fn test_get_with_consistency_lease_read() {
-    use d_engine_proto::client::ReadConsistencyPolicy;
+    use d_engine_core::config::ReadConsistencyPolicy;
 
     let (engine, _temp_dir) = create_test_engine("lease_read").await;
     let client = engine.client();

@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use d_engine_proto::error::ErrorCode;
+use crate::client::types::ErrorCode;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::task::JoinError;
@@ -97,8 +97,7 @@ pub enum ClientApiError {
 // pub enum GeneralErrorType {
 //     General,
 // }
-// Re-export LeaderHint from proto (network layer use)
-pub use d_engine_proto::common::LeaderHint;
+pub use crate::client::types::LeaderHint;
 impl From<tonic::transport::Error> for ClientApiError {
     /// Converts a tonic transport error into a ClientApiError
     ///

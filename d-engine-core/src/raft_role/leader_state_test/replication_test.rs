@@ -21,13 +21,13 @@ use crate::{MaybeCloneOneshot, PeerUpdate};
 
 use crate::RaftRequestWithSignal;
 
+use crate::client::ClientResponse;
 use crate::event::RoleEvent;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
-use d_engine_proto::client::ClientResponse;
 use d_engine_proto::common::{EntryPayload, LogId, NodeRole::Follower, NodeStatus};
 use d_engine_proto::server::cluster::{ClusterMembership, NodeMeta};
 use d_engine_proto::server::replication::append_entries_response;

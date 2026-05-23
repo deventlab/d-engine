@@ -93,6 +93,11 @@
 
 // ==================== Core Public API ====================
 
+/// Proto ↔ core type conversions — the single place that bridges gRPC and core types.
+mod proto_convert;
+#[cfg(test)]
+mod proto_convert_test;
+
 /// Node lifecycle management
 ///
 /// Contains [`Node`] and [`NodeBuilder`] for server setup.
@@ -137,6 +142,10 @@ pub use d_engine_core::ProstError;
 pub use d_engine_core::SnapshotError;
 // -------------------- Client API --------------------
 pub use api::EmbeddedClient;
+/// Error code discriminator returned by [`ClientApiError::code()`].
+/// Use this to pattern-match error categories without inspecting message strings:
+/// `e.code() == ErrorCode::NotLeader`
+pub use d_engine_core::client::ErrorCode;
 /// Unified client operations trait (put/get/delete/CAS/watch).
 /// Re-exported here so embedded-mode users don't need a separate d-engine-client dependency.
 pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
@@ -144,10 +153,6 @@ pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
 ///
 /// Implement this trait to create your own storage engine.
 pub use d_engine_core::{StateMachine, StorageEngine};
-/// Error code discriminator returned by [`ClientApiError::code()`].
-/// Use this to pattern-match error categories without inspecting message strings:
-/// `e.code() == ErrorCode::NotLeader`
-pub use d_engine_proto::error::ErrorCode;
 pub use node::Node;
 pub use node::NodeBuilder;
 // Re-export storage implementations

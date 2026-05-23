@@ -59,6 +59,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::Node;
+use crate::proto_convert;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>
@@ -410,19 +411,25 @@ where
         let cmd_tx = self.cmd_tx.clone();
 
         let request_future = async move {
-            let req: ClientWriteRequest = request.into_inner();
-            // Extract request and validate
-            if req.command.is_none() {
-                return Err(Status::invalid_argument("Command cannot be empty"));
+            let proto_req: ClientWriteRequest = request.into_inner();
+            let operation_present =
+                proto_req.command.as_ref().and_then(|c| c.operation.as_ref()).is_some();
+            if !operation_present {
+                return Err(Status::invalid_argument(
+                    "WriteCommand must contain an operation",
+                ));
             }
+            let core_req = proto_convert::to_core_write_req(proto_req);
 
             let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
             cmd_tx
-                .send(d_engine_core::ClientCmd::Propose(req, resp_tx))
+                .send(d_engine_core::ClientCmd::Propose(core_req, resp_tx))
                 .await
                 .map_err(|_| Status::internal("Command channel closed"))?;
 
-            handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_write").await
+            handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_write")
+                .await
+                .map(|resp| resp.map(proto_convert::to_proto_response))
         };
 
         let cancellation_future = async move {
@@ -451,18 +458,27 @@ where
             return Err(Status::unavailable("Service is not ready"));
         }
 
+        let proto_req = request.into_inner();
+        if let Some(raw) = proto_req.consistency_policy
+            && d_engine_proto::client::ReadConsistencyPolicy::try_from(raw).is_err()
+        {
+            warn!(
+                raw_value = raw,
+                "Unknown consistency_policy value received, degrading to cluster default"
+            );
+        }
+        let core_req = proto_convert::to_core_read_req(proto_req);
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.cmd_tx
-            .send(d_engine_core::ClientCmd::Read(
-                request.into_inner(),
-                resp_tx,
-            ))
+            .send(d_engine_core::ClientCmd::Read(core_req, resp_tx))
             .await
             .map_err(|_| Status::internal("Command channel closed"))?;
 
         let timeout_duration =
             Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
-        handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read").await
+        handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read")
+            .await
+            .map(|resp| resp.map(proto_convert::to_proto_response))
     }
 
     /// Scan all keys under a prefix.

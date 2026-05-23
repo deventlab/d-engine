@@ -3,18 +3,18 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use d_engine_core::ScanResult;
+use d_engine_core::client::ErrorCode;
+use d_engine_core::client::KvEntry;
+use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::MembershipSnapshot;
-use d_engine_proto::client::ReadConsistencyPolicy;
 use d_engine_proto::client::ScanRequest;
 use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WatchRequest;
 use d_engine_proto::client::WatchResponse;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::raft_client_service_client::RaftClientServiceClient;
-use d_engine_proto::error::ErrorCode;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -56,7 +56,7 @@ impl GrpcClient {
         &self,
         key: impl AsRef<[u8]>,
         consistency_policy: Option<ReadConsistencyPolicy>,
-    ) -> std::result::Result<Option<ClientResult>, ClientApiError> {
+    ) -> std::result::Result<Option<KvEntry>, ClientApiError> {
         // Delegate to multi-get implementation
         let mut results =
             self.get_multi_with_policy(std::iter::once(key), consistency_policy).await?;
@@ -73,7 +73,7 @@ impl GrpcClient {
         &self,
         keys: impl IntoIterator<Item = impl AsRef<[u8]>>,
         consistency_policy: Option<ReadConsistencyPolicy>,
-    ) -> std::result::Result<Vec<Option<ClientResult>>, ClientApiError> {
+    ) -> std::result::Result<Vec<Option<KvEntry>>, ClientApiError> {
         let _timer = ScopedTimer::new("client::get_multi");
 
         let client_inner = self.client_inner.load();
@@ -92,7 +92,9 @@ impl GrpcClient {
         let request = ClientReadRequest {
             client_id: client_inner.client_id,
             keys,
-            consistency_policy: consistency_policy.map(|p| p as i32),
+            consistency_policy: consistency_policy
+                .clone()
+                .map(|p| d_engine_proto::client::ReadConsistencyPolicy::from(p) as i32),
         };
 
         // Select client based on policy (if specified)

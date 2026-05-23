@@ -2,6 +2,7 @@ use crate::ClientCmd;
 use crate::MockMembership;
 use crate::MockStateMachineHandler;
 use crate::ReadConsistencyPolicy;
+use crate::client::{ClientReadRequest, ErrorCode};
 use crate::convert::safe_kv_bytes;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
@@ -12,10 +13,8 @@ use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::node_config;
 use crate::{Error, MockRaftLog, MockReplicationCore, RaftNodeConfig};
 use bytes::Bytes;
-use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeStatus;
-use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::NodeMeta;
 use std::sync::Arc;
 use std::time::Duration;
@@ -428,7 +427,7 @@ async fn test_linearizable_read_quorum_failure() {
     let client_read_request = ClientReadRequest {
         client_id: 1,
         keys,
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
@@ -529,7 +528,7 @@ async fn test_linearizable_read_quorum_success() {
     let keys = vec![safe_kv_bytes(1)];
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         keys,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -625,7 +624,7 @@ async fn test_linearizable_read_encounters_higher_term() {
     let keys = vec![safe_kv_bytes(1)];
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         keys,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -708,7 +707,7 @@ async fn test_lease_read_with_valid_lease() {
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
         keys: vec![safe_kv_bytes(1)],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -719,7 +718,7 @@ async fn test_lease_read_with_valid_lease() {
     state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(response.error, ErrorCode::Success as i32);
+    assert_eq!(response.error, ErrorCode::Success);
 }
 
 /// Test expired lease detection
@@ -804,7 +803,7 @@ async fn test_expired_lease_single_voter_refreshed_immediately() {
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
         keys: vec![safe_kv_bytes(1)],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -914,7 +913,7 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
         .expect("ApplyCompleted should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(response.error, ErrorCode::Success as i32);
+    assert_eq!(response.error, ErrorCode::Success);
 }
 
 /// Test EventualConsistency policy serves reads immediately
@@ -962,7 +961,7 @@ async fn test_eventual_consistency_serves_immediately() {
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency),
         keys: vec![safe_kv_bytes(1)],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -973,7 +972,7 @@ async fn test_eventual_consistency_serves_immediately() {
     state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(response.error, ErrorCode::Success as i32);
+    assert_eq!(response.error, ErrorCode::Success);
     // Should succeed immediately without any verification
 }
 
@@ -1022,7 +1021,7 @@ async fn test_server_default_overrides_client_policy() {
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32), // Should be ignored
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead), // Should be ignored
         keys: vec![safe_kv_bytes(1)],
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
@@ -1033,7 +1032,7 @@ async fn test_server_default_overrides_client_policy() {
     state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
-    assert_eq!(response.error, ErrorCode::Success as i32);
+    assert_eq!(response.error, ErrorCode::Success);
     // Should use server default (EventualConsistency) and succeed immediately
 }
 
@@ -1093,7 +1092,7 @@ async fn test_linearizable_read_batch_shared_quorum() {
     let req1 = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key1")],
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
     };
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     state.push_client_cmd(ClientCmd::Read(req1, tx1), &ctx);
@@ -1101,7 +1100,7 @@ async fn test_linearizable_read_batch_shared_quorum() {
     let req2 = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key2")],
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
     };
     let (tx2, mut rx2) = MaybeCloneOneshot::new();
     state.push_client_cmd(ClientCmd::Read(req2, tx2), &ctx);
@@ -1109,7 +1108,7 @@ async fn test_linearizable_read_batch_shared_quorum() {
     let req3 = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key3")],
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
     };
     let (tx3, mut rx3) = MaybeCloneOneshot::new();
     state.push_client_cmd(ClientCmd::Read(req3, tx3), &ctx);
@@ -1199,7 +1198,7 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     let req1 = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key1")],
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
     };
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     state.push_client_cmd(ClientCmd::Read(req1, tx1), &ctx);
@@ -1222,7 +1221,7 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     let req2 = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key2")],
-        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
     };
     let (tx2, mut rx2) = MaybeCloneOneshot::new();
     state.push_client_cmd(ClientCmd::Read(req2, tx2), &ctx);
@@ -1293,7 +1292,7 @@ async fn test_eventual_consistency_ignores_stale_lease() {
     let req = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key1")],
-        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency),
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();
     state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
@@ -1361,7 +1360,7 @@ async fn test_client_policy_override_allowed() {
     let req = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key1")],
-        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();
 
@@ -1437,7 +1436,7 @@ async fn test_client_policy_override_denied() {
     let req = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key1")],
-        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency),
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();
 
@@ -1521,7 +1520,7 @@ async fn test_drain_single_request_no_delay() {
     let req = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key1")],
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();
 
@@ -1602,7 +1601,7 @@ async fn test_drain_multiple_requests_natural_batch() {
         let req = ClientReadRequest {
             client_id: 1,
             keys: vec![Bytes::from(format!("key{i}"))],
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         };
         let (tx, rx) = MaybeCloneOneshot::new();
         state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
@@ -1682,7 +1681,7 @@ async fn test_drain_max_batch_size_limit() {
         let req = ClientReadRequest {
             client_id: 1,
             keys: vec![Bytes::from(format!("key{i}"))],
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         };
         let (tx, _rx) = MaybeCloneOneshot::new();
         state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
@@ -1776,7 +1775,7 @@ async fn test_linearizable_read_batch_single_quorum() {
         let req = ClientReadRequest {
             client_id: 1,
             keys: vec![Bytes::from(format!("key{i}"))],
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         };
         let (tx, rx) = MaybeCloneOneshot::new();
         state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
@@ -1845,7 +1844,7 @@ async fn test_lease_read_valid_lease_serves_immediately() {
     let req = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key1")],
-        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();
 
@@ -1916,7 +1915,7 @@ async fn test_linearizable_read_rejected_when_noop_not_committed() {
         ClientReadRequest {
             client_id: 1,
             keys: vec![safe_kv_bytes(1)],
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
         },
         resp_tx,
     );
@@ -2022,7 +2021,7 @@ async fn test_lease_read_empty_payload_verification_hangs_in_multi_node() {
     let req = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key1")],
-        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
     };
     let (tx, _rx) = MaybeCloneOneshot::new();
 
@@ -2169,7 +2168,7 @@ async fn test_linearizable_read_served_without_quorum_in_minority_partition() {
     let req = ClientReadRequest {
         client_id: 1,
         keys: vec![safe_kv_bytes(1)],
-        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     state.push_client_cmd(ClientCmd::Read(req, resp_tx), &ctx);

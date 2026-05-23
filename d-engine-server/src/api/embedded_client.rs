@@ -25,13 +25,11 @@ use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
 use d_engine_core::ScanResult;
-use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
-use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::client::ClientWriteRequest;
-use d_engine_proto::client::ReadConsistencyPolicy;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::common::LeaderHint;
-use d_engine_proto::error::ErrorCode;
+use d_engine_core::client::{
+    ClientApi, ClientApiError, ClientApiResult, ClientReadRequest, ClientResponsePayload,
+    ClientWriteRequest, ErrorCode, LeaderHint, ReadResults, WriteOperation,
+};
+use d_engine_core::config::ReadConsistencyPolicy;
 use tokio::sync::mpsc;
 
 #[cfg(feature = "watch")]
@@ -62,6 +60,7 @@ fn timeout_error(duration: Duration) -> ClientApiError {
 fn not_leader_error(
     leader_id: Option<String>,
     leader_address: Option<String>,
+    retry_after_ms: Option<u64>,
 ) -> ClientApiError {
     let message = match (&leader_address, &leader_id) {
         (Some(addr), _) => format!("Not leader, try leader at: {addr}"),
@@ -80,7 +79,7 @@ fn not_leader_error(
     ClientApiError::Network {
         code: ErrorCode::NotLeader,
         message,
-        retry_after_ms: Some(100),
+        retry_after_ms: retry_after_ms.or(Some(100)),
         leader_hint,
     }
 }
@@ -90,6 +89,28 @@ fn server_error(msg: String) -> ClientApiError {
         code: ErrorCode::Uncategorized,
         message: msg,
         required_action: None,
+    }
+}
+
+/// Unwrap a `ClientResponsePayload` as a `ReadResults`, returning a
+/// `Protocol { InvalidResponse }` error for any other variant.
+///
+/// Centralises the match so both `get_with_consistency` and
+/// `get_multi_with_consistency` share identical error semantics, and so
+/// the logic can be unit-tested without standing up a full Raft channel.
+fn extract_read_payload(result: Option<ClientResponsePayload>) -> ClientApiResult<ReadResults> {
+    match result {
+        Some(ClientResponsePayload::Read(r)) => Ok(r),
+        Some(ClientResponsePayload::Write(_)) => Err(ClientApiError::Protocol {
+            code: ErrorCode::InvalidResponse,
+            message: "expected ReadData payload, got WriteResult".to_string(),
+            supported_versions: None,
+        }),
+        None => Err(ClientApiError::Protocol {
+            code: ErrorCode::InvalidResponse,
+            message: "expected ReadData payload, got None".to_string(),
+            supported_versions: None,
+        }),
     }
 }
 
@@ -134,21 +155,21 @@ impl EmbeddedClient {
         self
     }
 
-    /// Map ErrorCode and ErrorMetadata to ClientApiError
     fn map_error_response(
-        error_code: i32,
-        metadata: Option<d_engine_proto::error::ErrorMetadata>,
+        error: ErrorCode,
+        leader_hint: Option<LeaderHint>,
+        retry_after_ms: Option<u64>,
     ) -> ClientApiError {
-        match ErrorCode::try_from(error_code) {
-            Ok(ErrorCode::NotLeader) => {
-                let (leader_id, leader_address) = if let Some(meta) = metadata {
-                    (meta.leader_id, meta.leader_address)
+        match error {
+            ErrorCode::NotLeader => {
+                let (leader_id, leader_address) = if let Some(hint) = leader_hint {
+                    (Some(hint.leader_id.to_string()), Some(hint.address))
                 } else {
                     (None, None)
                 };
-                not_leader_error(leader_id, leader_address)
+                not_leader_error(leader_id, leader_address, retry_after_ms)
             }
-            _ => server_error(format!("Error code: {error_code}")),
+            _ => server_error(format!("Error code: {error:?}")),
         }
     }
 
@@ -162,14 +183,13 @@ impl EmbeddedClient {
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> ClientApiResult<()> {
-        let command = WriteCommand::insert(
-            Bytes::copy_from_slice(key.as_ref()),
-            Bytes::copy_from_slice(value.as_ref()),
-        );
-
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(command),
+            command: Some(WriteOperation::Insert {
+                key: Bytes::copy_from_slice(key.as_ref()),
+                value: Bytes::copy_from_slice(value.as_ref()),
+                ttl_secs: None,
+            }),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -187,8 +207,12 @@ impl EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+                response.retry_after_ms,
+            ));
         }
 
         Ok(())
@@ -270,7 +294,7 @@ impl EmbeddedClient {
         let request = ClientReadRequest {
             client_id: self.client_id,
             keys: vec![Bytes::copy_from_slice(key.as_ref())],
-            consistency_policy: Some(consistency as i32),
+            consistency_policy: Some(consistency),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -288,20 +312,16 @@ impl EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+                response.retry_after_ms,
+            ));
         }
 
-        match response.success_result {
-            Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
-                read_results,
-            )) => {
-                // If results list is empty, key doesn't exist
-                // Otherwise, return the value (even if empty bytes)
-                Ok(read_results.results.first().map(|r| r.value.clone()))
-            }
-            _ => Ok(None),
-        }
+        let read_results = extract_read_payload(response.result)?;
+        Ok(read_results.entries.first().map(|e| e.value.clone()))
     }
 
     /// Get multiple keys with linearizable consistency.
@@ -347,7 +367,7 @@ impl EmbeddedClient {
         let request = ClientReadRequest {
             client_id: self.client_id,
             keys: keys.to_vec(),
-            consistency_policy: Some(consistency as i32),
+            consistency_policy: Some(consistency),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -365,24 +385,21 @@ impl EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+                response.retry_after_ms,
+            ));
         }
 
-        match response.success_result {
-            Some(d_engine_proto::client::client_response::SuccessResult::ReadData(
-                read_results,
-            )) => {
-                // Reconstruct result vector in requested key order.
-                // Server only returns results for keys that exist, so we must
-                // map by key to preserve positional correspondence with input.
-                let results_by_key: std::collections::HashMap<_, _> =
-                    read_results.results.into_iter().map(|r| (r.key, r.value)).collect();
-
-                Ok(keys.iter().map(|k| results_by_key.get(k).cloned()).collect())
-            }
-            _ => Ok(vec![None; keys.len()]),
-        }
+        let read_results = extract_read_payload(response.result)?;
+        // Reconstruct result vector in requested key order.
+        // Server only returns results for keys that exist, so we must
+        // map by key to preserve positional correspondence with input.
+        let results_by_key: std::collections::HashMap<_, _> =
+            read_results.entries.into_iter().map(|e| (e.key, e.value)).collect();
+        Ok(keys.iter().map(|k| results_by_key.get(k).cloned()).collect())
     }
 
     /// Delete a key-value pair with strong consistency.
@@ -394,11 +411,11 @@ impl EmbeddedClient {
         &self,
         key: impl AsRef<[u8]>,
     ) -> ClientApiResult<()> {
-        let command = WriteCommand::delete(Bytes::copy_from_slice(key.as_ref()));
-
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(command),
+            command: Some(WriteOperation::Delete {
+                key: Bytes::copy_from_slice(key.as_ref()),
+            }),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -416,8 +433,12 @@ impl EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+                response.retry_after_ms,
+            ));
         }
 
         Ok(())
@@ -682,15 +703,13 @@ impl ClientApi for EmbeddedClient {
         value: impl AsRef<[u8]> + Send,
         ttl_secs: u64,
     ) -> ClientApiResult<()> {
-        let command = WriteCommand::insert_with_ttl(
-            Bytes::copy_from_slice(key.as_ref()),
-            Bytes::copy_from_slice(value.as_ref()),
-            ttl_secs,
-        );
-
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(command),
+            command: Some(WriteOperation::Insert {
+                key: Bytes::copy_from_slice(key.as_ref()),
+                value: Bytes::copy_from_slice(value.as_ref()),
+                ttl_secs: Some(ttl_secs),
+            }),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -708,8 +727,12 @@ impl ClientApi for EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+                response.retry_after_ms,
+            ));
         }
 
         Ok(())
@@ -742,15 +765,13 @@ impl ClientApi for EmbeddedClient {
         expected_value: Option<impl AsRef<[u8]> + Send>,
         new_value: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<bool> {
-        let command = WriteCommand::compare_and_swap(
-            Bytes::copy_from_slice(key.as_ref()),
-            expected_value.map(|v| Bytes::copy_from_slice(v.as_ref())),
-            Bytes::copy_from_slice(new_value.as_ref()),
-        );
-
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(command),
+            command: Some(WriteOperation::CompareAndSwap {
+                key: Bytes::copy_from_slice(key.as_ref()),
+                expected: expected_value.map(|v| Bytes::copy_from_slice(v.as_ref())),
+                new_value: Bytes::copy_from_slice(new_value.as_ref()),
+            }),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -768,14 +789,16 @@ impl ClientApi for EmbeddedClient {
         let response =
             result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
 
-        if response.error != ErrorCode::Success as i32 {
-            return Err(Self::map_error_response(response.error, response.metadata));
+        if response.error != ErrorCode::Success {
+            return Err(Self::map_error_response(
+                response.error,
+                response.leader_hint,
+                response.retry_after_ms,
+            ));
         }
 
-        match response.success_result {
-            Some(d_engine_proto::client::client_response::SuccessResult::WriteResult(result)) => {
-                Ok(result.succeeded)
-            }
+        match response.result {
+            Some(ClientResponsePayload::Write(result)) => Ok(result.succeeded),
             _ => Err(server_error("Invalid CAS response".to_string())),
         }
     }
@@ -795,11 +818,12 @@ impl ClientApi for EmbeddedClient {
     async fn get_multi_with_policy(
         &self,
         keys: &[Bytes],
-        consistency_policy: Option<ReadConsistencyPolicy>,
+        consistency_policy: Option<d_engine_core::config::ReadConsistencyPolicy>,
     ) -> ClientApiResult<Vec<Option<Bytes>>> {
         self.get_multi_with_consistency(
             keys,
-            consistency_policy.unwrap_or(ReadConsistencyPolicy::LinearizableRead),
+            consistency_policy
+                .unwrap_or(d_engine_core::config::ReadConsistencyPolicy::LinearizableRead),
         )
         .await
     }
@@ -830,5 +854,176 @@ impl ClientApi for EmbeddedClient {
         prefix: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<ScanResult> {
         self.scan_prefix(prefix).await
+    }
+}
+
+#[cfg(test)]
+mod error_helper_tests {
+    use d_engine_core::client::KvEntry;
+
+    use super::*;
+
+    // ─── not_leader_error ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_not_leader_uses_server_retry_after_ms_when_provided() {
+        let err = not_leader_error(
+            Some("1".to_string()),
+            Some("127.0.0.1:5001".to_string()),
+            Some(500),
+        );
+        match err {
+            ClientApiError::Network { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, Some(500));
+            }
+            _ => panic!("expected Network error"),
+        }
+    }
+
+    #[test]
+    fn test_not_leader_falls_back_to_100ms_when_server_provides_none() {
+        let err = not_leader_error(None, None, None);
+        match err {
+            ClientApiError::Network { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, Some(100));
+            }
+            _ => panic!("expected Network error"),
+        }
+    }
+
+    #[test]
+    fn test_not_leader_zero_is_not_treated_as_none() {
+        // Some(0) is an explicit server instruction, not absent — must be preserved
+        let err = not_leader_error(None, None, Some(0));
+        match err {
+            ClientApiError::Network { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, Some(0));
+            }
+            _ => panic!("expected Network error"),
+        }
+    }
+
+    // ─── map_error_response ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_map_error_response_not_leader_forwards_retry_after_ms() {
+        let err = EmbeddedClient::map_error_response(
+            ErrorCode::NotLeader,
+            Some(LeaderHint {
+                leader_id: 2,
+                address: "10.0.0.2:5002".into(),
+            }),
+            Some(250),
+        );
+        match err {
+            ClientApiError::Network {
+                code,
+                retry_after_ms,
+                leader_hint,
+                ..
+            } => {
+                assert_eq!(code, ErrorCode::NotLeader);
+                assert_eq!(retry_after_ms, Some(250));
+                let h = leader_hint.unwrap();
+                assert_eq!(h.leader_id, 2);
+            }
+            _ => panic!("expected Network error"),
+        }
+    }
+
+    #[test]
+    fn test_map_error_response_not_leader_falls_back_to_100ms_when_none() {
+        let err = EmbeddedClient::map_error_response(ErrorCode::NotLeader, None, None);
+        match err {
+            ClientApiError::Network { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, Some(100));
+            }
+            _ => panic!("expected Network error"),
+        }
+    }
+
+    // ─── extract_read_payload ────────────────────────────────────────────────
+    //
+    // These tests call `extract_read_payload` directly — the actual function
+    // used by both `get_with_consistency` and `get_multi_with_consistency`.
+    // This ensures the error behaviour is tested at the implementation site,
+    // not via a copy of the match logic that could silently drift.
+
+    #[test]
+    fn test_extract_read_payload_returns_read_results_on_success() {
+        // Happy path: a well-formed Read payload must be unwrapped without error.
+        let entries = vec![KvEntry {
+            key: Bytes::from("k"),
+            value: Bytes::from("v"),
+        }];
+        let payload = Some(ClientResponsePayload::Read(ReadResults {
+            entries: entries.clone(),
+        }));
+
+        let result = extract_read_payload(payload).unwrap();
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].key, Bytes::from("k"));
+        assert_eq!(result.entries[0].value, Bytes::from("v"));
+    }
+
+    #[test]
+    fn test_extract_read_payload_rejects_write_result_payload() {
+        // A WriteResult inside a read response is a server protocol violation.
+        // It must surface as InvalidResponse, not silently become "key not found".
+        let payload = Some(ClientResponsePayload::Write(
+            d_engine_core::client::WriteResult { succeeded: true },
+        ));
+
+        let err = extract_read_payload(payload).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidResponse);
+        assert!(
+            err.message().contains("WriteResult"),
+            "error message should identify the unexpected variant; got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_extract_read_payload_rejects_none_payload() {
+        // A Success response with no payload is a protocol violation.
+        // It must surface as InvalidResponse, not silently become "key not found".
+        let err = extract_read_payload(None).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidResponse);
+        assert!(
+            err.message().contains("None"),
+            "error message should identify missing payload; got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_extract_read_payload_empty_entries_is_valid() {
+        // An empty ReadResults is a legitimate response (no keys matched).
+        // It must not be treated as an error.
+        let payload = Some(ClientResponsePayload::Read(ReadResults { entries: vec![] }));
+
+        let result = extract_read_payload(payload).unwrap();
+        assert!(result.entries.is_empty());
+    }
+
+    #[test]
+    fn test_extract_read_payload_multiple_entries_are_preserved() {
+        // All entries in the ReadResults must be passed through unchanged.
+        let payload = Some(ClientResponsePayload::Read(ReadResults {
+            entries: vec![
+                KvEntry {
+                    key: Bytes::from("k1"),
+                    value: Bytes::from("v1"),
+                },
+                KvEntry {
+                    key: Bytes::from("k2"),
+                    value: Bytes::from("v2"),
+                },
+            ],
+        }));
+
+        let result = extract_read_payload(payload).unwrap();
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.entries[1].key, Bytes::from("k2"));
     }
 }

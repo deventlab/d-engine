@@ -1,7 +1,7 @@
 use d_engine_client::Client;
 use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
-use d_engine_proto::error::ErrorCode;
+use d_engine_core::client::ErrorCode;
 use std::time::Duration;
 use tempfile::TempDir;
 use tracing::info;

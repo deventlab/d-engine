@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod client_api_error_tests {
     use crate::client::client_api_error::{ClientApiError, ClientApiResult};
-    use d_engine_proto::error::ErrorCode;
+    use crate::client::types::ErrorCode;
 
     /// Test: NotLeader error construction and code mapping
     #[test]
@@ -243,7 +243,7 @@ mod client_api_error_tests {
 #[cfg(test)]
 mod transport_error_tests {
     use crate::client::client_api_error::ClientApiError;
-    use d_engine_proto::error::ErrorCode;
+    use crate::client::types::ErrorCode;
 
     // `tonic::transport::Error` has no public constructor, so these tests trigger
     // real (but near-instant) connection failures to obtain an actual transport error,

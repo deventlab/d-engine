@@ -4,8 +4,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::vec;
 
+use d_engine_core::client::ErrorCode;
 use d_engine_proto::common::NodeStatus;
-use d_engine_proto::error::ErrorCode;
 use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::NodeMeta;
 use tokio::sync::oneshot;

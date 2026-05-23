@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_proto::client::ClientReadRequest;
+use crate::client::ClientReadRequest;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeStatus;
@@ -41,12 +41,12 @@ use crate::test_utils::mock::MockTypeConfig;
 
 fn make_lease_read_cmd(
     sender: crate::MaybeCloneOneshotSender<
-        std::result::Result<d_engine_proto::client::ClientResponse, tonic::Status>,
+        std::result::Result<crate::client::ClientResponse, tonic::Status>,
     >
 ) -> ClientCmd {
     let req = ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
         keys: vec![safe_kv_bytes(1)],
     };
     ClientCmd::Read(req, sender)
@@ -55,7 +55,7 @@ fn make_lease_read_cmd(
 fn make_lease_read_request() -> ClientReadRequest {
     ClientReadRequest {
         client_id: 1,
-        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+        consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
         keys: vec![safe_kv_bytes(1)],
     }
 }

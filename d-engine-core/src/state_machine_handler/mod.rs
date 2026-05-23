@@ -52,8 +52,8 @@ mod wait_applied_test;
 #[cfg(test)]
 mod worker_test;
 
+use crate::client::KvEntry;
 use async_trait::async_trait;
-use d_engine_proto::client::ClientResult;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use futures::stream::BoxStream;
@@ -105,7 +105,7 @@ where
     fn read_from_state_machine(
         &self,
         keys: Vec<bytes::Bytes>,
-    ) -> Option<Vec<ClientResult>>;
+    ) -> Option<Vec<KvEntry>>;
 
     /// Receives and installs a snapshot stream pushed by the leader
     /// Used when leader proactively sends snapshot updates to followers

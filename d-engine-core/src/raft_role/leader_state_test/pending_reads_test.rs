@@ -26,7 +26,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_proto::client::ClientReadRequest;
+use crate::client::ClientReadRequest;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeStatus;
@@ -63,13 +63,13 @@ use crate::test_utils::mock::mock_raft_builder::mock_state_machine;
 /// Build a LinearizableRead client command wired to the given sender.
 fn linear_read_cmd(
     sender: crate::MaybeCloneOneshotSender<
-        std::result::Result<d_engine_proto::client::ClientResponse, tonic::Status>,
+        std::result::Result<crate::client::ClientResponse, tonic::Status>,
     >
 ) -> ClientCmd {
     ClientCmd::Read(
         ClientReadRequest {
             client_id: 1,
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
             keys: vec![safe_kv_bytes(1)],
         },
         sender,
@@ -286,7 +286,7 @@ async fn test_pending_reads_drained_by_quorum_ack() {
     requests.push_back((
         ClientReadRequest {
             client_id: 1,
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
             keys: vec![safe_kv_bytes(1)],
         },
         resp_tx,
@@ -357,7 +357,7 @@ async fn test_pending_reads_slow_path_drained_by_apply_completed() {
     requests.push_back((
         ClientReadRequest {
             client_id: 1,
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
             keys: vec![safe_kv_bytes(1)],
         },
         resp_tx,
@@ -429,7 +429,7 @@ async fn test_pending_reads_partition_scenario_times_out() {
     requests.push_back((
         ClientReadRequest {
             client_id: 1,
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
             keys: vec![safe_kv_bytes(1)],
         },
         resp_tx,
@@ -495,7 +495,7 @@ async fn test_pending_reads_cleared_on_stepdown() {
         requests.push_back((
             ClientReadRequest {
                 client_id: 1,
-                consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+                consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
                 keys: vec![safe_kv_bytes(1)],
             },
             resp_tx,

@@ -1,10 +1,11 @@
 use bytes::Bytes;
+use d_engine_core::client::ErrorCode;
+use d_engine_core::client::KvEntry;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientResult;
 use d_engine_proto::client::ReadResults;
 use d_engine_proto::client::WriteResult;
 use d_engine_proto::client::client_response::SuccessResult;
-use d_engine_proto::error::ErrorCode;
 
 use super::*;
 use crate::ClientApiError;
@@ -111,11 +112,53 @@ fn test_into_read_results_success() {
         })),
     };
 
-    let result = response.into_read_results();
-    assert!(result.is_ok());
-    let data = result.unwrap();
+    // Type annotation is the spec: into_read_results must return KvEntry, not proto ClientResult
+    let data: Vec<Option<KvEntry>> = response.into_read_results().unwrap();
     assert_eq!(data.len(), 1);
-    assert!(data[0].is_some());
+    assert_eq!(
+        data[0],
+        Some(KvEntry {
+            key: Bytes::from(vec![1, 2, 3]),
+            value: Bytes::from(vec![4, 5, 6]),
+        })
+    );
+}
+
+#[test]
+fn test_into_read_results_multiple_entries_are_kv_entries() {
+    let response = ClientResponse {
+        error: ErrorCode::Success as i32,
+        metadata: None,
+        success_result: Some(SuccessResult::ReadData(ReadResults {
+            results: vec![
+                ClientResult {
+                    key: Bytes::from("k1"),
+                    value: Bytes::from("v1"),
+                },
+                ClientResult {
+                    key: Bytes::from("k2"),
+                    value: Bytes::from("v2"),
+                },
+            ],
+        })),
+    };
+
+    let data: Vec<Option<KvEntry>> = response.into_read_results().unwrap();
+    assert_eq!(data.len(), 2);
+    assert_eq!(
+        data[0],
+        Some(KvEntry {
+            key: Bytes::from("k1"),
+            value: Bytes::from("v1")
+        })
+    );
+    assert_eq!(
+        data[1],
+        Some(KvEntry {
+            key: Bytes::from("k2"),
+            value: Bytes::from("v2")
+        })
+    );
 }
 
 #[test]

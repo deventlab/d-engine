@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use d_engine_proto::client::ClientResponse;
+use d_engine_core::client::ClientResponse;
 use d_engine_proto::client::MembershipSnapshot;
 use d_engine_proto::client::WatchResponse;
 use d_engine_proto::client::raft_client_service_server::RaftClientServiceServer;
@@ -197,7 +197,7 @@ impl MockNode {
         cas_should_succeed: bool,
     ) -> std::result::Result<(Channel, u16), tonic::Status> {
         let response = if cas_should_succeed {
-            ClientResponse::cas_success()
+            ClientResponse::write_success()
         } else {
             ClientResponse::cas_failure()
         };

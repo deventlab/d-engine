@@ -1,7 +1,7 @@
-use d_engine_proto::client::ClientReadRequest;
-use d_engine_proto::client::ClientWriteRequest;
-use d_engine_proto::client::ReadConsistencyPolicy;
-use d_engine_proto::client::WriteCommand;
+use crate::client::ClientReadRequest;
+use crate::client::ClientWriteRequest;
+use crate::client::WriteOperation;
+use crate::config::ReadConsistencyPolicy;
 use tokio::sync::watch;
 
 use crate::BackpressureConfig;
@@ -40,7 +40,9 @@ async fn test_backpressure_write_limit_enforcement() {
         let cmd = ClientCmd::Propose(
             ClientWriteRequest {
                 client_id: i,
-                command: Some(WriteCommand::default()),
+                command: Some(WriteOperation::Delete {
+                    key: bytes::Bytes::new(),
+                }),
             },
             resp_tx,
         );
@@ -58,7 +60,9 @@ async fn test_backpressure_write_limit_enforcement() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 3,
-            command: Some(WriteCommand::default()),
+            command: Some(WriteOperation::Delete {
+                key: bytes::Bytes::new(),
+            }),
         },
         resp_tx,
     );
@@ -106,7 +110,7 @@ async fn test_backpressure_read_limit_enforcement() {
         let cmd = ClientCmd::Read(
             ClientReadRequest {
                 client_id: i,
-                consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+                consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
                 keys: vec![],
             },
             resp_tx,
@@ -125,7 +129,7 @@ async fn test_backpressure_read_limit_enforcement() {
     let cmd = ClientCmd::Read(
         ClientReadRequest {
             client_id: 4,
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
             keys: vec![],
         },
         resp_tx,
@@ -173,7 +177,9 @@ async fn test_backpressure_unlimited_when_zero() {
         let cmd = ClientCmd::Propose(
             ClientWriteRequest {
                 client_id: i,
-                command: Some(WriteCommand::default()),
+                command: Some(WriteOperation::Delete {
+                    key: bytes::Bytes::new(),
+                }),
             },
             resp_tx,
         );
@@ -214,7 +220,9 @@ async fn test_backpressure_write_and_read_independent() {
         let cmd = ClientCmd::Propose(
             ClientWriteRequest {
                 client_id: i,
-                command: Some(WriteCommand::default()),
+                command: Some(WriteOperation::Delete {
+                    key: bytes::Bytes::new(),
+                }),
             },
             resp_tx,
         );
@@ -226,7 +234,9 @@ async fn test_backpressure_write_and_read_independent() {
     let write_cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 99,
-            command: Some(WriteCommand::default()),
+            command: Some(WriteOperation::Delete {
+                key: bytes::Bytes::new(),
+            }),
         },
         write_tx,
     );
@@ -245,7 +255,7 @@ async fn test_backpressure_write_and_read_independent() {
     let read_cmd = ClientCmd::Read(
         ClientReadRequest {
             client_id: 99,
-            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LinearizableRead),
             keys: vec![],
         },
         read_tx,
@@ -286,7 +296,7 @@ async fn test_backpressure_all_read_policies() {
         let cmd = ClientCmd::Read(
             ClientReadRequest {
                 client_id: i,
-                consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+                consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
                 keys: vec![],
             },
             resp_tx,
@@ -301,7 +311,7 @@ async fn test_backpressure_all_read_policies() {
     let cmd = ClientCmd::Read(
         ClientReadRequest {
             client_id: 3,
-            consistency_policy: Some(ReadConsistencyPolicy::LeaseRead as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
             keys: vec![],
         },
         resp_tx,
@@ -325,7 +335,7 @@ async fn test_backpressure_all_read_policies() {
         let cmd = ClientCmd::Read(
             ClientReadRequest {
                 client_id: i,
-                consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+                consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency),
                 keys: vec![],
             },
             resp_tx,
@@ -340,7 +350,7 @@ async fn test_backpressure_all_read_policies() {
     let cmd = ClientCmd::Read(
         ClientReadRequest {
             client_id: 3,
-            consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency as i32),
+            consistency_policy: Some(ReadConsistencyPolicy::EventualConsistency),
             keys: vec![],
         },
         resp_tx,

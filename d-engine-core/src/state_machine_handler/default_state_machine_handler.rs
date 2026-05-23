@@ -7,12 +7,12 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crate::client::KvEntry;
 use async_compression::tokio::bufread::GzipDecoder;
 use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use bytes::Bytes;
-use d_engine_proto::client::ClientResult;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotAck;
@@ -304,15 +304,14 @@ where
         apply_result
     }
 
-    /// TODO: decouple client related commands with RAFT internal logic
     fn read_from_state_machine(
         &self,
         keys: Vec<Bytes>,
-    ) -> Option<Vec<ClientResult>> {
+    ) -> Option<Vec<KvEntry>> {
         let mut result = Vec::new();
         for key in keys {
             if let Ok(Some(value)) = self.state_machine.get(&key) {
-                result.push(ClientResult { key, value });
+                result.push(KvEntry { key, value });
             }
         }
 

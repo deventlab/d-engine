@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use d_engine_core::ClientApiError;
-use d_engine_proto::client::ReadConsistencyPolicy;
+use d_engine_core::config::ReadConsistencyPolicy;
 use tracing_test::traced_test;
 
 use crate::client_manager::ClientManager;

@@ -1,4 +1,4 @@
-use d_engine_proto::client::ClientResponse;
+use crate::client::ClientResponse;
 use d_engine_proto::common::EntryPayload;
 use tonic::Status;
 

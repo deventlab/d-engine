@@ -27,8 +27,8 @@
 
 use crate::ScanResult;
 use crate::client::client_api_error::ClientApiResult;
+use crate::config::ReadConsistencyPolicy;
 use bytes::Bytes;
-use d_engine_proto::client::ReadConsistencyPolicy;
 
 /// Unified key-value store interface.
 ///
@@ -255,7 +255,7 @@ pub trait ClientApi: Send + Sync {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use d_engine_proto::client::ReadConsistencyPolicy;
+    /// use crate::config::ReadConsistencyPolicy;
     ///
     /// let keys = vec![
     ///     Bytes::from("key1"),

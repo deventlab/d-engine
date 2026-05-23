@@ -43,7 +43,7 @@ fn success_response(
 fn write_request() -> (
     RaftRequestWithSignal,
     crate::maybe_clone_oneshot::MaybeCloneOneshotReceiver<
-        std::result::Result<d_engine_proto::client::ClientResponse, tonic::Status>,
+        std::result::Result<crate::client::ClientResponse, tonic::Status>,
     >,
 ) {
     let (tx, rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();

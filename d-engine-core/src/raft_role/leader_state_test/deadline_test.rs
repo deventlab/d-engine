@@ -5,6 +5,7 @@
 //! `pending_commit_actions`, and leaves live entries intact.
 
 use crate::MaybeCloneOneshot;
+use crate::client::ClientReadRequest;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::{
     LeaderState, PendingLeaseRead, PendingReadBatch, PostCommitAction, PostCommitEntry,
@@ -13,7 +14,6 @@ use crate::raft_role::leader_state::{
 use crate::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
-use d_engine_proto::client::ClientReadRequest;
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -24,7 +24,7 @@ use tonic::Code;
 // Helpers
 // ============================================================================
 
-type WriteResponse = std::result::Result<d_engine_proto::client::ClientResponse, tonic::Status>;
+type WriteResponse = std::result::Result<crate::client::ClientResponse, tonic::Status>;
 type ReadResponse = WriteResponse;
 
 /// Build a minimal context + LeaderState sufficient for tick() deadline tests.
@@ -77,8 +77,9 @@ fn read_batch(
 ) {
     let (tx, rx) = MaybeCloneOneshot::new();
     let req = ClientReadRequest {
+        client_id: 0,
         keys: vec![],
-        ..Default::default()
+        consistency_policy: None,
     };
     let batch = PendingReadBatch {
         deadline,
@@ -193,7 +194,11 @@ async fn test_tick_drains_expired_pending_lease_read() {
 
     let (tx, mut rx) = MaybeCloneOneshot::new();
     state.pending_lease_reads.push_back(PendingLeaseRead {
-        request: ClientReadRequest::default(),
+        request: ClientReadRequest {
+            client_id: 0,
+            keys: vec![],
+            consistency_policy: None,
+        },
         sender: tx,
         deadline: expired(),
     });
@@ -219,7 +224,11 @@ async fn test_tick_keeps_non_expired_pending_lease_read() {
 
     let (tx, mut rx) = MaybeCloneOneshot::new();
     state.pending_lease_reads.push_back(PendingLeaseRead {
-        request: ClientReadRequest::default(),
+        request: ClientReadRequest {
+            client_id: 0,
+            keys: vec![],
+            consistency_policy: None,
+        },
         sender: tx,
         deadline: far_future(),
     });
@@ -243,12 +252,20 @@ async fn test_tick_drains_only_expired_lease_reads_in_mixed_queue() {
     let (live_tx, mut live_rx) = MaybeCloneOneshot::new();
 
     state.pending_lease_reads.push_back(PendingLeaseRead {
-        request: ClientReadRequest::default(),
+        request: ClientReadRequest {
+            client_id: 0,
+            keys: vec![],
+            consistency_policy: None,
+        },
         sender: exp_tx,
         deadline: expired(),
     });
     state.pending_lease_reads.push_back(PendingLeaseRead {
-        request: ClientReadRequest::default(),
+        request: ClientReadRequest {
+            client_id: 0,
+            keys: vec![],
+            consistency_policy: None,
+        },
         sender: live_tx,
         deadline: far_future(),
     });
