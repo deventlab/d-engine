@@ -70,6 +70,11 @@ clean:
 	rm -rf ./snapshots/*
 	@echo "Clean complete!"
 
+clean-log-db:
+	@echo "Cleaning db and logs..."
+	rm -rf ./logs/*
+	rm -rf ./data/*
+	rm -rf ./snapshots/*
 # ============================================
 # Write Performance Tests
 # ============================================

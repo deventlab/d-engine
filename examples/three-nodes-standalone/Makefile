@@ -150,7 +150,7 @@ clean:
 	rm -rf samply_reports/*
 
 clean-log-db:
-	@echo "Cleaning build artifacts..."
+	@echo "Cleaning db and logs..."
 	rm -rf logs/*
 	rm -rf db/*
 

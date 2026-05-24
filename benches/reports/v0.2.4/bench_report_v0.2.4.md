@@ -32,18 +32,18 @@
 |                     | Avg Latency | 0.197 ms      | 0.157 ms      | **-20.3%** ✅  |
 |                     | p99 Latency | 0.710 ms      | 0.367 ms      | **-48.3%** ✅  |
 | Lease Read          | Throughput  | 705,530 ops/s | 730,836 ops/s | **+3.6%** ✅   |
-|                     | Avg Latency | —             | 0.136 ms      | —              |
-|                     | p99 Latency | —             | 0.337 ms      | —              |
+|                     | Avg Latency | 0.116 ms      | 0.136 ms      | +17.2% ⚠️     |
+|                     | p99 Latency | 0.342 ms      | 0.337 ms      | -1.5% →        |
 | Eventual Read       | Throughput  | 742,602 ops/s | 752,198 ops/s | +1.3% →        |
-|                     | Avg Latency | —             | 0.132 ms      | —              |
-|                     | p99 Latency | —             | 0.343 ms      | —              |
+|                     | Avg Latency | 0.115 ms      | 0.132 ms      | +14.8% ⚠️     |
+|                     | p99 Latency | 0.382 ms      | 0.343 ms      | **-10.2%** ✅  |
 | Hot-Key (10 keys)   | Throughput  | 499,527 ops/s | 659,429 ops/s | **+32.0%** ✅  |
 |                     | Avg Latency | 0.205 ms      | 0.153 ms      | **-25.4%** ✅  |
 |                     | p99 Latency | 0.638 ms      | 0.343 ms      | **-46.2%** ✅  |
 
 **Notes**:
 
-- Lease/Eventual Read v0.2.3 baseline was re-measured on the same machine on March 30; original 852K/859K was not reproducible (likely different system state). Latency columns not re-measured; only throughput baseline was corrected.
+- Lease/Eventual Read v0.2.3 throughput baseline was re-measured on the same machine on March 30; original 852K/859K was not reproducible (likely different system state). Latency values are from the original v0.2.3 test run.
 - Single Client Write p99 +27.3% is local scheduling noise; throughput and avg latency are stable (within ±5%).
 - High Conc. Write improvement (+32.6%) driven by commits #349 (eliminate per-entry flush) and #350 (single-lock FileLogStore restructure).
 - Linearizable Read p99 improved from 0.710 ms (v0.2.3) to 0.367 ms (v0.2.4), a -48.3% gain, driven by #390 lease fast path recovering the #381 regression.
