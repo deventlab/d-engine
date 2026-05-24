@@ -7,9 +7,7 @@
 [![CI](https://github.com/deventlab/d-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/deventlab/d-engine/actions/workflows/ci.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/deventlab/d-engine)
 
-**d-engine** is a lightweight distributed coordination engine written in Rust,
-designed for embedding into applications that need strong consistency—the consensus
-layer for building reliable distributed systems.
+**d-engine** is a lightweight, embeddable distributed coordination engine for Rust — strong-consistency KV, watch streams, and leader election, running inside your process.
 
 **Built with a simple vision**: make distributed coordination accessible - cheap
 to run, simple to use. **Built on a core philosophy**: choose simple architectures
@@ -37,8 +35,8 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 - **EmbeddedEngine**: Zero-overhead in-process access (<0.1ms latency)
 - **Strong Consistency**: Full Raft protocol — linearizable writes, configurable read consistency
 - **Flexible Read Consistency**: Three-tier model (Linearizable/Lease-Based/Eventual) per request
-- **Watch API**: Real-time key change notifications for config updates, service discovery, and more
-- **TTL/Lease**: Automatic key expiration for distributed locks and session management
+- **Watch API**: Real-time key change notifications for configuration updates, state changes, and cluster events
+- **TTL**: Automatic key expiration for session management and short-lived entries
 - **Pluggable Storage**: Custom backends supported (RocksDB default; Sled, Raw File, or your own)
 - **Modular**: Feature flags (`client`/`server`) — depend only on what you need
 
@@ -83,7 +81,7 @@ d-engine = "0.2"
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
-> **Performance**: AWS EC2 3-node cluster — **64K writes/sec**, **181K linearizable reads/sec**, sub-millisecond latency. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4) for details.
+> **Performance**: AWS EC2 3-node cluster — **110K writes/sec**, **327K linearizable reads/sec**, sub-millisecond latency. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4) for details.
 
 **→ Examples:**
 
@@ -101,7 +99,7 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 **Use when**: Application and d-engine run as separate processes  
 **Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
 
-> **Performance**: 36K writes/sec, 51K linearizable reads/sec via gRPC. For maximum throughput, embedded mode is 1.8× faster on writes and 3.5× on reads. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4).
+> **Performance**: 59K writes/sec, 77K linearizable reads/sec via gRPC. For maximum throughput, embedded mode is 1.9× faster on writes and 4.2× on reads. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4).
 
 **→ Example:** [Quick Start Standalone (Go client)](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-standalone)
 
@@ -139,11 +137,11 @@ open benches/reports/
 
 ## Maintainer Philosophy
 
-d-engine is maintained by a single author with a clear vision. We value quality over quantity:
-
-- **PRs are not guaranteed to be merged** — even good code may be declined if it conflicts with roadmap priorities
-- **Response time varies** — active development takes precedence over PR reviews
-- **Breaking changes are OK pre-1.0** — we prioritize getting it right over backward compatibility
+d-engine has a focused roadmap maintained by a single author.
+We welcome bug fixes unconditionally. For feature PRs, please open
+an issue first — new features are evaluated against roadmap fit,
+not just code quality. Breaking changes before v1.0 are documented
+in MIGRATION_GUIDE.md.
 
 ---
 
@@ -176,6 +174,9 @@ Implement the `StorageEngine` and `StateMachine` traits (see Custom Storage Back
 
 **Production-ready?**  
 Core Raft engine is production-grade (1000+ tests, [Jepsen validated](https://github.com/deventlab/d-engine-jepsen/blob/main/GUARANTEES.md)). API is stabilizing toward v1.0. Pre-1.0 versions may introduce breaking changes (documented in [MIGRATION_GUIDE.md](https://github.com/deventlab/d-engine/blob/main/MIGRATION_GUIDE.md)).
+
+**Migrating from etcd?**  
+d-engine is not a drop-in replacement. See [API compatibility and migration gaps](https://docs.rs/d-engine/latest/d_engine/docs/use_cases/index.html#migrating-from-etcd) before porting — lease keepalive, multi-key transactions, and auth are not supported; built-in distributed lock requires DIY via CAS.
 
 ---
 

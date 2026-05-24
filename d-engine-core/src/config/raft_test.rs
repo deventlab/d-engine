@@ -1,6 +1,7 @@
 use crate::BackpressureConfig;
 use crate::ElectionConfig;
 use crate::RaftConfig;
+use crate::ReadConsistencyConfig;
 use crate::RpcCompressionConfig;
 #[test]
 fn test_invalid_election_timeout() {
@@ -177,4 +178,57 @@ fn test_backpressure_zero_vs_nonzero() {
     // Limited writes, unlimited reads
     assert!(config_limited_writes.should_reject_write(100));
     assert!(!config_limited_writes.should_reject_read(1_000_000));
+}
+
+// ============================================================================
+// N4 — Config validation: lease_duration must be < election_timeout (#390 Gap 2)
+// ============================================================================
+
+/// `RaftConfig::validate()` must reject configurations where `lease_duration_ms`
+/// is greater than or equal to `election_timeout_min`.
+///
+/// ## Why this constraint is load-bearing
+/// The lease fast path for LinearizableRead relies on the timeline invariant:
+///   `lease_duration < election_timeout - max_clock_drift`
+/// At minimum, `lease_duration < election_timeout` must hold.  If this is
+/// violated, a partitioned leader's lease could outlive the election timeout,
+/// causing "lease valid" and "new leader elected" to overlap — breaking the
+/// mutual-exclusion guarantee that makes lease-based linearizable reads safe.
+///
+/// A runtime `assert!` is insufficient on its own: it fires only when the node
+/// starts, which is too late if the operator misconfigures the values.  Config
+/// validation at construction time catches the error before any Raft activity.
+#[test]
+fn test_config_rejects_lease_duration_not_less_than_election_timeout() {
+    // Case 1: lease_duration_ms == election_timeout_min → must be rejected.
+    let mut config = RaftConfig {
+        election: ElectionConfig {
+            election_timeout_min: 300,
+            election_timeout_max: 600,
+            ..Default::default()
+        },
+        read_consistency: ReadConsistencyConfig {
+            lease_duration_ms: 300, // equal to election_timeout_min → invalid
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(
+        config.validate().is_err(),
+        "lease_duration_ms == election_timeout_min must be rejected"
+    );
+
+    // Case 2: lease_duration_ms > election_timeout_min → must be rejected.
+    config.read_consistency.lease_duration_ms = 400;
+    assert!(
+        config.validate().is_err(),
+        "lease_duration_ms > election_timeout_min must be rejected"
+    );
+
+    // Case 3: lease_duration_ms < election_timeout_min → must be accepted.
+    config.read_consistency.lease_duration_ms = 150;
+    assert!(
+        config.validate().is_ok(),
+        "lease_duration_ms < election_timeout_min must be accepted"
+    );
 }

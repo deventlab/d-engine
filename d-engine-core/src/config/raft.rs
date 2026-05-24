@@ -178,14 +178,18 @@ impl RaftConfig {
         self.watch.validate()?;
         self.persistence.validate()?;
 
-        // Warn if lease duration is too long compared to election timeout
-        if self.read_consistency.lease_duration_ms > self.election.election_timeout_min / 2 {
-            warn!(
-                "read_consistency.lease_duration_ms ({}) is greater than half of election_timeout_min ({}ms). \
-                     This may cause lease expiration during normal operation.",
-                self.read_consistency.lease_duration_ms,
-                self.election.election_timeout_min / 2
-            );
+        // Enforce lease_duration < election_timeout (load-bearing safety constraint).
+        // The lease fast path for linearizable reads relies on the invariant that
+        // "lease valid" and "new leader elected" are mutually exclusive on the timeline.
+        // This holds only when: lease_duration < election_timeout - max_clock_drift.
+        // At minimum, lease_duration must be strictly less than election_timeout_min.
+        if self.read_consistency.lease_duration_ms >= self.election.election_timeout_min {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "read_consistency.lease_duration_ms ({}) must be strictly less than \
+                 election_timeout_min ({}ms) — required for lease-based linearizable reads \
+                 to be safe under partition",
+                self.read_consistency.lease_duration_ms, self.election.election_timeout_min,
+            ))));
         }
 
         Ok(())
