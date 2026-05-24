@@ -18,28 +18,28 @@
 
 ### Embedded Mode: v0.2.4 vs v0.2.3
 
-*(4-round average, manually collected)*
+_(4-round average, manually collected)_
 
-| **Scenario**        | **Metric**  | **v0.2.3**    | **v0.2.4**    | **Δ**          |
-| ------------------- | ----------- | ------------- | ------------- | -------------- |
-| Single Client Write | Throughput  | 10,075 ops/s  | 9,740 ops/s   | -3.3% →        |
-|                     | Avg Latency | 0.099 ms      | 0.102 ms      | +3.0% →        |
-|                     | p99 Latency | 0.139 ms      | 0.177 ms      | +27.3%         |
-| High Conc. Write    | Throughput  | 176,314 ops/s | 233,821 ops/s | **+32.6%** ✅  |
-|                     | Avg Latency | 0.566 ms      | 0.426 ms      | **-24.7%** ✅  |
-|                     | p99 Latency | 1.566 ms      | 1.164 ms      | **-25.7%** ✅  |
-| Linearizable Read   | Throughput  | 508,264 ops/s | 630,789 ops/s | **+24.1%** ✅  |
-|                     | Avg Latency | 0.197 ms      | 0.157 ms      | **-20.3%** ✅  |
-|                     | p99 Latency | 0.710 ms      | 0.367 ms      | **-48.3%** ✅  |
-| Lease Read          | Throughput  | 705,530 ops/s | 730,836 ops/s | **+3.6%** ✅   |
+| **Scenario**        | **Metric**  | **v0.2.3**    | **v0.2.4**    | **Δ**         |
+| ------------------- | ----------- | ------------- | ------------- | ------------- |
+| Single Client Write | Throughput  | 10,075 ops/s  | 9,740 ops/s   | -3.3% →       |
+|                     | Avg Latency | 0.099 ms      | 0.102 ms      | +3.0% →       |
+|                     | p99 Latency | 0.139 ms      | 0.177 ms      | +27.3%        |
+| High Conc. Write    | Throughput  | 176,314 ops/s | 233,821 ops/s | **+32.6%** ✅ |
+|                     | Avg Latency | 0.566 ms      | 0.426 ms      | **-24.7%** ✅ |
+|                     | p99 Latency | 1.566 ms      | 1.164 ms      | **-25.7%** ✅ |
+| Linearizable Read   | Throughput  | 508,264 ops/s | 630,789 ops/s | **+24.1%** ✅ |
+|                     | Avg Latency | 0.197 ms      | 0.157 ms      | **-20.3%** ✅ |
+|                     | p99 Latency | 0.710 ms      | 0.367 ms      | **-48.3%** ✅ |
+| Lease Read          | Throughput  | 705,530 ops/s | 730,836 ops/s | **+3.6%** ✅  |
 |                     | Avg Latency | 0.116 ms      | 0.136 ms      | +17.2% ⚠️     |
-|                     | p99 Latency | 0.342 ms      | 0.337 ms      | -1.5% →        |
-| Eventual Read       | Throughput  | 742,602 ops/s | 752,198 ops/s | +1.3% →        |
+|                     | p99 Latency | 0.342 ms      | 0.337 ms      | -1.5% →       |
+| Eventual Read       | Throughput  | 742,602 ops/s | 752,198 ops/s | +1.3% →       |
 |                     | Avg Latency | 0.115 ms      | 0.132 ms      | +14.8% ⚠️     |
-|                     | p99 Latency | 0.382 ms      | 0.343 ms      | **-10.2%** ✅  |
-| Hot-Key (10 keys)   | Throughput  | 499,527 ops/s | 659,429 ops/s | **+32.0%** ✅  |
-|                     | Avg Latency | 0.205 ms      | 0.153 ms      | **-25.4%** ✅  |
-|                     | p99 Latency | 0.638 ms      | 0.343 ms      | **-46.2%** ✅  |
+|                     | p99 Latency | 0.382 ms      | 0.343 ms      | **-10.2%** ✅ |
+| Hot-Key (10 keys)   | Throughput  | 499,527 ops/s | 659,429 ops/s | **+32.0%** ✅ |
+|                     | Avg Latency | 0.205 ms      | 0.153 ms      | **-25.4%** ✅ |
+|                     | p99 Latency | 0.638 ms      | 0.343 ms      | **-46.2%** ✅ |
 
 **Notes**:
 
@@ -54,28 +54,28 @@
 
 ### Standalone Mode: v0.2.4 vs v0.2.3
 
-*(5-round average, manually collected)*
+_(5-round average, manually collected)_
 
-| **Scenario**        | **Metric**  | **v0.2.3**   | **v0.2.4**   | **Δ**          |
-| ------------------- | ----------- | ------------ | ------------ | -------------- |
-| Single Client Write | Throughput  | 6,421 ops/s  | 5,245 ops/s  | -18.3%         |
-|                     | Avg Latency | 0.155 ms     | 0.190 ms     | +22.6%         |
-|                     | p99 Latency | 0.200 ms     | 0.235 ms     | +17.5%         |
-| High Conc. Write    | Throughput  | 55,285 ops/s | 59,733 ops/s | **+8.0%** ✅   |
-|                     | Avg Latency | 3.610 ms     | 3.346 ms     | **-7.3%** ✅   |
-|                     | p99 Latency | 6.720 ms     | 6.325 ms     | **-5.9%** ✅   |
-| Linearizable Read   | Throughput  | 63,210 ops/s | 71,702 ops/s | **+13.4%** ✅  |
-|                     | Avg Latency | 3.160 ms     | 2.791 ms     | **-11.7%** ✅  |
-|                     | p99 Latency | 5.810 ms     | 5.933 ms     | +2.1% →        |
-| Lease Read          | Throughput  | 67,878 ops/s | 72,593 ops/s | **+6.9%** ✅   |
-|                     | Avg Latency | 2.950 ms     | 2.756 ms     | **-6.6%** ✅   |
-|                     | p99 Latency | 6.200 ms     | 5.762 ms     | **-7.1%** ✅   |
-| Eventual Read       | Throughput  | 91,174 ops/s | 94,956 ops/s | **+4.1%** ✅   |
-|                     | Avg Latency | 2.190 ms     | 2.103 ms     | **-4.0%** ✅   |
-|                     | p99 Latency | 13.970 ms    | 9.762 ms     | **-30.1%** ✅  |
-| Hot-Key (10 keys)   | Throughput  | 74,017 ops/s | 84,863 ops/s | **+14.7%** ✅  |
-|                     | Avg Latency | 2.700 ms     | 2.360 ms     | **-12.6%** ✅  |
-|                     | p99 Latency | 5.490 ms     | 5.602 ms     | +2.0% →        |
+| **Scenario**        | **Metric**  | **v0.2.3**   | **v0.2.4**   | **Δ**         |
+| ------------------- | ----------- | ------------ | ------------ | ------------- |
+| Single Client Write | Throughput  | 6,421 ops/s  | 5,245 ops/s  | -18.3%        |
+|                     | Avg Latency | 0.155 ms     | 0.190 ms     | +22.6%        |
+|                     | p99 Latency | 0.200 ms     | 0.235 ms     | +17.5%        |
+| High Conc. Write    | Throughput  | 55,285 ops/s | 59,733 ops/s | **+8.0%** ✅  |
+|                     | Avg Latency | 3.610 ms     | 3.346 ms     | **-7.3%** ✅  |
+|                     | p99 Latency | 6.720 ms     | 6.325 ms     | **-5.9%** ✅  |
+| Linearizable Read   | Throughput  | 63,210 ops/s | 71,702 ops/s | **+13.4%** ✅ |
+|                     | Avg Latency | 3.160 ms     | 2.791 ms     | **-11.7%** ✅ |
+|                     | p99 Latency | 5.810 ms     | 5.933 ms     | +2.1% →       |
+| Lease Read          | Throughput  | 67,878 ops/s | 72,593 ops/s | **+6.9%** ✅  |
+|                     | Avg Latency | 2.950 ms     | 2.756 ms     | **-6.6%** ✅  |
+|                     | p99 Latency | 6.200 ms     | 5.762 ms     | **-7.1%** ✅  |
+| Eventual Read       | Throughput  | 91,174 ops/s | 94,956 ops/s | **+4.1%** ✅  |
+|                     | Avg Latency | 2.190 ms     | 2.103 ms     | **-4.0%** ✅  |
+|                     | p99 Latency | 13.970 ms    | 9.762 ms     | **-30.1%** ✅ |
+| Hot-Key (10 keys)   | Throughput  | 74,017 ops/s | 84,863 ops/s | **+14.7%** ✅ |
+|                     | Avg Latency | 2.700 ms     | 2.360 ms     | **-12.6%** ✅ |
+|                     | p99 Latency | 5.490 ms     | 5.602 ms     | +2.0% →       |
 
 **Notes**:
 
@@ -96,30 +96,30 @@
 
 ![d-engine v0.2.3 vs v0.2.4 Standalone Mode](d-engine_v0.2.3_vs_v0.2.4_standalone_mode.png)
 
-![d-engine v0.2.4 vs etcd 3.2.0](d-engine_v0.2.4_ vs_etcd_3.2.0.png)
+![d-engine v0.2.4 vs etcd 3.2.0](d-engine_comparison_v0.2.4.png)
 
 ### Embedded Mode: v0.2.4 vs v0.2.3
 
-| **Scenario**        | **Metric**  | **v0.2.3 (AWS)** | **v0.2.4 (AWS)** | **Δ**          |
-| ------------------- | ----------- | ---------------- | ---------------- | -------------- |
-| Single Client Write | Throughput  | 2,710 ops/s      | 4,398 ops/s      | **+62.3%** ✅  |
-|                     | Avg Latency | 0.369 ms         | 0.227 ms         | **-38.5%** ✅  |
-|                     | p99 Latency | 0.588 ms         | 0.316 ms         | **-46.3%** ✅  |
-| High Conc. Write    | Throughput  | 64,269 ops/s     | 110,798 ops/s    | **+72.4%** ✅  |
-|                     | Avg Latency | 1.555 ms         | 0.902 ms         | **-42.0%** ✅  |
-|                     | p99 Latency | 2.809 ms         | 1.063 ms         | **-62.2%** ✅  |
-| Linearizable Read   | Throughput  | 180,768 ops/s    | 327,355 ops/s    | **+81.0%** ✅  |
-|                     | Avg Latency | 0.553 ms         | 0.305 ms         | **-44.8%** ✅  |
-|                     | p99 Latency | 0.751 ms         | 0.374 ms         | **-50.2%** ✅  |
+| **Scenario**        | **Metric**  | **v0.2.3 (AWS)** | **v0.2.4 (AWS)** | **Δ**         |
+| ------------------- | ----------- | ---------------- | ---------------- | ------------- |
+| Single Client Write | Throughput  | 2,710 ops/s      | 4,398 ops/s      | **+62.3%** ✅ |
+|                     | Avg Latency | 0.369 ms         | 0.227 ms         | **-38.5%** ✅ |
+|                     | p99 Latency | 0.588 ms         | 0.316 ms         | **-46.3%** ✅ |
+| High Conc. Write    | Throughput  | 64,269 ops/s     | 110,798 ops/s    | **+72.4%** ✅ |
+|                     | Avg Latency | 1.555 ms         | 0.902 ms         | **-42.0%** ✅ |
+|                     | p99 Latency | 2.809 ms         | 1.063 ms         | **-62.2%** ✅ |
+| Linearizable Read   | Throughput  | 180,768 ops/s    | 327,355 ops/s    | **+81.0%** ✅ |
+|                     | Avg Latency | 0.553 ms         | 0.305 ms         | **-44.8%** ✅ |
+|                     | p99 Latency | 0.751 ms         | 0.374 ms         | **-50.2%** ✅ |
 | Lease Read          | Throughput  | 378,810 ops/s    | 341,254 ops/s    | -9.9% ⚠️      |
 |                     | Avg Latency | 0.264 ms         | 0.293 ms         | +11.0% ⚠️     |
 |                     | p99 Latency | 0.334 ms         | 0.367 ms         | +9.9% ⚠️      |
 | Eventual Read       | Throughput  | 394,709 ops/s    | 363,407 ops/s    | -7.9% ⚠️      |
 |                     | Avg Latency | 0.253 ms         | 0.274 ms         | +8.3% ⚠️      |
 |                     | p99 Latency | 0.320 ms         | 0.343 ms         | +7.2% ⚠️      |
-| Hot-Key (10 keys)   | Throughput  | 184,510 ops/s    | 319,957 ops/s    | **+73.4%** ✅  |
-|                     | Avg Latency | 0.542 ms         | 0.313 ms         | **-42.3%** ✅  |
-|                     | p99 Latency | 0.714 ms         | 0.360 ms         | **-49.6%** ✅  |
+| Hot-Key (10 keys)   | Throughput  | 184,510 ops/s    | 319,957 ops/s    | **+73.4%** ✅ |
+|                     | Avg Latency | 0.542 ms         | 0.313 ms         | **-42.3%** ✅ |
+|                     | p99 Latency | 0.714 ms         | 0.360 ms         | **-49.6%** ✅ |
 
 **Notes**:
 
@@ -130,51 +130,51 @@
 
 ### Embedded Mode: v0.2.4 vs etcd 3.2.0
 
-| **Scenario**        | **Metric**  | **d-engine v0.2.4** | **etcd 3.2.0** | **Δ**          |
-| ------------------- | ----------- | ------------------- | -------------- | -------------- |
-| Single Client Write | Throughput  | 4,398 ops/s         | 583 ops/s      | **+7.5x** ✅   |
-|                     | Avg Latency | 0.227 ms            | 1.6 ms         | **-85.8%** ✅  |
-|                     | p99 Latency | 0.316 ms            | —              | —              |
-| High Conc. Write    | Throughput  | 110,798 ops/s       | 44,341 ops/s   | **+2.5x** ✅   |
-|                     | Avg Latency | 0.902 ms            | 22.0 ms        | **-95.9%** ✅  |
-|                     | p99 Latency | 1.063 ms            | —              | —              |
-| Linearizable Read   | Throughput  | 327,355 ops/s       | 141,578 ops/s  | **+2.3x** ✅   |
-|                     | Avg Latency | 0.305 ms            | 5.5 ms         | **-94.5%** ✅  |
-|                     | p99 Latency | 0.374 ms            | —              | —              |
-| Lease Read          | Throughput  | 341,254 ops/s       | —³             | —              |
-|                     | Avg Latency | 0.293 ms            | —              | —              |
-|                     | p99 Latency | 0.367 ms            | —              | —              |
-| Eventual Read       | Throughput  | 363,407 ops/s       | 185,758 ops/s  | **+95.6%** ✅  |
-|                     | Avg Latency | 0.274 ms            | 2.2 ms         | **-87.5%** ✅  |
-|                     | p99 Latency | 0.343 ms            | —              | —              |
-| Hot-Key (10 keys)   | Throughput  | 319,957 ops/s       | —³             | —              |
-|                     | Avg Latency | 0.313 ms            | —              | —              |
-|                     | p99 Latency | 0.360 ms            | —              | —              |
+| **Scenario**        | **Metric**  | **d-engine v0.2.4** | **etcd 3.2.0** | **Δ**         |
+| ------------------- | ----------- | ------------------- | -------------- | ------------- |
+| Single Client Write | Throughput  | 4,398 ops/s         | 583 ops/s      | **+7.5x** ✅  |
+|                     | Avg Latency | 0.227 ms            | 1.6 ms         | **-85.8%** ✅ |
+|                     | p99 Latency | 0.316 ms            | —              | —             |
+| High Conc. Write    | Throughput  | 110,798 ops/s       | 44,341 ops/s   | **+2.5x** ✅  |
+|                     | Avg Latency | 0.902 ms            | 22.0 ms        | **-95.9%** ✅ |
+|                     | p99 Latency | 1.063 ms            | —              | —             |
+| Linearizable Read   | Throughput  | 327,355 ops/s       | 141,578 ops/s  | **+2.3x** ✅  |
+|                     | Avg Latency | 0.305 ms            | 5.5 ms         | **-94.5%** ✅ |
+|                     | p99 Latency | 0.374 ms            | —              | —             |
+| Lease Read          | Throughput  | 341,254 ops/s       | —³             | —             |
+|                     | Avg Latency | 0.293 ms            | —              | —             |
+|                     | p99 Latency | 0.367 ms            | —              | —             |
+| Eventual Read       | Throughput  | 363,407 ops/s       | 185,758 ops/s  | **+95.6%** ✅ |
+|                     | Avg Latency | 0.274 ms            | 2.2 ms         | **-87.5%** ✅ |
+|                     | p99 Latency | 0.343 ms            | —              | —             |
+| Hot-Key (10 keys)   | Throughput  | 319,957 ops/s       | —³             | —             |
+|                     | Avg Latency | 0.313 ms            | —              | —             |
+|                     | p99 Latency | 0.360 ms            | —              | —             |
 
 ---
 
 ### Standalone Mode: v0.2.4 vs v0.2.3
 
-| **Scenario**        | **Metric**  | **v0.2.3 (AWS)** | **v0.2.4 (AWS)** | **Δ**          |
-| ------------------- | ----------- | ---------------- | ---------------- | -------------- |
-| Single Client Write | Throughput  | 1,667 ops/s      | 2,305 ops/s      | **+38.3%** ✅  |
-|                     | Avg Latency | 0.600 ms         | 0.433 ms         | **-27.8%** ✅  |
-|                     | p99 Latency | 0.832 ms         | 0.567 ms         | **-31.8%** ✅  |
-| High Conc. Write    | Throughput  | 36,160 ops/s     | 59,687 ops/s     | **+65.1%** ✅  |
-|                     | Avg Latency | 5.532 ms         | 3.346 ms         | **-39.5%** ✅  |
-|                     | p99 Latency | 10.154 ms        | 7.106 ms         | **-30.0%** ✅  |
-| Linearizable Read   | Throughput  | 51,077 ops/s     | 77,907 ops/s     | **+52.5%** ✅  |
-|                     | Avg Latency | 3.916 ms         | 2.563 ms         | **-34.6%** ✅  |
-|                     | p99 Latency | 8.230 ms         | 6.308 ms         | **-23.4%** ✅  |
-| Lease Read          | Throughput  | 62,555 ops/s     | 76,144 ops/s     | **+21.7%** ✅  |
-|                     | Avg Latency | 3.188 ms         | 2.624 ms         | **-17.7%** ✅  |
-|                     | p99 Latency | 6.676 ms         | 6.130 ms         | **-8.2%** ✅   |
-| Eventual Read       | Throughput  | 151,427 ops/s    | 170,000 ops/s    | **+12.3%** ✅  |
-|                     | Avg Latency | 1.317 ms         | 1.171 ms         | **-11.1%** ✅  |
-|                     | p99 Latency | 2.613 ms         | 2.245 ms         | **-14.1%** ✅  |
-| Hot-Key (10 keys)   | Throughput  | 58,677 ops/s     | 90,609 ops/s     | **+54.4%** ✅  |
-|                     | Avg Latency | 3.407 ms         | 2.203 ms         | **-35.3%** ✅  |
-|                     | p99 Latency | 7.257 ms         | 6.127 ms         | **-15.6%** ✅  |
+| **Scenario**        | **Metric**  | **v0.2.3 (AWS)** | **v0.2.4 (AWS)** | **Δ**         |
+| ------------------- | ----------- | ---------------- | ---------------- | ------------- |
+| Single Client Write | Throughput  | 1,667 ops/s      | 2,305 ops/s      | **+38.3%** ✅ |
+|                     | Avg Latency | 0.600 ms         | 0.433 ms         | **-27.8%** ✅ |
+|                     | p99 Latency | 0.832 ms         | 0.567 ms         | **-31.8%** ✅ |
+| High Conc. Write    | Throughput  | 36,160 ops/s     | 59,687 ops/s     | **+65.1%** ✅ |
+|                     | Avg Latency | 5.532 ms         | 3.346 ms         | **-39.5%** ✅ |
+|                     | p99 Latency | 10.154 ms        | 7.106 ms         | **-30.0%** ✅ |
+| Linearizable Read   | Throughput  | 51,077 ops/s     | 77,907 ops/s     | **+52.5%** ✅ |
+|                     | Avg Latency | 3.916 ms         | 2.563 ms         | **-34.6%** ✅ |
+|                     | p99 Latency | 8.230 ms         | 6.308 ms         | **-23.4%** ✅ |
+| Lease Read          | Throughput  | 62,555 ops/s     | 76,144 ops/s     | **+21.7%** ✅ |
+|                     | Avg Latency | 3.188 ms         | 2.624 ms         | **-17.7%** ✅ |
+|                     | p99 Latency | 6.676 ms         | 6.130 ms         | **-8.2%** ✅  |
+| Eventual Read       | Throughput  | 151,427 ops/s    | 170,000 ops/s    | **+12.3%** ✅ |
+|                     | Avg Latency | 1.317 ms         | 1.171 ms         | **-11.1%** ✅ |
+|                     | p99 Latency | 2.613 ms         | 2.245 ms         | **-14.1%** ✅ |
+| Hot-Key (10 keys)   | Throughput  | 58,677 ops/s     | 90,609 ops/s     | **+54.4%** ✅ |
+|                     | Avg Latency | 3.407 ms         | 2.203 ms         | **-35.3%** ✅ |
+|                     | p99 Latency | 7.257 ms         | 6.127 ms         | **-15.6%** ✅ |
 
 **Notes**:
 
@@ -186,26 +186,26 @@
 
 ### Standalone Mode: v0.2.4 vs etcd 3.2.0
 
-| **Scenario**        | **Metric**  | **d-engine v0.2.4** | **etcd 3.2.0** | **Δ**          |
-| ------------------- | ----------- | ------------------- | -------------- | -------------- |
-| Single Client Write | Throughput  | 2,305 ops/s         | 583 ops/s      | **+4.0x** ✅   |
-|                     | Avg Latency | 0.433 ms            | 1.6 ms         | **-72.9%** ✅  |
-|                     | p99 Latency | 0.567 ms            | —              | —              |
-| High Conc. Write    | Throughput  | 59,687 ops/s        | 44,341 ops/s   | **+34.6%** ✅  |
-|                     | Avg Latency | 3.346 ms            | 22.0 ms        | **-84.8%** ✅  |
-|                     | p99 Latency | 7.106 ms            | —              | —              |
-| Linearizable Read   | Throughput  | 77,907 ops/s        | 141,578 ops/s  | -44.9%         |
-|                     | Avg Latency | 2.563 ms            | 5.5 ms         | **-53.4%** ✅  |
-|                     | p99 Latency | 6.308 ms            | —              | —              |
-| Lease Read          | Throughput  | 76,144 ops/s        | —³             | —              |
-|                     | Avg Latency | 2.624 ms            | —              | —              |
-|                     | p99 Latency | 6.130 ms            | —              | —              |
-| Eventual Read       | Throughput  | 170,000 ops/s       | 185,758 ops/s  | -8.5% →        |
-|                     | Avg Latency | 1.171 ms            | 2.2 ms         | **-46.8%** ✅  |
-|                     | p99 Latency | 2.245 ms            | —              | —              |
-| Hot-Key (10 keys)   | Throughput  | 90,609 ops/s        | —³             | —              |
-|                     | Avg Latency | 2.203 ms            | —              | —              |
-|                     | p99 Latency | 6.127 ms            | —              | —              |
+| **Scenario**        | **Metric**  | **d-engine v0.2.4** | **etcd 3.2.0** | **Δ**         |
+| ------------------- | ----------- | ------------------- | -------------- | ------------- |
+| Single Client Write | Throughput  | 2,305 ops/s         | 583 ops/s      | **+4.0x** ✅  |
+|                     | Avg Latency | 0.433 ms            | 1.6 ms         | **-72.9%** ✅ |
+|                     | p99 Latency | 0.567 ms            | —              | —             |
+| High Conc. Write    | Throughput  | 59,687 ops/s        | 44,341 ops/s   | **+34.6%** ✅ |
+|                     | Avg Latency | 3.346 ms            | 22.0 ms        | **-84.8%** ✅ |
+|                     | p99 Latency | 7.106 ms            | —              | —             |
+| Linearizable Read   | Throughput  | 77,907 ops/s        | 141,578 ops/s  | -44.9%        |
+|                     | Avg Latency | 2.563 ms            | 5.5 ms         | **-53.4%** ✅ |
+|                     | p99 Latency | 6.308 ms            | —              | —             |
+| Lease Read          | Throughput  | 76,144 ops/s        | —³             | —             |
+|                     | Avg Latency | 2.624 ms            | —              | —             |
+|                     | p99 Latency | 6.130 ms            | —              | —             |
+| Eventual Read       | Throughput  | 170,000 ops/s       | 185,758 ops/s  | -8.5% →       |
+|                     | Avg Latency | 1.171 ms            | 2.2 ms         | **-46.8%** ✅ |
+|                     | p99 Latency | 2.245 ms            | —              | —             |
+| Hot-Key (10 keys)   | Throughput  | 90,609 ops/s        | —³             | —             |
+|                     | Avg Latency | 2.203 ms            | —              | —             |
+|                     | p99 Latency | 6.127 ms            | —              | —             |
 
 **Notes**:
 
@@ -234,20 +234,3 @@ max_batch_size = 200
 ```
 
 The `unified_db = true` path exists but was not covered by this benchmark run.
-
----
-
-## Key Changes in v0.2.4
-
-| Change | Commit / Ticket | Impact |
-| ------ | --------------- | ------ |
-| Unified IO architecture: single IO thread, drain-then-fsync, pipeline replication | 372df3b (#295, #313, #321, #329, #332–#334, #336, #340–#343, #346) | Foundation for all IO performance improvements |
-| Eliminate per-entry flush and lock in FileLogStore `persist_entries` | b7a8e6a (#349) | Embedded HC Write +32.5%, p99 -26.7%; standalone HC Write p99 -8.2% |
-| Restructure FileLogStore to single `Mutex<Inner>`, add `replace_range` override, store `end_pos` in index | 6df0a1d (#350) | Reduces lock contention; enables atomic truncate+write path |
-| IO thread owns `new_current_thread` runtime; `handle_non_write_cmd` fatal-exits on `replace_range` failure; `IOTask::ReplaceRange` carries `done` channel to block caller until truncation is durable | (#295) | Prevents SIGABRT on runtime drop; prevents flush short-circuit after log truncation; prevents IO thread from continuing on corrupted disk state |
-| Unified RocksDB option (`unified_db = true`): single DB with 4 CFs, shared block cache | #295 | Reduces memory RSS and file descriptor usage; throughput impact not benchmarked in this report |
-| Fix durable quorum: use `durable_index` for majority calculation and follower ACK | #329 | Prevents data loss with `MemFirst` strategy under concurrent leader+follower crash; correctness fix |
-| Snapshot push when peer log falls behind leader purge boundary | #336 | Fixes stuck follower when leader has purged entries the peer needs (Raft §7 compliance) |
-| Fix candidate not stepping down on same-term AppendEntries conflict | #340 | Prevents unnecessary leader re-elections during membership changes |
-| Reduce default `snapshot_cool_down` from 3600s to 60s | #290 | Enables practical log compaction; prevents unbounded log growth in production |
-| Remove `DiskFirst` persistence strategy | #332 | Simplifies storage layer; `MemFirst` provides OS page-cache durability — power-loss safety requires explicit fsync, which `MemFirst` does not perform |
