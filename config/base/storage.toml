@@ -1,0 +1,15 @@
+# Storage engine infrastructure configuration.
+#
+# Controls low-level storage backend behavior, independent of Raft protocol semantics.
+
+[storage]
+# Use a single shared RocksDB instance (4 column families) instead of two separate DB
+# instances (one for Raft log + meta, one for state machine).
+#
+# true:  one 128 MB block cache, one background thread pool, one file-descriptor budget
+#        — halves resource usage. Good for developer machines and resource-constrained envs.
+# false: each DB instance manages its own resources, providing stronger isolation between
+#        the log and state machine workloads. Recommended for production.
+#
+# Default: false
+unified_db = false

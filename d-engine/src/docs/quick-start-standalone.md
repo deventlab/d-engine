@@ -73,6 +73,46 @@ Value: world
 
 ---
 
+## Rust Client
+
+Add the client feature to your `Cargo.toml`:
+
+```toml
+d-engine = { version = "0.2", features = ["client"], default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+Then connect and run KV operations:
+
+```rust,no_run
+use d_engine::prelude::*;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = ClientBuilder::new(vec!["http://127.0.0.1:9081".into()])
+        .build()
+        .await?;
+
+    client.put(b"hello".to_vec(), b"world".to_vec()).await?;
+    let value = client.get_linearizable(b"hello".to_vec()).await?;
+    println!("{}", String::from_utf8_lossy(&value.unwrap()));
+
+    Ok(())
+}
+```
+
+Pass all cluster nodes for resilience — the client auto-redirects writes to the leader:
+
+```rust,no_run
+ClientBuilder::new(vec![
+    "http://127.0.0.1:9081".into(),
+    "http://127.0.0.1:9082".into(),
+    "http://127.0.0.1:9083".into(),
+])
+```
+
+---
+
 ## What's Next?
 
 **Try other languages:**
