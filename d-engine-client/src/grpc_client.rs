@@ -30,10 +30,9 @@ use crate::ClientResponseExt;
 use crate::scoped_timer::ScopedTimer;
 use d_engine_core::client::{ClientApi, ClientApiResult};
 
-/// gRPC-based key-value store client
+/// gRPC-based KV client for standalone mode. Obtained via [`crate::ClientBuilder`].
 ///
-/// Implements remote CRUD operations via gRPC protocol.
-/// All write operations use strong consistency.
+/// For embedded mode use `EmbeddedClient` instead. Both implement `ClientApi`.
 #[derive(Clone)]
 pub struct GrpcClient {
     pub(super) client_inner: Arc<ArcSwap<ClientInner>>,

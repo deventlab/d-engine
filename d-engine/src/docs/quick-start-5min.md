@@ -30,18 +30,22 @@ Add d-engine to your `Cargo.toml`:
 [dependencies]
 d-engine = "0.2"  # Default includes server + rocksdb
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# rt-multi-thread: d-engine spawns background tasks; macros: #[tokio::main]
 ```
 
 ---
 
 ## Step 2: Create Config File (1 minute)
 
-Create `d-engine.toml`:
+Create `d-engine.toml` with only the settings you need — omitted fields use built-in defaults:
 
 ```toml
 [cluster]
 db_root_dir = "./data/single-node"
 ```
+
+For all available options with descriptions and defaults, see
+[`d_engine_core::config`](https://docs.rs/d-engine-core/latest/d_engine_core/config/).
 
 ## Step 3: Write Your First d-engine App (2 minutes)
 
@@ -239,17 +243,6 @@ See [complete API documentation](https://docs.rs/d-engine/latest/d_engine/prelud
 
 ---
 
-## Performance Characteristics
-
-| Operation           | Single-Node         | 3-Node Cluster              |
-| ------------------- | ------------------- | --------------------------- |
-| **put()**           | <0.1ms (local)      | 1-5ms (network replication) |
-| **get()**           | <0.1ms (local read) | <0.1ms (local read)         |
-| **Leader election** | <100ms              | 1-2s (network RTT)          |
-| **Failover**        | N/A (no peers)      | 1-2s (auto re-election)     |
-
----
-
 ## Common Patterns
 
 ### Pattern 1: Production (explicit data directory)
@@ -259,7 +252,7 @@ See [complete API documentation](https://docs.rs/d-engine/latest/d_engine/prelud
 let engine = EmbeddedEngine::start("./data").await?;
 ```
 
-### Pattern 2: Development (explicit config)
+### Pattern 2: Explicit config file
 
 ```rust,ignore
 // Use specific config file

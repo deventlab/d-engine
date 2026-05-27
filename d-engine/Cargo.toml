@@ -37,6 +37,12 @@ watch = ["server", "d-engine-server/watch"]
 # Add to `[dev-dependencies]` when implementing and testing custom state machines or storage engines.
 __test_support = ["server", "d-engine-server/__test_support"]
 
+[lib]
+# d-engine is a pure re-export wrapper — doc examples use tokio + feature-gated types
+# that are not available in the default doctest context. Real compilation verification
+# is provided by examples/ (compiled via `check-examples` in CI).
+doctest = false
+
 [dependencies]
 d-engine-client = { workspace = true, optional = true }
 d-engine-server = { workspace = true, optional = true }
