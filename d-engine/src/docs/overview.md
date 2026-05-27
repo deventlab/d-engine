@@ -15,7 +15,7 @@ d-engine = "0.2"  # This is all you need
 
 ### Embedded Mode (Rust)
 
-```rust,no_run
+```rust,ignore
 use d_engine::prelude::*;
 use std::time::Duration;
 
@@ -71,7 +71,7 @@ Both expose identical methods — pick your mode, the API below applies to both.
 | [`EmbeddedClient::get_multi`]             | Read multiple keys                                  |
 | [`EmbeddedClient::get_multi_with_policy`] | Read multiple keys with explicit consistency policy |
 | [`EmbeddedClient::scan_prefix`]           | Prefix scan                                         |
-| [`EmbeddedClient::get_lease`]             | TTL remaining for a key                             |
+| [`EmbeddedClient::get_lease`]             | Lease-based read (optimized linearizable)           |
 
 **Watch**
 

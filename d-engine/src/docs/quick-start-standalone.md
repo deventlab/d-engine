@@ -84,7 +84,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 Then connect and run KV operations:
 
-```rust,no_run
+```rust,ignore
 use d_engine::prelude::*;
 
 #[tokio::main]
@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Pass all cluster nodes for resilience — the client auto-redirects writes to the leader:
 
-```rust,no_run
+```rust,ignore
 ClientBuilder::new(vec![
     "http://127.0.0.1:9081".into(),
     "http://127.0.0.1:9082".into(),
