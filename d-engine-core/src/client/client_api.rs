@@ -30,25 +30,18 @@ use crate::client::client_api_error::ClientApiResult;
 use crate::config::ReadConsistencyPolicy;
 use bytes::Bytes;
 
-/// Unified key-value store interface.
+/// Unified key-value store interface implemented by `EmbeddedClient` and `GrpcClient`.
 ///
-/// This trait abstracts over different client implementations, allowing applications
-/// to write generic code that works with both remote (gRPC) and embedded (local) access.
+/// You do **not** need to import or name this trait directly — use the concrete client type
+/// returned by `engine.client()` or `ClientBuilder` and call methods on it.
 ///
-/// # Consistency Guarantees
+/// Only import `ClientApi` when writing generic code over both client types.
 ///
-/// - **put()**: Strong consistency, linearizable writes
-/// - **get()**: Linearizable reads by default
-/// - **delete()**: Strong consistency, linearizable deletes
+/// # Consistency
 ///
-/// # Thread Safety
-///
-/// All implementations must be `Send + Sync`, safe for concurrent access.
-///
-/// # Performance Characteristics
-///
-/// - `GrpcClient`: 1-2ms latency (network + serialization)
-/// - `EmbeddedClient`: <0.1ms latency (direct function call)
+/// - **put / delete**: linearizable writes (replicated to quorum before returning)
+/// - **get_linearizable**: linearizable read (goes through Raft leader)
+/// - **get_eventual**: fast local read (may be slightly stale)
 #[async_trait::async_trait]
 pub trait ClientApi: Send + Sync {
     /// Stores a key-value pair with strong consistency.

@@ -68,6 +68,8 @@ async fn main() {
 
 **→ Full example:** [examples/quick-start-embedded](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-embedded)
 
+**→ New to d-engine?** [5-minute guide](https://docs.rs/d-engine/latest/d_engine/#-new-to-d-engine-start-here)
+
 ---
 
 ## Integration Modes

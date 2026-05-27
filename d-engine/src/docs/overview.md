@@ -4,66 +4,32 @@
 designed for embedding into applications that need strong consistency—the consensus
 layer for building reliable distributed systems.
 
-**Built with a simple vision**: make distributed coordination accessible - cheap
-to run, simple to use. **Built on a core philosophy**: choose simple architectures
-over complex ones.
-
-d-engine's Raft core uses a single-threaded event loop to guarantee strong consistency
-and strict ordering while keeping the codebase clean and performant. Production-ready
-Raft implementation with flexible read consistency (Linearizable/Lease-Based/Eventual)
-and pluggable storage backends. Start with one node, scale to a cluster when needed.
-
-## 🚀 New to d-engine? Start Here
-
-Follow this learning path to get started quickly:
-
-```text
-1. Is d-engine Right for You? (1 minute)
-   ↓
-2. Choose Integration Mode (1 minute)
-   ↓
-3a. Quick Start - Embedded (5 minutes)
-   OR
-3b. Quick Start - Standalone (5 minutes)
-   ↓
-4. Scale to Cluster (optional)
-```
-
-**→ Start: [Is d-engine Right for You?](crate::docs::use_cases)**
-
 ## Recommended Entry Point
-
-**This is the recommended crate for most users.** It re-exports all functionality from the internal crates below.
 
 ```toml
 [dependencies]
 d-engine = "0.2"  # This is all you need
 ```
 
-## Crate Organization
-
-| Crate               | Purpose                         |
-| ------------------- | ------------------------------- |
-| **d-engine-proto**  | Protocol definitions (Prost)    |
-| **d-engine-core**   | Core Raft algorithm & traits    |
-| **d-engine-client** | Client library for applications |
-| **d-engine-server** | Server runtime implementation   |
-
 ## Quick Start
 
 ### Embedded Mode (Rust)
 
-```rust,ignore
+```rust,no_run
 use d_engine::prelude::*;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
-    engine.wait_ready(std::time::Duration::from_secs(5)).await?;
+    let engine = EmbeddedEngine::start("./data").await?;
+    engine.wait_ready(Duration::from_secs(5)).await?;
 
     let client = engine.client();
-    client.put(b"key".to_vec(), b"value".to_vec()).await?;
+    client.put(b"hello".to_vec(), b"world".to_vec()).await?;
+    let value = client.get_linearizable(b"hello".to_vec()).await?;
+    println!("{}", String::from_utf8_lossy(&value.unwrap()));
 
+    engine.stop().await?;
     Ok(())
 }
 ```
@@ -78,6 +44,51 @@ make start-cluster
 ```
 
 **→ [Standalone Guide](crate::docs::quick_start_standalone)**
+
+## Client API
+
+- [`EmbeddedClient`] → [`EmbeddedEngine::client()`]
+- [`GrpcClient`] → [`ClientBuilder::build()`]
+
+Both expose identical methods — pick your mode, the API below applies to both. No need to import `ClientApi` directly.
+
+**Write**
+
+| Method                               | Description                                    |
+| ------------------------------------ | ---------------------------------------------- |
+| [`EmbeddedClient::put`]              | Write a key-value pair                         |
+| [`EmbeddedClient::put_with_ttl`]     | Write with expiry (key auto-expires after TTL) |
+| [`EmbeddedClient::delete`]           | Delete a key                                   |
+| [`EmbeddedClient::compare_and_swap`] | Atomic CAS                                     |
+
+**Read**
+
+| Method                                    | Description                                         |
+| ----------------------------------------- | --------------------------------------------------- |
+| [`EmbeddedClient::get_eventual`]          | Fast local read (may be slightly stale)             |
+| [`EmbeddedClient::get_linearizable`]      | Linearizable read (goes through leader)             |
+| [`EmbeddedClient::get`]                   | Read with default consistency policy                |
+| [`EmbeddedClient::get_multi`]             | Read multiple keys                                  |
+| [`EmbeddedClient::get_multi_with_policy`] | Read multiple keys with explicit consistency policy |
+| [`EmbeddedClient::scan_prefix`]           | Prefix scan                                         |
+| [`EmbeddedClient::get_lease`]             | TTL remaining for a key                             |
+
+**Watch**
+
+| Method                                        | Description                              |
+| --------------------------------------------- | ---------------------------------------- |
+| [`EmbeddedClient::watch`]                     | Watch a key for changes                  |
+| [`EmbeddedClient::watch_with_options`]        | Watch a key with full options            |
+| [`EmbeddedClient::watch_prefix`]              | Watch all keys under a prefix            |
+| [`EmbeddedClient::watch_prefix_with_options`] | Watch prefix with options (e.g. prev_kv) |
+| [`EmbeddedEngine::watch_membership`]          | Watch cluster membership changes         |
+
+**Cluster**
+
+| Method                            | Description                |
+| --------------------------------- | -------------------------- |
+| [`EmbeddedClient::list_members`]  | List all cluster members   |
+| [`EmbeddedClient::get_leader_id`] | Get current leader node ID |
 
 ## Documentation Index
 
@@ -110,7 +121,3 @@ make start-cluster
 - [Three-Node Standalone Cluster](crate::docs::examples::three_nodes_cluster) - Standalone mode cluster
 - [Throughput Optimization](crate::docs::performance::throughput_optimization_guide)
 - [Benchmarking Guide](crate::docs::performance::benchmarking_guide) - Run embedded and standalone benchmarks
-
-## License
-
-MIT or Apache-2.0

@@ -114,9 +114,9 @@ fn extract_read_payload(result: Option<ClientResponsePayload>) -> ClientApiResul
     }
 }
 
-/// Zero-overhead KV client for embedded mode.
+/// Zero-overhead KV client for embedded mode. Obtained via `EmbeddedEngine::client()`.
 ///
-/// Directly calls Raft core without gRPC overhead.
+/// For standalone/gRPC mode use `GrpcClient` instead. Both implement `ClientApi`.
 #[derive(Clone)]
 pub struct EmbeddedClient {
     event_tx: mpsc::Sender<RaftEvent>,
