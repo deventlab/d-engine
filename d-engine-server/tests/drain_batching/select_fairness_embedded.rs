@@ -37,8 +37,6 @@ single_node = true
 [raft.batching]
 max_batch_size = 100
 
-[raft.state_machine.lease]
-enabled = true
 "#,
         port,
         db_path.display()

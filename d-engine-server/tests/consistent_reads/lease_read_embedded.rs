@@ -31,9 +31,6 @@ listen_address = "127.0.0.1:{}"
 db_root_dir = "{}"
 single_node = true
 
-[raft.state_machine.lease]
-enabled = true
-
 [raft.read_consistency]
 state_machine_sync_timeout_ms = 2000
 "#,

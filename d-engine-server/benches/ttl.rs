@@ -28,7 +28,6 @@ async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     // For TTL benchmarks, we need lease enabled
     let lease_config = d_engine_core::config::LeaseConfig {
-        enabled: true,
         cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     };
@@ -88,7 +87,6 @@ fn bench_piggyback_cleanup(c: &mut Criterion) {
     // Test with different numbers of expired keys
     for expired_count in [10, 50, 100, 500].iter() {
         let lease_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -126,7 +124,6 @@ fn bench_ttl_registration(c: &mut Criterion) {
     use d_engine_server::storage::DefaultLease;
 
     let lease_config = d_engine_core::config::LeaseConfig {
-        enabled: true,
         cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     };

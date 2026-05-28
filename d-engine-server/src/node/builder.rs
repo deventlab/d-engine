@@ -281,22 +281,16 @@ where
         // Start state machine: flip flags and load persisted data
         state_machine.start().await?;
 
-        // Spawn lease background cleanup task (if TTL feature is enabled)
-        // Framework-level feature: completely transparent to developers
-        let lease_cleanup_handle = if node_config.raft.state_machine.lease.enabled {
-            info!(
-                "Starting lease background cleanup worker (interval: {}ms)",
-                node_config.raft.state_machine.lease.cleanup_interval_ms
-            );
-            Some(Self::spawn_background_cleanup_worker(
-                Arc::clone(&state_machine),
-                node_config.raft.state_machine.lease.cleanup_interval_ms,
-                self.shutdown_signal.clone(),
-            ))
-        } else {
-            debug!("Lease feature disabled: no background cleanup worker");
-            None
-        };
+        // Spawn lease background cleanup task (TTL is always active)
+        info!(
+            "Starting lease background cleanup worker (interval: {}ms)",
+            node_config.raft.state_machine.lease.cleanup_interval_ms
+        );
+        let lease_cleanup_handle = Some(Self::spawn_background_cleanup_worker(
+            Arc::clone(&state_machine),
+            node_config.raft.state_machine.lease.cleanup_interval_ms,
+            self.shutdown_signal.clone(),
+        ));
 
         // Handle storage engine initialization
         let storage_engine = self.storage_engine.take().ok_or_else(|| {

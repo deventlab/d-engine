@@ -3,91 +3,123 @@ use super::lease::LeaseConfig;
 #[test]
 fn test_default_config() {
     let config = LeaseConfig::default();
-    assert!(!config.enabled); // Default: disabled
     assert_eq!(config.cleanup_interval_ms, 1000);
     assert_eq!(config.max_cleanup_duration_ms, 1);
     assert!(config.validate().is_ok());
 }
 
 #[test]
-fn test_enabled_config() {
+fn test_explicit_config() {
     let config = LeaseConfig {
-        enabled: true,
         cleanup_interval_ms: 5000,
         max_cleanup_duration_ms: 5,
     };
-    assert!(config.enabled);
     assert_eq!(config.cleanup_interval_ms, 5000);
     assert_eq!(config.max_cleanup_duration_ms, 5);
     assert!(config.validate().is_ok());
 }
 
 #[test]
-fn test_disabled_config_skips_validation() {
-    let config = LeaseConfig {
-        enabled: false,
-        cleanup_interval_ms: 50, // Invalid (too small), but ignored when disabled
-        max_cleanup_duration_ms: 0, // Invalid, but ignored when disabled
-    };
-    assert!(config.validate().is_ok());
-}
-
-#[test]
 fn test_validation_cleanup_interval_ms() {
-    let mut config = LeaseConfig {
-        enabled: true,
-        ..Default::default()
-    };
+    let base = LeaseConfig::default();
 
     // Too small
-    config.cleanup_interval_ms = 99;
-    assert!(config.validate().is_err());
-
+    assert!(
+        LeaseConfig {
+            cleanup_interval_ms: 99,
+            ..base
+        }
+        .validate()
+        .is_err()
+    );
     // Too large
-    config.cleanup_interval_ms = 60_001;
-    assert!(config.validate().is_err());
-
+    assert!(
+        LeaseConfig {
+            cleanup_interval_ms: 60_001,
+            ..base
+        }
+        .validate()
+        .is_err()
+    );
     // Valid range
-    config.cleanup_interval_ms = 100;
-    assert!(config.validate().is_ok());
-
-    config.cleanup_interval_ms = 1000;
-    assert!(config.validate().is_ok());
-
-    config.cleanup_interval_ms = 60_000;
-    assert!(config.validate().is_ok());
+    assert!(
+        LeaseConfig {
+            cleanup_interval_ms: 100,
+            ..base
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        LeaseConfig {
+            cleanup_interval_ms: 1000,
+            ..base
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        LeaseConfig {
+            cleanup_interval_ms: 60_000,
+            ..base
+        }
+        .validate()
+        .is_ok()
+    );
 }
 
 #[test]
 fn test_validation_max_cleanup_duration() {
-    let mut config = LeaseConfig {
-        enabled: true,
-        ..Default::default()
-    };
+    let base = LeaseConfig::default();
 
     // Too small
-    config.max_cleanup_duration_ms = 0;
-    assert!(config.validate().is_err());
-
+    assert!(
+        LeaseConfig {
+            max_cleanup_duration_ms: 0,
+            ..base
+        }
+        .validate()
+        .is_err()
+    );
     // Too large
-    config.max_cleanup_duration_ms = 101;
-    assert!(config.validate().is_err());
-
+    assert!(
+        LeaseConfig {
+            max_cleanup_duration_ms: 101,
+            ..base
+        }
+        .validate()
+        .is_err()
+    );
     // Valid range
-    config.max_cleanup_duration_ms = 1;
-    assert!(config.validate().is_ok());
-
-    config.max_cleanup_duration_ms = 50;
-    assert!(config.validate().is_ok());
-
-    config.max_cleanup_duration_ms = 100;
-    assert!(config.validate().is_ok());
+    assert!(
+        LeaseConfig {
+            max_cleanup_duration_ms: 1,
+            ..base
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        LeaseConfig {
+            max_cleanup_duration_ms: 50,
+            ..base
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        LeaseConfig {
+            max_cleanup_duration_ms: 100,
+            ..base
+        }
+        .validate()
+        .is_ok()
+    );
 }
 
 #[test]
 fn test_typical_production_config() {
     let config = LeaseConfig {
-        enabled: true,
         cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     };
@@ -97,7 +129,6 @@ fn test_typical_production_config() {
 #[test]
 fn test_aggressive_cleanup_config() {
     let config = LeaseConfig {
-        enabled: true,
         cleanup_interval_ms: 100,
         max_cleanup_duration_ms: 10,
     };
@@ -107,7 +138,6 @@ fn test_aggressive_cleanup_config() {
 #[test]
 fn test_relaxed_cleanup_config() {
     let config = LeaseConfig {
-        enabled: true,
         cleanup_interval_ms: 60_000,
         max_cleanup_duration_ms: 5,
     };

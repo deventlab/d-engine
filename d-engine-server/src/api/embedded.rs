@@ -227,11 +227,10 @@ impl EmbeddedEngine {
             (storage, sm)
         };
 
-        let lease_cfg = &config.raft.state_machine.lease;
-        if lease_cfg.enabled {
-            let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
-            sm.set_lease(lease);
-        }
+        let lease = Arc::new(crate::storage::DefaultLease::new(
+            config.raft.state_machine.lease.clone(),
+        ));
+        sm.set_lease(lease);
 
         Self::start_node(config, Arc::new(storage), Arc::new(sm)).await
     }
@@ -277,12 +276,10 @@ impl EmbeddedEngine {
             (storage, sm)
         };
 
-        // Inject lease if enabled
-        let lease_cfg = &config.raft.state_machine.lease;
-        if lease_cfg.enabled {
-            let lease = Arc::new(crate::storage::DefaultLease::new(lease_cfg.clone()));
-            sm.set_lease(lease);
-        }
+        let lease = Arc::new(crate::storage::DefaultLease::new(
+            config.raft.state_machine.lease.clone(),
+        ));
+        sm.set_lease(lease);
 
         Self::start_custom(Arc::new(storage), Arc::new(sm), Some(config_path)).await
     }

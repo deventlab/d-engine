@@ -40,10 +40,8 @@ allow_client_override = true
 state_machine_sync_timeout_ms = 10
 
 [raft.state_machine.lease]
-# Enable TTL (time-to-live) key expiration feature.
-# When disabled (default), no lease components are initialized — zero overhead.
-# When enabled, a background worker periodically removes expired keys.
-enabled = false
+# TTL key expiration — always active, no enable flag needed.
+# A background worker periodically removes expired keys.
 
 # How often the background cleanup worker runs (milliseconds).
 # Controls MEMORY EFFICIENCY only — expired keys are always rejected at read time

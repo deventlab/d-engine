@@ -53,7 +53,6 @@ retained_log_entries = 3
 
 # == TTL Lease Configuration ==
 [raft.state_machine.lease]
-enabled = true
 cleanup_interval_ms = 1000
 max_cleanup_duration_ms = 1
 
