@@ -86,13 +86,6 @@ pub struct RocksDBStateMachine {
     // DefaultLease is thread-safe internally (uses DashMap + Mutex)
     // Injected by NodeBuilder after construction
     lease: Option<Arc<DefaultLease>>,
-
-    /// Whether lease manager is enabled (immutable after init)
-    /// Set to true when lease is injected, never changes after that
-    ///
-    /// Invariant: lease_enabled == true ⟹ lease.is_some()
-    /// Performance: Allows safe unwrap_unchecked in hot paths
-    lease_enabled: bool,
 }
 
 /// Returns the lexicographic successor of `prefix` for use as an iterator upper bound.
@@ -143,7 +136,6 @@ impl RocksDBStateMachine {
             last_applied_term: AtomicU64::new(last_applied_term),
             last_snapshot_metadata: RwLock::new(last_snapshot_metadata),
             lease: None,
-            lease_enabled: false,
         })
     }
 
@@ -162,7 +154,6 @@ impl RocksDBStateMachine {
             last_applied_term: AtomicU64::new(last_applied_term),
             last_snapshot_metadata: RwLock::new(last_snapshot_metadata),
             lease: None,
-            lease_enabled: false,
         })
     }
 
@@ -175,8 +166,6 @@ impl RocksDBStateMachine {
         &mut self,
         lease: Arc<DefaultLease>,
     ) {
-        // Mark lease as enabled (immutable after this point)
-        self.lease_enabled = true;
         self.lease = Some(lease);
     }
 
@@ -755,16 +744,8 @@ impl StateMachine for RocksDBStateMachine {
                     batch.put_cf(&cf, key, value);
 
                     if let Some(ttl) = ttl_secs {
-                        if !self.lease_enabled {
-                            return Err(StorageError::FeatureNotEnabled(
-                                "TTL feature is not enabled on this server. \
-                                 Enable it in config: [raft.state_machine.lease] enabled = true"
-                                    .into(),
-                            )
-                            .into());
-                        }
-                        // Safety: lease_enabled invariant ensures lease.is_some()
-                        let lease = unsafe { self.lease.as_ref().unwrap_unchecked() };
+                        let lease =
+                            self.lease.as_ref().expect("lease always initialized by NodeBuilder");
                         lease.register(key.clone(), *ttl);
                     }
 
@@ -1040,13 +1021,22 @@ impl StateMachine for RocksDBStateMachine {
     }
 
     async fn lease_background_cleanup(&self) -> Result<Vec<Bytes>, Error> {
-        // Fast path: no lease configured
         let Some(ref lease) = self.lease else {
             return Ok(vec![]);
         };
 
-        // Get all expired keys
+        // Fast path: no TTL keys ever registered — single atomic load (~10ns)
+        if !lease.has_lease_keys() {
+            return Ok(vec![]);
+        }
+
         let now = SystemTime::now();
+
+        // Fast path: sample first 10 entries — if none expired, skip full scan (~30ns)
+        if !lease.may_have_expired_keys(now) {
+            return Ok(vec![]);
+        }
+
         let expired_keys = lease.get_expired_keys(now);
 
         if expired_keys.is_empty() {

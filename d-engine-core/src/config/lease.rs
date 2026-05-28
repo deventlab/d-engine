@@ -5,18 +5,16 @@
 //!
 //! # Design Philosophy
 //!
-//! - **Simple**: Single `enabled` flag - no strategy choices
+//! - **Always On**: TTL is part of the public API — no feature flag needed
 //! - **Best Practice**: Fixed background cleanup (industry standard)
-//! - **Zero Overhead**: When disabled, no lease components are initialized
-//! - **Graceful Degradation**: TTL requests are rejected when disabled
+//! - **Low Overhead**: When no TTL keys exist, cleanup cycle is a single atomic load (~10ns)
 //!
 //! # Usage
 //!
 //! ```toml
-//! # Enable TTL feature (default: disabled)
+//! # Optional: tune cleanup behaviour (TTL is always active)
 //! [raft.state_machine.lease]
-//! enabled = true
-//! cleanup_interval_ms = 1000  # Optional, default 1 second
+//! cleanup_interval_ms = 1000  # default 1 second
 //! ```
 
 use config::ConfigError;
@@ -26,52 +24,27 @@ use serde::Serialize;
 use crate::errors::Error;
 use crate::errors::Result;
 
-/// Lease configuration for TTL-based key expiration
+/// Lease configuration for TTL-based key expiration.
 ///
-/// When `enabled = true`:
-/// - Server initializes lease manager at startup
-/// - Background worker periodically cleans expired keys
-/// - Client TTL requests (ttl_secs > 0) are accepted
-///
-/// When `enabled = false` (default):
-/// - No lease components initialized (zero overhead)
-/// - Client TTL requests (ttl_secs > 0) are rejected with error
-/// - All keys are permanent (ttl_secs = 0 is always allowed)
+/// TTL is always active — no enable flag. Background cleanup runs automatically.
 ///
 /// # Performance
 ///
 /// Background cleanup overhead: ~0.001% CPU
 /// - Wakes up every `cleanup_interval_ms` (default 1000ms)
-/// - Scans expired keys (limited by `max_cleanup_duration_ms`)
-/// - Deletes expired entries from storage
+/// - No-op when no TTL keys exist (~10ns atomic load)
+/// - Deletes expired entries when keys are present
 ///
 /// # Examples
 ///
 /// ```rust
 /// use d_engine_core::config::LeaseConfig;
 ///
-/// // Default: disabled
 /// let config = LeaseConfig::default();
-/// assert!(!config.enabled);
-///
-/// // Enable with defaults
-/// let config = LeaseConfig {
-///     enabled: true,
-///     ..Default::default()
-/// };
 /// assert_eq!(config.cleanup_interval_ms, 1000);
 /// ```
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LeaseConfig {
-    /// Enable TTL feature
-    ///
-    /// - `true`: Initialize lease manager + start background cleanup worker
-    /// - `false`: No TTL support, reject requests with ttl_secs > 0
-    ///
-    /// Default: false (zero overhead when TTL not needed)
-    #[serde(default)]
-    pub enabled: bool,
-
     /// How often the background worker wakes up to scan and delete expired keys (milliseconds).
     ///
     /// This setting controls MEMORY EFFICIENCY only, not TTL correctness.
@@ -90,7 +63,7 @@ pub struct LeaseConfig {
     /// - 100-500ms: High-throughput short-TTL workloads (e.g., rate limiting, sessions)
     /// - 5000-60000ms: Low-frequency TTL usage where memory pressure is not a concern
     ///
-    /// Only used when `enabled = true`
+    /// Always active — no enable flag needed.
     #[serde(default = "default_cleanup_interval_ms")]
     pub cleanup_interval_ms: u64,
 
@@ -107,7 +80,7 @@ pub struct LeaseConfig {
     /// - 5-10ms: Aggressive cleanup when backlog exists
     /// - >10ms: Not recommended (can impact foreground operations)
     ///
-    /// Only used when `enabled = true`
+    /// Always active — no enable flag needed.
     #[serde(default = "default_max_cleanup_duration_ms")]
     pub max_cleanup_duration_ms: u64,
 }
@@ -123,7 +96,6 @@ fn default_max_cleanup_duration_ms() -> u64 {
 impl Default for LeaseConfig {
     fn default() -> Self {
         Self {
-            enabled: false, // Default: TTL disabled (zero overhead)
             cleanup_interval_ms: default_cleanup_interval_ms(),
             max_cleanup_duration_ms: default_max_cleanup_duration_ms(),
         }
@@ -137,11 +109,6 @@ impl LeaseConfig {
     /// - `cleanup_interval_ms` is out of range (100-60000)
     /// - `max_cleanup_duration_ms` is out of range (1-100)
     pub fn validate(&self) -> Result<()> {
-        // Skip validation if disabled
-        if !self.enabled {
-            return Ok(());
-        }
-
         // Validate cleanup_interval_ms
         // Range: 100ms to 60s
         // - Lower bound (100ms): Prevents excessive wakeups (CPU waste)

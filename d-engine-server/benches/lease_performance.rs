@@ -27,7 +27,6 @@ use tempfile::TempDir;
 async fn create_sm_background() -> (FileStateMachine, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let lease_config = d_engine_core::config::LeaseConfig {
-        enabled: true,
         cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     };

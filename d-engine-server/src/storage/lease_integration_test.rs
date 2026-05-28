@@ -145,7 +145,6 @@ mod file_state_machine_tests {
     async fn test_ttl_expiration_after_apply() {
         let temp_dir = TempDir::new().unwrap();
         let lease_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -175,7 +174,6 @@ mod file_state_machine_tests {
     async fn test_ttl_snapshot_persistence() {
         let temp_dir = TempDir::new().unwrap();
         let lease_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -224,7 +222,6 @@ mod file_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let state_machine_path = temp_dir.path().to_path_buf();
         let lease_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -297,7 +294,6 @@ mod file_state_machine_tests {
     async fn test_ttl_update_cancels_previous() {
         let temp_dir = TempDir::new().unwrap();
         let lease_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -328,7 +324,6 @@ mod file_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let state_machine_path = temp_dir.path().to_path_buf();
         let lease_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -589,7 +584,6 @@ mod file_state_machine_tests {
     async fn test_background_strategy_manual_cleanup() {
         let temp_dir = TempDir::new().unwrap();
         let lease_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 50,
         };
@@ -642,7 +636,6 @@ mod file_state_machine_tests {
     async fn test_background_cleanup_respects_max_duration() {
         let temp_dir = TempDir::new().unwrap();
         let lease_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1, // Very short limit
         };
@@ -677,6 +670,92 @@ mod file_state_machine_tests {
             "Cleanup should respect max duration (took {:?})",
             duration
         );
+    }
+
+    /// Fast path: cleanup is a no-op when no TTL keys have ever been registered.
+    ///
+    /// `has_lease_keys()` returns false → cleanup must return empty without
+    /// scanning storage. Regular (non-TTL) keys must be untouched.
+    #[tokio::test]
+    async fn test_background_cleanup_fast_path_no_ttl_keys_ever_registered() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = create_file_state_machine_with_lease(
+            temp_dir.path().to_path_buf(),
+            d_engine_core::config::LeaseConfig::default(),
+        )
+        .await;
+
+        // Insert regular keys without TTL
+        for i in 0..5u64 {
+            let key = format!("plain_key_{i}");
+            let entry = ApplyEntry {
+                index: i + 1,
+                term: 1,
+                command: Command::Insert {
+                    key: Bytes::copy_from_slice(key.as_bytes()),
+                    value: Bytes::from("value"),
+                    ttl_secs: None,
+                },
+            };
+            sm.apply_chunk(&[entry]).await.unwrap();
+        }
+
+        // Cleanup must be a no-op: no TTL keys, nothing to scan or delete
+        let cleaned = sm.lease_background_cleanup().await.unwrap();
+        assert!(
+            cleaned.is_empty(),
+            "cleanup must return empty when no TTL keys registered, got {:?}",
+            cleaned
+        );
+
+        // All regular keys must survive cleanup
+        for i in 0..5u64 {
+            let key = format!("plain_key_{i}");
+            assert_eq!(
+                sm.get(key.as_bytes()).unwrap(),
+                Some(Bytes::from("value")),
+                "plain_key_{i} must not be touched by cleanup"
+            );
+        }
+    }
+
+    /// Fast path: cleanup is a no-op when TTL keys exist but none are expired.
+    ///
+    /// `has_lease_keys()` is true but `may_have_expired_keys()` is false →
+    /// cleanup must return empty and leave all keys intact.
+    #[tokio::test]
+    async fn test_background_cleanup_fast_path_unexpired_keys_preserved() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = create_file_state_machine_with_lease(
+            temp_dir.path().to_path_buf(),
+            d_engine_core::config::LeaseConfig::default(),
+        )
+        .await;
+
+        // Insert keys with a very long TTL (3600s, will not expire during test)
+        for i in 0..5u64 {
+            let key = format!("ttl_key_{i}");
+            let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 3600);
+            sm.apply_chunk(&[entry]).await.unwrap();
+        }
+
+        // Cleanup must skip all keys: none are expired
+        let cleaned = sm.lease_background_cleanup().await.unwrap();
+        assert!(
+            cleaned.is_empty(),
+            "cleanup must return empty when no keys are expired, got {:?}",
+            cleaned
+        );
+
+        // All TTL keys must still be readable
+        for i in 0..5u64 {
+            let key = format!("ttl_key_{i}");
+            assert_eq!(
+                sm.get(key.as_bytes()).unwrap(),
+                Some(Bytes::from("value")),
+                "ttl_key_{i} must not be deleted by cleanup before expiry"
+            );
+        }
     }
 }
 
@@ -742,7 +821,6 @@ mod rocksdb_state_machine_tests {
     async fn test_rocksdb_ttl_expiration_after_apply() {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -774,7 +852,6 @@ mod rocksdb_state_machine_tests {
     async fn test_rocksdb_ttl_snapshot_persistence() {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -828,7 +905,6 @@ mod rocksdb_state_machine_tests {
     async fn test_rocksdb_ttl_update_cancels_previous() {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -860,7 +936,6 @@ mod rocksdb_state_machine_tests {
     async fn test_rocksdb_ttl_delete_unregisters() {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -890,7 +965,6 @@ mod rocksdb_state_machine_tests {
     async fn test_rocksdb_multiple_keys_with_different_ttls() {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -939,7 +1013,6 @@ mod rocksdb_state_machine_tests {
         let temp_dir = TempDir::new().unwrap();
         let state_machine_path = temp_dir.path().join("rocksdb");
         let ttl_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -1013,7 +1086,6 @@ mod rocksdb_state_machine_tests {
     async fn test_rocksdb_reset_clears_ttl_manager() {
         let temp_dir = TempDir::new().unwrap();
         let ttl_config = d_engine_core::config::LeaseConfig {
-            enabled: true,
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
@@ -1035,11 +1107,96 @@ mod rocksdb_state_machine_tests {
         assert_eq!(sm.len(), 0);
     }
 
+    /// Fast path: cleanup is a no-op when no TTL keys have ever been registered.
+    ///
+    /// `has_lease_keys()` returns false → cleanup must return empty without
+    /// scanning storage. Regular (non-TTL) keys must be untouched.
+    #[tokio::test]
+    async fn test_rocksdb_background_cleanup_fast_path_no_ttl_keys_ever_registered() {
+        let temp_dir = TempDir::new().unwrap();
+        let (_storage, sm) = create_rocksdb_state_machine_with_lease(
+            temp_dir.path().join("rocksdb"),
+            d_engine_core::config::LeaseConfig::default(),
+        )
+        .await;
+
+        // Insert regular keys without TTL
+        for i in 0..5u64 {
+            let key = format!("plain_key_{i}");
+            let entry = ApplyEntry {
+                index: i + 1,
+                term: 1,
+                command: Command::Insert {
+                    key: Bytes::copy_from_slice(key.as_bytes()),
+                    value: Bytes::from("value"),
+                    ttl_secs: None,
+                },
+            };
+            sm.apply_chunk(&[entry]).await.unwrap();
+        }
+
+        // Cleanup must be a no-op: no TTL keys, nothing to scan or delete
+        let cleaned = sm.lease_background_cleanup().await.unwrap();
+        assert!(
+            cleaned.is_empty(),
+            "cleanup must return empty when no TTL keys registered, got {:?}",
+            cleaned
+        );
+
+        // All regular keys must survive cleanup
+        for i in 0..5u64 {
+            let key = format!("plain_key_{i}");
+            assert_eq!(
+                sm.get(key.as_bytes()).unwrap(),
+                Some(Bytes::from("value")),
+                "plain_key_{i} must not be touched by cleanup"
+            );
+        }
+    }
+
+    /// Fast path: cleanup is a no-op when TTL keys exist but none are expired.
+    ///
+    /// `has_lease_keys()` is true but `may_have_expired_keys()` is false →
+    /// cleanup must return empty and leave all keys intact.
+    #[tokio::test]
+    async fn test_rocksdb_background_cleanup_fast_path_unexpired_keys_preserved() {
+        let temp_dir = TempDir::new().unwrap();
+        let (_storage, sm) = create_rocksdb_state_machine_with_lease(
+            temp_dir.path().join("rocksdb"),
+            d_engine_core::config::LeaseConfig::default(),
+        )
+        .await;
+
+        // Insert keys with a very long TTL (3600s, will not expire during test)
+        for i in 0..5u64 {
+            let key = format!("ttl_key_{i}");
+            let entry = create_insert_entry(i + 1, 1, key.as_bytes(), b"value", 3600);
+            sm.apply_chunk(&[entry]).await.unwrap();
+        }
+
+        // Cleanup must skip all keys: none are expired
+        let cleaned = sm.lease_background_cleanup().await.unwrap();
+        assert!(
+            cleaned.is_empty(),
+            "cleanup must return empty when no keys are expired, got {:?}",
+            cleaned
+        );
+
+        // All TTL keys must still be readable
+        for i in 0..5u64 {
+            let key = format!("ttl_key_{i}");
+            assert_eq!(
+                sm.get(key.as_bytes()).unwrap(),
+                Some(Bytes::from("value")),
+                "ttl_key_{i} must not be deleted by cleanup before expiry"
+            );
+        }
+    }
+
     //     #[tokio::test]
     //     async fn test_rocksdb_passive_deletion_on_get() {
     //         let temp_dir = TempDir::new().unwrap();
     //         let ttl_config = d_engine_core::config::LeaseConfig {
-    //             enabled: true,
     //             cleanup_interval_ms: 1000,
     //             max_cleanup_duration_ms: 1,
     //         };
