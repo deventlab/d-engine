@@ -599,6 +599,11 @@ async fn test_put_with_ttl_succeeds_with_default_config() {
         .put(b"probe", b"alive")
         .await
         .expect("node must still be alive after put_with_ttl (#398 regression)");
+    let probe = client
+        .get_linearizable(b"probe")
+        .await
+        .expect("probe read should succeed after put_with_ttl");
+    assert_eq!(probe, Some(Bytes::from("alive")));
 }
 
 // =============================================================================

@@ -122,7 +122,6 @@ impl StandaloneEngine {
             (storage, sm)
         };
 
-        // Inject lease if enabled
         let lease = Arc::new(crate::storage::DefaultLease::new(
             config.raft.state_machine.lease.clone(),
         ));
