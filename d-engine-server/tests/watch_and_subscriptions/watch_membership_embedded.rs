@@ -1,4 +1,4 @@
-//! Integration tests for `EmbeddedEngine::watch_membership()` — Ticket #327
+//! Integration tests for `DefaultEmbeddedEngine::watch_membership()` — Ticket #327
 //!
 //! Verifies in-process membership change notifications via `watch::Receiver<MembershipSnapshot>`.
 //!
@@ -49,7 +49,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_server::{EmbeddedEngine, RocksDBUnifiedEngine};
+use d_engine_server::{DefaultEmbeddedEngine, RocksDBUnifiedEngine};
 use tempfile::TempDir;
 use tokio::time::timeout;
 use tracing_test::traced_test;
@@ -179,18 +179,21 @@ async fn wait_for_node_in_snapshot(
     .flatten()
 }
 
-/// Start one `EmbeddedEngine` from a TOML string written to a temp file.
+/// Start one `DefaultEmbeddedEngine` from a TOML string written to a temp file.
 async fn start_engine(
     toml: &str,
     node_id: u32,
     db_root: &std::path::Path,
     config_path: &str,
-) -> Result<EmbeddedEngine, Box<dyn std::error::Error>> {
+) -> Result<DefaultEmbeddedEngine, Box<dyn std::error::Error>> {
     tokio::fs::write(config_path, toml).await?;
     let db_path = db_root.join(format!("node{node_id}/db"));
     tokio::fs::create_dir_all(&db_path).await?;
     let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
-    Ok(EmbeddedEngine::start_custom(Arc::new(storage), Arc::new(sm), Some(config_path)).await?)
+    Ok(
+        DefaultEmbeddedEngine::start_custom(Arc::new(storage), Arc::new(sm), Some(config_path))
+            .await?,
+    )
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

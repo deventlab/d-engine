@@ -753,7 +753,7 @@ async fn test_expired_lease_detection() {
 
     // Don't update lease timestamp - lease should be expired by default
     assert!(
-        !state.is_lease_valid(&context),
+        !state.is_lease_valid(),
         "Lease should be expired when timestamp is never updated"
     );
 }
@@ -796,10 +796,7 @@ async fn test_expired_lease_single_voter_refreshed_immediately() {
     membership.expect_replication_peers().returning(Vec::new);
     state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
 
-    assert!(
-        !state.is_lease_valid(&context),
-        "Precondition: lease expired"
-    );
+    assert!(!state.is_lease_valid(), "Precondition: lease expired");
 
     let client_read_request = ClientReadRequest {
         client_id: 1,
@@ -815,7 +812,7 @@ async fn test_expired_lease_single_voter_refreshed_immediately() {
 
     // Lease must be refreshed after flush
     assert!(
-        state.is_lease_valid(&context),
+        state.is_lease_valid(),
         "Lease must be refreshed after single-voter flush"
     );
 
@@ -1187,10 +1184,7 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
 
     // Verify: Initial lease is invalid
-    assert!(
-        !state.is_lease_valid(&ctx),
-        "Lease should be invalid initially"
-    );
+    assert!(!state.is_lease_valid(), "Lease should be invalid initially");
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
@@ -1213,7 +1207,7 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     state.handle_log_flushed(1, &ctx, &role_tx).await;
 
     assert!(
-        state.is_lease_valid(&ctx),
+        state.is_lease_valid(),
         "Lease should be valid after log flush (single-voter)"
     );
 
@@ -1282,7 +1276,7 @@ async fn test_eventual_consistency_ignores_stale_lease() {
 
     // Verify: Lease is invalid (simulates stale leader scenario)
     assert!(
-        !state.is_lease_valid(&ctx),
+        !state.is_lease_valid(),
         "Lease should be invalid (stale leader)"
     );
 
@@ -1306,7 +1300,7 @@ async fn test_eventual_consistency_ignores_stale_lease() {
 
     // Verify: Lease still invalid (not refreshed by EventualConsistency)
     assert!(
-        !state.is_lease_valid(&ctx),
+        !state.is_lease_valid(),
         "EventualConsistency should not refresh lease"
     );
 
@@ -2015,7 +2009,7 @@ async fn test_lease_read_empty_payload_verification_hangs_in_multi_node() {
         !state.cluster_metadata.single_voter,
         "precondition: multi-voter"
     );
-    assert!(!state.is_lease_valid(&ctx), "precondition: lease expired");
+    assert!(!state.is_lease_valid(), "precondition: lease expired");
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
     let req = ClientReadRequest {

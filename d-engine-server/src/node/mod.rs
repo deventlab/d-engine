@@ -46,6 +46,7 @@ use d_engine_core::Membership;
 use d_engine_core::Raft;
 use d_engine_core::RaftEvent;
 use d_engine_core::RaftNodeConfig;
+use d_engine_core::ReadLease;
 use d_engine_core::Result;
 use d_engine_core::TypeConfig;
 use d_engine_core::alias::MOF;
@@ -121,6 +122,9 @@ where
 
     /// Shutdown signal for graceful termination
     pub(crate) shutdown_signal: watch::Receiver<()>,
+
+    /// Read lease — same Arc as the one inside SharedState, exposed for EmbeddedClient.
+    pub(crate) read_lease: Arc<ReadLease>,
 }
 
 impl<T> Debug for Node<T>
@@ -326,5 +330,20 @@ where
     /// which Raft node is handling operations.
     pub fn node_id(&self) -> u32 {
         self.node_id
+    }
+
+    /// Returns a clone of the read lease handle.
+    ///
+    /// The returned `Arc<ReadLease>` is the same object held inside the Raft loop's
+    /// `SharedState`. EmbeddedClient uses it to check lease validity without going
+    /// through `cmd_tx`.
+    pub fn read_lease(&self) -> Arc<ReadLease> {
+        Arc::clone(&self.read_lease)
+    }
+
+    /// Returns the current Raft term from the hard state.
+    /// Used to seed `EmbeddedClient::known_term` at startup.
+    pub async fn current_term(&self) -> u64 {
+        self.raft_core.lock().await.current_term()
     }
 }

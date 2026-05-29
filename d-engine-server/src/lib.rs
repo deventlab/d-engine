@@ -117,6 +117,10 @@ pub use d_engine_core::LeaderInfo;
 pub mod storage;
 
 // -------------------- Primary Entry Points --------------------
+#[cfg(feature = "rocksdb")]
+pub use api::DefaultEmbeddedClient;
+#[cfg(feature = "rocksdb")]
+pub use api::DefaultEmbeddedEngine;
 pub use api::EmbeddedEngine;
 pub use api::StandaloneEngine;
 pub use membership::MembershipSnapshot;

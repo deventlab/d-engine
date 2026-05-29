@@ -60,3 +60,6 @@ mod stale_learner_deadline_test;
 
 #[cfg(test)]
 mod pending_reads_test;
+
+#[cfg(test)]
+mod become_follower_test;

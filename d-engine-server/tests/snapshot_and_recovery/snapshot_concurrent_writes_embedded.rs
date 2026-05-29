@@ -21,7 +21,7 @@ use d_engine_server::RocksDBUnifiedEngine;
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -119,9 +119,12 @@ snapshots_dir = '{}'
 
         let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
 
-        let engine =
-            EmbeddedEngine::start_custom(Arc::new(storage), Arc::new(sm), Some(&config_path))
-                .await?;
+        let engine = DefaultEmbeddedEngine::start_custom(
+            Arc::new(storage),
+            Arc::new(sm),
+            Some(&config_path),
+        )
+        .await?;
         engines.push(engine);
     }
 

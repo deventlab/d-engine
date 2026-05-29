@@ -9,17 +9,17 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use d_engine_core::ClientApi;
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use tempfile::TempDir;
 
 use crate::common::get_available_ports;
 
-/// Helper to create a test EmbeddedEngine without any lease config section.
+/// Helper to create a test DefaultEmbeddedEngine without any lease config section.
 ///
 /// Used by regression tests that must verify behaviour with default (zero-config)
 /// settings — notably #398 where omitting [raft.state_machine.lease] previously
 /// caused a fatal crash when put_with_ttl was called.
-async fn create_test_engine_default_config(test_name: &str) -> (EmbeddedEngine, TempDir) {
+async fn create_test_engine_default_config(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
     let config_path = temp_dir.path().join("d-engine.toml");
@@ -37,7 +37,7 @@ single_node = true
         db_path.display()
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
-    let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
         .expect("Failed to start engine");
     engine.wait_ready(Duration::from_secs(5)).await.expect("Engine not ready");
@@ -45,7 +45,7 @@ single_node = true
 }
 
 /// Helper to create a test EmbeddedEngine
-async fn create_test_engine(test_name: &str) -> (EmbeddedEngine, TempDir) {
+async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
 
@@ -65,7 +65,7 @@ single_node = true
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
         .expect("Failed to start engine");
 
@@ -709,14 +709,14 @@ async fn test_get_multi_linearizable_empty_keys() {
 // Watch operations (requires `watch` feature)
 // =============================================================================
 
-/// Helper: create an EmbeddedEngine with watch feature enabled.
+/// Helper: create an DefaultEmbeddedEngine with watch feature enabled.
 ///
 /// Separate from create_test_engine because watch requires the
 /// `[raft.watch]` config section to activate the WatchRegistry.
 #[cfg(feature = "watch")]
 async fn create_watch_engine(
     test_name: &str
-) -> (d_engine_server::EmbeddedEngine, tempfile::TempDir) {
+) -> (d_engine_server::DefaultEmbeddedEngine, tempfile::TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
 
@@ -752,7 +752,7 @@ watcher_buffer_size = 10
     );
     std::fs::write(&config_path, config_content).expect("Failed to write watch config");
 
-    let engine = d_engine_server::EmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = d_engine_server::DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
         .expect("Failed to start watch engine");
 

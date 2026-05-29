@@ -26,7 +26,7 @@ pub use adaptors::*;
 pub use buffered::*;
 // Re-export Lease trait from core for convenience
 pub use d_engine_core::Lease;
-pub use lease::DefaultLease;
+pub use lease::TtlLease;
 
 #[cfg(test)]
 mod lease_integration_test;

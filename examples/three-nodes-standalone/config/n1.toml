@@ -15,7 +15,6 @@ general_raft_timeout_duration_in_ms = 100
 cmd_channel_capacity = 1024
 ordered_channel_capacity = 1024
 
-
 [raft.election]
 election_timeout_min = 1000
 election_timeout_max = 2000
@@ -23,6 +22,10 @@ election_timeout_max = 2000
 [raft.read_consistency]
 default_policy = "LeaseRead"
 lease_duration_ms = 500
+
+[raft.read_actor]
+channel_capacity = 10240
+max_drain = 2000
 
 [raft.batching]
 # Maximum number of commands to accumulate in a single batch during drain operations

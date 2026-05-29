@@ -15,7 +15,7 @@ use super::RocksDBStateMachine;
 use super::RocksDBStorageEngine;
 use super::RocksDBUnifiedEngine;
 use crate::StateMachine;
-use crate::storage::DefaultLease;
+use crate::storage::TtlLease;
 
 // Both test suites call build() twice within a single persistence test (write data → drop →
 // build() again → verify data survived). Both builders therefore:
@@ -169,8 +169,8 @@ fn test_concurrent_open_same_path_fails() {
 
 // ── Lease round-trip tests ────────────────────────────────────────────────────
 
-fn make_lease() -> Arc<DefaultLease> {
-    Arc::new(DefaultLease::new(LeaseConfig {
+fn make_lease() -> Arc<TtlLease> {
+    Arc::new(TtlLease::new(LeaseConfig {
         cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 10,
     }))

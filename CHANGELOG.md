@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [v0.2.5] - 2026-XX-XX
+
+### Added
+
+- **ReadActor fast path for Eventual/LeaseRead** (#392): Dedicated `ReadActor` task serves `EventualConsistency` and `LeaseRead` without entering the Raft loop, eliminating channel contention under high read concurrency.
+  - `Arc<SM>` is owned exclusively by ReadActor — guarantees RocksDB LOCK release before Raft shutdown on `stop()`, fixing `test_snapshot_recovery_embedded`
+  - `ReadLease.revoke()`: atomic lease invalidation on leader demotion (replaces `invalidate()`)
+  - `EmbeddedClient` routes Eventual/Lease → ReadActor; falls back to `cmd_tx` on `LeaseInvalid`/`SmStopped`
+  - New `[raft.read_actor]` config section: `channel_capacity` (default 512), `max_drain` (default 100)
+  - **Benchmark (local embedded, 100 concurrent clients)**: Lease Read +10.9%, Eventual Read +13.1% vs v0.2.4; write throughput unchanged (see `benches/reports/v0.2.5/`)
+
+### Fixed
+
+- **fix(ttl) #398**: Removed `lease.enabled` flag — TTL expiration is always active. Fixes fatal crash when calling `put_with_ttl` without setting the (now-removed) `lease.enabled = true`.
+
+### Changed
+
+- `[raft.read_actor]` replaces the previous flat `read_actor_channel_capacity` / `read_actor_max_drain` fields in `[raft]`. Update existing config files accordingly.
+
+---
+
 ## [v0.2.4] - 2026-05-23
 
 ### Added

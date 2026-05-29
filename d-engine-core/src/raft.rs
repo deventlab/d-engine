@@ -714,6 +714,14 @@ where
         self.cmd_tx.clone()
     }
 
+    pub fn read_lease(&self) -> Arc<super::ReadLease> {
+        Arc::clone(&self.role.state().shared_state().lease)
+    }
+
+    pub fn current_term(&self) -> u64 {
+        self.role.state().current_term()
+    }
+
     /// Returns a cloned role event sender for internal use.
     ///
     /// # Warning

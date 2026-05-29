@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use d_engine::EmbeddedEngine;
+use d_engine::DefaultEmbeddedEngine;
 use d_engine::WatchEventType;
 use tokio::signal;
 
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting embedded d-engine for service discovery...\n");
 
-    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
+    let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
 
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;
     println!(

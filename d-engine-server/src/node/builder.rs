@@ -566,6 +566,7 @@ where
         let commit_handler_handle = Self::spawn_state_machine_commit_listener(commit_handler);
 
         let event_tx = raft_core.event_sender();
+        let read_lease = raft_core.read_lease();
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
 
         let node = Node::<RaftTypeConfig<SE, SM>> {
@@ -587,6 +588,7 @@ where
             _commit_handler_handle: Some(commit_handler_handle),
             _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),
+            read_lease,
         };
 
         self.node = Some(Arc::new(node));

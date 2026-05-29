@@ -19,8 +19,8 @@ use criterion::black_box;
 use criterion::criterion_group;
 use criterion::criterion_main;
 use d_engine_core::{ApplyEntry, Command, StateMachine};
-use d_engine_server::storage::DefaultLease;
 use d_engine_server::storage::FileStateMachine;
+use d_engine_server::storage::TtlLease;
 use tempfile::TempDir;
 
 /// Create FileStateMachine with Background strategy (lease enabled)
@@ -35,7 +35,7 @@ async fn create_sm_background() -> (FileStateMachine, TempDir) {
         .await
         .expect("Failed to create state machine");
 
-    let lease = Arc::new(DefaultLease::new(lease_config));
+    let lease = Arc::new(TtlLease::new(lease_config));
     sm.set_lease(lease);
 
     (sm, temp_dir)

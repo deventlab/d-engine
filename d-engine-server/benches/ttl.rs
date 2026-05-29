@@ -23,7 +23,7 @@ use tempfile::TempDir;
 
 /// Helper to create a temporary state machine for benchmarking
 async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
-    use d_engine_server::storage::DefaultLease;
+    use d_engine_server::storage::TtlLease;
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     // For TTL benchmarks, we need lease enabled
@@ -37,7 +37,7 @@ async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
         .expect("Failed to create state machine");
 
     // Manually inject lease for benchmarking
-    let lease = std::sync::Arc::new(DefaultLease::new(lease_config));
+    let lease = std::sync::Arc::new(TtlLease::new(lease_config));
     sm.set_lease(lease);
     sm.load_lease_data().await.expect("Failed to load lease data");
 
@@ -80,7 +80,7 @@ fn create_noop_entry(index: u64) -> ApplyEntry {
 /// Target: < 1ms for typical workload (100 expired keys)
 /// This directly benchmarks lease.on_apply() to isolate cleanup overhead
 fn bench_piggyback_cleanup(c: &mut Criterion) {
-    use d_engine_server::storage::DefaultLease;
+    use d_engine_server::storage::TtlLease;
 
     let mut group = c.benchmark_group("piggyback_cleanup");
 
@@ -90,7 +90,7 @@ fn bench_piggyback_cleanup(c: &mut Criterion) {
             cleanup_interval_ms: 1000,
             max_cleanup_duration_ms: 1,
         };
-        let lease = DefaultLease::new(lease_config);
+        let lease = TtlLease::new(lease_config);
 
         // Register keys with very short TTL
         for i in 0..*expired_count {
@@ -121,13 +121,13 @@ fn bench_piggyback_cleanup(c: &mut Criterion) {
 /// Measures the cost of registering a TTL entry in the TTL manager
 /// Target: < 100ns per registration
 fn bench_ttl_registration(c: &mut Criterion) {
-    use d_engine_server::storage::DefaultLease;
+    use d_engine_server::storage::TtlLease;
 
     let lease_config = d_engine_core::config::LeaseConfig {
         cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     };
-    let lease = DefaultLease::new(lease_config);
+    let lease = TtlLease::new(lease_config);
 
     c.bench_function("ttl_registration", |b| {
         let mut counter = 0u64;

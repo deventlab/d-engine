@@ -9,7 +9,7 @@
 //!
 //! ## Test Categories
 //! 1. **Standalone/RPC Mode**: Nodes via gRPC, clients via ClientManager
-//! 2. **Embedded Mode**: Nodes in same process, clients via EmbeddedEngine API
+//! 2. **Embedded Mode**: Nodes in same process, clients via DefaultEmbeddedEngine API
 
 use std::time::Duration;
 

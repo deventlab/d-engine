@@ -3,10 +3,10 @@
 //! These tests verify that linearizable reads use a fixed read_index calculated
 //! at request arrival time, preventing unnecessary waiting for concurrent writes.
 //!
-//! Uses embedded mode with EmbeddedEngine for production-ready testing.
+//! Uses embedded mode with DefaultEmbeddedEngine for production-ready testing.
 
 use crate::common::{create_node_config, get_available_ports, node_config};
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use d_engine_server::RocksDBUnifiedEngine;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use tracing_test::traced_test;
 
 /// Helper to create a test EmbeddedEngine
-async fn create_test_engine(test_name: &str) -> (EmbeddedEngine, TempDir) {
+async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
 
@@ -38,7 +38,7 @@ state_machine_sync_timeout_ms = 2000
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
         .expect("Failed to start engine");
 
@@ -330,7 +330,7 @@ async fn test_read_index_fixed_with_concurrent_writes_multi_node()
         let config_path = format!("/tmp/d-engine-test-linear-read-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine = EmbeddedEngine::start_custom(
+        let engine = DefaultEmbeddedEngine::start_custom(
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&config_path),

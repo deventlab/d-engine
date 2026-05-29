@@ -155,7 +155,7 @@ async fn test_single_voter_lease_refreshed_on_log_flushed() {
 
     // Precondition: Lease is invalid initially
     assert!(
-        !state.is_lease_valid(&ctx),
+        !state.is_lease_valid(),
         "Lease should be invalid before any log flush"
     );
 
@@ -166,7 +166,7 @@ async fn test_single_voter_lease_refreshed_on_log_flushed() {
 
     // Verify: Lease is now valid
     assert!(
-        state.is_lease_valid(&ctx),
+        state.is_lease_valid(),
         "Lease should be valid after log flush in single_voter cluster"
     );
 
@@ -197,17 +197,17 @@ async fn test_single_voter_lease_expires_and_refreshes() {
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // T0: Lease invalid
-    assert!(!state.is_lease_valid(&ctx));
+    assert!(!state.is_lease_valid());
 
     // T1: Log flush → lease valid
     last_entry_id.store(1, Ordering::Relaxed);
     state.handle_log_flushed(1, &ctx, &role_tx).await;
-    assert!(state.is_lease_valid(&ctx));
+    assert!(state.is_lease_valid());
 
     // T2: Wait for lease to expire
     sleep(Duration::from_millis(lease_duration_ms + 50)).await;
     assert!(
-        !state.is_lease_valid(&ctx),
+        !state.is_lease_valid(),
         "Lease should expire after lease_duration_ms"
     );
 
@@ -215,7 +215,7 @@ async fn test_single_voter_lease_expires_and_refreshes() {
     last_entry_id.store(2, Ordering::Relaxed);
     state.handle_log_flushed(2, &ctx, &role_tx).await;
     assert!(
-        state.is_lease_valid(&ctx),
+        state.is_lease_valid(),
         "Lease should be refreshed by subsequent log flush"
     );
 }
@@ -244,13 +244,13 @@ async fn test_single_voter_lease_not_refreshed_when_commit_unchanged() {
 
     // Precondition: commit=0, lease invalid
     assert_eq!(state.commit_index(), 0);
-    assert!(!state.is_lease_valid(&ctx));
+    assert!(!state.is_lease_valid());
 
     // Action: Flush with durable=0, last_entry_id=0 (no new entries, commit unchanged)
     state.handle_log_flushed(0, &ctx, &role_tx).await;
 
     // Verify: Lease remains invalid (no leadership proof)
-    assert!(!state.is_lease_valid(&ctx));
+    assert!(!state.is_lease_valid());
     assert_eq!(state.commit_index(), 0);
 
     // Action: Flush with durable=1 (commit advances); set last_entry_id=1 to match
@@ -258,7 +258,7 @@ async fn test_single_voter_lease_not_refreshed_when_commit_unchanged() {
     state.handle_log_flushed(1, &ctx, &role_tx).await;
 
     // Verify: Now lease is valid
-    assert!(state.is_lease_valid(&ctx));
+    assert!(state.is_lease_valid());
     assert_eq!(state.commit_index(), 1);
 }
 
@@ -292,7 +292,7 @@ async fn test_single_voter_continuous_flushes_maintain_lease() {
         last_entry_id.store(i, Ordering::Relaxed);
         state.handle_log_flushed(i, &ctx, &role_tx).await;
         assert!(
-            state.is_lease_valid(&ctx),
+            state.is_lease_valid(),
             "Lease should remain valid after flush {i}"
         );
         assert_eq!(state.commit_index(), i);
@@ -302,7 +302,7 @@ async fn test_single_voter_continuous_flushes_maintain_lease() {
     }
 
     // Final verification: lease still valid
-    assert!(state.is_lease_valid(&ctx));
+    assert!(state.is_lease_valid());
 }
 
 // ============================================================================
@@ -331,7 +331,7 @@ async fn test_multi_voter_lease_not_refreshed_on_log_flushed() {
 
     // Precondition: Multi-voter cluster, lease invalid
     assert!(!state.cluster_metadata.single_voter);
-    assert!(!state.is_lease_valid(&ctx));
+    assert!(!state.is_lease_valid());
 
     // Action: Log flush with durable=1
     // Note: In multi-voter, commit won't advance without follower ACKs,
@@ -340,7 +340,7 @@ async fn test_multi_voter_lease_not_refreshed_on_log_flushed() {
 
     // Verify: Lease remains invalid (must wait for handle_append_result)
     assert!(
-        !state.is_lease_valid(&ctx),
+        !state.is_lease_valid(),
         "Lease should NOT be refreshed by log flush in multi-voter cluster"
     );
 
@@ -372,18 +372,18 @@ async fn test_multi_voter_lease_refresh_requires_append_result() {
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // Precondition: Lease invalid
-    assert!(!state.is_lease_valid(&ctx));
+    assert!(!state.is_lease_valid());
 
     // Action 1: Log flush → no lease refresh
     state.handle_log_flushed(1, &ctx, &role_tx).await;
-    assert!(!state.is_lease_valid(&ctx));
+    assert!(!state.is_lease_valid());
 
     // Action 2: Simulate append_result path (via test helper)
     state.test_update_lease_timestamp();
 
     // Verify: Lease now valid (proves separation of paths)
     assert!(
-        state.is_lease_valid(&ctx),
+        state.is_lease_valid(),
         "Lease should be valid after explicit update (simulating append_result)"
     );
 }
@@ -413,7 +413,7 @@ async fn test_single_voter_durable_regression_does_not_refresh_lease() {
     last_entry_id.store(5, Ordering::Relaxed);
     state.handle_log_flushed(5, &ctx, &role_tx).await;
     assert_eq!(state.commit_index(), 5);
-    assert!(state.is_lease_valid(&ctx));
+    assert!(state.is_lease_valid());
 
     // Wait to distinguish timestamps
     sleep(Duration::from_millis(50)).await;
@@ -424,10 +424,7 @@ async fn test_single_voter_durable_regression_does_not_refresh_lease() {
 
     // Verify: Commit unchanged, lease not updated (timestamp same as T1)
     assert_eq!(state.commit_index(), 5, "Commit should not regress");
-    assert!(
-        state.is_lease_valid(&ctx),
-        "Lease should remain valid from T1"
-    );
+    assert!(state.is_lease_valid(), "Lease should remain valid from T1");
 }
 
 /// **Business Scenario**: Very short lease duration expires quickly
@@ -452,13 +449,13 @@ async fn test_single_voter_very_short_lease_expires_quickly() {
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // T0: Lease invalid
-    assert!(!state.is_lease_valid(&ctx));
+    assert!(!state.is_lease_valid());
 
     // T1: Flush updates lease
     last_entry_id.store(1, Ordering::Relaxed);
     state.handle_log_flushed(1, &ctx, &role_tx).await;
     assert!(
-        state.is_lease_valid(&ctx),
+        state.is_lease_valid(),
         "Lease should be valid immediately after flush"
     );
 
@@ -467,7 +464,7 @@ async fn test_single_voter_very_short_lease_expires_quickly() {
 
     // T3: Lease expired
     assert!(
-        !state.is_lease_valid(&ctx),
+        !state.is_lease_valid(),
         "Lease should expire with lease_duration_ms = 50"
     );
 }
@@ -491,14 +488,14 @@ async fn test_single_voter_large_lease_duration() {
     // Action: Single flush
     last_entry_id.store(1, Ordering::Relaxed);
     state.handle_log_flushed(1, &ctx, &role_tx).await;
-    assert!(state.is_lease_valid(&ctx));
+    assert!(state.is_lease_valid());
 
     // Wait 1 second (much less than 10s lease)
     sleep(Duration::from_secs(1)).await;
 
     // Verify: Lease still valid
     assert!(
-        state.is_lease_valid(&ctx),
+        state.is_lease_valid(),
         "Lease should remain valid within duration"
     );
 }

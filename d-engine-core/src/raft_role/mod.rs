@@ -3,6 +3,7 @@ pub mod candidate_state;
 pub mod follower_state;
 pub mod leader_state;
 pub mod learner_state;
+pub mod read_lease;
 pub mod role_state;
 
 #[cfg(test)]
@@ -18,6 +19,7 @@ mod leader_state_test;
 mod learner_state_test;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 
@@ -28,6 +30,7 @@ use follower_state::FollowerState;
 pub use leader_state::ClusterMetadata;
 use leader_state::LeaderState;
 use learner_state::LearnerState;
+pub use read_lease::{ReadLease, init_clock, now_ms};
 use role_state::RaftRoleState;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -84,6 +87,10 @@ pub struct SharedState {
     /// In-memory leader ID for hot-path reads (0 = no leader)
     /// Performance optimization: avoid RwLock on AppendEntries path
     current_leader_id: AtomicU32,
+
+    /// Shared lease state between Raft loop (writer) and EmbeddedClient (reader).
+    /// Arc ensures the same allocation is shared across role transitions via clone().
+    pub lease: Arc<ReadLease>,
 }
 
 impl Clone for SharedState {
@@ -93,6 +100,7 @@ impl Clone for SharedState {
             hard_state: self.hard_state,
             commit_index: self.commit_index,
             current_leader_id: AtomicU32::new(self.current_leader_id.load(Ordering::Acquire)),
+            lease: Arc::clone(&self.lease),
         }
     }
 }
@@ -150,6 +158,7 @@ impl SharedState {
             hard_state,
             commit_index: last_applied_index_option.unwrap_or(0),
             current_leader_id: AtomicU32::new(0),
+            lease: Arc::new(ReadLease::new()),
         }
     }
 

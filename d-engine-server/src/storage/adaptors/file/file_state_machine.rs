@@ -115,7 +115,7 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::storage::DefaultLease;
+use crate::storage::TtlLease;
 
 type FileStateMachineDataType = RwLock<HashMap<Bytes, (Bytes, u64)>>;
 
@@ -242,9 +242,9 @@ pub struct FileStateMachine {
     data: FileStateMachineDataType, // (value, term)
 
     // Lease management for automatic key expiration
-    // DefaultLease is thread-safe internally (uses DashMap + Mutex)
+    // TtlLease is thread-safe internally (uses DashMap + Mutex)
     // Injected by NodeBuilder after construction
-    lease: Option<Arc<DefaultLease>>,
+    lease: Option<Arc<TtlLease>>,
 
     // Raft state with disk persistence
     last_applied_index: AtomicU64,
@@ -305,7 +305,7 @@ impl FileStateMachine {
     /// Also available for testing and benchmarks.
     pub fn set_lease(
         &mut self,
-        lease: Arc<DefaultLease>,
+        lease: Arc<TtlLease>,
     ) {
         self.lease = Some(lease);
     }

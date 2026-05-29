@@ -11,7 +11,7 @@
 //!    from the Leader without data loss or stall.
 
 #![cfg(feature = "rocksdb")]
-use d_engine_server::{EmbeddedEngine, RocksDBUnifiedEngine};
+use d_engine_server::{DefaultEmbeddedEngine, RocksDBUnifiedEngine};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -129,9 +129,12 @@ snapshots_dir = '{}'
         tokio::fs::create_dir_all(snapshots_dir.join(format!("node{node_id}"))).await?;
 
         let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
-        let engine =
-            EmbeddedEngine::start_custom(Arc::new(storage), Arc::new(sm), Some(&config_path))
-                .await?;
+        let engine = DefaultEmbeddedEngine::start_custom(
+            Arc::new(storage),
+            Arc::new(sm),
+            Some(&config_path),
+        )
+        .await?;
         engines.push(engine);
     }
 

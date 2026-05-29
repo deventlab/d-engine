@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::RocksDBUnifiedEngine;
-use d_engine_server::api::EmbeddedEngine;
+use d_engine_server::api::DefaultEmbeddedEngine;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -11,7 +11,7 @@ use crate::common::get_available_ports;
 use crate::common::node_config;
 use crate::common::wait_for_new_leader;
 
-/// Test 3-node cluster leader failover with EmbeddedEngine API
+/// Test 3-node cluster leader failover with DefaultEmbeddedEngine API
 ///
 /// Scenario:
 /// 1. Start 3-node cluster
@@ -59,7 +59,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
         configs.push((config_str, config_path));
 
-        let engine = EmbeddedEngine::start_custom(
+        let engine = DefaultEmbeddedEngine::start_custom(
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&configs[i].1),
@@ -212,7 +212,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
 
         configs.push((config_str, config_path));
 
-        let engine = EmbeddedEngine::start_custom(
+        let engine = DefaultEmbeddedEngine::start_custom(
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&configs[i].1),
@@ -293,7 +293,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
         opened.ok_or_else(|| last_err.unwrap())?
     };
 
-    let restarted_engine = EmbeddedEngine::start_custom(
+    let restarted_engine = DefaultEmbeddedEngine::start_custom(
         Arc::new(storage),
         Arc::new(state_machine),
         Some(&killed_config.1),
@@ -368,7 +368,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
         let config_path = format!("/tmp/d-engine-test-minority-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine = EmbeddedEngine::start_custom(
+        let engine = DefaultEmbeddedEngine::start_custom(
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&config_path),

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::ClientApi;
-use d_engine_server::api::EmbeddedEngine;
+use d_engine_server::api::DefaultEmbeddedEngine;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -58,7 +58,7 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
         let config_path = format!("/tmp/d-engine-cas-lock-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine = EmbeddedEngine::start_custom(
+        let engine = DefaultEmbeddedEngine::start_custom(
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&config_path),

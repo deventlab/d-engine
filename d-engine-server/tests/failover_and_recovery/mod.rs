@@ -26,7 +26,7 @@
 //! ## Developer API Coverage
 //!
 //! **Embedded Mode**:
-//! - `EmbeddedEngine::stop()` - Graceful shutdown (simulates failure)
+//! - `DefaultEmbeddedEngine::stop()` - Graceful shutdown (simulates failure)
 //! - `engine.leader_change_notifier()` - Watch for leader changes
 //! - `Client::put/get_eventual` - Verify writes succeed/fail based on quorum
 //! - `Client::get_linearizable()` - Strong consistency reads

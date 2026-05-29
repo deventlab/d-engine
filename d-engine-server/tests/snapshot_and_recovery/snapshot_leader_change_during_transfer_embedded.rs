@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use d_engine_server::RocksDBUnifiedEngine;
 use serial_test::serial;
 use tracing::info;
@@ -103,7 +103,7 @@ snapshots_dir = '{}'
         tokio::fs::create_dir_all(snapshots_dir.join(format!("node{node_id}"))).await?;
 
         let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
-        let engine = EmbeddedEngine::start_custom(
+        let engine = DefaultEmbeddedEngine::start_custom(
             Arc::new(storage),
             Arc::new(sm),
             Some(config_path.to_str().unwrap()),
@@ -184,7 +184,7 @@ snapshots_dir = '{}'
     tokio::fs::create_dir_all(snapshots_dir.join("node4")).await?;
 
     let (learner_storage, learner_sm) = RocksDBUnifiedEngine::open(&learner_db_path)?;
-    let learner_engine = EmbeddedEngine::start_custom(
+    let learner_engine = DefaultEmbeddedEngine::start_custom(
         Arc::new(learner_storage),
         Arc::new(learner_sm),
         Some(learner_config_path.to_str().unwrap()),

@@ -40,7 +40,7 @@ use tracing::info;
 use tracing::instrument;
 use tracing::warn;
 
-use crate::storage::DefaultLease;
+use crate::storage::TtlLease;
 
 use super::STATE_MACHINE_CF;
 use super::STATE_MACHINE_META_CF;
@@ -83,9 +83,9 @@ pub struct RocksDBStateMachine {
     last_snapshot_metadata: RwLock<Option<SnapshotMetadata>>,
 
     // Lease management for automatic key expiration
-    // DefaultLease is thread-safe internally (uses DashMap + Mutex)
+    // TtlLease is thread-safe internally (uses DashMap + Mutex)
     // Injected by NodeBuilder after construction
-    lease: Option<Arc<DefaultLease>>,
+    lease: Option<Arc<TtlLease>>,
 }
 
 /// Returns the lexicographic successor of `prefix` for use as an iterator upper bound.
@@ -164,7 +164,7 @@ impl RocksDBStateMachine {
     /// Also available for testing and benchmarks.
     pub fn set_lease(
         &mut self,
-        lease: Arc<DefaultLease>,
+        lease: Arc<TtlLease>,
     ) {
         self.lease = Some(lease);
     }

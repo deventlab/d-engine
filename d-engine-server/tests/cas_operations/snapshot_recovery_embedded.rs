@@ -2,7 +2,7 @@
 use d_engine_server::RocksDBUnifiedEngine;
 
 use d_engine_core::ClientApi;
-use d_engine_server::api::EmbeddedEngine;
+use d_engine_server::api::DefaultEmbeddedEngine;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -60,7 +60,7 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
         let config_path = format!("/tmp/d-engine-cas-snapshot-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine = EmbeddedEngine::start_custom(
+        let engine = DefaultEmbeddedEngine::start_custom(
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&config_path),
@@ -118,7 +118,7 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
     let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_paths[follower_idx])?;
     let config_path = format!("/tmp/d-engine-cas-snapshot-node{}.toml", follower_idx + 1);
 
-    let new_engine = EmbeddedEngine::start_custom(
+    let new_engine = DefaultEmbeddedEngine::start_custom(
         Arc::new(storage),
         Arc::new(state_machine),
         Some(&config_path),

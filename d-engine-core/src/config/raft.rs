@@ -87,6 +87,10 @@ pub struct RaftConfig {
     #[serde(default = "default_ordered_channel_capacity")]
     pub ordered_channel_capacity: usize,
 
+    /// ReadActor configuration — tuning for the dedicated Eventual/LeaseRead fast path.
+    #[serde(default)]
+    pub read_actor: ReadActorConfig,
+
     /// Configuration settings for new node auto join feature
     #[serde(default)]
     pub auto_join: AutoJoinConfig,
@@ -145,6 +149,7 @@ impl Default for RaftConfig {
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
             cmd_channel_capacity: default_cmd_channel_capacity(),
             ordered_channel_capacity: default_ordered_channel_capacity(),
+            read_actor: ReadActorConfig::default(),
             read_consistency: ReadConsistencyConfig::default(),
             backpressure: BackpressureConfig::default(),
             rpc_compression: RpcCompressionConfig::default(),
@@ -219,6 +224,47 @@ fn default_cmd_channel_capacity() -> usize {
 
 fn default_ordered_channel_capacity() -> usize {
     1024
+}
+
+/// Configuration for the ReadActor — the dedicated read task that serves
+/// Eventual and LeaseRead requests without entering the Raft loop.
+///
+/// Exposed as `[raft.read_actor]` in TOML configuration.
+///
+/// # Tuning Guidelines
+/// - `channel_capacity`: set to at least 2× peak concurrent Eventual/LeaseRead clients
+/// - `max_drain`: rarely needs changing; must not exceed `channel_capacity` meaningfully
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReadActorConfig {
+    /// mpsc channel buffer between the client layer and ReadActor.
+    /// Larger values reduce backpressure under high Eventual/LeaseRead concurrency.
+    /// Default: 512.
+    #[serde(default = "default_read_actor_channel_capacity")]
+    pub channel_capacity: usize,
+
+    /// Max reads drained per ReadActor wakeup (mirrors Raft::drain_client_cmds).
+    /// After the first recv().await fires, the actor drains up to this many
+    /// additional commands with try_recv() before yielding.
+    /// Default: 100.
+    #[serde(default = "default_read_actor_max_drain")]
+    pub max_drain: usize,
+}
+
+impl Default for ReadActorConfig {
+    fn default() -> Self {
+        Self {
+            channel_capacity: default_read_actor_channel_capacity(),
+            max_drain: default_read_actor_max_drain(),
+        }
+    }
+}
+
+fn default_read_actor_channel_capacity() -> usize {
+    512
+}
+
+fn default_read_actor_max_drain() -> usize {
+    100
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

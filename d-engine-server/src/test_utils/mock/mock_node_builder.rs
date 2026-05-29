@@ -316,6 +316,7 @@ impl MockBuilder {
         let cmd_tx = raft.cmd_sender();
         let node_config = raft.ctx.node_config.clone();
         let membership = raft.ctx.membership.clone();
+        let read_lease = raft.read_lease();
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
         let (_membership_tx, membership_rx) = watch::channel(MembershipSnapshot::default());
@@ -339,6 +340,7 @@ impl MockBuilder {
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal,
+            read_lease,
         }
     }
 
@@ -360,6 +362,7 @@ impl MockBuilder {
                 .expect("Should succeed to validate RaftNodeConfig")
         });
         let membership = raft.ctx.membership.clone();
+        let read_lease = raft.read_lease();
         trace!(
             node_config.raft.election.election_timeout_min,
             "build_node_with_rpc_server"
@@ -388,6 +391,7 @@ impl MockBuilder {
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal: shutdown.clone(),
+            read_lease,
         });
         let node_clone = node.clone();
         let listen_address = node_config_arc.cluster.listen_address;

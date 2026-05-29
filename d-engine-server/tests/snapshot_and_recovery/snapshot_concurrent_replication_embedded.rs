@@ -13,7 +13,7 @@
 #![cfg(feature = "rocksdb")]
 use d_engine_server::RocksDBUnifiedEngine;
 
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 
 use serial_test::serial;
 use std::sync::Arc;
@@ -113,9 +113,12 @@ snapshots_dir = '{}'
 
         let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
 
-        let engine =
-            EmbeddedEngine::start_custom(Arc::new(storage), Arc::new(sm), Some(&config_path))
-                .await?;
+        let engine = DefaultEmbeddedEngine::start_custom(
+            Arc::new(storage),
+            Arc::new(sm),
+            Some(&config_path),
+        )
+        .await?;
         engines.push(engine);
     }
 
@@ -210,7 +213,7 @@ snapshots_dir = '{}'
 
     let (learner_storage, learner_sm) = RocksDBUnifiedEngine::open(&learner_db_path)?;
 
-    let learner_engine = EmbeddedEngine::start_custom(
+    let learner_engine = DefaultEmbeddedEngine::start_custom(
         Arc::new(learner_storage),
         Arc::new(learner_sm),
         Some(&learner_config_path),

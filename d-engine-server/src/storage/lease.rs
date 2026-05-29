@@ -55,7 +55,7 @@ use crate::Result;
 /// - Per-key overhead: ~50 bytes (single DashMap entry)
 /// - Expired keys are removed automatically during cleanup
 #[derive(Debug)]
-pub struct DefaultLease {
+pub struct TtlLease {
     /// Lease cleanup configuration (immutable after creation)
     config: d_engine_core::config::LeaseConfig,
 
@@ -72,7 +72,7 @@ pub struct DefaultLease {
     has_keys: AtomicBool,
 }
 
-impl DefaultLease {
+impl TtlLease {
     /// Creates a new default lease manager with the given configuration.
     ///
     /// # Arguments
@@ -179,7 +179,7 @@ impl DefaultLease {
     }
 }
 
-impl Lease for DefaultLease {
+impl Lease for TtlLease {
     /// Register a key with TTL (Time-To-Live).
     ///
     /// # TTL Semantics

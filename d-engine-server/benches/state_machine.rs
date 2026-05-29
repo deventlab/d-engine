@@ -40,7 +40,7 @@ async fn create_test_state_machine() -> (FileStateMachine, TempDir) {
         cleanup_interval_ms: 1000,
         max_cleanup_duration_ms: 1,
     };
-    let lease = Arc::new(d_engine_server::storage::DefaultLease::new(lease_config));
+    let lease = Arc::new(d_engine_server::storage::TtlLease::new(lease_config));
     sm.set_lease(lease);
 
     (sm, temp_dir)

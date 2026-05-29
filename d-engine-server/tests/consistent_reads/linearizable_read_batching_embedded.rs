@@ -3,12 +3,12 @@
 //! These tests verify that batching multiple linearizable read requests
 //! improves throughput by sharing a single verify_leadership() call.
 //!
-//! Uses embedded mode with EmbeddedEngine for production-ready testing.
+//! Uses embedded mode with DefaultEmbeddedEngine for production-ready testing.
 
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use tempfile::TempDir;
 use tokio::time::Instant;
 
@@ -16,11 +16,11 @@ use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
 
-/// Helper to create a test EmbeddedEngine with batching config
+/// Helper to create a test DefaultEmbeddedEngine with batching config
 async fn create_engine_with_batching(
     test_name: &str,
     size_threshold: usize,
-) -> (EmbeddedEngine, TempDir) {
+) -> (DefaultEmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
 
@@ -47,7 +47,7 @@ size_threshold = {}
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
         .expect("Failed to start engine");
 

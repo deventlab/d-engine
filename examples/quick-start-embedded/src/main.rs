@@ -22,7 +22,7 @@ async fn main() -> std::result::Result<(), Box<dyn StdError>> {
 
     // Start embedded engine with explicit config
     // Config file specifies data directory and other settings
-    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
+    let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
 
     // Wait for leader election (single-node: instant)
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;
@@ -47,7 +47,7 @@ async fn main() -> std::result::Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-async fn run_demo(client: Arc<EmbeddedClient>) -> std::result::Result<(), Box<dyn StdError>> {
+async fn run_demo(client: Arc<DefaultEmbeddedClient>) -> std::result::Result<(), Box<dyn StdError>> {
     println!("=== Quick Start Demo ===");
 
     // Store workflow state

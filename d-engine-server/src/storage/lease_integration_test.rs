@@ -4,7 +4,7 @@
 //! Integration tests for Lease functionality across the full stack
 //!
 //! This module contains comprehensive tests for:
-//! - DefaultLease unit tests (moved from ttl_manager.rs)
+//! - TtlLease unit tests (moved from ttl_manager.rs)
 //! - FileStateMachine Lease integration tests
 //! - RocksDBStateMachine Lease integration tests
 
@@ -15,12 +15,12 @@ mod lease_tests {
     use bytes::Bytes;
     use d_engine_core::Lease;
 
-    use crate::storage::DefaultLease;
+    use crate::storage::TtlLease;
 
     #[test]
     fn test_register_and_get_expired() {
         let config = d_engine_core::config::LeaseConfig::default();
-        let manager = DefaultLease::new(config);
+        let manager = TtlLease::new(config);
 
         // Register keys with 1 second TTL
         manager.register(Bytes::from("key1"), 1);
@@ -43,7 +43,7 @@ mod lease_tests {
     #[test]
     fn test_unregister() {
         let config = d_engine_core::config::LeaseConfig::default();
-        let manager = DefaultLease::new(config);
+        let manager = TtlLease::new(config);
 
         manager.register(Bytes::from("key1"), 10);
         assert_eq!(manager.len(), 1);
@@ -55,7 +55,7 @@ mod lease_tests {
     #[test]
     fn test_update_ttl() {
         let config = d_engine_core::config::LeaseConfig::default();
-        let manager = DefaultLease::new(config);
+        let manager = TtlLease::new(config);
 
         // Register with 10 seconds
         manager.register(Bytes::from("key1"), 10);
@@ -70,13 +70,13 @@ mod lease_tests {
     #[test]
     fn test_snapshot_roundtrip() {
         let config = d_engine_core::config::LeaseConfig::default();
-        let manager = DefaultLease::new(config.clone());
+        let manager = TtlLease::new(config.clone());
 
         manager.register(Bytes::from("key1"), 3600);
         manager.register(Bytes::from("key2"), 7200);
 
         let snapshot = manager.to_snapshot();
-        let restored = DefaultLease::from_snapshot(&snapshot, config);
+        let restored = TtlLease::from_snapshot(&snapshot, config);
 
         assert_eq!(restored.len(), 2);
     }
@@ -84,7 +84,7 @@ mod lease_tests {
     #[test]
     fn test_snapshot_filters_expired() {
         let config = d_engine_core::config::LeaseConfig::default();
-        let manager = DefaultLease::new(config.clone());
+        let manager = TtlLease::new(config.clone());
 
         // Register key with 1 second TTL
         manager.register(Bytes::from("key1"), 1);
@@ -93,7 +93,7 @@ mod lease_tests {
         sleep(Duration::from_secs(2));
 
         let snapshot = manager.to_snapshot();
-        let restored = DefaultLease::from_snapshot(&snapshot, config);
+        let restored = TtlLease::from_snapshot(&snapshot, config);
 
         // Only key2 should be restored
         assert_eq!(restored.len(), 1);
@@ -108,8 +108,8 @@ mod file_state_machine_tests {
     use tempfile::TempDir;
     use tokio::time::sleep;
 
-    use crate::storage::DefaultLease;
     use crate::storage::FileStateMachine;
+    use crate::storage::TtlLease;
 
     /// Helper to create a FileStateMachine with lease injected for testing
     async fn create_file_state_machine_with_lease(
@@ -117,7 +117,7 @@ mod file_state_machine_tests {
         lease_config: d_engine_core::config::LeaseConfig,
     ) -> FileStateMachine {
         let mut sm = FileStateMachine::new(path).await.unwrap();
-        let lease = std::sync::Arc::new(DefaultLease::new(lease_config));
+        let lease = std::sync::Arc::new(TtlLease::new(lease_config));
         sm.set_lease(lease);
         sm.load_lease_data().await.unwrap();
         sm
@@ -779,7 +779,7 @@ mod rocksdb_state_machine_tests {
         lease_config: d_engine_core::config::LeaseConfig,
     ) -> (RocksDBStorageEngine, RocksDBStateMachine) {
         let (storage, mut sm) = RocksDBUnifiedEngine::open(&path).unwrap();
-        let lease = std::sync::Arc::new(crate::storage::DefaultLease::new(lease_config));
+        let lease = std::sync::Arc::new(crate::storage::TtlLease::new(lease_config));
         sm.set_lease(lease);
         sm.load_lease_data().await.unwrap();
         (storage, sm)

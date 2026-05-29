@@ -2,6 +2,19 @@
 # DEVELOPER SETTINGS — safe to adjust for your application
 # =============================================================================
 
+[raft.read_actor]
+# ReadActor fast path — serves Eventual and LeaseRead requests without entering the Raft loop.
+
+# mpsc channel buffer between the client layer and ReadActor.
+# Rule of thumb: set to at least 2× your peak concurrent Eventual/LeaseRead clients.
+# Default: 512.
+channel_capacity = 512
+
+# Max reads drained per ReadActor wakeup.
+# Setting above channel_capacity has no effect (channel empties first).
+# Default: 100.
+max_drain = 100
+
 [raft.batching]
 # Maximum number of commands to accumulate in a single batch during drain operations.
 # A single value covers all drain loops (cmd_rx, role_rx, new_commit_rx) because

@@ -1,4 +1,4 @@
-//! Comprehensive unit tests for DefaultLease implementation
+//! Comprehensive unit tests for TtlLease implementation
 //!
 //! Tests cover:
 //! - Basic registration, expiration, and cleanup
@@ -14,7 +14,7 @@ use std::time::SystemTime;
 use bytes::Bytes;
 use d_engine_core::Lease;
 
-use crate::storage::lease::DefaultLease;
+use crate::storage::lease::TtlLease;
 
 fn default_config() -> d_engine_core::config::LeaseConfig {
     d_engine_core::config::LeaseConfig {
@@ -29,7 +29,7 @@ fn default_config() -> d_engine_core::config::LeaseConfig {
 
 #[test]
 fn test_register_and_is_expired() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     lease.register(Bytes::from("key1"), 1);
     assert!(!lease.is_expired(b"key1"));
@@ -40,7 +40,7 @@ fn test_register_and_is_expired() {
 
 #[test]
 fn test_unregister() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     lease.register(Bytes::from("key1"), 10);
     assert_eq!(lease.len(), 1);
@@ -52,7 +52,7 @@ fn test_unregister() {
 
 #[test]
 fn test_unregister_nonexistent_key() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     // Should not panic on unregistering non-existent key
     lease.unregister(b"nonexistent");
@@ -61,7 +61,7 @@ fn test_unregister_nonexistent_key() {
 
 #[test]
 fn test_get_expired_keys() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     lease.register(Bytes::from("key1"), 1);
     lease.register(Bytes::from("key2"), 1);
@@ -75,7 +75,7 @@ fn test_get_expired_keys() {
 
 #[test]
 fn test_is_empty() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
     assert!(lease.is_empty());
 
     lease.register(Bytes::from("key1"), 10);
@@ -91,7 +91,7 @@ fn test_is_empty() {
 
 #[test]
 fn test_has_lease_keys() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
     assert!(!lease.has_lease_keys());
 
     lease.register(Bytes::from("key1"), 10);
@@ -103,7 +103,7 @@ fn test_has_lease_keys() {
 
 #[test]
 fn test_may_have_expired_keys_false_when_no_keys() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     // No keys registered, should return false immediately
     assert!(!lease.may_have_expired_keys(SystemTime::now()));
@@ -111,7 +111,7 @@ fn test_may_have_expired_keys_false_when_no_keys() {
 
 #[test]
 fn test_may_have_expired_keys_false_when_all_valid() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     lease.register(Bytes::from("key1"), 3600);
     lease.register(Bytes::from("key2"), 7200);
@@ -122,7 +122,7 @@ fn test_may_have_expired_keys_false_when_all_valid() {
 
 #[test]
 fn test_may_have_expired_keys_true_when_has_expired() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     lease.register(Bytes::from("key1"), 1);
     sleep(Duration::from_secs(2));
@@ -137,7 +137,7 @@ fn test_may_have_expired_keys_true_when_has_expired() {
 
 #[test]
 fn test_get_expiration() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     lease.register(Bytes::from("key1"), 3600);
 
@@ -148,7 +148,7 @@ fn test_get_expiration() {
 
 #[test]
 fn test_get_expiration_not_found() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     let expiration = lease.get_expiration(b"nonexistent");
     assert!(expiration.is_none());
@@ -160,7 +160,7 @@ fn test_get_expiration_not_found() {
 
 #[test]
 fn test_register_updates_existing_key() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     // Register with 10s TTL
     lease.register(Bytes::from("key1"), 10);
@@ -181,7 +181,7 @@ fn test_register_updates_existing_key() {
 
 #[test]
 fn test_multiple_keys_same_expiration() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     let ttl = 5u64;
     lease.register(Bytes::from("key1"), ttl);
@@ -199,7 +199,7 @@ fn test_multiple_keys_same_expiration() {
 
 #[test]
 fn test_mixed_expired_and_valid_keys() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     lease.register(Bytes::from("expire_soon"), 1);
     lease.register(Bytes::from("expire_later"), 3600);
@@ -222,13 +222,13 @@ fn test_mixed_expired_and_valid_keys() {
 #[test]
 fn test_snapshot_roundtrip() {
     let config = default_config();
-    let lease1 = DefaultLease::new(config.clone());
+    let lease1 = TtlLease::new(config.clone());
 
     lease1.register(Bytes::from("key1"), 3600);
     lease1.register(Bytes::from("key2"), 7200);
 
     let snapshot = lease1.to_snapshot();
-    let lease2 = DefaultLease::from_snapshot(&snapshot, config);
+    let lease2 = TtlLease::from_snapshot(&snapshot, config);
 
     assert_eq!(lease2.len(), 2);
     assert!(!lease2.is_expired(b"key1"));
@@ -238,7 +238,7 @@ fn test_snapshot_roundtrip() {
 #[test]
 fn test_snapshot_roundtrip_filters_expired_keys() {
     let config = default_config();
-    let lease1 = DefaultLease::new(config.clone());
+    let lease1 = TtlLease::new(config.clone());
 
     lease1.register(Bytes::from("valid_key"), 3600);
     lease1.register(Bytes::from("expired_key"), 1);
@@ -248,7 +248,7 @@ fn test_snapshot_roundtrip_filters_expired_keys() {
     let snapshot = lease1.to_snapshot();
 
     // from_snapshot should filter out expired keys
-    let lease2 = DefaultLease::from_snapshot(&snapshot, config);
+    let lease2 = TtlLease::from_snapshot(&snapshot, config);
 
     // Only valid_key should remain
     assert_eq!(lease2.len(), 1);
@@ -260,14 +260,14 @@ fn test_from_snapshot_with_invalid_data() {
     let config = default_config();
 
     // from_snapshot with invalid data should return empty lease
-    let lease = DefaultLease::from_snapshot(&[0xFF, 0xFE], config);
+    let lease = TtlLease::from_snapshot(&[0xFF, 0xFE], config);
     assert_eq!(lease.len(), 0);
     assert!(!lease.has_lease_keys());
 }
 
 #[test]
 fn test_reload() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     lease.register(Bytes::from("key1"), 3600);
     let snapshot = lease.to_snapshot();
@@ -283,7 +283,7 @@ fn test_reload() {
 
 #[test]
 fn test_reload_invalid_data() {
-    let lease = DefaultLease::new(default_config());
+    let lease = TtlLease::new(default_config());
 
     lease.register(Bytes::from("key1"), 3600);
     assert_eq!(lease.len(), 1);
@@ -306,7 +306,7 @@ fn test_reload_clears_apply_counter() {
         max_cleanup_duration_ms: 1,
     };
 
-    let lease = DefaultLease::new(config.clone());
+    let lease = TtlLease::new(config.clone());
 
     lease.register(Bytes::from("key1"), 3600);
 
@@ -333,7 +333,7 @@ fn test_reload_clears_apply_counter() {
 fn test_on_apply_piggyback_removed() {
     let config = default_config();
 
-    let lease = DefaultLease::new(config);
+    let lease = TtlLease::new(config);
     lease.register(Bytes::from("key1"), 1);
 
     sleep(Duration::from_secs(2));
@@ -354,6 +354,6 @@ fn test_custom_cleanup_interval() {
         max_cleanup_duration_ms: 1,
     };
 
-    let lease = DefaultLease::new(config);
+    let lease = TtlLease::new(config);
     assert_eq!(lease.config().cleanup_interval_ms, 5000);
 }

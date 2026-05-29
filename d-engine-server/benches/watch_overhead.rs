@@ -22,7 +22,7 @@ use criterion::criterion_group;
 use criterion::criterion_main;
 use d_engine_core::{ApplyEntry, Command, StateMachine};
 use d_engine_server::RocksDBUnifiedEngine;
-use d_engine_server::api::EmbeddedEngine;
+use d_engine_server::api::DefaultEmbeddedEngine;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
@@ -71,7 +71,8 @@ fn create_test_entries(
 }
 
 /// Create a temporary EmbeddedEngine for benchmarking
-async fn create_embedded_engine() -> Result<(EmbeddedEngine, TempDir), Box<dyn std::error::Error>> {
+async fn create_embedded_engine()
+-> Result<(DefaultEmbeddedEngine, TempDir), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("db");
 
@@ -101,9 +102,12 @@ watcher_buffer_size = 100
     let storage = Arc::new(storage);
     let state_machine = Arc::new(state_machine);
 
-    let engine =
-        EmbeddedEngine::start_custom(storage, state_machine, Some(config_path.to_str().unwrap()))
-            .await?;
+    let engine = DefaultEmbeddedEngine::start_custom(
+        storage,
+        state_machine,
+        Some(config_path.to_str().unwrap()),
+    )
+    .await?;
 
     // Wait for ready
     engine.wait_ready(Duration::from_secs(5)).await?;

@@ -2,7 +2,7 @@ use d_engine_server::RocksDBUnifiedEngine;
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -61,9 +61,12 @@ general_raft_timeout_duration_in_ms = 5000
 
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path)?;
 
-    let engine1 =
-        EmbeddedEngine::start_custom(Arc::new(storage1), Arc::new(sm1), Some(node1_config_path))
-            .await?;
+    let engine1 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage1),
+        Arc::new(sm1),
+        Some(node1_config_path),
+    )
+    .await?;
 
     let leader = engine1.wait_ready(Duration::from_secs(5)).await?;
     info!(
@@ -116,9 +119,12 @@ general_raft_timeout_duration_in_ms = 5000
 
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
 
-    let engine2 =
-        EmbeddedEngine::start_custom(Arc::new(storage2), Arc::new(sm2), Some(node2_config_path))
-            .await?;
+    let engine2 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage2),
+        Arc::new(sm2),
+        Some(node2_config_path),
+    )
+    .await?;
     info!("Node 2 started, joining as Learner");
 
     // Wait a bit for node 2 to sync and get promoted
@@ -159,9 +165,12 @@ general_raft_timeout_duration_in_ms = 5000
 
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
 
-    let engine3 =
-        EmbeddedEngine::start_custom(Arc::new(storage3), Arc::new(sm3), Some(node3_config_path))
-            .await?;
+    let engine3 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage3),
+        Arc::new(sm3),
+        Some(node3_config_path),
+    )
+    .await?;
     info!("Node 3 started, joining as Learner");
 
     // Wait for promotion and cluster stabilization
@@ -320,9 +329,12 @@ election_timeout_max = 600
 
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
 
-    let engine1 =
-        EmbeddedEngine::start_custom(Arc::new(storage1), Arc::new(sm1), Some(node1_config_path))
-            .await?;
+    let engine1 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage1),
+        Arc::new(sm1),
+        Some(node1_config_path),
+    )
+    .await?;
 
     let initial_leader = engine1.wait_ready(Duration::from_secs(5)).await?;
     info!(
@@ -380,9 +392,12 @@ election_timeout_max = 6000
 
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
 
-    let engine2 =
-        EmbeddedEngine::start_custom(Arc::new(storage2), Arc::new(sm2), Some(node2_config_path))
-            .await?;
+    let engine2 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage2),
+        Arc::new(sm2),
+        Some(node2_config_path),
+    )
+    .await?;
     info!("Node 2 started as Learner");
 
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -421,9 +436,12 @@ election_timeout_max = 6000
 
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
 
-    let engine3 =
-        EmbeddedEngine::start_custom(Arc::new(storage3), Arc::new(sm3), Some(node3_config_path))
-            .await?;
+    let engine3 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage3),
+        Arc::new(sm3),
+        Some(node3_config_path),
+    )
+    .await?;
     info!("Node 3 started as Learner");
 
     // Wait for Learner promotion and cluster stabilization
@@ -577,7 +595,7 @@ election_timeout_max = 6000
     let node1_config_path = "/tmp/d-engine-test-node1-phase6.toml".to_string();
     tokio::fs::write(&node1_config_path, &node1_config_str).await?;
 
-    let engine1 = EmbeddedEngine::start_custom(
+    let engine1 = DefaultEmbeddedEngine::start_custom(
         Arc::new(node1_storage),
         Arc::new(node1_state_machine),
         Some(&node1_config_path),

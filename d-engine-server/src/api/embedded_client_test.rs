@@ -113,10 +113,10 @@ mod integration_tests {
     use d_engine_core::ClientApi;
     use tempfile::TempDir;
 
-    use crate::api::EmbeddedEngine;
+    use crate::api::DefaultEmbeddedEngine;
 
     /// Helper to create a test EmbeddedEngine
-    async fn create_test_engine() -> (EmbeddedEngine, TempDir) {
+    async fn create_test_engine() -> (DefaultEmbeddedEngine, TempDir) {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let db_path = temp_dir.path().join("db");
 
@@ -145,7 +145,7 @@ max_batch_size = 1
         );
         std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-        let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+        let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
             .await
             .expect("Failed to start engine");
 
