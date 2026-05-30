@@ -343,6 +343,100 @@ async fn test_scan_prefix_all_0xff_no_upper_bound() {
     assert_eq!(result.entries[0].0, Bytes::copy_from_slice(key));
 }
 
+// ── get_multi tests ───────────────────────────────────────────────────────────
+
+/// RocksDB get_multi uses db.snapshot() to guarantee snapshot isolation.
+///
+/// A snapshot taken at the start of the batch read freezes the visible state:
+/// writes committed after the snapshot is taken are invisible to that batch.
+/// This means every (key, value) pair in the result comes from the same
+/// point-in-time state, preventing torn reads across apply indexes.
+///
+/// This test verifies two things:
+///   1. get_multi returns the current state accurately after each apply.
+///   2. Each result set is internally consistent — no v1/v2 mix is possible.
+#[tokio::test]
+async fn test_get_multi_rocksdb_snapshot_reads_consistent_state() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    // Apply v1: initial deployment state
+    sm.apply_chunk(&[
+        insert_at(b"/svc/addr", b"10.0.0.1:8080", 1),
+        insert_at(b"/svc/version", b"v1", 2),
+        insert_at(b"/svc/health", b"healthy", 3),
+    ])
+    .await
+    .unwrap();
+
+    let keys = vec![
+        Bytes::from_static(b"/svc/addr"),
+        Bytes::from_static(b"/svc/version"),
+        Bytes::from_static(b"/svc/health"),
+    ];
+
+    // Read after v1 — must see full v1 state
+    let v1_result = sm.get_multi(&keys).unwrap();
+    assert_eq!(
+        v1_result[0],
+        Some(Bytes::from_static(b"10.0.0.1:8080")),
+        "addr must be v1"
+    );
+    assert_eq!(
+        v1_result[1],
+        Some(Bytes::from_static(b"v1")),
+        "version must be v1"
+    );
+    assert_eq!(
+        v1_result[2],
+        Some(Bytes::from_static(b"healthy")),
+        "health must be v1"
+    );
+
+    // Apply v2: new deployment — all three fields transition
+    sm.apply_chunk(&[
+        insert_at(b"/svc/addr", b"10.0.0.2:8080", 4),
+        insert_at(b"/svc/version", b"v2", 5),
+        insert_at(b"/svc/health", b"starting", 6),
+    ])
+    .await
+    .unwrap();
+
+    // Read after v2 — must see full v2 state, no v1 values mixed in
+    let v2_result = sm.get_multi(&keys).unwrap();
+    assert_eq!(
+        v2_result[0],
+        Some(Bytes::from_static(b"10.0.0.2:8080")),
+        "addr must be v2"
+    );
+    assert_eq!(
+        v2_result[1],
+        Some(Bytes::from_static(b"v2")),
+        "version must be v2"
+    );
+    assert_eq!(
+        v2_result[2],
+        Some(Bytes::from_static(b"starting")),
+        "health must be v2"
+    );
+
+    // Verify each result set is internally consistent (snapshot isolation guarantee).
+    // A torn read — e.g., addr=v2 + version=v1 — would indicate the snapshot is not
+    // held for the full batch, which would be a correctness violation.
+    for (label, result) in [("v1_result", &v1_result), ("v2_result", &v2_result)] {
+        let is_v1 = result[0] == Some(Bytes::from_static(b"10.0.0.1:8080"))
+            && result[1] == Some(Bytes::from_static(b"v1"))
+            && result[2] == Some(Bytes::from_static(b"healthy"));
+        let is_v2 = result[0] == Some(Bytes::from_static(b"10.0.0.2:8080"))
+            && result[1] == Some(Bytes::from_static(b"v2"))
+            && result[2] == Some(Bytes::from_static(b"starting"));
+        assert!(
+            is_v1 || is_v2,
+            "{label}: torn read detected — result is neither pure v1 nor pure v2: {result:?}"
+        );
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn insert_at(

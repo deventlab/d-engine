@@ -326,6 +326,7 @@ impl MockBuilder {
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
+            read_handle: crate::api::ReadHandle::new(None, cmd_tx.clone()),
             cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
@@ -337,6 +338,7 @@ impl MockBuilder {
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
             sm_worker_handle: std::sync::Mutex::new(None),
+            read_actor_handle: std::sync::Mutex::new(None),
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal,
@@ -377,6 +379,7 @@ impl MockBuilder {
             raft_core: Arc::new(Mutex::new(raft)),
             membership,
             event_tx,
+            read_handle: crate::api::ReadHandle::new(None, cmd_tx.clone()),
             cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
@@ -388,6 +391,7 @@ impl MockBuilder {
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
             sm_worker_handle: std::sync::Mutex::new(None),
+            read_actor_handle: std::sync::Mutex::new(None),
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal: shutdown.clone(),

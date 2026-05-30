@@ -1581,4 +1581,14 @@ impl StateMachine for FileStateMachine {
         let revision = self.last_applied_index.load(Ordering::SeqCst);
         Ok(ScanResult { entries, revision })
     }
+
+    fn get_multi(
+        &self,
+        keys: &[Bytes],
+    ) -> d_engine_core::Result<Vec<Option<Bytes>>> {
+        // Hold read lock for the full batch so all keys come from the same consistent view.
+        // apply_chunk holds the write lock; parking_lot RwLock ensures they don't interleave.
+        let data = self.data.read();
+        Ok(keys.iter().map(|k| data.get(k).map(|(v, _)| v.clone())).collect())
+    }
 }

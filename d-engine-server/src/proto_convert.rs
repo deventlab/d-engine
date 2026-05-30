@@ -211,6 +211,34 @@ pub(crate) fn to_proto_response(r: ClientResponse) -> proto_client::ClientRespon
     }
 }
 
+/// Build a successful `ClientResponse` proto for a single-key fast-path read.
+/// Build a fast-path read response from a batch of keys and their optional values.
+///
+/// Keys with `None` values are omitted from results (key not found).
+/// The result slice is positionally ordered and corresponds 1:1 to `keys`.
+pub(crate) fn fast_path_batch_read_response(
+    keys: &[bytes::Bytes],
+    values: Vec<Option<bytes::Bytes>>,
+) -> proto_client::ClientResponse {
+    let results = keys
+        .iter()
+        .zip(values)
+        .filter_map(|(key, value)| {
+            value.map(|v| ClientResult {
+                key: key.clone(),
+                value: v,
+            })
+        })
+        .collect();
+    proto_client::ClientResponse {
+        error: 0, // ErrorCode::Success
+        metadata: None,
+        success_result: Some(proto_client::client_response::SuccessResult::ReadData(
+            ProtoReadResults { results },
+        )),
+    }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 #[inline]

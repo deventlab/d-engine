@@ -2,8 +2,10 @@
 
 mod embedded;
 mod embedded_client;
+mod read_handle;
 mod standalone;
 
+pub use read_handle::ReadHandle;
 pub use standalone::StandaloneEngine;
 
 /// Embedded engine generic over any `(SE, SM)` pair.
@@ -28,6 +30,9 @@ mod embedded_client_test;
 
 #[cfg(test)]
 mod embedded_client_fast_path_test;
+
+#[cfg(test)]
+mod read_handle_test;
 
 #[cfg(test)]
 mod embedded_test;

@@ -12,15 +12,16 @@ mod fast_path_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use crate::read_actor::run_read_actor;
     use bytes::Bytes;
     use d_engine_core::MockTypeConfig;
     use d_engine_core::config::ReadConsistencyPolicy;
-    use d_engine_core::read_actor::run_read_actor;
     use d_engine_core::{MockStateMachine, ReadLease, now_ms};
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
     use super::super::embedded_client::EmbeddedClient;
+    use super::super::read_handle::ReadHandle;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -45,9 +46,13 @@ mod fast_path_tests {
         }
 
         let ra_handle = tokio::spawn(run_read_actor(read_rx, lease, Arc::new(sm), 64));
-        let client =
-            EmbeddedClient::new_internal(make_event_tx(), cmd_tx, 1, Duration::from_millis(100))
-                .with_read_actor(read_tx);
+        let client = EmbeddedClient::new_internal(
+            make_event_tx(),
+            cmd_tx.clone(),
+            1,
+            Duration::from_millis(100),
+        )
+        .with_read_handle(ReadHandle::new(Some(read_tx), cmd_tx));
         (client, ra_handle)
     }
 
@@ -72,14 +77,15 @@ mod fast_path_tests {
     fn sm_running_with_value(value: Bytes) -> MockStateMachine {
         let mut sm = MockStateMachine::new();
         sm.expect_is_running().returning(|| true);
-        sm.expect_get().returning(move |_| Ok(Some(value.clone())));
+        sm.expect_get_multi()
+            .returning(move |keys| Ok(keys.iter().map(|_| Some(value.clone())).collect()));
         sm
     }
 
     fn sm_running_missing_key() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
         sm.expect_is_running().returning(|| true);
-        sm.expect_get().returning(|_| Ok(None));
+        sm.expect_get_multi().returning(|keys| Ok(keys.iter().map(|_| None).collect()));
         sm
     }
 
@@ -125,8 +131,8 @@ mod fast_path_tests {
     async fn test_get_lease_fallback_when_lease_revoked() {
         let mut sm = MockStateMachine::new();
         sm.expect_is_running().returning(|| true);
-        // get() must not be called — ReadActor short-circuits on LeaseInvalid
-        sm.expect_get().never();
+        // get_multi() must not be called — ReadActor short-circuits on LeaseInvalid
+        sm.expect_get_multi().never();
 
         let (client, handle) = client_with_read_actor(sm, revoked_lease(), true).await;
         let result = client.get_with_consistency(b"k", ReadConsistencyPolicy::LeaseRead).await;
@@ -141,7 +147,7 @@ mod fast_path_tests {
     async fn test_get_lease_fallback_when_lease_expired() {
         let mut sm = MockStateMachine::new();
         sm.expect_is_running().returning(|| true);
-        sm.expect_get().never();
+        sm.expect_get_multi().never();
 
         let (client, handle) = client_with_read_actor(sm, expired_lease(), true).await;
         let result = client.get_with_consistency(b"k", ReadConsistencyPolicy::LeaseRead).await;
@@ -198,9 +204,9 @@ mod fast_path_tests {
 
     // ── No fast path without read_tx ──────────────────────────────────────────
 
-    /// Client without with_read_actor() always routes through cmd_tx.
+    /// Client without with_read_handle() (read_tx=None) always routes through cmd_tx.
     #[tokio::test]
-    async fn test_no_fast_path_without_with_read_actor_call() {
+    async fn test_no_fast_path_without_read_handle() {
         let (cmd_tx, cmd_rx) = mpsc::channel(1);
         drop(cmd_rx);
         let client: EmbeddedClient<MockTypeConfig> =
@@ -247,7 +253,7 @@ mod fast_path_tests {
     async fn test_sm_error_returned_directly_without_cmd_tx_fallback() {
         let mut sm = MockStateMachine::new();
         sm.expect_is_running().returning(|| true);
-        sm.expect_get()
+        sm.expect_get_multi()
             .returning(|_| Err(d_engine_core::Error::Fatal("disk I/O failure".into())));
 
         let (client, handle) = client_with_read_actor(sm, valid_lease(), true).await;
@@ -269,16 +275,20 @@ mod fast_path_tests {
     #[tokio::test]
     async fn test_fast_path_fallback_when_read_actor_channel_closed() {
         let sm = sm_running_with_value(Bytes::from("v"));
-        let (read_tx, read_rx) = mpsc::channel::<d_engine_core::read_actor::ReadCmd>(1);
+        let (read_tx, read_rx) = mpsc::channel::<crate::read_actor::ReadCmd>(1);
         let (cmd_tx, cmd_rx) = mpsc::channel(1);
         drop(cmd_rx); // cmd_tx closed for fallback verification
 
         // Drop read_rx immediately → channel is closed from the receiver side.
         drop(read_rx);
 
-        let client: EmbeddedClient<MockTypeConfig> =
-            EmbeddedClient::new_internal(make_event_tx(), cmd_tx, 1, Duration::from_millis(100))
-                .with_read_actor(read_tx);
+        let client: EmbeddedClient<MockTypeConfig> = EmbeddedClient::new_internal(
+            make_event_tx(),
+            cmd_tx.clone(),
+            1,
+            Duration::from_millis(100),
+        )
+        .with_read_handle(ReadHandle::new(Some(read_tx), cmd_tx));
 
         // Send to a closed channel → is_ok() == false → falls through to cmd_tx → error
         let result = client.get_with_consistency(b"k", ReadConsistencyPolicy::LeaseRead).await;
@@ -289,5 +299,98 @@ mod fast_path_tests {
 
         // Suppress unused SM warning
         drop(sm);
+    }
+
+    // ── get_multi_with_consistency fast path ──────────────────────────────────
+
+    fn sm_running_with_multi_values(vals: Vec<(&'static [u8], &'static [u8])>) -> MockStateMachine {
+        let mut sm = MockStateMachine::new();
+        sm.expect_is_running().returning(|| true);
+        sm.expect_get_multi().returning(move |keys| {
+            Ok(keys
+                .iter()
+                .map(|k| {
+                    for (key, val) in &vals {
+                        if &k[..] == *key {
+                            return Some(Bytes::from_static(val));
+                        }
+                    }
+                    None
+                })
+                .collect())
+        });
+        sm
+    }
+
+    /// get_multi_with_consistency Eventual with valid SM → ReadActor fast path.
+    /// cmd_rx dropped: Ok proves fast path was taken.
+    #[tokio::test]
+    async fn test_get_multi_eventual_fast_path_returns_values() {
+        let sm = sm_running_with_multi_values(vec![(b"k1", b"v1"), (b"k2", b"v2")]);
+        let (client, handle) = client_with_read_actor(sm, valid_lease(), true).await;
+
+        let keys = vec![Bytes::from_static(b"k1"), Bytes::from_static(b"k2")];
+        let result = client
+            .get_multi_with_consistency(&keys, ReadConsistencyPolicy::EventualConsistency)
+            .await;
+
+        let values = result.unwrap();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0], Some(Bytes::from_static(b"v1")));
+        assert_eq!(values[1], Some(Bytes::from_static(b"v2")));
+        drop(client);
+        handle.await.unwrap();
+    }
+
+    /// get_multi_with_consistency LeaseRead with valid lease → fast path.
+    #[tokio::test]
+    async fn test_get_multi_lease_read_fast_path_returns_values() {
+        let sm = sm_running_with_multi_values(vec![(b"k1", b"v1")]);
+        let (client, handle) = client_with_read_actor(sm, valid_lease(), true).await;
+
+        let keys = vec![Bytes::from_static(b"k1"), Bytes::from_static(b"missing")];
+        let result =
+            client.get_multi_with_consistency(&keys, ReadConsistencyPolicy::LeaseRead).await;
+
+        let values = result.unwrap();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0], Some(Bytes::from_static(b"v1")));
+        assert_eq!(values[1], None);
+        drop(client);
+        handle.await.unwrap();
+    }
+
+    /// get_multi_with_consistency LeaseRead revoked → fallback to cmd_tx.
+    #[tokio::test]
+    async fn test_get_multi_lease_revoked_falls_back_to_cmd_tx() {
+        let sm = sm_running_with_multi_values(vec![(b"k1", b"v1")]);
+        let (client, handle) = client_with_read_actor(sm, revoked_lease(), true).await;
+
+        let keys = vec![Bytes::from_static(b"k1")];
+        let result =
+            client.get_multi_with_consistency(&keys, ReadConsistencyPolicy::LeaseRead).await;
+
+        assert!(result.is_err(), "revoked lease must fall back to cmd_tx");
+        drop(client);
+        handle.await.unwrap();
+    }
+
+    /// get_multi_with_consistency LinearizableRead always uses cmd_tx.
+    /// cmd_rx dropped: error proves cmd_tx was used (not ReadActor).
+    #[tokio::test]
+    async fn test_get_multi_linearizable_always_routes_through_cmd_tx() {
+        let mut sm = MockStateMachine::new();
+        sm.expect_is_running().returning(|| true);
+        // no expect_get() — mockall panics if get() is called
+        let (client, handle) = client_with_read_actor(sm, valid_lease(), true).await;
+
+        let keys = vec![Bytes::from_static(b"k1"), Bytes::from_static(b"k2")];
+        let result = client
+            .get_multi_with_consistency(&keys, ReadConsistencyPolicy::LinearizableRead)
+            .await;
+
+        assert!(result.is_err(), "LinearizableRead must always use cmd_tx");
+        drop(client);
+        handle.await.unwrap();
     }
 }

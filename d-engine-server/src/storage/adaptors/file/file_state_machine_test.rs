@@ -397,6 +397,106 @@ async fn test_file_sm_scan_prefix_empty_namespace() {
     );
 }
 
+// ── get_multi tests ───────────────────────────────────────────────────────────
+
+/// FileStateMachine get_multi holds a read lock for the entire batch, ensuring
+/// that state transitions are atomic from the reader's perspective.
+///
+/// Because apply_chunk acquires a write lock when updating self.data, a concurrent
+/// write cannot interleave between the individual key reads inside get_multi.
+/// The result is always either the full pre-write state or the full post-write state —
+/// never a mix of values from different apply indexes.
+///
+/// This test verifies sequential coherence: after each state transition, all keys
+/// in the batch reflect the same version with no cross-version contamination.
+#[tokio::test]
+async fn test_get_multi_file_sm_atomic_state_transitions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
+
+    // v1: initial state
+    sm.apply_chunk(&[
+        ApplyEntry {
+            index: 1,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from("/svc/addr"),
+                value: Bytes::from("10.0.0.1"),
+                ttl_secs: None,
+            },
+        },
+        ApplyEntry {
+            index: 2,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from("/svc/version"),
+                value: Bytes::from("v1"),
+                ttl_secs: None,
+            },
+        },
+    ])
+    .await
+    .unwrap();
+
+    let keys = vec![Bytes::from("/svc/addr"), Bytes::from("/svc/version")];
+
+    // Read after v1 — both fields must be from v1
+    let v1_result = sm.get_multi(&keys).unwrap();
+    assert_eq!(
+        v1_result[0],
+        Some(Bytes::from("10.0.0.1")),
+        "addr must be v1"
+    );
+    assert_eq!(v1_result[1], Some(Bytes::from("v1")), "version must be v1");
+
+    // Apply v2: both fields transition together
+    sm.apply_chunk(&[
+        ApplyEntry {
+            index: 3,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from("/svc/addr"),
+                value: Bytes::from("10.0.0.2"),
+                ttl_secs: None,
+            },
+        },
+        ApplyEntry {
+            index: 4,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from("/svc/version"),
+                value: Bytes::from("v2"),
+                ttl_secs: None,
+            },
+        },
+    ])
+    .await
+    .unwrap();
+
+    // Read after v2 — both fields must be from v2
+    let v2_result = sm.get_multi(&keys).unwrap();
+    assert_eq!(
+        v2_result[0],
+        Some(Bytes::from("10.0.0.2")),
+        "addr must be v2"
+    );
+    assert_eq!(v2_result[1], Some(Bytes::from("v2")), "version must be v2");
+
+    // Verify internal consistency of each result: addr and version must come from
+    // the same version. A torn read (addr=v2 + version=v1) would indicate that
+    // the read lock is not held across the full batch, which is a correctness bug.
+    for (label, result) in [("v1_result", &v1_result), ("v2_result", &v2_result)] {
+        let is_v1 =
+            result[0] == Some(Bytes::from("10.0.0.1")) && result[1] == Some(Bytes::from("v1"));
+        let is_v2 =
+            result[0] == Some(Bytes::from("10.0.0.2")) && result[1] == Some(Bytes::from("v2"));
+        assert!(
+            is_v1 || is_v2,
+            "{label}: torn read — result is neither pure v1 nor pure v2: {result:?}"
+        );
+    }
+}
+
 /// scan_prefix revision equals last_applied_index at scan time.
 #[tokio::test]
 async fn test_file_sm_scan_prefix_revision_reflects_applied_index() {

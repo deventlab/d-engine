@@ -135,12 +135,10 @@ use crate::StorageEngine;
 use crate::node::NodeBuilder;
 use crate::node::RaftTypeConfig;
 use d_engine_core::TypeConfig;
-use d_engine_core::read_actor::run_read_actor;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::error;
@@ -154,9 +152,6 @@ struct Inner<T: TypeConfig> {
     membership_rx: watch::Receiver<crate::membership::MembershipSnapshot>,
     is_stopped: Mutex<bool>,
     node_id: u32,
-    /// ReadActor task handle. Aborted during stop() before the Raft node shuts down,
-    /// ensuring Arc<SM> (and the RocksDB LOCK) is released before stop() returns.
-    read_actor_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// Embedded d-engine with automatic lifecycle management.
@@ -352,23 +347,12 @@ where
 
         let node = NodeBuilder::init(node_config, shutdown_rx)
             .storage_engine(storage_engine)
-            .state_machine(state_machine.clone())
+            .state_machine(state_machine)
             .start()
             .await?;
 
         let leader_elected_rx = node.leader_change_notifier();
         let membership_rx = node.membership_change_notifier();
-        let read_lease = node.read_lease();
-
-        // Start ReadActor: sole owner of Arc<SM> on the read path.
-        let (read_tx, read_rx) = mpsc::channel(node.node_config.raft.read_actor.channel_capacity);
-        let max_drain = node.node_config.raft.read_actor.max_drain;
-        let read_actor_handle = tokio::spawn(run_read_actor(
-            read_rx,
-            read_lease,
-            state_machine,
-            max_drain,
-        ));
 
         let client = {
             let base = EmbeddedClient::new_internal(
@@ -377,7 +361,7 @@ where
                 node.node_id,
                 Duration::from_millis(node.node_config.raft.general_raft_timeout_duration_in_ms),
             )
-            .with_read_actor(read_tx);
+            .with_read_handle(node.read_handle.clone());
 
             #[cfg(feature = "watch")]
             let base = {
@@ -413,7 +397,6 @@ where
                 membership_rx,
                 is_stopped: Mutex::new(false),
                 node_id,
-                read_actor_handle: Mutex::new(Some(read_actor_handle)),
             }),
         })
     }
@@ -649,16 +632,6 @@ impl<T: TypeConfig> EmbeddedEngine<T> {
         }
 
         info!("Stopping embedded d-engine");
-
-        // Abort ReadActor first so Arc<SM> drops and RocksDB LOCK is released
-        // before the Raft node exits. Any in-flight reads will get a channel-closed
-        // error, which is acceptable during shutdown.
-        let mut ra_handle = self.inner.read_actor_handle.lock().await;
-        if let Some(handle) = ra_handle.take() {
-            handle.abort();
-            let _ = handle.await; // expect JoinError::Cancelled
-        }
-        drop(ra_handle);
 
         // Send shutdown signal to Raft node
         let _ = self.inner.shutdown_tx.send(());

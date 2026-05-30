@@ -114,6 +114,10 @@ where
     /// ensuring `Arc<DB>` is released before run() returns.
     pub(crate) sm_worker_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 
+    /// ReadActor task handle. Aborted in run() after sm_worker exits so that the
+    /// `Arc<SM>` (and the RocksDB LOCK) is released before run() returns.
+    pub(crate) read_actor_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+
     /// Commit handler task handle (background log application)
     pub(crate) _commit_handler_handle: Option<tokio::task::JoinHandle<()>>,
 
@@ -125,6 +129,9 @@ where
 
     /// Read lease — same Arc as the one inside SharedState, exposed for EmbeddedClient.
     pub(crate) read_lease: Arc<ReadLease>,
+
+    /// Fast-path read routing. Always set; `read_tx = None` means no ReadActor.
+    pub(crate) read_handle: crate::api::ReadHandle,
 }
 
 impl<T> Debug for Node<T>
@@ -185,6 +192,14 @@ where
             })
             .await
             .ok();
+        }
+
+        // Abort ReadActor after sm_worker exits so Arc<SM> ref-count goes to zero
+        // and RocksDB LOCK is released before run() returns.
+        let ra_handle = self.read_actor_handle.lock().unwrap().take();
+        if let Some(ra_handle) = ra_handle {
+            ra_handle.abort();
+            let _ = ra_handle.await;
         }
 
         Ok(())

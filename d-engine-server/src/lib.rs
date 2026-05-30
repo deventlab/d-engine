@@ -98,6 +98,12 @@ mod proto_convert;
 #[cfg(test)]
 mod proto_convert_test;
 
+/// ReadActor — fast-path read task for Eventual and LeaseRead.
+/// Kept in server (not core) because it is a performance optimization, not a Raft protocol component.
+pub(crate) mod read_actor;
+#[cfg(test)]
+mod read_actor_test;
+
 /// Node lifecycle management
 ///
 /// Contains [`Node`] and [`NodeBuilder`] for server setup.

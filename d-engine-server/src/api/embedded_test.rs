@@ -524,6 +524,29 @@ listen_addr = "127.0.0.1:0"
             // verifies the code path doesn't panic
             drop(engine);
         }
+
+        /// stop() must release the RocksDB LOCK before returning.
+        ///
+        /// If ReadActor still held Arc<SM> after stop(), RocksDB would refuse the
+        /// second open() with "lock file already held by process" — no sleep needed.
+        #[tokio::test]
+        #[serial(tmp_db)]
+        async fn test_stop_releases_sm_lock_immediately() {
+            let data_dir = std::path::PathBuf::from("/tmp/d-engine-lock-release-test");
+            let _ = std::fs::remove_dir_all(&data_dir);
+
+            let engine =
+                EmbeddedEngine::start(&data_dir).await.expect("First start should succeed");
+            engine.stop().await.expect("stop() should succeed");
+
+            // Immediately reopen — no sleep. If the LOCK is still held this fails.
+            let engine2 = EmbeddedEngine::start(&data_dir).await.expect(
+                "Second start must succeed immediately after stop() — LOCK was not released",
+            );
+            engine2.stop().await.ok();
+
+            let _ = std::fs::remove_dir_all(&data_dir);
+        }
     }
 
     #[cfg(feature = "watch")]

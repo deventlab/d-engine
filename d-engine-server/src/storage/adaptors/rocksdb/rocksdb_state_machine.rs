@@ -1075,6 +1075,32 @@ impl StateMachine for RocksDBStateMachine {
     ) -> Result<ScanResult, Error> {
         self.scan_prefix(prefix)
     }
+
+    fn get_multi(
+        &self,
+        keys: &[Bytes],
+    ) -> Result<Vec<Option<Bytes>>, Error> {
+        if !self.is_serving.load(Ordering::SeqCst) {
+            return Err(StorageError::NotServing(
+                "State machine is restoring from snapshot".to_string(),
+            )
+            .into());
+        }
+        let db = self.db.load();
+        let cf = db
+            .cf_handle(STATE_MACHINE_CF)
+            .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
+        // One snapshot covers the full batch: all keys read from the same point-in-time.
+        // Snapshot lives only within this call — no lifetime escaping, no unsafe.
+        let snap = db.snapshot();
+        keys.iter()
+            .map(|k| {
+                snap.get_cf(&cf, k)
+                    .map(|v| v.map(|b| Bytes::copy_from_slice(&b)))
+                    .map_err(|e| StorageError::DbError(e.to_string()).into())
+            })
+            .collect()
+    }
 }
 impl Drop for RocksDBStateMachine {
     fn drop(&mut self) {

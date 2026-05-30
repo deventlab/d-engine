@@ -67,7 +67,6 @@ mod purge;
 mod raft;
 mod raft_context;
 mod raft_role;
-pub mod read_actor;
 mod replication;
 mod state_machine_handler;
 mod timer;
@@ -128,9 +127,6 @@ pub use type_config::*;
 pub use utils::*;
 
 pub(crate) use timer::*;
-
-#[cfg(test)]
-mod read_actor_test;
 
 #[cfg(test)]
 mod command_test;

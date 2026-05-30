@@ -3,14 +3,27 @@
 //! Safety invariant: a stepped-down leader must not allow ReadActor to serve
 //! stale lease reads. The shared `Arc<ReadLease>` must be invalid immediately
 //! after `become_follower()` returns so any concurrent ReadActor check fails.
+//!
+//! # Coverage
+//! - Direct call: `become_follower()` revokes lease (unit pin)
+//! - End-to-end: higher-term VoteRequest → BecomeFollower → become_follower() → lease invalid
+//! - End-to-end: higher-term AppendEntries → BecomeFollower → become_follower() → lease invalid
+//! - End-to-end: higher-term AppendResult → BecomeFollower → become_follower() → lease invalid
 
 use std::sync::Arc;
 
+use tokio::sync::{mpsc, watch};
+
 use crate::RaftNodeConfig;
+use crate::event::{RaftEvent, RoleEvent};
+use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
 use crate::now_ms;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
+use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
 
 /// become_follower() revokes the shared Arc<ReadLease> so ReadActor immediately
 /// returns LeaseInvalid on the very next is_valid() check.
@@ -43,5 +56,153 @@ async fn test_become_follower_revokes_read_lease() {
     assert!(
         !lease.is_valid(now_ms()),
         "become_follower() must revoke the shared Arc<ReadLease>"
+    );
+}
+
+/// Higher-term VoteRequest → BecomeFollower event → become_follower() → lease revoked.
+///
+/// End-to-end pin for the path:
+///   ReceiveVoteRequest(term > current) → send_become_follower_event()
+///   → Raft loop calls become_follower() → lease.revoke()
+///
+/// The ReadActor holds the same Arc<ReadLease>. After this chain the fast path
+/// must return LeaseInvalid on the very next is_valid() check.
+#[tokio::test]
+async fn test_receive_higher_term_vote_request_revokes_lease() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_vote_request_revokes_lease")
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let lease = Arc::clone(&state.shared_state.lease);
+
+    state.test_update_lease_timestamp();
+    assert!(
+        lease.is_valid(now_ms()),
+        "precondition: lease must be valid"
+    );
+
+    let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let event = RaftEvent::ReceiveVoteRequest(
+        VoteRequest {
+            term: 999,
+            candidate_id: 2,
+            last_log_index: 0,
+            last_log_term: 0,
+        },
+        resp_tx,
+    );
+    state.handle_raft_event(event, &context, role_tx).await.ok();
+
+    assert!(
+        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))),
+        "higher-term VoteRequest must emit BecomeFollower"
+    );
+
+    // Simulate Raft loop processing BecomeFollower.
+    let _ = state.become_follower().expect("become_follower must succeed");
+
+    assert!(
+        !lease.is_valid(now_ms()),
+        "lease must be revoked after VoteRequest step-down — ReadActor must not serve stale reads"
+    );
+}
+
+/// Higher-term AppendEntries → BecomeFollower event → become_follower() → lease revoked.
+///
+/// End-to-end pin for the path:
+///   AppendEntries(term > current) → send_become_follower_event()
+///   → Raft loop calls become_follower() → lease.revoke()
+#[tokio::test]
+async fn test_receive_higher_term_append_entries_revokes_lease() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_append_entries_revokes_lease")
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(10);
+    let lease = Arc::clone(&state.shared_state.lease);
+
+    state.test_update_lease_timestamp();
+    assert!(
+        lease.is_valid(now_ms()),
+        "precondition: lease must be valid"
+    );
+
+    let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let event = RaftEvent::AppendEntries(
+        AppendEntriesRequest {
+            term: 11, // higher than current term 10
+            leader_id: 2,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit_index: 0,
+        },
+        resp_tx,
+    );
+    state.handle_raft_event(event, &context, role_tx).await.ok();
+
+    assert!(
+        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))),
+        "higher-term AppendEntries must emit BecomeFollower"
+    );
+
+    // Simulate Raft loop processing BecomeFollower.
+    let _ = state.become_follower().expect("become_follower must succeed");
+
+    assert!(
+        !lease.is_valid(now_ms()),
+        "lease must be revoked after AppendEntries step-down"
+    );
+}
+
+/// Higher-term AppendResult → BecomeFollower event → become_follower() → lease revoked.
+///
+/// End-to-end pin for the path:
+///   handle_append_result(response.term > current) → send_become_follower_event()
+///   → Raft loop calls become_follower() → lease.revoke()
+#[tokio::test]
+async fn test_append_result_higher_term_revokes_lease() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_append_result_revokes_lease")
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let lease = Arc::clone(&state.shared_state.lease);
+
+    state.test_update_lease_timestamp();
+    assert!(
+        lease.is_valid(now_ms()),
+        "precondition: lease must be valid"
+    );
+
+    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let higher_term_response = AppendEntriesResponse {
+        node_id: 2,
+        term: 999, // higher than leader term=1
+        result: None,
+    };
+    let result = state
+        .handle_append_result(2, Ok(higher_term_response), &context, &role_tx)
+        .await;
+
+    assert!(result.is_err(), "higher-term AppendResult must return Err");
+    assert!(
+        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))),
+        "higher-term AppendResult must emit BecomeFollower"
+    );
+
+    // Simulate Raft loop processing BecomeFollower.
+    let _ = state.become_follower().expect("become_follower must succeed");
+
+    assert!(
+        !lease.is_valid(now_ms()),
+        "lease must be revoked after AppendResult step-down"
     );
 }

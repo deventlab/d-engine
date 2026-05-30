@@ -48,6 +48,14 @@ impl StateMachineTestSuite {
         Self::test_ungraceful_shutdown_recovery(&builder).await?;
         Self::test_reset_operation(builder.build().await?).await?;
 
+        Self::test_get_multi_returns_values_in_key_order(builder.build().await?).await?;
+        Self::test_get_multi_absent_keys_return_none(builder.build().await?).await?;
+        Self::test_get_multi_empty_keys_returns_empty(builder.build().await?).await?;
+        Self::test_get_multi_partial_hit_some_keys_missing(builder.build().await?).await?;
+        Self::test_get_multi_service_registry_coherence(builder.build().await?).await?;
+        Self::test_get_multi_election_state_coherence(builder.build().await?).await?;
+        Self::test_get_multi_quota_management_coherence(builder.build().await?).await?;
+
         builder.cleanup().await?;
         Ok(())
     }
@@ -832,6 +840,326 @@ impl StateMachineTestSuite {
         );
         assert_eq!(state_machine.last_applied(), LogId { index: 2, term: 1 });
 
+        Ok(())
+    }
+
+    // ── get_multi tests ───────────────────────────────────────────────────────
+
+    /// Verify that get_multi preserves input key order in its output.
+    ///
+    /// The caller maps result[i] back to keys[i] without a key lookup.
+    /// Any reordering silently breaks that mapping.
+    pub async fn test_get_multi_returns_values_in_key_order(
+        sm: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        sm.apply_chunk(&[
+            create_insert_entry(1, Bytes::from("key_a"), Bytes::from("value_a")),
+            create_insert_entry(2, Bytes::from("key_b"), Bytes::from("value_b")),
+            create_insert_entry(3, Bytes::from("key_c"), Bytes::from("value_c")),
+        ])
+        .await?;
+
+        // Request in reverse alphabetical order to catch any accidental sorting.
+        let keys = vec![
+            Bytes::from("key_c"),
+            Bytes::from("key_a"),
+            Bytes::from("key_b"),
+        ];
+        let values = sm.get_multi(&keys)?;
+
+        assert_eq!(values.len(), 3, "result length must match key count");
+        assert_eq!(
+            values[0],
+            Some(Bytes::from("value_c")),
+            "position 0 = key_c"
+        );
+        assert_eq!(
+            values[1],
+            Some(Bytes::from("value_a")),
+            "position 1 = key_a"
+        );
+        assert_eq!(
+            values[2],
+            Some(Bytes::from("value_b")),
+            "position 2 = key_b"
+        );
+        Ok(())
+    }
+
+    /// Verify that absent keys produce None entries, not errors or panics.
+    ///
+    /// Callers rely on None to distinguish "key not found" from a storage failure.
+    /// Returning Err for a missing key would force callers to treat a normal business
+    /// state (no registration yet) as an error.
+    pub async fn test_get_multi_absent_keys_return_none(
+        sm: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        let keys = vec![Bytes::from("ghost_1"), Bytes::from("ghost_2")];
+        let values = sm.get_multi(&keys)?;
+
+        assert_eq!(values.len(), 2);
+        assert!(values[0].is_none(), "absent key must return None, not Err");
+        assert!(values[1].is_none(), "absent key must return None, not Err");
+        Ok(())
+    }
+
+    /// Verify that an empty key slice returns an empty result without error.
+    ///
+    /// Callers may pass an empty slice when the coordinator has no keys to fetch
+    /// (e.g., an empty service namespace). The implementation must not panic or
+    /// return an error in this case.
+    pub async fn test_get_multi_empty_keys_returns_empty(
+        sm: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        let values = sm.get_multi(&[])?;
+        assert!(
+            values.is_empty(),
+            "empty key list must produce empty result"
+        );
+        Ok(())
+    }
+
+    /// Verify that a mix of present and absent keys returns Some/None correctly.
+    ///
+    /// The position contract must hold even when some slots are None.
+    /// A naive implementation that skips missing keys and compacts the result
+    /// would shift positions, silently misrouting values to wrong fields.
+    pub async fn test_get_multi_partial_hit_some_keys_missing(
+        sm: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        sm.apply_chunk(&[create_insert_entry(
+            1,
+            Bytes::from("present"),
+            Bytes::from("v"),
+        )])
+        .await?;
+
+        let keys = vec![
+            Bytes::from("missing_before"),
+            Bytes::from("present"),
+            Bytes::from("missing_after"),
+        ];
+        let values = sm.get_multi(&keys)?;
+
+        assert_eq!(
+            values.len(),
+            3,
+            "result length must equal key count even with gaps"
+        );
+        assert!(
+            values[0].is_none(),
+            "missing_before must be None at position 0"
+        );
+        assert_eq!(
+            values[1],
+            Some(Bytes::from("v")),
+            "present must have value at position 1"
+        );
+        assert!(
+            values[2].is_none(),
+            "missing_after must be None at position 2"
+        );
+        Ok(())
+    }
+
+    /// Service registry coordinator scenario: batch read must not produce a torn state.
+    ///
+    /// In distributed service routing, (addr, version, health) must all come from
+    /// the same applied state. A torn read — addr from apply index 100, version from
+    /// index 105 — would cause traffic to route to the old instance while the client
+    /// believes it runs the new version, breaking gray-release correctness.
+    ///
+    /// This test verifies that after a full v2 deployment, get_multi returns all three
+    /// fields from v2 with no v1 values mixed in.
+    pub async fn test_get_multi_service_registry_coherence(
+        sm: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        // v1: initial deployment
+        sm.apply_chunk(&[
+            create_insert_entry(
+                1,
+                Bytes::from("/service/payment/addr"),
+                Bytes::from("10.0.0.1:8080"),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from("/service/payment/version"),
+                Bytes::from("v2.2"),
+            ),
+            create_insert_entry(
+                3,
+                Bytes::from("/service/payment/health"),
+                Bytes::from("healthy"),
+            ),
+        ])
+        .await?;
+
+        // v2: new deployment — all three fields transition together
+        sm.apply_chunk(&[
+            create_insert_entry(
+                4,
+                Bytes::from("/service/payment/addr"),
+                Bytes::from("10.0.0.2:8080"),
+            ),
+            create_insert_entry(
+                5,
+                Bytes::from("/service/payment/version"),
+                Bytes::from("v2.3"),
+            ),
+            create_insert_entry(
+                6,
+                Bytes::from("/service/payment/health"),
+                Bytes::from("starting"),
+            ),
+        ])
+        .await?;
+
+        let keys = vec![
+            Bytes::from("/service/payment/addr"),
+            Bytes::from("/service/payment/version"),
+            Bytes::from("/service/payment/health"),
+        ];
+        let values = sm.get_multi(&keys)?;
+
+        assert_eq!(values.len(), 3);
+        // All three must reflect the v2 state consistently.
+        // Any mix (e.g., addr=v2 + version=v2.2) is a torn read.
+        assert_eq!(
+            values[0],
+            Some(Bytes::from("10.0.0.2:8080")),
+            "addr must be v2.3 instance"
+        );
+        assert_eq!(values[1], Some(Bytes::from("v2.3")), "version must be v2.3");
+        assert_eq!(
+            values[2],
+            Some(Bytes::from("starting")),
+            "health must be v2.3 startup value"
+        );
+        Ok(())
+    }
+
+    /// Leader election coordinator scenario: batch read must not produce a phantom state.
+    ///
+    /// (leader, term, lease_expire) must be internally consistent. A torn read can
+    /// produce a combination that never existed — e.g., leader=node-3 (old term) with
+    /// term=43 (new term). A coordinator observing this phantom state may incorrectly
+    /// conclude that node-3 holds a lease in term 43 and take split-brain actions.
+    ///
+    /// This test verifies that after a term transition, get_multi returns all three
+    /// fields from the new term with no old-term values mixed in.
+    pub async fn test_get_multi_election_state_coherence(
+        sm: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        // Term 42: node-3 is leader
+        sm.apply_chunk(&[
+            create_insert_entry(1, Bytes::from("/election/leader"), Bytes::from("node-3")),
+            create_insert_entry(2, Bytes::from("/election/term"), Bytes::from("42")),
+            create_insert_entry(
+                3,
+                Bytes::from("/election/lease_expire"),
+                Bytes::from("1748600000"),
+            ),
+        ])
+        .await?;
+
+        // Term 43: node-5 wins new election
+        sm.apply_chunk(&[
+            create_insert_entry(4, Bytes::from("/election/leader"), Bytes::from("node-5")),
+            create_insert_entry(5, Bytes::from("/election/term"), Bytes::from("43")),
+            create_insert_entry(
+                6,
+                Bytes::from("/election/lease_expire"),
+                Bytes::from("1748603600"),
+            ),
+        ])
+        .await?;
+
+        let keys = vec![
+            Bytes::from("/election/leader"),
+            Bytes::from("/election/term"),
+            Bytes::from("/election/lease_expire"),
+        ];
+        let values = sm.get_multi(&keys)?;
+
+        assert_eq!(values.len(), 3);
+        // Must reflect term-43 state consistently.
+        // leader=node-3 + term=43 is a phantom state that never existed.
+        assert_eq!(
+            values[0],
+            Some(Bytes::from("node-5")),
+            "leader must be node-5 (term 43)"
+        );
+        assert_eq!(values[1], Some(Bytes::from("43")), "term must be 43");
+        assert_eq!(
+            values[2],
+            Some(Bytes::from("1748603600")),
+            "lease_expire must be term-43 value"
+        );
+        Ok(())
+    }
+
+    /// Quota management coordinator scenario: batch read must return coherent counters.
+    ///
+    /// (limit, used, window_start) from different apply indexes produce incorrect
+    /// rate-limit calculations — a pure business correctness failure that is independent
+    /// of Linearizable semantics. Reading used=850 with a new window_start makes the
+    /// rate limiter reject requests that should be allowed in the new window.
+    ///
+    /// This test verifies that after a window reset, get_multi returns all three
+    /// counters from the new window with no old-window values mixed in.
+    pub async fn test_get_multi_quota_management_coherence(
+        sm: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        // Window 1: tenant-A has consumed 850 of their 1000 quota
+        sm.apply_chunk(&[
+            create_insert_entry(1, Bytes::from("/quota/tenant-A/limit"), Bytes::from("1000")),
+            create_insert_entry(2, Bytes::from("/quota/tenant-A/used"), Bytes::from("850")),
+            create_insert_entry(
+                3,
+                Bytes::from("/quota/tenant-A/window_start"),
+                Bytes::from("1748599900"),
+            ),
+        ])
+        .await?;
+
+        // Window 2: quota window resets — used counter goes back to 0
+        sm.apply_chunk(&[
+            create_insert_entry(4, Bytes::from("/quota/tenant-A/limit"), Bytes::from("1000")),
+            create_insert_entry(5, Bytes::from("/quota/tenant-A/used"), Bytes::from("0")),
+            create_insert_entry(
+                6,
+                Bytes::from("/quota/tenant-A/window_start"),
+                Bytes::from("1748603500"),
+            ),
+        ])
+        .await?;
+
+        let keys = vec![
+            Bytes::from("/quota/tenant-A/limit"),
+            Bytes::from("/quota/tenant-A/used"),
+            Bytes::from("/quota/tenant-A/window_start"),
+        ];
+        let values = sm.get_multi(&keys)?;
+
+        assert_eq!(values.len(), 3);
+        // Must read window-2 consistently.
+        // used=850 + window_start from window-2 is a torn read that wrongly
+        // blocks requests that should be free in the new window.
+        assert_eq!(
+            values[0],
+            Some(Bytes::from("1000")),
+            "limit is unchanged across windows"
+        );
+        assert_eq!(
+            values[1],
+            Some(Bytes::from("0")),
+            "used must be 0 after window reset"
+        );
+        assert_eq!(
+            values[2],
+            Some(Bytes::from("1748603500")),
+            "window_start must be from window-2"
+        );
         Ok(())
     }
 }

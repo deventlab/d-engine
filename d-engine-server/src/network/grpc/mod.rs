@@ -14,6 +14,9 @@ pub(crate) mod grpc_transport;
 mod grpc_raft_service_test;
 
 #[cfg(test)]
+mod grpc_raft_service_fast_path_test;
+
+#[cfg(test)]
 mod grpc_transport_test;
 
 use std::net::SocketAddr;

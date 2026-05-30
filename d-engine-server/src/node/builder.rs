@@ -32,6 +32,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use crate::read_actor::run_read_actor;
 use d_engine_core::ClusterConfig;
 use d_engine_core::CommitHandler;
 use d_engine_core::CommitHandlerDependencies;
@@ -569,11 +570,23 @@ where
         let read_lease = raft_core.read_lease();
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
 
+        // Spawn ReadActor — sole owner of Arc<SM> on the read fast path.
+        let (read_tx, read_rx) = mpsc::channel(node_config_arc.raft.read_actor.channel_capacity);
+        let max_drain = node_config_arc.raft.read_actor.max_drain;
+        let read_actor_handle = tokio::spawn(run_read_actor(
+            read_rx,
+            Arc::clone(&read_lease),
+            state_machine,
+            max_drain,
+        ));
+        let read_handle = crate::api::ReadHandle::new(Some(read_tx), cmd_tx.clone());
+
         let node = Node::<RaftTypeConfig<SE, SM>> {
             node_id,
             raft_core: Arc::new(Mutex::new(raft_core)),
             membership,
             event_tx: event_tx.clone(),
+            read_handle,
             cmd_tx,
             ready: AtomicBool::new(false),
             rpc_ready_tx,
@@ -585,6 +598,7 @@ where
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: watch_system.map(|(_, _, handle, _)| handle),
             sm_worker_handle: std::sync::Mutex::new(Some(sm_worker_handle)),
+            read_actor_handle: std::sync::Mutex::new(Some(read_actor_handle)),
             _commit_handler_handle: Some(commit_handler_handle),
             _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),
