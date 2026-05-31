@@ -56,9 +56,9 @@ impl ReadLease {
         term: u64,
         deadline_ms: u64,
     ) -> u64 {
-        debug_assert!(
+        assert!(
             deadline_ms <= Self::DEADLINE_MASK,
-            "deadline_ms overflows 48 bits"
+            "deadline_ms overflows 48 bits: {deadline_ms}"
         );
         ((term & 0xFFFF) << Self::TERM_SHIFT) | (deadline_ms & Self::DEADLINE_MASK)
     }

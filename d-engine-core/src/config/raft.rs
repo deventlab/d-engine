@@ -179,23 +179,10 @@ impl RaftConfig {
         self.membership.validate()?;
         self.state_machine.validate()?;
         self.snapshot.validate()?;
-        self.read_consistency.validate()?;
+        self.read_consistency.validate(self.election.election_timeout_min)?;
+        self.read_actor.validate()?;
         self.watch.validate()?;
         self.persistence.validate()?;
-
-        // Enforce lease_duration < election_timeout (load-bearing safety constraint).
-        // The lease fast path for linearizable reads relies on the invariant that
-        // "lease valid" and "new leader elected" are mutually exclusive on the timeline.
-        // This holds only when: lease_duration < election_timeout - max_clock_drift.
-        // At minimum, lease_duration must be strictly less than election_timeout_min.
-        if self.read_consistency.lease_duration_ms >= self.election.election_timeout_min {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "read_consistency.lease_duration_ms ({}) must be strictly less than \
-                 election_timeout_min ({}ms) — required for lease-based linearizable reads \
-                 to be safe under partition",
-                self.read_consistency.lease_duration_ms, self.election.election_timeout_min,
-            ))));
-        }
 
         Ok(())
     }
@@ -256,6 +243,26 @@ impl Default for ReadActorConfig {
             channel_capacity: default_read_actor_channel_capacity(),
             max_drain: default_read_actor_max_drain(),
         }
+    }
+}
+
+impl ReadActorConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.channel_capacity == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "read_actor.channel_capacity must be at least 1 \
+                 (0 causes mpsc::channel to panic at startup)"
+                    .into(),
+            )));
+        }
+        if self.max_drain == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "read_actor.max_drain must be at least 1 \
+                 (0 disables post-wakeup batching — ReadActor drains no additional commands)"
+                    .into(),
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -1037,12 +1044,19 @@ pub struct ReadConsistencyConfig {
     #[serde(default)]
     pub default_policy: ReadConsistencyPolicy,
 
-    /// Lease duration in milliseconds for LeaseRead policy
+    /// Lease duration in milliseconds for LeaseRead policy.
     ///
-    /// Only applicable when using the LeaseRead policy. The leader considers
-    /// itself valid for this duration after successfully heartbeating to a quorum.
+    /// How long the leader treats its lease as valid after the last quorum ACK.
     ///
-    /// **MUST be > 0**. Config validation will reject 0 or invalid values.
+    /// **Safety constraint** (enforced by `RaftConfig::validate()`):
+    ///   `lease_duration_ms < election_timeout_min`
+    ///
+    /// Full theoretical bound (Raft §6.4):
+    ///   `lease_duration_ms < election_timeout_min - max_clock_drift`
+    ///
+    /// The simplified check (`< election_timeout_min`) is safe when NTP drift is
+    /// well below the margin. For environments with large clock drift, set
+    /// `lease_duration_ms` conservatively (e.g., `election_timeout_min - 2 × max_drift`).
     #[serde(default = "default_lease_duration_ms")]
     pub lease_duration_ms: u64,
 
@@ -1074,7 +1088,7 @@ impl Default for ReadConsistencyConfig {
 }
 
 fn default_lease_duration_ms() -> u64 {
-    // Conservative default: half of a typical heartbeat interval (~300ms)
+    // 2.5× the default heartbeat interval (100ms); safely below election_timeout_min (500ms).
     250
 }
 
@@ -1088,12 +1102,23 @@ fn default_state_machine_sync_timeout_ms() -> u64 {
 }
 
 impl ReadConsistencyConfig {
-    fn validate(&self) -> Result<()> {
-        // Validate read consistency configuration
+    pub(super) fn validate(
+        &self,
+        election_timeout_min: u64,
+    ) -> Result<()> {
         if self.lease_duration_ms == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "read_consistency.lease_duration_ms must be greater than 0".into(),
             )));
+        }
+        // Safety constraint (Raft §6.4): lease_duration < election_timeout - max_clock_drift.
+        // Enforcing < election_timeout_min is the conservative bound (assumes drift = 0).
+        if self.lease_duration_ms >= election_timeout_min {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "read_consistency.lease_duration_ms ({}) must be strictly less than \
+                 election_timeout_min ({}ms) — required for lease safety under partition",
+                self.lease_duration_ms, election_timeout_min,
+            ))));
         }
         Ok(())
     }

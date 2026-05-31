@@ -1116,6 +1116,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 let my_term = self.current_term();
                 if my_term < vote_request.term {
                     self.update_current_term(vote_request.term);
+                    // Revoke lease immediately — before the Raft loop processes BecomeFollower,
+                    // a concurrent ReadActor could still see the old valid lease (window-period bug).
+                    self.shared_state.lease.revoke();
                     // Step down as Follower
                     self.send_become_follower_event(None, &role_tx)?;
 
@@ -1219,6 +1222,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         my_id
                     );
                     //TODO: if there is a bug?  self.update_current_term(vote_request.term);
+                    // Revoke lease immediately — window-period fix (see VoteRequest branch).
+                    self.shared_state.lease.revoke();
                     self.send_become_follower_event(
                         Some(append_entries_request.leader_id),
                         &role_tx,
@@ -1766,6 +1771,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             );
             self.update_current_term(response.term);
             self.drain_pending_writes_with_error(ErrorCode::TermOutdated);
+            // Revoke lease immediately — window-period fix (see VoteRequest branch).
+            self.shared_state.lease.revoke();
             self.send_become_follower_event(None, role_tx)?;
             return Err(ReplicationError::HigherTerm(response.term).into());
         }
@@ -1793,6 +1800,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 if term > leader_term {
                     self.update_current_term(term);
                     self.drain_pending_writes_with_error(ErrorCode::TermOutdated);
+                    // Revoke lease immediately — window-period fix (see VoteRequest branch).
+                    self.shared_state.lease.revoke();
                     self.send_become_follower_event(None, role_tx)?;
                     return Err(ReplicationError::HigherTerm(term).into());
                 }

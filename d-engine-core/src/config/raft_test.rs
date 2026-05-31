@@ -3,6 +3,7 @@ use crate::ElectionConfig;
 use crate::RaftConfig;
 use crate::ReadConsistencyConfig;
 use crate::RpcCompressionConfig;
+use crate::config::raft::ReadActorConfig;
 #[test]
 fn test_invalid_election_timeout() {
     let mut config = RaftConfig::default();
@@ -230,5 +231,99 @@ fn test_config_rejects_lease_duration_not_less_than_election_timeout() {
     assert!(
         config.validate().is_ok(),
         "lease_duration_ms < election_timeout_min must be accepted"
+    );
+}
+
+/// Direct unit test for ReadConsistencyConfig::validate() — lease safety constraint.
+///
+/// This pins the Raft §6.4 invariant at the config layer:
+///   lease_duration_ms < election_timeout_min
+///
+/// Tested directly on ReadConsistencyConfig (not via RaftConfig) so the constraint
+/// is verified at the closest possible layer to the data.
+#[test]
+fn test_read_consistency_config_lease_duration_rejects_unsafe_values() {
+    let election_timeout_min = 500u64;
+
+    // equal → unsafe, must reject
+    let cfg = ReadConsistencyConfig {
+        lease_duration_ms: 500,
+        ..Default::default()
+    };
+    assert!(
+        cfg.validate(election_timeout_min).is_err(),
+        "lease_duration_ms == election_timeout_min violates safety invariant"
+    );
+
+    // greater → unsafe, must reject
+    let cfg = ReadConsistencyConfig {
+        lease_duration_ms: 600,
+        ..Default::default()
+    };
+    assert!(
+        cfg.validate(election_timeout_min).is_err(),
+        "lease_duration_ms > election_timeout_min violates safety invariant"
+    );
+
+    // strictly less → safe, must accept
+    let cfg = ReadConsistencyConfig {
+        lease_duration_ms: 250,
+        ..Default::default()
+    };
+    assert!(
+        cfg.validate(election_timeout_min).is_ok(),
+        "lease_duration_ms < election_timeout_min must be accepted"
+    );
+
+    // zero → must reject (separate guard)
+    let cfg = ReadConsistencyConfig {
+        lease_duration_ms: 0,
+        ..Default::default()
+    };
+    assert!(
+        cfg.validate(election_timeout_min).is_err(),
+        "lease_duration_ms = 0 must be rejected"
+    );
+}
+
+#[test]
+fn test_read_actor_channel_capacity_zero_is_invalid() {
+    let cfg = ReadActorConfig {
+        channel_capacity: 0,
+        max_drain: 100,
+    };
+    assert!(
+        cfg.validate().is_err(),
+        "channel_capacity = 0 must be rejected (mpsc::channel(0) panics at startup)"
+    );
+}
+
+#[test]
+fn test_read_actor_max_drain_zero_is_invalid() {
+    let cfg = ReadActorConfig {
+        channel_capacity: 512,
+        max_drain: 0,
+    };
+    assert!(
+        cfg.validate().is_err(),
+        "max_drain = 0 must be rejected (drains 0 commands per wakeup — disables batching)"
+    );
+}
+
+#[test]
+fn test_read_actor_default_config_is_valid() {
+    assert!(
+        ReadActorConfig::default().validate().is_ok(),
+        "default ReadActorConfig must be valid"
+    );
+}
+
+#[test]
+fn test_raft_config_propagates_read_actor_validation() {
+    let mut config = RaftConfig::default();
+    config.read_actor.channel_capacity = 0;
+    assert!(
+        config.validate().is_err(),
+        "RaftConfig::validate must propagate ReadActorConfig::validate failures"
     );
 }

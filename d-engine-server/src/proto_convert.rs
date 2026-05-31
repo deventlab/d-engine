@@ -211,7 +211,6 @@ pub(crate) fn to_proto_response(r: ClientResponse) -> proto_client::ClientRespon
     }
 }
 
-/// Build a successful `ClientResponse` proto for a single-key fast-path read.
 /// Build a fast-path read response from a batch of keys and their optional values.
 ///
 /// Keys with `None` values are omitted from results (key not found).
