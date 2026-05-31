@@ -76,7 +76,9 @@ struct CfExportFile {
 /// RocksDB-based state machine implementation with lease support
 #[derive(Debug)]
 pub struct RocksDBStateMachine {
-    db: Arc<ArcSwap<DB>>,
+    // Option<Arc<DB>> inside ArcSwap: close_db() stores None to release the RocksDB LOCK
+    // file immediately, decoupled from Arc<SM> reference count reaching zero.
+    db: Arc<ArcSwap<Option<Arc<DB>>>>,
     is_serving: AtomicBool,
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
@@ -130,7 +132,7 @@ impl RocksDBStateMachine {
         let last_snapshot_metadata = Self::load_snapshot_metadata(&db_arc)?;
 
         Ok(Self {
-            db: Arc::new(ArcSwap::new(db_arc)),
+            db: Arc::new(ArcSwap::new(Arc::new(Some(db_arc)))),
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
@@ -148,7 +150,7 @@ impl RocksDBStateMachine {
         let last_snapshot_metadata = Self::load_snapshot_metadata(&db)?;
 
         Ok(Self {
-            db: Arc::new(ArcSwap::new(db)),
+            db: Arc::new(ArcSwap::new(Arc::new(Some(db)))),
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
@@ -176,14 +178,49 @@ impl RocksDBStateMachine {
         &self,
         new_db: DB,
     ) {
-        self.db.store(Arc::new(new_db));
+        self.db.store(Arc::new(Some(Arc::new(new_db))));
     }
 
-    // Injects lease configuration into this state machine.
-    //
-    // Framework-internal method: called by NodeBuilder::build() during initialization.
-    // Opens RocksDB with the standard configuration
     // ========== Private helper methods ==========
+
+    /// Run `f` with a borrowed `&DB`, returning `NotServing` if `close_db()` was called.
+    ///
+    /// Uses `ArcSwap::load()` — a seqlock read with no Arc clone.  The Guard never
+    /// escapes this call, so the hot-path cost is identical to the pre-refactor code.
+    ///
+    /// **When to use**: any operation whose entire DB access fits inside a single closure
+    /// body: reads, metadata writes, batch commits, etc.
+    ///
+    /// **When NOT to use**: if the DB handle must cross an `await` point or if complex
+    /// lifetime dependencies prevent the whole operation from fitting in one closure
+    /// (e.g. `apply_chunk`, where `batch` borrows `cf` which borrows `db` across the
+    /// full function body).  In those cases use the inline Guard pattern directly, or
+    /// `load_db()` when the `Arc<DB>` must be moved (e.g. `spawn_blocking`).
+    fn with_db<F, R>(
+        &self,
+        f: F,
+    ) -> Result<R, Error>
+    where
+        F: FnOnce(&DB) -> Result<R, Error>,
+    {
+        let guard = self.db.load(); // Guard — no Arc clone
+        match guard.as_ref().as_deref() {
+            Some(db) => f(db),
+            None => Err(StorageError::NotServing("state machine stopped".into()).into()),
+        }
+    }
+
+    /// Clone the live `Arc<DB>` for paths that must *move* the handle (e.g. `spawn_blocking`).
+    ///
+    /// Costs 2 atomic ops (Arc increment + future decrement).  Only use when the handle
+    /// must be moved into a closure or across an await point.  For all other cases prefer
+    /// `with_db()` (zero Arc clone) or the inline Guard pattern.
+    fn load_db(&self) -> Result<Arc<DB>, Error> {
+        let opt = self.db.load_full(); // Arc<Option<Arc<DB>>>
+        opt.as_ref()
+            .clone()
+            .ok_or_else(|| StorageError::NotServing("state machine stopped".into()).into())
+    }
 
     fn load_state_machine_metadata(db: &Arc<DB>) -> Result<(u64, u64), Error> {
         let cf = db
@@ -231,51 +268,55 @@ impl RocksDBStateMachine {
     }
 
     fn persist_state_machine_metadata(&self) -> Result<(), Error> {
-        let db = self.db.load();
-        let cf = db
-            .cf_handle(STATE_MACHINE_META_CF)
-            .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
-
         let index = self.last_applied_index.load(Ordering::SeqCst);
         let term = self.last_applied_term.load(Ordering::SeqCst);
-
-        db.put_cf(&cf, LAST_APPLIED_INDEX_KEY, index.to_be_bytes())
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        db.put_cf(&cf, LAST_APPLIED_TERM_KEY, term.to_be_bytes())
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-
-        Ok(())
+        self.with_db(|db| {
+            let cf = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
+                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
+                    "State machine meta CF not found".to_string(),
+                )))
+            })?;
+            db.put_cf(&cf, LAST_APPLIED_INDEX_KEY, index.to_be_bytes())
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+            db.put_cf(&cf, LAST_APPLIED_TERM_KEY, term.to_be_bytes())
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+            Ok(())
+        })
     }
 
     fn persist_snapshot_metadata(&self) -> Result<(), Error> {
-        let db = self.db.load();
-        let cf = db
-            .cf_handle(STATE_MACHINE_META_CF)
-            .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
-
-        if let Some(metadata) = self.last_snapshot_metadata.read().clone() {
-            let bytes = bincode::serialize(&metadata).map_err(StorageError::BincodeError)?;
-            db.put_cf(&cf, SNAPSHOT_METADATA_KEY, bytes)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-        }
-        Ok(())
+        let snapshot = self.last_snapshot_metadata.read().clone();
+        self.with_db(|db| {
+            let cf = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
+                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
+                    "State machine meta CF not found".to_string(),
+                )))
+            })?;
+            if let Some(metadata) = &snapshot {
+                let bytes = bincode::serialize(metadata).map_err(StorageError::BincodeError)?;
+                db.put_cf(&cf, SNAPSHOT_METADATA_KEY, bytes)
+                    .map_err(|e| StorageError::DbError(e.to_string()))?;
+            }
+            Ok(())
+        })
     }
 
     fn persist_ttl_metadata(&self) -> Result<(), Error> {
-        if let Some(ref lease) = self.lease {
-            let db = self.db.load();
+        let Some(ref lease) = self.lease else {
+            return Ok(());
+        };
+        let ttl_snapshot = lease.to_snapshot();
+        self.with_db(|db| {
             let cf = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
-                StorageError::DbError("State machine meta CF not found".to_string())
+                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
+                    "State machine meta CF not found".to_string(),
+                )))
             })?;
-
-            let ttl_snapshot = lease.to_snapshot();
-
-            db.put_cf(&cf, TTL_STATE_KEY, ttl_snapshot)
+            db.put_cf(&cf, TTL_STATE_KEY, &ttl_snapshot)
                 .map_err(|e| StorageError::DbError(e.to_string()))?;
-
             debug!("Persisted TTL state to RocksDB");
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Loads TTL state from RocksDB metadata after lease injection.
@@ -286,26 +327,26 @@ impl RocksDBStateMachine {
         let Some(ref lease) = self.lease else {
             return Ok(()); // No lease configured
         };
-
-        let db = self.db.load();
-        let cf = db
-            .cf_handle(STATE_MACHINE_META_CF)
-            .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
-
-        match db
-            .get_cf(&cf, TTL_STATE_KEY)
-            .map_err(|e| StorageError::DbError(e.to_string()))?
-        {
-            Some(ttl_data) => {
-                lease.reload(&ttl_data)?;
-                debug!("Loaded TTL state from RocksDB: {} active TTLs", lease.len());
+        self.with_db(|db| {
+            let cf = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
+                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
+                    "State machine meta CF not found".to_string(),
+                )))
+            })?;
+            match db
+                .get_cf(&cf, TTL_STATE_KEY)
+                .map_err(|e| StorageError::DbError(e.to_string()))?
+            {
+                Some(ttl_data) => {
+                    lease.reload(&ttl_data)?;
+                    debug!("Loaded TTL state from RocksDB: {} active TTLs", lease.len());
+                }
+                None => {
+                    debug!("No TTL state found in RocksDB");
+                }
             }
-            None => {
-                debug!("No TTL state found in RocksDB");
-            }
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Piggyback cleanup: Remove expired keys with time budget
@@ -347,13 +388,13 @@ impl RocksDBStateMachine {
         }
 
         // Get database handle
-        let db = self.db.load();
-        let cf = match db.cf_handle(STATE_MACHINE_CF) {
-            Some(cf) => cf,
-            None => {
-                error!("State machine CF not found during TTL cleanup");
-                return 0;
-            }
+        let guard = self.db.load();
+        let Some(db) = guard.as_ref().as_deref() else {
+            return 0;
+        };
+        let Some(cf) = db.cf_handle(STATE_MACHINE_CF) else {
+            error!("State machine CF not found during TTL cleanup");
+            return 0;
         };
 
         // Cleanup expired keys with time budget
@@ -410,8 +451,7 @@ impl RocksDBStateMachine {
         &self,
         batch: WriteBatch,
     ) -> Result<(), Error> {
-        self.db.load().write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
+        self.with_db(|db| db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()).into()))
     }
 
     // ===== Snapshot restore helpers =====
@@ -424,8 +464,7 @@ impl RocksDBStateMachine {
         metadata: &SnapshotMetadata,
         snapshot_dir: &std::path::Path,
     ) -> Result<(), Error> {
-        let db = self.db.load();
-        Self::restore_from_cf_export(&db, snapshot_dir)?;
+        self.with_db(|db| Self::restore_from_cf_export(db, snapshot_dir))?;
 
         info!("Snapshot restore complete");
 
@@ -615,7 +654,10 @@ impl RocksDBStateMachine {
             opts.set_iterate_upper_bound(upper);
         }
 
-        let db = self.db.load();
+        let guard = self.db.load();
+        let Some(db) = guard.as_ref().as_deref() else {
+            return Err(StorageError::NotServing("state machine stopped".into()).into());
+        };
         let cf = db
             .cf_handle(STATE_MACHINE_CF)
             .ok_or_else(|| StorageError::DbError("STATE_MACHINE_CF not found".into()))?;
@@ -632,6 +674,38 @@ impl RocksDBStateMachine {
 
         let revision = self.last_applied_index.load(Ordering::SeqCst);
         Ok(ScanResult { entries, revision })
+    }
+
+    /// Permanently close the RocksDB handle and release the LOCK file.
+    ///
+    /// Unlike `stop()`, this is not reversible with `start()`.
+    /// Called by `EmbeddedEngine::stop()` before the Raft loop exits so the LOCK
+    /// is released without waiting for `Arc<SM>` reference counts to reach zero.
+    ///
+    /// Sequence: flush → save hard state → cancel background work → store None.
+    /// After this, `load_db()` returns `NotServing`; `stop()` afterwards is safe.
+    pub(crate) fn close_db(&self) {
+        self.is_serving.store(false, Ordering::SeqCst);
+
+        if let Err(e) = self.persist_ttl_metadata() {
+            error!("close_db: failed to persist TTL metadata: {e:?}");
+        }
+        if let Err(e) = self.save_hard_state() {
+            error!("close_db: failed to save hard state: {e:?}");
+        }
+        if let Err(e) = self.flush() {
+            error!("close_db: failed to flush: {e:?}");
+        }
+        {
+            let guard = self.db.load();
+            if let Some(db) = guard.as_ref().as_deref() {
+                db.cancel_all_background_work(true);
+            }
+        }
+
+        // Release Arc<DB>: refcount decrements here, RocksDB LOCK file released.
+        self.db.store(Arc::new(None));
+        info!("RocksDB state machine: DB closed, LOCK released");
     }
 }
 
@@ -650,12 +724,20 @@ impl StateMachine for RocksDBStateMachine {
         Ok(())
     }
 
+    fn close_storage(&self) {
+        self.close_db();
+    }
+
     fn stop(&self) -> Result<(), Error> {
         self.is_serving.store(false, Ordering::SeqCst);
 
-        // Graceful shutdown: persist TTL state to disk
-        // This ensures lease data survives across restarts
-        if let Err(e) = self.persist_ttl_metadata() {
+        // Skip TTL persist if close_db() was already called (DB is None).
+        // Node::stop() calls sm.stop() after EmbeddedEngine has already called close_db(),
+        // so this path must be safe to call on a closed DB.
+        // Skip TTL persist if close_db() has already set DB to None.
+        if self.db.load().as_ref().is_some()
+            && let Err(e) = self.persist_ttl_metadata()
+        {
             error!("Failed to persist TTL metadata on shutdown: {:?}", e);
             return Err(e);
         }
@@ -682,15 +764,17 @@ impl StateMachine for RocksDBStateMachine {
             .into());
         }
 
-        let db = self.db.load();
-        let cf = db
-            .cf_handle(STATE_MACHINE_CF)
-            .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
-
-        match db.get_cf(&cf, key_buffer).map_err(|e| StorageError::DbError(e.to_string()))? {
-            Some(value) => Ok(Some(Bytes::copy_from_slice(&value))),
-            None => Ok(None),
-        }
+        self.with_db(|db| {
+            let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
+                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
+                    "State machine CF not found".to_string(),
+                )))
+            })?;
+            match db.get_cf(&cf, key_buffer).map_err(|e| StorageError::DbError(e.to_string()))? {
+                Some(value) => Ok(Some(Bytes::copy_from_slice(&value))),
+                None => Ok(None),
+            }
+        })
     }
 
     fn entry_term(
@@ -708,7 +792,13 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         chunk: &[ApplyEntry],
     ) -> Result<Vec<ApplyResult>, Error> {
-        let db = self.db.load();
+        // Inline guard: db and cf must share a lifetime across the entire function body
+        // (batch borrows cf, CAS reads borrow db). Using with_db() closure would require
+        // moving the whole async function body into a sync closure — use Guard directly.
+        let guard = self.db.load();
+        let Some(db) = guard.as_ref().as_deref() else {
+            return Err(StorageError::NotServing("state machine stopped".into()).into());
+        };
         let cf = db
             .cf_handle(STATE_MACHINE_CF)
             .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
@@ -767,7 +857,7 @@ impl StateMachine for RocksDBStateMachine {
                     // Read through WriteBatchWithIndex so earlier writes in this batch
                     // are visible, preventing stale-read linearizability violations.
                     let current_value = batch
-                        .get_from_batch_and_db_cf(&*db, &cf, key, &ReadOptions::default())
+                        .get_from_batch_and_db_cf(db, &cf, key, &ReadOptions::default())
                         .map_err(|e| StorageError::DbError(format!("CAS read failed: {e}")))?;
 
                     let cas_success = match (current_value, expected) {
@@ -796,10 +886,7 @@ impl StateMachine for RocksDBStateMachine {
             }
         }
 
-        self.db
-            .load()
-            .write_wbwi(&batch)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        db.write_wbwi(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
 
         if let Some(highest) = highest_index_entry {
             self.update_last_applied(highest);
@@ -809,15 +896,15 @@ impl StateMachine for RocksDBStateMachine {
     }
 
     fn len(&self) -> usize {
-        let db = self.db.load();
-        let cf = match db.cf_handle(STATE_MACHINE_CF) {
-            Some(cf) => cf,
-            None => return 0,
+        let guard = self.db.load();
+        let Some(db) = guard.as_ref().as_deref() else {
+            return 0;
         };
-
+        let Some(cf) = db.cf_handle(STATE_MACHINE_CF) else {
+            return 0;
+        };
         // Note: This is an expensive operation because it iterates over all keys.
-        let iter = db.iterator_cf(&cf, IteratorMode::Start);
-        iter.count()
+        db.iterator_cf(&cf, IteratorMode::Start).count()
     }
 
     fn update_last_applied(
@@ -904,7 +991,7 @@ impl StateMachine for RocksDBStateMachine {
         // run on tokio's blocking thread pool via spawn_blocking, not on an async worker thread.
         // This prevents snapshot disk I/O from starving the Raft event loop under concurrent
         // writes (#315).
-        let db = self.db.load_full(); // Arc<DB>: Send, safe to move into spawn_blocking
+        let db = self.load_db()?; // Arc<DB>: Send, safe to move into spawn_blocking
         let dir = new_snapshot_dir.clone();
         tokio::task::spawn_blocking(move || -> Result<(), Error> {
             std::fs::create_dir_all(&dir)?;
@@ -970,18 +1057,12 @@ impl StateMachine for RocksDBStateMachine {
     }
 
     fn flush(&self) -> Result<(), Error> {
-        let db = self.db.load();
-
-        // Step 1: Sync WAL to disk (critical!)
-        // true = sync to disk
-        db.flush_wal(true).map_err(|e| StorageError::DbError(e.to_string()))?;
-        // Step 2: Flush memtables to SST files
-        db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
-
-        // Persist state machine metadata (last_applied_index, last_applied_term, snapshot_metadata)
-        self.persist_state_machine_metadata()?;
-
-        Ok(())
+        self.with_db(|db| {
+            db.flush_wal(true).map_err(|e| StorageError::DbError(e.to_string()))?;
+            db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+            Ok(())
+        })?;
+        self.persist_state_machine_metadata()
     }
 
     async fn flush_async(&self) -> Result<(), Error> {
@@ -990,28 +1071,25 @@ impl StateMachine for RocksDBStateMachine {
 
     #[instrument(skip(self))]
     async fn reset(&self) -> Result<(), Error> {
-        let db = self.db.load();
-        let cf = db
-            .cf_handle(STATE_MACHINE_CF)
-            .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
+        self.with_db(|db| {
+            let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
+                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
+                    "State machine CF not found".to_string(),
+                )))
+            })?;
+            let mut batch = WriteBatch::default();
+            let iter = db.iterator_cf(&cf, IteratorMode::Start);
+            for item in iter {
+                let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
+                batch.delete_cf(&cf, &key);
+            }
+            db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+            Ok(())
+        })?;
 
-        // Delete all keys in the state machine
-        let mut batch = WriteBatch::default();
-        let iter = db.iterator_cf(&cf, IteratorMode::Start);
-
-        for item in iter {
-            let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-            batch.delete_cf(&cf, &key);
-        }
-
-        db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-
-        // Reset metadata
         self.last_applied_index.store(0, Ordering::SeqCst);
         self.last_applied_term.store(0, Ordering::SeqCst);
         *self.last_snapshot_metadata.write() = None;
-
-        // Note: Lease is managed by NodeBuilder and doesn't need reset
 
         self.persist_state_machine_metadata()?;
         self.persist_snapshot_metadata()?;
@@ -1049,16 +1127,18 @@ impl StateMachine for RocksDBStateMachine {
         );
 
         // Delete expired keys from RocksDB
-        let db = self.db.load();
-        let cf = db
-            .cf_handle(STATE_MACHINE_CF)
-            .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
-
-        let mut batch = WriteBatch::default();
-        for key in &expired_keys {
-            batch.delete_cf(&cf, key);
-        }
-
+        let batch = self.with_db(|db| {
+            let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
+                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
+                    "State machine CF not found".to_string(),
+                )))
+            })?;
+            let mut batch = WriteBatch::default();
+            for key in &expired_keys {
+                batch.delete_cf(&cf, key);
+            }
+            Ok(batch)
+        })?;
         self.apply_batch(batch)?;
 
         info!(
@@ -1086,24 +1166,32 @@ impl StateMachine for RocksDBStateMachine {
             )
             .into());
         }
-        let db = self.db.load();
-        let cf = db
-            .cf_handle(STATE_MACHINE_CF)
-            .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
-        // One snapshot covers the full batch: all keys read from the same point-in-time.
-        // Snapshot lives only within this call — no lifetime escaping, no unsafe.
-        let snap = db.snapshot();
-        keys.iter()
-            .map(|k| {
-                snap.get_cf(&cf, k)
-                    .map(|v| v.map(|b| Bytes::copy_from_slice(&b)))
-                    .map_err(|e| StorageError::DbError(e.to_string()).into())
-            })
-            .collect()
+        self.with_db(|db| {
+            let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
+                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
+                    "State machine CF not found".to_string(),
+                )))
+            })?;
+            // One snapshot covers the full batch: all keys read from the same point-in-time.
+            // Snapshot lives only within this call — no lifetime escaping, no unsafe.
+            let snap = db.snapshot();
+            keys.iter()
+                .map(|k| {
+                    snap.get_cf(&cf, k)
+                        .map(|v| v.map(|b| Bytes::copy_from_slice(&b)))
+                        .map_err(|e| StorageError::DbError(e.to_string()).into())
+                })
+                .collect()
+        })
     }
 }
 impl Drop for RocksDBStateMachine {
     fn drop(&mut self) {
+        // If close_db() was already called, DB is None — nothing to flush or cancel.
+        if self.db.load().as_ref().is_none() {
+            return;
+        }
+
         // save_hard_state() persists last_applied metadata before flush
         // This is critical to prevent replay of already-applied entries on restart
         if let Err(e) = self.save_hard_state() {
@@ -1117,8 +1205,11 @@ impl Drop for RocksDBStateMachine {
             debug!("RocksDBStateMachine flushed successfully on drop");
         }
 
-        // This ensures flush operations are truly finished
-        self.db.load().cancel_all_background_work(true); // true = wait for completion
-        debug!("RocksDB background work cancelled on drop");
+        // Ensure flush operations are truly finished (no Arc clone needed — just &DB)
+        let guard = self.db.load();
+        if let Some(db) = guard.as_ref().as_deref() {
+            db.cancel_all_background_work(true);
+            debug!("RocksDB background work cancelled on drop");
+        }
     }
 }

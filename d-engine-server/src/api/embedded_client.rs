@@ -15,7 +15,6 @@
 //! client.put(b"key", b"value").await?;
 //! ```
 
-use std::marker::PhantomData;
 #[cfg(feature = "watch")]
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,8 +25,6 @@ use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
 use d_engine_core::ScanResult;
 use d_engine_core::TypeConfig;
-#[cfg(feature = "watch")]
-use d_engine_core::client::ClientApiError;
 use d_engine_core::client::{
     ClientApi, ClientApiResult, ClientResponsePayload, ClientWriteRequest, ErrorCode,
     WriteOperation,
@@ -35,11 +32,13 @@ use d_engine_core::client::{
 use d_engine_core::config::ReadConsistencyPolicy;
 use tokio::sync::mpsc;
 
-use super::read_handle::ReadHandle;
-pub(crate) use super::read_handle::{
+use super::embedded_read_handle::EmbeddedReadHandle;
+pub(crate) use super::standalone_read_handle::{
     channel_closed_error, map_error_response, server_error, timeout_error,
 };
 
+#[cfg(feature = "watch")]
+use d_engine_core::client::ClientApiError;
 #[cfg(feature = "watch")]
 use d_engine_core::watch::WatchRegistry;
 
@@ -51,12 +50,11 @@ use d_engine_core::watch::WatchRegistry;
 /// For standalone/gRPC mode use `GrpcClient` instead. Both implement `ClientApi`.
 pub struct EmbeddedClient<T: TypeConfig> {
     event_tx: mpsc::Sender<RaftEvent>,
-    read_handle: ReadHandle,
+    read_handle: EmbeddedReadHandle<T>,
     client_id: u32,
     timeout: Duration,
     #[cfg(feature = "watch")]
     watch_registry: Option<Arc<WatchRegistry>>,
-    _phantom: PhantomData<fn() -> T>,
 }
 
 impl<T: TypeConfig> Clone for EmbeddedClient<T> {
@@ -68,37 +66,26 @@ impl<T: TypeConfig> Clone for EmbeddedClient<T> {
             timeout: self.timeout,
             #[cfg(feature = "watch")]
             watch_registry: self.watch_registry.clone(),
-            _phantom: PhantomData,
         }
     }
 }
 
 impl<T: TypeConfig> EmbeddedClient<T> {
-    /// Internal constructor (used by EmbeddedEngine)
+    /// Internal constructor (used by EmbeddedEngine).
     pub(crate) fn new_internal(
         event_tx: mpsc::Sender<RaftEvent>,
-        cmd_tx: mpsc::Sender<d_engine_core::ClientCmd>,
+        read_handle: EmbeddedReadHandle<T>,
         client_id: u32,
         timeout: Duration,
     ) -> Self {
         Self {
             event_tx,
-            read_handle: ReadHandle::new(None, cmd_tx),
+            read_handle,
             client_id,
             timeout,
             #[cfg(feature = "watch")]
             watch_registry: None,
-            _phantom: PhantomData,
         }
-    }
-
-    /// Wire the ReadHandle (fast path + cmd_tx) into the client.
-    pub(crate) fn with_read_handle(
-        mut self,
-        rh: ReadHandle,
-    ) -> Self {
-        self.read_handle = rh;
-        self
     }
 
     /// Set watch registry for watch operations
@@ -743,173 +730,5 @@ impl<T: TypeConfig> ClientApi for EmbeddedClient<T> {
 }
 
 #[cfg(test)]
-mod error_helper_tests {
-    use d_engine_core::client::{KvEntry, LeaderHint, ReadResults};
-
-    use super::super::read_handle::{extract_read_payload, not_leader_error};
-    use super::*;
-
-    // ─── not_leader_error ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_not_leader_uses_server_retry_after_ms_when_provided() {
-        let err = not_leader_error(
-            Some("1".to_string()),
-            Some("127.0.0.1:5001".to_string()),
-            Some(500),
-        );
-        match err {
-            ClientApiError::Network { retry_after_ms, .. } => {
-                assert_eq!(retry_after_ms, Some(500));
-            }
-            _ => panic!("expected Network error"),
-        }
-    }
-
-    #[test]
-    fn test_not_leader_falls_back_to_100ms_when_server_provides_none() {
-        let err = not_leader_error(None, None, None);
-        match err {
-            ClientApiError::Network { retry_after_ms, .. } => {
-                assert_eq!(retry_after_ms, Some(100));
-            }
-            _ => panic!("expected Network error"),
-        }
-    }
-
-    #[test]
-    fn test_not_leader_zero_is_not_treated_as_none() {
-        // Some(0) is an explicit server instruction, not absent — must be preserved
-        let err = not_leader_error(None, None, Some(0));
-        match err {
-            ClientApiError::Network { retry_after_ms, .. } => {
-                assert_eq!(retry_after_ms, Some(0));
-            }
-            _ => panic!("expected Network error"),
-        }
-    }
-
-    // ─── map_error_response ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_map_error_response_not_leader_forwards_retry_after_ms() {
-        let err = map_error_response(
-            ErrorCode::NotLeader,
-            Some(LeaderHint {
-                leader_id: 2,
-                address: "10.0.0.2:5002".into(),
-            }),
-            Some(250),
-        );
-        match err {
-            ClientApiError::Network {
-                code,
-                retry_after_ms,
-                leader_hint,
-                ..
-            } => {
-                assert_eq!(code, ErrorCode::NotLeader);
-                assert_eq!(retry_after_ms, Some(250));
-                let h = leader_hint.unwrap();
-                assert_eq!(h.leader_id, 2);
-            }
-            _ => panic!("expected Network error"),
-        }
-    }
-
-    #[test]
-    fn test_map_error_response_not_leader_falls_back_to_100ms_when_none() {
-        let err = map_error_response(ErrorCode::NotLeader, None, None);
-        match err {
-            ClientApiError::Network { retry_after_ms, .. } => {
-                assert_eq!(retry_after_ms, Some(100));
-            }
-            _ => panic!("expected Network error"),
-        }
-    }
-
-    // ─── extract_read_payload ────────────────────────────────────────────────
-    //
-    // These tests call `extract_read_payload` directly — the actual function
-    // used by both `get_with_consistency` and `get_multi_with_consistency`.
-    // This ensures the error behaviour is tested at the implementation site,
-    // not via a copy of the match logic that could silently drift.
-
-    #[test]
-    fn test_extract_read_payload_returns_read_results_on_success() {
-        // Happy path: a well-formed Read payload must be unwrapped without error.
-        let entries = vec![KvEntry {
-            key: Bytes::from("k"),
-            value: Bytes::from("v"),
-        }];
-        let payload = Some(ClientResponsePayload::Read(ReadResults {
-            entries: entries.clone(),
-        }));
-
-        let result = extract_read_payload(payload).unwrap();
-        assert_eq!(result.entries.len(), 1);
-        assert_eq!(result.entries[0].key, Bytes::from("k"));
-        assert_eq!(result.entries[0].value, Bytes::from("v"));
-    }
-
-    #[test]
-    fn test_extract_read_payload_rejects_write_result_payload() {
-        // A WriteResult inside a read response is a server protocol violation.
-        // It must surface as InvalidResponse, not silently become "key not found".
-        let payload = Some(ClientResponsePayload::Write(
-            d_engine_core::client::WriteResult { succeeded: true },
-        ));
-
-        let err = extract_read_payload(payload).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::InvalidResponse);
-        assert!(
-            err.message().contains("WriteResult"),
-            "error message should identify the unexpected variant; got: {}",
-            err.message()
-        );
-    }
-
-    #[test]
-    fn test_extract_read_payload_rejects_none_payload() {
-        // A Success response with no payload is a protocol violation.
-        // It must surface as InvalidResponse, not silently become "key not found".
-        let err = extract_read_payload(None).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::InvalidResponse);
-        assert!(
-            err.message().contains("None"),
-            "error message should identify missing payload; got: {}",
-            err.message()
-        );
-    }
-
-    #[test]
-    fn test_extract_read_payload_empty_entries_is_valid() {
-        // An empty ReadResults is a legitimate response (no keys matched).
-        // It must not be treated as an error.
-        let payload = Some(ClientResponsePayload::Read(ReadResults { entries: vec![] }));
-
-        let result = extract_read_payload(payload).unwrap();
-        assert!(result.entries.is_empty());
-    }
-
-    #[test]
-    fn test_extract_read_payload_multiple_entries_are_preserved() {
-        // All entries in the ReadResults must be passed through unchanged.
-        let payload = Some(ClientResponsePayload::Read(ReadResults {
-            entries: vec![
-                KvEntry {
-                    key: Bytes::from("k1"),
-                    value: Bytes::from("v1"),
-                },
-                KvEntry {
-                    key: Bytes::from("k2"),
-                    value: Bytes::from("v2"),
-                },
-            ],
-        }));
-
-        let result = extract_read_payload(payload).unwrap();
-        assert_eq!(result.entries.len(), 2);
-        assert_eq!(result.entries[1].key, Bytes::from("k2"));
-    }
-}
+#[path = "embedded_client_test/embedded_client_test.rs"]
+mod tests;

@@ -85,6 +85,17 @@ pub trait StateMachine: Send + Sync + 'static {
     /// This is typically a sync operation for state management.
     fn stop(&self) -> Result<(), Error>;
 
+    /// Permanently close underlying storage resources (e.g. DB handle, file descriptors).
+    ///
+    /// Called by `EmbeddedEngine::stop()` before the Raft loop exits to release
+    /// OS-level resources (e.g. RocksDB LOCK file) without waiting for all
+    /// `Arc<SM>` clones to drop.
+    ///
+    /// Default is a no-op — custom state machine implementations do not need to
+    /// override this unless they hold exclusive OS resources that must be released
+    /// before the process exits or a new engine instance is started.
+    fn close_storage(&self) {}
+
     /// Checks if the state machine is currently running.
     /// Sync operation as it just checks an atomic boolean.
     fn is_running(&self) -> bool;

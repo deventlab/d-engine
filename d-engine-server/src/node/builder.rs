@@ -579,7 +579,7 @@ where
             state_machine,
             max_drain,
         ));
-        let read_handle = crate::api::ReadHandle::new(Some(read_tx), cmd_tx.clone());
+        let read_handle = crate::api::StandaloneReadHandle::new(Some(read_tx), cmd_tx.clone());
 
         let node = Node::<RaftTypeConfig<SE, SM>> {
             node_id,

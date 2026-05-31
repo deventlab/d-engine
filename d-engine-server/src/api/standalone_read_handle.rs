@@ -1,13 +1,10 @@
-//! ReadHandle — unified read-routing for embedded and standalone modes.
+//! StandaloneReadHandle — read routing for standalone (gRPC) mode.
 //!
-//! `ReadHandle` is the single source of truth for read routing:
-//! - `EventualConsistency` / `LeaseRead` → ReadActor fast path (no Raft round-trip)
-//! - `LinearizableRead` → `cmd_tx` (full Raft readIndex protocol)
-//! - `SmError` → returned immediately; no `cmd_tx` fallback
-//! - `LeaseInvalid` / `SmStopped` / channel-closed → fall through to `cmd_tx`
+//! Routes reads through the ReadActor channel for Eventual/LeaseRead fast path,
+//! falling back to `cmd_tx` (Raft readIndex) for LinearizableRead or on error.
 //!
-//! Both `EmbeddedClient` and the gRPC `Node` handler hold a cloned `ReadHandle`,
-//! ensuring routing logic is defined in exactly one place.
+//! For embedded mode, use `EmbeddedReadHandle` which calls the SM directly
+//! without any channel overhead.
 
 use std::time::Duration;
 
@@ -113,22 +110,22 @@ pub(crate) fn extract_read_payload(
     }
 }
 
-// ── ReadHandle ────────────────────────────────────────────────────────────────
+// ── StandaloneReadHandle ──────────────────────────────────────────────────────
 
-/// Routes read requests to the ReadActor fast path or `cmd_tx`.
+/// Routes read requests to the ReadActor fast path or `cmd_tx` for standalone gRPC mode.
 ///
-/// Cloneable — `EmbeddedClient` and `StandaloneServer` each hold their own clone.
-/// The underlying channels are shared (mpsc::Sender is cheaply cloneable).
+/// Cloneable — the gRPC `Node` handler holds a clone per request.
+/// The underlying channels are shared (`mpsc::Sender` is cheaply cloneable).
 #[derive(Clone)]
-pub struct ReadHandle {
+pub(crate) struct StandaloneReadHandle {
     /// ReadActor channel. `None` if node was started without a ReadActor.
     pub(crate) read_tx: Option<mpsc::Sender<ReadCmd>>,
     /// Raft command channel for the cmd_tx fallback path.
     pub(crate) cmd_tx: mpsc::Sender<d_engine_core::ClientCmd>,
 }
 
-impl ReadHandle {
-    /// Create a `ReadHandle` wiring the optional fast-path sender and the Raft cmd channel.
+impl StandaloneReadHandle {
+    /// Create a `StandaloneReadHandle` wiring the fast-path sender and the Raft cmd channel.
     pub(crate) fn new(
         read_tx: Option<mpsc::Sender<ReadCmd>>,
         cmd_tx: mpsc::Sender<d_engine_core::ClientCmd>,
@@ -144,6 +141,9 @@ impl ReadHandle {
     /// | Eventual/Lease | ReadActor (fast path)      | fall through to cmd_tx|
     /// | Linearizable   | cmd_tx always              | —                     |
     /// | SmError        | direct return              | no fallback           |
+    ///
+    /// Note: Not called internally; exposed as public API for callers to use.
+    #[allow(dead_code)]
     pub async fn get(
         &self,
         key: &[u8],
@@ -234,3 +234,7 @@ impl ReadHandle {
         Ok(keys.iter().map(|k| entry_map.get(k).cloned()).collect())
     }
 }
+
+#[cfg(test)]
+#[path = "standalone_read_handle_test.rs"]
+mod tests;

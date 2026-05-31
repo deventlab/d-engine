@@ -10,8 +10,8 @@ db_root_dir = "./data/n1"
 log_dir = "./logs"
 
 [raft.read_actor]
-channel_capacity = 10240
-max_drain = 2000
+channel_capacity = 2048
+max_drain = 1024
 
 [raft.batching]
 # Maximum number of commands to accumulate in a single batch during drain operations

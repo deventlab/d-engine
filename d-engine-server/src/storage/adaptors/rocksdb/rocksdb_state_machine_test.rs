@@ -437,6 +437,59 @@ async fn test_get_multi_rocksdb_snapshot_reads_consistent_state() {
     }
 }
 
+// ── close_db() tests ──────────────────────────────────────────────────────────
+//
+// close_db() is a permanent, one-way shutdown that releases the RocksDB LOCK file
+// immediately, without waiting for Arc<SM> to be the sole owner.  It is separate
+// from stop() because stop()/start() must remain a reversible cycle (used during
+// snapshot restoration).
+
+/// close_db() marks SM not-running and makes reads return an error.
+#[tokio::test]
+async fn test_close_db_prevents_reads() {
+    let dir = TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    sm.start().await.unwrap();
+    sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
+    assert_eq!(sm.get(b"k").unwrap(), Some(Bytes::from_static(b"v")));
+
+    sm.close_db();
+
+    assert!(!sm.is_running(), "is_running must be false after close_db");
+    assert!(sm.get(b"k").is_err(), "get must fail after close_db");
+    assert!(
+        sm.get_multi(&[Bytes::from_static(b"k")]).is_err(),
+        "get_multi must fail after close_db"
+    );
+}
+
+/// stop() after close_db() must succeed without panicking.
+/// Node::stop() calls sm.stop() after EmbeddedEngine has already called close_db();
+/// that sequence must be safe.
+#[test]
+fn test_stop_after_close_db_is_safe() {
+    let dir = TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    sm.close_db();
+    assert!(sm.stop().is_ok(), "stop after close_db must not error");
+}
+
+/// Drop after close_db() must not panic or double-flush.
+/// EmbeddedEngine::stop() calls close_db() before the Raft loop exits; the SM
+/// is then dropped — Drop must detect the closed state and skip the flush.
+#[tokio::test]
+async fn test_drop_after_close_db_does_not_panic() {
+    let dir = TempDir::new().unwrap();
+    {
+        let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+        sm.start().await.unwrap();
+        sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
+        sm.close_db();
+        // sm drops here — Drop must be a no-op
+    }
+    // reaching here without panic means the test passes
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn insert_at(

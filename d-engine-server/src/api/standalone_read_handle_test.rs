@@ -1,6 +1,6 @@
-/// Unit tests for ReadHandle routing logic.
+/// Unit tests for StandaloneReadHandle routing logic.
 ///
-/// ReadHandle is the single source of truth for read routing:
+/// StandaloneReadHandle is the single source of truth for read routing:
 ///   Eventual/LeaseRead  → ReadActor fast path; fallback to cmd_tx on LeaseInvalid/SmStopped
 ///   LinearizableRead    → cmd_tx always
 ///   SmError             → returned directly, NO cmd_tx fallback
@@ -22,7 +22,7 @@ mod read_handle_tests {
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
-    use super::super::read_handle::ReadHandle;
+    use super::super::StandaloneReadHandle;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -72,7 +72,7 @@ mod read_handle_tests {
         sm
     }
 
-    /// Build a ReadHandle with a live ReadActor.
+    /// Build a StandaloneReadHandle with a live ReadActor.
     ///
     /// `drop_cmd_rx=true` closes the cmd_tx receiver — any cmd_tx fallback
     /// returns a channel-closed Network error (proof the fast path was NOT taken).
@@ -80,14 +80,14 @@ mod read_handle_tests {
         sm: MockStateMachine,
         lease: Arc<ReadLease>,
         drop_cmd_rx: bool,
-    ) -> (ReadHandle, JoinHandle<()>) {
+    ) -> (StandaloneReadHandle, JoinHandle<()>) {
         let (read_tx, read_rx) = mpsc::channel(8);
         let (cmd_tx, cmd_rx) = mpsc::channel(1);
         if drop_cmd_rx {
             drop(cmd_rx);
         }
         let handle = tokio::spawn(run_read_actor(read_rx, lease, Arc::new(sm), 64));
-        let rh = ReadHandle::new(Some(read_tx), cmd_tx);
+        let rh = StandaloneReadHandle::new(Some(read_tx), cmd_tx);
         (rh, handle)
     }
 
@@ -241,12 +241,12 @@ mod read_handle_tests {
 
     // ── No read_tx — always cmd_tx ────────────────────────────────────────────
 
-    /// ReadHandle without read_tx (None) always falls through to cmd_tx for any policy.
+    /// StandaloneReadHandle without read_tx (None) always falls through to cmd_tx for any policy.
     #[tokio::test]
     async fn test_no_read_tx_all_policies_use_cmd_tx() {
         let (cmd_tx, cmd_rx) = mpsc::channel::<d_engine_core::ClientCmd>(1);
         drop(cmd_rx);
-        let rh = ReadHandle::new(None, cmd_tx);
+        let rh = StandaloneReadHandle::new(None, cmd_tx);
 
         for policy in [
             ReadConsistencyPolicy::EventualConsistency,
@@ -273,7 +273,7 @@ mod read_handle_tests {
         drop(read_rx); // ReadActor is gone
         drop(cmd_rx); // cmd_tx also closed — proves fallback was attempted
 
-        let rh = ReadHandle::new(Some(read_tx), cmd_tx);
+        let rh = StandaloneReadHandle::new(Some(read_tx), cmd_tx);
         let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
         assert!(
             matches!(result, Err(ClientApiError::Network { .. })),
@@ -284,19 +284,19 @@ mod read_handle_tests {
 
     // ── cmd_tx path: alignment helper ────────────────────────────────────────
 
-    /// Builds a ReadHandle wired to a one-shot mock Raft responder.
+    /// Builds a StandaloneReadHandle wired to a one-shot mock Raft responder.
     ///
     /// The responder returns the given sparse `entries` exactly as
     /// `read_from_state_machine` would — caller is responsible for verifying
     /// that `get_batch` re-aligns them to the input key positions.
-    async fn make_cmd_tx_handle(entries: Vec<KvEntry>) -> ReadHandle {
+    async fn make_cmd_tx_handle(entries: Vec<KvEntry>) -> StandaloneReadHandle {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
         tokio::spawn(async move {
             if let Some(ClientCmd::Read(_, resp_tx)) = cmd_rx.recv().await {
                 let _ = resp_tx.send(Ok(ClientResponse::read_results(entries)));
             }
         });
-        ReadHandle::new(None, cmd_tx)
+        StandaloneReadHandle::new(None, cmd_tx)
     }
 
     // ── cmd_tx path: HashMap re-alignment correctness ─────────────────────────
@@ -566,5 +566,153 @@ mod read_handle_tests {
         );
         drop(rh);
         handle.await.unwrap();
+    }
+}
+
+// ── Error helper tests ────────────────────────────────────────────────────────
+//
+// These functions live in standalone_read_handle.rs and are shared by both
+// StandaloneReadHandle and EmbeddedReadHandle (via re-export).  Testing them
+// here keeps the coverage co-located with the implementation.
+
+#[cfg(test)]
+mod error_helper_tests {
+    use bytes::Bytes;
+    use d_engine_core::client::{ClientApiError, ClientResponsePayload, ErrorCode};
+    use d_engine_core::client::{KvEntry, LeaderHint, ReadResults};
+
+    use super::super::{extract_read_payload, map_error_response, not_leader_error};
+
+    // ─── not_leader_error ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_not_leader_uses_server_retry_after_ms_when_provided() {
+        let err = not_leader_error(
+            Some("1".to_string()),
+            Some("127.0.0.1:5001".to_string()),
+            Some(500),
+        );
+        match err {
+            ClientApiError::Network { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, Some(500));
+            }
+            _ => panic!("expected Network error"),
+        }
+    }
+
+    #[test]
+    fn test_not_leader_falls_back_to_100ms_when_server_provides_none() {
+        let err = not_leader_error(None, None, None);
+        match err {
+            ClientApiError::Network { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, Some(100));
+            }
+            _ => panic!("expected Network error"),
+        }
+    }
+
+    #[test]
+    fn test_not_leader_zero_is_not_treated_as_none() {
+        let err = not_leader_error(None, None, Some(0));
+        match err {
+            ClientApiError::Network { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, Some(0));
+            }
+            _ => panic!("expected Network error"),
+        }
+    }
+
+    // ─── map_error_response ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_map_error_response_not_leader_forwards_retry_after_ms() {
+        let err = map_error_response(
+            ErrorCode::NotLeader,
+            Some(LeaderHint {
+                leader_id: 2,
+                address: "10.0.0.2:5002".into(),
+            }),
+            Some(250),
+        );
+        match err {
+            ClientApiError::Network {
+                code,
+                retry_after_ms,
+                leader_hint,
+                ..
+            } => {
+                assert_eq!(code, ErrorCode::NotLeader);
+                assert_eq!(retry_after_ms, Some(250));
+                assert_eq!(leader_hint.unwrap().leader_id, 2);
+            }
+            _ => panic!("expected Network error"),
+        }
+    }
+
+    #[test]
+    fn test_map_error_response_not_leader_falls_back_to_100ms_when_none() {
+        let err = map_error_response(ErrorCode::NotLeader, None, None);
+        match err {
+            ClientApiError::Network { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, Some(100));
+            }
+            _ => panic!("expected Network error"),
+        }
+    }
+
+    // ─── extract_read_payload ────────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_read_payload_returns_read_results_on_success() {
+        let payload = Some(ClientResponsePayload::Read(ReadResults {
+            entries: vec![KvEntry {
+                key: Bytes::from("k"),
+                value: Bytes::from("v"),
+            }],
+        }));
+        let result = extract_read_payload(payload).unwrap();
+        assert_eq!(result.entries[0].key, Bytes::from("k"));
+    }
+
+    #[test]
+    fn test_extract_read_payload_rejects_write_result_payload() {
+        let payload = Some(ClientResponsePayload::Write(
+            d_engine_core::client::WriteResult { succeeded: true },
+        ));
+        let err = extract_read_payload(payload).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidResponse);
+        assert!(err.message().contains("WriteResult"));
+    }
+
+    #[test]
+    fn test_extract_read_payload_rejects_none_payload() {
+        let err = extract_read_payload(None).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidResponse);
+        assert!(err.message().contains("None"));
+    }
+
+    #[test]
+    fn test_extract_read_payload_empty_entries_is_valid() {
+        let payload = Some(ClientResponsePayload::Read(ReadResults { entries: vec![] }));
+        assert!(extract_read_payload(payload).unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn test_extract_read_payload_multiple_entries_are_preserved() {
+        let payload = Some(ClientResponsePayload::Read(ReadResults {
+            entries: vec![
+                KvEntry {
+                    key: Bytes::from("k1"),
+                    value: Bytes::from("v1"),
+                },
+                KvEntry {
+                    key: Bytes::from("k2"),
+                    value: Bytes::from("v2"),
+                },
+            ],
+        }));
+        let result = extract_read_payload(payload).unwrap();
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.entries[1].key, Bytes::from("k2"));
     }
 }

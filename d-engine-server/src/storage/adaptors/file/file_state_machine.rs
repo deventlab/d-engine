@@ -1017,6 +1017,12 @@ impl StateMachine for FileStateMachine {
         Ok(())
     }
 
+    fn close_storage(&self) {
+        self.running.store(false, Ordering::SeqCst);
+        // FileStateMachine has no exclusive OS lock file.
+        // Marking not-running is sufficient; Drop handles final flush.
+    }
+
     fn stop(&self) -> Result<(), Error> {
         // Ensure all data is flushed to disk before stopping
         self.running.store(false, Ordering::SeqCst);

@@ -131,7 +131,7 @@ where
     pub(crate) read_lease: Arc<ReadLease>,
 
     /// Fast-path read routing. Always set; `read_tx = None` means no ReadActor.
-    pub(crate) read_handle: crate::api::ReadHandle,
+    pub(crate) read_handle: crate::api::StandaloneReadHandle,
 }
 
 impl<T> Debug for Node<T>

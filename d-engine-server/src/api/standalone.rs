@@ -187,3 +187,7 @@ impl StandaloneEngine {
         node.run().await
     }
 }
+
+#[cfg(test)]
+#[path = "standalone_test.rs"]
+mod tests;

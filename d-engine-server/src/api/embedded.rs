@@ -123,6 +123,7 @@
 //! For auto-forwarding with gRPC overhead, use standalone mode with `GrpcClient`.
 
 use super::embedded_client::EmbeddedClient;
+use super::embedded_read_handle::EmbeddedReadHandle;
 use crate::Result;
 #[cfg(feature = "rocksdb")]
 use crate::RocksDBStateMachine;
@@ -145,6 +146,9 @@ use tracing::error;
 use tracing::info;
 
 struct Inner<T: TypeConfig> {
+    /// SM reference for shutdown: close_storage() releases OS resources (e.g. RocksDB LOCK)
+    /// before the Raft loop exits, without waiting for all Arc<SM> clones to drop.
+    sm: Arc<T::SM>,
     node_handle: Mutex<Option<JoinHandle<Result<()>>>>,
     shutdown_tx: watch::Sender<()>,
     client: Arc<EmbeddedClient<T>>,
@@ -345,6 +349,13 @@ where
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
 
+        // Clone SM before NodeBuilder consumes it — EmbeddedReadHandle holds this
+        // for the direct-SM fast path. LOCK release is decoupled from Arc<SM> counting
+        // (via close_db()), so holding multiple Arc<SM> clones is safe.
+        let sm_for_client = Arc::clone(&state_machine);
+
+        let sm_for_engine = Arc::clone(&state_machine);
+
         let node = NodeBuilder::init(node_config, shutdown_rx)
             .storage_engine(storage_engine)
             .state_machine(state_machine)
@@ -354,14 +365,16 @@ where
         let leader_elected_rx = node.leader_change_notifier();
         let membership_rx = node.membership_change_notifier();
 
+        let read_handle =
+            EmbeddedReadHandle::new(sm_for_client, node.read_lease(), node.cmd_tx.clone());
+
         let client = {
             let base = EmbeddedClient::new_internal(
                 node.event_tx.clone(),
-                node.cmd_tx.clone(),
+                read_handle,
                 node.node_id,
                 Duration::from_millis(node.node_config.raft.general_raft_timeout_duration_in_ms),
-            )
-            .with_read_handle(node.read_handle.clone());
+            );
 
             #[cfg(feature = "watch")]
             let base = {
@@ -390,6 +403,7 @@ where
 
         Ok(Self {
             inner: Arc::new(Inner {
+                sm: sm_for_engine,
                 node_handle: Mutex::new(Some(node_handle)),
                 shutdown_tx,
                 client,
@@ -633,6 +647,11 @@ impl<T: TypeConfig> EmbeddedEngine<T> {
 
         info!("Stopping embedded d-engine");
 
+        // Close SM storage resources first (releases RocksDB LOCK immediately).
+        // Must happen before the Raft loop exits so the LOCK is freed before any
+        // subsequent engine restart on the same data directory.
+        self.inner.sm.close_storage();
+
         // Send shutdown signal to Raft node
         let _ = self.inner.shutdown_tx.send(());
 
@@ -686,3 +705,7 @@ impl<T: TypeConfig> Drop for EmbeddedEngine<T> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "embedded_test/mod.rs"]
+mod tests;
