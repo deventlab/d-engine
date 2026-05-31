@@ -73,7 +73,7 @@ let user = client.get_lease(b"user:123").await?;
 
 **API**: `client.get_eventual(key)`
 
-**Guarantee**: Returns valid committed state, may be ~100ms behind leader.
+**Guarantee**: Returns valid committed state, may be slightly behind the latest write.
 
 **Performance**: ~0.1ms (20x faster than LinearizableRead)
 
@@ -83,7 +83,7 @@ let user = client.get_lease(b"user:123").await?;
 - Analytics queries
 - Monitoring data
 
-**Bonus**: Can read from **any node** (leader/follower), not just leader.
+> **Any node**: EventualConsistency is served by the local ReadActor on whichever node the client connects to — leader or follower. No lease is required. Follower reads may return slightly stale data (expected for this policy).
 
 ```rust,ignore
 let stats = client.get_eventual(b"dashboard_stats").await?;
@@ -131,6 +131,8 @@ allow_client_override = true           # Allow client to override (default: true
 | EventualConsistency | ~0.1ms  | ~20x       | 0 RTT       | Any node    |
 
 _Measured on 3-node cluster, AWS same-region_
+
+**Why 0 RTT for Eventual/LeaseRead (v0.2.5+)**: These policies are served by a dedicated ReadActor that reads directly from the state machine — bypassing the Raft command channel entirely. The leader's read lease is validated atomically; if it expires or the node steps down, ReadActor falls back to the Raft path automatically.
 
 **Important**: All policies return **correct** committed data. Difference is whether you get the **latest** or **slightly older** committed state.
 

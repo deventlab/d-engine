@@ -21,7 +21,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let engine = EmbeddedEngine::start("./data").await?;
+    let engine = DefaultEmbeddedEngine::start("./data").await?;
     engine.wait_ready(Duration::from_secs(5)).await?;
 
     let client = engine.client();

@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting d-engine...\n");
 
     // Start embedded engine with config file
-    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
+    let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
 
     // Wait for leader election (single-node: instant)
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;
@@ -116,7 +116,7 @@ Done!
 ### Behind the Scenes
 
 ```rust,ignore
-EmbeddedEngine::start_with("d-engine.toml").await?
+DefaultEmbeddedEngine::start_with("d-engine.toml").await?
 ```
 
 This one line:
@@ -141,7 +141,7 @@ Waits for leader election (combines node initialization + leader election):
 let client = engine.client();
 ```
 
-Returns `Arc<EmbeddedClient>` for zero-overhead KV operations.
+Returns `Arc<DefaultEmbeddedClient>` for zero-overhead KV operations.
 
 ---
 
@@ -174,7 +174,8 @@ No gRPC overhead - direct function calls to embedded Raft core.
 
 - `put(key, value)` - Write with Raft consensus
 - `get_linearizable(key)` - Strong consistency read
-- `get_eventual(key)` - Fast local read (may be stale)
+- `get_lease(key)` - Fast read, no Raft round-trip (recommended default)
+- `get_eventual(key)` - Fastest local read (may be slightly stale)
 - `delete(key)` - Delete key
 
 See docs for TTL, multi-key operations, and advanced consistency control.
@@ -184,7 +185,7 @@ See docs for TTL, multi-key operations, and advanced consistency control.
 ### 3. Automatic Lifecycle Management
 
 ```rust,ignore
-let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
+let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
 // ↑ Internally spawns node.run() in background
 
 engine.stop().await?;
@@ -197,17 +198,17 @@ No manual `tokio::spawn()`, no leaked tasks.
 
 ## API Reference
 
-### EmbeddedEngine
+### DefaultEmbeddedEngine
 
 ```rust,ignore
 // Explicit data directory (highest priority)
-EmbeddedEngine::start(data_dir: impl AsRef<Path>) -> Result<Self>
+DefaultEmbeddedEngine::start(data_dir: impl AsRef<Path>) -> Result<Self>
 
 // Use explicit config file
-EmbeddedEngine::start_with(config_path: &str) -> Result<Self>
+DefaultEmbeddedEngine::start_with(config_path: &str) -> Result<Self>
 
-// Advanced (custom storage)
-EmbeddedEngine::start_custom(
+// Advanced (custom storage + state machine — define your own TypeConfig)
+EmbeddedEngine::<YourTypeConfig>::start_custom(
     storage: Arc<impl StorageEngine>,
     state_machine: Arc<impl StateMachine>,
     config_path: Option<&str>
@@ -217,7 +218,7 @@ EmbeddedEngine::start_custom(
 engine.wait_ready(timeout: Duration) -> Result<LeaderInfo>
 
 // Get KV client
-engine.client() -> Arc<EmbeddedClient>
+engine.client() -> Arc<DefaultEmbeddedClient>
 
 // Subscribe to leader changes (optional, for monitoring)
 engine.leader_change_notifier() -> watch::Receiver<Option<LeaderInfo>>
@@ -226,14 +227,20 @@ engine.leader_change_notifier() -> watch::Receiver<Option<LeaderInfo>>
 engine.stop().await -> Result<()>
 ```
 
-### EmbeddedClient
+### DefaultEmbeddedClient
 
 ```rust,ignore
 // Write (replicates to majority)
 client.put(key: Vec<u8>, value: Vec<u8>) -> Result<PutResponse>
 
-// Read (local, no network)
-client.get(key: Vec<u8>) -> Result<Option<Vec<u8>>>
+// Read — linearizable (always latest, 1 Raft round-trip)
+client.get_linearizable(key: impl Into<Vec<u8>>) -> Result<Option<Bytes>>
+
+// Read — lease (no Raft round-trip, recommended default)
+client.get_lease(key: impl Into<Vec<u8>>) -> Result<Option<Bytes>>
+
+// Read — eventual (fastest, served directly from state machine)
+client.get_eventual(key: impl Into<Vec<u8>>) -> Result<Option<Bytes>>
 
 // Delete
 client.delete(key: Vec<u8>) -> Result<DeleteResponse>
@@ -249,14 +256,14 @@ See [complete API documentation](https://docs.rs/d-engine/latest/d_engine/prelud
 
 ```rust,ignore
 // Pass the data directory directly — works in debug and release
-let engine = EmbeddedEngine::start("./data").await?;
+let engine = DefaultEmbeddedEngine::start("./data").await?;
 ```
 
 ### Pattern 2: Explicit config file
 
 ```rust,ignore
 // Use specific config file
-let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
+let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
 ```
 
 ### Pattern 3: Monitor Leader Changes

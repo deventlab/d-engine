@@ -155,7 +155,7 @@ tail -f logs/2/demo.log  # Watch new leader election
 | **Serialization** | None                           | Protobuf               |
 | **Language**      | Rust only                      | Any (Go, Python, Java) |
 | **Deployment**    | 1 binary                       | 3 server processes     |
-| **Setup**         | `EmbeddedEngine::start_with()` | `make start-cluster`   |
+| **Setup**         | `DefaultEmbeddedEngine::start_with()` | `make start-cluster`   |
 
 ---
 

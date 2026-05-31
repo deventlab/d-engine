@@ -85,7 +85,7 @@ The example demonstrates 3 simple steps:
 
 ```rust
 // 1. Start embedded engine with config file
-let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
+let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
 
 // 2. Wait for leader election (single-node: instant)
 let leader = engine.wait_ready(Duration::from_secs(5)).await?;
@@ -131,7 +131,7 @@ Copy this example and modify `src/main.rs`:
 Example:
 
 ```rust
-async fn my_app(client: &EmbeddedClient) -> Result<(), Box<dyn Error>> {
+async fn my_app(client: &DefaultEmbeddedClient) -> Result<(), Box<dyn Error>> {
     // Your code here
     client.put("user:1:name".as_bytes().to_vec(), b"alice".to_vec()).await?;
     client.put("user:1:email".as_bytes().to_vec(), b"alice@example.com".to_vec()).await?;

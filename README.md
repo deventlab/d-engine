@@ -54,7 +54,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
-    let engine = EmbeddedEngine::start("./data").await.unwrap();
+    let engine = DefaultEmbeddedEngine::start("./data").await.unwrap();
     engine.wait_ready(Duration::from_secs(5)).await.unwrap();
 
     let client = engine.client();

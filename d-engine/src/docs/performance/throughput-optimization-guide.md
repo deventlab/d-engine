@@ -56,13 +56,32 @@ The `max_batch_size` controls how many commands are drained per Raft loop iterat
 max_batch_size = 200  # default, suitable for most deployments
 ```
 
-| Deployment | Recommended | Rationale |
-|---|---|---|
-| Embedded 3-node | **200** | Matches typical concurrent client counts; higher values yield diminishing returns |
-| Standalone 3-node | **200** | Network RTT dominates; batch size has limited impact |
-| High concurrency (500+ clients) | **500** | Increase if HC Write throughput plateaus |
+| Deployment                      | Recommended | Rationale                                                                         |
+| ------------------------------- | ----------- | --------------------------------------------------------------------------------- |
+| Embedded 3-node                 | **200**     | Matches typical concurrent client counts; higher values yield diminishing returns |
+| Standalone 3-node               | **200**     | Network RTT dominates; batch size has limited impact                              |
+| High concurrency (500+ clients) | **500**     | Increase if HC Write throughput plateaus                                          |
 
 > **Rule of thumb**: For embedded mode, optimal `max_batch_size ≈ concurrent_client_count`. For standalone, keep at 200 unless profiling shows cmd_rx consistently saturated.
+
+## Read Fast Path Tuning (v0.2.5+)
+
+`Eventual` and `LeaseRead` bypass `cmd_rx` entirely — they never touch `max_batch_size` or `time_threshold_ms`. Two dedicated knobs:
+
+```toml
+[raft.read_actor]
+channel_capacity = 512   # default
+max_drain        = 100   # default
+```
+
+| Parameter | What it controls | Tune up when… |
+|---|---|---|
+| `channel_capacity` | mpsc buffer depth between client and ReadActor | read latency spikes under high concurrent Eventual/LeaseRead (channel full → backpressure) |
+| `max_drain` | reads batched per ReadActor wakeup (mirrors `max_batch_size`) | read throughput plateaus but CPU is not saturated |
+
+Same tradeoff as write batching: higher `max_drain` → better throughput, higher tail latency. Start with defaults; only tune if profiling shows a bottleneck here.
+
+---
 
 ## Configuration Tuning
 
