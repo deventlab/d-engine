@@ -188,13 +188,15 @@ impl StandaloneReadHandle {
                 .await
                 .is_ok()
             {
-                match reply_rx.await {
-                    Ok(Ok(values)) => return Ok(values),
-                    Ok(Err(ReadActorError::SmError(e))) => return Err(server_error(e)),
+                match tokio::time::timeout(timeout, reply_rx).await {
+                    Ok(Ok(Ok(values))) => return Ok(values),
+                    Ok(Ok(Err(ReadActorError::SmError(e)))) => return Err(server_error(e)),
                     // LeaseInvalid / SmStopped → fall through to cmd_tx
-                    Ok(Err(ReadActorError::LeaseInvalid | ReadActorError::SmStopped)) => {}
+                    Ok(Ok(Err(ReadActorError::LeaseInvalid | ReadActorError::SmStopped))) => {}
                     // ReadActor exited without replying → fall through
-                    Err(_) => {}
+                    Ok(Err(_)) => {}
+                    // ReadActor stalled beyond timeout → fall through to cmd_tx
+                    Err(_timeout) => {}
                 }
             }
             // send() failed (channel closed) → fall through to cmd_tx

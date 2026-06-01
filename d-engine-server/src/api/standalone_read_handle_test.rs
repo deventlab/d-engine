@@ -567,6 +567,40 @@ mod read_handle_tests {
         drop(rh);
         handle.await.unwrap();
     }
+
+    /// ReadActor stalls (never replies) → timeout must fire and fall through to cmd_tx.
+    /// Without timeout on reply_rx.await, this test would hang indefinitely.
+    #[tokio::test]
+    async fn test_read_actor_stall_respects_timeout() {
+        let (read_tx, _read_rx) = mpsc::channel::<crate::read_actor::ReadCmd>(1);
+        // _read_rx is held alive (ReadActor never processes requests) but cmd_rx dropped
+        let (cmd_tx, cmd_rx) = mpsc::channel::<d_engine_core::ClientCmd>(1);
+        drop(cmd_rx);
+
+        let rh = StandaloneReadHandle::new(Some(read_tx), cmd_tx);
+
+        let short_timeout = Duration::from_millis(50);
+        let start = tokio::time::Instant::now();
+        let result = rh
+            .get(
+                b"k",
+                ReadConsistencyPolicy::EventualConsistency,
+                1,
+                short_timeout,
+            )
+            .await;
+
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "stalled ReadActor must not block beyond timeout, took {:?}",
+            start.elapsed()
+        );
+        assert!(
+            result.is_err(),
+            "stalled ReadActor + closed cmd_tx must return error, got: {:?}",
+            result
+        );
+    }
 }
 
 // ── Error helper tests ────────────────────────────────────────────────────────
