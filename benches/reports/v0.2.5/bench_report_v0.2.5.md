@@ -80,7 +80,7 @@ _(v0.2.5: 5-round average; v0.2.4: 5-round average; v0.2.3: 5-round average. All
 
 **Notes**:
 
-- **v0.2.5 Standalone is stable vs v0.2.4** — all write and read scenarios within ±2%, confirming ReadActor fast path (#392) is additive and introduces no regressions in Standalone mode.
+- **v0.2.5 Standalone is stable vs v0.2.4** — all write and non-Lease read scenarios within ±2%, confirming ReadActor fast path (#392) is additive and introduces no regressions in Standalone mode.
 - **Lease Read: +10.8% throughput / -9.5% avg latency vs v0.2.4** — ReadActor shared infrastructure benefits Standalone mode; gRPC RTT masks the direct SM path, so improvement is smaller than Embedded.
 - SC Write shows -18.3% vs v0.2.3 but is stable vs v0.2.4; the latency floor shift (155 µs → 190 µs) was introduced before v0.2.4, not a #392 regression.
 - Eventual Read p99 has high run-to-run variance (~±1 ms) due to Mac mini OS scheduler noise under 1000 concurrent clients; the improvement trend from v0.2.3 (13.97 ms) to v0.2.4 (9.76 ms) is the meaningful signal.
@@ -127,7 +127,7 @@ _(v0.2.5: 5-round average; v0.2.4: 5-round average; v0.2.3: 5-round average. All
 
 - **Lease/Eventual Read: ~3.6x throughput improvement vs v0.2.4** — ReadActor fast path (#392) delivers 261%/240% throughput gain and 95%+ latency reduction. On AWS, this is the headline win: zero-channel direct SM reads eliminate all Raft/channel contention.
 - **Write performance stable vs v0.2.4** — HC Write +0.7%, SC Write +0.7%, within AWS noise tolerance.
-- **Linearizable Read +5.7% vs v0.2.4** — Read-index optimization in ReadActor provides consistent improvement.
+- **Linearizable Read +5.7% vs v0.2.4** — observed benchmark delta; Linearizable Read path remains on the Raft loop and is unchanged by #392.
 - **vs etcd 3.2.0** — Embedded mode outperforms etcd across all comparable metrics: SC Write **+7.6x**, HC Write **+152%**, Lin Read **+144%**, Eventual Read **+6.7x** throughput; avg latency **-86~99%** lower.
 - **v0.2.5 vs v0.2.3 baseline** — v0.2.4 had Lease/Eventual regressions vs v0.2.3 (378K/395K). v0.2.5 with #392 ReadActor achieves **+3.3x** vs v0.2.3.
 
