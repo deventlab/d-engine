@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
-use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
@@ -76,9 +76,9 @@ struct CfExportFile {
 /// RocksDB-based state machine implementation with lease support
 #[derive(Debug)]
 pub struct RocksDBStateMachine {
-    // Option<Arc<DB>> inside ArcSwap: close_db() stores None to release the RocksDB LOCK
-    // file immediately, decoupled from Arc<SM> reference count reaching zero.
-    db: Arc<ArcSwap<Option<Arc<DB>>>>,
+    // ArcSwapOption: close_db() stores None to release the RocksDB LOCK file immediately,
+    // decoupled from Arc<SM> reference count reaching zero.
+    db: ArcSwapOption<DB>,
     is_serving: AtomicBool,
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
@@ -132,7 +132,7 @@ impl RocksDBStateMachine {
         let last_snapshot_metadata = Self::load_snapshot_metadata(&db_arc)?;
 
         Ok(Self {
-            db: Arc::new(ArcSwap::new(Arc::new(Some(db_arc)))),
+            db: ArcSwapOption::new(Some(db_arc)),
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
@@ -150,7 +150,7 @@ impl RocksDBStateMachine {
         let last_snapshot_metadata = Self::load_snapshot_metadata(&db)?;
 
         Ok(Self {
-            db: Arc::new(ArcSwap::new(Arc::new(Some(db)))),
+            db: ArcSwapOption::new(Some(db)),
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
@@ -178,14 +178,14 @@ impl RocksDBStateMachine {
         &self,
         new_db: DB,
     ) {
-        self.db.store(Arc::new(Some(Arc::new(new_db))));
+        self.db.store(Some(Arc::new(new_db)));
     }
 
     // ========== Private helper methods ==========
 
     /// Run `f` with a borrowed `&DB`, returning `NotServing` if `close_db()` was called.
     ///
-    /// Uses `ArcSwap::load()` — a seqlock read with no Arc clone.  The Guard never
+    /// Uses `ArcSwapOption::load()` — a seqlock read with no Arc clone.  The Guard never
     /// escapes this call, so the hot-path cost is identical to the pre-refactor code.
     ///
     /// **When to use**: any operation whose entire DB access fits inside a single closure
@@ -204,7 +204,7 @@ impl RocksDBStateMachine {
         F: FnOnce(&DB) -> Result<R, Error>,
     {
         let guard = self.db.load(); // Guard — no Arc clone
-        match guard.as_ref().as_deref() {
+        match guard.as_deref() {
             Some(db) => f(db),
             None => Err(StorageError::NotServing("state machine stopped".into()).into()),
         }
@@ -216,9 +216,8 @@ impl RocksDBStateMachine {
     /// must be moved into a closure or across an await point.  For all other cases prefer
     /// `with_db()` (zero Arc clone) or the inline Guard pattern.
     fn load_db(&self) -> Result<Arc<DB>, Error> {
-        let opt = self.db.load_full(); // Arc<Option<Arc<DB>>>
-        opt.as_ref()
-            .clone()
+        self.db
+            .load_full()
             .ok_or_else(|| StorageError::NotServing("state machine stopped".into()).into())
     }
 
@@ -389,7 +388,7 @@ impl RocksDBStateMachine {
 
         // Get database handle
         let guard = self.db.load();
-        let Some(db) = guard.as_ref().as_deref() else {
+        let Some(db) = guard.as_deref() else {
             return 0;
         };
         let Some(cf) = db.cf_handle(STATE_MACHINE_CF) else {
@@ -655,7 +654,7 @@ impl RocksDBStateMachine {
         }
 
         let guard = self.db.load();
-        let Some(db) = guard.as_ref().as_deref() else {
+        let Some(db) = guard.as_deref() else {
             return Err(StorageError::NotServing("state machine stopped".into()).into());
         };
         let cf = db
@@ -698,13 +697,13 @@ impl RocksDBStateMachine {
         }
         {
             let guard = self.db.load();
-            if let Some(db) = guard.as_ref().as_deref() {
+            if let Some(db) = guard.as_deref() {
                 db.cancel_all_background_work(true);
             }
         }
 
         // Release Arc<DB>: refcount decrements here, RocksDB LOCK file released.
-        self.db.store(Arc::new(None));
+        self.db.store(None);
         info!("RocksDB state machine: DB closed, LOCK released");
     }
 }
@@ -735,7 +734,7 @@ impl StateMachine for RocksDBStateMachine {
         // Node::stop() calls sm.stop() after EmbeddedEngine has already called close_db(),
         // so this path must be safe to call on a closed DB.
         // Skip TTL persist if close_db() has already set DB to None.
-        if self.db.load().as_ref().is_some()
+        if self.db.load().is_some()
             && let Err(e) = self.persist_ttl_metadata()
         {
             error!("Failed to persist TTL metadata on shutdown: {:?}", e);
@@ -796,7 +795,7 @@ impl StateMachine for RocksDBStateMachine {
         // (batch borrows cf, CAS reads borrow db). Using with_db() closure would require
         // moving the whole async function body into a sync closure — use Guard directly.
         let guard = self.db.load();
-        let Some(db) = guard.as_ref().as_deref() else {
+        let Some(db) = guard.as_deref() else {
             return Err(StorageError::NotServing("state machine stopped".into()).into());
         };
         let cf = db
@@ -897,7 +896,7 @@ impl StateMachine for RocksDBStateMachine {
 
     fn len(&self) -> usize {
         let guard = self.db.load();
-        let Some(db) = guard.as_ref().as_deref() else {
+        let Some(db) = guard.as_deref() else {
             return 0;
         };
         let Some(cf) = db.cf_handle(STATE_MACHINE_CF) else {
@@ -1188,7 +1187,7 @@ impl StateMachine for RocksDBStateMachine {
 impl Drop for RocksDBStateMachine {
     fn drop(&mut self) {
         // If close_db() was already called, DB is None — nothing to flush or cancel.
-        if self.db.load().as_ref().is_none() {
+        if self.db.load().is_none() {
             return;
         }
 
@@ -1207,7 +1206,7 @@ impl Drop for RocksDBStateMachine {
 
         // Ensure flush operations are truly finished (no Arc clone needed — just &DB)
         let guard = self.db.load();
-        if let Some(db) = guard.as_ref().as_deref() {
+        if let Some(db) = guard.as_deref() {
             db.cancel_all_background_work(true);
             debug!("RocksDB background work cancelled on drop");
         }
