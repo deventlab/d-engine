@@ -123,13 +123,13 @@ Implement the `StorageEngine` and `StateMachine` traits for custom backends:
 
 ## Performance
 
-### d-engine v0.2.4 vs etcd
+### d-engine v0.2.5 vs etcd
 
-![d-engine vs etcd comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.4/d-engine_comparison_v0.2.4.png)
+![d-engine vs etcd comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.5/d-engine_comparison_v0.2.5.png)
 
-### d-engine v0.2.4 vs v0.2.3
+### d-engine v0.2.5 vs v0.2.4
 
-![d-engine v0.2.4 vs v0.2.3 comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.4/d-engine_v0.2.3_vs_v0.2.4_embedded_mode.png)
+![d-engine v0.2.5 vs v0.2.4 comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.5/d-engine_v0.2.5_vs_v0.2.4_embedded_mode.png)
 
 ```bash
 open benches/reports/
