@@ -1077,7 +1077,7 @@ pub struct ReadConsistencyConfig {
     #[serde(default = "default_state_machine_sync_timeout_ms")]
     pub state_machine_sync_timeout_ms: u64,
 
-    /// Estimated p99 one-way network RTT between leader and followers, in milliseconds.
+    /// Estimated p99 round-trip network latency between leader and followers, in milliseconds.
     ///
     /// Used to tighten the lease safety constraint beyond the basic
     /// `lease_duration_ms < election_timeout_min` check.
@@ -1085,7 +1085,7 @@ pub struct ReadConsistencyConfig {
     /// **Why this matters**: the lease deadline is anchored to the heartbeat *send* time,
     /// but a follower's election timer resets at heartbeat *receive* time (~RTT/2 later).
     /// The precise safety condition is:
-    ///   `lease_duration_ms + rtt_p99_ms / 2 < election_timeout_min`
+    ///   `lease_duration_ms + network_rtt_p99_ms / 2 < election_timeout_min`
     ///
     /// Typical values:
     /// - Same host / loopback: 0–1 ms
@@ -1147,7 +1147,9 @@ impl ReadConsistencyConfig {
         // Without this margin the effective lease window can exceed election_timeout_min,
         // allowing stale reads after a network partition that heals before lease expiry.
         let rtt_half_ms = self.network_rtt_p99_ms / 2;
-        if self.lease_duration_ms + rtt_half_ms >= election_timeout_min {
+        // Use saturating_add: if the sum overflows u64 it saturates to u64::MAX,
+        // which is guaranteed >= any election_timeout_min, so the config is correctly rejected.
+        if self.lease_duration_ms.saturating_add(rtt_half_ms) >= election_timeout_min {
             return Err(Error::Config(ConfigError::Message(format!(
                 "read_consistency.lease_duration_ms ({}) + network_rtt_p99_ms/2 ({}) \
                  must be strictly less than election_timeout_min ({}ms) — \

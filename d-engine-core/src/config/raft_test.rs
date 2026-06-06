@@ -327,3 +327,53 @@ fn test_raft_config_propagates_read_actor_validation() {
         "RaftConfig::validate must propagate ReadActorConfig::validate failures"
     );
 }
+
+/// lease_duration_ms + network_rtt_p99_ms/2 must account for RTT/2 in the safety bound.
+///
+/// Invariant (Raft §6.4): lease_duration_ms + rtt_p99_ms/2 < election_timeout_min
+/// Even if lease_duration_ms alone is safe, adding rtt/2 can push it over the bound.
+#[test]
+fn test_read_consistency_config_rtt_p99_tightens_lease_safety_bound() {
+    let election_timeout_min = 500u64;
+
+    // lease=498, rtt=4 → rtt/2=2 → 498+2=500 >= 500 → must reject
+    let cfg = ReadConsistencyConfig {
+        lease_duration_ms: 498,
+        network_rtt_p99_ms: 4,
+        ..Default::default()
+    };
+    assert!(
+        cfg.validate(election_timeout_min).is_err(),
+        "lease + rtt/2 == election_timeout_min must be rejected"
+    );
+
+    // lease=497, rtt=4 → rtt/2=2 → 497+2=499 < 500 → must accept
+    let cfg = ReadConsistencyConfig {
+        lease_duration_ms: 497,
+        network_rtt_p99_ms: 4,
+        ..Default::default()
+    };
+    assert!(
+        cfg.validate(election_timeout_min).is_ok(),
+        "lease + rtt/2 < election_timeout_min must be accepted"
+    );
+}
+
+/// Overflow-safe: u64::MAX lease_duration_ms must be rejected, not wrap around.
+///
+/// Without saturating_add, u64::MAX + rtt_half wraps to a small value in release
+/// builds, allowing an invalid config to pass validate() and violate lease safety.
+#[test]
+fn test_read_consistency_config_lease_duration_overflow_is_rejected() {
+    let election_timeout_min = 500u64;
+
+    let cfg = ReadConsistencyConfig {
+        lease_duration_ms: u64::MAX,
+        network_rtt_p99_ms: 4,
+        ..Default::default()
+    };
+    assert!(
+        cfg.validate(election_timeout_min).is_err(),
+        "u64::MAX lease_duration_ms must be rejected (saturating_add prevents wrap-around)"
+    );
+}
