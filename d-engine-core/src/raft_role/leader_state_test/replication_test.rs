@@ -1398,6 +1398,13 @@ async fn test_execute_and_process_raft_rpc_multi_node_empty_peer_updates() {
     let (tx_write, rx_write) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let batch = VecDeque::from(vec![mock_request(tx_write)]);
 
+    // Initialize the monotonic clock before process_batch so now_ms() returns > 0 when
+    // Phase 0 runs. Without this, the very first now_ms() call returns 0 (epoch just
+    // initialized, elapsed = 0ms), making the post-call assertion on last_heartbeat_send_ts
+    // indistinguishable from the default value of 0.
+    crate::raft_role::read_lease::init_clock();
+    std::thread::sleep(std::time::Duration::from_millis(1));
+
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
 
@@ -1417,6 +1424,13 @@ async fn test_execute_and_process_raft_rpc_multi_node_empty_peer_updates() {
     assert!(
         rx.try_recv().is_err(),
         "Write is pending — no peer responses"
+    );
+
+    // Phase 0 of execute_and_process_raft_rpc must have recorded last_heartbeat_send_ts.
+    // If this is 0, the RTT/2 fix (lease deadline anchored to send time) is silently broken.
+    assert!(
+        context.state.last_heartbeat_send_ts > 0,
+        "last_heartbeat_send_ts must be set by Phase 0 before AppendEntries is sent"
     );
 }
 

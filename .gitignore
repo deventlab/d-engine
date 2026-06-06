@@ -53,3 +53,7 @@ CLAUDE.md
 .claude/
 .rules
 .github/copilot-instructions.md
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
