@@ -1402,8 +1402,18 @@ async fn test_execute_and_process_raft_rpc_multi_node_empty_peer_updates() {
     // Phase 0 runs. Without this, the very first now_ms() call returns 0 (epoch just
     // initialized, elapsed = 0ms), making the post-call assertion on last_heartbeat_send_ts
     // indistinguishable from the default value of 0.
+    // Use a bounded spin instead of a fixed sleep — more deterministic on slow/coarse CI.
     crate::raft_role::read_lease::init_clock();
-    std::thread::sleep(std::time::Duration::from_millis(1));
+    let clock_start = std::time::Instant::now();
+    while crate::raft_role::read_lease::now_ms() == 0
+        && clock_start.elapsed() < std::time::Duration::from_millis(50)
+    {
+        std::thread::yield_now();
+    }
+    assert!(
+        crate::raft_role::read_lease::now_ms() > 0,
+        "clock failed to advance past 0 within 50ms"
+    );
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;

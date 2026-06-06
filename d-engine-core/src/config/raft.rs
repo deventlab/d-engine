@@ -1049,14 +1049,16 @@ pub struct ReadConsistencyConfig {
     /// How long the leader treats its lease as valid after the last quorum ACK.
     ///
     /// **Safety constraint** (enforced by `RaftConfig::validate()`):
-    ///   `lease_duration_ms < election_timeout_min`
+    ///   `lease_duration_ms + network_rtt_p99_ms / 2 < election_timeout_min`
     ///
     /// Full theoretical bound (Raft §6.4):
-    ///   `lease_duration_ms < election_timeout_min - max_clock_drift`
+    ///   `lease_duration_ms < election_timeout_min - rtt_p99/2 - max_clock_drift`
     ///
-    /// The simplified check (`< election_timeout_min`) is safe when NTP drift is
-    /// well below the margin. For environments with large clock drift, set
-    /// `lease_duration_ms` conservatively (e.g., `election_timeout_min - 2 × max_drift`).
+    /// The lease deadline is anchored to heartbeat *send* time, but the follower's
+    /// election timer resets at *receive* time (~rtt/2 later). Without accounting for
+    /// rtt/2 the safety invariant is violated under network latency — confirmed by
+    /// Jepsen set workload (19 elements lost). etcd absorbs this via `electionTimeout × 2/3`;
+    /// d-engine makes it explicit via `network_rtt_p99_ms`.
     #[serde(default = "default_lease_duration_ms")]
     pub lease_duration_ms: u64,
 
@@ -1074,6 +1076,26 @@ pub struct ReadConsistencyConfig {
     /// Default: 10ms (safe buffer for single-node local deployments)
     #[serde(default = "default_state_machine_sync_timeout_ms")]
     pub state_machine_sync_timeout_ms: u64,
+
+    /// Estimated p99 one-way network RTT between leader and followers, in milliseconds.
+    ///
+    /// Used to tighten the lease safety constraint beyond the basic
+    /// `lease_duration_ms < election_timeout_min` check.
+    ///
+    /// **Why this matters**: the lease deadline is anchored to the heartbeat *send* time,
+    /// but a follower's election timer resets at heartbeat *receive* time (~RTT/2 later).
+    /// The precise safety condition is:
+    ///   `lease_duration_ms + rtt_p99_ms / 2 < election_timeout_min`
+    ///
+    /// Typical values:
+    /// - Same host / loopback: 0–1 ms
+    /// - Same datacenter:      1–2 ms
+    /// - Cross-AZ (AWS):       1–3 ms
+    /// - Cross-region:         50+ ms (LeaseRead not recommended)
+    ///
+    /// Default: 2ms (safe for same-datacenter and typical cross-AZ deployments).
+    #[serde(default = "default_network_rtt_p99_ms")]
+    pub network_rtt_p99_ms: u64,
 }
 
 impl Default for ReadConsistencyConfig {
@@ -1083,6 +1105,7 @@ impl Default for ReadConsistencyConfig {
             lease_duration_ms: default_lease_duration_ms(),
             allow_client_override: default_allow_client_override(),
             state_machine_sync_timeout_ms: default_state_machine_sync_timeout_ms(),
+            network_rtt_p99_ms: default_network_rtt_p99_ms(),
         }
     }
 }
@@ -1095,6 +1118,12 @@ fn default_lease_duration_ms() -> u64 {
 fn default_allow_client_override() -> bool {
     // Allow flexibility by default — clients can choose stronger consistency when needed
     true
+}
+
+fn default_network_rtt_p99_ms() -> u64 {
+    // 2ms covers same-datacenter and typical AWS cross-AZ deployments.
+    // Cross-region deployments should increase this value and reconsider using LeaseRead.
+    2
 }
 
 fn default_state_machine_sync_timeout_ms() -> u64 {
@@ -1111,13 +1140,19 @@ impl ReadConsistencyConfig {
                 "read_consistency.lease_duration_ms must be greater than 0".into(),
             )));
         }
-        // Safety constraint (Raft §6.4): lease_duration < election_timeout - max_clock_drift.
-        // Enforcing < election_timeout_min is the conservative bound (assumes drift = 0).
-        if self.lease_duration_ms >= election_timeout_min {
+        // Safety constraint (Raft §6.4):
+        //   lease_duration_ms + rtt_p99/2 < election_timeout_min
+        //
+        // The follower's election timer resets at heartbeat receive time (~rtt/2 after send).
+        // Without this margin the effective lease window can exceed election_timeout_min,
+        // allowing stale reads after a network partition that heals before lease expiry.
+        let rtt_half_ms = self.network_rtt_p99_ms / 2;
+        if self.lease_duration_ms + rtt_half_ms >= election_timeout_min {
             return Err(Error::Config(ConfigError::Message(format!(
-                "read_consistency.lease_duration_ms ({}) must be strictly less than \
-                 election_timeout_min ({}ms) — required for lease safety under partition",
-                self.lease_duration_ms, election_timeout_min,
+                "read_consistency.lease_duration_ms ({}) + network_rtt_p99_ms/2 ({}) \
+                 must be strictly less than election_timeout_min ({}ms) — \
+                 required for lease safety under partition (see network_rtt_p99_ms config)",
+                self.lease_duration_ms, rtt_half_ms, election_timeout_min,
             ))));
         }
         Ok(())

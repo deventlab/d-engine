@@ -409,6 +409,11 @@ pub struct LeaderState<T: TypeConfig> {
     /// Used as the deadline base in update_lease_timestamp so the lease expires at
     /// `send_ts + lease_duration_ms` rather than `ack_ts + lease_duration_ms`,
     /// eliminating the RTT/2 window that allowed stale reads after partition.
+    ///
+    /// Known limitation: single shared value overwritten on every execute_and_process_raft_rpc
+    /// call. In rare cases where tick() and drain_client_cmds() both fire in the same loop
+    /// iteration, an old ACK may use a newer send_ts (microsecond-level error, negligible
+    /// relative to lease_duration_ms). Per-round correctness requires Method B (token-based).
     pub(crate) last_heartbeat_send_ts: u64,
 
     // -- Stale Learner Handling --
@@ -3313,7 +3318,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // Step 6: Reschedule if any pending promotions remain
         if !self.pending_promotions.is_empty() {
             debug!(
-                "[Leader {}] 🔁 Re-sending PromoteReadyLearners for remaining pending: {:?}",
+                "[Leader {}] Re-sending PromoteReadyLearners for remaining pending: {:?}",
                 self.node_id(),
                 self.pending_promotions.iter().map(|p| p.node_id).collect::<Vec<_>>()
             );
