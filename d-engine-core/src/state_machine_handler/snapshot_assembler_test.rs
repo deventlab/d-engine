@@ -197,12 +197,17 @@ async fn test_assembler_on_stale_temp_file_does_not_append_old_data() {
         "snapshot-".to_string(),
     ));
 
-    // First transfer: write 3 chunks then drop (simulates timeout / leader change)
+    // First transfer: write 3 chunks, flush to OS buffer, then drop without finalize.
+    // Explicit flush is required: tokio::fs::File has an internal write buffer that is
+    // NOT guaranteed to reach the OS kernel on drop. Without flush, the stale file size
+    // is non-deterministic (CI flakiness). flush_to_disk() models the production scenario
+    // where some chunks were flushed to the OS before the transfer timed out.
     {
         let mut assembler = SnapshotAssembler::new(path_mgr.clone()).await.unwrap();
         for i in 0..3u32 {
             assembler.write_chunk(i, Bytes::from(vec![0xAAu8; 1024])).await.unwrap();
         }
+        assembler.flush_to_disk().await.unwrap();
         // Drop without finalize — stale temp file stays on disk with 3 * 1024 bytes
     }
 

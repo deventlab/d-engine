@@ -343,6 +343,153 @@ async fn test_scan_prefix_all_0xff_no_upper_bound() {
     assert_eq!(result.entries[0].0, Bytes::copy_from_slice(key));
 }
 
+// ── get_multi tests ───────────────────────────────────────────────────────────
+
+/// RocksDB get_multi uses db.snapshot() to guarantee snapshot isolation.
+///
+/// A snapshot taken at the start of the batch read freezes the visible state:
+/// writes committed after the snapshot is taken are invisible to that batch.
+/// This means every (key, value) pair in the result comes from the same
+/// point-in-time state, preventing torn reads across apply indexes.
+///
+/// This test verifies two things:
+///   1. get_multi returns the current state accurately after each apply.
+///   2. Each result set is internally consistent — no v1/v2 mix is possible.
+#[tokio::test]
+async fn test_get_multi_rocksdb_snapshot_reads_consistent_state() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    // Apply v1: initial deployment state
+    sm.apply_chunk(&[
+        insert_at(b"/svc/addr", b"10.0.0.1:8080", 1),
+        insert_at(b"/svc/version", b"v1", 2),
+        insert_at(b"/svc/health", b"healthy", 3),
+    ])
+    .await
+    .unwrap();
+
+    let keys = vec![
+        Bytes::from_static(b"/svc/addr"),
+        Bytes::from_static(b"/svc/version"),
+        Bytes::from_static(b"/svc/health"),
+    ];
+
+    // Read after v1 — must see full v1 state
+    let v1_result = sm.get_multi(&keys).unwrap();
+    assert_eq!(
+        v1_result[0],
+        Some(Bytes::from_static(b"10.0.0.1:8080")),
+        "addr must be v1"
+    );
+    assert_eq!(
+        v1_result[1],
+        Some(Bytes::from_static(b"v1")),
+        "version must be v1"
+    );
+    assert_eq!(
+        v1_result[2],
+        Some(Bytes::from_static(b"healthy")),
+        "health must be v1"
+    );
+
+    // Apply v2: new deployment — all three fields transition
+    sm.apply_chunk(&[
+        insert_at(b"/svc/addr", b"10.0.0.2:8080", 4),
+        insert_at(b"/svc/version", b"v2", 5),
+        insert_at(b"/svc/health", b"starting", 6),
+    ])
+    .await
+    .unwrap();
+
+    // Read after v2 — must see full v2 state, no v1 values mixed in
+    let v2_result = sm.get_multi(&keys).unwrap();
+    assert_eq!(
+        v2_result[0],
+        Some(Bytes::from_static(b"10.0.0.2:8080")),
+        "addr must be v2"
+    );
+    assert_eq!(
+        v2_result[1],
+        Some(Bytes::from_static(b"v2")),
+        "version must be v2"
+    );
+    assert_eq!(
+        v2_result[2],
+        Some(Bytes::from_static(b"starting")),
+        "health must be v2"
+    );
+
+    // Verify each result set is internally consistent (snapshot isolation guarantee).
+    // A torn read — e.g., addr=v2 + version=v1 — would indicate the snapshot is not
+    // held for the full batch, which would be a correctness violation.
+    for (label, result) in [("v1_result", &v1_result), ("v2_result", &v2_result)] {
+        let is_v1 = result[0] == Some(Bytes::from_static(b"10.0.0.1:8080"))
+            && result[1] == Some(Bytes::from_static(b"v1"))
+            && result[2] == Some(Bytes::from_static(b"healthy"));
+        let is_v2 = result[0] == Some(Bytes::from_static(b"10.0.0.2:8080"))
+            && result[1] == Some(Bytes::from_static(b"v2"))
+            && result[2] == Some(Bytes::from_static(b"starting"));
+        assert!(
+            is_v1 || is_v2,
+            "{label}: torn read detected — result is neither pure v1 nor pure v2: {result:?}"
+        );
+    }
+}
+
+// ── close_db() tests ──────────────────────────────────────────────────────────
+//
+// close_db() is a permanent, one-way shutdown that releases the RocksDB LOCK file
+// immediately, without waiting for Arc<SM> to be the sole owner.  It is separate
+// from stop() because stop()/start() must remain a reversible cycle (used during
+// snapshot restoration).
+
+/// close_db() marks SM not-running and makes reads return an error.
+#[tokio::test]
+async fn test_close_db_prevents_reads() {
+    let dir = TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    sm.start().await.unwrap();
+    sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
+    assert_eq!(sm.get(b"k").unwrap(), Some(Bytes::from_static(b"v")));
+
+    sm.close_db();
+
+    assert!(!sm.is_running(), "is_running must be false after close_db");
+    assert!(sm.get(b"k").is_err(), "get must fail after close_db");
+    assert!(
+        sm.get_multi(&[Bytes::from_static(b"k")]).is_err(),
+        "get_multi must fail after close_db"
+    );
+}
+
+/// stop() after close_db() must succeed without panicking.
+/// Node::stop() calls sm.stop() after EmbeddedEngine has already called close_db();
+/// that sequence must be safe.
+#[test]
+fn test_stop_after_close_db_is_safe() {
+    let dir = TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+    sm.close_db();
+    assert!(sm.stop().is_ok(), "stop after close_db must not error");
+}
+
+/// Drop after close_db() must not panic or double-flush.
+/// EmbeddedEngine::stop() calls close_db() before the Raft loop exits; the SM
+/// is then dropped — Drop must detect the closed state and skip the flush.
+#[tokio::test]
+async fn test_drop_after_close_db_does_not_panic() {
+    let dir = TempDir::new().unwrap();
+    {
+        let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+        sm.start().await.unwrap();
+        sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
+        sm.close_db();
+        // sm drops here — Drop must be a no-op
+    }
+    // reaching here without panic means the test passes
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn insert_at(

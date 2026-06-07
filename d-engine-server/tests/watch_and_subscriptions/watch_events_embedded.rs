@@ -5,14 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::watch::WatchEventType;
-use d_engine_server::api::EmbeddedEngine;
+use d_engine_server::api::DefaultEmbeddedEngine;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
 use crate::common::get_available_ports;
 
-/// Helper function to create a test EmbeddedEngine with RocksDB
-async fn setup_engine() -> Result<(EmbeddedEngine, TempDir), Box<dyn std::error::Error>> {
+/// Helper function to create a test DefaultEmbeddedEngine with RocksDB
+async fn setup_engine() -> Result<(DefaultEmbeddedEngine, TempDir), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("db");
 
@@ -37,7 +37,7 @@ watcher_buffer_size = 10
     // Start engine with RocksDB storage
     let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
-    let engine = EmbeddedEngine::start_custom(
+    let engine = DefaultEmbeddedEngine::start_custom(
         Arc::new(storage),
         Arc::new(state_machine),
         Some(config_path.to_str().unwrap()),
@@ -119,7 +119,7 @@ listen_address = "127.0.0.1:{port}"
     // Start engine with RocksDB storage
     let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
-    let engine = EmbeddedEngine::start_custom(
+    let engine = DefaultEmbeddedEngine::start_custom(
         Arc::new(storage),
         Arc::new(state_machine),
         Some(config_path.to_str().unwrap()),
@@ -141,7 +141,7 @@ listen_address = "127.0.0.1:{port}"
 #[tokio::test]
 async fn test_watch_node_crash_embedded_mode() -> Result<(), Box<dyn std::error::Error>> {
     // Scenario:
-    // 1. Node1: EmbeddedEngine.watch(key)
+    // 1. Node1: DefaultEmbeddedEngine.watch(key)
     // 2. Drop engine (simulate crash)
     // 3. Verify all watchers are automatically cleaned up
     //
@@ -361,7 +361,7 @@ watcher_buffer_size = 10
     // Start engine with RocksDB storage
     let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
-    let engine = EmbeddedEngine::start_custom(
+    let engine = DefaultEmbeddedEngine::start_custom(
         Arc::new(storage),
         Arc::new(state_machine),
         Some(config_path.to_str().unwrap()),

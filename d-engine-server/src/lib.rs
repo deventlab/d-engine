@@ -98,6 +98,12 @@ mod proto_convert;
 #[cfg(test)]
 mod proto_convert_test;
 
+/// ReadActor — fast-path read task for Eventual and LeaseRead.
+/// Kept in server (not core) because it is a performance optimization, not a Raft protocol component.
+pub(crate) mod read_actor;
+#[cfg(test)]
+mod read_actor_test;
+
 /// Node lifecycle management
 ///
 /// Contains [`Node`] and [`NodeBuilder`] for server setup.
@@ -117,6 +123,10 @@ pub use d_engine_core::LeaderInfo;
 pub mod storage;
 
 // -------------------- Primary Entry Points --------------------
+#[cfg(feature = "rocksdb")]
+pub use api::DefaultEmbeddedClient;
+#[cfg(feature = "rocksdb")]
+pub use api::DefaultEmbeddedEngine;
 pub use api::EmbeddedEngine;
 pub use api::StandaloneEngine;
 pub use membership::MembershipSnapshot;

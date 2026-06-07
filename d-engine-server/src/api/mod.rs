@@ -2,20 +2,26 @@
 
 mod embedded;
 mod embedded_client;
+mod embedded_read_handle;
 mod standalone;
+mod standalone_read_handle;
 
-pub use embedded::EmbeddedEngine;
-pub use embedded_client::EmbeddedClient;
 pub use standalone::StandaloneEngine;
+pub(crate) use standalone_read_handle::StandaloneReadHandle;
 
-#[cfg(test)]
-mod embedded_client_test;
+/// Embedded engine generic over any `(SE, SM)` pair.
+pub type EmbeddedEngine<SE, SM> = embedded::EmbeddedEngine<crate::node::RaftTypeConfig<SE, SM>>;
 
-#[cfg(test)]
-mod embedded_test;
+/// Embedded client generic over any `(SE, SM)` pair.
+pub type EmbeddedClient<SE, SM> =
+    embedded_client::EmbeddedClient<crate::node::RaftTypeConfig<SE, SM>>;
 
-#[cfg(test)]
-mod embedded_env_test;
+/// Zero-param embedded engine alias using the default RocksDB backend.
+#[cfg(feature = "rocksdb")]
+pub type DefaultEmbeddedEngine =
+    EmbeddedEngine<crate::RocksDBStorageEngine, crate::RocksDBStateMachine>;
 
-#[cfg(test)]
-mod standalone_test;
+/// Zero-param embedded client alias using the default RocksDB backend.
+#[cfg(feature = "rocksdb")]
+pub type DefaultEmbeddedClient =
+    EmbeddedClient<crate::RocksDBStorageEngine, crate::RocksDBStateMachine>;

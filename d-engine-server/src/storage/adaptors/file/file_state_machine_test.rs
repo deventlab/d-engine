@@ -9,6 +9,32 @@ use d_engine_core::Error;
 use d_engine_core::storage::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
 use tempfile::TempDir;
 
+// ── close_storage() tests ─────────────────────────────────────────────────────
+
+/// close_storage() must mark the SM as not running.
+/// FileStateMachine has no exclusive OS lock, so close_storage() is a lifecycle
+/// signal — subsequent reads must fail with NotServing.
+#[tokio::test]
+async fn test_file_sm_close_storage_marks_not_running() {
+    let dir = TempDir::new().unwrap();
+    let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
+    sm.start().await.unwrap();
+    assert!(sm.is_running());
+
+    sm.close_storage();
+
+    assert!(!sm.is_running(), "close_storage must mark SM not running");
+}
+
+/// stop() after close_storage() must not panic (idempotent shutdown).
+#[tokio::test]
+async fn test_file_sm_stop_after_close_storage_is_safe() {
+    let dir = TempDir::new().unwrap();
+    let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
+    sm.close_storage();
+    assert!(sm.stop().is_ok(), "stop after close_storage must not error");
+}
+
 /// Builder for FileStateMachine test instances
 struct FileStateMachineBuilder {
     temp_dir: TempDir,
@@ -26,7 +52,7 @@ impl FileStateMachineBuilder {
 impl StateMachineBuilder for FileStateMachineBuilder {
     async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
         // Use fixed path to support restart recovery testing
-        let path = self.temp_dir.path().join("file_sm");
+        let path = self.temp_dir.path().to_path_buf().join("file_sm");
         let sm = FileStateMachine::new(path).await?;
         Ok(Arc::new(sm))
     }
@@ -60,7 +86,7 @@ async fn test_file_state_machine_performance() {
 #[tokio::test]
 async fn test_wal_replay_after_crash() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let data_dir = temp_dir.path().to_path_buf();
+    let data_dir = temp_dir.path().to_path_buf().to_path_buf();
 
     let sm = FileStateMachine::new(data_dir.clone()).await.unwrap();
 
@@ -136,7 +162,7 @@ async fn test_wal_replay_after_crash() {
 #[tokio::test]
 async fn test_cas_failure_wal_replay_does_not_corrupt_data() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let data_dir = temp_dir.path().to_path_buf();
+    let data_dir = temp_dir.path().to_path_buf().to_path_buf();
     let sm = FileStateMachine::new(data_dir.clone()).await.unwrap();
 
     // Establish initial value
@@ -190,7 +216,9 @@ async fn test_cas_failure_wal_replay_does_not_corrupt_data() {
 #[tokio::test]
 async fn test_cas_in_same_chunk_as_preceding_insert() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
+    let sm = FileStateMachine::new(temp_dir.path().to_path_buf().to_path_buf())
+        .await
+        .unwrap();
 
     let results = sm
         .apply_chunk(&[
@@ -224,7 +252,7 @@ async fn test_cas_in_same_chunk_as_preceding_insert() {
 #[tokio::test]
 async fn test_cas_success_wal_replay_applies_new_value() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let data_dir = temp_dir.path().to_path_buf();
+    let data_dir = temp_dir.path().to_path_buf().to_path_buf();
     let sm = FileStateMachine::new(data_dir.clone()).await.unwrap();
 
     sm.apply_chunk(&[ApplyEntry {
@@ -278,7 +306,7 @@ async fn test_cas_success_wal_replay_applies_new_value() {
 #[tokio::test]
 async fn test_replay_wal_unknown_opcode_returns_error() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let data_dir = temp_dir.path().to_path_buf();
+    let data_dir = temp_dir.path().to_path_buf().to_path_buf();
 
     // Write one valid entry so the WAL file exists and has a known-good prefix.
     let sm = FileStateMachine::new(data_dir.clone()).await.unwrap();
@@ -325,7 +353,9 @@ async fn test_replay_wal_unknown_opcode_returns_error() {
 #[tokio::test]
 async fn test_file_sm_scan_prefix_returns_matching_keys() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
+    let sm = FileStateMachine::new(temp_dir.path().to_path_buf().to_path_buf())
+        .await
+        .unwrap();
 
     let entries = vec![
         ApplyEntry {
@@ -375,7 +405,9 @@ async fn test_file_sm_scan_prefix_returns_matching_keys() {
 #[tokio::test]
 async fn test_file_sm_scan_prefix_empty_namespace() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
+    let sm = FileStateMachine::new(temp_dir.path().to_path_buf().to_path_buf())
+        .await
+        .unwrap();
 
     sm.apply_chunk(&[ApplyEntry {
         index: 1,
@@ -397,11 +429,115 @@ async fn test_file_sm_scan_prefix_empty_namespace() {
     );
 }
 
+// ── get_multi tests ───────────────────────────────────────────────────────────
+
+/// FileStateMachine get_multi holds a read lock for the entire batch, ensuring
+/// that state transitions are atomic from the reader's perspective.
+///
+/// Because apply_chunk acquires a write lock when updating self.data, a concurrent
+/// write cannot interleave between the individual key reads inside get_multi.
+/// The result is always either the full pre-write state or the full post-write state —
+/// never a mix of values from different apply indexes.
+///
+/// This test verifies sequential coherence: after each state transition, all keys
+/// in the batch reflect the same version with no cross-version contamination.
+#[tokio::test]
+async fn test_get_multi_file_sm_atomic_state_transitions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = FileStateMachine::new(temp_dir.path().to_path_buf().to_path_buf())
+        .await
+        .unwrap();
+
+    // v1: initial state
+    sm.apply_chunk(&[
+        ApplyEntry {
+            index: 1,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from("/svc/addr"),
+                value: Bytes::from("10.0.0.1"),
+                ttl_secs: None,
+            },
+        },
+        ApplyEntry {
+            index: 2,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from("/svc/version"),
+                value: Bytes::from("v1"),
+                ttl_secs: None,
+            },
+        },
+    ])
+    .await
+    .unwrap();
+
+    let keys = vec![Bytes::from("/svc/addr"), Bytes::from("/svc/version")];
+
+    // Read after v1 — both fields must be from v1
+    let v1_result = sm.get_multi(&keys).unwrap();
+    assert_eq!(
+        v1_result[0],
+        Some(Bytes::from("10.0.0.1")),
+        "addr must be v1"
+    );
+    assert_eq!(v1_result[1], Some(Bytes::from("v1")), "version must be v1");
+
+    // Apply v2: both fields transition together
+    sm.apply_chunk(&[
+        ApplyEntry {
+            index: 3,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from("/svc/addr"),
+                value: Bytes::from("10.0.0.2"),
+                ttl_secs: None,
+            },
+        },
+        ApplyEntry {
+            index: 4,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from("/svc/version"),
+                value: Bytes::from("v2"),
+                ttl_secs: None,
+            },
+        },
+    ])
+    .await
+    .unwrap();
+
+    // Read after v2 — both fields must be from v2
+    let v2_result = sm.get_multi(&keys).unwrap();
+    assert_eq!(
+        v2_result[0],
+        Some(Bytes::from("10.0.0.2")),
+        "addr must be v2"
+    );
+    assert_eq!(v2_result[1], Some(Bytes::from("v2")), "version must be v2");
+
+    // Verify internal consistency of each result: addr and version must come from
+    // the same version. A torn read (addr=v2 + version=v1) would indicate that
+    // the read lock is not held across the full batch, which is a correctness bug.
+    for (label, result) in [("v1_result", &v1_result), ("v2_result", &v2_result)] {
+        let is_v1 =
+            result[0] == Some(Bytes::from("10.0.0.1")) && result[1] == Some(Bytes::from("v1"));
+        let is_v2 =
+            result[0] == Some(Bytes::from("10.0.0.2")) && result[1] == Some(Bytes::from("v2"));
+        assert!(
+            is_v1 || is_v2,
+            "{label}: torn read — result is neither pure v1 nor pure v2: {result:?}"
+        );
+    }
+}
+
 /// scan_prefix revision equals last_applied_index at scan time.
 #[tokio::test]
 async fn test_file_sm_scan_prefix_revision_reflects_applied_index() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let sm = FileStateMachine::new(temp_dir.path().to_path_buf()).await.unwrap();
+    let sm = FileStateMachine::new(temp_dir.path().to_path_buf().to_path_buf())
+        .await
+        .unwrap();
 
     let entries: Vec<ApplyEntry> = (1u64..=3)
         .map(|i| ApplyEntry {

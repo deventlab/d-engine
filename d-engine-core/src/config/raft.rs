@@ -87,6 +87,10 @@ pub struct RaftConfig {
     #[serde(default = "default_ordered_channel_capacity")]
     pub ordered_channel_capacity: usize,
 
+    /// ReadActor configuration — tuning for the dedicated Eventual/LeaseRead fast path.
+    #[serde(default)]
+    pub read_actor: ReadActorConfig,
+
     /// Configuration settings for new node auto join feature
     #[serde(default)]
     pub auto_join: AutoJoinConfig,
@@ -145,6 +149,7 @@ impl Default for RaftConfig {
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
             cmd_channel_capacity: default_cmd_channel_capacity(),
             ordered_channel_capacity: default_ordered_channel_capacity(),
+            read_actor: ReadActorConfig::default(),
             read_consistency: ReadConsistencyConfig::default(),
             backpressure: BackpressureConfig::default(),
             rpc_compression: RpcCompressionConfig::default(),
@@ -174,23 +179,10 @@ impl RaftConfig {
         self.membership.validate()?;
         self.state_machine.validate()?;
         self.snapshot.validate()?;
-        self.read_consistency.validate()?;
+        self.read_consistency.validate(self.election.election_timeout_min)?;
+        self.read_actor.validate()?;
         self.watch.validate()?;
         self.persistence.validate()?;
-
-        // Enforce lease_duration < election_timeout (load-bearing safety constraint).
-        // The lease fast path for linearizable reads relies on the invariant that
-        // "lease valid" and "new leader elected" are mutually exclusive on the timeline.
-        // This holds only when: lease_duration < election_timeout - max_clock_drift.
-        // At minimum, lease_duration must be strictly less than election_timeout_min.
-        if self.read_consistency.lease_duration_ms >= self.election.election_timeout_min {
-            return Err(Error::Config(ConfigError::Message(format!(
-                "read_consistency.lease_duration_ms ({}) must be strictly less than \
-                 election_timeout_min ({}ms) — required for lease-based linearizable reads \
-                 to be safe under partition",
-                self.read_consistency.lease_duration_ms, self.election.election_timeout_min,
-            ))));
-        }
 
         Ok(())
     }
@@ -219,6 +211,67 @@ fn default_cmd_channel_capacity() -> usize {
 
 fn default_ordered_channel_capacity() -> usize {
     1024
+}
+
+/// Configuration for the ReadActor — the dedicated read task that serves
+/// Eventual and LeaseRead requests without entering the Raft loop.
+///
+/// Exposed as `[raft.read_actor]` in TOML configuration.
+///
+/// # Tuning Guidelines
+/// - `channel_capacity`: set to at least 2× peak concurrent Eventual/LeaseRead clients
+/// - `max_drain`: rarely needs changing; must not exceed `channel_capacity` meaningfully
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReadActorConfig {
+    /// mpsc channel buffer between the client layer and ReadActor.
+    /// Larger values reduce backpressure under high Eventual/LeaseRead concurrency.
+    /// Default: 512.
+    #[serde(default = "default_read_actor_channel_capacity")]
+    pub channel_capacity: usize,
+
+    /// Max reads drained per ReadActor wakeup (mirrors Raft::drain_client_cmds).
+    /// After the first recv().await fires, the actor drains up to this many
+    /// additional commands with try_recv() before yielding.
+    /// Default: 100.
+    #[serde(default = "default_read_actor_max_drain")]
+    pub max_drain: usize,
+}
+
+impl Default for ReadActorConfig {
+    fn default() -> Self {
+        Self {
+            channel_capacity: default_read_actor_channel_capacity(),
+            max_drain: default_read_actor_max_drain(),
+        }
+    }
+}
+
+impl ReadActorConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.channel_capacity == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "read_actor.channel_capacity must be at least 1 \
+                 (0 causes mpsc::channel to panic at startup)"
+                    .into(),
+            )));
+        }
+        if self.max_drain == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "read_actor.max_drain must be at least 1 \
+                 (0 disables post-wakeup batching — ReadActor drains no additional commands)"
+                    .into(),
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn default_read_actor_channel_capacity() -> usize {
+    512
+}
+
+fn default_read_actor_max_drain() -> usize {
+    100
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -991,12 +1044,21 @@ pub struct ReadConsistencyConfig {
     #[serde(default)]
     pub default_policy: ReadConsistencyPolicy,
 
-    /// Lease duration in milliseconds for LeaseRead policy
+    /// Lease duration in milliseconds for LeaseRead policy.
     ///
-    /// Only applicable when using the LeaseRead policy. The leader considers
-    /// itself valid for this duration after successfully heartbeating to a quorum.
+    /// How long the leader treats its lease as valid after the last quorum ACK.
     ///
-    /// **MUST be > 0**. Config validation will reject 0 or invalid values.
+    /// **Safety constraint** (enforced by `RaftConfig::validate()`):
+    ///   `lease_duration_ms + network_rtt_p99_ms / 2 < election_timeout_min`
+    ///
+    /// Full theoretical bound (Raft §6.4):
+    ///   `lease_duration_ms < election_timeout_min - rtt_p99/2 - max_clock_drift`
+    ///
+    /// The lease deadline is anchored to heartbeat *send* time, but the follower's
+    /// election timer resets at *receive* time (~rtt/2 later). Without accounting for
+    /// rtt/2 the safety invariant is violated under network latency — confirmed by
+    /// Jepsen set workload (19 elements lost). etcd absorbs this via `electionTimeout × 2/3`;
+    /// d-engine makes it explicit via `network_rtt_p99_ms`.
     #[serde(default = "default_lease_duration_ms")]
     pub lease_duration_ms: u64,
 
@@ -1014,6 +1076,26 @@ pub struct ReadConsistencyConfig {
     /// Default: 10ms (safe buffer for single-node local deployments)
     #[serde(default = "default_state_machine_sync_timeout_ms")]
     pub state_machine_sync_timeout_ms: u64,
+
+    /// Estimated p99 round-trip network latency between leader and followers, in milliseconds.
+    ///
+    /// Used to tighten the lease safety constraint beyond the basic
+    /// `lease_duration_ms < election_timeout_min` check.
+    ///
+    /// **Why this matters**: the lease deadline is anchored to the heartbeat *send* time,
+    /// but a follower's election timer resets at heartbeat *receive* time (~RTT/2 later).
+    /// The precise safety condition is:
+    ///   `lease_duration_ms + network_rtt_p99_ms / 2 < election_timeout_min`
+    ///
+    /// Typical values:
+    /// - Same host / loopback: 0–1 ms
+    /// - Same datacenter:      1–2 ms
+    /// - Cross-AZ (AWS):       1–3 ms
+    /// - Cross-region:         50+ ms (LeaseRead not recommended)
+    ///
+    /// Default: 2ms (safe for same-datacenter and typical cross-AZ deployments).
+    #[serde(default = "default_network_rtt_p99_ms")]
+    pub network_rtt_p99_ms: u64,
 }
 
 impl Default for ReadConsistencyConfig {
@@ -1023,12 +1105,13 @@ impl Default for ReadConsistencyConfig {
             lease_duration_ms: default_lease_duration_ms(),
             allow_client_override: default_allow_client_override(),
             state_machine_sync_timeout_ms: default_state_machine_sync_timeout_ms(),
+            network_rtt_p99_ms: default_network_rtt_p99_ms(),
         }
     }
 }
 
 fn default_lease_duration_ms() -> u64 {
-    // Conservative default: half of a typical heartbeat interval (~300ms)
+    // 2.5× the default heartbeat interval (100ms); safely below election_timeout_min (500ms).
     250
 }
 
@@ -1037,17 +1120,42 @@ fn default_allow_client_override() -> bool {
     true
 }
 
+fn default_network_rtt_p99_ms() -> u64 {
+    // 2ms covers same-datacenter and typical AWS cross-AZ deployments.
+    // Cross-region deployments should increase this value and reconsider using LeaseRead.
+    2
+}
+
 fn default_state_machine_sync_timeout_ms() -> u64 {
     10 // 10ms is safe for typical <1ms apply latency on local SSD
 }
 
 impl ReadConsistencyConfig {
-    fn validate(&self) -> Result<()> {
-        // Validate read consistency configuration
+    pub(super) fn validate(
+        &self,
+        election_timeout_min: u64,
+    ) -> Result<()> {
         if self.lease_duration_ms == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "read_consistency.lease_duration_ms must be greater than 0".into(),
             )));
+        }
+        // Safety constraint (Raft §6.4):
+        //   lease_duration_ms + rtt_p99/2 < election_timeout_min
+        //
+        // The follower's election timer resets at heartbeat receive time (~rtt/2 after send).
+        // Without this margin the effective lease window can exceed election_timeout_min,
+        // allowing stale reads after a network partition that heals before lease expiry.
+        let rtt_half_ms = self.network_rtt_p99_ms / 2;
+        // Use saturating_add: if the sum overflows u64 it saturates to u64::MAX,
+        // which is guaranteed >= any election_timeout_min, so the config is correctly rejected.
+        if self.lease_duration_ms.saturating_add(rtt_half_ms) >= election_timeout_min {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "read_consistency.lease_duration_ms ({}) + network_rtt_p99_ms/2 ({}) \
+                 must be strictly less than election_timeout_min ({}ms) — \
+                 required for lease safety under partition (see network_rtt_p99_ms config)",
+                self.lease_duration_ms, rtt_half_ms, election_timeout_min,
+            ))));
         }
         Ok(())
     }

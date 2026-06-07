@@ -22,7 +22,9 @@ pub mod prelude {
     };
 
     #[cfg(feature = "rocksdb")]
-    pub use d_engine_server::{RocksDBStateMachine, RocksDBStorageEngine};
+    pub use d_engine_server::{
+        DefaultEmbeddedClient, DefaultEmbeddedEngine, RocksDBStateMachine, RocksDBStorageEngine,
+    };
 
     #[cfg(feature = "client")]
     pub use d_engine_client::{Client, ClientApi, ClientBuilder};

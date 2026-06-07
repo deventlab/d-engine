@@ -44,12 +44,12 @@ d-engine-server = "0.2"
 ### Embedded Mode (zero-overhead local client)
 
 ```rust
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let engine = EmbeddedEngine::start_with("config.toml").await?;
+    let engine = DefaultEmbeddedEngine::start_with("config.toml").await?;
     engine.wait_ready(Duration::from_secs(5)).await?;
 
     let client = engine.client();
@@ -184,13 +184,13 @@ See the [Server Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guid
 High-level API for embedding d-engine in Rust applications:
 
 ```rust
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start embedded engine with config file
-    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
+    let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
 
     // Wait for leader election
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;

@@ -17,13 +17,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use d_engine_server::api::EmbeddedEngine;
+use d_engine_server::api::DefaultEmbeddedEngine;
 use tempfile::TempDir;
 
 use crate::common::get_available_ports;
 
 /// Helper: Create a test engine
-async fn create_test_engine() -> (EmbeddedEngine, TempDir) {
+async fn create_test_engine() -> (DefaultEmbeddedEngine, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join("db");
 
@@ -48,7 +48,7 @@ watcher_buffer_size = 100
     let (storage, state_machine) =
         RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
 
-    let engine = EmbeddedEngine::start_custom(
+    let engine = DefaultEmbeddedEngine::start_custom(
         Arc::new(storage),
         Arc::new(state_machine),
         Some(config_path.to_str().unwrap()),

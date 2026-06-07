@@ -63,12 +63,12 @@ d-engine runs **inside your Rust application process**:
 ### Quick Start
 
 ```rust,ignore
-use d_engine::EmbeddedEngine;
+use d_engine::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start with config file
-    let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
+    let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
 
     // Wait for leader election
     engine.wait_ready(Duration::from_secs(5)).await?;

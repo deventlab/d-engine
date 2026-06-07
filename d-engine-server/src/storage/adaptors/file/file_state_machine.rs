@@ -115,7 +115,7 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::storage::DefaultLease;
+use crate::storage::TtlLease;
 
 type FileStateMachineDataType = RwLock<HashMap<Bytes, (Bytes, u64)>>;
 
@@ -242,9 +242,9 @@ pub struct FileStateMachine {
     data: FileStateMachineDataType, // (value, term)
 
     // Lease management for automatic key expiration
-    // DefaultLease is thread-safe internally (uses DashMap + Mutex)
+    // TtlLease is thread-safe internally (uses DashMap + Mutex)
     // Injected by NodeBuilder after construction
-    lease: Option<Arc<DefaultLease>>,
+    lease: Option<Arc<TtlLease>>,
 
     // Raft state with disk persistence
     last_applied_index: AtomicU64,
@@ -305,7 +305,7 @@ impl FileStateMachine {
     /// Also available for testing and benchmarks.
     pub fn set_lease(
         &mut self,
-        lease: Arc<DefaultLease>,
+        lease: Arc<TtlLease>,
     ) {
         self.lease = Some(lease);
     }
@@ -1017,6 +1017,12 @@ impl StateMachine for FileStateMachine {
         Ok(())
     }
 
+    fn close_storage(&self) {
+        self.running.store(false, Ordering::SeqCst);
+        // FileStateMachine has no exclusive OS lock file.
+        // Marking not-running is sufficient; Drop handles final flush.
+    }
+
     fn stop(&self) -> Result<(), Error> {
         // Ensure all data is flushed to disk before stopping
         self.running.store(false, Ordering::SeqCst);
@@ -1580,5 +1586,15 @@ impl StateMachine for FileStateMachine {
             .collect();
         let revision = self.last_applied_index.load(Ordering::SeqCst);
         Ok(ScanResult { entries, revision })
+    }
+
+    fn get_multi(
+        &self,
+        keys: &[Bytes],
+    ) -> d_engine_core::Result<Vec<Option<Bytes>>> {
+        // Hold read lock for the full batch so all keys come from the same consistent view.
+        // apply_chunk holds the write lock; parking_lot RwLock ensures they don't interleave.
+        let data = self.data.read();
+        Ok(keys.iter().map(|k| data.get(k).map(|(v, _)| v.clone())).collect())
     }
 }

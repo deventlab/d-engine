@@ -1,8 +1,8 @@
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use std::time::Duration;
 use tracing_test::traced_test;
 
-/// Test single-node EmbeddedEngine basic lifecycle
+/// Test single-node DefaultEmbeddedEngine basic lifecycle
 #[tokio::test]
 async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -16,7 +16,7 @@ async fn test_single_node_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
     }
 
     // Start embedded engine — data_dir takes highest priority
-    let engine = EmbeddedEngine::start(&data_dir).await?;
+    let engine = DefaultEmbeddedEngine::start(&data_dir).await?;
 
     // Clean up environment variables immediately
     unsafe {
@@ -80,7 +80,7 @@ async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("RAFT__CLUSTER__LISTEN_ADDRESS", "127.0.0.1:9002");
     }
 
-    let engine = EmbeddedEngine::start(&data_dir).await?;
+    let engine = DefaultEmbeddedEngine::start(&data_dir).await?;
 
     unsafe {
         std::env::remove_var("RAFT__CLUSTER__NODE_ID");
@@ -112,7 +112,7 @@ async fn test_leader_notification() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
 
-    use d_engine_server::EmbeddedEngine;
+    use d_engine_server::DefaultEmbeddedEngine;
 
     let temp_dir = tempfile::tempdir()?;
     let data_dir = temp_dir.path().join("db");
@@ -125,7 +125,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
 
     // First session: write data
     {
-        let engine = EmbeddedEngine::start(&data_dir).await?;
+        let engine = DefaultEmbeddedEngine::start(&data_dir).await?;
         engine.wait_ready(Duration::from_secs(5)).await?;
 
         engine.client().put(b"persist-key".to_vec(), b"persist-value".to_vec()).await?;
@@ -138,7 +138,7 @@ async fn test_data_persistence() -> Result<(), Box<dyn std::error::Error>> {
 
     // Second session: verify data still exists
     {
-        let engine = EmbeddedEngine::start(&data_dir).await?;
+        let engine = DefaultEmbeddedEngine::start(&data_dir).await?;
         engine.wait_ready(Duration::from_secs(5)).await?;
 
         let value = engine.client().get_linearizable(b"persist-key".to_vec()).await?;

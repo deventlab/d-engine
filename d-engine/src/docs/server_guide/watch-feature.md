@@ -63,10 +63,10 @@ while let Some(event) = stream.next().await {
 For in-process usage (e.g., `EmbeddedEngine`), use the client's `watch()` method:
 
 ```rust,ignore
-use d_engine::EmbeddedEngine;
+use d_engine::prelude::*;
 
 // Initialize engine with config enabling watch
-let engine = EmbeddedEngine::start_with("d-engine.toml").await?;
+let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
 
 // Watch via client (unified API)
 let mut watcher = engine.client().watch("my_key")?;
@@ -386,7 +386,7 @@ Write → Raft Consensus → StateMachine.apply() → broadcast::send()
 When `EmbeddedEngine` is dropped or crashes:
 
 ```rust,ignore
-let engine = EmbeddedEngine::start_with(config).await?;
+let engine = DefaultEmbeddedEngine::start_with(config).await?;
 let mut watcher = engine.client().watch(b"key")?;
 
 // If engine crashes or is dropped:
@@ -399,7 +399,7 @@ let mut watcher = engine.client().watch(b"key")?;
 
 ```rust,ignore
 loop {
-    let engine = EmbeddedEngine::start_with(config).await?;
+    let engine = DefaultEmbeddedEngine::start_with(config).await?;
     let mut watcher = engine.watch(b"key").await?;
 
     while let Some(event) = watcher.recv().await {

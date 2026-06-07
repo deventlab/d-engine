@@ -1,4 +1,4 @@
-//! Integration tests for EmbeddedEngine cluster state APIs (Ticket #234)
+//! Integration tests for DefaultEmbeddedEngine cluster state APIs (Ticket #234)
 //!
 //! These tests verify is_leader() and leader_info() behavior in multi-node scenarios:
 //! - Multi-node leader election
@@ -7,7 +7,7 @@
 
 use crate::common::get_available_ports;
 use crate::common::node_config;
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -18,7 +18,7 @@ use d_engine_server::RocksDBUnifiedEngine;
 /// Test: 3-node cluster should elect exactly one leader
 ///
 /// Setup:
-/// - Start 3 EmbeddedEngine instances as a cluster
+/// - Start 3 DefaultEmbeddedEngine instances as a cluster
 /// - Wait for leader election
 ///
 /// Verification:
@@ -105,25 +105,34 @@ listen_address = '127.0.0.1:{}'
     let db_path1 = config1.cluster.db_root_dir.join("node1/db");
     tokio::fs::create_dir_all(&db_path1).await?;
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
-    let engine1 =
-        EmbeddedEngine::start_custom(Arc::new(storage1), Arc::new(sm1), Some(node1_config_path))
-            .await?;
+    let engine1 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage1),
+        Arc::new(sm1),
+        Some(node1_config_path),
+    )
+    .await?;
 
     let config2 = node_config(&node2_config);
     let db_path2 = config2.cluster.db_root_dir.join("node2/db");
     tokio::fs::create_dir_all(&db_path2).await?;
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
-    let engine2 =
-        EmbeddedEngine::start_custom(Arc::new(storage2), Arc::new(sm2), Some(node2_config_path))
-            .await?;
+    let engine2 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage2),
+        Arc::new(sm2),
+        Some(node2_config_path),
+    )
+    .await?;
 
     let config3 = node_config(&node3_config);
     let db_path3 = config3.cluster.db_root_dir.join("node3/db");
     tokio::fs::create_dir_all(&db_path3).await?;
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
-    let engine3 =
-        EmbeddedEngine::start_custom(Arc::new(storage3), Arc::new(sm3), Some(node3_config_path))
-            .await?;
+    let engine3 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage3),
+        Arc::new(sm3),
+        Some(node3_config_path),
+    )
+    .await?;
 
     // Wait for leader election
     info!("Waiting for leader election...");
@@ -243,25 +252,34 @@ general_raft_timeout_duration_in_ms = 3000
     let db_path1 = config1.cluster.db_root_dir.join("node1/db");
     tokio::fs::create_dir_all(&db_path1).await?;
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
-    let engine1 =
-        EmbeddedEngine::start_custom(Arc::new(storage1), Arc::new(sm1), Some(node1_config_path))
-            .await?;
+    let engine1 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage1),
+        Arc::new(sm1),
+        Some(node1_config_path),
+    )
+    .await?;
 
     let config2 = node_config(&node2_config);
     let db_path2 = config2.cluster.db_root_dir.join("node2/db");
     tokio::fs::create_dir_all(&db_path2).await?;
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
-    let engine2 =
-        EmbeddedEngine::start_custom(Arc::new(storage2), Arc::new(sm2), Some(node2_config_path))
-            .await?;
+    let engine2 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage2),
+        Arc::new(sm2),
+        Some(node2_config_path),
+    )
+    .await?;
 
     let config3 = node_config(&node3_config);
     let db_path3 = config3.cluster.db_root_dir.join("node3/db");
     tokio::fs::create_dir_all(&db_path3).await?;
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
-    let engine3 =
-        EmbeddedEngine::start_custom(Arc::new(storage3), Arc::new(sm3), Some(node3_config_path))
-            .await?;
+    let engine3 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage3),
+        Arc::new(sm3),
+        Some(node3_config_path),
+    )
+    .await?;
 
     // Wait for leader election
     info!("Waiting for leader election...");
@@ -413,25 +431,34 @@ general_raft_timeout_duration_in_ms = 3000
     let db_path1 = config1.cluster.db_root_dir.join("node1/db");
     tokio::fs::create_dir_all(&db_path1).await?;
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
-    let engine1 =
-        EmbeddedEngine::start_custom(Arc::new(storage1), Arc::new(sm1), Some(node1_config_path))
-            .await?;
+    let engine1 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage1),
+        Arc::new(sm1),
+        Some(node1_config_path),
+    )
+    .await?;
 
     let config2 = node_config(&node2_config);
     let db_path2 = config2.cluster.db_root_dir.join("node2/db");
     tokio::fs::create_dir_all(&db_path2).await?;
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
-    let engine2 =
-        EmbeddedEngine::start_custom(Arc::new(storage2), Arc::new(sm2), Some(node2_config_path))
-            .await?;
+    let engine2 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage2),
+        Arc::new(sm2),
+        Some(node2_config_path),
+    )
+    .await?;
 
     let config3 = node_config(&node3_config);
     let db_path3 = config3.cluster.db_root_dir.join("node3/db");
     tokio::fs::create_dir_all(&db_path3).await?;
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
-    let engine3 =
-        EmbeddedEngine::start_custom(Arc::new(storage3), Arc::new(sm3), Some(node3_config_path))
-            .await?;
+    let engine3 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage3),
+        Arc::new(sm3),
+        Some(node3_config_path),
+    )
+    .await?;
 
     // Wait for initial leader election
     tokio::time::sleep(Duration::from_secs(5)).await;

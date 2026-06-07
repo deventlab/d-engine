@@ -9,6 +9,8 @@ mod embedded_engine_tests {
     use crate::storage::FileStateMachine;
     use crate::storage::FileStorageEngine;
 
+    type TestEngine = EmbeddedEngine<FileStorageEngine, FileStateMachine>;
+
     async fn create_test_storage_and_sm() -> (
         Arc<FileStorageEngine>,
         Arc<FileStateMachine>,
@@ -39,7 +41,7 @@ mod embedded_engine_tests {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         // Start embedded engine (single node)
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -65,7 +67,7 @@ mod embedded_engine_tests {
     async fn test_wait_ready_timeout() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -85,7 +87,7 @@ mod embedded_engine_tests {
     async fn test_leader_change_notifier_basic() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -119,7 +121,7 @@ mod embedded_engine_tests {
     async fn test_ready_and_wait_ready_sequence() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -148,7 +150,7 @@ mod embedded_engine_tests {
     async fn test_client_available_after_wait_ready() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -174,7 +176,7 @@ mod embedded_engine_tests {
     async fn test_multiple_leader_change_notifier_subscribers() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -211,7 +213,7 @@ mod embedded_engine_tests {
     async fn test_engine_stop_cleans_up() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -224,7 +226,7 @@ mod embedded_engine_tests {
     async fn test_wait_ready_race_condition_already_elected() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -259,7 +261,7 @@ mod embedded_engine_tests {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = Arc::new(
-            EmbeddedEngine::start_custom(storage, sm, None)
+            TestEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine"),
         );
@@ -305,7 +307,7 @@ mod embedded_engine_tests {
     async fn test_wait_ready_check_current_value_first() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -513,7 +515,7 @@ listen_addr = "127.0.0.1:0"
         async fn test_drop_without_stop_warning() {
             let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-            let engine = EmbeddedEngine::start_custom(storage, sm, None)
+            let engine = TestEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
@@ -521,6 +523,29 @@ listen_addr = "127.0.0.1:0"
             // Note: We can't easily capture the warning log in test, but this
             // verifies the code path doesn't panic
             drop(engine);
+        }
+
+        /// stop() must release the RocksDB LOCK before returning.
+        ///
+        /// If ReadActor still held Arc<SM> after stop(), RocksDB would refuse the
+        /// second open() with "lock file already held by process" — no sleep needed.
+        #[tokio::test]
+        #[serial(tmp_db)]
+        async fn test_stop_releases_sm_lock_immediately() {
+            let data_dir = std::path::PathBuf::from("/tmp/d-engine-lock-release-test");
+            let _ = std::fs::remove_dir_all(&data_dir);
+
+            let engine =
+                EmbeddedEngine::start(&data_dir).await.expect("First start should succeed");
+            engine.stop().await.expect("stop() should succeed");
+
+            // Immediately reopen — no sleep. If the LOCK is still held this fails.
+            let engine2 = EmbeddedEngine::start(&data_dir).await.expect(
+                "Second start must succeed immediately after stop() — LOCK was not released",
+            );
+            engine2.stop().await.ok();
+
+            let _ = std::fs::remove_dir_all(&data_dir);
         }
     }
 
@@ -535,7 +560,7 @@ listen_addr = "127.0.0.1:0"
         async fn test_watch_registers_successfully() {
             let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-            let engine = EmbeddedEngine::start_custom(storage, sm, None)
+            let engine = TestEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
@@ -612,7 +637,7 @@ listen_addr = "127.0.0.1:0"
                 // temp_dir dropped here — underlying paths are now invalid
             };
 
-            let engine = EmbeddedEngine::start_custom(storage, sm, None)
+            let engine = TestEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
@@ -677,10 +702,9 @@ listen_addr = "127.0.0.1:0"
             )
             .unwrap();
 
-            let engine =
-                EmbeddedEngine::start_custom(storage, sm, Some(config_path.to_str().unwrap()))
-                    .await
-                    .expect("Failed to start engine");
+            let engine = TestEngine::start_custom(storage, sm, Some(config_path.to_str().unwrap()))
+                .await
+                .expect("Failed to start engine");
 
             engine
                 .wait_ready(Duration::from_secs(5))
@@ -751,7 +775,7 @@ listen_addr = "127.0.0.1:0"
     async fn test_is_leader_single_node() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -791,7 +815,7 @@ listen_addr = "127.0.0.1:0"
     async fn test_leader_info_before_election() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -842,7 +866,7 @@ listen_addr = "127.0.0.1:0"
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
         let engine = Arc::new(
-            EmbeddedEngine::start_custom(storage, sm, None)
+            TestEngine::start_custom(storage, sm, None)
                 .await
                 .expect("Failed to start engine"),
         );
@@ -925,7 +949,7 @@ listen_addr = "127.0.0.1:0"
     async fn test_leader_info_consistency() {
         let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = EmbeddedEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(storage, sm, None)
             .await
             .expect("Failed to start engine");
 

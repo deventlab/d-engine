@@ -9,6 +9,10 @@ initial_cluster = [
 db_root_dir = "./data/n3"
 log_dir = "./logs"
 
+[raft.read_actor]
+channel_capacity = 2048
+max_drain = 1024
+
 [raft.batching]
 # Maximum number of commands to accumulate in a single batch during drain operations
 max_batch_size = 200

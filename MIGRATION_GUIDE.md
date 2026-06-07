@@ -134,6 +134,7 @@ grep "WAL" /var/log/d-engine.log
 | v0.2.0–v0.2.2 | Absolute expiration | Compatible           | ✅ Yes (clear WAL from v0.1.x)                          |
 | v0.2.3        | Same as v0.2.0+     | **Incompatible**     | ✅ Yes (protobuf enum changes + API changes)             |
 | v0.2.4        | Same as v0.2.0+     | Compatible (additive)| ✅ Yes (delete `snapshot/` — format changed to CF export)|
+| v0.2.5        | Same as v0.2.0+     | Compatible (additive)| ⚠️ Minor (remove `lease.enabled` from config if present) |
 
 ---
 
@@ -490,6 +491,52 @@ while let Some(event) = stream.next().await {
 ```
 
 See [Watch Feature Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/watch_feature/index.html) for details.
+
+---
+
+---
+
+## For v0.2.4 Users: TTL Config Change in v0.2.5 (#398)
+
+### What Changed
+
+The `enabled` flag under `[raft.state_machine.lease]` has been removed. TTL expiration is now **always active** — no opt-in required.
+
+In v0.2.4, omitting `enabled = true` caused a fatal crash on `put_with_ttl`. This bug is fixed in v0.2.5.
+
+### Migration
+
+If your config contains `enabled = true` or `enabled = false`, remove the line:
+
+```toml
+# Old (v0.2.4) — remove this line
+[raft.state_machine.lease]
+enabled = true   # ← delete
+
+# New (v0.2.5) — TTL always active, no flag needed
+[raft.state_machine.lease]
+cleanup_interval_ms = 1000
+```
+
+**Impact**: None if you do not touch the config — unrecognised fields are ignored. The only behavioral change is that TTL expiration is now unconditionally enabled.
+
+---
+
+## For v0.2.4 Users: New `[raft.read_actor]` Config Section in v0.2.5 (#392)
+
+This section is **optional** — both fields have defaults and existing configs work without changes.
+
+```toml
+[raft.read_actor]
+# mpsc channel buffer for Eventual/LeaseRead fast path.
+# Rule of thumb: ≥ 2× peak concurrent readers. Default: 512.
+channel_capacity = 512
+
+# Max reads drained per wakeup. Default: 100.
+max_drain = 100
+```
+
+No migration action required unless you want to tune read concurrency.
 
 ---
 

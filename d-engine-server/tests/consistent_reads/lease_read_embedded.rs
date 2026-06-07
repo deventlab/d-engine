@@ -9,14 +9,14 @@
 use std::time::Duration;
 
 use d_engine_core::ClientApi;
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use tempfile::TempDir;
 use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
 
-/// Helper to create a test EmbeddedEngine with lease configuration
-async fn create_test_engine_with_lease(test_name: &str) -> (EmbeddedEngine, TempDir) {
+/// Helper to create a test DefaultEmbeddedEngine with lease configuration
+async fn create_test_engine_with_lease(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
 
@@ -39,7 +39,7 @@ state_machine_sync_timeout_ms = 2000
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
         .expect("Failed to start engine");
 

@@ -5,6 +5,7 @@ use super::StateSnapshot;
 use super::buffers::BatchBuffer;
 use super::buffers::ProposeBatchBuffer;
 use super::candidate_state::CandidateState;
+use super::read_lease::now_ms;
 use super::role_state::RaftRoleState;
 use super::role_state::check_and_trigger_snapshot;
 use super::role_state::send_replay_raft_event;
@@ -73,7 +74,6 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
@@ -405,6 +405,17 @@ pub struct LeaderState<T: TypeConfig> {
     /// Last time we checked for learners
     pub last_learner_check: Instant,
 
+    /// Timestamp captured just before the first AppendEntries RPC is sent each round.
+    /// Used as the deadline base in update_lease_timestamp so the lease expires at
+    /// `send_ts + lease_duration_ms` rather than `ack_ts + lease_duration_ms`,
+    /// eliminating the RTT/2 window that allowed stale reads after partition.
+    ///
+    /// Known limitation: single shared value overwritten on every execute_and_process_raft_rpc
+    /// call. In rare cases where tick() and drain_client_cmds() both fire in the same loop
+    /// iteration, an old ACK may use a newer send_ts (microsecond-level error, negligible
+    /// relative to lease_duration_ms). Per-round correctness requires Method B (token-based).
+    pub(crate) last_heartbeat_send_ts: u64,
+
     // -- Stale Learner Handling --
     /// Earliest time the oldest pending learner becomes stale.
     ///
@@ -419,11 +430,6 @@ pub struct LeaderState<T: TypeConfig> {
 
     /// Queue of learners that have caught up and are pending promotion to voter.
     pub pending_promotions: VecDeque<PendingPromotion>,
-
-    /// Monotonic instant of the last quorum ACK, used to check lease validity.
-    /// `None` until the first ACK; replaced on every subsequent quorum confirmation.
-    /// Must be `Instant` (not `SystemTime`) — wall clock can move backward under NTP.
-    pub(super) lease_instant: Mutex<Option<Instant>>,
 
     // -- Cluster Topology Cache --
     /// Cached cluster metadata (updated on membership changes)
@@ -702,6 +708,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             self.node_id(),
             self.current_term()
         );
+        // Revoke lease so ReadActor immediately returns LeaseInvalid on the next read.
+        self.shared_state.lease.revoke();
         Ok(RaftRole::Follower(Box::new(self.into())))
     }
 
@@ -1119,6 +1127,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 let my_term = self.current_term();
                 if my_term < vote_request.term {
                     self.update_current_term(vote_request.term);
+                    // Revoke lease immediately — before the Raft loop processes BecomeFollower,
+                    // a concurrent ReadActor could still see the old valid lease (window-period bug).
+                    self.shared_state.lease.revoke();
                     // Step down as Follower
                     self.send_become_follower_event(None, &role_tx)?;
 
@@ -1222,6 +1233,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         my_id
                     );
                     //TODO: if there is a bug?  self.update_current_term(vote_request.term);
+                    // Revoke lease immediately — window-period fix (see VoteRequest branch).
+                    self.shared_state.lease.revoke();
                     self.send_become_follower_event(
                         Some(append_entries_request.leader_id),
                         &role_tx,
@@ -1705,7 +1718,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 // Refresh lease timestamp after all post-commit work to eliminate the yield-point
                 // race window introduced when drain_commit_actions became async.
                 if self.cluster_metadata.single_voter {
-                    self.update_lease_timestamp();
+                    // Single-voter: self is the entire quorum, no peer RTT to account for.
+                    self.update_lease_timestamp(
+                        now_ms(),
+                        ctx.node_config().raft.read_consistency.lease_duration_ms,
+                    );
                     self.drain_pending_lease_reads(ctx);
                 }
             }
@@ -1767,6 +1784,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             );
             self.update_current_term(response.term);
             self.drain_pending_writes_with_error(ErrorCode::TermOutdated);
+            // Revoke lease immediately — window-period fix (see VoteRequest branch).
+            self.shared_state.lease.revoke();
             self.send_become_follower_event(None, role_tx)?;
             return Err(ReplicationError::HigherTerm(response.term).into());
         }
@@ -1794,6 +1813,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 if term > leader_term {
                     self.update_current_term(term);
                     self.drain_pending_writes_with_error(ErrorCode::TermOutdated);
+                    // Revoke lease immediately — window-period fix (see VoteRequest branch).
+                    self.shared_state.lease.revoke();
                     self.send_become_follower_event(None, role_tx)?;
                     return Err(ReplicationError::HigherTerm(term).into());
                 }
@@ -1880,9 +1901,17 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 )
                 .is_some();
             if quorum_confirmed {
-                // Refresh after all post-commit work to eliminate the yield-point race window
-                // introduced when drain_commit_actions became async.
-                self.update_lease_timestamp();
+                // Anchor deadline to send time (not ACK time) to eliminate the RTT/2 window.
+                // Falls back to now_ms() only in tests that bypass execute_and_process_raft_rpc.
+                let send_ts = if self.last_heartbeat_send_ts > 0 {
+                    self.last_heartbeat_send_ts
+                } else {
+                    now_ms()
+                };
+                self.update_lease_timestamp(
+                    send_ts,
+                    ctx.node_config().raft.read_consistency.lease_duration_ms,
+                );
                 self.drain_pending_lease_reads(ctx);
                 // Path A drain (Bug #381 fix): serve linearizable reads that have been
                 // waiting for quorum confirmation. Pure-read batches never advance
@@ -3115,10 +3144,10 @@ impl<T: TypeConfig> LeaderState<T> {
             scheduled_purge_upto: None,
             last_purged_index: None, //TODO
             last_learner_check: Instant::now(),
+            last_heartbeat_send_ts: 0,
             snapshot_in_progress: AtomicBool::new(false),
             stale_check_deadline: None,
             pending_promotions: VecDeque::new(),
-            lease_instant: Mutex::new(None),
             linearizable_read_buffer: Box::new(BatchBuffer::new(batch_size).with_length_gauge(
                 node_id,
                 "linearizable",
@@ -3289,7 +3318,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // Step 6: Reschedule if any pending promotions remain
         if !self.pending_promotions.is_empty() {
             debug!(
-                "[Leader {}] 🔁 Re-sending PromoteReadyLearners for remaining pending: {:?}",
+                "[Leader {}] Re-sending PromoteReadyLearners for remaining pending: {:?}",
                 self.node_id(),
                 self.pending_promotions.iter().map(|p| p.node_id).collect::<Vec<_>>()
             );
@@ -3383,6 +3412,11 @@ impl<T: TypeConfig> LeaderState<T> {
             payload_count = payloads.len(),
         );
 
+        // Phase 0: Record send timestamp before any AppendEntries RPC goes out.
+        // handle_append_result uses this to anchor deadline to send time (not ACK time),
+        // ensuring lease expires at send_ts + lease_duration_ms rather than ack_ts + lease_duration_ms.
+        self.last_heartbeat_send_ts = now_ms();
+
         // Phase 1: write entries to local log + prepare per-peer requests (serial in Raft loop).
         let requests = match ctx
             .replication_handler()
@@ -3467,7 +3501,7 @@ impl<T: TypeConfig> LeaderState<T> {
         if let Some(read_batch) = read_batch {
             let read_index = self.calculate_read_index();
             let last_applied = ctx.state_machine().last_applied().index;
-            if (self.cluster_metadata.single_voter || self.is_lease_valid(ctx))
+            if (self.cluster_metadata.single_voter || self.is_lease_valid())
                 && last_applied >= read_index
             {
                 self.execute_pending_reads(read_batch, ctx);
@@ -3712,22 +3746,25 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Returns true if the leader's lease is still within its validity window.
     ///
     /// Uses a monotonic `Instant` so NTP clock adjustments cannot extend the lease.
-    /// Returns false if no quorum ACK has been received yet (lease_instant is None).
-    pub fn is_lease_valid(
-        &self,
-        ctx: &RaftContext<T>,
-    ) -> bool {
-        let lease_duration_ms = ctx.node_config().raft.read_consistency.lease_duration_ms;
-        match *self.lease_instant.lock().expect("lease_instant poisoned") {
-            Some(t) => (t.elapsed().as_millis() as u64) < lease_duration_ms,
-            None => false,
-        }
+    /// Returns true iff this leader holds a valid quorum-backed lease.
+    /// Uses a single atomic load (~4 ns) — no mutex, no lock contention.
+    pub fn is_lease_valid(&self) -> bool {
+        self.shared_state.lease.is_valid_for_leader(self.current_term(), now_ms())
     }
 
-    /// Records the current monotonic instant as the last quorum-confirmed timestamp.
-    /// Called after every quorum ACK (handle_append_result, handle_log_flushed).
-    fn update_lease_timestamp(&self) {
-        *self.lease_instant.lock().expect("lease_instant poisoned") = Some(Instant::now());
+    /// Renews the lease after every quorum ACK (handle_append_result, handle_log_flushed).
+    ///
+    /// `send_ts` is the timestamp recorded just before the heartbeat was sent.
+    /// Using send_ts (not now_ms()) eliminates the RTT/2 window:
+    ///   deadline = send_ts + lease_duration_ms  ≤  follower's election timer start + election_timeout
+    /// Single-voter callers pass now_ms() directly (no peer RTT to account for).
+    fn update_lease_timestamp(
+        &self,
+        send_ts: u64,
+        lease_duration_ms: u64,
+    ) {
+        let deadline = send_ts.saturating_add(lease_duration_ms);
+        self.shared_state.lease.renew(self.current_term(), deadline);
     }
 
     /// Unified write + linearizable read: single RPC for both (2*RTT → 1*RTT).
@@ -3805,7 +3842,18 @@ impl<T: TypeConfig> LeaderState<T> {
 
     #[cfg(test)]
     pub(crate) fn test_update_lease_timestamp(&mut self) {
-        self.update_lease_timestamp();
+        // Renew with a generous 60-second deadline so tests don't flake on slow CI.
+        let deadline = now_ms().saturating_add(60_000);
+        self.shared_state.lease.renew(self.current_term(), deadline);
+    }
+
+    /// Test helper: renew lease from an explicit send_ts (RTT/2 fix path).
+    #[cfg(test)]
+    pub(crate) fn test_renew_lease_from_send_ts(
+        &mut self,
+        lease_duration_ms: u64,
+    ) {
+        self.update_lease_timestamp(self.last_heartbeat_send_ts, lease_duration_ms);
     }
 
     /// Returns the current match_index for `peer_id`, or 0 if not yet tracked.
@@ -3886,7 +3934,7 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
-        if self.is_lease_valid(ctx) {
+        if self.is_lease_valid() {
             // Lease valid - serve immediately
             let results = ctx
                 .handlers
@@ -3898,8 +3946,11 @@ impl<T: TypeConfig> LeaderState<T> {
         } else {
             // Lease expired - need to confirm leadership before serving.
             if self.cluster_metadata.single_voter {
-                // Single-voter: self is the entire quorum, refresh immediately and serve.
-                self.update_lease_timestamp();
+                // Single-voter: self is the entire quorum, no peer RTT to account for.
+                self.update_lease_timestamp(
+                    now_ms(),
+                    ctx.node_config().raft.read_consistency.lease_duration_ms,
+                );
                 let results = ctx
                     .handlers
                     .state_machine_handler
@@ -3987,6 +4038,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             scheduled_purge_upto: None,
             last_purged_index: candidate.last_purged_index,
             last_learner_check: Instant::now(),
+            last_heartbeat_send_ts: 0,
             snapshot_in_progress: AtomicBool::new(false),
             stale_check_deadline: None,
             pending_promotions: VecDeque::new(),
@@ -3995,7 +4047,6 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
                 total_voters: 0,
                 replication_targets: vec![],
             },
-            lease_instant: Mutex::new(None),
             linearizable_read_buffer: Box::new(
                 BatchBuffer::new(candidate.node_config.raft.batching.max_batch_size)
                     .with_length_gauge(

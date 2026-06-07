@@ -46,6 +46,7 @@ use d_engine_core::Membership;
 use d_engine_core::Raft;
 use d_engine_core::RaftEvent;
 use d_engine_core::RaftNodeConfig;
+use d_engine_core::ReadLease;
 use d_engine_core::Result;
 use d_engine_core::TypeConfig;
 use d_engine_core::alias::MOF;
@@ -113,6 +114,10 @@ where
     /// ensuring `Arc<DB>` is released before run() returns.
     pub(crate) sm_worker_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 
+    /// ReadActor task handle. Aborted in run() after sm_worker exits so that the
+    /// `Arc<SM>` (and the RocksDB LOCK) is released before run() returns.
+    pub(crate) read_actor_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+
     /// Commit handler task handle (background log application)
     pub(crate) _commit_handler_handle: Option<tokio::task::JoinHandle<()>>,
 
@@ -121,6 +126,12 @@ where
 
     /// Shutdown signal for graceful termination
     pub(crate) shutdown_signal: watch::Receiver<()>,
+
+    /// Read lease — same Arc as the one inside SharedState, exposed for EmbeddedClient.
+    pub(crate) read_lease: Arc<ReadLease>,
+
+    /// Fast-path read routing. Always set; `read_tx = None` means no ReadActor.
+    pub(crate) read_handle: crate::api::StandaloneReadHandle,
 }
 
 impl<T> Debug for Node<T>
@@ -181,6 +192,14 @@ where
             })
             .await
             .ok();
+        }
+
+        // Abort ReadActor after sm_worker exits so Arc<SM> ref-count goes to zero
+        // and RocksDB LOCK is released before run() returns.
+        let ra_handle = self.read_actor_handle.lock().unwrap().take();
+        if let Some(ra_handle) = ra_handle {
+            ra_handle.abort();
+            let _ = ra_handle.await;
         }
 
         Ok(())
@@ -326,5 +345,20 @@ where
     /// which Raft node is handling operations.
     pub fn node_id(&self) -> u32 {
         self.node_id
+    }
+
+    /// Returns a clone of the read lease handle.
+    ///
+    /// The returned `Arc<ReadLease>` is the same object held inside the Raft loop's
+    /// `SharedState`. EmbeddedClient uses it to check lease validity without going
+    /// through `cmd_tx`.
+    pub fn read_lease(&self) -> Arc<ReadLease> {
+        Arc::clone(&self.read_lease)
+    }
+
+    /// Returns the current Raft term from the hard state.
+    /// Used to seed `EmbeddedClient::known_term` at startup.
+    pub async fn current_term(&self) -> u64 {
+        self.raft_core.lock().await.current_term()
     }
 }

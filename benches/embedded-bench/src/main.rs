@@ -1,4 +1,4 @@
-use d_engine::EmbeddedEngine;
+use d_engine::DefaultEmbeddedEngine;
 use d_engine::protocol::ReadConsistencyPolicy;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -202,7 +202,7 @@ async fn main() {
 /// Run a single benchmark test with specified parameters
 #[allow(clippy::too_many_arguments)]
 async fn run_benchmark_task(
-    engine: &Arc<EmbeddedEngine>,
+    engine: &Arc<DefaultEmbeddedEngine>,
     test_name: &str,
     command: Commands,
     total: u64,
@@ -294,7 +294,7 @@ async fn run_benchmark_task(
 
 /// Run all benchmark tests in batch mode
 async fn run_batch_tests(
-    engine: &Arc<EmbeddedEngine>,
+    engine: &Arc<DefaultEmbeddedEngine>,
     cli: &Cli,
 ) {
     println!("\n╔════════════════════════════════════════╗");
@@ -420,7 +420,7 @@ async fn run_batch_tests(
 
 /// Helper function to run a single test in batch mode
 async fn run_single_batch_test(
-    engine: &Arc<EmbeddedEngine>,
+    engine: &Arc<DefaultEmbeddedEngine>,
     test_name: &str,
     command: Commands,
     total: u64,
@@ -447,7 +447,7 @@ async fn run_local_benchmark(cli: Cli) {
     println!("Starting local benchmark mode...");
 
     let engine = Arc::new(
-        EmbeddedEngine::start_with(&cli.config_path)
+        DefaultEmbeddedEngine::start_with(&cli.config_path)
             .await
             .expect("Failed to start engine"),
     );
@@ -673,7 +673,7 @@ async fn run_http_server(cli: Cli) {
     println!("Health check port: {}", cli.health_port);
 
     let engine = Arc::new(
-        EmbeddedEngine::start_with(&cli.config_path)
+        DefaultEmbeddedEngine::start_with(&cli.config_path)
             .await
             .expect("Failed to start engine"),
     );
@@ -701,7 +701,7 @@ async fn run_http_server(cli: Cli) {
 }
 
 async fn start_health_check_server(
-    engine: Arc<EmbeddedEngine>,
+    engine: Arc<DefaultEmbeddedEngine>,
     port: u16,
 ) {
     let app = Router::new()
@@ -718,7 +718,7 @@ async fn start_health_check_server(
     axum::serve(listener, app).await.expect("Health check server failed");
 }
 
-async fn health_primary(State(engine): State<Arc<EmbeddedEngine>>) -> StatusCode {
+async fn health_primary(State(engine): State<Arc<DefaultEmbeddedEngine>>) -> StatusCode {
     if engine.is_leader() {
         StatusCode::OK
     } else {
@@ -726,7 +726,7 @@ async fn health_primary(State(engine): State<Arc<EmbeddedEngine>>) -> StatusCode
     }
 }
 
-async fn health_replica(State(engine): State<Arc<EmbeddedEngine>>) -> StatusCode {
+async fn health_replica(State(engine): State<Arc<DefaultEmbeddedEngine>>) -> StatusCode {
     if !engine.is_leader() {
         StatusCode::OK
     } else {
@@ -735,7 +735,7 @@ async fn health_replica(State(engine): State<Arc<EmbeddedEngine>>) -> StatusCode
 }
 
 async fn start_business_server(
-    engine: Arc<EmbeddedEngine>,
+    engine: Arc<DefaultEmbeddedEngine>,
     port: u16,
 ) {
     let app = Router::new()
@@ -753,7 +753,7 @@ async fn start_business_server(
 }
 
 async fn handle_put(
-    State(engine): State<Arc<EmbeddedEngine>>,
+    State(engine): State<Arc<DefaultEmbeddedEngine>>,
     Json(req): Json<PutRequest>,
 ) -> StatusCode {
     match engine.client().put(req.key.into_bytes(), req.value.into_bytes()).await {
@@ -763,7 +763,7 @@ async fn handle_put(
 }
 
 async fn handle_get(
-    State(engine): State<Arc<EmbeddedEngine>>,
+    State(engine): State<Arc<DefaultEmbeddedEngine>>,
     Path(key): Path<String>,
 ) -> Result<Json<GetResponse>, StatusCode> {
     match engine.client().get_eventual(key.into_bytes()).await {

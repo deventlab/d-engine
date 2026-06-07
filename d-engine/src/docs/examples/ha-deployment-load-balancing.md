@@ -159,7 +159,7 @@ Each node exposes two health endpoints:
 **Implementation** (from example code):
 
 ```rust,ignore
-async fn health_primary(State(engine): State<Arc<EmbeddedEngine>>) -> StatusCode {
+async fn health_primary(State(engine): State<Arc<DefaultEmbeddedEngine>>) -> StatusCode {
     if engine.is_leader() {
         StatusCode::OK
     } else {

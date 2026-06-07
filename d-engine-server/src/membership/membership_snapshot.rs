@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 /// A point-in-time snapshot of committed cluster membership.
 ///
-/// Delivered via [`crate::EmbeddedEngine::watch_membership`] whenever a `ConfChange`
+/// Delivered via `EmbeddedEngine::watch_membership` whenever a `ConfChange`
 /// entry commits.  The snapshot reflects the membership state **after** the
 /// change has been applied, so `borrow()` always returns a consistent view.
 ///

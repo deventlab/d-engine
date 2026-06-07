@@ -1,8 +1,8 @@
-//! Integration tests for configuration loading with EmbeddedEngine.
+//! Integration tests for configuration loading with DefaultEmbeddedEngine.
 //!
 //! Verifies the bug fix for start_with() failing when CONFIG_PATH env is not set.
 
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use std::io::Write;
 use std::time::Duration;
 
@@ -38,7 +38,7 @@ status = 3
     drop(file);
 
     // Core test: start_with should work without CONFIG_PATH env var
-    let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
         .expect("Should start without CONFIG_PATH env");
 

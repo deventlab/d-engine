@@ -8,7 +8,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use d_engine::{ClientApiError, EmbeddedEngine, ErrorCode};
+use d_engine::{ClientApiError, DefaultEmbeddedEngine, ErrorCode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -60,7 +60,7 @@ async fn main() {
     // d-engine Integration (Start & Wait for Leader Election)
     // ============================================================
     let engine = Arc::new(
-        EmbeddedEngine::start_with(&cli.config_path)
+        DefaultEmbeddedEngine::start_with(&cli.config_path)
             .await
             .expect("Failed to start engine"),
     );
@@ -135,7 +135,7 @@ async fn main() {
 }
 
 async fn start_health_check_server(
-    engine: Arc<EmbeddedEngine>,
+    engine: Arc<DefaultEmbeddedEngine>,
     port: u16,
     mut shutdown_rx: watch::Receiver<()>,
 ) {
@@ -158,7 +158,7 @@ async fn start_health_check_server(
         .expect("Health check server failed");
 }
 
-async fn health_primary(State(engine): State<Arc<EmbeddedEngine>>) -> StatusCode {
+async fn health_primary(State(engine): State<Arc<DefaultEmbeddedEngine>>) -> StatusCode {
     if engine.is_leader() {
         StatusCode::OK
     } else {
@@ -166,7 +166,7 @@ async fn health_primary(State(engine): State<Arc<EmbeddedEngine>>) -> StatusCode
     }
 }
 
-async fn health_replica(State(engine): State<Arc<EmbeddedEngine>>) -> StatusCode {
+async fn health_replica(State(engine): State<Arc<DefaultEmbeddedEngine>>) -> StatusCode {
     if !engine.is_leader() {
         StatusCode::OK
     } else {
@@ -175,7 +175,7 @@ async fn health_replica(State(engine): State<Arc<EmbeddedEngine>>) -> StatusCode
 }
 
 async fn start_business_server(
-    engine: Arc<EmbeddedEngine>,
+    engine: Arc<DefaultEmbeddedEngine>,
     port: u16,
     mut shutdown_rx: watch::Receiver<()>,
 ) {
@@ -203,7 +203,7 @@ fn is_not_leader(e: &ClientApiError) -> bool {
 }
 
 async fn handle_put(
-    State(engine): State<Arc<EmbeddedEngine>>,
+    State(engine): State<Arc<DefaultEmbeddedEngine>>,
     Json(req): Json<PutRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match engine.client().put(req.key.into_bytes(), req.value.into_bytes()).await {
@@ -223,7 +223,7 @@ async fn handle_put(
 }
 
 async fn handle_get(
-    State(engine): State<Arc<EmbeddedEngine>>,
+    State(engine): State<Arc<DefaultEmbeddedEngine>>,
     Path(key): Path<String>,
 ) -> Result<Json<GetResponse>, StatusCode> {
     match engine.client().get_eventual(key.into_bytes()).await {

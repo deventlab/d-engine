@@ -467,15 +467,51 @@ where
                 "Unknown consistency_policy value received, degrading to cluster default"
             );
         }
+
+        let timeout_duration =
+            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         let core_req = proto_convert::to_core_read_req(proto_req);
+
+        // Fast path: Eventual/LeaseRead → ReadHandle (ReadActor + cmd_tx fallback).
+        {
+            use d_engine_core::client::ClientApiError;
+            use d_engine_core::config::ReadConsistencyPolicy;
+            if let Some(ref policy) = core_req.consistency_policy
+                && matches!(
+                    policy,
+                    ReadConsistencyPolicy::EventualConsistency | ReadConsistencyPolicy::LeaseRead
+                )
+            {
+                return match self
+                    .read_handle
+                    .get_batch(
+                        &core_req.keys,
+                        policy.clone(),
+                        core_req.client_id,
+                        timeout_duration,
+                    )
+                    .await
+                {
+                    Ok(values) => Ok(tonic::Response::new(
+                        proto_convert::fast_path_batch_read_response(&core_req.keys, values),
+                    )),
+                    Err(ClientApiError::Business { message, .. }) => Err(Status::internal(message)),
+                    Err(ClientApiError::Network { message, .. }) => {
+                        Err(Status::unavailable(message))
+                    }
+                    Err(other) => Err(Status::internal(format!("{other:?}"))),
+                };
+            }
+        }
+
+        // cmd_tx path: Linearizable or unrecognized policy.
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-        self.cmd_tx
+        self.read_handle
+            .cmd_tx
             .send(d_engine_core::ClientCmd::Read(core_req, resp_tx))
             .await
             .map_err(|_| Status::internal("Command channel closed"))?;
 
-        let timeout_duration =
-            Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
         handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read")
             .await
             .map(|resp| resp.map(proto_convert::to_proto_response))

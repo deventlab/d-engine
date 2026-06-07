@@ -93,6 +93,12 @@ impl StateMachine for SledStateMachine {
         Ok(())
     }
 
+    fn close_storage(&self) {
+        self.is_serving.store(false, Ordering::Release);
+        // Flush pending sled writes. The sled::Db is released when SledStateMachine drops.
+        let _ = self.db.load().flush();
+    }
+
     fn stop(&self) -> Result<()> {
         debug!("stop state machine");
         self.is_serving.store(false, Ordering::Release);

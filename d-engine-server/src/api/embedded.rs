@@ -122,6 +122,8 @@
 //!
 //! For auto-forwarding with gRPC overhead, use standalone mode with `GrpcClient`.
 
+use super::embedded_client::EmbeddedClient;
+use super::embedded_read_handle::EmbeddedReadHandle;
 use crate::Result;
 #[cfg(feature = "rocksdb")]
 use crate::RocksDBStateMachine;
@@ -131,8 +133,10 @@ use crate::RocksDBStorageEngine;
 use crate::RocksDBUnifiedEngine;
 use crate::StateMachine;
 use crate::StorageEngine;
-use crate::api::EmbeddedClient;
 use crate::node::NodeBuilder;
+use crate::node::RaftTypeConfig;
+use d_engine_core::TypeConfig;
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -141,10 +145,13 @@ use tokio::task::JoinHandle;
 use tracing::error;
 use tracing::info;
 
-struct Inner {
+struct Inner<T: TypeConfig> {
+    /// SM reference for shutdown: close_storage() releases OS resources (e.g. RocksDB LOCK)
+    /// before the Raft loop exits, without waiting for all Arc<SM> clones to drop.
+    sm: Arc<T::SM>,
     node_handle: Mutex<Option<JoinHandle<Result<()>>>>,
     shutdown_tx: watch::Sender<()>,
-    client: Arc<EmbeddedClient>,
+    client: Arc<EmbeddedClient<T>>,
     leader_elected_rx: watch::Receiver<Option<crate::LeaderInfo>>,
     membership_rx: watch::Receiver<crate::membership::MembershipSnapshot>,
     is_stopped: Mutex<bool>,
@@ -175,12 +182,22 @@ struct Inner {
 ///
 /// engine.stop().await?;
 /// ```
-#[derive(Clone)]
-pub struct EmbeddedEngine {
-    inner: Arc<Inner>,
+pub struct EmbeddedEngine<T: TypeConfig> {
+    inner: Arc<Inner<T>>,
 }
 
-impl EmbeddedEngine {
+impl<T: TypeConfig> Clone for EmbeddedEngine<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+// ─── RocksDB default start ───────────────────────────────────────────────────
+
+#[cfg(feature = "rocksdb")]
+impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
     /// Start engine with an explicit data directory.
     ///
     /// `data_dir` has highest priority and always overrides `cluster.db_root_dir` from
@@ -199,7 +216,6 @@ impl EmbeddedEngine {
     /// // Works with any AsRef<Path>
     /// let engine = EmbeddedEngine::start(std::path::Path::new("/var/lib/my-app")).await?;
     /// ```
-    #[cfg(feature = "rocksdb")]
     pub async fn start(data_dir: impl AsRef<std::path::Path>) -> Result<Self> {
         let mut config = d_engine_core::RaftNodeConfig::new()?;
         config.cluster.db_root_dir = data_dir.as_ref().to_path_buf();
@@ -227,7 +243,7 @@ impl EmbeddedEngine {
             (storage, sm)
         };
 
-        let lease = Arc::new(crate::storage::DefaultLease::new(
+        let lease = Arc::new(crate::storage::TtlLease::new(
             config.raft.state_machine.lease.clone(),
         ));
         sm.set_lease(lease);
@@ -248,7 +264,6 @@ impl EmbeddedEngine {
     /// let engine = EmbeddedEngine::start_with("config/node1.toml").await?;
     /// engine.wait_ready(Duration::from_secs(5)).await?;
     /// ```
-    #[cfg(feature = "rocksdb")]
     pub async fn start_with(config_path: &str) -> Result<Self> {
         let config = d_engine_core::RaftNodeConfig::new()?
             .with_override_config(config_path)?
@@ -276,14 +291,22 @@ impl EmbeddedEngine {
             (storage, sm)
         };
 
-        let lease = Arc::new(crate::storage::DefaultLease::new(
+        let lease = Arc::new(crate::storage::TtlLease::new(
             config.raft.state_machine.lease.clone(),
         ));
         sm.set_lease(lease);
 
         Self::start_custom(Arc::new(storage), Arc::new(sm), Some(config_path)).await
     }
+}
 
+// ─── Custom SE/SM: start_custom + start_node ─────────────────────────────────
+
+impl<SE, SM> EmbeddedEngine<RaftTypeConfig<SE, SM>>
+where
+    SE: StorageEngine + Debug + 'static,
+    SM: StateMachine + Debug + 'static,
+{
     /// Start engine with custom storage and state machine.
     ///
     /// Advanced API for users providing custom storage implementations.
@@ -299,15 +322,11 @@ impl EmbeddedEngine {
     /// let sm = Arc::new(MyCustomStateMachine::new()?);
     /// let engine = EmbeddedEngine::start_custom(storage, sm, None).await?;
     /// ```
-    pub async fn start_custom<SE, SM>(
+    pub async fn start_custom(
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
         config_path: Option<&str>,
-    ) -> Result<Self>
-    where
-        SE: StorageEngine + std::fmt::Debug + 'static,
-        SM: StateMachine + std::fmt::Debug + 'static,
-    {
+    ) -> Result<Self> {
         let node_config = if let Some(path) = config_path {
             d_engine_core::RaftNodeConfig::default()
                 .with_override_config(path)?
@@ -320,18 +339,22 @@ impl EmbeddedEngine {
     }
 
     /// Build and launch the node from a validated config and pre-built storage.
-    async fn start_node<SE, SM>(
+    async fn start_node(
         node_config: d_engine_core::RaftNodeConfig,
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
-    ) -> Result<Self>
-    where
-        SE: StorageEngine + std::fmt::Debug + 'static,
-        SM: StateMachine + std::fmt::Debug + 'static,
-    {
+    ) -> Result<Self> {
         info!("Starting embedded d-engine");
+        d_engine_core::init_clock();
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
+
+        // Clone SM before NodeBuilder consumes it — EmbeddedReadHandle holds this
+        // for the direct-SM fast path. LOCK release is decoupled from Arc<SM> counting
+        // (via close_db()), so holding multiple Arc<SM> clones is safe.
+        let sm_for_client = Arc::clone(&state_machine);
+
+        let sm_for_engine = Arc::clone(&state_machine);
 
         let node = NodeBuilder::init(node_config, shutdown_rx)
             .storage_engine(storage_engine)
@@ -342,27 +365,27 @@ impl EmbeddedEngine {
         let leader_elected_rx = node.leader_change_notifier();
         let membership_rx = node.membership_change_notifier();
 
-        #[cfg(not(feature = "watch"))]
-        let client = Arc::new(EmbeddedClient::new_internal(
-            node.event_tx.clone(),
-            node.cmd_tx.clone(),
-            node.node_id,
-            Duration::from_millis(node.node_config.raft.general_raft_timeout_duration_in_ms),
-        ));
+        let read_handle =
+            EmbeddedReadHandle::new(sm_for_client, node.read_lease(), node.cmd_tx.clone());
 
-        #[cfg(feature = "watch")]
         let client = {
-            let watch_registry = node.watch_registry.clone();
-            let mut client = EmbeddedClient::new_internal(
+            let base = EmbeddedClient::new_internal(
                 node.event_tx.clone(),
-                node.cmd_tx.clone(),
+                read_handle,
                 node.node_id,
                 Duration::from_millis(node.node_config.raft.general_raft_timeout_duration_in_ms),
             );
-            if let Some(registry) = &watch_registry {
-                client = client.with_watch_registry(registry.clone());
-            }
-            Arc::new(client)
+
+            #[cfg(feature = "watch")]
+            let base = {
+                let mut c = base;
+                if let Some(registry) = &node.watch_registry {
+                    c = c.with_watch_registry(registry.clone());
+                }
+                c
+            };
+
+            Arc::new(base)
         };
 
         let node_id = node.node_id();
@@ -380,6 +403,7 @@ impl EmbeddedEngine {
 
         Ok(Self {
             inner: Arc::new(Inner {
+                sm: sm_for_engine,
                 node_handle: Mutex::new(Some(node_handle)),
                 shutdown_tx,
                 client,
@@ -390,7 +414,11 @@ impl EmbeddedEngine {
             }),
         })
     }
+}
 
+// ─── General API (all TypeConfig) ────────────────────────────────────────────
+
+impl<T: TypeConfig> EmbeddedEngine<T> {
     /// Wait until the cluster is ready to serve requests.
     ///
     /// Blocks until a leader has been elected **and** its no-op entry is committed
@@ -590,7 +618,7 @@ impl EmbeddedEngine {
     /// let client = engine.client();
     /// client.put(b"key", b"value").await?;
     /// ```
-    pub fn client(&self) -> Arc<EmbeddedClient> {
+    pub fn client(&self) -> Arc<EmbeddedClient<T>> {
         Arc::clone(&self.inner.client)
     }
 
@@ -619,7 +647,12 @@ impl EmbeddedEngine {
 
         info!("Stopping embedded d-engine");
 
-        // Send shutdown signal
+        // Close SM storage resources first (releases RocksDB LOCK immediately).
+        // Must happen before the Raft loop exits so the LOCK is freed before any
+        // subsequent engine restart on the same data directory.
+        self.inner.sm.close_storage();
+
+        // Send shutdown signal to Raft node
         let _ = self.inner.shutdown_tx.send(());
 
         // Wait for node task to complete
@@ -661,7 +694,7 @@ impl EmbeddedEngine {
     }
 }
 
-impl Drop for EmbeddedEngine {
+impl<T: TypeConfig> Drop for EmbeddedEngine<T> {
     fn drop(&mut self) {
         // Warn if stop() was not called
         if let Ok(handle) = self.inner.node_handle.try_lock()
@@ -672,3 +705,7 @@ impl Drop for EmbeddedEngine {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "embedded_test/mod.rs"]
+mod tests;

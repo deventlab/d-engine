@@ -85,6 +85,17 @@ pub trait StateMachine: Send + Sync + 'static {
     /// This is typically a sync operation for state management.
     fn stop(&self) -> Result<(), Error>;
 
+    /// Permanently close underlying storage resources (e.g. DB handle, file descriptors).
+    ///
+    /// Called by `EmbeddedEngine::stop()` before the Raft loop exits to release
+    /// OS-level resources (e.g. RocksDB LOCK file) without waiting for all
+    /// `Arc<SM>` clones to drop.
+    ///
+    /// Default is a no-op — custom state machine implementations do not need to
+    /// override this unless they hold exclusive OS resources that must be released
+    /// before the process exits or a new engine instance is started.
+    fn close_storage(&self) {}
+
     /// Checks if the state machine is currently running.
     /// Sync operation as it just checks an atomic boolean.
     fn is_running(&self) -> bool;
@@ -95,6 +106,46 @@ pub trait StateMachine: Send + Sync + 'static {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error>;
+
+    /// Retrieves multiple values by key from the state machine in a single call.
+    ///
+    /// # Why this belongs in the protocol layer
+    ///
+    /// `get()` is already part of the protocol interface because the ReadActor hot path
+    /// requires direct SM access. `get_multi` is its natural batch extension — the same
+    /// reasoning applies. An Iterator's `fold` has a default impl; `Vec` overrides it for
+    /// performance. Users don't need to know which path executes.
+    ///
+    /// # Read coherence requirement
+    ///
+    /// The consistency unit is the **request**, not the key. All returned values must
+    /// come from the same applied state. A torn read — key A from apply index 100,
+    /// key B from apply index 105 — is a correctness violation in coordinator workloads:
+    ///
+    /// - Service registry: addr=v2 + version=v2.2 routes traffic to the wrong instance
+    /// - Leader election: leader=node-3 + term=43 is a phantom state that never existed
+    /// - Quota management: used=850 with a reset window_start blocks valid requests
+    ///
+    /// etcd (Range + MVCC), TiKV RawKV (BatchGet + RocksDB snapshot), and Consul stale
+    /// reads all guarantee snapshot consistency even in eventual/stale modes.
+    ///
+    /// # Default implementation
+    ///
+    /// Calls `get()` sequentially. Correct when the caller holds no write locks, but
+    /// does not guarantee snapshot isolation under concurrent writes. Override in
+    /// implementations that support it (RocksDB `db.snapshot()`, FileStateMachine
+    /// read-lock held for the full batch).
+    ///
+    /// # Position contract
+    ///
+    /// `result[i]` corresponds to `keys[i]`. Missing keys produce `None` at their
+    /// position; the result length always equals `keys.len()`.
+    fn get_multi(
+        &self,
+        keys: &[Bytes],
+    ) -> Result<Vec<Option<Bytes>>, Error> {
+        keys.iter().map(|k| self.get(k)).collect()
+    }
 
     /// Returns the term of a specific log entry by its ID.
     /// Sync operation as it queries in-memory data.

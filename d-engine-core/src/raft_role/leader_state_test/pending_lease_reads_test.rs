@@ -166,10 +166,7 @@ async fn test_lease_read_expired_pushes_to_pending_lease_reads() {
     )
     .await;
 
-    assert!(
-        !state.is_lease_valid(&context),
-        "precondition: lease expired"
-    );
+    assert!(!state.is_lease_valid(), "precondition: lease expired");
 
     let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
     state.push_client_cmd(make_lease_read_cmd(resp_tx), &context);
@@ -292,10 +289,7 @@ async fn test_single_voter_lease_read_served_immediately_on_expired_lease() {
         state.cluster_metadata.single_voter,
         "precondition: single-voter"
     );
-    assert!(
-        !state.is_lease_valid(&context),
-        "precondition: lease expired"
-    );
+    assert!(!state.is_lease_valid(), "precondition: lease expired");
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();

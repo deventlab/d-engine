@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
@@ -19,7 +19,7 @@ use tokio::time::Instant;
 use crate::common::get_available_ports;
 
 /// Helper to create a single-node test engine with embedded mode
-async fn create_test_engine(test_name: &str) -> (EmbeddedEngine, TempDir) {
+async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let db_path = temp_dir.path().join(test_name);
 
@@ -43,7 +43,7 @@ max_batch_size = 100
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
         .await
         .expect("Failed to start engine");
 

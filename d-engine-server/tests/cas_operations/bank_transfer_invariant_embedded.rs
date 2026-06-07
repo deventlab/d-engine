@@ -3,7 +3,7 @@
 use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
 use d_engine_server::RocksDBUnifiedEngine;
-use d_engine_server::api::EmbeddedEngine;
+use d_engine_server::api::DefaultEmbeddedEngine;
 use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
@@ -81,7 +81,7 @@ async fn test_concurrent_transfers_preserve_bank_invariant()
         let config_path = format!("/tmp/d-engine-bank-node{node_id}.toml");
         tokio::fs::write(&config_path, &config_str).await?;
 
-        let engine = EmbeddedEngine::start_custom(
+        let engine = DefaultEmbeddedEngine::start_custom(
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&config_path),

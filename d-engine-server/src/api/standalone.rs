@@ -68,7 +68,7 @@ impl StandaloneEngine {
             (storage, sm)
         };
 
-        let lease = Arc::new(crate::storage::DefaultLease::new(
+        let lease = Arc::new(crate::storage::TtlLease::new(
             config.raft.state_machine.lease.clone(),
         ));
         sm.set_lease(lease);
@@ -122,7 +122,7 @@ impl StandaloneEngine {
             (storage, sm)
         };
 
-        let lease = Arc::new(crate::storage::DefaultLease::new(
+        let lease = Arc::new(crate::storage::TtlLease::new(
             config.raft.state_machine.lease.clone(),
         ));
         sm.set_lease(lease);
@@ -187,3 +187,7 @@ impl StandaloneEngine {
         node.run().await
     }
 }
+
+#[cfg(test)]
+#[path = "standalone_test.rs"]
+mod tests;

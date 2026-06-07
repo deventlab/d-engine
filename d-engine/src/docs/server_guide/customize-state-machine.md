@@ -30,9 +30,20 @@ impl StateMachine for CustomStateMachine {
     }
 
     fn stop(&self) -> Result<(), Error> {
-        // Cleanup resources
+        // Graceful shutdown: stop accepting requests.
+        // Called by the Raft loop on shutdown. May be called multiple times.
         Ok(())
     }
+
+    // close_storage() has a default no-op implementation.
+    // Override ONLY if your backend holds an exclusive OS resource (e.g. a lock
+    // file or an open DB handle) that must be released immediately when
+    // EmbeddedEngine::stop() is called — without waiting for all Arc<SM> clones
+    // held by EmbeddedClient to drop.
+    //
+    // fn close_storage(&self) {
+    //     self.backend.close(); // release lock file / DB handle
+    // }
 
     fn is_running(&self) -> bool {
         // Return running status
@@ -104,7 +115,8 @@ impl StateMachine for CustomStateMachine {
 | Method                             | Purpose                            | Sync/Async | Criticality |
 | ---------------------------------- | ---------------------------------- | ---------- | ----------- |
 | `start()`                          | Initialize state machine service   | Sync       | High        |
-| `stop()`                           | Graceful shutdown                  | Sync       | High        |
+| `stop()`                           | Graceful shutdown (reversible)     | Sync       | High        |
+| `close_storage()`                  | Release exclusive OS resources (e.g. DB lock file). Default no-op — override only if needed. | Sync | Medium |
 | `is_running()`                     | Check service status               | Sync       | Medium      |
 | `get()`                            | Read value by key                  | Sync       | High        |
 | `entry_term()`                     | Get term for log index             | Sync       | Medium      |

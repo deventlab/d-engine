@@ -1,11 +1,11 @@
 //! ReadOnly Learner Node Embedded Mode Tests
 //!
-//! Tests whether d-engine's EmbeddedEngine supports permanent read-only Learner nodes.
+//! Tests whether d-engine's DefaultEmbeddedEngine supports permanent read-only Learner nodes.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_server::EmbeddedEngine;
+use d_engine_server::DefaultEmbeddedEngine;
 use d_engine_server::RocksDBUnifiedEngine;
 use serial_test::serial;
 use tracing::info;
@@ -22,7 +22,7 @@ const LOG_DIR: &str = "./logs/embedded/readonly";
 /// Test: Embedded Mode - ReadOnly Learner Node
 ///
 /// ## Integration Mode
-/// **Embedded**: Nodes in same process, client accesses via EmbeddedEngine API
+/// **Embedded**: Nodes in same process, client accesses via DefaultEmbeddedEngine API
 ///
 /// ## Test Purpose
 /// Verify that a Learner node with READ_ONLY status can be used as a permanent read-only node:
@@ -46,7 +46,7 @@ const LOG_DIR: &str = "./logs/embedded/readonly";
 /// ✓ Cluster remains stable with READ_ONLY Learner node present
 ///
 /// ## Note on Status Verification
-/// EmbeddedEngine currently does not expose Membership API to verify node status at runtime.
+/// DefaultEmbeddedEngine currently does not expose Membership API to verify node status at runtime.
 /// Data sync and replication verification serve as implicit proof that READ_ONLY protection
 /// is working correctly (nodes would be promoted if not protected).
 ///
@@ -98,9 +98,12 @@ general_raft_timeout_duration_in_ms = 5000
 
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
 
-    let engine1 =
-        EmbeddedEngine::start_custom(Arc::new(storage1), Arc::new(sm1), Some(node1_config_path))
-            .await?;
+    let engine1 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage1),
+        Arc::new(sm1),
+        Some(node1_config_path),
+    )
+    .await?;
 
     // Node 2 config
     let node2_config = format!(
@@ -131,9 +134,12 @@ general_raft_timeout_duration_in_ms = 5000
 
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
 
-    let engine2 =
-        EmbeddedEngine::start_custom(Arc::new(storage2), Arc::new(sm2), Some(node2_config_path))
-            .await?;
+    let engine2 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage2),
+        Arc::new(sm2),
+        Some(node2_config_path),
+    )
+    .await?;
 
     // Wait for cluster to be ready
     let leader1 = engine1.wait_ready(Duration::from_secs(5)).await?;
@@ -195,9 +201,12 @@ general_raft_timeout_duration_in_ms = 5000
 
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
 
-    let engine3 =
-        EmbeddedEngine::start_custom(Arc::new(storage3), Arc::new(sm3), Some(node3_config_path))
-            .await?;
+    let engine3 = DefaultEmbeddedEngine::start_custom(
+        Arc::new(storage3),
+        Arc::new(sm3),
+        Some(node3_config_path),
+    )
+    .await?;
     println!("         ✓ Node 3 process started");
 
     // Wait for learner to sync
@@ -256,13 +265,13 @@ general_raft_timeout_duration_in_ms = 5000
     println!("╔════════════════════════════════════════════════════════════╗");
     println!("║ TEST RESULTS: READONLY LEARNER (EMBEDDED MODE)            ║");
     println!("╠════════════════════════════════════════════════════════════╣");
-    println!("║ ✓ EmbeddedEngine supports Learner role configuration     ║");
+    println!("║ ✓ DefaultEmbeddedEngine supports Learner role configuration     ║");
     println!("║ ✓ READ_ONLY status (status=2) prevents auto-promotion   ║");
     println!("║ ✓ ReadOnly Learners sync data from cluster               ║");
     println!("║ ✓ ReadOnly Learners receive new writes (replication OK) ║");
     println!("║                                                            ║");
     println!("║ NOTE: Status verification requires Membership API         ║");
-    println!("║       (EmbeddedEngine does not expose it currently).      ║");
+    println!("║       (DefaultEmbeddedEngine does not expose it currently).      ║");
     println!("║       Data sync/replication serve as implicit proof.      ║");
     println!("║                                                            ║");
     println!("║ CONCLUSION: ReadOnly Learners are FULLY SUPPORTED ✅     ║");
