@@ -4,11 +4,6 @@
 //! never `last_entry_id` (in-memory). Covers both the single-voter fast path and
 //! the multi-voter quorum path. Fixed by ticket #329.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-
-use tokio::sync::{mpsc, watch};
-
 use crate::event::RoleEvent;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
@@ -18,9 +13,14 @@ use crate::test_utils::mock::{MockTypeConfig, mock_raft_context};
 use crate::{MockMembership, MockRaftLog, PeerUpdate, RaftRequestWithSignal};
 use bytes::Bytes;
 use d_engine_proto::common::{EntryPayload, LogId};
+use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
+use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::replication::append_entries_response;
 use d_engine_proto::server::replication::{AppendEntriesResponse, SuccessResult};
 use rand::distr::SampleString;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use tokio::sync::{mpsc, watch};
 
 fn success_response(
     term: u64,
@@ -186,8 +186,6 @@ async fn test_multi_voter_commit_respects_quorum_result() {
     let mut membership = crate::MockMembership::<MockTypeConfig>::new();
     membership.expect_is_single_node_cluster().returning(|| false);
     membership.expect_voters().returning(|| {
-        use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
-        use d_engine_proto::server::cluster::NodeMeta;
         vec![
             NodeMeta {
                 id: 2,

@@ -405,7 +405,7 @@ impl LogStore for RocksDBLogStore {
 
     fn is_write_durable(&self) -> bool {
         // Level 2 semantics: db.write() lands in OS page cache (not RocksDB internal buffer).
-        // Process crash: OS retains page cache → WAL replay on restart → full recovery. ✅
+        // Process crash: OS retains page cache → WAL replay on restart → full recovery.
         // Power loss:    OS page cache lost → data unrecoverable. ❌  (intentional trade-off)
         //
         // Returns true → advance_durable_and_notify fires immediately after persist_entries,

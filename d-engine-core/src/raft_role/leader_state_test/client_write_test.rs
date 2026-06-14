@@ -7,12 +7,14 @@ use crate::ApplyResult;
 use crate::ClientCmd;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
+use crate::PrepareResult;
 use crate::RaftRequestWithSignal;
 use crate::client::{ClientWriteRequest, WriteOperation};
 use crate::client_command_to_entry_payloads;
 use crate::event::{NewCommitData, RoleEvent};
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
+use crate::mock_raft_context;
 use crate::raft_context::RaftContext;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
@@ -21,9 +23,13 @@ use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::node_config;
 use bytes::Bytes;
 use d_engine_proto::common::AddNode;
+use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::common::membership_change::Change;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::replication::AppendEntriesRequest;
 use rand::distr::SampleString;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -1413,5 +1419,87 @@ async fn test_single_voter_client_write_completes_after_log_flushed() {
         client_response.error,
         crate::client::ErrorCode::Success,
         "client must receive Success error code"
+    );
+}
+
+// Test speculative next index logic
+// Criteria: new next_index should be pushed forward before receiving append result
+//
+#[tokio::test]
+async fn test_speculative_next_index_before_receiving_append_result() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let mut ctx = mock_raft_context(
+        "/tmp/test_speculative_next_index_before_receving_append_result",
+        graceful_rx,
+        None,
+    );
+
+    let mut membership = crate::MockMembership::<MockTypeConfig>::new();
+    membership.expect_is_single_node_cluster().returning(|| false);
+    membership.expect_voters().returning(|| {
+        vec![
+            NodeMeta {
+                id: 2,
+                address: "".into(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+            NodeMeta {
+                id: 3,
+                address: "".into(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+        ]
+    });
+    membership.expect_replication_peers().returning(Vec::new);
+    ctx.membership = Arc::new(membership);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 1);
+    raft_log.expect_durable_index().returning(|| 0);
+    // Quorum blocked: calculate_majority_matched_index returns None (leader durable=0)
+    raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+    assert!(!state.cluster_metadata.single_voter);
+
+    let follower_2_prev_log_index = 11;
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(move |_, _, _, _, _| {
+            Ok(PrepareResult {
+                append_requests: [(
+                    2,
+                    AppendEntriesRequest {
+                        term: 1,
+                        leader_id: 1,
+                        prev_log_index: follower_2_prev_log_index,
+                        prev_log_term: 1,
+                        entries: vec![Entry {
+                            index: 12,
+                            term: 1,
+                            payload: None,
+                        }],
+                        leader_commit_index: 3,
+                    },
+                )]
+                .to_vec(),
+                snapshot_targets: Vec::new(),
+            })
+        });
+
+    let (req, _rx) = write_request();
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    state.process_batch(VecDeque::from(vec![req]), &role_tx, &ctx).await.unwrap();
+    assert_eq!(
+        state.next_index(2),
+        Some(follower_2_prev_log_index + 1 + 1),
+        "follower(id=2) speculative next index is: prev_log_index + entries.len() + 1"
     );
 }
