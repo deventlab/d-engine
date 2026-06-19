@@ -395,9 +395,19 @@ where
     }
 
     async fn process_raft_events(&mut self) -> Result<()> {
-        self.merge_append_entries();
+        while !self.buffered_raft_event.is_empty() {
+            // Avoid none AE event pop and push into queue
+            if matches!(
+                self.buffered_raft_event.front(),
+                Some(RaftEvent::AppendEntries(..))
+            ) {
+                self.merge_append_entries();
+            }
 
-        while let Some(event) = self.buffered_raft_event.pop_front() {
+            let Some(event) = self.buffered_raft_event.pop_front() else {
+                break;
+            };
+
             #[cfg(test)]
             let test_event = raft_event_to_test_event(&event);
 
@@ -828,6 +838,9 @@ mod leader_discovered_tests;
 #[cfg(test)]
 #[path = "raft_test/merge_append_entries_tests.rs"]
 mod merge_append_entries_tests;
+#[cfg(test)]
+#[path = "raft_test/process_raft_events_tests.rs"]
+mod process_raft_events_tests;
 #[cfg(test)]
 #[path = "raft_test/raft_comprehensive_tests.rs"]
 mod raft_comprehensive_tests;
