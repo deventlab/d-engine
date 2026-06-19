@@ -388,7 +388,11 @@ where
     async fn process_role_events(&mut self) -> Result<()> {
         while let Some(event) = self.buffered_role_event.pop_front() {
             if let Err(e) = self.handle_role_event(event).await {
-                error!(%self.node_id, ?e, "drain_role_events: handle_role_event error");
+                if e.is_fatal() {
+                    error!(%self.node_id, ?e, "Fatal error in process_role_events, shutting down");
+                    return Err(e);
+                }
+                warn!(%self.node_id, ?e, "Non-fatal error in process_role_events, continuing");
             }
         }
         Ok(())

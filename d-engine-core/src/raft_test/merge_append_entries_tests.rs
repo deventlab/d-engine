@@ -852,7 +852,7 @@ fn test_max_merge_entries_limit_stops_merge() {
 
     let mut raft = MockBuilder::new(graceful_rx).with_node_config(node_config).build_raft();
     let mut queue = VecDeque::new();
-    for (prev, count, term) in [(9u64, 5, 6), (14, 5, 5)] {
+    for (prev, count, term) in [(9u64, 5, 6), (14, 5, 6)] {
         let request = make_request(term, prev, count, 1);
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
@@ -880,7 +880,7 @@ fn test_max_merge_entries_limit_stops_merge() {
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.prev_log_index, 14);
-            assert_eq!(request.term, 5);
+            assert_eq!(request.term, 6);
         }
         _ => panic!("expected RaftEvent::AppendEntries, got something else"),
     }

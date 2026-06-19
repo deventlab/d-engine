@@ -10,9 +10,10 @@
 //! Dispatch counts are asserted via mock `times(N)`:
 //! - `handle_append_entries.times(1)` proves two consecutive AEs were merged.
 //! - `handle_append_entries.times(2)` would prove they were dispatched separately.
-//! Mock expectations are verified on drop at the end of each test.
+//!   Mock expectations are verified on drop at the end of each test.
 
 use crate::AppendResponseWithUpdates;
+use crate::RoleEvent;
 use crate::StateUpdate;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
@@ -46,6 +47,13 @@ fn make_request(
 fn make_ae_event(req: AppendEntriesRequest) -> RaftEvent {
     let (tx, _rx) = MaybeCloneOneshot::new();
     RaftEvent::AppendEntries(req, vec![tx])
+}
+
+fn make_fatal_event() -> RoleEvent {
+    RoleEvent::FatalError {
+        source: "core".to_string(),
+        error: "fatal-error".to_string(),
+    }
 }
 
 fn make_vr_event() -> RaftEvent {
@@ -189,7 +197,7 @@ async fn test_all_non_ae_drain_no_merge_no_panic() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_append_entries()
-        .times(0) // ← 2 runs × 1 merged dispatch each = 2 total (not 4)
+        .times(0) //  ← no AE events, merge guard never triggers
         .returning(|_, _, _| Ok(ok_append_response()));
 
     let mut raft = MockBuilder::new(graceful_rx)
@@ -208,7 +216,7 @@ async fn test_all_non_ae_drain_no_merge_no_panic() {
 /// A single AE sandwiched between non-AE events is dispatched alone.
 /// Merge fires but finds no contiguous AE neighbour to coalesce.
 ///
-/// Buffer before: [AE(prev=9, 5 entries), VoteRequest, AE(prev=9, 5 entries)]
+/// Buffer before: [AE(prev=9, 5 entries), VoteRequest, AE(prev=14, 5 entries)]
 ///
 /// Expected dispatches:
 /// - handle_append_entries × 2   ← each AE alone, no merge opportunity
@@ -245,4 +253,33 @@ async fn test_isolated_ae_between_non_ae_dispatched_alone() {
     raft.buffered_raft_event = queue;
 
     raft.process_raft_events().await.unwrap();
+}
+
+// -----------------------------------------------------------------------
+// process_role_events error propagation
+// -----------------------------------------------------------------------
+
+/// A RoleEvent::FatalError in the buffer causes process_role_events to
+/// return Err immediately rather than swallowing the error and continuing.
+///
+/// This guards against the node silently continuing after a fatal signal
+/// (e.g. state machine worker crash).
+///
+/// Buffer before: [RoleEvent::FatalError { source: "sm_worker", error: "disk full" }]
+///
+/// Expected:
+/// - returns Err(e) where e.is_fatal() == true
+/// - does NOT return Ok(())
+#[tokio::test]
+async fn test_process_role_events_propagates_fatal_error() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    let mut queue = VecDeque::new();
+    queue.push_back(make_fatal_event());
+    raft.buffered_role_event = queue;
+
+    let err = raft.process_role_events().await.unwrap_err();
+    assert!(err.is_fatal());
 }
