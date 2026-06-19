@@ -319,7 +319,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 }
             }
 
-            RaftEvent::AppendEntries(append_entries_request, sender) => {
+            RaftEvent::AppendEntries(append_entries_request, senders) => {
                 debug!(
                     "handle_raft_event::RaftEvent::AppendEntries: {:?}",
                     &append_entries_request
@@ -349,7 +349,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     );
                     self.send_replay_raft_event(
                         &role_tx,
-                        RaftEvent::AppendEntries(append_entries_request, sender),
+                        RaftEvent::AppendEntries(append_entries_request, senders),
                     )?;
                 } else {
                     // request.term < my_term: stale leader, reject.
@@ -359,12 +359,14 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         ctx.raft_log(),
                     );
                     debug!("Rejecting AppendEntries from stale leader: {:?}", &response);
-                    if let Err(e) = sender.send(Ok(response)) {
-                        // Receiver timed out and dropped — this is normal, do not crash the node
-                        error!(
-                            "Failed to send AppendEntries rejection (receiver dropped): {:?}",
-                            e
-                        );
+                    for sender in senders {
+                        if let Err(e) = sender.send(Ok(response)) {
+                            // Receiver timed out and dropped — this is normal, do not crash the node
+                            error!(
+                                "Failed to send AppendEntries rejection (receiver dropped): {:?}",
+                                e
+                            );
+                        }
                     }
                 }
             }

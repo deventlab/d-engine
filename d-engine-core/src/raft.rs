@@ -27,6 +27,7 @@ use crate::Result;
 use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::TROF;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 pub struct Raft<T>
@@ -40,6 +41,7 @@ where
     // Network & Storage events
     event_tx: mpsc::Sender<RaftEvent>,
     event_rx: mpsc::Receiver<RaftEvent>,
+    buffered_raft_event: VecDeque<RaftEvent>,
 
     // Client commands (drain-driven)
     cmd_tx: mpsc::Sender<super::ClientCmd>,
@@ -48,6 +50,7 @@ where
     // Timer
     role_tx: mpsc::UnboundedSender<RoleEvent>,
     role_rx: mpsc::UnboundedReceiver<RoleEvent>,
+    buffered_role_event: VecDeque<RoleEvent>,
 
     // For business logic to apply logs into state machine
     new_commit_listener: Vec<mpsc::UnboundedSender<NewCommitData>>,
@@ -134,12 +137,14 @@ where
 
             event_tx: signal_params.event_tx,
             event_rx: signal_params.event_rx,
+            buffered_raft_event: VecDeque::new(),
 
             cmd_tx: signal_params.cmd_tx,
             cmd_rx: signal_params.cmd_rx,
 
             role_tx: signal_params.role_tx,
             role_rx: signal_params.role_rx,
+            buffered_role_event: VecDeque::new(),
 
             new_commit_listener: Vec::new(),
 
@@ -259,6 +264,7 @@ where
             tokio::select! {
                 // Use biased to ensure branch order
                 biased;
+
                 // P0: shutdown received;
                 _ = self.shutdown_signal.changed() => {
                     info!("[Raft:{}] shutdown signal received.", self.node_id);
@@ -271,9 +277,9 @@ where
                     self.event_rx.close();
                     return Ok(());
                 }
+
                 // P1: Tick: start Heartbeat(replication) or start Election
                 _ = tick => {
-
                     trace!("receive tick");
                     let role_tx = &self.role_tx;
                     let event_tx = &self.event_tx;
@@ -288,35 +294,28 @@ where
                 // P2: Role events — handle first, drain rest after select
                 Some(role_event) = self.role_rx.recv() => {
                     debug!(%self.node_id, ?role_event, "receive role event");
+                    self.buffered_role_event.push_back(role_event);
+                    self.drain_role_events().await?;
 
-                    if let Err(e) = self.handle_role_event(role_event).await {
-                        error!(%self.node_id, ?e, "handle_role_event error");
-                    }
+
                 }
 
                 // P3: Client commands — push first, drain rest after select
                 Some(first_cmd) = self.cmd_rx.recv() => {
                     trace!(%self.node_id, "receive first client command");
                     self.role.push_client_cmd(first_cmd, &self.ctx);
+                    self.drain_client_cmds().await?;
                 }
 
                 // P4: Other events — handle first, drain rest after select
                 Some(raft_event) = self.event_rx.recv() => {
                     trace!(%self.node_id, ?raft_event, "receive raft event");
+                    self.buffered_raft_event.push_back(raft_event);
+                    self.drain_raft_events().await?;
 
-                    #[cfg(test)]
-                    let event = raft_event_to_test_event(&raft_event);
 
-                    if let Err(e) = self.role.handle_raft_event(raft_event, &self.ctx, self.role_tx.clone()).await {
-                        if e.is_fatal() {
-                            error!(%self.node_id, ?e, "Fatal error in handle_raft_event, shutting down");
-                            return Err(e);
-                        }
-                        warn!(%self.node_id, ?e, "Non-fatal error in handle_raft_event, continuing");
-                    }
 
-                    #[cfg(test)]
-                    self.notify_raft_event(event);
+
                 }
 
             }
@@ -326,13 +325,29 @@ where
             // naturally yielding at .await points so client tasks can enqueue their
             // next writes into cmd_rx before drain_client_cmds runs.
             tokio::task::yield_now().await;
-            self.drain_role_events().await?;
+            self.process_role_events().await?;
             // Yield after role events so woken client tasks can enqueue their next
             // writes into cmd_rx before drain_client_cmds runs.
             tokio::task::yield_now().await;
-            self.drain_client_cmds().await?;
-            self.drain_raft_events().await?;
+            self.process_client_cmds().await?;
+            self.process_raft_events().await?;
         }
+    }
+
+    /// Drain all pending raft events (up to max_batch_size).
+    async fn drain_raft_events(&mut self) -> Result<()> {
+        let max = self.ctx.node_config.raft.batching.max_batch_size;
+        let mut count = 0;
+        while count < max {
+            match self.event_rx.try_recv() {
+                Ok(raft_event) => {
+                    self.buffered_raft_event.push_back(raft_event);
+                    count += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        Ok(())
     }
 
     /// Drain all pending role events (up to max_batch_size).
@@ -342,9 +357,7 @@ where
         while count < max {
             match self.role_rx.try_recv() {
                 Ok(role_event) => {
-                    if let Err(e) = self.handle_role_event(role_event).await {
-                        error!(%self.node_id, ?e, "drain_role_events: handle_role_event error");
-                    }
+                    self.buffered_role_event.push_back(role_event);
                     count += 1;
                 }
                 Err(_) => break,
@@ -369,39 +382,93 @@ where
         if count > 0 {
             trace!("Drained {} client commands", count);
         }
-        // Always flush: the P3 select arm may have pushed a command before this drain ran.
-        // flush_cmd_buffers checks is_empty() internally and is a no-op when nothing is buffered.
-        if let Err(e) = self.role.flush_cmd_buffers(&self.ctx, &self.role_tx).await {
-            error!(%self.node_id, ?e, "drain_client_cmds: flush_cmd_buffers error");
-            return Err(e);
+        Ok(())
+    }
+
+    async fn process_role_events(&mut self) -> Result<()> {
+        while let Some(event) = self.buffered_role_event.pop_front() {
+            if let Err(e) = self.handle_role_event(event).await {
+                error!(%self.node_id, ?e, "drain_role_events: handle_role_event error");
+            }
         }
         Ok(())
     }
 
-    /// Drain all pending raft events (up to max_batch_size).
-    async fn drain_raft_events(&mut self) -> Result<()> {
-        let max = self.ctx.node_config.raft.batching.max_batch_size;
-        let mut count = 0;
-        while count < max {
-            match self.event_rx.try_recv() {
-                Ok(raft_event) => {
-                    if let Err(e) = self
-                        .role
-                        .handle_raft_event(raft_event, &self.ctx, self.role_tx.clone())
-                        .await
-                    {
-                        if e.is_fatal() {
-                            error!(%self.node_id, ?e, "Fatal error in drain_raft_events, shutting down");
-                            return Err(e);
-                        }
-                        warn!(%self.node_id, ?e, "Non-fatal error in drain_raft_events, continuing");
-                    }
-                    count += 1;
+    async fn process_raft_events(&mut self) -> Result<()> {
+        self.merge_append_entries();
+
+        while let Some(event) = self.buffered_raft_event.pop_front() {
+            #[cfg(test)]
+            let test_event = raft_event_to_test_event(&event);
+
+            if let Err(e) =
+                self.role.handle_raft_event(event, &self.ctx, self.role_tx.clone()).await
+            {
+                if e.is_fatal() {
+                    error!(%self.node_id, ?e, "Fatal error in drain_raft_events, shutting down");
+                    return Err(e);
                 }
-                Err(_) => break,
+                warn!(%self.node_id, ?e, "Non-fatal error in drain_raft_events, continuing");
             }
+
+            #[cfg(test)]
+            self.notify_raft_event(test_event);
         }
         Ok(())
+    }
+
+    async fn process_client_cmds(&mut self) -> Result<()> {
+        // Always flush: the P3 select arm may have pushed a command before this drain ran.
+        // flush_cmd_buffers checks is_empty() internally and is a no-op when nothing is buffered.
+        self.role.flush_cmd_buffers(&self.ctx, &self.role_tx).await
+    }
+
+    /// Drain all pending raft events (up to max_batch_size).
+    fn merge_append_entries(&mut self) {
+        let Some(event) = self.buffered_raft_event.pop_front() else {
+            return;
+        };
+
+        let RaftEvent::AppendEntries(mut first_req, first_senders) = event else {
+            self.buffered_raft_event.push_front(event);
+            return;
+        };
+
+        let max = self.ctx.node_config.raft.batching.max_merge_entries;
+
+        let mut next_prev = first_req.prev_log_index + first_req.entries.len() as u64;
+        let mut merged_entries = first_req.entries;
+        let term = first_req.term;
+        let mut merged_senders = first_senders;
+
+        while let Some(event) = self.buffered_raft_event.pop_front() {
+            match event {
+                RaftEvent::AppendEntries(mut req, mut senders)
+                    if next_prev == req.prev_log_index && term == req.term =>
+                {
+                    if merged_entries.len() + req.entries.len() > max {
+                        self.buffered_raft_event.push_front(RaftEvent::AppendEntries(req, senders));
+                        break;
+                    }
+
+                    // Take max(leader_commit_index) to handle two cases:
+                    // case 1: heartbeat (empty entries) may carry a higher commit index
+                    // case 2: leader's commit index may advance between consecutive AE sends
+                    first_req.leader_commit_index =
+                        first_req.leader_commit_index.max(req.leader_commit_index);
+                    next_prev += req.entries.len() as u64;
+                    merged_entries.append(&mut req.entries);
+                    merged_senders.append(&mut senders);
+                }
+                _ => {
+                    self.buffered_raft_event.push_front(event);
+                    break;
+                }
+            }
+        }
+        first_req.entries = merged_entries;
+        self.buffered_raft_event
+            .push_front(RaftEvent::AppendEntries(first_req, merged_senders));
     }
 
     /// `handle_role_event` will be responsbile to process role trasnsition and
@@ -751,3 +818,16 @@ where
         info!("Graceful shutdown node state ...");
     }
 }
+
+#[cfg(test)]
+#[path = "raft_test/leader_change_tests.rs"]
+mod leader_change_tests;
+#[cfg(test)]
+#[path = "raft_test/leader_discovered_tests.rs"]
+mod leader_discovered_tests;
+#[cfg(test)]
+#[path = "raft_test/merge_append_entries_tests.rs"]
+mod merge_append_entries_tests;
+#[cfg(test)]
+#[path = "raft_test/raft_comprehensive_tests.rs"]
+mod raft_comprehensive_tests;

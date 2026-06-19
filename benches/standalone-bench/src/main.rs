@@ -1,3 +1,10 @@
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
+
 use clap::Parser;
 use clap::Subcommand;
 use d_engine::Client;
@@ -9,12 +16,6 @@ use hdrhistogram::Histogram;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::distributions::Alphanumeric;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-use std::time::Instant;
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug, Clone)]
@@ -209,7 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize the connection pool
     let endpoints = cli.endpoints.clone();
-    println!("Initializing client connection with: {:?}", &endpoints);
+    println!("Initializing client connection with: {:?}", endpoints);
     let client_pool = ClientPool::new(endpoints, cli.conns)
         .await
         .expect("Failed to create client pool");

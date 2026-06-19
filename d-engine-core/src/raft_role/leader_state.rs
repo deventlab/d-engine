@@ -1211,7 +1211,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
             }
 
-            RaftEvent::AppendEntries(append_entries_request, sender) => {
+            RaftEvent::AppendEntries(append_entries_request, senders) => {
                 debug!(
                     "handle_raft_event::RaftEvent::AppendEntries: {:?}",
                     &append_entries_request
@@ -1221,11 +1221,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 if my_term >= append_entries_request.term {
                     let response = AppendEntriesResponse::higher_term(my_id, my_term);
 
-                    sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+                    for sender in senders {
+                        if let Err(e) = sender.send(Ok(response)) {
+                            error!("Failed to send: {:?}", e);
+                        }
+                    }
                 } else {
                     // Step down as Follower as new Leader found
                     info!(
@@ -1245,7 +1245,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     );
                     send_replay_raft_event(
                         &role_tx,
-                        RaftEvent::AppendEntries(append_entries_request, sender),
+                        RaftEvent::AppendEntries(append_entries_request, senders),
                     )?;
                 }
             }

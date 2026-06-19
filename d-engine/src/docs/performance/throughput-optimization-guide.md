@@ -23,7 +23,7 @@ pub(crate) enum ConnectionType {
 
 ## Persistence Strategy & Throughput/Latency Trade-offs
 
-`MemFirst` is the only persistence strategy in v0.2.4+. It writes to OS page cache (process-crash safe, not power-loss safe) and flushes asynchronously.
+`MemFirst` is the only persistence strategy in v0.2.4+. It batches writes to OS page cache and flushes with fsync asynchronously — committing data to disk before notifying Raft.
 
 ### Strategy Configuration
 
@@ -35,17 +35,28 @@ flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 
 ### `MemFirst` Strategy
 
-- **Write Path**: Entry written to OS page cache immediately; IO thread flushes asynchronously.
-- **Durability**: Process crash safe (OS page cache survives). Power loss may drop the most recent unflushed entries.
-- **Throughput**: High. Writes batch naturally; no per-write fsync.
+- **Write Path**: Entries are written to OS page cache via `db.write()` / `file.write()`; the IO
+  thread batches them and calls fsync (`flush_wal(true)` / `sync_all()`) before advancing
+  `durable_index`. Raft only counts an entry toward quorum after fsync completes.
+- **Durability**:
+  - *Process crash*: OS page cache survives a process restart → full recovery via WAL replay. ✅
+  - *Power loss (single node)*: In a multi-node cluster, Raft quorum ensures committed data
+    survives a single-node power failure — the other quorum members retain the data. ✅
+  - *Power loss (majority of nodes simultaneously)*: Entries in the current unflushed batch
+    (written since the last fsync) may be lost. This window is bounded by
+    `idle_flush_interval_ms`. Raft has not yet counted these entries toward quorum, so no
+    client-acknowledged write is lost — the leader will re-replicate after re-election. ⚠️
+- **Throughput**: High. Multiple writes share a single fsync; no per-write fsync overhead.
 
 ### `FlushPolicy` Tuning
 
-- **`Batch { idle_flush_interval_ms }`**: Flush after this many milliseconds of idle time.
-  - Lower values reduce data loss window but increase IO pressure.
+- **`Batch { idle_flush_interval_ms }`**: Flush (fsync) after this many milliseconds of idle time.
+  - Lower values reduce the unflushed batch window but increase IO pressure.
   - Default `1000` ms is suitable for most workloads.
 
-> **Note**: `DiskFirst` strategy was removed in v0.2.4. `MemFirst` writes to OS page cache and is process-crash safe but **not power-loss safe** — `idle_flush_interval_ms` controls flush frequency but does not provide fsync-level durability.
+> **Note**: `DiskFirst` strategy was removed in v0.2.4. `MemFirst` replaced it with batched
+> fsync — multiple writes share one fsync call, reducing IO overhead while still providing
+> disk-level durability for all client-acknowledged (committed) writes.
 
 ## Batching Configuration
 

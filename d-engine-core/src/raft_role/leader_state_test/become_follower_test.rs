@@ -143,7 +143,7 @@ async fn test_receive_higher_term_append_entries_revokes_lease() {
             entries: vec![],
             leader_commit_index: 0,
         },
-        resp_tx,
+        vec![resp_tx],
     );
     state.handle_raft_event(event, &context, role_tx).await.ok();
 
@@ -247,7 +247,7 @@ async fn test_append_entries_higher_term_lease_revoked_before_become_follower() 
             entries: vec![],
             leader_commit_index: 0,
         },
-        resp_tx,
+        vec![resp_tx],
     );
     state.handle_raft_event(event, &context, role_tx).await.ok();
 

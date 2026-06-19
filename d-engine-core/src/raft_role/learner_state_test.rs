@@ -318,7 +318,7 @@ async fn test_learner_handles_append_entries_success() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     assert!(
@@ -379,7 +379,7 @@ async fn test_learner_rejects_append_entries_stale_term() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     assert!(
@@ -436,7 +436,7 @@ async fn test_learner_handles_append_entries_handler_error() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
     assert!(
@@ -1740,7 +1740,7 @@ async fn test_learner_acks_immediately_after_memory_write() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());

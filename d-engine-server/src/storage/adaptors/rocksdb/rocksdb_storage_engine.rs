@@ -404,14 +404,17 @@ impl LogStore for RocksDBLogStore {
     }
 
     fn is_write_durable(&self) -> bool {
-        // Level 2 semantics: db.write() lands in OS page cache (not RocksDB internal buffer).
-        // Process crash: OS retains page cache → WAL replay on restart → full recovery.
-        // Power loss:    OS page cache lost → data unrecoverable. ❌  (intentional trade-off)
+        // Batched Level 3: db.write() uses sync=false (lands in OS page cache),
+        // but durable_index does NOT advance until flush_wal(true) (fdatasync) completes.
         //
-        // Returns true → advance_durable_and_notify fires immediately after persist_entries,
-        // without waiting for an explicit flush_wal(true) (Level 3 / fdatasync).
-        // Level 3 support (sync thread + flush_wal) is tracked as a future feature.
-        true
+        // Process crash: OS retains page cache → WAL replay on restart → full recovery. ✅
+        // Power loss:    committed data (durable_index advanced) has been fdatasync'd → safe. ✅
+        //                Only entries in the current unflushed batch are at risk — a small window
+        //                bounded by idle_flush_interval_ms, and not yet counted toward quorum.
+        //
+        // Returns false → advance_durable_after_write calls flush_wal(true) before notifying,
+        // coalescing multiple db.write() calls into a single fdatasync (batched Level 3).
+        false
     }
 
     fn load_purge_boundary(&self) -> Result<Option<LogId>, Error> {

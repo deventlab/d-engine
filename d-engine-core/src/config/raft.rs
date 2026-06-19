@@ -333,12 +333,19 @@ pub struct BatchingConfig {
     /// **Default**: 100
     #[serde(default = "default_max_batch_size")]
     pub max_batch_size: usize,
+
+    /// Maximum total entries to accumulate in a single merge_append_entries pass.
+    /// Prevents unbounded memory growth when the buffer has many large batches.
+    /// Default: 1000
+    #[serde(default = "default_max_merge_entries")]
+    pub max_merge_entries: usize,
 }
 
 impl Default for BatchingConfig {
     fn default() -> Self {
         Self {
             max_batch_size: default_max_batch_size(),
+            max_merge_entries: default_max_merge_entries(),
         }
     }
 }
@@ -348,6 +355,11 @@ impl BatchingConfig {
         if self.max_batch_size == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "batching.max_batch_size must be > 0".into(),
+            )));
+        }
+        if self.max_merge_entries == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "batching.max_merge_entries must be > 0".into(),
             )));
         }
         Ok(())
@@ -360,6 +372,11 @@ fn default_append_interval() -> u64 {
 fn default_max_batch_size() -> usize {
     100
 }
+
+fn default_max_merge_entries() -> usize {
+    1000
+}
+
 fn default_entries_per_replication() -> u64 {
     100
 }

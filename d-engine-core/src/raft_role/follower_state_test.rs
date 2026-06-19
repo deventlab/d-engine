@@ -556,7 +556,7 @@ async fn test_handle_append_entries_success_from_new_leader() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
@@ -653,7 +653,7 @@ async fn test_handle_append_entries_rejects_stale_term() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
@@ -730,7 +730,7 @@ async fn test_handle_append_entries_with_handler_error() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
@@ -2409,7 +2409,7 @@ async fn test_follower_acks_immediately_after_memory_write() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
@@ -2450,7 +2450,7 @@ async fn test_follower_acks_immediately_for_heartbeat() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
@@ -2499,7 +2499,7 @@ async fn test_follower_commit_index_and_ack_both_sent_immediately() {
         leader_commit_index: new_commit,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());

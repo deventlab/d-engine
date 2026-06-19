@@ -389,7 +389,7 @@ async fn test_handle_append_entries_reject_same_term() {
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
 
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
@@ -453,7 +453,7 @@ async fn test_handle_append_entries_step_down_on_higher_term() {
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, resp_tx);
+    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
 
