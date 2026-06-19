@@ -236,7 +236,7 @@ async fn test_isolated_ae_between_non_ae_dispatched_alone() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_handle_append_entries()
-        .times(2) // ← 2 runs × 1 merged dispatch each = 2 total (not 4)
+        .times(2)
         .returning(|_, _, _| Ok(ok_append_response()));
 
     let mut raft = MockBuilder::new(graceful_rx)
@@ -245,10 +245,10 @@ async fn test_isolated_ae_between_non_ae_dispatched_alone() {
         .build_raft();
 
     let mut queue = VecDeque::new();
-    // first run: entries 10-19
+    // isolated AE: entries 10-14
     queue.push_back(make_ae_event(make_request(5, 9, 5, 1)));
     queue.push_back(make_vr_event());
-    // second run: entries 20-29 (new entries, continues after first run)
+    // isolated AE: entries 15-19
     queue.push_back(make_ae_event(make_request(5, 14, 5, 1)));
     raft.buffered_raft_event = queue;
 
