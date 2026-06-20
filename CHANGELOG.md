@@ -8,12 +8,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **ReadActor fast path for Eventual/LeaseRead** (#392): Dedicated `ReadActor` task serves `EventualConsistency` and `LeaseRead` without entering the Raft loop, eliminating channel contention under high read concurrency.
-  - `Arc<SM>` is owned exclusively by ReadActor — guarantees RocksDB LOCK release before Raft shutdown on `stop()`, fixing `test_snapshot_recovery_embedded`
-  - `ReadLease.revoke()`: atomic lease invalidation on leader demotion (replaces `invalidate()`)
-  - `EmbeddedClient` routes Eventual/Lease → ReadActor; falls back to `cmd_tx` on `LeaseInvalid`/`SmStopped`
-  - New `[raft.read_actor]` config section: `channel_capacity` (default 512), `max_drain` (default 100)
-  - **Benchmark (local embedded, 100 concurrent clients)**: Lease Read +10.9%, Eventual Read +13.1% vs v0.2.4; write throughput unchanged (see `benches/reports/v0.2.5/`)
+- **AppendEntries coalescing + speculative replication** (#407): Consecutive same-term `AppendEntries` in the receive buffer are merged before dispatch (heartbeats absorbed via `max(leader_commit_index)`); leader advances `next_index` speculatively on send, eliminating stop-and-wait per replication round.
+
+- **ReadActor fast path for Eventual/LeaseRead** (#392): Dedicated `ReadActor` serves `EventualConsistency` and `LeaseRead` off the Raft loop, eliminating channel contention under high read concurrency. Lease Read +10.9%, Eventual Read +13.1% vs v0.2.4 (100 concurrent clients, local embedded).
 
 ### Fixed
 
