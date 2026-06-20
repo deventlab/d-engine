@@ -116,7 +116,10 @@ where
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
-            .send(RaftEvent::AppendEntries(request.into_inner(), resp_tx))
+            .send(RaftEvent::AppendEntries(
+                request.into_inner(),
+                vec![resp_tx],
+            ))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
@@ -177,7 +180,7 @@ where
                         match result {
                             Some(Ok(req)) => {
                                 let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-                                if event_tx.send(RaftEvent::AppendEntries(req, resp_tx)).await.is_err() {
+                                if event_tx.send(RaftEvent::AppendEntries(req, vec![resp_tx])).await.is_err() {
                                     warn!("[stream_append_entries|recv] event_tx closed");
                                     break;
                                 }

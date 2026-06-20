@@ -25,6 +25,7 @@
 //!
 
 use crate::RaftOneshot;
+use crate::client::{ClientReadRequest, ClientWriteRequest, ReadConsistencyPolicy};
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::{
     MockBuilder,
@@ -32,10 +33,8 @@ use crate::{
     raft_role::{RaftRole, role_state::RaftRoleState},
 };
 use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::Operation;
-use d_engine_proto::client::{
-    ClientReadRequest, ClientWriteRequest, ReadConsistencyPolicy, WriteCommand,
-};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;

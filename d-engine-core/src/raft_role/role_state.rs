@@ -449,7 +449,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
     async fn handle_append_entries_request_workflow(
         &mut self,
         append_entries_request: AppendEntriesRequest,
-        sender: MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>,
+        senders: Vec<MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>>,
         ctx: &RaftContext<Self::T>,
         role_tx: mpsc::UnboundedSender<RoleEvent>,
         state_snapshot: &StateSnapshot,
@@ -469,11 +469,12 @@ pub trait RaftRoleState: Send + Sync + 'static {
             let response = AppendEntriesResponse::higher_term(self.node_id(), my_term);
             debug!("AppendEntriesResponse: {:?}", response);
 
-            sender.send(Ok(response)).map_err(|e| {
-                let error_str = format!("{e:?}");
-                error!("Failed to send: {}", error_str);
-                NetworkError::SingalSendFailed(error_str)
-            })?;
+            for sender in senders {
+                if let Err(e) = sender.send(Ok(response)) {
+                    error!("Failed to send client: {:?}", e);
+                }
+            }
+
             return Ok(());
         }
 
@@ -546,11 +547,12 @@ pub trait RaftRoleState: Send + Sync + 'static {
                 // MemFirst: ACK immediately after memory write. IO thread fsyncs async.
                 // Safety: quorum uses last_entry_id (in-memory); crash safety is guaranteed by
                 // majority replication, not per-follower durability.
-                sender.send(Ok(response)).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
+
+                for sender in senders {
+                    if let Err(e) = sender.send(Ok(response)) {
+                        error!("Failed to send: {:?}", e);
+                    }
+                }
             }
             Err(e) => {
                 // Conservatively fallback to a safe position, forcing the leader to retry or
@@ -567,11 +569,12 @@ pub trait RaftRoleState: Send + Sync + 'static {
                 );
                 debug!("AppendEntriesResponse: {:?}", response);
 
-                sender.send(Ok(response)).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
+                for sender in senders {
+                    if let Err(e) = sender.send(Ok(response)) {
+                        error!("Failed to send: {:?}", e);
+                    }
+                }
+
                 error("handle_raft_event", &e);
                 return Err(e);
             }

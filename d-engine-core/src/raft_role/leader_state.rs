@@ -1211,7 +1211,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
             }
 
-            RaftEvent::AppendEntries(append_entries_request, sender) => {
+            RaftEvent::AppendEntries(append_entries_request, senders) => {
                 debug!(
                     "handle_raft_event::RaftEvent::AppendEntries: {:?}",
                     &append_entries_request
@@ -1221,11 +1221,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 if my_term >= append_entries_request.term {
                     let response = AppendEntriesResponse::higher_term(my_id, my_term);
 
-                    sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+                    for sender in senders {
+                        if let Err(e) = sender.send(Ok(response)) {
+                            error!("Failed to send: {:?}", e);
+                        }
+                    }
                 } else {
                     // Step down as Follower as new Leader found
                     info!(
@@ -1245,7 +1245,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     );
                     send_replay_raft_event(
                         &role_tx,
-                        RaftEvent::AppendEntries(append_entries_request, sender),
+                        RaftEvent::AppendEntries(append_entries_request, senders),
                     )?;
                 }
             }
@@ -1830,8 +1830,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         };
 
         // Update next_index and match_index for this peer.
-        let peer_updates = HashMap::from([(follower_id, peer_update.clone())]);
-        self.update_peer_indexes(&peer_updates);
+        self.update_peer_index(follower_id, &peer_update);
 
         // Check learner promotion progress.
         if !is_voter {
@@ -2565,26 +2564,48 @@ impl<T: TypeConfig> LeaderState<T> {
         }
     }
 
-    /// Update peer node index
+    /// Updates next_index and match_index for a peer after receiving an AppendEntries response.
+    ///
+    /// Two distinct update strategies based on response type:
+    /// - Success: `next_index = max(current, peer_match + 1)` — never regress a speculative
+    ///   advance; the ACK is a lower-bound confirmation, not a correction.
+    /// - Conflict: `next_index = conflict_hint` (floor-guarded by `match_index + 1`) —
+    ///   the follower explicitly corrects the leader's assumption; retreat is required.
     #[instrument(skip(self))]
-    fn update_peer_indexes(
+    pub(super) fn update_peer_index(
         &mut self,
-        peer_updates: &HashMap<u32, PeerUpdate>,
+        follower_id: u32,
+        update: &PeerUpdate,
     ) {
-        for (peer_id, update) in peer_updates {
-            if let Err(e) = self.update_next_index(*peer_id, update.next_index) {
+        if update.success {
+            // Success: trust speculative advance — never regress next_index below what
+            // the leader has already pipeline-sent. ACK confirms a lower bound only;
+            // the leader may have sent further batches speculatively.
+            let current = self.next_index.get(&follower_id).copied().unwrap_or(1);
+            if let Err(e) = self.update_next_index(follower_id, update.next_index.max(current)) {
                 error!("Failed to update next index: {:?}", e);
             }
-            trace!(
-                "Updated next index for peer {}-{}",
-                peer_id, update.next_index
-            );
-            if let Some(match_index) = update.match_index {
-                if let Err(e) = self.update_match_index(*peer_id, match_index) {
-                    error!("Failed to update match index: {:?}", e);
-                }
-                trace!("Updated match index for peer {}-{}", peer_id, match_index);
+        } else {
+            // Conflict: follower explicitly corrects our assumption — allow next_index
+            // to retreat to the hint. Floor guard (match_index + 1) inside
+            // update_next_index prevents retreating below confirmed entries.
+            if let Err(e) = self.update_next_index(follower_id, update.next_index) {
+                error!("Failed to update next index: {:?}", e);
             }
+        }
+
+        trace!(
+            "Updated next index for peer {}-{}",
+            follower_id, update.next_index
+        );
+        if let Some(match_index) = update.match_index {
+            if let Err(e) = self.update_match_index(follower_id, match_index) {
+                error!("Failed to update match index: {:?}", e);
+            }
+            trace!(
+                "Updated match index for peer {}-{}",
+                follower_id, match_index
+            );
         }
     }
 
@@ -3536,6 +3557,14 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Phase 5: fire AppendEntries requests to per-follower workers (non-blocking).
         for (peer_id, request) in requests.append_requests {
+            let speculative_next_index = request.prev_log_index + request.entries.len() as u64 + 1;
+            if let Err(e) = self.update_next_index(peer_id, speculative_next_index) {
+                error!(
+                    "speculative next_index advance peer={} failed: {:?}",
+                    peer_id, e
+                );
+            }
+
             self.send_to_worker_or_spawn(
                 peer_id,
                 ReplicationTask::Append(request),

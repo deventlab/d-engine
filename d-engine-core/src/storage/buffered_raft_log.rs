@@ -1147,10 +1147,12 @@ where
         }
     }
 
-    /// Advance durable_index to `max_index` after data has been written to OS page cache (Level 2).
+    /// Advance durable_index to `max_index` after ensuring WAL durability.
     ///
-    /// For Level 2 (current): `is_write_durable=true` → skip flush_wal, advance immediately.
-    /// For Level 3 (future):  `is_write_durable=false` → call flush_wal(sync=true) first.
+    /// Batched Level 3 (current): `is_write_durable=false` → flush_wal(sync=true) first,
+    ///   coalescing multiple db.write() calls into a single fdatasync before notifying Raft.
+    /// Per-write durable mode:    `is_write_durable=true`  → skip flush_wal, advance immediately.
+    ///   (backend guarantees each write() is already durable, e.g. write_options.sync=true)
     async fn advance_durable_after_write(
         &self,
         max_index: u64,

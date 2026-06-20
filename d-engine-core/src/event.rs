@@ -146,7 +146,7 @@ pub enum RaftEvent {
 
     AppendEntries(
         AppendEntriesRequest,
-        MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>,
+        Vec<MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>>,
     ),
 
     // Response snapshot stream from Leader
@@ -192,6 +192,11 @@ pub enum RaftEvent {
         error: String,  // Error message
     },
 }
+
+// SAFETY: tonic::Streaming variants are only accessed on the thread that created them;
+// no shared references to snapshot variants cross thread boundaries.
+// Full decoupling tracked in #409.
+unsafe impl Sync for RaftEvent {}
 
 #[cfg(test)]
 #[cfg_attr(test, derive(Debug, Clone))]

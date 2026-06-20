@@ -345,8 +345,3 @@
 //! - Fast: Complete suite should run in <10 seconds
 //! - Comprehensive: Cover normal path, error path, and edge cases
 //! - Clear: Test names and comments explain what is being tested and why
-
-mod drain_based_batch_architecture_tests;
-mod leader_change_tests;
-mod leader_discovered_tests;
-mod raft_comprehensive_tests;

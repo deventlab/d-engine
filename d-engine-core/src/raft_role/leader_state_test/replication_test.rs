@@ -4,34 +4,35 @@
 //! `execute_request_immediately` methods which handle log replication,
 //! commit index calculation, and client response delivery.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use bytes::Bytes;
-use rand::distr::SampleString;
-use tokio::sync::{mpsc, watch};
-use tonic::Status;
-use tracing_test::traced_test;
-
 use crate::Error;
 use crate::MockMembership;
 use crate::MockRaftLog;
-use crate::{MaybeCloneOneshot, PeerUpdate};
-
+use crate::MockReplicationCore;
+use crate::RaftContext;
 use crate::RaftRequestWithSignal;
-
 use crate::client::ClientResponse;
 use crate::event::RoleEvent;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
+use crate::test_utils::mock::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
+use crate::{MaybeCloneOneshot, PeerUpdate};
+use bytes::Bytes;
 use d_engine_proto::common::{EntryPayload, LogId, NodeRole::Follower, NodeStatus};
 use d_engine_proto::server::cluster::{ClusterMembership, NodeMeta};
+use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::append_entries_response;
 use d_engine_proto::server::replication::{AppendEntriesResponse, SuccessResult};
+use rand::distr::SampleString;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Status;
+use tracing_test::traced_test;
 
 // ============================================================================
 // Test Helper Structures and Functions
@@ -2149,11 +2150,6 @@ async fn test_handle_append_result_rpc_failure_ignored() {
 #[tokio::test]
 #[traced_test]
 async fn test_stale_conflict_ack_does_not_regress_next_index() {
-    use crate::MockReplicationCore;
-    use crate::test_utils::mock::MockBuilder;
-    use d_engine_proto::server::replication::ConflictResult;
-    use tokio::sync::watch;
-
     let peer_id = 2u32;
 
     // Build a replication handler that returns next_index=1 for the conflict —
@@ -2257,4 +2253,260 @@ async fn test_stale_conflict_ack_does_not_regress_next_index() {
         state.match_index[&peer_id], 100,
         "match_index must remain unchanged after a conflict response"
     );
+}
+
+async fn setup_state_with_next_and_match(
+    match_index: u64,
+    next_index: u64,
+    speculative_next_index: u64,
+) -> (
+    LeaderState<MockTypeConfig>,
+    AppendEntriesResponse,
+    RaftContext<MockTypeConfig>,
+) {
+    let follower2_id = 2u32;
+
+    // Build a replication handler that returns next_index=1 for the conflict —
+    // simulating what happens when a stale conflict from an empty-log follower arrives.
+    let mut rep = MockReplicationCore::<MockTypeConfig>::new();
+    rep.expect_handle_conflict_response().returning(move |_, _, _, _| {
+        Ok(crate::PeerUpdate {
+            match_index: None,
+            next_index,
+            success: false,
+        })
+    });
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context_inner =
+        MockBuilder::new(graceful_rx).with_replication_handler(rep).build_context();
+
+    // Set up membership with peer 2 and 3 as voters (same as setup_commit_index_test_context).
+    let mut membership = MockMembership::new();
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
+    membership.expect_voters().returning(|| {
+        vec![
+            NodeMeta {
+                id: 2,
+                address: "".into(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+            NodeMeta {
+                id: 3,
+                address: "".into(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+        ]
+    });
+    membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
+    membership.expect_members().returning(Vec::new);
+    membership.expect_check_cluster_is_ready().returning(|| Ok(()));
+    membership.expect_retrieve_cluster_membership_config().returning(|_| {
+        d_engine_proto::server::cluster::ClusterMembership {
+            version: 1,
+            nodes: vec![],
+            current_leader_id: None,
+        }
+    });
+    membership.expect_pre_warm_connections().returning(|| Ok(()));
+    membership.expect_replication_peers().returning(|| {
+        vec![
+            NodeMeta {
+                id: 2,
+                address: "".into(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+            NodeMeta {
+                id: 3,
+                address: "".into(),
+                status: NodeStatus::Active as i32,
+                role: Follower.into(),
+            },
+        ]
+    });
+    membership.expect_initial_cluster_size().returning(|| 3);
+    context_inner.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
+    state.update_commit_index(5).unwrap();
+    state.init_cluster_metadata(&context_inner.membership).await.unwrap();
+
+    // Simulate: SUCCESS from Batch A already processed — match_index = 100, next_index = 101.
+    state.match_index.insert(follower2_id, match_index);
+    state.next_index.insert(follower2_id, speculative_next_index);
+
+    // Stale CONFLICT from Batch B: follower's log was empty when it arrived.
+    let stale_conflict = AppendEntriesResponse {
+        node_id: follower2_id,
+        term: 1,
+        result: Some(append_entries_response::Result::Conflict(ConflictResult {
+            conflict_term: None,
+            conflict_index: Some(1),
+        })),
+    };
+
+    (state, stale_conflict, context_inner)
+}
+
+// Leader speculatively advances next_index to 13 before receiving an ACK.
+// When a fresh conflict response carries hint=7, next_index must roll back
+// from the speculative value (13) to the follower's hint (7) so the
+// retransmission starts from the correct entry.
+#[tokio::test]
+async fn test_stale_conflict_floor_guard_prevents_regression() {
+    let follower2_id = 2u32;
+    let follower2_speculative_next_index = 13;
+    let follower2_returned_next_index = 7;
+    let follower2_returned_match_index = 100;
+    let (mut state, stale_conflict, context_inner) = setup_state_with_next_and_match(
+        follower2_returned_match_index,
+        follower2_returned_next_index,
+        follower2_speculative_next_index,
+    )
+    .await;
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let result = state
+        .handle_append_result(follower2_id, Ok(stale_conflict), &context_inner, &role_tx)
+        .await;
+
+    assert!(result.is_ok(), "stale conflict must not return an error");
+
+    // Floor guard: next_index must not retreat below match_index + 1 = 101.
+    assert_eq!(
+        state.next_index[&follower2_id],
+        follower2_returned_match_index + 1,
+        "stale conflict must not regress next_index below match_index + 1"
+    );
+}
+// Stale conflict arrives after match_index is already at 100.
+// The floor guard (match_index + 1 = 101) must override the conflict hint (7),
+// so next_index never retreats below what quorum already confirmed.
+#[tokio::test]
+async fn test_conflict_response_resets_speculative_next_index() {
+    let follower2_id = 2u32;
+    let follower2_speculative_next_index = 13;
+    let follower2_returned_next_index = 7;
+    let follower2_returned_match_index = 1;
+
+    let (mut state, stale_conflict, context_inner) = setup_state_with_next_and_match(
+        follower2_returned_match_index,
+        follower2_returned_next_index,
+        follower2_speculative_next_index,
+    )
+    .await;
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+
+    let result = state
+        .handle_append_result(follower2_id, Ok(stale_conflict), &context_inner, &role_tx)
+        .await;
+
+    assert!(result.is_ok(), "stale conflict must not return an error");
+
+    // Floor guard: next_index must not retreat below match_index + 1 = 101.
+    assert_eq!(
+        state.next_index[&follower2_id], follower2_returned_next_index,
+        "stale conflict must not regress next_index below match_index + 1"
+    );
+}
+
+mod test_leader_update_next_index {
+    use super::*;
+
+    // On a success ACK, next_index must not regress below the current speculative value.
+    // The ACK carries peer_match + 1 which may lag behind what the leader has
+    // already pipeline-sent; the leader must keep the higher speculative value.
+    #[tokio::test]
+    async fn test_update_peer_index_success_preserves_speculative_next_index() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context_inner = MockBuilder::new(graceful_rx).build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
+        state.update_next_index(2, 100).unwrap();
+        state.update_match_index(2, 7).unwrap();
+        state.update_peer_index(
+            2,
+            &PeerUpdate {
+                match_index: Some(11),
+                next_index: 12,
+                success: true,
+            },
+        );
+        assert_eq!(state.next_index.get(&2), Some(&100));
+        assert_eq!(state.match_index.get(&2), Some(&11));
+    }
+
+    // On a conflict response, next_index must retreat to the follower's hint,
+    // allowing the leader to retransmit from the correct position.
+    // The floor guard (match_index + 1) prevents retreating below confirmed entries.
+    #[tokio::test]
+    async fn test_update_peer_index_conflict_retreats_to_hint() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context_inner = MockBuilder::new(graceful_rx).build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
+        state.update_next_index(2, 100).unwrap();
+        state.update_match_index(2, 7).unwrap();
+        state.update_peer_index(
+            2,
+            &PeerUpdate {
+                match_index: None,
+                next_index: 12,
+                success: false,
+            },
+        );
+        assert_eq!(state.next_index.get(&2), Some(&12));
+        assert_eq!(state.match_index.get(&2), Some(&7));
+    }
+
+    // On a conflict response, if the computed retry point (PeerUpdate::next_index)
+    // is below the confirmed match_index + 1, the floor guard must clamp next_index to match_index + 1.
+    // Retreating below already-confirmed entries would violate Raft's Log Matching Property.
+    #[tokio::test]
+    async fn test_update_peer_index_conflict_floor_guard_prevents_retreat_below_match_index() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context_inner = MockBuilder::new(graceful_rx).build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
+        state.update_next_index(2, 100).unwrap();
+        state.update_match_index(2, 50).unwrap();
+        state.update_peer_index(
+            2,
+            &PeerUpdate {
+                match_index: None,
+                next_index: 12,
+                success: false,
+            },
+        );
+        assert_eq!(state.next_index.get(&2), Some(&(50 + 1)));
+        assert_eq!(state.match_index.get(&2), Some(&50));
+    }
+
+    // On a success ACK, if the ACK carries a next_index larger than the current
+    // speculative value (e.g. after reconnect or snapshot install where next_index
+    // was never advanced), next_index must be updated to the ACK value.
+    // Failing to do so causes the leader to re-send the same entries forever.
+    #[tokio::test]
+    async fn test_update_peer_index_success_advances_next_index_when_ack_is_ahead() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context_inner = MockBuilder::new(graceful_rx).build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
+        state.update_next_index(2, 1).unwrap();
+        state.update_match_index(2, 1).unwrap();
+        state.update_peer_index(
+            2,
+            &PeerUpdate {
+                match_index: Some(11),
+                next_index: 12,
+                success: true,
+            },
+        );
+        assert_eq!(state.next_index.get(&2), Some(&12));
+        assert_eq!(state.match_index.get(&2), Some(&11));
+    }
 }
