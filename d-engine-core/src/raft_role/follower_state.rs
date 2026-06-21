@@ -500,18 +500,16 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Ok(());
             }
 
-            RaftEvent::StreamSnapshot(request, sender) => {
-                debug!(?request, "Follower::RaftEvent::StreamSnapshot");
-                sender
-                    .send(Err(Status::permission_denied(
-                        "Follower should not receive StreamSnapshot event.",
-                    )))
-                    .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
-
+            RaftEvent::StreamSnapshot(_ack_rx, _chunk_tx, startup_tx) => {
+                debug!("Follower::RaftEvent::StreamSnapshot");
+                warn!("Follower should not receive StreamSnapshot event.");
+                if let Err(e) = startup_tx.send(Err(Status::failed_precondition("Not the leader")))
+                {
+                    error!(
+                        ?e,
+                        "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
+                    );
+                }
                 return Ok(());
             }
 

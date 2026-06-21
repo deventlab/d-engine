@@ -1,10 +1,6 @@
 //! Centerialized all RPC client operations will make unit test eaiser.
 //! We also want to refactor all the APIs based its similar parttern.
 
-use std::collections::HashSet;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use d_engine_core::AppendResult;
 use d_engine_core::BackgroundSnapshotTransfer;
@@ -44,6 +40,9 @@ use dashmap::DashMap;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use std::collections::HashSet;
+use std::marker::PhantomData;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task;
@@ -548,7 +547,7 @@ where
         ack_rx: mpsc::Receiver<SnapshotAck>,
         _retry: &InstallSnapshotBackoffPolicy,
         membership: Arc<MOF<T>>,
-    ) -> Result<Box<tonic::Streaming<SnapshotChunk>>> {
+    ) -> Result<mpsc::Receiver<SnapshotChunk>> {
         debug!("Fetching snapshot from leader {}", leader_id);
 
         // Get bulk connection channel
@@ -569,7 +568,26 @@ where
             .await
             .map_err(|e| NetworkError::TonicStatusError(Box::new(e)))?;
 
-        Ok(Box::new(response.into_inner()))
+        let mut tonic_stream = response.into_inner();
+        let (tx, rx) = mpsc::channel(32);
+
+        tokio::spawn(async move {
+            while let Some(chunk) = tonic_stream.next().await {
+                match chunk {
+                    Ok(c) => {
+                        if tx.send(c).await.is_err() {
+                            break; //receive stops
+                        }
+                    }
+                    Err(e) => {
+                        //network error, drop tx, rx will receive None
+                        error!("{:?}", e);
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(rx)
     }
 }
 

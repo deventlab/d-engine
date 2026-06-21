@@ -3,7 +3,6 @@ use crate::client::ClientWriteRequest;
 use crate::client::ErrorCode;
 use crate::client::WriteOperation;
 use crate::config::ReadConsistencyPolicy;
-use crate::test_utils::create_test_snapshot_stream;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
@@ -2549,13 +2548,14 @@ async fn test_follower_install_snapshot_reports_success_when_apply_succeeds() {
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
-    let stream = create_test_snapshot_stream(vec![SnapshotChunk::default()]);
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
-
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk::default()).await.unwrap();
+    drop(tx);
     state
         .handle_raft_event(
-            RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx),
+            RaftEvent::InstallSnapshotChunk(rx, resp_tx),
             &context,
             role_tx,
         )
@@ -2616,14 +2616,16 @@ async fn test_follower_install_snapshot_reports_failure_when_apply_fails_after_t
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
 
-    let stream = create_test_snapshot_stream(vec![SnapshotChunk::default()]);
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
     // Follower absorbs the error and continues (does not propagate)
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk::default()).await.unwrap();
+    drop(tx);
     let _ = state
         .handle_raft_event(
-            RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx),
+            RaftEvent::InstallSnapshotChunk(rx, resp_tx),
             &context,
             role_tx,
         )

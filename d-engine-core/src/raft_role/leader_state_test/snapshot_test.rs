@@ -220,3 +220,153 @@ async fn test_handle_log_purge_completed() {
         .unwrap();
     assert_eq!(state.last_purged_index, Some(LogId { term: 1, index: 50 }));
 }
+
+// ============================================================================
+// StreamSnapshot Startup Rejection Tests
+// ============================================================================
+
+/// Leader rejects StreamSnapshot when no snapshot metadata is available.
+///
+/// # Given
+/// - Leader with no snapshot created yet (snapshot_metadata() → None)
+///
+/// # When
+/// - StreamSnapshot event is received
+///
+/// # Then
+/// - startup_rx receives Err(Status::not_found)
+/// - chunk_rx is closed immediately (no chunks sent)
+#[tokio::test]
+async fn test_stream_snapshot_rejects_when_no_metadata() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    // Default mock: snapshot_metadata() returns None
+    let context = MockBuilder::new(graceful_rx).build_context();
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+
+    let (ack_tx, ack_rx) = mpsc::channel::<d_engine_proto::server::storage::SnapshotAck>(4);
+    let (chunk_tx, mut chunk_rx) =
+        mpsc::channel::<std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>>(4);
+    let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<(), tonic::Status>>();
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    state
+        .handle_raft_event(
+            RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
+            &context,
+            role_tx,
+        )
+        .await
+        .expect("handler must not return Err");
+
+    // startup_rx must carry a rejection, not Ok
+    let result = startup_rx.await.expect("startup_tx must be sent");
+    assert!(result.is_err(), "expected Err from startup channel, got Ok");
+    assert_eq!(result.unwrap_err().code(), tonic::Code::NotFound);
+
+    // chunk channel must be closed — no chunks were sent
+    drop(ack_tx); // silence unused warning
+    assert!(
+        chunk_rx.recv().await.is_none(),
+        "expected chunk_rx to be closed"
+    );
+}
+
+/// Leader confirms startup and begins transfer when snapshot metadata exists.
+///
+/// # Given
+/// - Leader with valid snapshot metadata
+/// - State machine handler returns a single-chunk data stream
+///
+/// # When
+/// - StreamSnapshot event is received
+///
+/// # Then
+/// - startup_rx receives Ok(())
+/// - chunk_rx eventually delivers the chunk (background task runs)
+#[tokio::test]
+async fn test_stream_snapshot_confirms_startup_when_metadata_exists() {
+    use bytes::Bytes;
+    use futures::StreamExt;
+    use futures::stream;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    // Build state machine from scratch so snapshot_metadata returns Some.
+    // (Can't override expectations added by mock_state_machine() — mockall
+    // uses the first matching expectation, so the None default would win.)
+    let mut sm = crate::MockStateMachine::new();
+    sm.expect_start().returning(|| Ok(()));
+    sm.expect_stop().returning(|| Ok(()));
+    sm.expect_is_running().returning(|| true);
+    sm.expect_get().returning(|_| Ok(None));
+    sm.expect_entry_term().returning(|_| None);
+    sm.expect_apply_chunk().returning(|_| Ok(vec![]));
+    sm.expect_len().returning(|| 0);
+    sm.expect_update_last_applied().returning(|_| ());
+    sm.expect_last_applied().return_const(LogId::default());
+    sm.expect_persist_last_applied().returning(|_| Ok(()));
+    sm.expect_update_last_snapshot_metadata().returning(|_| Ok(()));
+    sm.expect_snapshot_metadata().returning(|| {
+        Some(SnapshotMetadata {
+            last_included: Some(LogId { term: 1, index: 10 }),
+            ..Default::default()
+        })
+    });
+    sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
+    sm.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
+    sm.expect_generate_snapshot_data()
+        .returning(|_, _| Ok(bytes::Bytes::copy_from_slice(&[0u8; 32])));
+    sm.expect_save_hard_state().returning(|| Ok(()));
+    sm.expect_flush().returning(|| Ok(()));
+
+    // State machine handler returns a minimal 1-chunk stream
+    let mut smh = crate::test_utils::mock::mock_state_machine_handler();
+    smh.expect_load_snapshot_data().returning(|_| {
+        let chunk = d_engine_proto::server::storage::SnapshotChunk {
+            seq: 0,
+            total_chunks: 1,
+            data: Bytes::from_static(b"hello"),
+            metadata: Some(SnapshotMetadata::default()),
+            ..Default::default()
+        };
+        Ok(stream::iter(vec![Ok(chunk)]).boxed())
+    });
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine(sm)
+        .with_state_machine_handler(smh)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+
+    let (_ack_tx, ack_rx) = mpsc::channel::<d_engine_proto::server::storage::SnapshotAck>(4);
+    let (chunk_tx, mut chunk_rx) =
+        mpsc::channel::<std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>>(4);
+    let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<(), tonic::Status>>();
+
+    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    state
+        .handle_raft_event(
+            RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
+            &context,
+            role_tx,
+        )
+        .await
+        .expect("handler must not return Err");
+
+    // startup_rx must carry Ok — transfer has started
+    let result = startup_rx.await.expect("startup_tx must be sent");
+    assert!(
+        result.is_ok(),
+        "expected Ok from startup channel, got {:?}",
+        result
+    );
+
+    // Background task delivers the chunk; give it a moment to run
+    let chunk = tokio::time::timeout(std::time::Duration::from_millis(200), chunk_rx.recv())
+        .await
+        .expect("timed out waiting for chunk")
+        .expect("chunk_rx closed before first chunk");
+
+    assert_eq!(chunk.seq, 0);
+}

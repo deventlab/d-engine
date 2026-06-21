@@ -1,30 +1,3 @@
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-
-use async_trait::async_trait;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole;
-use d_engine_proto::common::NodeRole::Learner;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::JoinRequest;
-use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
-use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotResponse;
-use tokio::sync::mpsc::{self};
-use tokio::time::Instant;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
-
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
@@ -48,6 +21,31 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::alias::MOF;
+use async_trait::async_trait;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::NodeRole::Learner;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::JoinRequest;
+use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
+use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotResponse;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use tokio::sync::mpsc::{self};
+use tokio::time::Instant;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
 
 /// Learner node's state in Raft cluster.
 ///
@@ -447,20 +445,20 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
                 return Ok(());
             }
-            RaftEvent::StreamSnapshot(request, sender) => {
-                debug!(?request, "Learner::RaftEvent::StreamSnapshot");
-                sender
-                    .send(Err(Status::permission_denied(
-                        "Learner should not receive StreamSnapshot event.",
-                    )))
-                    .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
 
+            RaftEvent::StreamSnapshot(_ack_rx, _chunk_tx, startup_tx) => {
+                debug!("Learner::RaftEvent::StreamSnapshot");
+                warn!("Learner should not receive StreamSnapshot event.");
+                if let Err(e) = startup_tx.send(Err(Status::failed_precondition("Not the leader")))
+                {
+                    error!(
+                        ?e,
+                        "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
+                    );
+                }
                 return Ok(());
             }
+
             RaftEvent::PromoteReadyLearners => {
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Learner",
@@ -597,7 +595,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         let (ack_tx, ack_rx) = mpsc::channel(32);
 
         // Get snapshot stream from leader (with ACK feedback)
-        let snapshot_stream = ctx
+        let snapshot_chunk_receiver = ctx
             .transport()
             .request_snapshot_from_leader(
                 leader_id,
@@ -613,7 +611,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             .state_machine_handler
             .apply_snapshot_stream_from_leader(
                 self.current_term(),
-                snapshot_stream,
+                snapshot_chunk_receiver,
                 ack_tx,
                 &ctx.node_config.raft.snapshot,
             )

@@ -34,9 +34,7 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio::time::timeout;
-use tokio_stream::StreamExt;
 use tokio_tar::Archive;
-use tonic::Streaming;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -326,15 +324,16 @@ where
     async fn apply_snapshot_stream_from_leader(
         &self,
         current_term: u64,
-        stream: Box<Streaming<SnapshotChunk>>,
+        stream_chunk_receiver: mpsc::Receiver<SnapshotChunk>,
         ack_tx: mpsc::Sender<SnapshotAck>, // ACK sender
         config: &SnapshotConfig,
     ) -> Result<()> {
         let _timer = ScopedTimer::new("receive_snapshot_stream_from_leader");
 
         info!(?ack_tx, %current_term, "receive_snapshot_stream_from_leader");
-        let (final_metadata, snapshot_path) =
-            self.process_snapshot_stream(stream, ack_tx.clone(), config).await?;
+        let (final_metadata, snapshot_path) = self
+            .process_snapshot_stream(stream_chunk_receiver, ack_tx.clone(), config)
+            .await?;
 
         debug!(
             ?final_metadata,
@@ -898,10 +897,10 @@ where
     }
 
     /// Helper function to process snapshot stream
-    #[instrument(skip(self, stream))]
+    #[instrument(skip(self, stream_chunk_receiver))]
     async fn process_snapshot_stream(
         &self,
-        mut stream: Box<tonic::Streaming<SnapshotChunk>>,
+        mut stream_chunk_receiver: mpsc::Receiver<SnapshotChunk>,
         ack_tx: mpsc::Sender<SnapshotAck>,
         config: &SnapshotConfig,
     ) -> Result<(SnapshotMetadata, PathBuf)> {
@@ -914,27 +913,11 @@ where
         let mut count = 0;
 
         loop {
-            let chunk = match timeout(chunk_timeout, stream.next()).await {
-                Ok(Some(Ok(chunk))) => {
+            let chunk = match timeout(chunk_timeout, stream_chunk_receiver.recv()).await {
+                Ok(Some(chunk)) => {
                     debug!("receive new chunk.");
                     last_received = Instant::now();
                     chunk
-                }
-                Ok(Some(Err(e))) => {
-                    // Send stream error ACK
-                    ack_tx
-                        .send(SnapshotAck {
-                            seq: 0, // Best effort
-                            status: ChunkStatus::Failed.into(),
-                            next_requested: 0,
-                        })
-                        .await
-                        .map_err(|e| {
-                            SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
-                        })?;
-                    return Err(
-                        SnapshotError::OperationFailed(format!("Stream error: {e:?}")).into(),
-                    );
                 }
                 Ok(None) => {
                     debug!("no more chunks available...");

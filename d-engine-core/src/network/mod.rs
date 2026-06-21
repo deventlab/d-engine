@@ -322,7 +322,7 @@ where
         ack_tx: tokio::sync::mpsc::Receiver<d_engine_proto::server::storage::SnapshotAck>,
         retry: &crate::InstallSnapshotBackoffPolicy,
         membership: std::sync::Arc<crate::alias::MOF<T>>,
-    ) -> Result<Box<tonic::Streaming<SnapshotChunk>>>;
+    ) -> Result<mpsc::Receiver<SnapshotChunk>>;
 
     /// Opens a persistent bidirectional AppendEntries stream to the given peer.
     ///

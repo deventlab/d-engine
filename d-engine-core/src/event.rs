@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-
-use crate::client::{ClientReadRequest, ClientResponse, ClientWriteRequest};
+use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
+use crate::client::ClientWriteRequest;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -24,7 +24,6 @@ use crate::ApplyResult;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::ScanResult;
-use crate::StreamResponseSender;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewCommitData {
@@ -151,12 +150,16 @@ pub enum RaftEvent {
 
     // Response snapshot stream from Leader
     InstallSnapshotChunk(
-        Box<tonic::Streaming<SnapshotChunk>>,
+        tokio::sync::mpsc::Receiver<SnapshotChunk>,
         MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
     ),
 
     // Request snapshot stream from Leader
-    StreamSnapshot(Box<tonic::Streaming<SnapshotAck>>, StreamResponseSender),
+    StreamSnapshot(
+        tokio::sync::mpsc::Receiver<SnapshotAck>,
+        tokio::sync::mpsc::Sender<std::sync::Arc<SnapshotChunk>>,
+        tokio::sync::oneshot::Sender<std::result::Result<(), Status>>, // startup confirmation
+    ),
 
     JoinCluster(
         JoinRequest,
@@ -172,7 +175,7 @@ pub enum RaftEvent {
 
     LogPurgeCompleted(LogId),
 
-    SnapshotCreated(Result<(SnapshotMetadata, PathBuf)>),
+    SnapshotCreated(Result<(SnapshotMetadata, std::path::PathBuf)>),
 
     // Lightweight promotion trigger
     PromoteReadyLearners,
@@ -192,11 +195,6 @@ pub enum RaftEvent {
         error: String,  // Error message
     },
 }
-
-// SAFETY: tonic::Streaming variants are only accessed on the thread that created them;
-// no shared references to snapshot variants cross thread boundaries.
-// Full decoupling tracked in #409.
-unsafe impl Sync for RaftEvent {}
 
 #[cfg(test)]
 #[cfg_attr(test, derive(Debug, Clone))]
@@ -250,7 +248,7 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::ClusterConfUpdate(req, _) => TestEvent::ClusterConfUpdate(req.clone()),
         RaftEvent::AppendEntries(req, _) => TestEvent::AppendEntries(req.clone()),
         RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
-        RaftEvent::StreamSnapshot(_, _) => TestEvent::StreamSnapshot,
+        RaftEvent::StreamSnapshot(_, _, _) => TestEvent::StreamSnapshot,
         RaftEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
         RaftEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
         RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,

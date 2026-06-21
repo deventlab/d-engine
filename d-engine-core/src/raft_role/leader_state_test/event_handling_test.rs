@@ -22,9 +22,9 @@ use crate::event::{NewCommitData, RoleEvent};
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
+use crate::test_utils::create_test_chunk;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
-use crate::test_utils::{create_test_chunk, create_test_snapshot_stream};
 use crate::utils::convert::safe_kv_bytes;
 use d_engine_proto::server::cluster::{
     ClusterConfChangeRequest, ClusterMembership, MetadataRequest,
@@ -829,8 +829,10 @@ async fn test_handle_install_snapshot_returns_permission_denied() {
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
 
-    let stream = create_test_snapshot_stream(vec![create_test_chunk(0, b"chunk0", 1, 1, 2)]);
-    let raft_event = RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx);
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(create_test_chunk(0, b"chunk0", 1, 1, 2)).await.unwrap();
+    drop(tx);
+    let raft_event = RaftEvent::InstallSnapshotChunk(rx, resp_tx);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
     assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());

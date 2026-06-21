@@ -16,7 +16,6 @@ use crate::client::WriteOperation;
 use crate::config::ReadConsistencyPolicy;
 use crate::raft_role::learner_state::LearnerState;
 use crate::raft_role::role_state::RaftRoleState;
-use crate::test_utils::create_test_snapshot_stream;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::mock_raft_context_with_temp;
@@ -1790,14 +1789,15 @@ async fn test_learner_install_snapshot_reports_success_after_all_chunks_applied(
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     state.update_current_term(2);
 
-    let chunks: Vec<SnapshotChunk> = vec![SnapshotChunk::default()];
-    let stream = create_test_snapshot_stream(chunks);
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk::default()).await.unwrap();
+    drop(tx);
     state
         .handle_raft_event(
-            RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx),
+            RaftEvent::InstallSnapshotChunk(rx, resp_tx),
             &context,
             role_tx,
         )
@@ -1863,15 +1863,16 @@ async fn test_learner_install_snapshot_does_not_report_success_on_mid_chunk_fail
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     state.update_current_term(2);
 
-    let chunks: Vec<SnapshotChunk> = vec![SnapshotChunk::default()];
-    let stream = create_test_snapshot_stream(chunks);
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk::default()).await.unwrap();
+    drop(tx);
     // handle_raft_event returns Err (apply failed) — that is expected
     let _ = state
         .handle_raft_event(
-            RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx),
+            RaftEvent::InstallSnapshotChunk(rx, resp_tx),
             &context,
             role_tx,
         )
@@ -1933,14 +1934,16 @@ async fn test_learner_install_snapshot_reports_failure_when_apply_fails_after_tr
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     state.update_current_term(2);
 
-    let stream = create_test_snapshot_stream(vec![SnapshotChunk::default()]);
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (role_tx, _role_rx) = mpsc::unbounded_channel();
 
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk::default()).await.unwrap();
+    drop(tx);
     // Learner propagates apply errors — ignore the return value here
     let _ = state
         .handle_raft_event(
-            RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx),
+            RaftEvent::InstallSnapshotChunk(rx, resp_tx),
             &context,
             role_tx,
         )

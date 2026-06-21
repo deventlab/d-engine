@@ -45,7 +45,6 @@ use crate::alias::TROF;
 use crate::client::{ClientReadRequest, ClientResponse, ErrorCode};
 use crate::event::ClientCmd;
 use crate::network::Transport;
-use crate::stream::create_production_snapshot_stream;
 use async_trait::async_trait;
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::BatchPromote;
@@ -65,7 +64,6 @@ use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::append_entries_response;
-use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use rand::distr::SampleString;
 use std::collections::BTreeMap;
@@ -1388,23 +1386,18 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     panic!("{}", msg);
                 }
             }
-            RaftEvent::StreamSnapshot(request, sender) => {
+            RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx) => {
                 debug!("Leader::RaftEvent::StreamSnapshot");
 
                 // Get the latest snapshot metadata
                 if let Some(metadata) = ctx.state_machine().snapshot_metadata() {
-                    // Create response channel
-                    let (response_tx, response_rx) =
-                        mpsc::channel::<std::result::Result<Arc<SnapshotChunk>, Status>>(32);
-                    // Convert to properly encoded tonic stream
-                    let size = 1024 * 1024 * 1024; // 1GB max message size
-                    let response_stream = create_production_snapshot_stream(response_rx, size);
-                    // Immediately respond with the stream
-                    sender.send(Ok(response_stream)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Stream response failed: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+                    // confirm: transfer starting
+                    if let Err(e) = startup_tx.send(Ok(())) {
+                        error!(
+                            ?e,
+                            "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
+                        );
+                    }
 
                     // Spawn background transfer task
                     let state_machine_handler = ctx.state_machine_handler().clone();
@@ -1415,8 +1408,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                     tokio::spawn(async move {
                         if let Err(e) = BackgroundSnapshotTransfer::<T>::run_pull_transfer(
-                            request,
-                            response_tx,
+                            ack_rx,
+                            chunk_tx,
                             data_stream,
                             config,
                         )
@@ -1425,13 +1418,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             error!("StreamSnapshot failed: {:?}", e);
                         }
                     });
-                } else {
-                    warn!("No snapshot available for streaming");
-                    sender.send(Err(Status::not_found("Snapshot not found"))).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Stream response failed: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+                } else if let Err(e) =
+                    startup_tx.send(Err(Status::not_found("No snapshot available")))
+                {
+                    error!(
+                        ?e,
+                        "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
+                    );
+                    // chunk_tx dropped
                 }
             }
             RaftEvent::PromoteReadyLearners => {

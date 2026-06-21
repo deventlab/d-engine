@@ -2,15 +2,12 @@
 //! and client requests. Implements core Raft protocol logic for leader election,
 //! log replication, and cluster configuration management.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::time::Duration;
-
+use crate::Node;
+use crate::proto_convert;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::MaybeCloneOneshotReceiver;
 use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
-use d_engine_core::StreamResponseSender;
 use d_engine_core::TypeConfig;
 #[cfg(feature = "watch")]
 use d_engine_core::WatchError;
@@ -45,9 +42,15 @@ use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
 use futures::Stream;
 use futures::StreamExt;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::select;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::time::timeout;
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
 use tonic::Response;
@@ -57,9 +60,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
-
-use crate::Node;
-use crate::proto_convert;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>
@@ -223,7 +223,7 @@ impl<T> SnapshotService for Node<T>
 where
     T: TypeConfig,
 {
-    type StreamSnapshotStream = tonic::Streaming<SnapshotChunk>;
+    type StreamSnapshotStream = Pin<Box<dyn Stream<Item = Result<SnapshotChunk, Status>> + Send>>;
 
     async fn stream_snapshot(
         &self,
@@ -234,24 +234,44 @@ where
             return Err(Status::unavailable("Service is not ready"));
         }
 
-        let (resp_tx, resp_rx) = StreamResponseSender::new();
+        // Bridge incoming ACK stream: tonic → mpsc
+        let mut ack_stream = request.into_inner();
+        let (ack_tx, ack_rx) = mpsc::channel::<SnapshotAck>(32);
+        tokio::spawn(async move {
+            while let Some(ack) = ack_stream.next().await {
+                match ack {
+                    Ok(a) => {
+                        if ack_tx.send(a).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Server creates chunk channel, passes tx to core, keeps rx for gRPC response
+        let (chunk_tx, chunk_rx) = mpsc::channel::<Arc<SnapshotChunk>>(32);
+        let (startup_tx, startup_rx) = oneshot::channel::<Result<(), Status>>();
 
         self.event_tx
-            .send(RaftEvent::StreamSnapshot(
-                Box::new(request.into_inner()),
-                resp_tx,
-            ))
+            .send(RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
-        let timeout_duration = Duration::from_millis(self.node_config.raft.snapshot_rpc_timeout_ms);
+        // Wait for core to confirm it can serve the snapshot
+        match startup_rx.await {
+            Ok(Ok(())) => {
+                debug!("stream request been processed");
+            }
+            Ok(Err(status)) => return Err(status),
+            Err(_) => return Err(Status::internal("Core dropped startup sender")),
+        }
 
-        handle_rpc_timeout(
-            async { resp_rx.await.map_err(|_| Status::internal("Response channel closed")) },
-            timeout_duration,
-            "stream_snapshot",
-        )
-        .await
+        // Return chunk stream directly — no waiting needed
+        let response_stream =
+            ReceiverStream::new(chunk_rx).map(|arc_chunk| Ok((*arc_chunk).clone()));
+        Ok(Response::new(Box::pin(response_stream)))
     }
 
     async fn install_snapshot(
@@ -265,11 +285,23 @@ where
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
 
+        let mut tonic_stream = request.into_inner();
+        let (tx, rx) = mpsc::channel(32);
+        tokio::spawn(async move {
+            while let Some(chunk) = tonic_stream.next().await {
+                match chunk {
+                    Ok(c) => {
+                        if tx.send(c).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
         self.event_tx
-            .send(RaftEvent::InstallSnapshotChunk(
-                Box::new(request.into_inner()),
-                resp_tx,
-            ))
+            .send(RaftEvent::InstallSnapshotChunk(rx, resp_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
