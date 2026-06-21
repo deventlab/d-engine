@@ -296,8 +296,6 @@ where
                     debug!(%self.node_id, ?role_event, "receive role event");
                     self.buffered_role_event.push_back(role_event);
                     self.drain_role_events().await?;
-
-
                 }
 
                 // P3: Client commands — push first, drain rest after select
@@ -312,23 +310,11 @@ where
                     trace!(%self.node_id, ?raft_event, "receive raft event");
                     self.buffered_raft_event.push_back(raft_event);
                     self.drain_raft_events().await?;
-
-
-
-
                 }
 
             }
 
-            // After any arm fires: drain all channels in order.
-            // role_rx first: processes ACKs/commits and sends responses to clients,
-            // naturally yielding at .await points so client tasks can enqueue their
-            // next writes into cmd_rx before drain_client_cmds runs.
-            tokio::task::yield_now().await;
             self.process_role_events().await?;
-            // Yield after role events so woken client tasks can enqueue their next
-            // writes into cmd_rx before drain_client_cmds runs.
-            tokio::task::yield_now().await;
             self.process_client_cmds().await?;
             self.process_raft_events().await?;
         }

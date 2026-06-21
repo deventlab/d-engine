@@ -500,9 +500,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Ok(());
             }
 
-            RaftEvent::StreamSnapshot(_ack_rx, _chunk_tx) => {
+            RaftEvent::StreamSnapshot(_ack_rx, _chunk_tx, startup_tx) => {
+                let _ = startup_tx.send(Err(Status::failed_precondition("Not the leader")));
                 debug!("Follower::RaftEvent::StreamSnapshot");
-                warn!("Candidate should not receive StreamSnapshot event.");
+                warn!("Follower should not receive StreamSnapshot event.");
                 return Ok(());
             }
 

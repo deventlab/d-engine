@@ -666,6 +666,61 @@ mod run_pull_transfer_test {
         );
     }
 
+    // Test: ACK channel closes before all chunks are acknowledged — transfer must fail.
+    //
+    // This test guards the fix in the `None` arm of `ack_rx.recv()`.
+    // Before the fix, `None => break` exited the loop and returned Ok(()) even
+    // with unacknowledged chunks still in pending_acks.
+    //
+    // Setup: 2-chunk stream. Follower ACKs seq=0 (Accepted), receives seq=1,
+    //        then drops the ACK sender without ACKing seq=1 (simulates disconnect).
+    // Expected: run_pull_transfer returns Err(TransferFailed).
+    // Regression: revert `None` arm to just `break` — this test must then FAIL
+    //             because the transfer would incorrectly return Ok(()).
+    #[tokio::test]
+    async fn test_pull_transfer_fails_on_early_ack_channel_closure() {
+        let config = pull_config();
+        let (ack_tx, ack_rx) = mpsc::channel::<SnapshotAck>(32);
+        let (chunk_tx, mut chunk_rx) = mpsc::channel::<Arc<SnapshotChunk>>(32);
+
+        let data_stream = stream::iter(vec![Ok(make_chunk(0, 2)), Ok(make_chunk(1, 2))]).boxed();
+
+        let transfer = tokio::spawn(async move {
+            BackgroundSnapshotTransfer::<MockTypeConfig>::run_pull_transfer(
+                ack_rx,
+                chunk_tx,
+                data_stream,
+                config,
+            )
+            .await
+        });
+
+        // Receive seq=0 and ACK it — pending_acks becomes {1} after seq=1 is sent.
+        let chunk0 = chunk_rx.recv().await.expect("should receive chunk 0");
+        assert_eq!(chunk0.seq, 0);
+        ack_tx
+            .send(make_ack(0, ChunkStatus::Accepted))
+            .await
+            .expect("ack channel should be open");
+
+        // Receive seq=1 but do NOT ACK it — then close the ACK channel.
+        // At this point pending_acks = {1}, so early closure must be an error.
+        let chunk1 = chunk_rx.recv().await.expect("should receive chunk 1");
+        assert_eq!(chunk1.seq, 1);
+        drop(ack_tx);
+
+        let result = transfer.await.expect("task should not panic");
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::Consensus(crate::ConsensusError::Snapshot(
+                    SnapshotError::TransferFailed
+                )))
+            ),
+            "expected TransferFailed when ack channel closes with pending chunks, got: {result:?}"
+        );
+    }
+
     // Test: Chunks arriving out of sequence cause an immediate protocol error.
     //
     // Setup: data_stream yields seq=0 then seq=2 (skipping seq=1).

@@ -1386,11 +1386,19 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     panic!("{}", msg);
                 }
             }
-            RaftEvent::StreamSnapshot(ack_rx, chunk_tx) => {
+            RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx) => {
                 debug!("Leader::RaftEvent::StreamSnapshot");
 
                 // Get the latest snapshot metadata
                 if let Some(metadata) = ctx.state_machine().snapshot_metadata() {
+                    // confirm: transfer starting
+                    if let Err(e) = startup_tx.send(Ok(())) {
+                        error!(
+                            ?e,
+                            "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
+                        );
+                    }
+
                     // Spawn background transfer task
                     let state_machine_handler = ctx.state_machine_handler().clone();
                     let config = ctx.node_config.raft.snapshot.clone();
@@ -1410,6 +1418,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                             error!("StreamSnapshot failed: {:?}", e);
                         }
                     });
+                } else if let Err(e) =
+                    startup_tx.send(Err(Status::not_found("No snapshot available")))
+                {
+                    error!(
+                        ?e,
+                        "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
+                    );
+                    // chunk_tx dropped
                 }
             }
             RaftEvent::PromoteReadyLearners => {

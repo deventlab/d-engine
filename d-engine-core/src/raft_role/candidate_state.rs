@@ -464,9 +464,16 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 return Ok(());
             }
 
-            RaftEvent::StreamSnapshot(_ack_rx, _chunk_tx) => {
+            RaftEvent::StreamSnapshot(_ack_rx, _chunk_tx, startup_tx) => {
                 debug!("Candidate::RaftEvent::StreamSnapshot");
                 warn!("Candidate should not receive StreamSnapshot event.");
+                if let Err(e) = startup_tx.send(Err(Status::failed_precondition("Not the leader")))
+                {
+                    error!(
+                        ?e,
+                        "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
+                    );
+                }
                 return Ok(());
             }
 

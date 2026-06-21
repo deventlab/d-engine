@@ -48,6 +48,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -251,11 +252,21 @@ where
 
         // Server creates chunk channel, passes tx to core, keeps rx for gRPC response
         let (chunk_tx, chunk_rx) = mpsc::channel::<Arc<SnapshotChunk>>(32);
+        let (startup_tx, startup_rx) = oneshot::channel::<Result<(), Status>>();
 
         self.event_tx
-            .send(RaftEvent::StreamSnapshot(ack_rx, chunk_tx))
+            .send(RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
+
+        // Wait for core to confirm it can serve the snapshot
+        match startup_rx.await {
+            Ok(Ok(())) => {
+                debug!("stream request been processed");
+            }
+            Ok(Err(status)) => return Err(status),
+            Err(_) => return Err(Status::internal("Core dropped startup sender")),
+        }
 
         // Return chunk stream directly — no waiting needed
         let response_stream =

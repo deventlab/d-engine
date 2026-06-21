@@ -215,7 +215,15 @@ where
                             &mut retry_counts,
                             &config,
                         )?,
-                        None => break, // ACK stream closed
+                        None => {
+                            if let Some(total) = total_chunks
+                                && next_seq >= total
+                                && pending_acks.is_empty()
+                            {
+                                break;
+                            }
+                            return Err(SnapshotError::TransferFailed.into());
+                        }
                     }
                 },
 
