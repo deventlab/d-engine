@@ -5,11 +5,11 @@
 
 use super::super::LeaderState;
 use crate::ClientCmd;
+use crate::InboundEvent;
+use crate::InternalEvent;
 use crate::MockMembership;
 use crate::MockTypeConfig;
-use crate::RaftEvent;
 use crate::ReadConsistencyPolicy;
-use crate::RoleEvent;
 use crate::client::ClientReadRequest;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
@@ -38,10 +38,10 @@ use tracing_test::traced_test;
 /// - FatalError event from StateMachine component with specific error details
 ///
 /// # When
-/// - Leader handles FatalError event via handle_raft_event()
+/// - Leader handles FatalError event via handle_inbound_event()
 ///
 /// # Then
-/// - handle_raft_event() returns Error::Fatal
+/// - handle_inbound_event() returns Error::Fatal
 /// - Error message contains source and error details from FatalError event
 /// - No role transition events are sent (leadership continues until higher level handles error)
 #[tokio::test]
@@ -57,21 +57,21 @@ async fn test_leader_handles_fatal_error_notifies_pending_write_apply() {
     let mut leader = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Create FatalError event from state machine
-    let fatal_error = RaftEvent::FatalError {
+    let fatal_error = InboundEvent::FatalError {
         source: "StateMachine".to_string(),
         error: "Disk failure - cannot write to persistent storage".to_string(),
     };
 
-    // Create role event channel
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    // Create internal event channel
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
     // Handle the FatalError event
-    let result = leader.handle_raft_event(fatal_error, &context, role_tx).await;
+    let result = leader.handle_inbound_event(fatal_error, &context, internal_event_tx).await;
 
-    // VERIFY 1: handle_raft_event() returns Error::Fatal
+    // VERIFY 1: handle_inbound_event() returns Error::Fatal
     assert!(
         result.is_err(),
-        "Expected handle_raft_event to return Err, got: {result:?}"
+        "Expected handle_inbound_event to return Err, got: {result:?}"
     );
 
     // VERIFY 2: Error is Fatal and contains source information
@@ -89,11 +89,11 @@ async fn test_leader_handles_fatal_error_notifies_pending_write_apply() {
         other => panic!("Expected Error::Fatal, got: {other:?}"),
     }
 
-    // VERIFY 3: No role events sent (FatalError is handled locally in leader)
+    // VERIFY 3: No internal events sent (FatalError is handled locally in leader)
     // The leader stops processing at the fatal error and higher level (Raft core)
     // will eventually shut down the node
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "No role transition events should be sent during FatalError handling"
     );
 }
@@ -184,15 +184,15 @@ async fn test_fatal_error_drains_all_pending_queues() {
     );
 
     // -- Action: FatalError --
-    let (role_tx, _role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
     let result = leader
-        .handle_raft_event(
-            RaftEvent::FatalError {
+        .handle_inbound_event(
+            InboundEvent::FatalError {
                 source: "StateMachine".to_string(),
                 error: "disk failure".to_string(),
             },
             &ctx,
-            role_tx,
+            internal_event_tx,
         )
         .await;
 

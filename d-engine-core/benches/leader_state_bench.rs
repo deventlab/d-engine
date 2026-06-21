@@ -150,7 +150,7 @@ struct BenchFixture {
     leader_state: LeaderState<MockTypeConfig>,
     raft_context: RaftContext<MockTypeConfig>,
     #[allow(dead_code)]
-    role_tx: mpsc::UnboundedSender<d_engine_core::RoleEvent>,
+    internal_event_tx: mpsc::UnboundedSender<d_engine_core::InternalEvent>,
 }
 
 impl BenchFixture {
@@ -257,13 +257,13 @@ impl BenchFixture {
             node_config: Arc::new(node_config.clone()),
         };
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
         let leader_state = LeaderState::new(1, Arc::new(node_config));
 
         BenchFixture {
             leader_state,
             raft_context,
-            role_tx,
+            internal_event_tx,
         }
     }
 }
@@ -287,7 +287,10 @@ fn bench_process_promotions_2_nodes(c: &mut Criterion) {
             black_box(
                 fixture
                     .leader_state
-                    .handle_promote_ready_learners(&fixture.raft_context, &fixture.role_tx)
+                    .handle_promote_ready_learners(
+                        &fixture.raft_context,
+                        &fixture.internal_event_tx,
+                    )
                     .await,
             )
         })
@@ -320,7 +323,10 @@ fn bench_batch_promotion_scaling(c: &mut Criterion) {
                     black_box(
                         fixture
                             .leader_state
-                            .handle_promote_ready_learners(&fixture.raft_context, &fixture.role_tx)
+                            .handle_promote_ready_learners(
+                                &fixture.raft_context,
+                                &fixture.internal_event_tx,
+                            )
                             .await,
                     )
                 })

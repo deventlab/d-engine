@@ -9,6 +9,8 @@ use tokio::sync::watch;
 use tracing::trace;
 
 use crate::ElectionConfig;
+use crate::InboundEvent;
+use crate::InternalEvent;
 use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockPurgeExecutor;
@@ -22,12 +24,10 @@ use crate::Raft;
 use crate::RaftConfig;
 use crate::RaftContext;
 use crate::RaftCoreHandlers;
-use crate::RaftEvent;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftStorageHandles;
-use crate::RoleEvent;
 use crate::SignalParams;
 use crate::StateMachine;
 use crate::follower_state::FollowerState;
@@ -47,11 +47,11 @@ pub struct MockBuilder {
     pub turn_on_election: Option<bool>,
     shutdown_signal: watch::Receiver<()>,
 
-    pub(crate) event_tx: Option<mpsc::Sender<RaftEvent>>,
-    pub(crate) event_rx: Option<mpsc::Receiver<RaftEvent>>,
+    pub(crate) event_tx: Option<mpsc::Sender<InboundEvent>>,
+    pub(crate) event_rx: Option<mpsc::Receiver<InboundEvent>>,
 
-    pub(crate) role_tx: Option<mpsc::UnboundedSender<RoleEvent>>,
-    pub(crate) role_rx: Option<mpsc::UnboundedReceiver<RoleEvent>>,
+    pub(crate) internal_event_tx: Option<mpsc::UnboundedSender<InternalEvent>>,
+    pub(crate) internal_event_rx: Option<mpsc::UnboundedReceiver<InternalEvent>>,
 }
 
 impl MockBuilder {
@@ -71,8 +71,8 @@ impl MockBuilder {
             turn_on_election: None,
             shutdown_signal,
 
-            role_tx: None,
-            role_rx: None,
+            internal_event_tx: None,
+            internal_event_rx: None,
             event_tx: None,
             event_rx: None,
         }
@@ -121,7 +121,7 @@ impl MockBuilder {
     }
 
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
-        let (role_tx, role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10);
         let (cmd_tx, cmd_rx) = mpsc::channel(1024);
         let (
@@ -135,8 +135,8 @@ impl MockBuilder {
             membership,
             purge_executor,
             node_config,
-            role_tx,
-            role_rx,
+            internal_event_tx,
+            internal_event_rx,
             event_tx,
             event_rx,
         ) = (
@@ -156,8 +156,8 @@ impl MockBuilder {
                     .validate()
                     .expect("Should succeed to validate RaftNodeConfig")
             }),
-            self.role_tx.unwrap_or(role_tx),
-            self.role_rx.unwrap_or(role_rx),
+            self.internal_event_tx.unwrap_or(internal_event_tx),
+            self.internal_event_rx.unwrap_or(internal_event_rx),
             self.event_tx.unwrap_or(event_tx),
             self.event_rx.unwrap_or(event_rx),
         );
@@ -205,8 +205,8 @@ impl MockBuilder {
             },
             membership,
             SignalParams {
-                role_tx,
-                role_rx,
+                internal_event_tx,
+                internal_event_rx,
                 event_tx,
                 event_rx,
                 cmd_tx,

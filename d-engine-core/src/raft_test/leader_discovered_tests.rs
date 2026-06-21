@@ -1,4 +1,4 @@
-//! # RoleEvent Handling Tests - Leader Discovery Category
+//! # InternalEvent Handling Tests - Leader Discovery Category
 //!
 //! **Original location**: raft_test.rs L379-514
 //! **Test count**: 5 tests
@@ -11,13 +11,13 @@
 //! - LeaderDiscovered event triggers notifications but no state change
 //! - Multiple listeners receive the event
 //! - Event deduplication and watch channel behavior
-//! - RoleEvent::LeaderDiscovered creation and serialization
+//! - InternalEvent::LeaderDiscovered creation and serialization
 //!
 
 use tokio::sync::watch;
 
+use crate::InternalEvent;
 use crate::Raft;
-use crate::RoleEvent;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
 
@@ -34,7 +34,7 @@ async fn test_leader_discovered_event_handling() {
     // Send LeaderDiscovered event
     let leader_id = 3;
     let term = 5;
-    raft.handle_role_event(RoleEvent::LeaderDiscovered(leader_id, term))
+    raft.handle_internal_event(InternalEvent::LeaderDiscovered(leader_id, term))
         .await
         .expect("Should handle LeaderDiscovered");
 
@@ -56,7 +56,7 @@ async fn test_leader_discovered_no_state_change() {
     let initial_role = raft.role.as_i32();
 
     // Send LeaderDiscovered event
-    raft.handle_role_event(RoleEvent::LeaderDiscovered(3, 5))
+    raft.handle_internal_event(InternalEvent::LeaderDiscovered(3, 5))
         .await
         .expect("Should handle LeaderDiscovered");
 
@@ -81,7 +81,7 @@ async fn test_leader_discovered_multiple_listeners() {
     // Send LeaderDiscovered event
     let leader_id = 2;
     let term = 10;
-    raft.handle_role_event(RoleEvent::LeaderDiscovered(leader_id, term))
+    raft.handle_internal_event(InternalEvent::LeaderDiscovered(leader_id, term))
         .await
         .expect("Should handle LeaderDiscovered");
 
@@ -108,10 +108,10 @@ async fn test_leader_discovered_with_deduplication() {
     raft.register_leader_change_listener(leader_tx);
 
     // Send same leader multiple times
-    raft.handle_role_event(RoleEvent::LeaderDiscovered(2, 5))
+    raft.handle_internal_event(InternalEvent::LeaderDiscovered(2, 5))
         .await
         .expect("Should handle first");
-    raft.handle_role_event(RoleEvent::LeaderDiscovered(2, 5))
+    raft.handle_internal_event(InternalEvent::LeaderDiscovered(2, 5))
         .await
         .expect("Should handle second (duplicate)");
 
@@ -133,15 +133,15 @@ async fn test_leader_discovered_with_deduplication() {
 }
 
 #[test]
-fn test_role_event_leader_discovered_creation() {
+fn test_internal_event_leader_discovered_creation() {
     // Test creating LeaderDiscovered event
     let leader_id = 5;
     let term = 20;
-    let event = RoleEvent::LeaderDiscovered(leader_id, term);
+    let event = InternalEvent::LeaderDiscovered(leader_id, term);
 
     // Verify we can match on it
     match event {
-        RoleEvent::LeaderDiscovered(id, t) => {
+        InternalEvent::LeaderDiscovered(id, t) => {
             assert_eq!(id, leader_id);
             assert_eq!(t, term);
         }

@@ -1,6 +1,6 @@
 //! Tests for leader state event handling
 //!
-//! This module tests the `handle_raft_event` method for various Raft events
+//! This module tests the `handle_inbound_event` method for various inbound events
 //! including vote requests, append entries, client operations, and more.
 
 use crate::client::WriteOperation;
@@ -17,8 +17,8 @@ use crate::MockStateMachineHandler;
 use crate::client::{ClientReadRequest, ClientWriteRequest};
 use crate::config::RaftNodeConfig;
 use crate::config::ReadConsistencyPolicy;
-use crate::event::RaftEvent;
-use crate::event::{NewCommitData, RoleEvent};
+use crate::event::InboundEvent;
+use crate::event::{InternalEvent, NewCommitData};
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
@@ -45,11 +45,11 @@ fn create_mock_membership() -> crate::MockMembership<MockTypeConfig> {
 }
 
 /// Helper to create VoteRequest event
-fn setup_handle_raft_event_case1_params(
+fn setup_handle_inbound_event_case1_params(
     resp_tx: crate::MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
     term: u64,
-) -> RaftEvent {
-    RaftEvent::ReceiveVoteRequest(
+) -> InboundEvent {
+    InboundEvent::ReceiveVoteRequest(
         VoteRequest {
             term,
             candidate_id: 1,
@@ -98,16 +98,21 @@ async fn test_handle_vote_request_reject_same_term() {
     // Prepare function params
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let raft_event = setup_handle_raft_event_case1_params(resp_tx, request_term);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = setup_handle_inbound_event_case1_params(resp_tx, request_term);
 
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
 
     // Receive response with vote_granted = false
     assert!(!resp_rx.recv().await.unwrap().unwrap().vote_granted);
 
-    // No role event receives
-    assert!(role_rx.try_recv().is_err());
+    // No internal event receives
+    assert!(internal_event_rx.try_recv().is_err());
 
     // Term should not be updated
     assert_eq!(term_before, state.current_term());
@@ -147,27 +152,27 @@ async fn test_handle_vote_request_step_down_on_higher_term() {
     // Prepare function params
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let raft_event = setup_handle_raft_event_case1_params(resp_tx, updated_term);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = setup_handle_inbound_event_case1_params(resp_tx, updated_term);
 
-    let r = state.handle_raft_event(raft_event, &context, role_tx).await;
+    let r = state.handle_inbound_event(inbound_event, &context, internal_event_tx).await;
     assert!(r.is_ok());
 
     // Step to Follower
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeFollower(_))
     ));
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::ReprocessEvent(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::ReprocessEvent(_))
     ));
 
     // Term should be updated
     assert_eq!(state.current_term(), updated_term);
 
     // Make sure this assert is at the end of the test function.
-    // Because we should wait handle_raft_event fun finish running after the role
+    // Because we should wait handle_inbound_event fun finish running after the role
     // events been consumed above.
     assert!(resp_rx.recv().await.is_err());
 }
@@ -216,10 +221,15 @@ async fn test_handle_cluster_conf_metadata_request() {
     // Prepare function params
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::ClusterConf(MetadataRequest {}, resp_tx);
 
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
 
     let m = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(m.nodes, vec![]);
@@ -268,10 +278,10 @@ async fn test_handle_cluster_conf_update_reject_stale_term() {
 
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let raft_event = RaftEvent::ClusterConfUpdate(request, resp_tx);
+    let inbound_event = InboundEvent::ClusterConfUpdate(request, resp_tx);
 
     state
-        .handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0)
+        .handle_inbound_event(inbound_event, &context, mpsc::unbounded_channel().0)
         .await
         .unwrap();
 
@@ -324,19 +334,22 @@ async fn test_handle_cluster_conf_update_step_down_on_higher_term() {
 
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ClusterConfUpdate(request, resp_tx);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::ClusterConfUpdate(request, resp_tx);
 
-    state.handle_raft_event(raft_event, &context, role_tx).await.unwrap();
+    state
+        .handle_inbound_event(inbound_event, &context, internal_event_tx)
+        .await
+        .unwrap();
 
     // Verify step down to follower
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(Some(2)))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeFollower(Some(2)))
     ));
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::ReprocessEvent(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::ReprocessEvent(_))
     ));
     assert!(resp_rx.recv().await.is_err()); // Original sender should not get response
 }
@@ -389,13 +402,13 @@ async fn test_handle_append_entries_reject_same_term() {
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Execute fun
     state
-        .handle_raft_event(raft_event, &context, role_tx)
+        .handle_inbound_event(inbound_event, &context, internal_event_tx)
         .await
         .expect("should succeed");
 
@@ -453,21 +466,26 @@ async fn test_handle_append_entries_step_down_on_higher_term() {
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Test fun
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
 
     // Validate criterias: step down as Follower
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeFollower(_))
     ));
     assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::ReprocessEvent(_)
+        internal_event_rx.try_recv().unwrap(),
+        InternalEvent::ReprocessEvent(_)
     ));
 
     // Validate no response received
@@ -513,7 +531,7 @@ async fn test_handle_client_propose_success() {
     // New state
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
-    // Handle raft event
+    // Handle inbound event
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let cmd = ClientCmd::Propose(
@@ -526,11 +544,14 @@ async fn test_handle_client_propose_success() {
         resp_tx,
     );
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Push to buffer then flush to trigger replication
     state.push_client_cmd(cmd, &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush should succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("flush should succeed");
 }
 
 /// Test handling ClientReadRequest with linearizable read failure
@@ -584,13 +605,13 @@ async fn test_handle_client_read_linearizable_failure() {
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Push to buffer
     state.push_client_cmd(cmd, &context);
 
     // Flush: triggers quorum verification which will fail
-    state.flush_cmd_buffers(&context, &role_tx).await.ok();
+    state.flush_cmd_buffers(&context, &internal_event_tx).await.ok();
 
     // Client receives error via response channel
     let e = resp_rx.recv().await.unwrap().unwrap_err();
@@ -675,26 +696,31 @@ async fn test_handle_client_read_linearizable_success() {
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Push to buffer
     state.push_client_cmd(cmd, &context);
 
     // Flush: prepare_batch_requests fires-and-forgets; read deferred to pending_reads[1]
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("should succeed");
 
     // Advance commit to 3 via single-voter flush path → fires NotifyNewCommitIndex
     state.cluster_metadata.single_voter = true;
-    state.handle_log_flushed(expect_new_commit_index, &context, &role_tx).await;
+    state
+        .handle_log_flushed(expect_new_commit_index, &context, &internal_event_tx)
+        .await;
 
     // Validation criteria 1: Leader commit should be updated to: 3
     assert_eq!(state.shared_state().commit_index, expect_new_commit_index);
 
-    // Validation criteria 3: event "RoleEvent::NotifyNewCommitIndex" should be received
-    let event = role_rx.try_recv().unwrap();
+    // Validation criteria 3: event "InternalEvent::NotifyNewCommitIndex" should be received
+    let event = internal_event_rx.try_recv().unwrap();
     assert!(matches!(
         event,
-        RoleEvent::NotifyNewCommitIndex(NewCommitData {
+        InternalEvent::NotifyNewCommitIndex(NewCommitData {
             new_commit_index: _expect_new_commit_index,
             role: _,
             current_term: _
@@ -703,7 +729,12 @@ async fn test_handle_client_read_linearizable_success() {
 
     // Simulate SM apply: ApplyCompleted fires pending_reads for read_index <= 3
     state
-        .handle_apply_completed(expect_new_commit_index, vec![], &context, &role_tx)
+        .handle_apply_completed(
+            expect_new_commit_index,
+            vec![],
+            &context,
+            &internal_event_tx,
+        )
         .await
         .expect("ApplyCompleted should succeed");
 
@@ -765,11 +796,11 @@ async fn test_handle_client_read_encounters_higher_term() {
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Push to buffer and flush: read deferred to pending_reads[1]
     state.push_client_cmd(cmd, &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.ok();
+    state.flush_cmd_buffers(&context, &internal_event_tx).await.ok();
 
     // Simulate peer responding with higher term → triggers step-down
     let higher_term_resp = AppendEntriesResponse {
@@ -778,16 +809,16 @@ async fn test_handle_client_read_encounters_higher_term() {
         result: None,
     };
     state
-        .handle_append_result(2, Ok(higher_term_resp), &context, &role_tx)
+        .handle_append_result(2, Ok(higher_term_resp), &context, &internal_event_tx)
         .await
         .unwrap_err(); // Expected to return Err(HigherTerm)
 
     // Validation criteria 1: Leader commit should remain unchanged
     assert_eq!(state.shared_state().commit_index, 1);
 
-    // Validation criteria 2: event "RoleEvent::BecomeFollower" should be received
-    let event = role_rx.try_recv().unwrap();
-    assert!(matches!(event, RoleEvent::BecomeFollower(None)));
+    // Validation criteria 2: event "InternalEvent::BecomeFollower" should be received
+    let event = internal_event_rx.try_recv().unwrap();
+    assert!(matches!(event, InternalEvent::BecomeFollower(None)));
 
     // Drain pending reads (step-down cleanup) → sends Unavailable to clients
     state.drain_read_buffer().expect("drain should succeed");
@@ -832,18 +863,23 @@ async fn test_handle_install_snapshot_returns_permission_denied() {
     let (tx, rx) = mpsc::channel(32);
     tx.send(create_test_chunk(0, b"chunk0", 1, 1, 2)).await.unwrap();
     drop(tx);
-    let raft_event = RaftEvent::InstallSnapshotChunk(rx, resp_tx);
+    let inbound_event = InboundEvent::InstallSnapshotChunk(rx, resp_tx);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_err());
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_err()
+    );
 
     // Validation criteria 1: The response should return an error
     // Assert that resp_rx receives permission_denied
     let e = resp_rx.recv().await.unwrap().unwrap_err();
     assert!(matches!(e.code(), Code::PermissionDenied));
 
-    // Validation criteria 2: No role event should be triggered
-    assert!(role_rx.try_recv().is_err());
+    // Validation criteria 2: No internal event should be triggered
+    assert!(internal_event_rx.try_recv().is_err());
 }
 
 // ============================================================================
@@ -907,9 +943,12 @@ async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
         },
         resp_tx,
     );
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(cmd, &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush should succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("flush should succeed");
 
     // Verify: read is now in pending_reads, not yet served
     assert!(
@@ -947,8 +986,8 @@ async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
 ///
 /// Per Raft protocol, after a leader commits its own removal from the cluster
 /// it must immediately step down to Follower. This test verifies:
-/// 1. handle_raft_event returns Ok(())
-/// 2. A BecomeFollower(None) event is sent on role_tx
+/// 1. handle_inbound_event returns Ok(())
+/// 2. A BecomeFollower(None) event is sent on internal_event_tx
 #[tokio::test]
 async fn test_step_down_self_removed_sends_become_follower() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -957,14 +996,14 @@ async fn test_step_down_self_removed_sends_become_follower() {
     let node_config = raft_context.node_config();
     let mut leader_state = LeaderState::<MockTypeConfig>::new(1, node_config);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let result = leader_state.handle_self_removed(&role_tx);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let result = leader_state.handle_self_removed(&internal_event_tx);
 
     assert!(result.is_ok(), "StepDownSelfRemoved must return Ok");
 
-    let event = role_rx.try_recv().expect("BecomeFollower event must be sent");
+    let event = internal_event_rx.try_recv().expect("BecomeFollower event must be sent");
     assert!(
-        matches!(event, RoleEvent::BecomeFollower(None)),
+        matches!(event, InternalEvent::BecomeFollower(None)),
         "Expected BecomeFollower(None), got: {event:?}"
     );
 }
@@ -1016,13 +1055,13 @@ async fn test_cluster_conf_hides_leader_id_when_noop_not_committed() {
 
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     assert!(
         state
-            .handle_raft_event(
-                RaftEvent::ClusterConf(MetadataRequest {}, resp_tx),
+            .handle_inbound_event(
+                InboundEvent::ClusterConf(MetadataRequest {}, resp_tx),
                 &context,
-                role_tx
+                internal_event_tx
             )
             .await
             .is_ok()
@@ -1070,13 +1109,13 @@ async fn test_cluster_conf_exposes_leader_id_after_noop_committed() {
 
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     assert!(
         state
-            .handle_raft_event(
-                RaftEvent::ClusterConf(MetadataRequest {}, resp_tx),
+            .handle_inbound_event(
+                InboundEvent::ClusterConf(MetadataRequest {}, resp_tx),
                 &context,
-                role_tx
+                internal_event_tx
             )
             .await
             .is_ok()
@@ -1140,16 +1179,16 @@ async fn test_cluster_conf_leader_id_transitions_after_noop_commits() {
     state.shared_state.set_current_leader(1);
 
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Call 1: noop_log_id = None (pre-noop)
     let (resp_tx1, mut resp_rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     assert!(
         state
-            .handle_raft_event(
-                RaftEvent::ClusterConf(MetadataRequest {}, resp_tx1),
+            .handle_inbound_event(
+                InboundEvent::ClusterConf(MetadataRequest {}, resp_tx1),
                 &context,
-                role_tx.clone(),
+                internal_event_tx.clone(),
             )
             .await
             .is_ok()
@@ -1167,10 +1206,10 @@ async fn test_cluster_conf_leader_id_transitions_after_noop_commits() {
     let (resp_tx2, mut resp_rx2) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     assert!(
         state
-            .handle_raft_event(
-                RaftEvent::ClusterConf(MetadataRequest {}, resp_tx2),
+            .handle_inbound_event(
+                InboundEvent::ClusterConf(MetadataRequest {}, resp_tx2),
                 &context,
-                role_tx,
+                internal_event_tx,
             )
             .await
             .is_ok()

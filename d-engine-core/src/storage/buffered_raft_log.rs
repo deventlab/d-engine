@@ -184,7 +184,7 @@ impl TermSegments {
 /// IO tasks for the dedicated raft-io thread.
 ///
 /// All blocking storage operations route through this channel so they never run
-/// on tokio worker threads or the Raft event loop.
+/// on tokio worker threads or the inbound event loop.
 #[derive(Debug)]
 pub enum IOTask {
     /// Atomically truncate from `truncate_from` then persist `new_entries`.
@@ -202,7 +202,7 @@ pub enum IOTask {
         done: oneshot::Sender<()>,
     },
     /// Reset log storage (snapshot install). Routes through IO thread so reset
-    /// never runs on the Raft event loop.
+    /// never runs on the inbound event loop.
     Reset { done: oneshot::Sender<Result<()>> },
     /// Persist any pending entries then fsync. The IO thread sends the fsync
     /// result (Ok or Err) back to the caller via the oneshot channel.
@@ -269,9 +269,9 @@ where
     pub(crate) command_sender: mpsc::UnboundedSender<IOTask>,
 
     // --- P0: LogFlushed event notification ---
-    // Sends RoleEvent::LogFlushed(durable) to Raft loop after each fsync.
-    // None in tests; Some(role_tx) in production.
-    log_flush_tx: Option<mpsc::UnboundedSender<crate::RoleEvent>>,
+    // Sends InternalEvent::LogFlushed(durable) to Raft loop after each fsync.
+    // None in tests; Some(internal_event_tx) in production.
+    log_flush_tx: Option<mpsc::UnboundedSender<crate::InternalEvent>>,
 
     // IO thread handle — set by start(), used by close() to join before returning.
     io_thread_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -635,7 +635,7 @@ where
         self.last_purged_term.store(cutoff_index.term, Ordering::Release);
         self.last_purged_index.store(cutoff_index.index, Ordering::Release);
 
-        // Route purge through the IO thread so it never blocks the Raft event loop.
+        // Route purge through the IO thread so it never blocks the inbound event loop.
         // Also writes the purge boundary to META_CF in the RocksDB implementation.
         let (done_tx, done_rx) = oneshot::channel();
         self.command_sender
@@ -822,7 +822,7 @@ where
     pub fn start(
         mut self,
         receiver: mpsc::UnboundedReceiver<IOTask>,
-        log_flush_tx: Option<mpsc::UnboundedSender<crate::RoleEvent>>,
+        log_flush_tx: Option<mpsc::UnboundedSender<crate::InternalEvent>>,
     ) -> Arc<Self> {
         self.log_flush_tx = log_flush_tx;
         let arc_self = Arc::new(self);
@@ -1246,7 +1246,7 @@ where
         if new_durable > prev
             && let Some(ref tx) = self.log_flush_tx
         {
-            let _ = tx.send(crate::RoleEvent::LogFlushed {
+            let _ = tx.send(crate::InternalEvent::LogFlushed {
                 durable_index: new_durable,
             });
         }

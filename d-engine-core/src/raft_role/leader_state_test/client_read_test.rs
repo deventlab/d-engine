@@ -398,7 +398,7 @@ async fn test_optimization_skip_wait_when_commit_satisfies_read() {
 /// cannot guarantee linearizability and must reject the read.
 ///
 /// # Note
-/// Renamed from test_handle_raft_event_case6_1
+/// Renamed from test_handle_inbound_event_case6_1
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_quorum_failure() {
@@ -432,13 +432,13 @@ async fn test_linearizable_read_quorum_failure() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Push to buffer
     state.push_client_cmd(cmd, &context);
 
     // Flush: triggers quorum verification which will fail
-    state.flush_cmd_buffers(&context, &role_tx).await.ok();
+    state.flush_cmd_buffers(&context, &internal_event_tx).await.ok();
 
     // Then: Client receives error via response channel
     let e = resp_rx.recv().await.unwrap().unwrap_err();
@@ -476,7 +476,7 @@ async fn test_linearizable_read_quorum_failure() {
 /// 3. Leader serves read from state machine
 ///
 /// # Note
-/// Renamed from test_handle_raft_event_case6_2
+/// Renamed from test_handle_inbound_event_case6_2
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_quorum_success() {
@@ -534,20 +534,28 @@ async fn test_linearizable_read_quorum_success() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Push to buffer
     state.push_client_cmd(cmd, &context);
 
     // Flush: quorum succeeds, read registered in pending_reads[read_index=3]
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("should succeed");
 
     // Note: In new architecture, commit_index advances asynchronously via handle_append_result
     // We skip the sync commit assertion and move to ApplyCompleted
 
     // Simulate SM apply: ApplyCompleted fires pending_reads for read_index <= 3
     state
-        .handle_apply_completed(expect_new_commit_index, vec![], &context, &role_tx)
+        .handle_apply_completed(
+            expect_new_commit_index,
+            vec![],
+            &context,
+            &internal_event_tx,
+        )
         .await
         .expect("ApplyCompleted should succeed");
 
@@ -584,7 +592,7 @@ async fn test_linearizable_read_quorum_success() {
 /// reads after losing leadership.
 ///
 /// # Note
-/// Renamed from test_handle_raft_event_case6_3
+/// Renamed from test_handle_inbound_event_case6_3
 #[tokio::test]
 #[traced_test]
 async fn test_linearizable_read_encounters_higher_term() {
@@ -630,11 +638,11 @@ async fn test_linearizable_read_encounters_higher_term() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Push to buffer and flush (triggers leadership verification which discovers higher term)
     state.push_client_cmd(cmd, &context);
-    let _ = state.flush_cmd_buffers(&context, &role_tx).await;
+    let _ = state.flush_cmd_buffers(&context, &internal_event_tx).await;
 
     // Then: Leader commit remains unchanged (Fatal error aborted the operation)
     assert_eq!(state.commit_index(), 1);
@@ -713,9 +721,12 @@ async fn test_lease_read_with_valid_lease() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(cmd, &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.error, ErrorCode::Success);
@@ -806,9 +817,9 @@ async fn test_expired_lease_single_voter_refreshed_immediately() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(cmd, &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&context, &internal_event_tx).await.unwrap();
 
     // Lease must be refreshed after flush
     assert!(
@@ -898,14 +909,17 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(cmd, &context);
     // Flush: quorum succeeds, read registered in pending_reads[read_index=5]
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("should succeed");
 
     // Simulate SM apply: releases pending linearizable read
     state
-        .handle_apply_completed(5, vec![], &context, &role_tx)
+        .handle_apply_completed(5, vec![], &context, &internal_event_tx)
         .await
         .expect("ApplyCompleted should succeed");
 
@@ -964,9 +978,12 @@ async fn test_eventual_consistency_serves_immediately() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(cmd, &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.error, ErrorCode::Success);
@@ -1024,9 +1041,12 @@ async fn test_server_default_overrides_client_policy() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(cmd, &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("should succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("should succeed");
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.error, ErrorCode::Success);
@@ -1083,7 +1103,7 @@ async fn test_linearizable_read_batch_shared_quorum() {
     membership.expect_replication_peers().returning(Vec::new);
     state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: Push 3 LinearizableRead requests to buffer (simulating drain collection)
     let req1 = ClientReadRequest {
@@ -1111,7 +1131,7 @@ async fn test_linearizable_read_batch_shared_quorum() {
     state.push_client_cmd(ClientCmd::Read(req3, tx3), &ctx);
 
     // Action: Flush buffers (simulating drain-triggered flush)
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Verify: Buffer cleared after flush
     assert_eq!(
@@ -1186,7 +1206,7 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     // Verify: Initial lease is invalid
     assert!(!state.is_lease_valid(), "Lease should be invalid initially");
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action 1: LinearizableRead (triggers quorum + lease refresh)
     let req1 = ClientReadRequest {
@@ -1196,7 +1216,7 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     };
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     state.push_client_cmd(ClientCmd::Read(req1, tx1), &ctx);
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Verify: Request succeeded
     assert!(rx1.recv().await.is_ok(), "LinearizableRead should succeed");
@@ -1204,7 +1224,7 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     // Verify: Lease is now valid (refreshed by LinearizableRead)
     // After flush in single-voter: lease refreshed via handle_log_flushed
     // Manually trigger to simulate the async flush event
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     assert!(
         state.is_lease_valid(),
@@ -1219,7 +1239,7 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     };
     let (tx2, mut rx2) = MaybeCloneOneshot::new();
     state.push_client_cmd(ClientCmd::Read(req2, tx2), &ctx);
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Verify: Request succeeded (reused lease, no quorum check)
     assert!(
@@ -1280,7 +1300,7 @@ async fn test_eventual_consistency_ignores_stale_lease() {
         "Lease should be invalid (stale leader)"
     );
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: EventualConsistency read
     let req = ClientReadRequest {
@@ -1290,7 +1310,7 @@ async fn test_eventual_consistency_ignores_stale_lease() {
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();
     state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Verify: Request succeeded despite stale lease
     assert!(
@@ -1348,7 +1368,7 @@ async fn test_client_policy_override_allowed() {
     // Setup valid lease so LeaseRead can succeed
     state.test_update_lease_timestamp();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: Client requests LeaseRead (different from server default)
     let req = ClientReadRequest {
@@ -1368,7 +1388,7 @@ async fn test_client_policy_override_allowed() {
 
     // Execute: Process the read with client-specified policy
     state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Verify: Request succeeded using LeaseRead (no quorum verification)
     assert!(
@@ -1424,7 +1444,7 @@ async fn test_client_policy_override_denied() {
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: Client requests EventualConsistency (weaker than server default)
     let req = ClientReadRequest {
@@ -1444,7 +1464,7 @@ async fn test_client_policy_override_denied() {
 
     // Execute: Process the read with server-enforced policy
     state.push_client_cmd(ClientCmd::Read(req, tx), &ctx);
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Verify: Request succeeded using LinearizableRead (quorum verification performed)
     assert!(
@@ -1507,7 +1527,7 @@ async fn test_drain_single_request_no_delay() {
     membership.expect_replication_peers().returning(Vec::new);
     state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: Single request (simulates low load)
     let start = Instant::now();
@@ -1528,7 +1548,7 @@ async fn test_drain_single_request_no_delay() {
     );
 
     // Flush immediately (drain pattern: no waiting for timeout or size threshold)
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
     let elapsed = start.elapsed();
 
     // Verify: Request succeeded
@@ -1587,7 +1607,7 @@ async fn test_drain_multiple_requests_natural_batch() {
     membership.expect_replication_peers().returning(Vec::new);
     state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: Push 10 requests to buffer (simulates high load accumulation)
     let mut receivers = vec![];
@@ -1610,7 +1630,7 @@ async fn test_drain_multiple_requests_natural_batch() {
     );
 
     // Action: Single flush processes entire batch
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Verify: Buffer emptied (all requests processed together)
     assert_eq!(
@@ -1761,7 +1781,7 @@ async fn test_linearizable_read_batch_single_quorum() {
     membership.expect_replication_peers().returning(Vec::new);
     state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: Push 5 LinearizableRead requests
     let mut receivers = vec![];
@@ -1777,7 +1797,7 @@ async fn test_linearizable_read_batch_single_quorum() {
     }
 
     // Action: Flush batch (triggers single quorum verification)
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Verify: All 5 requests succeeded
     for (i, mut rx) in receivers.into_iter().enumerate() {
@@ -1833,7 +1853,7 @@ async fn test_lease_read_valid_lease_serves_immediately() {
     membership.expect_replication_peers().returning(Vec::new);
     state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let req = ClientReadRequest {
         client_id: 1,
@@ -1843,7 +1863,7 @@ async fn test_lease_read_valid_lease_serves_immediately() {
     let (tx, mut rx) = MaybeCloneOneshot::new();
 
     // Action: process_lease_read directly (valid lease → serve immediately, no quorum)
-    let result = state.process_lease_read(req, tx, &ctx, &role_tx).await;
+    let result = state.process_lease_read(req, tx, &ctx, &internal_event_tx).await;
 
     // Verify: succeeds without error
     assert!(result.is_ok(), "Should succeed with valid lease");
@@ -1914,9 +1934,9 @@ async fn test_linearizable_read_rejected_when_noop_not_committed() {
         resp_tx,
     );
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(cmd, &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.ok();
+    state.flush_cmd_buffers(&context, &internal_event_tx).await.ok();
 
     // After fix: client receives LeaderNotReady (noop not yet committed).
     // Before fix: client receives Ok (unsafe — no quorum confirmation).
@@ -2011,7 +2031,7 @@ async fn test_lease_read_empty_payload_verification_hangs_in_multi_node() {
     );
     assert!(!state.is_lease_valid(), "precondition: lease expired");
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let req = ClientReadRequest {
         client_id: 1,
         keys: vec![Bytes::from_static(b"key1")],
@@ -2021,7 +2041,7 @@ async fn test_lease_read_empty_payload_verification_hangs_in_multi_node() {
 
     // process_lease_read must return immediately (no blocking await on quorum)
     let start = std::time::Instant::now();
-    let result = state.process_lease_read(req, tx, &ctx, &role_tx).await;
+    let result = state.process_lease_read(req, tx, &ctx, &internal_event_tx).await;
     let elapsed = start.elapsed();
 
     assert!(result.is_ok(), "process_lease_read must not return Err");
@@ -2157,7 +2177,7 @@ async fn test_linearizable_read_served_without_quorum_in_minority_partition() {
         "precondition: multi-voter cluster"
     );
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let req = ClientReadRequest {
         client_id: 1,
@@ -2169,7 +2189,7 @@ async fn test_linearizable_read_served_without_quorum_in_minority_partition() {
 
     tokio::time::timeout(
         Duration::from_millis(200),
-        state.flush_cmd_buffers(&ctx, &role_tx),
+        state.flush_cmd_buffers(&ctx, &internal_event_tx),
     )
     .await
     .expect("flush_cmd_buffers must not block")

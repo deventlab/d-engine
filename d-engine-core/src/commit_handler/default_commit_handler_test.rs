@@ -14,13 +14,13 @@ use super::CommitHandler;
 use super::CommitHandlerDependencies;
 use super::DefaultCommitHandler;
 use crate::Error;
+use crate::InternalEvent;
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockStateMachineHandler;
 use crate::MockTypeConfig;
 use crate::NewCommitData;
 use crate::Result;
-use crate::RoleEvent;
 
 const TEST_TERM: u64 = 1;
 
@@ -68,8 +68,8 @@ pub struct TestHarness {
     mock_membership: Arc<MockMembership<MockTypeConfig>>,
     commit_tx: mpsc::UnboundedSender<NewCommitData>,
     commit_rx: Option<mpsc::UnboundedReceiver<NewCommitData>>,
-    role_tx: mpsc::UnboundedSender<RoleEvent>,
-    role_rx: mpsc::UnboundedReceiver<RoleEvent>,
+    internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
+    internal_event_rx: mpsc::UnboundedReceiver<InternalEvent>,
     shutdown_tx: watch::Sender<()>,
     shutdown_rx: Option<watch::Receiver<()>>,
     handle: Option<JoinHandle<()>>,
@@ -90,7 +90,7 @@ where
 {
     let (commit_tx, commit_rx) = mpsc::unbounded_channel();
     let (shutdown_tx, shutdown_rx) = watch::channel(());
-    let (role_tx, role_rx) = mpsc::unbounded_channel(); // Large capacity to prevent blocking in tests
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel(); // Large capacity to prevent blocking in tests
 
     // Mock state machine
     let mut mock_smh = MockStateMachineHandler::new();
@@ -134,8 +134,8 @@ where
         mock_membership: Arc::new(mock_membership),
         commit_rx: Some(commit_rx),
         commit_tx,
-        role_tx,
-        role_rx,
+        internal_event_tx,
+        internal_event_rx,
         shutdown_tx,
         shutdown_rx: Some(shutdown_rx),
         handle: None,
@@ -150,7 +150,7 @@ impl TestHarness {
             state_machine_handler: self.mock_smh.clone(),
             raft_log: self.mock_log.clone(),
             membership: self.mock_membership.clone(),
-            role_tx: self.role_tx.clone(),
+            internal_event_tx: self.internal_event_tx.clone(),
             sm_apply_tx,
             shutdown_signal: self.shutdown_rx.take().unwrap(),
             max_batch_size: 10,
@@ -185,7 +185,7 @@ impl TestHarness {
             state_machine_handler: self.mock_smh.clone(),
             raft_log: self.mock_log.clone(),
             membership: self.mock_membership.clone(),
-            role_tx: self.role_tx.clone(),
+            internal_event_tx: self.internal_event_tx.clone(),
             sm_apply_tx,
             shutdown_signal: self.shutdown_rx.take().unwrap(),
             max_batch_size: 10,
@@ -224,7 +224,7 @@ impl TestHarness {
     }
 
     async fn expect_snapshot_trigger(&mut self) -> bool {
-        match time::timeout(Duration::from_millis(50), self.role_rx.recv()).await {
+        match time::timeout(Duration::from_millis(50), self.internal_event_rx.recv()).await {
             Ok(Some(_)) => true, // Event received normally
             Ok(None) => false,   // Channel closed
             Err(_) => false,     // Timeout
@@ -650,7 +650,7 @@ mod process_batch_test {
     //     snapshot_condition: Option<u64>,
     // ) -> (
     //     DefaultCommitHandler<MockTypeConfig>,
-    //     mpsc::Receiver<RoleEvent>,
+    //     mpsc::Receiver<InternalEvent>,
     //     watch::Sender<()>,
     // ) where
     //     F: Fn() -> bool + 'static + Send + Sync,
@@ -910,7 +910,7 @@ mod process_batch_test {
     /// Test 1: MembershipApplied event MUST be sent after successful config change
     ///
     /// Verifies that when apply_config_change() succeeds, the commit handler
-    /// sends RoleEvent::MembershipApplied to notify Leader to refresh cache.
+    /// sends InternalEvent::MembershipApplied to notify Leader to refresh cache.
     ///
     /// Related: Bug fix #209 - cluster metadata cache timing issue
     #[tokio::test]
@@ -939,8 +939,10 @@ mod process_batch_test {
         assert!(result.is_ok(), "Config change should succeed");
 
         // Verify MembershipApplied event was sent
-        match tokio::time::timeout(Duration::from_millis(50), harness.role_rx.recv()).await {
-            Ok(Some(RoleEvent::MembershipApplied)) => {
+        match tokio::time::timeout(Duration::from_millis(50), harness.internal_event_rx.recv())
+            .await
+        {
+            Ok(Some(InternalEvent::MembershipApplied)) => {
                 // Success - event received
             }
             Ok(Some(other)) => panic!("Expected MembershipApplied, got {other:?}"),
@@ -993,8 +995,10 @@ mod process_batch_test {
         harness.process_batch_handler().await.unwrap();
 
         // Verify event received
-        match tokio::time::timeout(Duration::from_millis(50), harness.role_rx.recv()).await {
-            Ok(Some(RoleEvent::MembershipApplied)) => {
+        match tokio::time::timeout(Duration::from_millis(50), harness.internal_event_rx.recv())
+            .await
+        {
+            Ok(Some(InternalEvent::MembershipApplied)) => {
                 // Record event reception
                 apply_order.lock().push("MembershipApplied_event");
             }
@@ -1042,7 +1046,9 @@ mod process_batch_test {
         assert!(result.is_err(), "Config change should fail");
 
         // Verify NO event was sent
-        match tokio::time::timeout(Duration::from_millis(50), harness.role_rx.recv()).await {
+        match tokio::time::timeout(Duration::from_millis(50), harness.internal_event_rx.recv())
+            .await
+        {
             Err(_) => {
                 // Timeout is expected - no event sent
             }
@@ -1076,8 +1082,9 @@ mod process_batch_test {
         harness.process_batch_handler().await.unwrap();
         assert!(
             matches!(
-                tokio::time::timeout(Duration::from_millis(50), harness.role_rx.recv()).await,
-                Ok(Some(RoleEvent::MembershipApplied))
+                tokio::time::timeout(Duration::from_millis(50), harness.internal_event_rx.recv())
+                    .await,
+                Ok(Some(InternalEvent::MembershipApplied))
             ),
             "AddNode should send MembershipApplied"
         );
@@ -1093,8 +1100,9 @@ mod process_batch_test {
         harness.process_batch_handler().await.unwrap();
         assert!(
             matches!(
-                tokio::time::timeout(Duration::from_millis(50), harness.role_rx.recv()).await,
-                Ok(Some(RoleEvent::MembershipApplied))
+                tokio::time::timeout(Duration::from_millis(50), harness.internal_event_rx.recv())
+                    .await,
+                Ok(Some(InternalEvent::MembershipApplied))
             ),
             "RemoveNode should send MembershipApplied"
         );
@@ -1113,8 +1121,9 @@ mod process_batch_test {
         harness.process_batch_handler().await.unwrap();
         assert!(
             matches!(
-                tokio::time::timeout(Duration::from_millis(50), harness.role_rx.recv()).await,
-                Ok(Some(RoleEvent::MembershipApplied))
+                tokio::time::timeout(Duration::from_millis(50), harness.internal_event_rx.recv())
+                    .await,
+                Ok(Some(InternalEvent::MembershipApplied))
             ),
             "PromoteLearner should send MembershipApplied"
         );
@@ -1146,8 +1155,8 @@ mod process_batch_test {
 
         // Replace the receiver with a dummy so the original event_tx sends will fail.
         // Swap old_rx out of the harness so harness is still usable, then drop old_rx.
-        let (_dummy_tx, dummy_rx) = mpsc::unbounded_channel::<RoleEvent>();
-        let old_rx = std::mem::replace(&mut harness.role_rx, dummy_rx);
+        let (_dummy_tx, dummy_rx) = mpsc::unbounded_channel::<InternalEvent>();
+        let old_rx = std::mem::replace(&mut harness.internal_event_rx, dummy_rx);
         drop(old_rx); // Now harness.event_tx's peer receiver is gone → sends fail.
 
         let result = harness.process_batch_handler().await;
@@ -1181,8 +1190,8 @@ mod process_batch_test {
         );
 
         // Replace receiver with a dummy so both sends fail.
-        let (_dummy_tx, dummy_rx) = mpsc::unbounded_channel::<RoleEvent>();
-        let old_rx = std::mem::replace(&mut harness.role_rx, dummy_rx);
+        let (_dummy_tx, dummy_rx) = mpsc::unbounded_channel::<InternalEvent>();
+        let old_rx = std::mem::replace(&mut harness.internal_event_rx, dummy_rx);
         drop(old_rx);
 
         let result = harness.process_batch_handler().await;
@@ -1225,8 +1234,10 @@ mod process_batch_test {
         harness.process_batch_handler().await.unwrap();
 
         // First event should be MembershipApplied
-        match tokio::time::timeout(Duration::from_millis(50), harness.role_rx.recv()).await {
-            Ok(Some(RoleEvent::MembershipApplied)) => {
+        match tokio::time::timeout(Duration::from_millis(50), harness.internal_event_rx.recv())
+            .await
+        {
+            Ok(Some(InternalEvent::MembershipApplied)) => {
                 // Correct first event
             }
             Ok(Some(other)) => panic!("Expected MembershipApplied first, got {other:?}"),
@@ -1234,8 +1245,10 @@ mod process_batch_test {
         }
 
         // Second event should be StepDownSelfRemoved
-        match tokio::time::timeout(Duration::from_millis(50), harness.role_rx.recv()).await {
-            Ok(Some(RoleEvent::StepDownSelfRemoved)) => {
+        match tokio::time::timeout(Duration::from_millis(50), harness.internal_event_rx.recv())
+            .await
+        {
+            Ok(Some(InternalEvent::StepDownSelfRemoved)) => {
                 // Correct second event
             }
             Ok(Some(other)) => panic!("Expected StepDownSelfRemoved second, got {other:?}"),

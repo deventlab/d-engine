@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tracing_test::traced_test;
 
-use crate::event::RaftEvent;
+use crate::event::InboundEvent;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
@@ -302,12 +302,12 @@ async fn test_handle_discover_leader_success() {
         node_id: 100,
         requester_address: "127.0.0.1:8080".to_string(),
     };
-    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+    let inbound_event = InboundEvent::DiscoverLeader(request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     state
-        .handle_raft_event(raft_event, &context, role_tx)
+        .handle_inbound_event(inbound_event, &context, internal_event_tx)
         .await
         .expect("Should handle successfully");
 
@@ -355,12 +355,12 @@ async fn test_handle_discover_leader_metadata_not_found() {
         node_id: 100,
         requester_address: "127.0.0.1:8080".to_string(),
     };
-    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+    let inbound_event = InboundEvent::DiscoverLeader(request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     state
-        .handle_raft_event(raft_event, &context, role_tx)
+        .handle_inbound_event(inbound_event, &context, internal_event_tx)
         .await
         .expect("Should panic during handling");
 }
@@ -412,12 +412,12 @@ async fn test_handle_discover_leader_different_terms() {
         node_id: 100,
         requester_address: "127.0.0.1:8080".to_string(),
     };
-    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+    let inbound_event = InboundEvent::DiscoverLeader(request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     state
-        .handle_raft_event(raft_event, &context, role_tx)
+        .handle_inbound_event(inbound_event, &context, internal_event_tx)
         .await
         .expect("Should handle successfully");
 
@@ -472,12 +472,12 @@ async fn test_handle_discover_leader_invalid_node_id() {
         node_id: 0,
         requester_address: "127.0.0.1:8080".to_string(),
     };
-    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+    let inbound_event = InboundEvent::DiscoverLeader(request, resp_tx);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     state
-        .handle_raft_event(raft_event, &context, role_tx)
+        .handle_inbound_event(inbound_event, &context, internal_event_tx)
         .await
         .expect("Should handle successfully");
 

@@ -68,7 +68,7 @@ max_batch_size = 100
 ///
 /// **Assertions**:
 /// - Each drain processes max_batch_size (100), then returns to select
-/// - Internal Raft events processed within reasonable time (<50ms p99)
+/// - Internal inbound events processed within reasonable time (<50ms p99)
 /// - No event starvation (cluster remains healthy)
 /// - System remains responsive to protocol messages
 ///
@@ -138,7 +138,7 @@ async fn test_select_fairness_drain_no_starvation() {
             let start = Instant::now();
 
             // Linearizable read requires verify_leadership
-            // This tests if P4 branch (raft events) is responsive
+            // This tests if P4 branch (inbound events) is responsive
             let _result = monitor_client.get_linearizable(b"monitor_key").await;
 
             let latency = start.elapsed();

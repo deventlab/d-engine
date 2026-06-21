@@ -187,10 +187,10 @@ async fn test_p0_leader_single_command_drain_immediately() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // Transition to Leader
-    raft.handle_role_event(crate::RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(crate::InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(crate::RoleEvent::BecomeLeader)
+    raft.handle_internal_event(crate::InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
 
@@ -219,9 +219,9 @@ async fn test_p0_leader_single_command_drain_immediately() {
         leader.push_client_cmd(cmd, &raft.ctx);
 
         // **Step 3**: Flush buffers (simulate drain)
-        let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = tokio::sync::mpsc::unbounded_channel();
         leader
-            .flush_cmd_buffers(&raft.ctx, &role_tx)
+            .flush_cmd_buffers(&raft.ctx, &internal_event_tx)
             .await
             .expect("flush should succeed");
 
@@ -279,10 +279,10 @@ async fn test_p0_leader_high_load_max_batch_cap() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // Transition to Leader
-    raft.handle_role_event(crate::RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(crate::InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(crate::RoleEvent::BecomeLeader)
+    raft.handle_internal_event(crate::InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
 
@@ -296,7 +296,7 @@ async fn test_p0_leader_high_load_max_batch_cap() {
     const MAX_BATCH_SIZE: usize = 100;
     const ROUNDS: usize = 10;
 
-    let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = tokio::sync::mpsc::unbounded_channel();
 
     if let RaftRole::Leader(ref mut leader) = raft.role {
         for round in 0..ROUNDS {
@@ -322,7 +322,7 @@ async fn test_p0_leader_high_load_max_batch_cap() {
 
             // Flush: sends exactly the pushed batch to replication
             leader
-                .flush_cmd_buffers(&raft.ctx, &role_tx)
+                .flush_cmd_buffers(&raft.ctx, &internal_event_tx)
                 .await
                 .expect("flush should succeed");
         }
@@ -554,7 +554,7 @@ async fn test_p0_candidate_commands_handling() {
     raft.ctx.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
     // Transition to Candidate
-    raft.handle_role_event(crate::RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(crate::InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
 
@@ -726,10 +726,10 @@ async fn test_p1_medium_load_natural_batching() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // Transition to Leader
-    raft.handle_role_event(crate::RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(crate::InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(crate::RoleEvent::BecomeLeader)
+    raft.handle_internal_event(crate::InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
 
@@ -763,9 +763,9 @@ async fn test_p1_medium_load_natural_batching() {
         }
 
         // **Step 2**: Single flush drains all 50 commands in one batch
-        let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = tokio::sync::mpsc::unbounded_channel();
         leader
-            .flush_cmd_buffers(&raft.ctx, &role_tx)
+            .flush_cmd_buffers(&raft.ctx, &internal_event_tx)
             .await
             .expect("flush should succeed");
 
@@ -840,10 +840,10 @@ async fn test_p1_mixed_workload_read_write_coexistence() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // Transition to Leader
-    raft.handle_role_event(crate::RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(crate::InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(crate::RoleEvent::BecomeLeader)
+    raft.handle_internal_event(crate::InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
 
@@ -894,9 +894,9 @@ async fn test_p1_mixed_workload_read_write_coexistence() {
         }
 
         // **Step 2**: Flush all commands
-        let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = tokio::sync::mpsc::unbounded_channel();
         leader
-            .flush_cmd_buffers(&raft.ctx, &role_tx)
+            .flush_cmd_buffers(&raft.ctx, &internal_event_tx)
             .await
             .expect("flush should succeed");
 
@@ -948,10 +948,10 @@ async fn test_p1_burst_load_recovery_after_spike() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // Transition to Leader
-    raft.handle_role_event(crate::RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(crate::InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(crate::RoleEvent::BecomeLeader)
+    raft.handle_internal_event(crate::InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
 
@@ -978,11 +978,11 @@ async fn test_p1_burst_load_recovery_after_spike() {
         }
 
         // **Step 2**: Flush burst (multiple cycles expected)
-        let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut burst_flushes = 0;
         for _ in 0..20 {
             leader
-                .flush_cmd_buffers(&raft.ctx, &role_tx)
+                .flush_cmd_buffers(&raft.ctx, &internal_event_tx)
                 .await
                 .expect("flush should succeed");
             burst_flushes += 1;
@@ -1011,7 +1011,7 @@ async fn test_p1_burst_load_recovery_after_spike() {
 
             // Flush after each trickle command
             leader
-                .flush_cmd_buffers(&raft.ctx, &role_tx)
+                .flush_cmd_buffers(&raft.ctx, &internal_event_tx)
                 .await
                 .expect("flush should succeed");
 

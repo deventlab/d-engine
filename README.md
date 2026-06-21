@@ -22,7 +22,7 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 
 ## New in v0.2.4 🎉
 
-- **Async IO Architecture**: Raft event loop is fully non-blocking — WAL writes, state machine apply, and replication all run off the hot path. AppendEntries uses a persistent bidirectional stream per peer; replication is pipelined across followers.
+- **Async IO Architecture**: Inbound event loop is fully non-blocking — WAL writes, state machine apply, and replication all run off the hot path. AppendEntries uses a persistent bidirectional stream per peer; replication is pipelined across followers.
 - **Cluster Membership Streaming**: `EmbeddedEngine::watch_membership()` / `GrpcClient::watch_membership()` — subscribe to real-time membership changes in both embedded and standalone modes
 - **Simpler Startup**: `EmbeddedEngine::start(data_dir)` and `StandaloneEngine::run(data_dir, shutdown_rx)` — no config file required for common cases
 - **Jepsen Validated**: 5 workloads + 6-hour soak test under combined kill/partition/pause faults — see [Correctness Guarantees](https://github.com/deventlab/d-engine-jepsen/blob/main/GUARANTEES.md)

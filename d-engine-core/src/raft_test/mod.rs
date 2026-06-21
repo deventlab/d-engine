@@ -58,9 +58,9 @@
 //! - **A5.2**: Learner promotion to Follower
 //! - **A5.3**: Multiple learners in cluster (tracked separately from voters)
 //!
-//! ### B. RoleEvent Handling Tests (Individual Event Processing)
+//! ### B. InternalEvent Handling Tests (Individual Event Processing)
 //!
-//! These tests verify that each RoleEvent variant is processed correctly and sends
+//! These tests verify that each InternalEvent variant is processed correctly and sends
 //! appropriate notifications to listeners.
 //!
 //! #### B1. BecomeFollower Event
@@ -98,23 +98,23 @@
 //! #### B7. ReprocessEvent Event
 //! - **B7.1**: Event re-queued to event_rx for reprocessing
 //!
-//! #### B8. CreateSnapshotEvent (migrated from P4 event_tx → P2 role_tx)
+//! #### B8. CreateSnapshotEvent (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B8.1**: Follower — dispatch returns Ok, snapshot task spawned in background
 //! - **B8.2**: Candidate — RoleViolation is non-fatal, swallowed by dispatch layer
 //!
-//! #### B9. SnapshotCreated (migrated from P4 event_tx → P2 role_tx)
+//! #### B9. SnapshotCreated (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B9.1**: Follower + Err payload — dispatch returns Ok (non-fatal error swallowed)
 //!
-//! #### B10. StepDownSelfRemoved (migrated from P4 event_tx → P2 role_tx)
+//! #### B10. StepDownSelfRemoved (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B10.1**: Leader — handle_self_removed enqueues BecomeFollower; role transitions to Follower
 //!
-//! #### B11. MembershipApplied (migrated from P4 event_tx → P2 role_tx)
+//! #### B11. MembershipApplied (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B11.1**: Follower — RoleViolation swallowed; leader-specific logic in membership_change_test
 //!
-//! #### B12. PromoteReadyLearners (migrated from P4 event_tx → P2 role_tx)
+//! #### B12. PromoteReadyLearners (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B12.1**: Follower — RoleViolation swallowed; leader-specific logic in membership_change_test
 //!
-//! #### B13. LogPurgeCompleted (migrated from P4 event_tx → P2 role_tx)
+//! #### B13. LogPurgeCompleted (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B13.1**: Follower — dispatch returns Ok, last_purged_index updated
 //!
 //! ### C. Leader Initialization Tests (Peer State Setup)
@@ -190,40 +190,40 @@
 //!
 //! **Priority Order (P0 > P1 > P2 > P3):**
 //! - **P0 (Shutdown)**: shutdown_signal.changed()
-//!   - **F1.1**: Shutdown always processed first, even if tick/role events pending
+//!   - **F1.1**: Shutdown always processed first, even if tick/internal events pending
 //!   - **F1.2**: Pending events discarded on shutdown
 //!   - **F1.3**: Graceful termination ensures no state corruption
 //!
 //! - **P1 (Tick)**: sleep_until(next_deadline) - election timeout / heartbeat
 //!   - **F1.4**: Tick has highest operational priority
 //!   - **F1.5**: Tick drives election timeout and heartbeat cadence
-//!   - **F1.6**: Tick fires even if role_rx/event_rx have pending messages
+//!   - **F1.6**: Tick fires even if internal_event_rx/event_rx have pending messages
 //!
-//! - **P2 (RoleEvent)**: role_rx.recv() - internal state transitions
-//!   - **F1.7**: RoleEvent processed before network events
+//! - **P2 (InternalEvent)**: internal_event_rx.recv() - internal state transitions
+//!   - **F1.7**: InternalEvent processed before network events
 //!   - **F1.8**: Leadership/follower transitions take priority over RPCs
-//!   - **F1.9**: Multiple role events processed in order (not all at once)
+//!   - **F1.9**: Multiple internal events processed in order (not all at once)
 //!
-//! - **P3 (RaftEvent)**: event_rx.recv() - network RPCs and responses
+//! - **P3 (InboundEvent)**: event_rx.recv() - network RPCs and responses
 //!   - **F1.10**: Network events (AppendEntries, RequestVote) processed last
 //!   - **F1.11**: Responses from followers/candidates deferred until tick completes
 //!   - **F1.12**: This prevents RPC storms from starving timers
 //!
 //! #### F2. Concurrent Event Arrival Scenarios
 //!
-//! **Scenario: Tick fires while role_event and raft_event pending**
+//! **Scenario: Tick fires while internal_event and inbound_event pending**
 //! - **F2.1**: Tick processes first (P1 > P2, P3)
-//! - **F2.2**: Role event processes next (P2 > P3)
-//! - **F2.3**: Raft event processes last
+//! - **F2.2**: internal event processes next (P2 > P3)
+//! - **F2.3**: inbound event processes last
 //! - **F2.4**: Starvation prevention: next iteration will service events
 //!
-//! **Scenario: Role event while multiple raft events pending**
-//! - **F2.5**: Single role event dequeued and processed
-//! - **F2.6**: Only one raft event processed per iteration
-//! - **F2.7**: Multiple role events do NOT accumulate in single iteration
+//! **Scenario: internal event while multiple inbound events pending**
+//! - **F2.5**: Single internal event dequeued and processed
+//! - **F2.6**: Only one inbound event processed per iteration
+//! - **F2.7**: Multiple internal events do NOT accumulate in single iteration
 //!
 //! **Scenario: Shutdown signal during election**
-//! - **F2.8**: Shutdown takes priority even if Tick and RoleEvent pending
+//! - **F2.8**: Shutdown takes priority even if Tick and InternalEvent pending
 //! - **F2.9**: Partial election in progress is abandoned
 //! - **F2.10**: State machine remains consistent (no partial transitions)
 //!
@@ -235,14 +235,14 @@
 //! - **F3.1**: Follower election timeout → BecomeCandidate
 //! - **F3.2**: Candidate timeout → restart election (stay Candidate or become Follower)
 //! - **F3.3**: Leader timeout → no action (heartbeat continues)
-//! - **F3.4**: Timeout NOT missed when role_event/raft_event arrive
+//! - **F3.4**: Timeout NOT missed when internal_event/inbound_event arrive
 //! - **F3.5**: Timeout randomization prevents split brain
 //!
 //! #### F4. Complete Election Flow with Event Ordering
 //! - **F4.1**: Follower → Candidate (election starts via tick)
-//! - **F4.2**: Candidate → Leader (majority votes received via raft events)
-//! - **F4.3**: Leadership verified (noop entry replicated via raft events)
-//! - **F4.4**: RoleEvent BecomeLeader processes before any AppendEntries responses
+//! - **F4.2**: Candidate → Leader (majority votes received via inbound events)
+//! - **F4.3**: Leadership verified (noop entry replicated via inbound events)
+//! - **F4.4**: InternalEvent BecomeLeader processes before any AppendEntries responses
 //! - **F4.5**: Tick continues at regular intervals during replication
 //!
 //! ### G. Error Cases and Edge Cases
@@ -260,7 +260,7 @@
 //!
 //! #### G3. Concurrent Event Handling
 //! - **G3.1**: Multiple listeners receiving notifications simultaneously
-//! - **G3.2**: RoleEvents arriving while processing previous event
+//! - **G3.2**: InternalEvents arriving while processing previous event
 //!
 //! #### G4. Listener Registration Edge Cases
 //! - **G4.1**: Register listeners after role transitions

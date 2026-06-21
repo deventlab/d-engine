@@ -316,7 +316,7 @@ impl ReplicationConfig {
 /// A single value intentionally covers all drain loops because they all operate
 /// within the same heartbeat period and share the same order-of-magnitude concurrency:
 /// - `raft.rs` cmd_rx drain (client propose ingestion)
-/// - `raft.rs` role_rx drain (commit index event coalescing)
+/// - `raft.rs` internal_event_rx drain (commit index event coalescing)
 /// - `DefaultCommitHandler` new_commit_rx drain (state machine apply batching)
 ///
 /// Also used as the initial Vec capacity for propose and linearizable-read buffers

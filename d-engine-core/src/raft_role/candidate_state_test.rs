@@ -22,15 +22,15 @@ use crate::ClientCmd;
 use crate::ConsensusError;
 use crate::ElectionError;
 use crate::Error;
+use crate::InboundEvent;
+use crate::InternalEvent;
 use crate::MaybeCloneOneshot;
 use crate::MockBuilder;
 use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
-use crate::RaftEvent;
 use crate::RaftOneshot;
-use crate::RoleEvent;
 use crate::raft_role::candidate_state::CandidateState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::create_test_chunk;
@@ -177,7 +177,7 @@ async fn test_tick_triggers_new_election_round_on_success() {
 
     // Create new candidate state (term=1)
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
 
     // Advance time to expire the election timer
@@ -186,7 +186,7 @@ async fn test_tick_triggers_new_election_round_on_success() {
 
     // Execute tick
     assert!(
-        state.tick(&role_tx, &event_tx, &context).await.is_ok(),
+        state.tick(&internal_event_tx, &event_tx, &context).await.is_ok(),
         "Tick should succeed"
     );
 
@@ -241,7 +241,7 @@ async fn test_tick_discovers_higher_term_and_steps_down() {
 
     // Create new candidate state (term=1)
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
 
     // Advance time to expire the election timer
@@ -250,7 +250,7 @@ async fn test_tick_discovers_higher_term_and_steps_down() {
 
     // Execute tick
     assert!(
-        state.tick(&role_tx, &event_tx, &context).await.is_ok(),
+        state.tick(&internal_event_tx, &event_tx, &context).await.is_ok(),
         "Tick should succeed even with HigherTerm error"
     );
 
@@ -259,7 +259,10 @@ async fn test_tick_discovers_higher_term_and_steps_down() {
 
     // Verify: sent BecomeFollower event
     assert!(
-        matches!(role_rx.try_recv().unwrap(), RoleEvent::BecomeFollower(_)),
+        matches!(
+            internal_event_rx.try_recv().unwrap(),
+            InternalEvent::BecomeFollower(_)
+        ),
         "Should send BecomeFollower event"
     );
 }
@@ -277,7 +280,7 @@ async fn test_tick_discovers_higher_term_and_steps_down() {
 /// - Term remains unchanged
 ///
 /// Original test location:
-/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_raft_event_case1_1`
+/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_inbound_event_case1_1`
 #[tokio::test]
 async fn test_handle_vote_request_rejects_illegal_request() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -296,8 +299,8 @@ async fn test_handle_vote_request_rejects_illegal_request() {
 
     // Prepare VoteRequest event
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ReceiveVoteRequest(
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::ReceiveVoteRequest(
         VoteRequest {
             term: request_term,
             candidate_id: 1,
@@ -309,7 +312,10 @@ async fn test_handle_vote_request_rejects_illegal_request() {
 
     // Execute
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
         "Should handle event successfully"
     );
 
@@ -319,7 +325,7 @@ async fn test_handle_vote_request_rejects_illegal_request() {
 
     // Verify: no role change event
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "Should not send role change event"
     );
 
@@ -344,7 +350,7 @@ async fn test_handle_vote_request_rejects_illegal_request() {
 /// step down and let the new role process it.
 ///
 /// Original test location:
-/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_raft_event_case1_2`
+/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_inbound_event_case1_2`
 #[tokio::test]
 async fn test_handle_vote_request_grants_and_steps_down_when_legal() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -362,8 +368,8 @@ async fn test_handle_vote_request_grants_and_steps_down_when_legal() {
 
     // Prepare VoteRequest event with higher term
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ReceiveVoteRequest(
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::ReceiveVoteRequest(
         VoteRequest {
             term: updated_term,
             candidate_id: 1,
@@ -375,19 +381,28 @@ async fn test_handle_vote_request_grants_and_steps_down_when_legal() {
 
     // Execute
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
         "Should handle event successfully"
     );
 
     // Verify: steps down to Follower
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))),
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::BecomeFollower(None))
+        ),
         "Should send BecomeFollower event"
     );
 
     // Verify: reprocess event
     assert!(
-        matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)),
+        matches!(
+            internal_event_rx.try_recv().unwrap(),
+            InternalEvent::ReprocessEvent(_)
+        ),
         "Should send ReprocessEvent for Follower to handle"
     );
 
@@ -418,7 +433,7 @@ async fn test_handle_vote_request_grants_and_steps_down_when_legal() {
 /// This validates that Candidate can serve read-only cluster metadata queries.
 ///
 /// Original test location:
-/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_raft_event_case2`
+/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_inbound_event_case2`
 #[tokio::test]
 async fn test_handle_cluster_conf_metadata_request() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -439,12 +454,15 @@ async fn test_handle_cluster_conf_metadata_request() {
 
     // Prepare ClusterConf event
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::ClusterConf(MetadataRequest {}, resp_tx);
 
     // Execute
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
         "Should handle ClusterConf event"
     );
 
@@ -470,7 +488,7 @@ async fn test_handle_cluster_conf_metadata_request() {
 /// This validates that Candidate can apply configuration changes from leader.
 ///
 /// Original test location:
-/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_raft_event_case3`
+/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_inbound_event_case3`
 #[tokio::test]
 async fn test_handle_cluster_conf_update_success() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -497,8 +515,8 @@ async fn test_handle_cluster_conf_update_success() {
 
     // Prepare ClusterConfUpdate event
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ClusterConfUpdate(
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::ClusterConfUpdate(
         ClusterConfChangeRequest {
             id: 2, // Leader ID
             term: 1,
@@ -510,7 +528,10 @@ async fn test_handle_cluster_conf_update_success() {
 
     // Execute
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
         "Should handle ClusterConfUpdate event"
     );
 
@@ -538,7 +559,7 @@ async fn test_handle_cluster_conf_update_success() {
 /// - Commit index NOT updated (Follower will handle)
 /// - No response sent (Follower will send it)
 ///
-/// Original: test_handle_raft_event_case4_1
+/// Original: test_handle_inbound_event_case4_1
 #[tokio::test]
 async fn test_handle_append_entries_steps_down_to_follower() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -570,18 +591,23 @@ async fn test_handle_append_entries_steps_down_to_follower() {
         leader_commit_index: new_leader_commit,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
 
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(None))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeFollower(None))
     ));
     assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::ReprocessEvent(_)
+        internal_event_rx.try_recv().unwrap(),
+        InternalEvent::ReprocessEvent(_)
     ));
     assert_eq!(state.current_term(), new_leader_term);
     assert!(state.commit_index() != new_leader_commit);
@@ -590,7 +616,7 @@ async fn test_handle_append_entries_steps_down_to_follower() {
 
 /// Test: CandidateState rejects AppendEntries with higher local term
 ///
-/// Original: test_handle_raft_event_case4_2
+/// Original: test_handle_inbound_event_case4_2
 #[tokio::test]
 async fn test_handle_append_entries_rejects_lower_term() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -618,11 +644,16 @@ async fn test_handle_append_entries_rejects_lower_term() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
-    assert!(role_rx.try_recv().is_err());
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
+    assert!(internal_event_rx.try_recv().is_err());
     assert_eq!(state.current_term(), term);
 
     let response = resp_rx.recv().await.expect("should succeed").unwrap();
@@ -644,7 +675,7 @@ async fn test_handle_append_entries_rejects_lower_term() {
 /// Rule 1 fires and returns higher_term — the candidate correctly informs the stale leader
 /// of the current term without stepping down.
 ///
-/// Original: test_handle_raft_event_case4_3
+/// Original: test_handle_inbound_event_case4_3
 #[tokio::test]
 async fn test_handle_append_entries_rejects_stale_leader() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -672,12 +703,17 @@ async fn test_handle_append_entries_rejects_stale_leader() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
     assert!(
-        role_rx.try_recv().is_err(),
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
+    assert!(
+        internal_event_rx.try_recv().is_err(),
         "Candidate must not change role for stale leader"
     );
     assert_eq!(state.current_term(), term);
@@ -735,17 +771,28 @@ async fn test_handle_append_entries_same_term_log_conflict_steps_down() {
         leader_commit_index: 10,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))),
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
+
+    assert!(
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::BecomeFollower(None))
+        ),
         "Candidate must step down when receiving AppendEntries with term >= currentTerm (Raft §5.2)"
     );
     assert!(
-        matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)),
+        matches!(
+            internal_event_rx.try_recv().unwrap(),
+            InternalEvent::ReprocessEvent(_)
+        ),
         "Candidate must replay the event so Follower can handle the log conflict"
     );
 
@@ -806,17 +853,28 @@ async fn test_handle_append_entries_higher_term_log_conflict_steps_down_and_upda
         leader_commit_index: 10,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_entries_request, vec![resp_tx]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(None))),
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
+
+    assert!(
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::BecomeFollower(None))
+        ),
         "Candidate must step down when receiving AppendEntries with term > currentTerm (Raft §5.2)"
     );
     assert!(
-        matches!(role_rx.try_recv().unwrap(), RoleEvent::ReprocessEvent(_)),
+        matches!(
+            internal_event_rx.try_recv().unwrap(),
+            InternalEvent::ReprocessEvent(_)
+        ),
         "Candidate must replay the event so Follower can handle the log conflict"
     );
 
@@ -836,7 +894,7 @@ async fn test_handle_append_entries_higher_term_log_conflict_steps_down_and_upda
 
 /// Test: CandidateState handles ClientPropose (write request)
 ///
-/// Original: test_handle_raft_event_case5
+/// Original: test_handle_inbound_event_case5
 #[tokio::test]
 async fn test_handle_client_write_returns_not_leader() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -864,24 +922,24 @@ async fn test_handle_client_write_returns_not_leader() {
     assert!(err.message().contains("Not leader"));
 }
 
-/// Test: send_replay_raft_event sends correct events
+/// Test: send_replay_inbound_event sends correct events
 ///
-/// Original: test_send_replay_raft_event
+/// Original: test_send_replay_inbound_event
 #[test]
 fn test_send_become_follower_and_replay_events() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let context = mock_raft_context("/tmp/test_replay_event", graceful_rx, None);
 
     let state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
 
-    assert!(state.send_become_follower_event(&role_tx).is_ok());
+    assert!(state.send_become_follower_event(&internal_event_tx).is_ok());
     assert!(
         state
-            .send_replay_raft_event(
-                &role_tx,
-                RaftEvent::ReceiveVoteRequest(
+            .send_replay_inbound_event(
+                &internal_event_tx,
+                InboundEvent::ReceiveVoteRequest(
                     VoteRequest {
                         term: 1,
                         candidate_id: 1,
@@ -895,18 +953,18 @@ fn test_send_become_follower_and_replay_events() {
     );
 
     assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::BecomeFollower(None)
+        internal_event_rx.try_recv().unwrap(),
+        InternalEvent::BecomeFollower(None)
     ));
     assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        RoleEvent::ReprocessEvent(_)
+        internal_event_rx.try_recv().unwrap(),
+        InternalEvent::ReprocessEvent(_)
     ));
 }
 
 /// Test: InstallSnapshotChunk returns PermissionDenied
 ///
-/// Original: test_handle_raft_event_case7
+/// Original: test_handle_inbound_event_case7
 #[tokio::test]
 async fn test_handle_install_snapshot_returns_permission_denied() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -917,9 +975,11 @@ async fn test_handle_install_snapshot_returns_permission_denied() {
     let (tx, rx) = mpsc::channel(32);
     tx.send(create_test_chunk(0, b"chunk0", 1, 1, 2)).await.unwrap();
     drop(tx);
-    let raft_event = RaftEvent::InstallSnapshotChunk(rx, resp_tx);
+    let inbound_event = InboundEvent::InstallSnapshotChunk(rx, resp_tx);
 
-    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
+    let result = state
+        .handle_inbound_event(inbound_event, &context, mpsc::unbounded_channel().0)
+        .await;
 
     assert!(result.is_err(), "Expected error");
     let response = resp_rx.recv().await.expect("Response should be received");
@@ -932,7 +992,7 @@ async fn test_handle_install_snapshot_returns_permission_denied() {
 
 /// Test: DiscoverLeader returns PermissionDenied
 ///
-/// Original: test_handle_raft_event_case11
+/// Original: test_handle_inbound_event_case11
 #[tokio::test]
 async fn test_handle_discover_leader_returns_permission_denied() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -944,9 +1004,11 @@ async fn test_handle_discover_leader_returns_permission_denied() {
         requester_address: "127.0.0.1:9090".to_string(),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
+    let inbound_event = InboundEvent::DiscoverLeader(request, resp_tx);
 
-    let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
+    let result = state
+        .handle_inbound_event(inbound_event, &context, mpsc::unbounded_channel().0)
+        .await;
 
     assert!(result.is_ok(), "Expected Ok");
     let response = resp_rx.recv().await.expect("Response should be received");
@@ -970,10 +1032,10 @@ mod snapshot_tests {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let context = mock_raft_context("/tmp/test_role_violation", graceful_rx, None);
         let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
         // CreateSnapshotEvent → RoleViolation
-        let e = state.handle_create_snapshot(&context, &role_tx).await.unwrap_err();
+        let e = state.handle_create_snapshot(&context, &internal_event_tx).await.unwrap_err();
         assert!(matches!(
             e,
             Error::Consensus(ConsensusError::RoleViolation { .. })
@@ -981,7 +1043,11 @@ mod snapshot_tests {
 
         // SnapshotCreated → RoleViolation
         let e = state
-            .handle_snapshot_created(Err(Error::Fatal("test".to_string())), &context, &role_tx)
+            .handle_snapshot_created(
+                Err(Error::Fatal("test".to_string())),
+                &context,
+                &internal_event_tx,
+            )
             .await
             .unwrap_err();
         assert!(matches!(
@@ -1010,7 +1076,7 @@ mod snapshot_tests {
     ///
     /// Expected:
     /// - Event handler returns Ok() without error
-    /// - No CreateSnapshotEvent is sent to role_tx (channel remains empty)
+    /// - No CreateSnapshotEvent is sent to internal_event_tx (channel remains empty)
     /// - No snapshot file is created
     /// - Candidate state remains unchanged
     ///
@@ -1028,9 +1094,9 @@ mod snapshot_tests {
         let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
 
         // ApplyCompleted with high index that would normally trigger snapshot
-        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
-        let result = state.handle_apply_completed(1000, vec![], &context, &role_tx).await;
+        let result = state.handle_apply_completed(1000, vec![], &context, &internal_event_tx).await;
 
         // VERIFY 1: Event handling succeeds without error
         assert!(
@@ -1039,13 +1105,13 @@ mod snapshot_tests {
         );
 
         // VERIFY 2: No CreateSnapshotEvent is sent (channel should be empty).
-        // role_tx is kept alive so that Disconnected cannot be confused with "no event sent".
-        match role_rx.try_recv() {
+        // internal_event_tx is kept alive so that Disconnected cannot be confused with "no event sent".
+        match internal_event_rx.try_recv() {
             Err(mpsc::error::TryRecvError::Empty) => {
                 // Expected: no event sent — correct behavior
             }
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                panic!("role event channel disconnected unexpectedly");
+                panic!("internal event channel disconnected unexpectedly");
             }
             Ok(event) => {
                 panic!(
@@ -1053,7 +1119,7 @@ mod snapshot_tests {
                 );
             }
         }
-        drop(role_tx);
+        drop(internal_event_tx);
 
         // VERIFY 3: Candidate state remains unchanged (no snapshot in progress)
         // Note: CandidateState doesn't have snapshot_in_progress field because it doesn't handle snapshots
@@ -1066,7 +1132,7 @@ mod handle_client_read_request {
 
     /// Test: ClientReadRequest with LinearizableRead returns NotLeader
     ///
-    /// Original: test_handle_raft_event_case6_1
+    /// Original: test_handle_inbound_event_case6_1
     #[tokio::test]
     async fn test_client_read_linearizable_returns_not_leader() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -1094,7 +1160,7 @@ mod handle_client_read_request {
 
     /// Test: ClientReadRequest with EventualConsistency succeeds
     ///
-    /// Original: test_handle_raft_event_case6_2
+    /// Original: test_handle_inbound_event_case6_2
     #[tokio::test]
     async fn test_client_read_eventual_consistency_succeeds() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -1138,10 +1204,10 @@ mod handle_client_read_request {
 /// - FatalError event from StateMachine component
 ///
 /// # When
-/// - Candidate handles FatalError event via handle_raft_event()
+/// - Candidate handles FatalError event via handle_inbound_event()
 ///
 /// # Then
-/// - handle_raft_event() returns Error::Fatal
+/// - handle_inbound_event() returns Error::Fatal
 /// - Error message contains source and error details
 /// - No role transition events are sent (election is aborted)
 #[tokio::test]
@@ -1156,21 +1222,21 @@ async fn test_candidate_handles_fatal_error_returns_error() {
     let mut candidate = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Create FatalError event
-    let fatal_error = RaftEvent::FatalError {
+    let fatal_error = InboundEvent::FatalError {
         source: "StateMachine".to_string(),
         error: "Network failure - cannot persist state".to_string(),
     };
 
-    // Create role event channel
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    // Create internal event channel
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
     // Handle the FatalError event
-    let result = candidate.handle_raft_event(fatal_error, &context, role_tx).await;
+    let result = candidate.handle_inbound_event(fatal_error, &context, internal_event_tx).await;
 
-    // VERIFY 1: handle_raft_event() returns Error::Fatal
+    // VERIFY 1: handle_inbound_event() returns Error::Fatal
     assert!(
         result.is_err(),
-        "Expected handle_raft_event to return Err, got: {result:?}"
+        "Expected handle_inbound_event to return Err, got: {result:?}"
     );
 
     // VERIFY 2: Error is Fatal and contains source information
@@ -1184,9 +1250,9 @@ async fn test_candidate_handles_fatal_error_returns_error() {
         other => panic!("Expected Error::Fatal, got: {other:?}"),
     }
 
-    // VERIFY 3: No role events sent (election is aborted)
+    // VERIFY 3: No internal events sent (election is aborted)
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "No role transition events should be sent during FatalError handling"
     );
 }
@@ -1233,12 +1299,12 @@ async fn test_new_leader_initializes_empty_buffers() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // Transition to Candidate
-    raft.handle_role_event(crate::RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(crate::InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
 
     // Transition to Leader (Candidate wins election)
-    raft.handle_role_event(crate::RoleEvent::BecomeLeader)
+    raft.handle_internal_event(crate::InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
 
@@ -1266,8 +1332,8 @@ async fn test_new_leader_initializes_empty_buffers() {
         leader.push_client_cmd(cmd, &raft.ctx);
 
         // Flush buffers (verify drain → flush works)
-        let (role_tx, _role_rx) = tokio::sync::mpsc::unbounded_channel();
-        let result = leader.flush_cmd_buffers(&raft.ctx, &role_tx).await;
+        let (internal_event_tx, _internal_event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = leader.flush_cmd_buffers(&raft.ctx, &internal_event_tx).await;
 
         // Verify: Flush succeeds
         assert!(

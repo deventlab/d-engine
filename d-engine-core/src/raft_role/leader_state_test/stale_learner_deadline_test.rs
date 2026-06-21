@@ -38,17 +38,17 @@ async fn setup_with_threshold(
 ) -> (
     LeaderState<MockTypeConfig>,
     crate::RaftContext<MockTypeConfig>,
-    mpsc::UnboundedSender<crate::RoleEvent>,
-    mpsc::Sender<crate::RaftEvent>,
+    mpsc::UnboundedSender<crate::InternalEvent>,
+    mpsc::Sender<crate::InboundEvent>,
 ) {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let mut cfg = node_config("/tmp/stale_learner_deadline_test");
     cfg.raft.membership.promotion.stale_learner_threshold = threshold;
     let ctx = MockBuilder::new(shutdown_rx).with_node_config(cfg).build_context();
     let state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let (raft_tx, _raft_rx) = mpsc::channel(1);
-    (state, ctx, role_tx, raft_tx)
+    (state, ctx, internal_event_tx, raft_tx)
 }
 
 // ============================================================================
@@ -57,7 +57,8 @@ async fn setup_with_threshold(
 
 #[tokio::test]
 async fn test_stale_check_deadline_none_when_queue_empty() {
-    let (leader, _ctx, _role_tx, _raft_tx) = setup_with_threshold(Duration::from_secs(30)).await;
+    let (leader, _ctx, _internal_event_tx, _raft_tx) =
+        setup_with_threshold(Duration::from_secs(30)).await;
 
     assert!(
         leader.stale_check_deadline.is_none(),
@@ -72,7 +73,7 @@ async fn test_stale_check_deadline_none_when_queue_empty() {
 #[tokio::test]
 async fn test_stale_check_deadline_set_on_first_enqueue() {
     let threshold = Duration::from_secs(30);
-    let (mut leader, _ctx, _role_tx, _raft_tx) = setup_with_threshold(threshold).await;
+    let (mut leader, _ctx, _internal_event_tx, _raft_tx) = setup_with_threshold(threshold).await;
 
     let before = Instant::now();
     leader.pending_promotions.push_back(PendingPromotion::new(10, Instant::now()));
@@ -94,7 +95,7 @@ async fn test_stale_check_deadline_set_on_first_enqueue() {
 #[tokio::test]
 async fn test_stale_check_deadline_unchanged_on_second_enqueue() {
     let threshold = Duration::from_secs(30);
-    let (mut leader, _ctx, _role_tx, _raft_tx) = setup_with_threshold(threshold).await;
+    let (mut leader, _ctx, _internal_event_tx, _raft_tx) = setup_with_threshold(threshold).await;
 
     // Enqueue first learner
     let t0 = Instant::now();
@@ -121,7 +122,7 @@ async fn test_stale_check_deadline_unchanged_on_second_enqueue() {
 #[tokio::test]
 async fn test_tick_skips_stale_check_before_deadline() {
     let threshold = Duration::from_secs(3600); // Far future
-    let (mut leader, mut ctx, role_tx, raft_tx) = setup_with_threshold(threshold).await;
+    let (mut leader, mut ctx, internal_event_tx, raft_tx) = setup_with_threshold(threshold).await;
 
     let mut membership = MockMembership::new();
     // get_node_status must NOT be called — stale check should be skipped
@@ -133,7 +134,7 @@ async fn test_tick_skips_stale_check_before_deadline() {
     leader.refresh_stale_deadline(threshold);
 
     // Call tick() — deadline is far in the future, stale check must be skipped
-    let result = leader.tick(&role_tx, &raft_tx, &ctx).await;
+    let result = leader.tick(&internal_event_tx, &raft_tx, &ctx).await;
     assert!(result.is_ok());
     // If MockMembership::get_node_status were called, mockall would panic — test passes by not panicking
 }
@@ -187,7 +188,7 @@ async fn test_tick_removes_stale_learner_when_deadline_fires() {
 
     let node_config = ctx.node_config();
     let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let (raft_tx, _raft_rx) = mpsc::channel(1);
 
     // Enqueue learner with a ready_since in the past so it's already stale
@@ -196,7 +197,7 @@ async fn test_tick_removes_stale_learner_when_deadline_fires() {
     // Deadline = past + 1ms — already fired
     leader.stale_check_deadline = Some(past + threshold);
 
-    let result = leader.tick(&role_tx, &raft_tx, &ctx).await;
+    let result = leader.tick(&internal_event_tx, &raft_tx, &ctx).await;
     assert!(result.is_ok());
 
     // Verify a config change (BatchRemove or RemoveNode) was proposed for node 10
@@ -214,7 +215,7 @@ async fn test_tick_removes_stale_learner_when_deadline_fires() {
 #[tokio::test]
 async fn test_drain_batch_clears_deadline_when_queue_empty() {
     let threshold = Duration::from_secs(30);
-    let (mut leader, _ctx, _role_tx, _raft_tx) = setup_with_threshold(threshold).await;
+    let (mut leader, _ctx, _internal_event_tx, _raft_tx) = setup_with_threshold(threshold).await;
 
     leader.pending_promotions.push_back(PendingPromotion::new(10, Instant::now()));
     leader.refresh_stale_deadline(threshold);
@@ -237,7 +238,7 @@ async fn test_drain_batch_clears_deadline_when_queue_empty() {
 #[tokio::test]
 async fn test_drain_batch_refreshes_deadline_to_new_front() {
     let threshold = Duration::from_secs(30);
-    let (mut leader, _ctx, _role_tx, _raft_tx) = setup_with_threshold(threshold).await;
+    let (mut leader, _ctx, _internal_event_tx, _raft_tx) = setup_with_threshold(threshold).await;
 
     let t0 = Instant::now() - Duration::from_secs(5); // older
     let t1 = Instant::now() - Duration::from_secs(2); // newer (becomes new front after drain)

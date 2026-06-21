@@ -109,7 +109,7 @@ async fn test_zombie_signal_re_triggers_after_signal_lost() {
 // Bug 2: zombie signal must be invalidated when the peer recovers
 //
 // Scenario: ZombieDetected was queued in the channel, but before the bridge
-// task forwards it to the Raft event loop the peer reconnects successfully.
+// task forwards it to the inbound event loop the peer reconnects successfully.
 // The bridge task calls is_zombie_valid() to avoid proposing BatchRemove for a
 // healthy node.
 //

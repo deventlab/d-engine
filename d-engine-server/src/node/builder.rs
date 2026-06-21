@@ -40,6 +40,7 @@ use d_engine_core::DefaultCommitHandler;
 use d_engine_core::DefaultPurgeExecutor;
 use d_engine_core::DefaultStateMachineHandler;
 use d_engine_core::ElectionHandler;
+use d_engine_core::InternalEvent;
 use d_engine_core::LogSizePolicy;
 use d_engine_core::NewCommitData;
 use d_engine_core::Raft;
@@ -51,7 +52,6 @@ use d_engine_core::RaftRole;
 use d_engine_core::RaftStorageHandles;
 use d_engine_core::ReplicationHandler;
 use d_engine_core::Result;
-use d_engine_core::RoleEvent;
 use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
 use d_engine_core::StateMachineWorker;
@@ -305,8 +305,8 @@ where
         info!("Node startup, Last applied index: {}", last_applied_index);
 
         // Create role channel before raft_log so log_flush_tx can be passed to start().
-        // role_rx is passed to Raft::new() below; only the creation order changes.
-        let (role_tx, role_rx) = mpsc::unbounded_channel();
+        // internal_event_rx is passed to Raft::new() below; only the creation order changes.
+        let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
 
         let raft_log = {
             let (log, receiver) = BufferedRaftLog::new(
@@ -316,8 +316,8 @@ where
             );
 
             // Start processor and get Arc-wrapped instance.
-            // Pass role_tx so batch_processor sends RoleEvent::LogFlushed after each fsync.
-            log.start(receiver, Some(role_tx.clone()))
+            // Pass internal_event_tx so batch_processor sends InternalEvent::LogFlushed after each fsync.
+            log.start(receiver, Some(internal_event_tx.clone()))
         };
 
         // Peer health channels: transport fires try_send(peer_id) on stream failure/success.
@@ -424,24 +424,25 @@ where
 
         let purge_executor = DefaultPurgeExecutor::new(raft_log.clone());
 
-        // role_tx / role_rx created earlier (before raft_log) to pass log_flush_tx to start().
+        // internal_event_tx / internal_event_rx created earlier (before raft_log) to pass log_flush_tx to start().
         let (event_tx, event_rx) = mpsc::channel(10240);
         let (cmd_tx, cmd_rx) = mpsc::channel(node_config.raft.cmd_channel_capacity);
-        let role_tx_clone = role_tx.clone();
-        let role_tx_for_sm = role_tx.clone(); // used in SM worker (ApplyCompleted → P2)
+        let internal_event_tx_clone = internal_event_tx.clone();
+        let internal_event_tx_for_sm = internal_event_tx.clone(); // used in SM worker (ApplyCompleted → P2)
 
-        // Bridge zombie signals from health monitor → role event loop.
+        // Bridge zombie signals from health monitor → internal event loop.
         // Exits naturally when zombie_tx drops with RaftMembership (channel closed → recv None).
         // Validates each signal against the health monitor before forwarding: if the peer
         // recovered (record_success called) after the signal was queued, drop the stale signal
         // to prevent BatchRemove for a healthy node.
-        let role_tx_for_zombie = role_tx.clone();
+        let internal_event_tx_for_zombie = internal_event_tx.clone();
         let membership_for_zombie = Arc::clone(&membership);
         tokio::spawn(async move {
             let mut zombie_rx = zombie_rx;
             while let Some(node_id) = zombie_rx.recv().await {
                 if membership_for_zombie.is_zombie_valid(node_id) {
-                    let _ = role_tx_for_zombie.send(RoleEvent::ZombieDetected(node_id));
+                    let _ =
+                        internal_event_tx_for_zombie.send(InternalEvent::ZombieDetected(node_id));
                 }
             }
         });
@@ -512,8 +513,8 @@ where
             },
             membership.clone(),
             SignalParams::new(
-                role_tx,
-                role_rx,
+                internal_event_tx,
+                internal_event_rx,
                 event_tx,
                 event_rx,
                 cmd_tx.clone(),
@@ -538,7 +539,7 @@ where
             node_id,
             state_machine_handler.clone(),
             sm_apply_rx,
-            role_tx_for_sm,
+            internal_event_tx_for_sm,
             self.shutdown_signal.clone(),
         );
         let sm_worker_handle = Self::spawn_state_machine_worker(sm_worker);
@@ -548,7 +549,7 @@ where
             state_machine_handler,
             raft_log: raft_core.ctx.storage.raft_log.clone(),
             membership: membership.clone(),
-            role_tx: role_tx_clone,
+            internal_event_tx: internal_event_tx_clone,
             sm_apply_tx,
             shutdown_signal,
             max_batch_size: raft_core.ctx.node_config.raft.batching.max_batch_size,

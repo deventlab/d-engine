@@ -33,7 +33,7 @@ pub struct NewCommitData {
 }
 
 /// Client commands that require batching for performance
-/// Separated from internal RaftEvent for drain-driven processing
+/// Separated from internal InboundEvent for drain-driven processing
 #[derive(Debug)]
 pub enum ClientCmd {
     Propose(
@@ -52,7 +52,7 @@ pub enum ClientCmd {
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub enum RoleEvent {
+pub enum InternalEvent {
     BecomeFollower(Option<u32>), // BecomeFollower(Option<leader_id>)
     BecomeCandidate,
     BecomeLeader,
@@ -65,7 +65,7 @@ pub enum RoleEvent {
     /// No state transition - pure notification for watch channel
     LeaderDiscovered(u32, u64), // (leader_id, term)
 
-    ReprocessEvent(Box<RaftEvent>), //Replay the raft event when step down as another role
+    ReprocessEvent(Box<InboundEvent>), //Replay the inbound event when step down as another role
 
     /// Notify Raft loop that log entries up to `durable_index` are crash-safe (fsync complete).
     /// Sent by batch_processor after flush completes.
@@ -97,7 +97,7 @@ pub enum RoleEvent {
         term: u64,
     },
 
-    /// State machine apply completed — processed at P2 (unbounded role_tx) to avoid
+    /// State machine apply completed — processed at P2 (unbounded internal_event_tx) to avoid
     /// priority inversion: AppendEntries RPCs at P4 (bounded event_tx) must not starve
     /// internal commit-driven events.
     ApplyCompleted {
@@ -105,7 +105,7 @@ pub enum RoleEvent {
         results: Vec<ApplyResult>,
     },
 
-    /// Trigger state machine snapshot creation — routed via P2 (unbounded role_tx) to
+    /// Trigger state machine snapshot creation — routed via P2 (unbounded internal_event_tx) to
     /// prevent deadlock when P4 event_tx is saturated by inbound RPCs.
     CreateSnapshotEvent,
 
@@ -122,7 +122,7 @@ pub enum RoleEvent {
     MembershipApplied,
 
     /// Check pending learners for promotion eligibility after a membership change or heartbeat.
-    /// Re-queued via role_tx until all pending promotions are resolved.
+    /// Re-queued via internal_event_tx until all pending promotions are resolved.
     PromoteReadyLearners,
 
     /// Log entries up to `LogId` have been purged from storage after snapshot creation.
@@ -143,7 +143,7 @@ pub enum RoleEvent {
     ZombieDetected(u32),
 
     /// Fatal error from SM worker — node must shutdown.
-    /// Sent via role_tx (P2) so it is not blocked behind external RPCs on event_tx (P4).
+    /// Sent via internal_event_tx (P2) so it is not blocked behind external RPCs on event_tx (P4).
     FatalError {
         source: String,
         error: String,
@@ -151,7 +151,7 @@ pub enum RoleEvent {
 }
 
 #[derive(Debug)]
-pub enum RaftEvent {
+pub enum InboundEvent {
     ReceiveVoteRequest(
         VoteRequest,
         MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
@@ -248,17 +248,17 @@ pub enum TestEvent {
 }
 
 #[cfg(test)]
-pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
+pub(crate) fn inbound_event_to_test_event(event: &InboundEvent) -> TestEvent {
     match event {
-        RaftEvent::ReceiveVoteRequest(req, _) => TestEvent::ReceiveVoteRequest(*req),
-        RaftEvent::ClusterConf(req, _) => TestEvent::ClusterConf(*req),
-        RaftEvent::ClusterConfUpdate(req, _) => TestEvent::ClusterConfUpdate(req.clone()),
-        RaftEvent::AppendEntries(req, _) => TestEvent::AppendEntries(req.clone()),
-        RaftEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
-        RaftEvent::StreamSnapshot(_, _, _) => TestEvent::StreamSnapshot,
-        RaftEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
-        RaftEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
-        RaftEvent::FatalError { source, error } => TestEvent::FatalError {
+        InboundEvent::ReceiveVoteRequest(req, _) => TestEvent::ReceiveVoteRequest(*req),
+        InboundEvent::ClusterConf(req, _) => TestEvent::ClusterConf(*req),
+        InboundEvent::ClusterConfUpdate(req, _) => TestEvent::ClusterConfUpdate(req.clone()),
+        InboundEvent::AppendEntries(req, _) => TestEvent::AppendEntries(req.clone()),
+        InboundEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
+        InboundEvent::StreamSnapshot(_, _, _) => TestEvent::StreamSnapshot,
+        InboundEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
+        InboundEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
+        InboundEvent::FatalError { source, error } => TestEvent::FatalError {
             source: source.clone(),
             error: error.clone(),
         },

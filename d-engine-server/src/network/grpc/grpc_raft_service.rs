@@ -4,9 +4,9 @@
 
 use crate::Node;
 use crate::proto_convert;
+use d_engine_core::InboundEvent;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::MaybeCloneOneshotReceiver;
-use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
 use d_engine_core::TypeConfig;
 #[cfg(feature = "watch")]
@@ -85,7 +85,10 @@ where
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
-            .send(RaftEvent::ReceiveVoteRequest(request.into_inner(), resp_tx))
+            .send(InboundEvent::ReceiveVoteRequest(
+                request.into_inner(),
+                resp_tx,
+            ))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
         let timeout_duration =
@@ -116,7 +119,7 @@ where
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
-            .send(RaftEvent::AppendEntries(
+            .send(InboundEvent::AppendEntries(
                 request.into_inner(),
                 vec![resp_tx],
             ))
@@ -135,7 +138,7 @@ where
     /// Processes a persistent bidirectional AppendEntries stream from the cluster leader.
     ///
     /// Decouples request ingestion from response emission:
-    /// - recv task: reads batches from the stream, dispatches each as a `RaftEvent::AppendEntries`
+    /// - recv task: reads batches from the stream, dispatches each as a `InboundEvent::AppendEntries`
     ///   (non-blocking between batches)
     /// - forwarder task: drains ordered response handles sequentially; ordering is guaranteed
     ///   by the Raft single-threaded event loop
@@ -180,7 +183,7 @@ where
                         match result {
                             Some(Ok(req)) => {
                                 let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-                                if event_tx.send(RaftEvent::AppendEntries(req, vec![resp_tx])).await.is_err() {
+                                if event_tx.send(InboundEvent::AppendEntries(req, vec![resp_tx])).await.is_err() {
                                     warn!("[stream_append_entries|recv] event_tx closed");
                                     break;
                                 }
@@ -255,7 +258,7 @@ where
         let (startup_tx, startup_rx) = oneshot::channel::<Result<(), Status>>();
 
         self.event_tx
-            .send(RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx))
+            .send(InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
@@ -301,7 +304,7 @@ where
         });
 
         self.event_tx
-            .send(RaftEvent::InstallSnapshotChunk(rx, resp_tx))
+            .send(InboundEvent::InstallSnapshotChunk(rx, resp_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
@@ -334,7 +337,10 @@ where
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
-            .send(RaftEvent::ClusterConfUpdate(request.into_inner(), resp_tx))
+            .send(InboundEvent::ClusterConfUpdate(
+                request.into_inner(),
+                resp_tx,
+            ))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
@@ -361,7 +367,7 @@ where
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
-            .send(RaftEvent::ClusterConf(request.into_inner(), resp_tx))
+            .send(InboundEvent::ClusterConf(request.into_inner(), resp_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
@@ -383,7 +389,7 @@ where
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
-            .send(RaftEvent::JoinCluster(request.into_inner(), resp_tx))
+            .send(InboundEvent::JoinCluster(request.into_inner(), resp_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
@@ -404,7 +410,7 @@ where
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
-            .send(RaftEvent::DiscoverLeader(request.into_inner(), resp_tx))
+            .send(InboundEvent::DiscoverLeader(request.into_inner(), resp_tx))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 

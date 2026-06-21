@@ -21,13 +21,13 @@ pub(crate) struct RaftHealthMonitor {
     pub(crate) failure_counts: DashMap<u32, u32>,
     pub(crate) zombie_threshold: u32,
     /// Fires node_id when failure_count first reaches zombie_threshold.
-    /// Consumed by the Raft event loop (core layer) via select!.
+    /// Consumed by the inbound event loop (core layer) via select!.
     /// Server layer holds only Sender<u32> — zero dependency on core types.
     zombie_tx: mpsc::Sender<u32>,
 }
 
 impl RaftHealthMonitor {
-    /// Returns (monitor, zombie_rx). Caller passes zombie_rx to the Raft event loop.
+    /// Returns (monitor, zombie_rx). Caller passes zombie_rx to the inbound event loop.
     pub(crate) fn new(zombie_threshold: u32) -> (Self, mpsc::Receiver<u32>) {
         let (zombie_tx, zombie_rx) = mpsc::channel(64);
         (
@@ -80,7 +80,7 @@ impl RaftHealthMonitor {
     ///
     /// A zombie is invalid once `record_success` has been called (peer recovered),
     /// which removes the entry from `failure_counts`. The bridge task uses this
-    /// to drop stale zombie signals before forwarding them to the Raft event loop.
+    /// to drop stale zombie signals before forwarding them to the inbound event loop.
     pub(crate) fn is_zombie_valid(
         &self,
         node_id: u32,

@@ -1,9 +1,9 @@
 use crate::ClientCmd;
+use crate::InternalEvent;
 use crate::MaybeCloneOneshot;
 use crate::MockBuilder;
 use crate::RaftOneshot;
 use crate::RaftRole;
-use crate::RoleEvent;
 use crate::client::ClientWriteRequest;
 use crate::client::WriteOperation;
 use crate::raft_role::role_state::RaftRoleState;
@@ -52,10 +52,10 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // Transition to Leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
 
@@ -89,7 +89,7 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
     }
 
     // Leader steps down to Follower (receives higher term)
-    raft.handle_role_event(RoleEvent::BecomeFollower(Some(2)))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(Some(2)))
         .await
         .expect("Should become Follower");
 

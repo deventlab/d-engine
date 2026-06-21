@@ -1,13 +1,13 @@
 use crate::ClientCmd;
 use crate::Error;
+use crate::InboundEvent;
+use crate::InternalEvent;
 use crate::MaybeCloneOneshot;
 use crate::MockBuilder;
 use crate::MockMembership;
 use crate::MockStateMachineHandler;
 use crate::NewCommitData;
-use crate::RaftEvent;
 use crate::RaftOneshot;
-use crate::RoleEvent;
 use crate::client::ClientReadRequest;
 use crate::client::ClientResponsePayload;
 use crate::client::ClientWriteRequest;
@@ -88,12 +88,12 @@ async fn test_learner_tick_succeeds() {
     let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let (event_tx, _event_rx) = mpsc::channel(1);
 
     // Action: Tick
     assert!(
-        state.tick(&role_tx, &event_tx, &context).await.is_ok(),
+        state.tick(&internal_event_tx, &event_tx, &context).await.is_ok(),
         "Learner tick should succeed"
     );
 }
@@ -108,12 +108,12 @@ async fn test_learner_tick_succeeds() {
 /// Expected:
 /// - Returns response with vote_granted=false
 /// - Updates current_term to request term (11)
-/// - handle_raft_event returns Ok()
+/// - handle_inbound_event returns Ok()
 ///
 /// This validates Raft rule: all nodes update term when seeing higher term,
 /// but learners never grant votes.
 ///
-/// Original: test_handle_raft_event_case1
+/// Original: test_handle_inbound_event_case1
 #[tokio::test]
 async fn test_learner_rejects_vote_request_updates_term() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -124,8 +124,8 @@ async fn test_learner_rejects_vote_request_updates_term() {
     let request_term = term_before + 10;
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ReceiveVoteRequest(
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::ReceiveVoteRequest(
         VoteRequest {
             term: request_term,
             candidate_id: 2,
@@ -137,8 +137,11 @@ async fn test_learner_rejects_vote_request_updates_term() {
 
     // Action: Handle VoteRequest
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
+        "handle_inbound_event should succeed"
     );
 
     // Verify: Term updated
@@ -161,11 +164,11 @@ async fn test_learner_rejects_vote_request_updates_term() {
 ///
 /// Expected:
 /// - Returns Status error with Code::PermissionDenied
-/// - handle_raft_event returns Ok()
+/// - handle_inbound_event returns Ok()
 ///
 /// This validates that learners redirect metadata requests to leader.
 ///
-/// Original: test_handle_raft_event_case2
+/// Original: test_handle_inbound_event_case2
 #[tokio::test]
 async fn test_learner_rejects_cluster_conf_request() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -174,13 +177,16 @@ async fn test_learner_rejects_cluster_conf_request() {
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ClusterConf(MetadataRequest {}, resp_tx);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::ClusterConf(MetadataRequest {}, resp_tx);
 
     // Action: Handle ClusterConf
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
+        "handle_inbound_event should succeed"
     );
 
     // Verify: PermissionDenied
@@ -201,12 +207,12 @@ async fn test_learner_rejects_cluster_conf_request() {
 /// Expected:
 /// - Returns response with success=true
 /// - error_code = Unspecified
-/// - handle_raft_event returns Ok()
+/// - handle_inbound_event returns Ok()
 ///
 /// This validates that learners can receive and apply cluster
 /// configuration updates from leader.
 ///
-/// Original: test_handle_raft_event_case3
+/// Original: test_handle_inbound_event_case3
 #[tokio::test]
 async fn test_learner_handles_cluster_conf_update_success() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -232,8 +238,8 @@ async fn test_learner_handles_cluster_conf_update_success() {
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let raft_event = RaftEvent::ClusterConfUpdate(
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::ClusterConfUpdate(
         ClusterConfChangeRequest {
             id: 2, // Leader ID
             term: 1,
@@ -245,8 +251,11 @@ async fn test_learner_handles_cluster_conf_update_success() {
 
     // Action: Handle ClusterConfUpdate
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
+        "handle_inbound_event should succeed"
     );
 
     // Verify: Success response
@@ -275,7 +284,7 @@ async fn test_learner_handles_cluster_conf_update_success() {
 /// - Updates commit_index
 /// - Returns AppendEntriesResponse with success=true
 ///
-/// Original: test_handle_raft_event_case4_1
+/// Original: test_handle_inbound_event_case4_1
 #[tokio::test]
 async fn test_learner_handles_append_entries_success() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -317,24 +326,27 @@ async fn test_learner_handles_append_entries_success() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::AppendEntries(append_request, vec![resp_tx]);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
+        "handle_inbound_event should succeed"
     );
 
     // Verify: LeaderDiscovered event
     assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        crate::RoleEvent::LeaderDiscovered(5, _)
+        internal_event_rx.try_recv().unwrap(),
+        crate::InternalEvent::LeaderDiscovered(5, _)
     ));
 
     // Verify: NotifyNewCommitIndex event
     assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        crate::RoleEvent::NotifyNewCommitIndex(_)
+        internal_event_rx.try_recv().unwrap(),
+        crate::InternalEvent::NotifyNewCommitIndex(_)
     ));
 
     assert_eq!(state.current_term(), leader_term);
@@ -354,7 +366,7 @@ async fn test_learner_handles_append_entries_success() {
 /// - Term unchanged
 /// - Returns AppendEntriesResponse with is_higher_term=true
 ///
-/// Original: test_handle_raft_event_case4_2
+/// Original: test_handle_inbound_event_case4_2
 #[tokio::test]
 async fn test_learner_rejects_append_entries_stale_term() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -378,15 +390,21 @@ async fn test_learner_rejects_append_entries_stale_term() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::AppendEntries(append_request, vec![resp_tx]);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
+        "handle_inbound_event should succeed"
     );
 
-    assert!(role_rx.try_recv().is_err(), "No events should be sent");
+    assert!(
+        internal_event_rx.try_recv().is_err(),
+        "No events should be sent"
+    );
     assert_eq!(state.current_term(), learner_term);
 
     let response = resp_rx.recv().await.unwrap().unwrap();
@@ -403,9 +421,9 @@ async fn test_learner_rejects_append_entries_stale_term() {
 /// - Sends LeaderDiscovered event (leader is valid)
 /// - Updates term
 /// - Returns AppendEntriesResponse with success=false
-/// - handle_raft_event returns Err()
+/// - handle_inbound_event returns Err()
 ///
-/// Original: test_handle_raft_event_case4_3
+/// Original: test_handle_inbound_event_case4_3
 #[tokio::test]
 async fn test_learner_handles_append_entries_handler_error() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -435,19 +453,22 @@ async fn test_learner_handles_append_entries_handler_error() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::AppendEntries(append_request, vec![resp_tx]);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_err(),
-        "handle_raft_event should return error"
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_err(),
+        "handle_inbound_event should return error"
     );
 
     assert!(matches!(
-        role_rx.try_recv().unwrap(),
-        crate::RoleEvent::LeaderDiscovered(5, _)
+        internal_event_rx.try_recv().unwrap(),
+        crate::InternalEvent::LeaderDiscovered(5, _)
     ));
-    assert!(role_rx.try_recv().is_err());
+    assert!(internal_event_rx.try_recv().is_err());
 
     assert_eq!(state.current_term(), leader_term);
 
@@ -468,7 +489,7 @@ async fn test_learner_handles_append_entries_handler_error() {
 /// Expected:
 /// - Returns response with error_code = NOT_LEADER
 ///
-/// Original: test_handle_raft_event_case5
+/// Original: test_handle_inbound_event_case5
 #[tokio::test]
 async fn test_learner_rejects_client_write_request() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -506,7 +527,7 @@ async fn test_learner_rejects_client_write_request() {
 /// Expected:
 /// - Returns response with error_code = NOT_LEADER
 ///
-/// Original: test_handle_raft_event_case6
+/// Original: test_handle_inbound_event_case6
 #[tokio::test]
 async fn test_learner_rejects_client_read_request() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -533,7 +554,7 @@ async fn test_learner_rejects_client_read_request() {
     assert!(err.message().contains("Not leader"));
 }
 ///
-/// Original: test_handle_raft_event_case10
+/// Original: test_handle_inbound_event_case10
 #[tokio::test]
 async fn test_learner_rejects_join_cluster() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -548,12 +569,15 @@ async fn test_learner_rejects_join_cluster() {
         address: "127.0.0.1:9090".to_string(),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::JoinCluster(request, resp_tx);
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::JoinCluster(request, resp_tx);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_err(),
-        "handle_raft_event should return error"
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_err(),
+        "handle_inbound_event should return error"
     );
 
     let response = resp_rx.recv().await.expect("should receive response");
@@ -570,9 +594,9 @@ async fn test_learner_rejects_join_cluster() {
 ///
 /// Expected:
 /// - Returns Status error with Code::PermissionDenied
-/// - handle_raft_event returns Ok()
+/// - handle_inbound_event returns Ok()
 ///
-/// Original: test_handle_raft_event_case11
+/// Original: test_handle_inbound_event_case11
 #[tokio::test]
 async fn test_learner_rejects_leader_discovery() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -585,12 +609,15 @@ async fn test_learner_rejects_leader_discovery() {
         requester_address: "127.0.0.1:9090".to_string(),
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::DiscoverLeader(request, resp_tx);
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::DiscoverLeader(request, resp_tx);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     assert!(
-        state.handle_raft_event(raft_event, &context, role_tx).await.is_ok(),
-        "handle_raft_event should succeed"
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
+        "handle_inbound_event should succeed"
     );
 
     let response = resp_rx.recv().await.expect("should receive response");
@@ -1041,7 +1068,7 @@ async fn test_join_cluster_succeeds_large_cluster() {
 ///
 /// Expected:
 /// - Sends BecomeFollower event
-/// - handle_raft_event returns Ok()
+/// - handle_inbound_event returns Ok()
 ///
 /// This validates learner promotion mechanism.
 ///
@@ -1069,18 +1096,21 @@ async fn test_learner_promotion_on_membership_applied() {
     context.membership = Arc::new(mock_membership);
 
     let mut state = LearnerState::<MockTypeConfig>::new(3, context.node_config.clone());
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
-    let result = state.handle_membership_applied(&context, &role_tx).await;
+    let result = state.handle_membership_applied(&context, &internal_event_tx).await;
     assert!(result.is_ok(), "MembershipApplied should succeed");
 
-    let role_event = tokio::time::timeout(std::time::Duration::from_millis(100), role_rx.recv())
-        .await
-        .expect("Should receive event within timeout")
-        .expect("Channel should not be closed");
+    let internal_event = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        internal_event_rx.recv(),
+    )
+    .await
+    .expect("Should receive event within timeout")
+    .expect("Channel should not be closed");
 
-    match role_event {
-        crate::RoleEvent::BecomeFollower(leader_id) => {
+    match internal_event {
+        crate::InternalEvent::BecomeFollower(leader_id) => {
             assert_eq!(leader_id, None, "Should not specify leader on promotion");
         }
         other => panic!("Expected BecomeFollower event, got: {other:?}"),
@@ -1095,7 +1125,7 @@ async fn test_learner_promotion_on_membership_applied() {
 ///
 /// Expected:
 /// - No role transition event
-/// - handle_raft_event returns Ok()
+/// - handle_inbound_event returns Ok()
 ///
 /// Original: test_learner_stays_learner_on_membership_applied
 #[tokio::test]
@@ -1121,13 +1151,16 @@ async fn test_learner_stays_learner_on_membership_applied() {
     context.membership = Arc::new(mock_membership);
 
     let mut state = LearnerState::<MockTypeConfig>::new(3, context.node_config.clone());
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
-    let result = state.handle_membership_applied(&context, &role_tx).await;
+    let result = state.handle_membership_applied(&context, &internal_event_tx).await;
     assert!(result.is_ok(), "MembershipApplied should succeed");
 
-    let timeout_result =
-        tokio::time::timeout(std::time::Duration::from_millis(100), role_rx.recv()).await;
+    let timeout_result = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        internal_event_rx.recv(),
+    )
+    .await;
 
     if let Ok(Some(event)) = timeout_result {
         panic!("Should not send role transition when still Learner, got: {event:?}");
@@ -1142,7 +1175,7 @@ async fn test_learner_stays_learner_on_membership_applied() {
 ///
 /// Expected:
 /// - No role transition event
-/// - handle_raft_event returns Ok()
+/// - handle_inbound_event returns Ok()
 ///
 /// Original: test_learner_node_not_found_on_membership_applied
 #[tokio::test]
@@ -1161,16 +1194,19 @@ async fn test_learner_node_not_found_on_membership_applied() {
     context.membership = Arc::new(mock_membership);
 
     let mut state = LearnerState::<MockTypeConfig>::new(3, context.node_config.clone());
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
-    let result = state.handle_membership_applied(&context, &role_tx).await;
+    let result = state.handle_membership_applied(&context, &internal_event_tx).await;
     assert!(
         result.is_ok(),
         "MembershipApplied should succeed even when node not found"
     );
 
-    let timeout_result =
-        tokio::time::timeout(std::time::Duration::from_millis(100), role_rx.recv()).await;
+    let timeout_result = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        internal_event_rx.recv(),
+    )
+    .await;
 
     if let Ok(Some(event)) = timeout_result {
         panic!("Should not send role transition when node not found, got: {event:?}");
@@ -1198,18 +1234,18 @@ mod snapshot_tests {
         let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
         let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
         assert!(
             state.handle_log_purge_completed(LogId { term: 1, index: 1 }).is_ok(),
             "Stale LogPurgeCompleted should be silently ignored"
         );
         assert!(
-            state.handle_promote_ready_learners(&context, &role_tx).await.is_ok(),
+            state.handle_promote_ready_learners(&context, &internal_event_tx).await.is_ok(),
             "Stale PromoteReadyLearners should be silently ignored"
         );
         assert!(
-            state.handle_self_removed(&role_tx).is_ok(),
+            state.handle_self_removed(&internal_event_tx).is_ok(),
             "Stale StepDownSelfRemoved should be silently ignored"
         );
     }
@@ -1227,10 +1263,10 @@ mod snapshot_tests {
         let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
         let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
         // First trigger — starts background snapshot
-        let result1 = state.handle_create_snapshot(&context, &role_tx).await;
+        let result1 = state.handle_create_snapshot(&context, &internal_event_tx).await;
         assert!(result1.is_ok(), "First CreateSnapshotEvent should succeed");
         assert!(
             state.snapshot_in_progress.load(Ordering::SeqCst),
@@ -1238,7 +1274,7 @@ mod snapshot_tests {
         );
 
         // Second trigger while first is still running — must be a no-op
-        let result2 = state.handle_create_snapshot(&context, &role_tx).await;
+        let result2 = state.handle_create_snapshot(&context, &internal_event_tx).await;
         assert!(
             result2.is_ok(),
             "Second CreateSnapshotEvent should return Ok (ignored)"
@@ -1278,8 +1314,10 @@ mod snapshot_tests {
         };
         let snapshot_result = Ok((metadata, std::path::PathBuf::from("/tmp/test_snapshot.bin")));
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        let result = state.handle_snapshot_created(snapshot_result, &context, &role_tx).await;
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+        let result = state
+            .handle_snapshot_created(snapshot_result, &context, &internal_event_tx)
+            .await;
 
         assert!(result.is_ok(), "SnapshotCreated should succeed");
         assert!(
@@ -1312,8 +1350,10 @@ mod snapshot_tests {
 
         let snapshot_result = Err(crate::Error::Fatal("Snapshot creation failed".to_string()));
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        let result = state.handle_snapshot_created(snapshot_result, &context, &role_tx).await;
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+        let result = state
+            .handle_snapshot_created(snapshot_result, &context, &internal_event_tx)
+            .await;
 
         assert!(
             result.is_ok(),
@@ -1344,10 +1384,10 @@ mod snapshot_tests {
 /// - FatalError event from StateMachine component
 ///
 /// # When
-/// - Learner handles FatalError event via handle_raft_event()
+/// - Learner handles FatalError event via handle_inbound_event()
 ///
 /// # Then
-/// - handle_raft_event() returns Error::Fatal
+/// - handle_inbound_event() returns Error::Fatal
 /// - Error message contains source and error details
 /// - No role transition events are sent (log replication is aborted)
 #[tokio::test]
@@ -1362,21 +1402,21 @@ async fn test_learner_handles_fatal_error_returns_error() {
     let mut learner = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Create FatalError event
-    let fatal_error = RaftEvent::FatalError {
+    let fatal_error = InboundEvent::FatalError {
         source: "StateMachine".to_string(),
         error: "Disk failure".to_string(),
     };
 
-    // Create role event channel
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    // Create internal event channel
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
     // Handle the FatalError event
-    let result = learner.handle_raft_event(fatal_error, &context, role_tx).await;
+    let result = learner.handle_inbound_event(fatal_error, &context, internal_event_tx).await;
 
-    // VERIFY 1: handle_raft_event() returns Error::Fatal
+    // VERIFY 1: handle_inbound_event() returns Error::Fatal
     assert!(
         result.is_err(),
-        "Expected handle_raft_event to return Err, got: {result:?}"
+        "Expected handle_inbound_event to return Err, got: {result:?}"
     );
 
     // VERIFY 2: Error is Fatal and contains source information
@@ -1390,9 +1430,9 @@ async fn test_learner_handles_fatal_error_returns_error() {
         other => panic!("Expected Error::Fatal, got: {other:?}"),
     }
 
-    // VERIFY 3: No role events sent
+    // VERIFY 3: No internal events sent
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "No role transition events should be sent during FatalError handling"
     );
 }
@@ -1496,7 +1536,7 @@ async fn test_learner_serves_eventual_read_locally() {
 /// - State machine handler indicates snapshot should be taken
 ///
 /// Expected:
-/// - RoleEvent::CreateSnapshotEvent is sent directly on role_tx (P2 unbounded)
+/// - InternalEvent::CreateSnapshotEvent is sent directly on internal_event_tx (P2 unbounded)
 /// - No ReprocessEvent wrapper — direct send eliminates the bounded event_tx deadlock path
 #[tokio::test]
 async fn test_apply_completed_triggers_snapshot_when_condition_met() {
@@ -1521,10 +1561,10 @@ async fn test_apply_completed_triggers_snapshot_when_condition_met() {
 
     let mut learner = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
     // ACTION: Handle ApplyCompleted event
-    let result = learner.handle_apply_completed(100, vec![], &context, &role_tx).await;
+    let result = learner.handle_apply_completed(100, vec![], &context, &internal_event_tx).await;
 
     // VERIFY 1: Event handling succeeds
     assert!(
@@ -1532,16 +1572,16 @@ async fn test_apply_completed_triggers_snapshot_when_condition_met() {
         "ApplyCompleted should be handled successfully, got: {result:?}"
     );
 
-    // VERIFY 2: CreateSnapshotEvent is sent directly on role_tx (P2 unbounded)
-    let event = role_rx.try_recv().expect("Should receive snapshot trigger event");
+    // VERIFY 2: CreateSnapshotEvent is sent directly on internal_event_tx (P2 unbounded)
+    let event = internal_event_rx.try_recv().expect("Should receive snapshot trigger event");
     assert!(
-        matches!(event, RoleEvent::CreateSnapshotEvent),
-        "Expected RoleEvent::CreateSnapshotEvent, got: {event:?}"
+        matches!(event, InternalEvent::CreateSnapshotEvent),
+        "Expected InternalEvent::CreateSnapshotEvent, got: {event:?}"
     );
 
     // VERIFY 3: No additional events queued
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "Should only send one snapshot event"
     );
 }
@@ -1581,10 +1621,10 @@ async fn test_apply_completed_does_not_trigger_snapshot_when_condition_not_met()
 
     let mut learner = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
     // ACTION: Handle ApplyCompleted event
-    let result = learner.handle_apply_completed(50, vec![], &context, &role_tx).await;
+    let result = learner.handle_apply_completed(50, vec![], &context, &internal_event_tx).await;
 
     // VERIFY 1: Event handling succeeds
     assert!(
@@ -1594,7 +1634,7 @@ async fn test_apply_completed_does_not_trigger_snapshot_when_condition_not_met()
 
     // VERIFY 2: No snapshot event is sent
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "Should not send snapshot event when condition is not met"
     );
 }
@@ -1629,10 +1669,10 @@ async fn test_apply_completed_respects_snapshot_disabled_config() {
 
     let mut learner = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
     // ACTION: Handle ApplyCompleted event
-    let result = learner.handle_apply_completed(100, vec![], &context, &role_tx).await;
+    let result = learner.handle_apply_completed(100, vec![], &context, &internal_event_tx).await;
 
     // VERIFY 1: Event handling succeeds
     assert!(
@@ -1642,7 +1682,7 @@ async fn test_apply_completed_respects_snapshot_disabled_config() {
 
     // VERIFY 2: No snapshot event is sent (snapshot disabled in config)
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "Should not send snapshot event when snapshot is disabled in config"
     );
 }
@@ -1689,10 +1729,15 @@ async fn test_learner_acks_immediately_after_memory_write() {
         leader_commit_index: 0,
     };
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let raft_event = RaftEvent::AppendEntries(append_request, vec![resp_tx]);
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let inbound_event = InboundEvent::AppendEntries(append_request, vec![resp_tx]);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
-    assert!(state.handle_raft_event(raft_event, &context, role_tx).await.is_ok());
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
 
     // MemFirst: ACK sent immediately
     let response = resp_rx.try_recv().expect("ACK must be sent immediately after memory write");
@@ -1740,16 +1785,16 @@ async fn test_learner_install_snapshot_reports_success_after_all_chunks_applied(
     state.update_current_term(2);
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let (tx, rx) = mpsc::channel(32);
     tx.send(SnapshotChunk::default()).await.unwrap();
     drop(tx);
     state
-        .handle_raft_event(
-            RaftEvent::InstallSnapshotChunk(rx, resp_tx),
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
             &context,
-            role_tx,
+            internal_event_tx,
         )
         .await
         .unwrap();
@@ -1814,17 +1859,17 @@ async fn test_learner_install_snapshot_does_not_report_success_on_mid_chunk_fail
     state.update_current_term(2);
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let (tx, rx) = mpsc::channel(32);
     tx.send(SnapshotChunk::default()).await.unwrap();
     drop(tx);
-    // handle_raft_event returns Err (apply failed) — that is expected
+    // handle_inbound_event returns Err (apply failed) — that is expected
     let _ = state
-        .handle_raft_event(
-            RaftEvent::InstallSnapshotChunk(rx, resp_tx),
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
             &context,
-            role_tx,
+            internal_event_tx,
         )
         .await;
 
@@ -1885,17 +1930,17 @@ async fn test_learner_install_snapshot_reports_failure_when_apply_fails_after_tr
     state.update_current_term(2);
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let (tx, rx) = mpsc::channel(32);
     tx.send(SnapshotChunk::default()).await.unwrap();
     drop(tx);
     // Learner propagates apply errors — ignore the return value here
     let _ = state
-        .handle_raft_event(
-            RaftEvent::InstallSnapshotChunk(rx, resp_tx),
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
             &context,
-            role_tx,
+            internal_event_tx,
         )
         .await;
 

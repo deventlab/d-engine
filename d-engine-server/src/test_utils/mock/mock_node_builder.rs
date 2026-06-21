@@ -6,6 +6,8 @@ use std::sync::atomic::AtomicBool;
 
 use bytes::Bytes;
 use d_engine_core::ElectionConfig;
+use d_engine_core::InboundEvent;
+use d_engine_core::InternalEvent;
 use d_engine_core::MockElectionCore;
 use d_engine_core::MockMembership;
 use d_engine_core::MockPurgeExecutor;
@@ -18,12 +20,10 @@ use d_engine_core::Raft;
 use d_engine_core::RaftConfig;
 use d_engine_core::RaftContext;
 use d_engine_core::RaftCoreHandlers;
-use d_engine_core::RaftEvent;
 use d_engine_core::RaftLog;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::RaftRole;
 use d_engine_core::RaftStorageHandles;
-use d_engine_core::RoleEvent;
 use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
 use d_engine_core::follower_state::FollowerState;
@@ -118,14 +118,14 @@ pub struct MockBuilder {
     shutdown_signal: watch::Receiver<()>,
 
     /// Internal event channel sender
-    pub(crate) event_tx: Option<mpsc::Sender<RaftEvent>>,
+    pub(crate) event_tx: Option<mpsc::Sender<InboundEvent>>,
     /// Internal event channel receiver
-    pub(crate) event_rx: Option<mpsc::Receiver<RaftEvent>>,
+    pub(crate) event_rx: Option<mpsc::Receiver<InboundEvent>>,
 
     /// Internal role change channel sender
-    pub(crate) role_tx: Option<mpsc::UnboundedSender<RoleEvent>>,
+    pub(crate) internal_event_tx: Option<mpsc::UnboundedSender<InternalEvent>>,
     /// Internal role change channel receiver
-    pub(crate) role_rx: Option<mpsc::UnboundedReceiver<RoleEvent>>,
+    pub(crate) internal_event_rx: Option<mpsc::UnboundedReceiver<InternalEvent>>,
 }
 
 impl MockBuilder {
@@ -153,8 +153,8 @@ impl MockBuilder {
             turn_on_election: None,
             shutdown_signal,
 
-            role_tx: None,
-            role_rx: None,
+            internal_event_tx: None,
+            internal_event_rx: None,
             event_tx: None,
             event_rx: None,
         }
@@ -210,7 +210,7 @@ impl MockBuilder {
     /// This is the most commonly used build method. Returns a fully
     /// initialized Raft instance ready for testing.
     pub fn build_raft(self) -> Raft<MockTypeConfig> {
-        let (role_tx, role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel(10);
         let (cmd_tx, cmd_rx) = mpsc::channel(1024);
         let (
@@ -224,8 +224,8 @@ impl MockBuilder {
             membership,
             purge_executor,
             node_config,
-            role_tx,
-            role_rx,
+            internal_event_tx,
+            internal_event_rx,
             event_tx,
             event_rx,
         ) = (
@@ -245,8 +245,8 @@ impl MockBuilder {
                     .validate()
                     .expect("Should succeed to validate RaftNodeConfig")
             }),
-            self.role_tx.unwrap_or(role_tx),
-            self.role_rx.unwrap_or(role_rx),
+            self.internal_event_tx.unwrap_or(internal_event_tx),
+            self.internal_event_rx.unwrap_or(internal_event_rx),
             self.event_tx.unwrap_or(event_tx),
             self.event_rx.unwrap_or(event_rx),
         );
@@ -294,8 +294,8 @@ impl MockBuilder {
             },
             membership,
             SignalParams::new(
-                role_tx,
-                role_rx,
+                internal_event_tx,
+                internal_event_rx,
                 event_tx,
                 event_rx,
                 cmd_tx,

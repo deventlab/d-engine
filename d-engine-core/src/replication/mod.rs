@@ -166,7 +166,7 @@ where
     /// 3. CALLER MUST:
     ///    - Check `response.term_update` for term conflicts
     ///    - If higher term exists, transition to Follower
-    ///    - Apply other state updates via role_tx
+    ///    - Apply other state updates via internal_event_tx
     async fn handle_append_entries(
         &self,
         request: AppendEntriesRequest,

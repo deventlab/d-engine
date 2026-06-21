@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_core::InboundEvent;
 use d_engine_core::MaybeCloneOneshot;
-use d_engine_core::RaftEvent;
 use d_engine_core::RaftOneshot;
 use d_engine_core::ScanResult;
 use d_engine_core::TypeConfig;
@@ -49,7 +49,7 @@ use d_engine_core::watch::WatchRegistry;
 ///
 /// For standalone/gRPC mode use `GrpcClient` instead. Both implement `ClientApi`.
 pub struct EmbeddedClient<T: TypeConfig> {
-    event_tx: mpsc::Sender<RaftEvent>,
+    event_tx: mpsc::Sender<InboundEvent>,
     read_handle: EmbeddedReadHandle<T>,
     client_id: u32,
     timeout: Duration,
@@ -73,7 +73,7 @@ impl<T: TypeConfig> Clone for EmbeddedClient<T> {
 impl<T: TypeConfig> EmbeddedClient<T> {
     /// Internal constructor (used by EmbeddedEngine).
     pub(crate) fn new_internal(
-        event_tx: mpsc::Sender<RaftEvent>,
+        event_tx: mpsc::Sender<InboundEvent>,
         read_handle: EmbeddedReadHandle<T>,
         client_id: u32,
         timeout: Duration,
@@ -531,7 +531,7 @@ impl<T: TypeConfig> EmbeddedClient<T> {
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
 
         self.event_tx
-            .send(RaftEvent::ClusterConf(request, resp_tx))
+            .send(InboundEvent::ClusterConf(request, resp_tx))
             .await
             .map_err(|_| channel_closed_error())?;
 

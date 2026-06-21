@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 
 use crate::RaftNodeConfig;
-use crate::event::{RaftEvent, RoleEvent};
+use crate::event::{InboundEvent, InternalEvent};
 use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
 use crate::now_ms;
 use crate::raft_role::leader_state::LeaderState;
@@ -84,8 +84,8 @@ async fn test_receive_higher_term_vote_request_revokes_lease() {
     );
 
     let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let event = RaftEvent::ReceiveVoteRequest(
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let event = InboundEvent::ReceiveVoteRequest(
         VoteRequest {
             term: 999,
             candidate_id: 2,
@@ -94,10 +94,13 @@ async fn test_receive_higher_term_vote_request_revokes_lease() {
         },
         resp_tx,
     );
-    state.handle_raft_event(event, &context, role_tx).await.ok();
+    state.handle_inbound_event(event, &context, internal_event_tx).await.ok();
 
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))),
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::BecomeFollower(_))
+        ),
         "higher-term VoteRequest must emit BecomeFollower"
     );
 
@@ -133,8 +136,8 @@ async fn test_receive_higher_term_append_entries_revokes_lease() {
     );
 
     let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let event = RaftEvent::AppendEntries(
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let event = InboundEvent::AppendEntries(
         AppendEntriesRequest {
             term: 11, // higher than current term 10
             leader_id: 2,
@@ -145,10 +148,13 @@ async fn test_receive_higher_term_append_entries_revokes_lease() {
         },
         vec![resp_tx],
     );
-    state.handle_raft_event(event, &context, role_tx).await.ok();
+    state.handle_inbound_event(event, &context, internal_event_tx).await.ok();
 
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))),
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::BecomeFollower(_))
+        ),
         "higher-term AppendEntries must emit BecomeFollower"
     );
 
@@ -164,11 +170,11 @@ async fn test_receive_higher_term_append_entries_revokes_lease() {
 /// Higher-term VoteRequest → lease revoked BEFORE Raft loop calls become_follower().
 ///
 /// Pins the window-period safety contract: the Raft loop sends BecomeFollower into
-/// role_tx but may not process it immediately (async event-driven). During that gap a
+/// internal_event_tx but may not process it immediately (async event-driven). During that gap a
 /// concurrent ReadActor task can observe the old valid lease and serve a stale LeaseRead.
 ///
 /// This test verifies the fix: revoke() is called at the detection point itself, so
-/// the lease is invalid as soon as handle_raft_event() returns — before become_follower()
+/// the lease is invalid as soon as handle_inbound_event() returns — before become_follower()
 /// is ever called by the Raft loop.
 ///
 /// Expected to FAIL before the fix (lease still valid in window), PASS after.
@@ -189,8 +195,8 @@ async fn test_vote_request_higher_term_lease_revoked_before_become_follower() {
     );
 
     let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let event = RaftEvent::ReceiveVoteRequest(
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let event = InboundEvent::ReceiveVoteRequest(
         VoteRequest {
             term: 999,
             candidate_id: 2,
@@ -199,10 +205,13 @@ async fn test_vote_request_higher_term_lease_revoked_before_become_follower() {
         },
         resp_tx,
     );
-    state.handle_raft_event(event, &context, role_tx).await.ok();
+    state.handle_inbound_event(event, &context, internal_event_tx).await.ok();
 
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))),
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::BecomeFollower(_))
+        ),
         "higher-term VoteRequest must emit BecomeFollower"
     );
 
@@ -211,7 +220,7 @@ async fn test_vote_request_higher_term_lease_revoked_before_become_follower() {
     assert!(
         !lease.is_valid(now_ms()),
         "lease must be revoked at detection point, not waiting for become_follower() \
-         — window-period fix required in handle_raft_event VoteRequest branch"
+         — window-period fix required in handle_inbound_event VoteRequest branch"
     );
 }
 
@@ -237,8 +246,8 @@ async fn test_append_entries_higher_term_lease_revoked_before_become_follower() 
     );
 
     let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let event = RaftEvent::AppendEntries(
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let event = InboundEvent::AppendEntries(
         AppendEntriesRequest {
             term: 11,
             leader_id: 2,
@@ -249,10 +258,13 @@ async fn test_append_entries_higher_term_lease_revoked_before_become_follower() 
         },
         vec![resp_tx],
     );
-    state.handle_raft_event(event, &context, role_tx).await.ok();
+    state.handle_inbound_event(event, &context, internal_event_tx).await.ok();
 
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))),
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::BecomeFollower(_))
+        ),
         "higher-term AppendEntries must emit BecomeFollower"
     );
 
@@ -260,7 +272,7 @@ async fn test_append_entries_higher_term_lease_revoked_before_become_follower() 
     assert!(
         !lease.is_valid(now_ms()),
         "lease must be revoked at detection point, not waiting for become_follower() \
-         — window-period fix required in handle_raft_event AppendEntries branch"
+         — window-period fix required in handle_inbound_event AppendEntries branch"
     );
 }
 
@@ -283,19 +295,22 @@ async fn test_append_result_higher_term_lease_revoked_before_become_follower() {
         "precondition: lease must be valid"
     );
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let higher_term_response = AppendEntriesResponse {
         node_id: 2,
         term: 999,
         result: None,
     };
     let result = state
-        .handle_append_result(2, Ok(higher_term_response), &context, &role_tx)
+        .handle_append_result(2, Ok(higher_term_response), &context, &internal_event_tx)
         .await;
 
     assert!(result.is_err(), "higher-term AppendResult must return Err");
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))),
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::BecomeFollower(_))
+        ),
         "higher-term AppendResult must emit BecomeFollower"
     );
 
@@ -328,19 +343,22 @@ async fn test_append_result_higher_term_revokes_lease() {
         "precondition: lease must be valid"
     );
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let higher_term_response = AppendEntriesResponse {
         node_id: 2,
         term: 999, // higher than leader term=1
         result: None,
     };
     let result = state
-        .handle_append_result(2, Ok(higher_term_response), &context, &role_tx)
+        .handle_append_result(2, Ok(higher_term_response), &context, &internal_event_tx)
         .await;
 
     assert!(result.is_err(), "higher-term AppendResult must return Err");
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))),
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::BecomeFollower(_))
+        ),
         "higher-term AppendResult must emit BecomeFollower"
     );
 

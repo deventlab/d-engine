@@ -33,7 +33,7 @@ All notable changes to this project will be documented in this file.
 - **`scan_prefix` API** (#378): `ClientApi::scan_prefix(prefix)` returns all KV pairs matching a prefix in a single read — intended for zero-race-window state re-sync after watch reconnection.
 
 - **Async IO architecture — pipeline replication** (#334, #341, #342, #343, #345, #349, #350, #351):
-  The Raft event loop is now fully non-blocking under write load
+  The Inbound event loop is now fully non-blocking under write load
   - `BufferedRaftLog` runs on a dedicated OS thread — WAL writes never steal tokio worker threads
   - `StateMachineWorker::apply_batch` is fully async — RocksDB apply no longer blocks the event loop
   - AppendEntries uses a **persistent bidirectional gRPC stream per peer** — eliminates per-batch connection overhead
@@ -78,7 +78,7 @@ All notable changes to this project will be documented in this file.
   - Eliminates election churn when recovering or newly-joined nodes have lagged logs
   - Aligns with Raft §5.2 (term check takes priority over log matching)
 
-- **fix(snapshot) #315**: Snapshot disk I/O isolated from Raft event loop via `spawn_blocking`
+- **fix(snapshot) #315**: Snapshot disk I/O isolated from Inbound event loop via `spawn_blocking`
   - Previously, snapshot transfer competed with consensus and caused `ProposeFailed` (4006) under load
 
 - **fix(snapshot) #308**: Snapshot install success is now driven by the follower's apply confirmation, not the transfer ACK

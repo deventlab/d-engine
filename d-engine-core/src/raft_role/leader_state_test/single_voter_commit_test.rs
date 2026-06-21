@@ -73,10 +73,10 @@ async fn setup_single_voter(
 async fn test_single_voter_commit_uses_last_entry_id_not_durable() {
     // last_entry_id=5: entries 4-5 arrived in memory during the IO flush of 1-3
     let (mut state, ctx, _last_entry_id) = setup_single_voter(5).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // IO flushed only entries 1-3 (durable=3), but log has entries 1-5 in memory
-    state.handle_log_flushed(3, &ctx, &role_tx).await;
+    state.handle_log_flushed(3, &ctx, &internal_event_tx).await;
 
     assert_eq!(
         state.commit_index(),
@@ -90,9 +90,9 @@ async fn test_single_voter_commit_uses_last_entry_id_not_durable() {
 #[tokio::test]
 async fn test_single_voter_commit_when_durable_equals_last_entry_id() {
     let (mut state, ctx, _last_entry_id) = setup_single_voter(5).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
-    state.handle_log_flushed(5, &ctx, &role_tx).await;
+    state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
 
     assert_eq!(
         state.commit_index(),
@@ -109,10 +109,10 @@ async fn test_single_voter_commit_when_durable_equals_last_entry_id() {
 #[tokio::test]
 async fn test_single_voter_pipelining_across_io_batches() {
     let (mut state, ctx, last_entry_id) = setup_single_voter(7).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // IO batch 1: flushed 1-3, memory has 1-7
-    state.handle_log_flushed(3, &ctx, &role_tx).await;
+    state.handle_log_flushed(3, &ctx, &internal_event_tx).await;
     assert_eq!(
         state.commit_index(),
         7,
@@ -121,7 +121,7 @@ async fn test_single_voter_pipelining_across_io_batches() {
 
     // IO batch 2: flushed 4-7, memory now has 1-10
     last_entry_id.store(10, Ordering::Relaxed);
-    state.handle_log_flushed(7, &ctx, &role_tx).await;
+    state.handle_log_flushed(7, &ctx, &internal_event_tx).await;
     assert_eq!(
         state.commit_index(),
         10,
@@ -133,14 +133,14 @@ async fn test_single_voter_pipelining_across_io_batches() {
 #[tokio::test]
 async fn test_single_voter_no_commit_when_nothing_new() {
     let (mut state, ctx, _last_entry_id) = setup_single_voter(3).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // First flush advances commit to 3
-    state.handle_log_flushed(3, &ctx, &role_tx).await;
+    state.handle_log_flushed(3, &ctx, &internal_event_tx).await;
     assert_eq!(state.commit_index(), 3);
 
     // Second flush with same last_entry_id=3: no new entries → no commit advance
-    state.handle_log_flushed(3, &ctx, &role_tx).await;
+    state.handle_log_flushed(3, &ctx, &internal_event_tx).await;
     assert_eq!(
         state.commit_index(),
         3,

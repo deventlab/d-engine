@@ -17,17 +17,17 @@ use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
 use crate::AppendResponseWithUpdates;
+use crate::InboundEvent;
+use crate::InternalEvent;
 use crate::MaybeCloneOneshotSender;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
 use crate::NewCommitData;
 use crate::RaftContext;
-use crate::RaftEvent;
 use crate::RaftLog;
 use crate::ReplicationCore;
 use crate::Result;
-use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
@@ -93,7 +93,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
     async fn handle_zombie_detected(
         &mut self,
         _node_id: u32,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
         _ctx: &RaftContext<Self::T>,
     ) -> Result<()> {
         // Default: no-op for non-leader roles
@@ -213,7 +213,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         role: i32,
         current_term: u64,
         new_commit_index: u64,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         if let Err(e) = self.update_commit_index(new_commit_index) {
             error!("Follower::update_commit_index: {:?}", e);
@@ -225,8 +225,8 @@ pub trait RaftRoleState: Send + Sync + 'static {
             new_commit_index
         );
 
-        role_tx
-            .send(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+        internal_event_tx
+            .send(InternalEvent::NotifyNewCommitIndex(NewCommitData {
                 new_commit_index,
                 role,
                 current_term,
@@ -260,16 +260,16 @@ pub trait RaftRoleState: Send + Sync + 'static {
 
     async fn tick(
         &mut self,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-        event_tx: &mpsc::Sender<RaftEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+        event_tx: &mpsc::Sender<InboundEvent>,
         ctx: &RaftContext<Self::T>,
     ) -> Result<()>;
 
-    async fn handle_raft_event(
+    async fn handle_inbound_event(
         &mut self,
-        raft_event: RaftEvent,
+        inbound_event: InboundEvent,
         ctx: &RaftContext<Self::T>,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()>;
 
     /// Push single client command directly to role's internal buffer (zero-copy).
@@ -361,7 +361,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
     async fn flush_cmd_buffers(
         &mut self,
         _ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         // Default implementation for non-leader: nothing to flush
         Ok(())
@@ -376,7 +376,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         _last_index: u64,
         _results: Vec<crate::ApplyResult>,
         _ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         Ok(())
     }
@@ -388,7 +388,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         &mut self,
         _durable: u64,
         _ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) {
         // Candidate: no-op
     }
@@ -401,7 +401,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         _follower_id: u32,
         _result: crate::Result<d_engine_proto::server::replication::AppendEntriesResponse>,
         _ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> crate::Result<()> {
         // Non-leader: stale result arrived after step-down — ignore safely.
         Ok(())
@@ -453,12 +453,12 @@ pub trait RaftRoleState: Send + Sync + 'static {
         append_entries_request: AppendEntriesRequest,
         senders: Vec<MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>>,
         ctx: &RaftContext<Self::T>,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
         state_snapshot: &StateSnapshot,
     ) -> Result<()> {
         let _timer = ScopedTimer::new("handle_append_entries_request_workflow");
         debug!(
-            "handle_raft_event::RaftEvent::AppendEntries: {:?}",
+            "handle_inbound_event::InboundEvent::AppendEntries: {:?}",
             &append_entries_request
         );
         self.reset_timer();
@@ -504,12 +504,12 @@ pub trait RaftRoleState: Send + Sync + 'static {
         // Event-driven: avoids redundant notifications on every heartbeat
         // Performance: ~9ns check overhead, saves ~100ns redundant sends
         if is_new_leader {
-            role_tx.send(RoleEvent::LeaderDiscovered(new_leader_id, request_term)).map_err(
-                |e| {
+            internal_event_tx
+                .send(InternalEvent::LeaderDiscovered(new_leader_id, request_term))
+                .map_err(|e| {
                     error!("Failed to send LeaderDiscovered: {e:?}");
                     NetworkError::SingalSendFailed(format!("{:?}", e))
-                },
-            )?;
+                })?;
         }
 
         if my_term < request_term {
@@ -534,7 +534,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
                         state_snapshot.role,
                         state_snapshot.current_term,
                         commit,
-                        &role_tx,
+                        &internal_event_tx,
                     )
                 {
                     error!(
@@ -576,7 +576,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
                     }
                 }
 
-                error("handle_raft_event", &e);
+                error("handle_inbound_event", &e);
                 return Err(e);
             }
         }
@@ -594,7 +594,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
     async fn handle_create_snapshot(
         &mut self,
         _ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         Err(ConsensusError::RoleViolation {
             current_role: "Candidate",
@@ -612,7 +612,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         &mut self,
         _result: crate::Result<(SnapshotMetadata, std::path::PathBuf)>,
         _ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         Err(ConsensusError::RoleViolation {
             current_role: "Candidate",
@@ -643,13 +643,13 @@ pub trait RaftRoleState: Send + Sync + 'static {
     async fn handle_promote_ready_learners(
         &mut self,
         ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         Err(ConsensusError::RoleViolation {
             current_role: "None Leader",
             required_role: "Leader",
             context: format!(
-                "None Leader node {} receives RaftEvent::PromoteReadyLearners",
+                "None Leader node {} receives InboundEvent::PromoteReadyLearners",
                 ctx.node_id
             ),
         }
@@ -661,7 +661,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
     /// Default: warn + Ok(()) (defensive; only Leader should receive this).
     fn handle_self_removed(
         &mut self,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         warn!(
             "Node {} received StepDownSelfRemoved in non-leader role — ignoring",
@@ -677,7 +677,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
     async fn handle_membership_applied(
         &mut self,
         ctx: &RaftContext<Self::T>,
-        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         // Followers don't maintain cluster metadata cache
         // This event is only relevant for leaders
@@ -686,7 +686,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
             current_role: "None Leader/Learner",
             required_role: "Leader/Learner",
             context: format!(
-                "None Leader/Learner node {} receives RaftEvent::PromoteReadyLearners",
+                "None Leader/Learner node {} receives InboundEvent::PromoteReadyLearners",
                 ctx.node_id
             ),
         }
@@ -694,15 +694,17 @@ pub trait RaftRoleState: Send + Sync + 'static {
     }
 }
 
-/// Send a RaftEvent back into the role event loop for reprocessing.
-pub(super) fn send_replay_raft_event(
-    role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    raft_event: RaftEvent,
+/// Send a InboundEvent back into the internal event loop for reprocessing.
+pub(super) fn send_replay_inbound_event(
+    internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    inbound_event: InboundEvent,
 ) -> Result<()> {
-    role_tx.send(RoleEvent::ReprocessEvent(Box::new(raft_event))).map_err(|e| {
-        error!("Failed to send: {e:?}");
-        NetworkError::SingalSendFailed(format!("{:?}", e)).into()
-    })
+    internal_event_tx
+        .send(InternalEvent::ReprocessEvent(Box::new(inbound_event)))
+        .map_err(|e| {
+            error!("Failed to send: {e:?}");
+            NetworkError::SingalSendFailed(format!("{:?}", e)).into()
+        })
 }
 
 /// Check snapshot condition and trigger if met. Used by all role states after SM apply.
@@ -714,7 +716,7 @@ pub(super) fn check_and_trigger_snapshot<T: TypeConfig>(
     role: i32,
     current_term: u64,
     ctx: &RaftContext<T>,
-    role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
 ) -> Result<()> {
     if ctx.node_config.raft.snapshot.enable
         && ctx.state_machine_handler().should_snapshot(NewCommitData {
@@ -723,7 +725,7 @@ pub(super) fn check_and_trigger_snapshot<T: TypeConfig>(
             current_term,
         })
     {
-        role_tx.send(RoleEvent::CreateSnapshotEvent).map_err(|e| {
+        internal_event_tx.send(InternalEvent::CreateSnapshotEvent).map_err(|e| {
             error!("Failed to send: {e:?}");
             NetworkError::SingalSendFailed(format!("{:?}", e))
         })?;

@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 
 use crate::SnapshotError;
 use crate::config::RaftNodeConfig as CoreRaftNodeConfig;
-use crate::event::RaftEvent;
+use crate::event::InboundEvent;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
@@ -48,18 +48,18 @@ async fn test_create_snapshot_event_starts_and_ignores_duplicates() {
     // Initially, no snapshot in progress
     assert!(!state.snapshot_in_progress.load(Ordering::SeqCst));
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // First event should set the flag and spawn the task
     state
-        .handle_create_snapshot(&context, &role_tx)
+        .handle_create_snapshot(&context, &internal_event_tx)
         .await
         .expect("Should start snapshot creation");
     assert!(state.snapshot_in_progress.load(Ordering::SeqCst));
 
     // Second event should be ignored (flag still set)
     state
-        .handle_create_snapshot(&context, &role_tx)
+        .handle_create_snapshot(&context, &internal_event_tx)
         .await
         .expect("Should ignore duplicate snapshot creation");
     // Still true, no panic, no duplicate task
@@ -90,7 +90,7 @@ async fn test_snapshot_in_progress_flag_reset_on_created_event() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
     state.snapshot_in_progress.store(true, Ordering::SeqCst);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Success case
     let _ = state
@@ -103,7 +103,7 @@ async fn test_snapshot_in_progress_flag_reset_on_created_event() {
                 PathBuf::from("/tmp/fake"),
             )),
             &context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await;
     assert!(!state.snapshot_in_progress.load(Ordering::SeqCst));
@@ -114,7 +114,7 @@ async fn test_snapshot_in_progress_flag_reset_on_created_event() {
         .handle_snapshot_created(
             Err(SnapshotError::OperationFailed("fail".into()).into()),
             &context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await;
     assert!(!state.snapshot_in_progress.load(Ordering::SeqCst));
@@ -140,10 +140,10 @@ async fn test_create_snapshot_event_is_non_blocking() {
     let context = MockBuilder::new(graceful_rx).build_context();
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let start = std::time::Instant::now();
-    let _ = state.handle_create_snapshot(&context, &role_tx).await;
+    let _ = state.handle_create_snapshot(&context, &internal_event_tx).await;
     let elapsed = start.elapsed();
 
     // Should return quickly (not wait for snapshot)
@@ -242,12 +242,12 @@ async fn test_stream_snapshot_rejects_when_no_metadata() {
         mpsc::channel::<std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>>(4);
     let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<(), tonic::Status>>();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state
-        .handle_raft_event(
-            RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
+        .handle_inbound_event(
+            InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
             &context,
-            role_tx,
+            internal_event_tx,
         )
         .await
         .expect("handler must not return Err");
@@ -338,12 +338,12 @@ async fn test_stream_snapshot_confirms_startup_when_metadata_exists() {
         mpsc::channel::<std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>>(4);
     let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<(), tonic::Status>>();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state
-        .handle_raft_event(
-            RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
+        .handle_inbound_event(
+            InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
             &context,
-            role_tx,
+            internal_event_tx,
         )
         .await
         .expect("handler must not return Err");

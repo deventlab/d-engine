@@ -568,7 +568,7 @@ async fn test_put_with_ttl_readable_immediately() {
 /// put_with_ttl must succeed when no [raft.state_machine.lease] section is present
 /// in the config (i.e. default/zero-config). Previously this caused a fatal crash:
 /// the state machine returned an error which the SM Worker mapped to
-/// RoleEvent::FatalError, shutting down the entire node.
+/// InternalEvent::FatalError, shutting down the entire node.
 ///
 /// Verification steps:
 ///   1. Engine starts with default config (no lease section)

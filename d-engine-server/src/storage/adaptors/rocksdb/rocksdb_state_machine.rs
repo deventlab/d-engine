@@ -351,7 +351,7 @@ impl RocksDBStateMachine {
     /// Piggyback cleanup: Remove expired keys with time budget
     ///
     /// This method is called during apply_chunk to cleanup expired keys
-    /// opportunistically (piggyback on existing Raft events).
+    /// opportunistically (piggyback on existing inbound events).
     ///
     /// # Arguments
     /// * `max_duration_ms` - Maximum time budget for cleanup (milliseconds)
@@ -988,7 +988,7 @@ impl StateMachine for RocksDBStateMachine {
         //
         // All blocking RocksDB operations (create_dir_all, flush_cf_opt, export_column_family)
         // run on tokio's blocking thread pool via spawn_blocking, not on an async worker thread.
-        // This prevents snapshot disk I/O from starving the Raft event loop under concurrent
+        // This prevents snapshot disk I/O from starving the inbound event loop under concurrent
         // writes (#315).
         let db = self.load_db()?; // Arc<DB>: Send, safe to move into spawn_blocking
         let dir = new_snapshot_dir.clone();

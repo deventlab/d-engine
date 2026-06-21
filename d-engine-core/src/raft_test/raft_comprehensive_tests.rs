@@ -2,13 +2,13 @@
 //!
 //! **Original location**: raft_test.rs L517-2528
 //! **Test count**: 78 tests
-//! **Categories**: A (Role Transitions), B (RoleEvent Handling), C (Leader Init),
+//! **Categories**: A (Role Transitions), B (InternalEvent Handling), C (Leader Init),
 //!                  D (Leadership Verification), F (Event Queue), G (Error Cases),
 //!                  H (Bootstrap & Joining)
 //!
 //! This is the largest test module covering core Raft consensus behavior:
 //! - A: Role state machine transitions (25 tests)
-//! - B: RoleEvent processing (6 tests within this module)
+//! - B: InternalEvent processing (6 tests within this module)
 //! - C: Leader initialization of peer state (12 tests)
 //! - D: Leadership verification via noop entry (9 tests)
 //! - F: Event loop priority and election timeout (12 tests)
@@ -28,8 +28,8 @@ use d_engine_proto::common::NodeRole::{Candidate, Follower, Leader, Learner};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+use crate::InternalEvent;
 use crate::NewCommitData;
-use crate::RoleEvent;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
 
@@ -115,23 +115,23 @@ async fn test_role_transition_follower_candidate_leader_follower() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Follower cannot directly become Follower
-    assert!(raft.handle_role_event(RoleEvent::BecomeFollower(None)).await.is_err());
+    assert!(raft.handle_internal_event(InternalEvent::BecomeFollower(None)).await.is_err());
     assert!(is_follower(raft.role.as_i32()));
 
     // Follower → Candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Follower should transition to Candidate");
     assert!(is_candidate(raft.role.as_i32()));
 
     // Candidate → Leader
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Candidate should transition to Leader");
     assert!(is_leader(raft.role.as_i32()));
 
     // Leader → Follower
-    raft.handle_role_event(RoleEvent::BecomeFollower(None))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(None))
         .await
         .expect("Leader should transition to Follower");
     assert!(is_follower(raft.role.as_i32()));
@@ -147,13 +147,13 @@ async fn test_role_transition_follower_candidate_follower() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Follower → Candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Follower should transition to Candidate");
     assert!(is_candidate(raft.role.as_i32()));
 
     // Candidate → Follower (step down after election failure)
-    raft.handle_role_event(RoleEvent::BecomeFollower(None))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(None))
         .await
         .expect("Candidate should step down to Follower");
     assert!(is_follower(raft.role.as_i32()));
@@ -172,13 +172,13 @@ async fn test_role_transition_follower_candidate_leader() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Follower → Candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Follower should transition to Candidate");
     assert!(is_candidate(raft.role.as_i32()));
 
     // Candidate → Leader
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Candidate should transition to Leader");
     assert!(is_leader(raft.role.as_i32()));
@@ -194,13 +194,13 @@ async fn test_role_transition_candidate_follower() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Follower → Candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
     assert!(is_candidate(raft.role.as_i32()));
 
     // Candidate → Follower (on discovery of higher term)
-    raft.handle_role_event(RoleEvent::BecomeFollower(Some(2)))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(Some(2)))
         .await
         .expect("Candidate should step down to Follower");
     assert!(is_follower(raft.role.as_i32()));
@@ -217,13 +217,13 @@ async fn test_role_transition_candidate_candidate_invalid() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Follower → Candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
     assert!(is_candidate(raft.role.as_i32()));
 
     // Candidate → Candidate (invalid - should error)
-    let result = raft.handle_role_event(RoleEvent::BecomeCandidate).await;
+    let result = raft.handle_internal_event(InternalEvent::BecomeCandidate).await;
     assert!(
         result.is_err(),
         "Candidate should not transition to Candidate"
@@ -244,16 +244,16 @@ async fn test_role_transition_leader_follower() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Follower → Candidate → Leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
 
     // Leader → Follower (step down)
-    raft.handle_role_event(RoleEvent::BecomeFollower(Some(2)))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(Some(2)))
         .await
         .expect("Leader should step down to Follower");
     assert!(is_follower(raft.role.as_i32()));
@@ -273,16 +273,16 @@ async fn test_role_transition_leader_candidate_invalid() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Follower → Candidate → Leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
 
     // Leader → Candidate (invalid - should error)
-    let result = raft.handle_role_event(RoleEvent::BecomeCandidate).await;
+    let result = raft.handle_internal_event(InternalEvent::BecomeCandidate).await;
     assert!(result.is_err(), "Leader should not transition to Candidate");
     assert!(is_leader(raft.role.as_i32()), "Should remain Leader");
 }
@@ -300,16 +300,16 @@ async fn test_role_transition_leader_leader_invalid() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Follower → Candidate → Leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
 
     // Leader → Leader (invalid - should error)
-    let result = raft.handle_role_event(RoleEvent::BecomeLeader).await;
+    let result = raft.handle_internal_event(InternalEvent::BecomeLeader).await;
     assert!(result.is_err(), "Leader should not transition to Leader");
     assert!(is_leader(raft.role.as_i32()), "Should remain Leader");
 }
@@ -324,13 +324,13 @@ async fn test_role_transition_learner_follower() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Follower → Learner
-    raft.handle_role_event(RoleEvent::BecomeLearner)
+    raft.handle_internal_event(InternalEvent::BecomeLearner)
         .await
         .expect("Should become Learner");
     assert!(is_learner(raft.role.as_i32()));
 
     // Learner → Follower (promotion)
-    raft.handle_role_event(RoleEvent::BecomeFollower(None))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(None))
         .await
         .expect("Learner should transition to Follower");
     assert!(is_follower(raft.role.as_i32()));
@@ -347,13 +347,13 @@ async fn test_role_transition_learner_candidate_invalid() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Follower → Learner
-    raft.handle_role_event(RoleEvent::BecomeLearner)
+    raft.handle_internal_event(InternalEvent::BecomeLearner)
         .await
         .expect("Should become Learner");
     assert!(is_learner(raft.role.as_i32()));
 
     // Learner → Candidate (invalid - should error)
-    let result = raft.handle_role_event(RoleEvent::BecomeCandidate).await;
+    let result = raft.handle_internal_event(InternalEvent::BecomeCandidate).await;
     assert!(
         result.is_err(),
         "Learner should not transition to Candidate"
@@ -371,13 +371,13 @@ async fn test_role_transition_learner_leader_invalid() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Follower → Learner
-    raft.handle_role_event(RoleEvent::BecomeLearner)
+    raft.handle_internal_event(InternalEvent::BecomeLearner)
         .await
         .expect("Should become Learner");
     assert!(is_learner(raft.role.as_i32()));
 
     // Learner → Leader (invalid - should error)
-    let result = raft.handle_role_event(RoleEvent::BecomeLeader).await;
+    let result = raft.handle_internal_event(InternalEvent::BecomeLeader).await;
     assert!(result.is_err(), "Learner should not transition to Leader");
     assert!(is_learner(raft.role.as_i32()), "Should remain Learner");
 }
@@ -392,13 +392,13 @@ async fn test_role_transition_learner_learner_invalid() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Follower → Learner
-    raft.handle_role_event(RoleEvent::BecomeLearner)
+    raft.handle_internal_event(InternalEvent::BecomeLearner)
         .await
         .expect("Should become Learner");
     assert!(is_learner(raft.role.as_i32()));
 
     // Learner → Learner (invalid - should error)
-    let result = raft.handle_role_event(RoleEvent::BecomeLearner).await;
+    let result = raft.handle_internal_event(InternalEvent::BecomeLearner).await;
     assert!(result.is_err(), "Learner should not transition to Learner");
     assert!(is_learner(raft.role.as_i32()), "Should remain Learner");
 }
@@ -416,15 +416,15 @@ async fn test_follower_become_with_known_leader() {
 
     // Follower with known leader
     let leader_id = 3;
-    raft.handle_role_event(RoleEvent::BecomeFollower(Some(leader_id)))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(Some(leader_id)))
         .await
         .expect_err("Initial follower should not be able to become follower again");
 
     // First transition to candidate, then back to follower with known leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeFollower(Some(leader_id)))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(Some(leader_id)))
         .await
         .expect("Should transition to Follower with known leader");
     assert!(is_follower(raft.role.as_i32()));
@@ -440,12 +440,12 @@ async fn test_follower_become_without_leader() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // First become candidate, then follower without known leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
     assert!(is_candidate(raft.role.as_i32()));
 
-    raft.handle_role_event(RoleEvent::BecomeFollower(None))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(None))
         .await
         .expect("Should transition to Follower without known leader");
     assert!(is_follower(raft.role.as_i32()));
@@ -462,13 +462,13 @@ async fn test_follower_state_reset_voted_for() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Follower → Candidate (sets voted_for to self)
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
     assert!(is_candidate(raft.role.as_i32()));
 
     // Candidate → Follower (should clear voted_for)
-    raft.handle_role_event(RoleEvent::BecomeFollower(None))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(None))
         .await
         .expect("Should transition to Follower");
     assert!(is_follower(raft.role.as_i32()));
@@ -492,7 +492,7 @@ async fn test_candidate_become_increments_term() {
     let initial_term = raft.role.current_term();
 
     // Transition to candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
     assert!(is_candidate(raft.role.as_i32()));
@@ -518,7 +518,7 @@ async fn test_candidate_become_votes_for_self() {
     let _node_id = raft.ctx.node_id;
 
     // Transition to candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
     assert!(is_candidate(raft.role.as_i32()));
@@ -536,7 +536,7 @@ async fn test_candidate_become_clears_leader() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // First make candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
     assert!(is_candidate(raft.role.as_i32()));
@@ -559,10 +559,10 @@ async fn test_leader_become_marks_vote_committed() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Transition to leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
@@ -584,10 +584,10 @@ async fn test_leader_become_initializes_peer_indices() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Transition to leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
@@ -608,10 +608,10 @@ async fn test_leader_become_initializes_metadata_cache() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Transition to leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
@@ -632,10 +632,10 @@ async fn test_leader_become_sends_noop_entry() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Transition to leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
@@ -655,10 +655,10 @@ async fn test_leader_verification_succeeds() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Transition to leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
@@ -695,10 +695,10 @@ async fn test_leader_verification_fails_downgrades() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // Transition to leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
@@ -727,10 +727,10 @@ async fn test_leader_single_node_cluster() {
     raft.ctx.membership = Arc::new(membership);
 
     // Transition to leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
@@ -750,7 +750,7 @@ async fn test_learner_become_non_voting() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Transition to learner
-    raft.handle_role_event(RoleEvent::BecomeLearner)
+    raft.handle_internal_event(InternalEvent::BecomeLearner)
         .await
         .expect("Should become Learner");
     assert!(is_learner(raft.role.as_i32()));
@@ -767,13 +767,13 @@ async fn test_learner_promotion_to_follower() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Transition to learner
-    raft.handle_role_event(RoleEvent::BecomeLearner)
+    raft.handle_internal_event(InternalEvent::BecomeLearner)
         .await
         .expect("Should become Learner");
     assert!(is_learner(raft.role.as_i32()));
 
     // Promote learner to follower
-    raft.handle_role_event(RoleEvent::BecomeFollower(None))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(None))
         .await
         .expect("Learner should be promoted to Follower");
     assert!(is_follower(raft.role.as_i32()));
@@ -789,7 +789,7 @@ async fn test_multiple_learners_tracking() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Transition to learner (this learner instance is tracked)
-    raft.handle_role_event(RoleEvent::BecomeLearner)
+    raft.handle_internal_event(InternalEvent::BecomeLearner)
         .await
         .expect("Should become Learner");
     assert!(is_learner(raft.role.as_i32()));
@@ -797,7 +797,7 @@ async fn test_multiple_learners_tracking() {
 }
 
 // ============================================================================
-// B. ROLEEVENT HANDLING TESTS (Individual Event Processing)
+// B. INTERNAL EVENT HANDLING TESTS (Individual Event Processing)
 // ============================================================================
 
 // B1. BecomeFollower Event Tests
@@ -816,13 +816,13 @@ async fn test_become_follower_sends_leader_notification() {
     raft.register_leader_change_listener(leader_tx);
 
     // First become candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
 
     // Then become follower with a known leader
     let leader_id = 2;
-    raft.handle_role_event(RoleEvent::BecomeFollower(Some(leader_id)))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(Some(leader_id)))
         .await
         .expect("Should become Follower");
     assert!(is_follower(raft.role.as_i32()));
@@ -848,7 +848,7 @@ async fn test_become_candidate_clears_leader_notification() {
     raft.register_leader_change_listener(leader_tx);
 
     // Become candidate (no leader in this state)
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
     assert!(is_candidate(raft.role.as_i32()));
@@ -875,10 +875,10 @@ async fn test_become_leader_full_initialization() {
     raft.register_leader_change_listener(leader_tx);
 
     // Become candidate then leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate)
+    raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    raft.handle_role_event(RoleEvent::BecomeLeader)
+    raft.handle_internal_event(InternalEvent::BecomeLeader)
         .await
         .expect("Should become Leader");
     assert!(is_leader(raft.role.as_i32()));
@@ -901,16 +901,16 @@ async fn test_leader_ready_notification_only_after_noop_committed() {
     let (leader_tx, mut leader_rx) = watch::channel(None);
     raft.register_leader_change_listener(leader_tx);
 
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
 
-    // In the async design, BecomeLeader queues RoleEvent::NoopCommitted via role_tx.
+    // In the async design, BecomeLeader queues InternalEvent::NoopCommitted via internal_event_tx.
     // The Raft loop would process it, but in unit tests we drive events manually.
     // Single-voter path: initiate_noop_commit fires drain_commit_actions synchronously
-    // (via Phase 4 → handle_log_flushed), sending NoopCommitted to role_tx.
+    // (via Phase 4 → handle_log_flushed), sending NoopCommitted to internal_event_tx.
     // Process it now to complete the leader ready notification.
     let term = raft.role.current_term();
-    raft.handle_role_event(RoleEvent::NoopCommitted { term }).await.unwrap();
+    raft.handle_internal_event(InternalEvent::NoopCommitted { term }).await.unwrap();
 
     // Must receive Some(leader_id): noop committed successfully, cluster is ready
     leader_rx.changed().await.expect("Should receive leader ready notification");
@@ -946,8 +946,8 @@ async fn test_leader_ready_notification_suppressed_when_noop_fails() {
     let (leader_tx, mut leader_rx) = watch::channel(None);
     raft.register_leader_change_listener(leader_tx);
 
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
 
     // Must NOT receive Some(leader_id). Channel starts as None; BecomeFollower writes None
     // again — send_if_modified skips (no change), so changed() never fires. Timeout = correct.
@@ -978,7 +978,7 @@ async fn test_become_learner_no_leader() {
     raft.register_leader_change_listener(leader_tx);
 
     // Become learner (no leader in this state)
-    raft.handle_role_event(RoleEvent::BecomeLearner)
+    raft.handle_internal_event(InternalEvent::BecomeLearner)
         .await
         .expect("Should become Learner");
     assert!(is_learner(raft.role.as_i32()));
@@ -1005,7 +1005,7 @@ async fn test_notify_new_commit_index_broadcasts() {
 
     // Send NotifyNewCommitIndex event
     let new_commit_index = 10;
-    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+    raft.handle_internal_event(InternalEvent::NotifyNewCommitIndex(NewCommitData {
         new_commit_index,
         role: Follower.into(),
         current_term: 1,
@@ -1036,7 +1036,7 @@ async fn test_leader_discovered_no_state_change() {
     let initial_role = raft.role.as_i32();
 
     // Send LeaderDiscovered event
-    raft.handle_role_event(RoleEvent::LeaderDiscovered(3, 5))
+    raft.handle_internal_event(InternalEvent::LeaderDiscovered(3, 5))
         .await
         .expect("Should handle LeaderDiscovered");
 
@@ -1063,9 +1063,9 @@ async fn test_reprocess_event_requeues() {
 
 // B8–B13. New Lifecycle Event Dispatch Tests
 //
-// Six RoleEvent variants were migrated from bounded event_tx (P4) to unbounded
-// role_tx (P2) to eliminate deadlock when the P4 channel is saturated by inbound RPCs.
-// These tests verify that each dispatch arm in handle_role_event routes correctly
+// Six InternalEvent variants were migrated from bounded event_tx (P4) to unbounded
+// internal_event_tx (P2) to eliminate deadlock when the P4 channel is saturated by inbound RPCs.
+// These tests verify that each dispatch arm in handle_internal_event routes correctly
 // — no todo!() panic, correct return value, and the observable role-level outcome.
 //
 // Handler-level behaviour (flag mutations, purge logic, metadata refresh) is already
@@ -1081,7 +1081,7 @@ async fn test_create_snapshot_event_dispatch_on_follower() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
     assert!(is_follower(raft.role.as_i32()));
 
-    raft.handle_role_event(RoleEvent::CreateSnapshotEvent)
+    raft.handle_internal_event(InternalEvent::CreateSnapshotEvent)
         .await
         .expect("CreateSnapshotEvent on Follower must not return a fatal error");
 
@@ -1098,11 +1098,11 @@ async fn test_create_snapshot_event_dispatch_on_candidate() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
     assert!(is_candidate(raft.role.as_i32()));
 
     // RoleViolation is non-fatal — dispatch swallows it and returns Ok.
-    raft.handle_role_event(RoleEvent::CreateSnapshotEvent)
+    raft.handle_internal_event(InternalEvent::CreateSnapshotEvent)
         .await
         .expect("CreateSnapshotEvent on Candidate must return Ok (RoleViolation swallowed)");
 
@@ -1125,7 +1125,7 @@ async fn test_snapshot_created_err_dispatch_on_follower() {
     // Use a non-fatal snapshot error so the dispatch does not propagate it.
     let err_result = Err(crate::SnapshotError::OperationFailed("simulated failure".into()).into());
 
-    raft.handle_role_event(RoleEvent::SnapshotCreated(err_result))
+    raft.handle_internal_event(InternalEvent::SnapshotCreated(err_result))
         .await
         .expect("SnapshotCreated(Err) on Follower must return Ok (non-fatal error swallowed)");
 
@@ -1135,7 +1135,7 @@ async fn test_snapshot_created_err_dispatch_on_follower() {
 /// B10 — StepDownSelfRemoved on Leader causes role transition to Follower
 ///
 /// This is the most behaviourally significant of the six new events at the integration
-/// level. handle_self_removed posts BecomeFollower(None) onto role_tx so the main loop
+/// level. handle_self_removed posts BecomeFollower(None) onto internal_event_tx so the main loop
 /// can process the transition on the next iteration. In unit tests we drive that queued
 /// event manually to verify the complete Leader → StepDownSelfRemoved → Follower path.
 #[tokio::test]
@@ -1147,20 +1147,20 @@ async fn test_step_down_self_removed_leader_transitions_to_follower() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Establish Leader role.
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
 
     // Step 1: dispatch StepDownSelfRemoved — handle_self_removed enqueues
-    // BecomeFollower(None) on the internal role_tx and returns Ok.
-    raft.handle_role_event(RoleEvent::StepDownSelfRemoved)
+    // BecomeFollower(None) on the internal internal_event_tx and returns Ok.
+    raft.handle_internal_event(InternalEvent::StepDownSelfRemoved)
         .await
         .expect("StepDownSelfRemoved on Leader must not return a fatal error");
 
     // Step 2: simulate the main loop consuming the queued BecomeFollower(None).
     // In production this is driven by the biased select! loop; in unit tests
     // we drive it manually to verify the full transition completes.
-    raft.handle_role_event(RoleEvent::BecomeFollower(None))
+    raft.handle_internal_event(InternalEvent::BecomeFollower(None))
         .await
         .expect("BecomeFollower queued by StepDownSelfRemoved must succeed");
 
@@ -1180,7 +1180,7 @@ async fn test_membership_applied_dispatch_on_follower() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    raft.handle_role_event(RoleEvent::MembershipApplied)
+    raft.handle_internal_event(InternalEvent::MembershipApplied)
         .await
         .expect("MembershipApplied on Follower must return Ok (RoleViolation swallowed)");
 
@@ -1197,7 +1197,7 @@ async fn test_promote_ready_learners_dispatch_on_follower() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    raft.handle_role_event(RoleEvent::PromoteReadyLearners)
+    raft.handle_internal_event(InternalEvent::PromoteReadyLearners)
         .await
         .expect("PromoteReadyLearners on Follower must return Ok (RoleViolation swallowed)");
 
@@ -1215,9 +1215,12 @@ async fn test_log_purge_completed_dispatch_on_follower() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    raft.handle_role_event(RoleEvent::LogPurgeCompleted(LogId { term: 1, index: 50 }))
-        .await
-        .expect("LogPurgeCompleted on Follower must not return a fatal error");
+    raft.handle_internal_event(InternalEvent::LogPurgeCompleted(LogId {
+        term: 1,
+        index: 50,
+    }))
+    .await
+    .expect("LogPurgeCompleted on Follower must not return a fatal error");
 
     assert!(is_follower(raft.role.as_i32()));
 }
@@ -1242,8 +1245,8 @@ async fn test_leader_init_single_peer() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Peer indices are initialized correctly
 }
@@ -1261,8 +1264,8 @@ async fn test_leader_init_two_peers() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Both peers are initialized with correct indices
 }
@@ -1280,8 +1283,8 @@ async fn test_leader_init_three_peers() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // All three peers are initialized
 }
@@ -1299,8 +1302,8 @@ async fn test_leader_init_five_peers() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // All five peers are initialized
 }
@@ -1318,8 +1321,8 @@ async fn test_leader_init_match_index_zero() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Match index is initialized to 0 for all peers
 }
@@ -1337,8 +1340,8 @@ async fn test_leader_init_includes_learners() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Learner peers are initialized separately
 }
@@ -1356,8 +1359,8 @@ async fn test_leader_init_mixed_voters_learners() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Both voters and learners are initialized together
 }
@@ -1377,8 +1380,8 @@ async fn test_leader_metadata_cache_replication_peers() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Metadata cache includes all replication peers
 }
@@ -1396,8 +1399,8 @@ async fn test_leader_metadata_cache_voters() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Metadata cache includes voters for quorum calculation
 }
@@ -1415,8 +1418,8 @@ async fn test_leader_metadata_cache_all_active() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Cache includes all active peers
 }
@@ -1434,8 +1437,8 @@ async fn test_leader_metadata_cache_learner_separation() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Learners are tracked separately from voters
 }
@@ -1461,8 +1464,8 @@ async fn test_leader_metadata_cache_single_node() {
     raft.ctx.membership = Arc::new(membership);
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Single-node cluster metadata cache has no peers
 }
@@ -1487,8 +1490,8 @@ async fn test_leadership_verification_success() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Leadership verification succeeds with majority confirmation
 }
@@ -1525,8 +1528,8 @@ async fn test_leadership_verification_failure_downgrades() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // On verification failure, leader should downgrade
 }
@@ -1552,8 +1555,8 @@ async fn test_leadership_verification_single_node() {
     raft.ctx.membership = Arc::new(membership);
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Single-node verification always succeeds
 }
@@ -1573,8 +1576,8 @@ async fn test_quorum_exactly_majority_3node() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // 2 out of 3 is exactly the majority
 }
@@ -1592,8 +1595,8 @@ async fn test_quorum_5node_minority_failure() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // 5-node cluster needs 3+ responses for quorum
 }
@@ -1628,8 +1631,8 @@ async fn test_network_partition_minority_loses_leadership() {
     raft.ctx.handlers.replication_handler = replication_handler;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Minority partition should lose leadership
 }
@@ -1658,8 +1661,8 @@ async fn test_leader_change_notification_correctness() {
     raft.register_leader_change_listener(leader_tx);
 
     // Become candidate then leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
 
     // Leader should send notification with self as leader
     assert!(is_leader(raft.role.as_i32()));
@@ -1683,7 +1686,7 @@ async fn test_new_commit_notification_correctness() {
 
     // Send commit notification
     let new_commit_index = 25;
-    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+    raft.handle_internal_event(InternalEvent::NotifyNewCommitIndex(NewCommitData {
         new_commit_index,
         role: Follower.into(),
         current_term: 5,
@@ -1715,12 +1718,12 @@ async fn test_role_transition_notification() {
     raft.register_role_transition_listener(tx);
 
     // Transition: Follower → Candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
     let role = rx.recv().await.expect("Should receive role transition");
     assert!(is_candidate(role));
 
     // Transition: Candidate → Leader
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     let role = rx.recv().await.expect("Should receive role transition");
     assert!(is_leader(role));
 }
@@ -1734,7 +1737,7 @@ async fn test_role_transition_notification() {
 /// Test: Shutdown has highest priority (P0)
 ///
 /// Verifies shutdown signal is processed before all other events.
-/// Even with pending tick/role/raft events, shutdown is first.
+/// Even with pending tick/role/inbound events, shutdown is first.
 /// See F1.1-F1.3 in test scenarios.
 #[tokio::test]
 async fn test_event_priority_p0_shutdown() {
@@ -1749,7 +1752,7 @@ async fn test_event_priority_p0_shutdown() {
 /// Test: Tick has highest operational priority (P1)
 ///
 /// Verifies tick (election timeout/heartbeat) is prioritized.
-/// Tick fires before role events and raft events.
+/// Tick fires before internal events and inbound events.
 /// See F1.4-F1.6 in test scenarios.
 #[tokio::test]
 async fn test_event_priority_p1_tick() {
@@ -1757,10 +1760,10 @@ async fn test_event_priority_p1_tick() {
     let _raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Tick (election timeout/heartbeat) has highest operational priority
-    // Even with role and raft events pending, tick is processed first
+    // Even with role and inbound events pending, tick is processed first
 }
 
-/// Test: RoleEvent processed before RaftEvent (P2 > P3)
+/// Test: InternalEvent processed before InboundEvent (P2 > P3)
 ///
 /// Verifies role state transitions take priority over network events.
 /// Leadership changes processed before AppendEntries responses.
@@ -1770,11 +1773,11 @@ async fn test_event_priority_p2_role_before_p3_raft() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let _raft = MockBuilder::new(graceful_rx).build_raft();
 
-    // RoleEvent has priority over RaftEvent
+    // InternalEvent has priority over InboundEvent
     // State transitions processed before network events
 }
 
-/// Test: RaftEvent has lowest priority (P3)
+/// Test: InboundEvent has lowest priority (P3)
 ///
 /// Verifies network events are processed last.
 /// This prevents RPC storms from starving timers.
@@ -1784,15 +1787,15 @@ async fn test_event_priority_p3_raft_last() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let _raft = MockBuilder::new(graceful_rx).build_raft();
 
-    // RaftEvent (network events) has lowest priority
+    // InboundEvent (network events) has lowest priority
     // Prevents RPC storms from starving timers
 }
 
 // F2. Concurrent Event Arrival Scenarios
 
-/// Test: Tick fires with role_event and raft_event pending
+/// Test: Tick fires with internal_event and inbound_event pending
 ///
-/// Verifies tick processes first, then role event, then raft event.
+/// Verifies tick processes first, then internal event, then inbound event.
 /// See F2.1-F2.4 in test scenarios.
 #[tokio::test]
 async fn test_concurrent_events_tick_role_raft() {
@@ -1801,13 +1804,13 @@ async fn test_concurrent_events_tick_role_raft() {
 
     // Concurrent events are processed in priority order:
     // 1. Tick (P1)
-    // 2. RoleEvent (P2)
-    // 3. RaftEvent (P3)
+    // 2. InternalEvent (P2)
+    // 3. InboundEvent (P3)
 }
 
-/// Test: Role event with multiple raft events pending
+/// Test: internal event with multiple inbound events pending
 ///
-/// Verifies one role event and one raft event per iteration.
+/// Verifies one internal event and one inbound event per iteration.
 /// Prevents starvation while ensuring progress.
 /// See F2.5-F2.7 in test scenarios.
 #[tokio::test]
@@ -1815,7 +1818,7 @@ async fn test_concurrent_events_role_multiple_raft() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let _raft = MockBuilder::new(graceful_rx).build_raft();
 
-    // Process one role event and one raft event per iteration
+    // Process one internal event and one inbound event per iteration
     // Prevents starvation while maintaining fair progress
 }
 
@@ -1860,7 +1863,7 @@ async fn test_election_timeout_candidate_restart() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Become candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
     assert!(is_candidate(raft.role.as_i32()));
     // Candidate timeout restarts election
 }
@@ -1878,8 +1881,8 @@ async fn test_election_timeout_leader_no_action() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // Become leader
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
     // Leader timeout doesn't trigger election, continues heartbeat
 }
@@ -1915,11 +1918,11 @@ async fn test_complete_election_flow() {
     assert!(is_follower(raft.role.as_i32()));
 
     // Follower → Candidate (tick timeout)
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
     assert!(is_candidate(raft.role.as_i32()));
 
     // Candidate → Leader (majority votes received)
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
 
     // Complete election flow with proper event ordering
@@ -1939,15 +1942,15 @@ async fn test_invalid_transitions_return_error() {
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Follower cannot transition to Follower
-    assert!(raft.handle_role_event(RoleEvent::BecomeFollower(None)).await.is_err());
+    assert!(raft.handle_internal_event(InternalEvent::BecomeFollower(None)).await.is_err());
 
     // Candidate → Candidate (invalid)
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
-    assert!(raft.handle_role_event(RoleEvent::BecomeCandidate).await.is_err());
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    assert!(raft.handle_internal_event(InternalEvent::BecomeCandidate).await.is_err());
 
     // Learner → Learner (invalid)
-    raft.handle_role_event(RoleEvent::BecomeLearner).await.unwrap();
-    assert!(raft.handle_role_event(RoleEvent::BecomeLearner).await.is_err());
+    raft.handle_internal_event(InternalEvent::BecomeLearner).await.unwrap();
+    assert!(raft.handle_internal_event(InternalEvent::BecomeLearner).await.is_err());
 }
 
 /// Test: State unchanged after failed transition
@@ -1963,7 +1966,7 @@ async fn test_failed_transition_state_unchanged() {
     let initial_role = raft.role.as_i32();
 
     // Try invalid transition
-    let _ = raft.handle_role_event(RoleEvent::BecomeFollower(None)).await;
+    let _ = raft.handle_internal_event(InternalEvent::BecomeFollower(None)).await;
 
     // State should be unchanged
     assert_eq!(raft.role.as_i32(), initial_role);
@@ -1991,11 +1994,11 @@ async fn test_single_node_cluster_election() {
     raft.ctx.membership = Arc::new(membership);
 
     // Become candidate
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
     assert!(is_candidate(raft.role.as_i32()));
 
     // Single node becomes leader immediately
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
 }
 
@@ -2017,7 +2020,7 @@ async fn test_multiple_listeners_concurrent() {
     raft.register_new_commit_listener(tx3);
 
     // Send notification
-    raft.handle_role_event(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+    raft.handle_internal_event(InternalEvent::NotifyNewCommitIndex(NewCommitData {
         new_commit_index: 5,
         role: Follower.into(),
         current_term: 1,
@@ -2044,14 +2047,14 @@ async fn test_late_listener_registration() {
     raft.ctx.handlers.replication_handler = replication_core;
 
     // First transition
-    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
 
     // Now register listener
     let (tx, mut rx) = mpsc::unbounded_channel::<i32>();
     raft.register_role_transition_listener(tx);
 
     // Next transition should be received
-    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     let role = rx.recv().await.expect("Should receive late registration");
     assert!(is_leader(role));
 }
