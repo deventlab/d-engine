@@ -34,7 +34,6 @@ use crate::RoleEvent;
 use crate::raft_role::candidate_state::CandidateState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::create_test_chunk;
-use crate::test_utils::create_test_snapshot_stream;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_election_core;
 use crate::test_utils::mock::mock_raft_context;
@@ -915,8 +914,10 @@ async fn test_handle_install_snapshot_returns_permission_denied() {
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let stream = create_test_snapshot_stream(vec![create_test_chunk(0, b"chunk0", 1, 1, 2)]);
-    let raft_event = RaftEvent::InstallSnapshotChunk(Box::new(stream), resp_tx);
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(create_test_chunk(0, b"chunk0", 1, 1, 2)).await.unwrap();
+    drop(tx);
+    let raft_event = RaftEvent::InstallSnapshotChunk(rx, resp_tx);
 
     let result = state.handle_raft_event(raft_event, &context, mpsc::unbounded_channel().0).await;
 

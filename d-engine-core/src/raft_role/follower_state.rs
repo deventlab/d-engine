@@ -500,18 +500,9 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Ok(());
             }
 
-            RaftEvent::StreamSnapshot(request, sender) => {
-                debug!(?request, "Follower::RaftEvent::StreamSnapshot");
-                sender
-                    .send(Err(Status::permission_denied(
-                        "Follower should not receive StreamSnapshot event.",
-                    )))
-                    .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
-
+            RaftEvent::StreamSnapshot(_ack_rx, _chunk_tx) => {
+                debug!("Follower::RaftEvent::StreamSnapshot");
+                warn!("Candidate should not receive StreamSnapshot event.");
                 return Ok(());
             }
 

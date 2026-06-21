@@ -19,7 +19,6 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::Status;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::debug;
@@ -169,16 +168,15 @@ where
 
     // Unified pull transfer entry point
     pub(crate) async fn run_pull_transfer(
-        ack_stream: Box<tonic::Streaming<SnapshotAck>>,
-        chunk_tx: mpsc::Sender<std::result::Result<Arc<SnapshotChunk>, Status>>,
+        ack_rx: mpsc::Receiver<SnapshotAck>,
+        chunk_tx: mpsc::Sender<Arc<SnapshotChunk>>,
         mut data_stream: BoxStream<'static, Result<SnapshotChunk>>,
         config: SnapshotConfig,
     ) -> Result<()> {
         debug!("Starting pull snapshot transfer");
 
         // Create processing pipeline
-        let transfer_fut =
-            Self::process_transfer(ack_stream, data_stream, chunk_tx, config.clone());
+        let transfer_fut = Self::process_transfer(ack_rx, chunk_tx, data_stream, config.clone());
 
         // Run with timeout
         tokio::select! {
@@ -191,9 +189,9 @@ where
 
     // Dedicated pull logic
     async fn process_transfer(
-        mut ack_stream: Box<tonic::Streaming<SnapshotAck>>,
+        mut ack_rx: mpsc::Receiver<SnapshotAck>,
+        chunk_tx: mpsc::Sender<Arc<SnapshotChunk>>,
         mut data_stream: Pin<Box<dyn Stream<Item = Result<SnapshotChunk>> + Send>>,
-        chunk_tx: mpsc::Sender<std::result::Result<Arc<SnapshotChunk>, Status>>,
         config: SnapshotConfig,
     ) -> Result<()> {
         let mut chunk_cache = LruCache::new(NonZero::new(config.cache_size).unwrap());
@@ -207,19 +205,16 @@ where
         loop {
             tokio::select! {
                 // Process incoming ACKs
-                ack = ack_stream.next() => {
+                ack = ack_rx.recv() => {
                     trace!("receive new ack");
 
                     match ack {
-                        Some(Ok(ack)) => Self::handle_ack(
+                        Some(ack) => Self::handle_ack(
                             ack,
                             &mut pending_acks,
                             &mut retry_counts,
                             &config,
-                        ).await?,
-
-                        Some(Err(e)) => return Err(NetworkError::TonicStatusError(Box::new(e)).into()),
-
+                        )?,
                         None => break, // ACK stream closed
                     }
                 },
@@ -253,37 +248,24 @@ where
                             next_seq += 1;
                         }
                         Some(Err(e)) => return Err(e),
-                        None => break, // Data stream exhausted
+                        None => return Err(SnapshotError::IncompleteSnapshot.into()),// Data stream exhausted
                     }
                 },
 
                 // Retry mechanism (separate timer)
                 _ = sleep(Duration::from_millis(config.retry_interval_in_ms)), if !pending_acks.is_empty() => {
-                    // Add filtering: only process blocks that need to be retried
-                    let needs_retry: Vec<u32> = pending_acks.iter()
-                    .filter(|&&seq| {
-                        // Only process blocks whose retry times are not exceeded
-                        retry_counts.get(&seq).is_none_or(|&c| c <= config.max_retries)
-                    })
-                    .copied()
-                    .collect();
-
-                    if !needs_retry.is_empty() {
-                        trace!(?retry_counts, ?needs_retry, ?pending_acks);
-
-                        Self::handle_retries(
-                            &pending_acks,
-                            &mut retry_counts,
-                            &mut chunk_cache,
-                            &chunk_tx,
-                            &config,
-                        ).await?;
-                    }
+                    trace!(?retry_counts, ?pending_acks, "retrying pending chunks");
+                    Self::handle_retries(
+                        &pending_acks,
+                        &mut retry_counts,
+                        &mut chunk_cache,
+                        &chunk_tx,
+                        &config,
+                    ).await?;
                 }
             }
 
             // Completion check
-            debug!(?total_chunks, "------ total_chunks");
 
             if let Some(total) = total_chunks
                 && next_seq >= total
@@ -299,7 +281,7 @@ where
     }
 
     // Handle ACK messages with proper error management
-    async fn handle_ack(
+    fn handle_ack(
         ack: SnapshotAck,
         pending_acks: &mut HashSet<u32>,
         retry_counts: &mut HashMap<u32, u32>,
@@ -355,25 +337,15 @@ where
         pending_acks: &HashSet<u32>,
         retry_counts: &mut HashMap<u32, u32>,
         chunk_cache: &mut LruCache<u32, Arc<SnapshotChunk>>,
-        chunk_tx: &mpsc::Sender<std::result::Result<Arc<SnapshotChunk>, Status>>,
+        chunk_tx: &mpsc::Sender<Arc<SnapshotChunk>>,
         config: &SnapshotConfig,
     ) -> Result<()> {
         let max_bandwidth_mbps = config.max_bandwidth_mbps;
 
-        // Create a snapshot of pending_acks to avoid concurrent modification issues
-        let pending_snapshot: Vec<u32> = pending_acks.iter().copied().collect();
-
-        for seq in pending_snapshot {
-            // Double-check if still pending before sending
-            if !pending_acks.contains(&seq) {
-                trace!(%seq, "Skipping retry for already-acked chunk");
-                continue;
-            }
-
-            // Skip if max retries exceeded
+        for &seq in pending_acks.iter() {
             let count = retry_counts.entry(seq).or_insert(0);
             if *count > config.max_retries {
-                trace!(%seq, "Skipping retry for chunk with max retries exceeded");
+                trace!(%seq, "skipping retry: max retries exceeded");
                 continue;
             }
 
@@ -447,14 +419,14 @@ where
 
     // Send chunk with proper error handling
     async fn send_chunk(
-        chunk_tx: &mpsc::Sender<std::result::Result<Arc<SnapshotChunk>, Status>>,
+        chunk_tx: &mpsc::Sender<Arc<SnapshotChunk>>,
         chunk: Arc<SnapshotChunk>,
         max_bandwidth_mbps: u32,
     ) -> Result<()> {
         Self::apply_rate_limit(&chunk, max_bandwidth_mbps).await;
 
         chunk_tx
-            .send(Ok(chunk))
+            .send(chunk)
             .await
             .map_err(|_| SnapshotError::ReceiverDisconnected.into())
     }

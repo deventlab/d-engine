@@ -34,7 +34,6 @@ use crate::SnapshotError;
 use crate::StorageError;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_compressed_snapshot;
-use crate::test_utils::create_test_snapshot_stream;
 use crate::test_utils::snapshot_config;
 
 // Case 1: normal update
@@ -530,7 +529,6 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
     // 3. Fake install snapshot request stream
     let total_chunks = 1;
     // Create compressed chunk data
-    let mut chunks: Vec<SnapshotChunk> = vec![];
     let metadata = SnapshotMetadata {
         last_included: Some(LogId { index: 2, term: 1 }),
         checksum: Bytes::from(vec![2; 32]),
@@ -563,19 +561,17 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
         data: Bytes::from(compressed_data.clone()),
         chunk_checksum: Bytes::from(crc32fast::hash(&compressed_data).to_be_bytes().to_vec()),
     };
-    chunks.push(chunk);
 
-    let streaming_request = create_test_snapshot_stream(chunks);
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
+
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(chunk).await.unwrap();
+    drop(tx);
 
     // Spawn the handler in a separate task to prevent deadlock
     let handler_task = tokio::spawn({
         let config = snapshot_config(temp_path.to_path_buf());
-        async move {
-            handler
-                .apply_snapshot_stream_from_leader(1, Box::new(streaming_request), ack_tx, &config)
-                .await
-        }
+        async move { handler.apply_snapshot_stream_from_leader(1, rx, ack_tx, &config).await }
     });
 
     // Verify intermediate response
@@ -604,15 +600,13 @@ async fn test_apply_snapshot_stream_from_leader_case3() {
 
     // Create ACK channel
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let stream = create_test_snapshot_stream(vec![bad_chunk]);
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(bad_chunk).await.unwrap();
+    drop(tx);
 
     let handler_task = tokio::spawn({
         let config = snapshot_config(temp_path.to_path_buf());
-        async move {
-            handler
-                .apply_snapshot_stream_from_leader(TEST_TERM, Box::new(stream), ack_tx, &config)
-                .await
-        }
+        async move { handler.apply_snapshot_stream_from_leader(TEST_TERM, rx, ack_tx, &config).await }
     });
 
     let ack = ack_rx.recv().await.unwrap();
@@ -641,15 +635,15 @@ async fn test_apply_snapshot_stream_from_leader_case4() {
     ];
 
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let stream = create_test_snapshot_stream(chunks);
+    let (tx, rx) = mpsc::channel(32);
+    for chunk in chunks {
+        tx.send(chunk).await.unwrap();
+    }
+    drop(tx);
 
     let handler_task = tokio::spawn({
         let config = snapshot_config(temp_path.to_path_buf());
-        async move {
-            handler
-                .apply_snapshot_stream_from_leader(TEST_TERM, Box::new(stream), ack_tx, &config)
-                .await
-        }
+        async move { handler.apply_snapshot_stream_from_leader(TEST_TERM, rx, ack_tx, &config).await }
     });
 
     let ack = ack_rx.recv().await.unwrap();
@@ -683,16 +677,17 @@ async fn test_apply_snapshot_stream_from_leader_case5() {
         TEST_LEADER_ID,
         2,
     )];
-    let stream = create_test_snapshot_stream(chunks);
+
+    let (tx, rx) = mpsc::channel(32);
+    for chunk in chunks {
+        tx.send(chunk).await.unwrap();
+    }
+    drop(tx);
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
 
     let handler_task = tokio::spawn({
         let config = snapshot_config(temp_path.to_path_buf());
-        async move {
-            handler
-                .apply_snapshot_stream_from_leader(TEST_TERM, Box::new(stream), ack_tx, &config)
-                .await
-        }
+        async move { handler.apply_snapshot_stream_from_leader(TEST_TERM, rx, ack_tx, &config).await }
     });
 
     let ack = ack_rx.recv().await.unwrap();
@@ -719,15 +714,13 @@ async fn test_apply_snapshot_stream_from_leader_case6() {
     invalid_chunk.metadata = None;
 
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let stream = create_test_snapshot_stream(vec![invalid_chunk]);
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(invalid_chunk).await.unwrap();
+    drop(tx);
 
     let handler_task = tokio::spawn({
         let config = snapshot_config(temp_path.to_path_buf());
-        async move {
-            handler
-                .apply_snapshot_stream_from_leader(TEST_TERM, Box::new(stream), ack_tx, &config)
-                .await
-        }
+        async move { handler.apply_snapshot_stream_from_leader(TEST_TERM, rx, ack_tx, &config).await }
     });
 
     let ack = ack_rx.recv().await.unwrap();
@@ -790,17 +783,17 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
         chunks.push(chunk);
     }
 
-    let streaming_request = create_test_snapshot_stream(chunks);
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
+    let (tx, rx) = mpsc::channel(32);
+    for chunk in chunks {
+        tx.send(chunk).await.unwrap();
+    }
+    drop(tx);
 
     // Spawn the handler in a separate task
     let handler_task = tokio::spawn({
         let config = snapshot_config(temp_path.to_path_buf());
-        async move {
-            handler
-                .apply_snapshot_stream_from_leader(1, Box::new(streaming_request), ack_tx, &config)
-                .await
-        }
+        async move { handler.apply_snapshot_stream_from_leader(1, rx, ack_tx, &config).await }
     });
 
     // Verify intermediate ACKs
@@ -1702,16 +1695,13 @@ async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
         chunk_checksum: Bytes::from(chunk_checksum),
     };
 
-    let streaming_request = create_test_snapshot_stream(vec![chunk]);
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(chunk).await.unwrap();
+    drop(tx);
     let handler_task = tokio::spawn({
         let config = snapshot_config(temp_path.to_path_buf());
-        async move {
-            handler
-                .apply_snapshot_stream_from_leader(1, Box::new(streaming_request), ack_tx, &config)
-                .await
-        }
+        async move { handler.apply_snapshot_stream_from_leader(1, rx, ack_tx, &config).await }
     });
 
     // Verify ACK

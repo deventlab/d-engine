@@ -17,11 +17,9 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use d_engine_proto::server::storage::SnapshotChunk;
 #[cfg(any(test, feature = "__test_support"))]
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
-use tonic::Status;
 
 pub trait RaftOneshot<T: Send> {
     type Sender: Send + Sync;
@@ -209,46 +207,5 @@ impl<T: Send> RaftOneshot<T> for MaybeCloneOneshot {
                 test_inner: None,
             },
         )
-    }
-}
-
-#[derive(Debug)]
-pub struct StreamResponseSender {
-    inner: oneshot::Sender<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>,
-
-    #[cfg(any(test, feature = "__test_support"))]
-    test_inner:
-        Option<broadcast::Sender<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>>,
-}
-
-impl StreamResponseSender {
-    pub fn new() -> (
-        Self,
-        oneshot::Receiver<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>,
-    ) {
-        let (inner_tx, inner_rx) = oneshot::channel();
-        (
-            Self {
-                inner: inner_tx,
-                #[cfg(any(test, feature = "__test_support"))]
-                test_inner: None,
-            },
-            inner_rx,
-        )
-    }
-
-    pub fn send(
-        self,
-        value: std::result::Result<tonic::Streaming<SnapshotChunk>, Status>,
-    ) -> Result<(), Box<std::result::Result<tonic::Streaming<SnapshotChunk>, Status>>> {
-        #[cfg(not(any(test, feature = "__test_support")))]
-        return self.inner.send(value).map_err(Box::new);
-
-        #[cfg(any(test, feature = "__test_support"))]
-        if let Some(tx) = self.test_inner {
-            tx.send(value).map(|_| ()).map_err(|e| Box::new(e.0))
-        } else {
-            self.inner.send(value).map_err(Box::new)
-        }
     }
 }

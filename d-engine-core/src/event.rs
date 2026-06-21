@@ -18,13 +18,13 @@ use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::SnapshotResponse;
+use tokio::sync::mpsc;
 use tonic::Status;
 
 use crate::ApplyResult;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::ScanResult;
-use crate::StreamResponseSender;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewCommitData {
@@ -151,12 +151,15 @@ pub enum RaftEvent {
 
     // Response snapshot stream from Leader
     InstallSnapshotChunk(
-        Box<tonic::Streaming<SnapshotChunk>>,
+        mpsc::Receiver<SnapshotChunk>,
         MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
     ),
 
     // Request snapshot stream from Leader
-    StreamSnapshot(Box<tonic::Streaming<SnapshotAck>>, StreamResponseSender),
+    StreamSnapshot(
+        mpsc::Receiver<SnapshotAck>,
+        mpsc::Sender<std::sync::Arc<SnapshotChunk>>,
+    ),
 
     JoinCluster(
         JoinRequest,
@@ -192,11 +195,6 @@ pub enum RaftEvent {
         error: String,  // Error message
     },
 }
-
-// SAFETY: tonic::Streaming variants are only accessed on the thread that created them;
-// no shared references to snapshot variants cross thread boundaries.
-// Full decoupling tracked in #409.
-unsafe impl Sync for RaftEvent {}
 
 #[cfg(test)]
 #[cfg_attr(test, derive(Debug, Clone))]

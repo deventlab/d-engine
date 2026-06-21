@@ -112,7 +112,7 @@ where
     async fn apply_snapshot_stream_from_leader(
         &self,
         current_term: u64,
-        stream: Box<tonic::Streaming<SnapshotChunk>>,
+        stream_chunk_receiver: tokio::sync::mpsc::Receiver<SnapshotChunk>,
         ack_tx: tokio::sync::mpsc::Sender<d_engine_proto::server::storage::SnapshotAck>,
         config: &crate::SnapshotConfig,
     ) -> Result<()>;
