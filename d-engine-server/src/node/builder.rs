@@ -427,7 +427,7 @@ where
         // role_tx / role_rx created earlier (before raft_log) to pass log_flush_tx to start().
         let (event_tx, event_rx) = mpsc::channel(10240);
         let (cmd_tx, cmd_rx) = mpsc::channel(node_config.raft.cmd_channel_capacity);
-        let event_tx_clone = event_tx.clone(); // used in commit handler
+        let role_tx_clone = role_tx.clone();
         let role_tx_for_sm = role_tx.clone(); // used in SM worker (ApplyCompleted → P2)
 
         // Bridge zombie signals from health monitor → role event loop.
@@ -548,7 +548,7 @@ where
             state_machine_handler,
             raft_log: raft_core.ctx.storage.raft_log.clone(),
             membership: membership.clone(),
-            event_tx: event_tx_clone,
+            role_tx: role_tx_clone,
             sm_apply_tx,
             shutdown_signal,
             max_batch_size: raft_core.ctx.node_config.raft.batching.max_batch_size,

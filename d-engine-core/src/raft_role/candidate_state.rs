@@ -375,9 +375,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 sender
                     .send(Err(Status::permission_denied("Not Follower or Learner.")))
                     .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
+                        error!("Failed to send: {:?}", e);
+                        NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
 
                 return Err(ConsensusError::RoleViolation {
@@ -391,51 +390,14 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 .into());
             }
 
-            RaftEvent::CreateSnapshotEvent => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Candidate",
-                    required_role: "Leader",
-                    context: format!(
-                        "Candidate node {} attempted to create snapshot.",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
-
-            RaftEvent::SnapshotCreated(_result) => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Candidate",
-                    required_role: "Leader",
-                    context: format!(
-                        "Candidate node {} attempted to handle created snapshot.",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
-
-            RaftEvent::LogPurgeCompleted(_purged_id) => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Learner",
-                    required_role: "Leader",
-                    context: format!(
-                        "Learner node {} should not receive LogPurgeCompleted event.",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
-
             RaftEvent::JoinCluster(_join_request, sender) => {
                 sender
                     .send(Err(Status::permission_denied(
                         "Candidate should not receive JoinCluster event.",
                     )))
                     .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
+                        error!("Failed to send: {:?}", e);
+                        NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
 
                 return Err(ConsensusError::RoleViolation {
@@ -456,9 +418,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         "Candidate should not response DiscoverLeader event.",
                     )))
                     .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
+                        error!("Failed to send: {:?}", e);
+                        NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
 
                 return Ok(());
@@ -477,34 +438,11 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 return Ok(());
             }
 
-            RaftEvent::PromoteReadyLearners => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Candidate",
-                    required_role: "Leader",
-                    context: format!(
-                        "Candidate node {} receives RaftEvent::PromoteReadyLearners",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
-
-            RaftEvent::MembershipApplied => {
-                // Candidates don't maintain cluster metadata cache
-                // This event is only relevant for leaders
-                trace!("Candidate ignoring MembershipApplied event");
-            }
-
             RaftEvent::FatalError { source, error } => {
                 error!("[Candidate] Fatal error from {}: {}", source, error);
                 return Err(crate::Error::Fatal(format!(
                     "Fatal error from {source}: {error}"
                 )));
-            }
-
-            RaftEvent::StepDownSelfRemoved => {
-                // Unreachable: handled at Raft level before reaching RoleState
-                unreachable!("StepDownSelfRemoved should be handled in Raft::run()");
             }
         }
 
@@ -558,9 +496,8 @@ impl<T: TypeConfig> CandidateState<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> Result<()> {
         role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-            let error_str = format!("{e:?}");
-            error!("Failed to send: {}", error_str);
-            NetworkError::SingalSendFailed(error_str).into()
+            error!("Failed to send: {:?}", e);
+            NetworkError::SingalSendFailed(format!("{:?}", e)).into()
         })
     }
 
@@ -571,9 +508,8 @@ impl<T: TypeConfig> CandidateState<T> {
     ) -> Result<()> {
         debug!("send_replay_raft_event, raft_event:{:?}", &raft_event);
         role_tx.send(RoleEvent::ReprocessEvent(Box::new(raft_event))).map_err(|e| {
-            let error_str = format!("{e:?}");
-            error!("Failed to send: {}", error_str);
-            NetworkError::SingalSendFailed(error_str).into()
+            error!("Failed to send: {:?}", e);
+            NetworkError::SingalSendFailed(format!("{:?}", e)).into()
         })
     }
 

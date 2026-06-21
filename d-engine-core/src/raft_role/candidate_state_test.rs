@@ -137,9 +137,9 @@ async fn test_candidate_drain_read_buffer_returns_error() {
     );
 
     if let Err(e) = result {
-        let error_str = format!("{e:?}");
+        let error_str = e.to_string();
         assert!(
-            error_str.contains("NotLeader"),
+            error_str.contains("Membership changes require leader role"),
             "Error should be NotLeader, got: {error_str}"
         );
     }
@@ -957,40 +957,40 @@ async fn test_handle_discover_leader_returns_permission_denied() {
 }
 
 #[cfg(test)]
-mod role_violation_tests {
+mod snapshot_tests {
     use super::*;
 
-    /// Test: Role violation events return RoleViolation error
+    /// Test: Candidate rejects snapshot lifecycle events with RoleViolation
     ///
-    /// Original: test_role_violation_events
+    /// Candidate is a transient election state — snapshot operations are only
+    /// valid on stable roles (Follower, Learner, Leader). All three methods
+    /// use the trait default which returns `ConsensusError::RoleViolation`.
     #[tokio::test]
-    async fn test_candidate_role_violation_errors() {
+    async fn test_candidate_rejects_snapshot_events() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
         let context = mock_raft_context("/tmp/test_role_violation", graceful_rx, None);
         let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-
-        // Test CreateSnapshotEvent
         let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        let raft_event = RaftEvent::CreateSnapshotEvent;
-        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
+
+        // CreateSnapshotEvent → RoleViolation
+        let e = state.handle_create_snapshot(&context, &role_tx).await.unwrap_err();
         assert!(matches!(
             e,
             Error::Consensus(ConsensusError::RoleViolation { .. })
         ));
 
-        // Test SnapshotCreated
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        let raft_event = RaftEvent::SnapshotCreated(Err(Error::Fatal("test".to_string())));
-        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
+        // SnapshotCreated → RoleViolation
+        let e = state
+            .handle_snapshot_created(Err(Error::Fatal("test".to_string())), &context, &role_tx)
+            .await
+            .unwrap_err();
         assert!(matches!(
             e,
             Error::Consensus(ConsensusError::RoleViolation { .. })
         ));
 
-        // Test LogPurgeCompleted
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
-        let raft_event = RaftEvent::LogPurgeCompleted(LogId { term: 1, index: 1 });
-        let e = state.handle_raft_event(raft_event, &context, role_tx).await.unwrap_err();
+        // LogPurgeCompleted → RoleViolation
+        let e = state.handle_log_purge_completed(LogId { term: 1, index: 1 }).unwrap_err();
         assert!(matches!(
             e,
             Error::Consensus(ConsensusError::RoleViolation { .. })

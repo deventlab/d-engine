@@ -13,9 +13,9 @@ use tracing::warn;
 use super::CommitHandler;
 use crate::Membership;
 use crate::NewCommitData;
-use crate::RaftEvent;
 use crate::RaftLog;
 use crate::Result;
+use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
 use crate::alias::MOF;
@@ -28,7 +28,7 @@ pub struct CommitHandlerDependencies<T: TypeConfig> {
     pub state_machine_handler: Arc<SMHOF<T>>,
     pub raft_log: Arc<ROF<T>>,
     pub membership: Arc<MOF<T>>,
-    pub event_tx: mpsc::Sender<RaftEvent>,
+    pub role_tx: mpsc::UnboundedSender<RoleEvent>,
     pub sm_apply_tx: mpsc::UnboundedSender<Vec<Entry>>,
     pub shutdown_signal: watch::Receiver<()>,
     pub max_batch_size: usize,
@@ -47,7 +47,7 @@ where
     new_commit_rx: Option<mpsc::UnboundedReceiver<NewCommitData>>,
     membership: Arc<MOF<T>>,
 
-    event_tx: mpsc::Sender<RaftEvent>, // Cloned from Raft
+    role_tx: mpsc::UnboundedSender<RoleEvent>, // Cloned from Raft
     sm_apply_tx: mpsc::UnboundedSender<Vec<Entry>>, // Send entries to SM Worker
 
     // Shutdown signal
@@ -130,7 +130,7 @@ where
             raft_log: deps.raft_log,
             membership: deps.membership,
             new_commit_rx: Some(new_commit_rx),
-            event_tx: deps.event_tx,
+            role_tx: deps.role_tx,
             sm_apply_tx: deps.sm_apply_tx,
             shutdown_signal: deps.shutdown_signal,
             max_batch_size: deps.max_batch_size,
@@ -254,7 +254,7 @@ where
 
             // 2.5. Notify leader to refresh cluster metadata cache
             // This must happen AFTER membership is applied
-            if let Err(e) = self.event_tx.send(RaftEvent::MembershipApplied).await {
+            if let Err(e) = self.role_tx.send(RoleEvent::MembershipApplied) {
                 warn!("Failed to send MembershipApplied event: {:?}", e);
             }
 
@@ -265,7 +265,7 @@ where
                     self.my_id, entry.index
                 );
                 // Signal step down - error is non-fatal as removal is already committed
-                if let Err(e) = self.event_tx.send(RaftEvent::StepDownSelfRemoved).await {
+                if let Err(e) = self.role_tx.send(RoleEvent::StepDownSelfRemoved) {
                     error!(
                         "[{}] Failed to send StepDownSelfRemoved event: {:?}",
                         self.my_id, e
@@ -299,3 +299,7 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "default_commit_handler_test.rs"]
+mod default_commit_handler_test;

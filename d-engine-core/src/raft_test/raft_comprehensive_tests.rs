@@ -1061,6 +1061,167 @@ async fn test_reprocess_event_requeues() {
     assert!(is_follower(raft.role.as_i32()));
 }
 
+// B8–B13. New Lifecycle Event Dispatch Tests
+//
+// Six RoleEvent variants were migrated from bounded event_tx (P4) to unbounded
+// role_tx (P2) to eliminate deadlock when the P4 channel is saturated by inbound RPCs.
+// These tests verify that each dispatch arm in handle_role_event routes correctly
+// — no todo!() panic, correct return value, and the observable role-level outcome.
+//
+// Handler-level behaviour (flag mutations, purge logic, metadata refresh) is already
+// covered in each role's unit-test module; these tests focus only on the routing layer.
+
+/// B8.1 — CreateSnapshotEvent dispatched to Follower
+///
+/// Follower's handle_create_snapshot spawns a background snapshot task and returns Ok.
+/// The dispatch must succeed without panicking or propagating a fatal error.
+#[tokio::test]
+async fn test_create_snapshot_event_dispatch_on_follower() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    assert!(is_follower(raft.role.as_i32()));
+
+    raft.handle_role_event(RoleEvent::CreateSnapshotEvent)
+        .await
+        .expect("CreateSnapshotEvent on Follower must not return a fatal error");
+
+    // CreateSnapshotEvent is a background trigger — role is unchanged.
+    assert!(is_follower(raft.role.as_i32()));
+}
+
+/// B8.2 — CreateSnapshotEvent dispatched to Candidate
+///
+/// Candidate rejects snapshot creation with RoleViolation (non-fatal).
+/// The dispatch layer swallows non-fatal errors and returns Ok to the caller.
+#[tokio::test]
+async fn test_create_snapshot_event_dispatch_on_candidate() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
+    assert!(is_candidate(raft.role.as_i32()));
+
+    // RoleViolation is non-fatal — dispatch swallows it and returns Ok.
+    raft.handle_role_event(RoleEvent::CreateSnapshotEvent)
+        .await
+        .expect("CreateSnapshotEvent on Candidate must return Ok (RoleViolation swallowed)");
+
+    assert!(
+        is_candidate(raft.role.as_i32()),
+        "Role must remain Candidate"
+    );
+}
+
+/// B9 — SnapshotCreated(Err) dispatched to Follower
+///
+/// When snapshot creation fails, SnapshotCreated carries an Err payload.
+/// The handler resets snapshot_in_progress and returns a non-fatal error.
+/// The dispatch layer swallows it and returns Ok — role is unchanged.
+#[tokio::test]
+async fn test_snapshot_created_err_dispatch_on_follower() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    // Use a non-fatal snapshot error so the dispatch does not propagate it.
+    let err_result = Err(crate::SnapshotError::OperationFailed("simulated failure".into()).into());
+
+    raft.handle_role_event(RoleEvent::SnapshotCreated(err_result))
+        .await
+        .expect("SnapshotCreated(Err) on Follower must return Ok (non-fatal error swallowed)");
+
+    assert!(is_follower(raft.role.as_i32()));
+}
+
+/// B10 — StepDownSelfRemoved on Leader causes role transition to Follower
+///
+/// This is the most behaviourally significant of the six new events at the integration
+/// level. handle_self_removed posts BecomeFollower(None) onto role_tx so the main loop
+/// can process the transition on the next iteration. In unit tests we drive that queued
+/// event manually to verify the complete Leader → StepDownSelfRemoved → Follower path.
+#[tokio::test]
+async fn test_step_down_self_removed_leader_transitions_to_follower() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    // Establish Leader role.
+    raft.handle_role_event(RoleEvent::BecomeCandidate).await.unwrap();
+    raft.handle_role_event(RoleEvent::BecomeLeader).await.unwrap();
+    assert!(is_leader(raft.role.as_i32()));
+
+    // Step 1: dispatch StepDownSelfRemoved — handle_self_removed enqueues
+    // BecomeFollower(None) on the internal role_tx and returns Ok.
+    raft.handle_role_event(RoleEvent::StepDownSelfRemoved)
+        .await
+        .expect("StepDownSelfRemoved on Leader must not return a fatal error");
+
+    // Step 2: simulate the main loop consuming the queued BecomeFollower(None).
+    // In production this is driven by the biased select! loop; in unit tests
+    // we drive it manually to verify the full transition completes.
+    raft.handle_role_event(RoleEvent::BecomeFollower(None))
+        .await
+        .expect("BecomeFollower queued by StepDownSelfRemoved must succeed");
+
+    assert!(
+        is_follower(raft.role.as_i32()),
+        "Leader must step down to Follower after self-removal"
+    );
+}
+
+/// B11 — MembershipApplied dispatched to Follower
+///
+/// MembershipApplied is meaningful only for the Leader (it refreshes its metadata cache).
+/// Follower returns RoleViolation (non-fatal); the dispatch layer swallows it.
+/// The leader-specific behaviour is already covered in membership_change_test.rs.
+#[tokio::test]
+async fn test_membership_applied_dispatch_on_follower() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    raft.handle_role_event(RoleEvent::MembershipApplied)
+        .await
+        .expect("MembershipApplied on Follower must return Ok (RoleViolation swallowed)");
+
+    assert!(is_follower(raft.role.as_i32()));
+}
+
+/// B12 — PromoteReadyLearners dispatched to Follower
+///
+/// Only the Leader evaluates learner promotion eligibility.
+/// Follower returns RoleViolation (non-fatal); the dispatch layer swallows it.
+/// The leader-specific promotion logic is already covered in membership_change_test.rs.
+#[tokio::test]
+async fn test_promote_ready_learners_dispatch_on_follower() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    raft.handle_role_event(RoleEvent::PromoteReadyLearners)
+        .await
+        .expect("PromoteReadyLearners on Follower must return Ok (RoleViolation swallowed)");
+
+    assert!(is_follower(raft.role.as_i32()));
+}
+
+/// B13 — LogPurgeCompleted dispatched to Follower
+///
+/// All roles update their internal last_purged_index on LogPurgeCompleted.
+/// This test confirms the dispatch arm routes correctly and returns Ok without panicking.
+#[tokio::test]
+async fn test_log_purge_completed_dispatch_on_follower() {
+    use d_engine_proto::common::LogId;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    raft.handle_role_event(RoleEvent::LogPurgeCompleted(LogId { term: 1, index: 50 }))
+        .await
+        .expect("LogPurgeCompleted on Follower must not return a fatal error");
+
+    assert!(is_follower(raft.role.as_i32()));
+}
+
 // ============================================================================
 // C. LEADER INITIALIZATION TESTS (Peer State Setup)
 // ============================================================================

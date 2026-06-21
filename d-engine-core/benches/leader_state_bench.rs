@@ -112,6 +112,7 @@ use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use d_engine_core::leader_state::{LeaderState, PendingPromotion};
+use d_engine_core::role_state::RaftRoleState;
 use d_engine_core::{
     MockElectionCore, MockMembership, MockPurgeExecutor, MockRaftLog, MockReplicationCore,
     MockStateMachine, MockStateMachineHandler, MockTransport, MockTypeConfig, RaftContext,
@@ -286,7 +287,7 @@ fn bench_process_promotions_2_nodes(c: &mut Criterion) {
             black_box(
                 fixture
                     .leader_state
-                    .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+                    .handle_promote_ready_learners(&fixture.raft_context, &fixture.role_tx)
                     .await,
             )
         })
@@ -319,7 +320,7 @@ fn bench_batch_promotion_scaling(c: &mut Criterion) {
                     black_box(
                         fixture
                             .leader_state
-                            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+                            .handle_promote_ready_learners(&fixture.raft_context, &fixture.role_tx)
                             .await,
                     )
                 })

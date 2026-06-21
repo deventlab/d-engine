@@ -1,14 +1,17 @@
+use crate::ConsensusError;
 use crate::client::{ClientReadRequest, ClientResponse, KvEntry, LeaderHint};
 use async_trait::async_trait;
+use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
-use tracing::debug;
 use tracing::error;
 use tracing::warn;
+use tracing::{debug, info};
 
 use super::RaftRole;
 use super::SharedState;
@@ -229,9 +232,8 @@ pub trait RaftRoleState: Send + Sync + 'static {
                 current_term,
             }))
             .map_err(|e| {
-                let error_str = format!("{e:?}");
-                error!("Failed to send NotifyNewCommitIndex: {}", error_str);
-                NetworkError::SingalSendFailed(error_str)
+                error!("Failed to send NotifyNewCommitIndex: {e:?}");
+                NetworkError::SingalSendFailed(format!("{:?}", e))
             })?;
 
         Ok(())
@@ -504,9 +506,8 @@ pub trait RaftRoleState: Send + Sync + 'static {
         if is_new_leader {
             role_tx.send(RoleEvent::LeaderDiscovered(new_leader_id, request_term)).map_err(
                 |e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send LeaderDiscovered: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
+                    error!("Failed to send LeaderDiscovered: {e:?}");
+                    NetworkError::SingalSendFailed(format!("{:?}", e))
                 },
             )?;
         }
@@ -586,6 +587,111 @@ pub trait RaftRoleState: Send + Sync + 'static {
         // No-op for non-leader roles (only Leader has read buffer to drain)
         Err(MembershipError::NotLeader.into())
     }
+
+    /// Trigger an independent snapshot on this role (Raft §7 — each server snapshots
+    /// independently). Called when `should_snapshot()` returns true after SM apply.
+    /// Default: no-op. Candidate overrides to return `RoleViolation`.
+    async fn handle_create_snapshot(
+        &mut self,
+        _ctx: &RaftContext<Self::T>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        Err(ConsensusError::RoleViolation {
+            current_role: "Candidate",
+            required_role: "Follower/Leader/Learner",
+            context: ("Candidate node attempted to create snapshot.").to_string(),
+        }
+        .into())
+    }
+
+    /// Process the completed snapshot result (success or error).
+    /// Leader: schedules log purge up to `last_included`.
+    /// Follower/Learner: updates local snapshot path.
+    /// Default: no-op. Candidate overrides to return `RoleViolation`.
+    async fn handle_snapshot_created(
+        &mut self,
+        _result: crate::Result<(SnapshotMetadata, std::path::PathBuf)>,
+        _ctx: &RaftContext<Self::T>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        Err(ConsensusError::RoleViolation {
+            current_role: "Candidate",
+            required_role: "Follower/Leader/Learner",
+            context: ("Candidate role node attempted to handle created snapshot.").to_string(),
+        }
+        .into())
+    }
+
+    /// Advance the purge boundary after log entries up to `purged_id` are removed.
+    /// Leader only: updates `last_purged_index`.
+    /// Default: no-op + warn (unexpected on non-leader).
+    fn handle_log_purge_completed(
+        &mut self,
+        _purged_id: LogId,
+    ) -> Result<()> {
+        Err(ConsensusError::RoleViolation {
+            current_role: "non-Leader",
+            required_role: "Leader",
+            context: "LogPurgeCompleted is a Leader-only event.".to_string(),
+        }
+        .into())
+    }
+
+    /// Check pending learners for promotion eligibility after a membership change.
+    /// Leader only: evaluates `pending_promotions`, proposes config change if ready.
+    /// Default: no-op + warn (unexpected on non-leader).
+    async fn handle_promote_ready_learners(
+        &mut self,
+        ctx: &RaftContext<Self::T>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        Err(ConsensusError::RoleViolation {
+            current_role: "None Leader",
+            required_role: "Leader",
+            context: format!(
+                "None Leader node {} receives RaftEvent::PromoteReadyLearners",
+                ctx.node_id
+            ),
+        }
+        .into())
+    }
+
+    /// Node was removed from cluster membership; step down immediately per Raft protocol.
+    /// Leader: emits `BecomeFollower`. Non-leader: unreachable in practice.
+    /// Default: warn + Ok(()) (defensive; only Leader should receive this).
+    fn handle_self_removed(
+        &mut self,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        warn!(
+            "Node {} received StepDownSelfRemoved in non-leader role — ignoring",
+            self.node_id()
+        );
+        Ok(())
+    }
+
+    /// Membership config change applied to state — refresh any role-local derived state.
+    /// Leader: invalidates `cluster_metadata` cache.
+    /// Learner: checks if promoted to Voter; emits `BecomeFollower` if so.
+    /// Default: no-op (Follower/Candidate have no derived state to refresh).
+    async fn handle_membership_applied(
+        &mut self,
+        ctx: &RaftContext<Self::T>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // Followers don't maintain cluster metadata cache
+        // This event is only relevant for leaders
+        info!("Follower/Candidate node ignoring MembershipApplied event");
+        Err(ConsensusError::RoleViolation {
+            current_role: "None Leader/Learner",
+            required_role: "Leader/Learner",
+            context: format!(
+                "None Leader/Learner node {} receives RaftEvent::PromoteReadyLearners",
+                ctx.node_id
+            ),
+        }
+        .into())
+    }
 }
 
 /// Send a RaftEvent back into the role event loop for reprocessing.
@@ -594,9 +700,8 @@ pub(super) fn send_replay_raft_event(
     raft_event: RaftEvent,
 ) -> Result<()> {
     role_tx.send(RoleEvent::ReprocessEvent(Box::new(raft_event))).map_err(|e| {
-        let error_str = format!("{e:?}");
-        error!("Failed to send: {}", error_str);
-        NetworkError::SingalSendFailed(error_str).into()
+        error!("Failed to send: {e:?}");
+        NetworkError::SingalSendFailed(format!("{:?}", e)).into()
     })
 }
 
@@ -618,7 +723,10 @@ pub(super) fn check_and_trigger_snapshot<T: TypeConfig>(
             current_term,
         })
     {
-        send_replay_raft_event(role_tx, RaftEvent::CreateSnapshotEvent)?;
+        role_tx.send(RoleEvent::CreateSnapshotEvent).map_err(|e| {
+            error!("Failed to send: {e:?}");
+            NetworkError::SingalSendFailed(format!("{:?}", e))
+        })?;
     }
     Ok(())
 }

@@ -1146,9 +1146,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         last_log_term: last_log_id.term,
                     };
                     sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
+                        error!("Failed to send: {e:?}");
+                        NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
                 }
             }
@@ -1186,9 +1185,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     );
 
                     sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
+                        error!("Failed to send: {e:?}");
+                        NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
                 } else {
                     // Step down as Follower as new Leader found
@@ -1252,9 +1250,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 sender
                     .send(Err(Status::permission_denied("Not Follower or Learner. ")))
                     .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
+                        error!("Failed to send: {e:?}");
+                        NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
 
                 return Err(ConsensusError::RoleViolation {
@@ -1266,98 +1263,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     ),
                 }
                 .into());
-            }
-
-            RaftEvent::CreateSnapshotEvent => {
-                // Prevent duplicate snapshot creation
-                if self.snapshot_in_progress.load(std::sync::atomic::Ordering::Acquire) {
-                    info!("Snapshot creation already in progress. Skipping duplicate request.");
-                    return Ok(());
-                }
-
-                self.snapshot_in_progress.store(true, std::sync::atomic::Ordering::Release);
-                let state_machine_handler = ctx.state_machine_handler().clone();
-
-                // Use spawn to perform snapshot creation in the background
-                tokio::spawn(async move {
-                    let result = state_machine_handler.create_snapshot().await;
-                    info!("SnapshotCreated event will be processed in another event thread");
-                    if let Err(e) =
-                        send_replay_raft_event(&role_tx, RaftEvent::SnapshotCreated(result))
-                    {
-                        error!("Failed to send snapshot creation result: {}", e);
-                    }
-                });
-            }
-
-            RaftEvent::SnapshotCreated(result) => {
-                self.snapshot_in_progress.store(false, Ordering::SeqCst);
-
-                match result {
-                    Err(e) => {
-                        error!(%e, "State machine snapshot creation failed");
-                    }
-                    Ok((
-                        SnapshotMetadata {
-                            last_included: last_included_option,
-                            checksum: _,
-                        },
-                        _final_path,
-                    )) => {
-                        info!("Initiating log purge after snapshot creation");
-
-                        if let Some(last_included) = last_included_option {
-                            // ----------------------
-                            // Phase 1: Schedule log purge if possible
-                            // ----------------------
-                            trace!("Phase 1: Schedule log purge if possible");
-                            if self.can_purge_logs(self.last_purged_index, last_included) {
-                                trace!(?last_included, "Phase 1: Scheduling log purge");
-                                self.scheduled_purge_upto(last_included);
-                            }
-
-                            // ----------------------
-                            // Phase 2: Execute local purge
-                            // ----------------------
-                            // Per Raft §7: Leader purges independently without peer coordination
-                            trace!("Phase 2: Execute scheduled purge task");
-                            debug!(?last_included, "Execute scheduled purge task");
-                            if let Some(scheduled) = self.scheduled_purge_upto {
-                                let purge_executor = ctx.purge_executor();
-                                match purge_executor.execute_purge(scheduled).await {
-                                    Ok(_) => {
-                                        if let Err(e) = send_replay_raft_event(
-                                            &role_tx,
-                                            RaftEvent::LogPurgeCompleted(scheduled),
-                                        ) {
-                                            error!(%e, "Failed to notify purge completion");
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!(?e, ?scheduled, "Log purge execution failed");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            RaftEvent::LogPurgeCompleted(purged_id) => {
-                // Ensure we don't regress the purge index
-                if self.last_purged_index.map_or(true, |current| purged_id.index > current.index) {
-                    debug!(
-                        ?purged_id,
-                        "Updating last purged index after successful execution"
-                    );
-                    self.last_purged_index = Some(purged_id);
-                } else {
-                    warn!(
-                        ?purged_id,
-                        ?self.last_purged_index,
-                        "Received outdated purge completion, ignoring"
-                    );
-                }
             }
 
             RaftEvent::JoinCluster(join_request, sender) => {
@@ -1375,9 +1280,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         term: my_term,
                     };
                     sender.send(Ok(response)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
+                        error!("Failed to send: {e:?}");
+                        NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
                     return Ok(());
                 } else {
@@ -1426,80 +1330,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
                     );
                     // chunk_tx dropped
-                }
-            }
-            RaftEvent::PromoteReadyLearners => {
-                // SAFETY: Called from main event loop, no reentrancy issues
-                info!(
-                    "[Leader {}] ⚡ PromoteReadyLearners event received, pending_promotions: {:?}",
-                    self.node_id(),
-                    self.pending_promotions.iter().map(|p| p.node_id).collect::<Vec<_>>()
-                );
-                self.process_pending_promotions(ctx, &role_tx).await?;
-            }
-
-            RaftEvent::MembershipApplied => {
-                // Save old membership for comparison
-                let old_replication_targets = self.cluster_metadata.replication_targets.clone();
-
-                // Refresh cluster metadata cache after membership change is applied
-                debug!("Refreshing cluster metadata cache after membership change");
-                if let Err(e) = self.update_cluster_metadata(&ctx.membership()).await {
-                    warn!("Failed to update cluster metadata: {:?}", e);
-                }
-
-                // CRITICAL FIX #218: Initialize replication state for newly added peers
-                // Per Raft protocol: When new members join, Leader must initialize their next_index
-                let newly_added: Vec<u32> = self
-                    .cluster_metadata
-                    .replication_targets
-                    .iter()
-                    .filter(|new_peer| {
-                        !old_replication_targets.iter().any(|old_peer| old_peer.id == new_peer.id)
-                    })
-                    .map(|peer| peer.id)
-                    .collect();
-
-                if !newly_added.is_empty() {
-                    debug!(
-                        "Initializing replication state for {} new peer(s): {:?}",
-                        newly_added.len(),
-                        newly_added
-                    );
-                    let last_entry_id = ctx.raft_log().last_entry_id();
-                    if let Err(e) = self
-                        .init_peers_next_index_and_match_index(last_entry_id, newly_added.clone())
-                    {
-                        warn!("Failed to initialize next_index for new peers: {:?}", e);
-                        // Non-fatal: next_index will use default value of 1,
-                        // replication will still work but may be less efficient
-                    } else {
-                        trace!(
-                            "[MEMBERSHIP-APPLIED-LEADER] Successfully initialized next_index/match_index for peers: {:?}",
-                            newly_added
-                        );
-                    }
-                } else {
-                    trace!("[MEMBERSHIP-APPLIED-LEADER] No newly added peers detected");
-                }
-
-                // Drop workers for peers that were removed from membership.
-                // Dropping ReplicationWorkerHandle closes task_tx → worker exits naturally.
-                let removed: Vec<u32> = old_replication_targets
-                    .iter()
-                    .filter(|old_peer| {
-                        !self
-                            .cluster_metadata
-                            .replication_targets
-                            .iter()
-                            .any(|new_peer| new_peer.id == old_peer.id)
-                    })
-                    .map(|peer| peer.id)
-                    .collect();
-                for removed_id in &removed {
-                    if self.replication_workers.remove(removed_id).is_some() {
-                        debug!("Dropped replication worker for removed peer {}", removed_id);
-                    }
                 }
             }
 
@@ -1564,26 +1394,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 return Err(crate::Error::Fatal(format!(
                     "Fatal error from {source}: {error}"
                 )));
-            }
-
-            RaftEvent::StepDownSelfRemoved => {
-                // Only Leader can propose configuration changes and remove itself
-                // Per Raft protocol: Leader steps down immediately after self-removal
-                warn!(
-                    "[Leader-{}] Removed from cluster membership, stepping down to Follower",
-                    self.node_id()
-                );
-                role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-                    error!(
-                        "[Leader-{}] Failed to send BecomeFollower after self-removal: {:?}",
-                        self.node_id(),
-                        e
-                    );
-                    NetworkError::SingalSendFailed(format!(
-                        "BecomeFollower after self-removal: {e:?}"
-                    ))
-                })?;
-                return Ok(());
             }
         }
 
@@ -1920,6 +1730,345 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Advance the purge boundary after log entries up to `purged_id` are removed.
+    /// Leader only: updates `last_purged_index`.
+    /// Default: no-op + warn (unexpected on non-leader).
+    fn handle_log_purge_completed(
+        &mut self,
+        purged_id: LogId,
+    ) -> Result<()> {
+        // Ensure we don't regress the purge index
+        if self.last_purged_index.is_none_or(|current| purged_id.index > current.index) {
+            debug!(
+                ?purged_id,
+                "Updating last purged index after successful execution"
+            );
+            self.last_purged_index = Some(purged_id);
+        } else {
+            warn!(
+                ?purged_id,
+                ?self.last_purged_index,
+                "Received outdated purge completion, ignoring"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Trigger an independent snapshot on this role (Raft §7 — each server snapshots
+    /// independently). Called when `should_snapshot()` returns true after SM apply.
+    /// Default: no-op. Candidate overrides to return `RoleViolation`.
+    async fn handle_create_snapshot(
+        &mut self,
+        ctx: &RaftContext<Self::T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // Prevent duplicate snapshot creation
+        if self.snapshot_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+            info!("Snapshot creation already in progress. Skipping duplicate request.");
+            return Ok(());
+        }
+
+        self.snapshot_in_progress.store(true, std::sync::atomic::Ordering::Release);
+        let state_machine_handler = ctx.state_machine_handler().clone();
+
+        // Use spawn to perform snapshot creation in the background
+        let role_tx = role_tx.clone();
+        tokio::spawn(async move {
+            let result = state_machine_handler.create_snapshot().await;
+            info!("SnapshotCreated event will be processed in another event thread");
+            if let Err(e) = role_tx.send(RoleEvent::SnapshotCreated(result)) {
+                error!("Failed to send snapshot creation result: {e:?}");
+            }
+        });
+
+        Ok(())
+    }
+    /// Process the completed snapshot result (success or error).
+    /// Leader: schedules log purge up to `last_included`.
+    /// Follower/Learner: updates local snapshot path.
+    /// Default: no-op. Candidate overrides to return `RoleViolation`.
+    async fn handle_snapshot_created(
+        &mut self,
+        result: crate::Result<(SnapshotMetadata, std::path::PathBuf)>,
+        ctx: &RaftContext<Self::T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        self.snapshot_in_progress.store(false, Ordering::SeqCst);
+
+        match result {
+            Err(e) => {
+                error!(%e, "State machine snapshot creation failed");
+            }
+            Ok((
+                SnapshotMetadata {
+                    last_included: last_included_option,
+                    checksum: _,
+                },
+                _final_path,
+            )) => {
+                info!("Initiating log purge after snapshot creation");
+
+                if let Some(last_included) = last_included_option {
+                    // ----------------------
+                    // Phase 1: Schedule log purge if possible
+                    // ----------------------
+                    trace!("Phase 1: Schedule log purge if possible");
+                    if self.can_purge_logs(self.last_purged_index, last_included) {
+                        trace!(?last_included, "Phase 1: Scheduling log purge");
+                        self.scheduled_purge_upto(last_included);
+                    }
+
+                    // ----------------------
+                    // Phase 2: Execute local purge
+                    // ----------------------
+                    // Per Raft §7: Leader purges independently without peer coordination
+                    trace!("Phase 2: Execute scheduled purge task");
+                    debug!(?last_included, "Execute scheduled purge task");
+                    if let Some(scheduled) = self.scheduled_purge_upto {
+                        let purge_executor = ctx.purge_executor();
+                        match purge_executor.execute_purge(scheduled).await {
+                            Ok(_) => {
+                                if let Err(e) =
+                                    role_tx.send(RoleEvent::LogPurgeCompleted(scheduled))
+                                {
+                                    error!(%e, "Failed to notify purge completion");
+                                }
+                            }
+                            Err(e) => {
+                                error!(?e, ?scheduled, "Log purge execution failed");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check pending learners for promotion eligibility after a membership change.
+    /// Leader only: evaluates `pending_promotions`, proposes config change if ready.
+    /// Default: no-op + warn (unexpected on non-leader).
+    async fn handle_promote_ready_learners(
+        &mut self,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // SAFETY: Called from main event loop, no reentrancy issues
+        info!(
+            "[Leader {}] PromoteReadyLearners event received, pending_promotions: {:?}",
+            self.node_id(),
+            self.pending_promotions.iter().map(|p| p.node_id).collect::<Vec<_>>()
+        );
+
+        // Get promotion configuration from the node config
+        let config = &ctx.node_config().raft.membership.promotion;
+
+        // Step 1: Remove stale entries (older than configured threshold)
+        let now = Instant::now();
+        self.pending_promotions.retain(|entry| {
+            now.saturating_duration_since(entry.ready_since) <= config.stale_learner_threshold
+        });
+        // Refresh deadline after potential removals
+        self.refresh_stale_deadline(config.stale_learner_threshold);
+
+        if self.pending_promotions.is_empty() {
+            debug!(
+                "[Leader {}] ❌ pending_promotions is empty after stale cleanup",
+                self.node_id()
+            );
+            return Ok(());
+        }
+
+        // Step 2: Get current voter count (including self as leader)
+        let membership = ctx.membership();
+        let current_voters = membership.voters().await.len() + 1; // +1 for self (leader)
+        debug!(
+            "[Leader {}] 📊 current_voters: {}, pending: {}",
+            self.node_id(),
+            current_voters,
+            self.pending_promotions.len()
+        );
+
+        // Step 3: Calculate the maximum batch size that preserves an odd total
+        let max_batch_size =
+            calculate_safe_batch_size(current_voters, self.pending_promotions.len());
+        debug!(
+            "[Leader {}] 🎯 max_batch_size: {}",
+            self.node_id(),
+            max_batch_size
+        );
+
+        if max_batch_size == 0 {
+            // Nothing we can safely promote now
+            debug!(
+                "[Leader {}] max_batch_size is 0, cannot promote now",
+                self.node_id()
+            );
+            return Ok(());
+        }
+
+        // Step 4: Extract the batch from the queue (FIFO order)
+        let promotion_entries = self.drain_batch(max_batch_size);
+        let promotion_node_ids = promotion_entries.iter().map(|e| e.node_id).collect::<Vec<_>>();
+
+        // Step 5: Execute batch promotion
+        if !promotion_node_ids.is_empty() {
+            // Log the batch promotion
+            info!(
+                "Promoting learner batch of {} nodes: {:?} (total voters: {} -> {})",
+                promotion_node_ids.len(),
+                promotion_node_ids,
+                current_voters,
+                current_voters + promotion_node_ids.len()
+            );
+
+            // Attempt promotion and restore batch on failure
+            let result = self.safe_batch_promote(promotion_node_ids.clone(), ctx, role_tx).await;
+
+            if let Err(e) = result {
+                // Restore entries to the front of the queue in reverse order
+                for entry in promotion_entries.into_iter().rev() {
+                    self.pending_promotions.push_front(entry);
+                }
+                // Refresh deadline to account for restored entries at front
+                let threshold = config.stale_learner_threshold;
+                self.refresh_stale_deadline(threshold);
+                return Err(e);
+            }
+
+            // Refresh stale deadline to reflect the new queue front after successful drain
+            let threshold = config.stale_learner_threshold;
+            self.refresh_stale_deadline(threshold);
+
+            info!(
+                "Promotion successful. Cluster members: {:?}",
+                membership.voters().await
+            );
+        }
+
+        trace!(
+            ?self.pending_promotions,
+            "Step 6: Reschedule if any pending promotions remain"
+        );
+        // Step 6: Reschedule if any pending promotions remain
+        if !self.pending_promotions.is_empty() {
+            debug!(
+                "[Leader {}] Re-sending PromoteReadyLearners for remaining pending: {:?}",
+                self.node_id(),
+                self.pending_promotions.iter().map(|p| p.node_id).collect::<Vec<_>>()
+            );
+            // Important: Re-send the event to trigger next cycle
+            role_tx.send(RoleEvent::PromoteReadyLearners).map_err(|e| {
+                error!("Send PromoteReadyLearners event failed: {e:?}");
+                NetworkError::SingalSendFailed(format!("{:?}", e))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Membership config change applied to state — refresh any role-local derived state.
+    /// Leader: invalidates `cluster_metadata` cache.
+    /// Learner: checks if promoted to Voter; emits `BecomeFollower` if so.
+    /// Default: no-op (Follower/Candidate have no derived state to refresh).
+    async fn handle_membership_applied(
+        &mut self,
+        ctx: &RaftContext<Self::T>,
+        _role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // Save old membership for comparison
+        let old_replication_targets = self.cluster_metadata.replication_targets.clone();
+
+        // Refresh cluster metadata cache after membership change is applied
+        debug!("Refreshing cluster metadata cache after membership change");
+        if let Err(e) = self.update_cluster_metadata(&ctx.membership()).await {
+            warn!("Failed to update cluster metadata: {:?}", e);
+        }
+
+        // CRITICAL FIX #218: Initialize replication state for newly added peers
+        // Per Raft protocol: When new members join, Leader must initialize their next_index
+        let newly_added: Vec<u32> = self
+            .cluster_metadata
+            .replication_targets
+            .iter()
+            .filter(|new_peer| {
+                !old_replication_targets.iter().any(|old_peer| old_peer.id == new_peer.id)
+            })
+            .map(|peer| peer.id)
+            .collect();
+
+        if !newly_added.is_empty() {
+            debug!(
+                "Initializing replication state for {} new peer(s): {:?}",
+                newly_added.len(),
+                newly_added
+            );
+            let last_entry_id = ctx.raft_log().last_entry_id();
+            if let Err(e) =
+                self.init_peers_next_index_and_match_index(last_entry_id, newly_added.clone())
+            {
+                warn!("Failed to initialize next_index for new peers: {:?}", e);
+                // Non-fatal: next_index will use default value of 1,
+                // replication will still work but may be less efficient
+            } else {
+                trace!(
+                    "[MEMBERSHIP-APPLIED-LEADER] Successfully initialized next_index/match_index for peers: {:?}",
+                    newly_added
+                );
+            }
+        } else {
+            trace!("[MEMBERSHIP-APPLIED-LEADER] No newly added peers detected");
+        }
+
+        // Drop workers for peers that were removed from membership.
+        // Dropping ReplicationWorkerHandle closes task_tx → worker exits naturally.
+        let removed: Vec<u32> = old_replication_targets
+            .iter()
+            .filter(|old_peer| {
+                !self
+                    .cluster_metadata
+                    .replication_targets
+                    .iter()
+                    .any(|new_peer| new_peer.id == old_peer.id)
+            })
+            .map(|peer| peer.id)
+            .collect();
+
+        for removed_id in &removed {
+            if self.replication_workers.remove(removed_id).is_some() {
+                debug!("Dropped replication worker for removed peer {}", removed_id);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Node was removed from cluster membership; step down immediately per Raft protocol.
+    /// Leader: emits `BecomeFollower`. Non-leader: unreachable in practice.
+    /// Default: warn + Ok(()) (defensive; only Leader should receive this).
+    fn handle_self_removed(
+        &mut self,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        // Only Leader can propose configuration changes and remove itself
+        // Per Raft protocol: Leader steps down immediately after self-removal
+        warn!(
+            "[Leader-{}] Removed from cluster membership, stepping down to Follower",
+            self.node_id()
+        );
+        role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
+            error!(
+                "[Leader-{}] Failed to send BecomeFollower after self-removal: {:?}",
+                self.node_id(),
+                e
+            );
+            NetworkError::SingalSendFailed(format!("BecomeFollower after self-removal: {e:?}"))
+        })?;
 
         Ok(())
     }
@@ -2800,17 +2949,12 @@ impl<T: TypeConfig> LeaderState<T> {
             self.refresh_stale_deadline(threshold);
         }
 
-        role_tx
-            .send(RoleEvent::ReprocessEvent(Box::new(
-                RaftEvent::PromoteReadyLearners,
+        role_tx.send(RoleEvent::PromoteReadyLearners).map_err(|e| {
+            error!("Failed to send PromoteReadyLearners: {e:?}");
+            Error::System(SystemError::Network(NetworkError::SingalSendFailed(
+                e.to_string(),
             )))
-            .map_err(|e| {
-                let error_str = format!("{e:?}");
-                error!("Failed to send PromoteReadyLearners: {}", error_str);
-                Error::System(SystemError::Network(NetworkError::SingalSendFailed(
-                    error_str,
-                )))
-            })?;
+        })?;
 
         Ok(())
     }
@@ -2915,9 +3059,8 @@ impl<T: TypeConfig> LeaderState<T> {
             "Leader is going to step down as Follower..."
         );
         role_tx.send(RoleEvent::BecomeFollower(new_leader_id)).map_err(|e| {
-            let error_str = format!("{e:?}");
-            error!("Failed to send: {}", error_str);
-            NetworkError::SingalSendFailed(error_str)
+            error!("Failed to send: {e:?}");
+            NetworkError::SingalSendFailed(format!("{:?}", e))
         })?;
 
         Ok(())
@@ -3224,130 +3367,6 @@ impl<T: TypeConfig> LeaderState<T> {
                 Err(_) => warn!("Snapshot result channel closed unexpectedly"),
             }
         });
-
-        Ok(())
-    }
-
-    /// Processes all pending promotions while respecting the cluster's odd-node constraint
-    pub async fn process_pending_promotions(
-        &mut self,
-        ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-    ) -> Result<()> {
-        debug!(
-            "[Leader {}] 🔄 process_pending_promotions called, pending: {:?}",
-            self.node_id(),
-            self.pending_promotions.iter().map(|p| p.node_id).collect::<Vec<_>>()
-        );
-
-        // Get promotion configuration from the node config
-        let config = &ctx.node_config().raft.membership.promotion;
-
-        // Step 1: Remove stale entries (older than configured threshold)
-        let now = Instant::now();
-        self.pending_promotions.retain(|entry| {
-            now.saturating_duration_since(entry.ready_since) <= config.stale_learner_threshold
-        });
-        // Refresh deadline after potential removals
-        self.refresh_stale_deadline(config.stale_learner_threshold);
-
-        if self.pending_promotions.is_empty() {
-            debug!(
-                "[Leader {}] ❌ pending_promotions is empty after stale cleanup",
-                self.node_id()
-            );
-            return Ok(());
-        }
-
-        // Step 2: Get current voter count (including self as leader)
-        let membership = ctx.membership();
-        let current_voters = membership.voters().await.len() + 1; // +1 for self (leader)
-        debug!(
-            "[Leader {}] 📊 current_voters: {}, pending: {}",
-            self.node_id(),
-            current_voters,
-            self.pending_promotions.len()
-        );
-
-        // Step 3: Calculate the maximum batch size that preserves an odd total
-        let max_batch_size =
-            calculate_safe_batch_size(current_voters, self.pending_promotions.len());
-        debug!(
-            "[Leader {}] 🎯 max_batch_size: {}",
-            self.node_id(),
-            max_batch_size
-        );
-
-        if max_batch_size == 0 {
-            // Nothing we can safely promote now
-            debug!(
-                "[Leader {}] ⚠️ max_batch_size is 0, cannot promote now",
-                self.node_id()
-            );
-            return Ok(());
-        }
-
-        // Step 4: Extract the batch from the queue (FIFO order)
-        let promotion_entries = self.drain_batch(max_batch_size);
-        let promotion_node_ids = promotion_entries.iter().map(|e| e.node_id).collect::<Vec<_>>();
-
-        // Step 5: Execute batch promotion
-        if !promotion_node_ids.is_empty() {
-            // Log the batch promotion
-            info!(
-                "Promoting learner batch of {} nodes: {:?} (total voters: {} -> {})",
-                promotion_node_ids.len(),
-                promotion_node_ids,
-                current_voters,
-                current_voters + promotion_node_ids.len()
-            );
-
-            // Attempt promotion and restore batch on failure
-            let result = self.safe_batch_promote(promotion_node_ids.clone(), ctx, role_tx).await;
-
-            if let Err(e) = result {
-                // Restore entries to the front of the queue in reverse order
-                for entry in promotion_entries.into_iter().rev() {
-                    self.pending_promotions.push_front(entry);
-                }
-                // Refresh deadline to account for restored entries at front
-                let threshold = config.stale_learner_threshold;
-                self.refresh_stale_deadline(threshold);
-                return Err(e);
-            }
-
-            // Refresh stale deadline to reflect the new queue front after successful drain
-            let threshold = config.stale_learner_threshold;
-            self.refresh_stale_deadline(threshold);
-
-            info!(
-                "Promotion successful. Cluster members: {:?}",
-                membership.voters().await
-            );
-        }
-
-        trace!(
-            ?self.pending_promotions,
-            "Step 6: Reschedule if any pending promotions remain"
-        );
-        // Step 6: Reschedule if any pending promotions remain
-        if !self.pending_promotions.is_empty() {
-            debug!(
-                "[Leader {}] Re-sending PromoteReadyLearners for remaining pending: {:?}",
-                self.node_id(),
-                self.pending_promotions.iter().map(|p| p.node_id).collect::<Vec<_>>()
-            );
-            // Important: Re-send the event to trigger next cycle
-            role_tx
-                .send(RoleEvent::ReprocessEvent(Box::new(
-                    RaftEvent::PromoteReadyLearners,
-                )))
-                .map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Send PromoteReadyLearners event failed: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
-        }
 
         Ok(())
     }

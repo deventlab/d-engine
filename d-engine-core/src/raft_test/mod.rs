@@ -98,6 +98,25 @@
 //! #### B7. ReprocessEvent Event
 //! - **B7.1**: Event re-queued to event_rx for reprocessing
 //!
+//! #### B8. CreateSnapshotEvent (migrated from P4 event_tx → P2 role_tx)
+//! - **B8.1**: Follower — dispatch returns Ok, snapshot task spawned in background
+//! - **B8.2**: Candidate — RoleViolation is non-fatal, swallowed by dispatch layer
+//!
+//! #### B9. SnapshotCreated (migrated from P4 event_tx → P2 role_tx)
+//! - **B9.1**: Follower + Err payload — dispatch returns Ok (non-fatal error swallowed)
+//!
+//! #### B10. StepDownSelfRemoved (migrated from P4 event_tx → P2 role_tx)
+//! - **B10.1**: Leader — handle_self_removed enqueues BecomeFollower; role transitions to Follower
+//!
+//! #### B11. MembershipApplied (migrated from P4 event_tx → P2 role_tx)
+//! - **B11.1**: Follower — RoleViolation swallowed; leader-specific logic in membership_change_test
+//!
+//! #### B12. PromoteReadyLearners (migrated from P4 event_tx → P2 role_tx)
+//! - **B12.1**: Follower — RoleViolation swallowed; leader-specific logic in membership_change_test
+//!
+//! #### B13. LogPurgeCompleted (migrated from P4 event_tx → P2 role_tx)
+//! - **B13.1**: Follower — dispatch returns Ok, last_purged_index updated
+//!
 //! ### C. Leader Initialization Tests (Peer State Setup)
 //!
 //! These tests verify that newly elected leaders correctly initialize peer state

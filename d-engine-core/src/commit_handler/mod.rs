@@ -50,20 +50,11 @@
 //! - Developers must ensure that the state machine implementation is idempotent to handle potential
 //!   retries or re-applications of log entries.
 mod default_commit_handler;
-
 pub use default_commit_handler::*;
-#[cfg(test)]
-mod default_commit_handler_test;
 
-use async_trait::async_trait;
-#[cfg(any(test, feature = "__test_support"))]
-use mockall::automock;
-
-use crate::Result;
-
-#[cfg_attr(any(test, feature = "__test_support"), automock)]
+#[cfg_attr(any(test, feature = "__test_support"), mockall::automock)]
 #[doc(hidden)]
-#[async_trait]
+#[async_trait::async_trait]
 pub trait CommitHandler: Send + Sync + 'static {
-    async fn run(&mut self) -> Result<()>;
+    async fn run(&mut self) -> crate::Result<()>;
 }

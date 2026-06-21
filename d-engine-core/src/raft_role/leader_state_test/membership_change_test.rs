@@ -898,7 +898,7 @@ mod check_learner_progress_tests {
 
     use crate::MockMembership;
     use crate::RaftContext;
-    use crate::event::{RaftEvent, RoleEvent};
+    use crate::event::RoleEvent;
     use crate::raft_role::leader_state::{LeaderState, PendingPromotion};
     use crate::raft_role::role_state::RaftRoleState;
     use crate::test_utils::mock::MockTypeConfig;
@@ -1176,9 +1176,7 @@ mod check_learner_progress_tests {
         // Should receive exactly 1 event
         let mut event_count = 0;
         while let Ok(event) = role_rx.try_recv() {
-            if let RoleEvent::ReprocessEvent(inner) = event
-                && matches!(*inner, RaftEvent::PromoteReadyLearners)
-            {
+            if matches!(event, RoleEvent::PromoteReadyLearners) {
                 event_count += 1;
             }
         }
@@ -1208,7 +1206,7 @@ mod pending_promotion_tests {
     use crate::MockRaftLog;
     use crate::MockReplicationCore;
     use crate::RaftContext;
-    use crate::event::{RaftEvent, RoleEvent};
+    use crate::event::RoleEvent;
     use crate::raft_role::leader_state::{
         LeaderState, PendingPromotion, calculate_safe_batch_size,
     };
@@ -1348,7 +1346,7 @@ mod pending_promotion_tests {
         // Result is Err(Timeout): quorum cannot complete without a running Raft loop
         let _ = fixture
             .leader_state
-            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .handle_promote_ready_learners(&fixture.raft_context, &fixture.role_tx)
             .await;
 
         // Verify the correct BatchPromote config was submitted with all 3 nodes
@@ -1476,7 +1474,7 @@ mod pending_promotion_tests {
 
         let _ = fixture
             .leader_state
-            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .handle_promote_ready_learners(&fixture.raft_context, &fixture.role_tx)
             .await;
 
         // Verify FIFO: node 1 (older) was submitted, not node 2
@@ -1518,7 +1516,7 @@ mod pending_promotion_tests {
 
         let result = fixture
             .leader_state
-            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .handle_promote_ready_learners(&fixture.raft_context, &fixture.role_tx)
             .await;
 
         // Fire-and-forget: 9 submitted successfully, returns Ok
@@ -1531,8 +1529,7 @@ mod pending_promotion_tests {
         let reschedule_count = {
             let mut count = 0;
             while let Ok(event) = fixture.role_rx.try_recv() {
-                if matches!(event, RoleEvent::ReprocessEvent(ref inner) if matches!(**inner, RaftEvent::PromoteReadyLearners))
-                {
+                if matches!(event, RoleEvent::PromoteReadyLearners) {
                     count += 1;
                 }
             }
@@ -1561,7 +1558,7 @@ mod pending_promotion_tests {
             (1..=2).map(|id| PendingPromotion::new(id, Instant::now())).collect();
         let result = fixture
             .leader_state
-            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .handle_promote_ready_learners(&fixture.raft_context, &fixture.role_tx)
             .await;
 
         // Fire-and-forget: 1 submitted, returns Ok
@@ -1585,7 +1582,7 @@ mod pending_promotion_tests {
         fixture.leader_state.update_current_term(2);
         let result = fixture
             .leader_state
-            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .handle_promote_ready_learners(&fixture.raft_context, &fixture.role_tx)
             .await;
 
         // Fire-and-forget: term change does not prevent submission

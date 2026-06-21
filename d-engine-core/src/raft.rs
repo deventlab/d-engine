@@ -540,9 +540,8 @@ where
                 if let Err(e) = self.role.initiate_noop_commit(&self.ctx, &self.role_tx).await {
                     warn!(?e, "initiate_noop_commit failed — stepping down");
                     self.role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
+                        error!("Failed to send: {:?}", e);
+                        NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
                 }
 
@@ -580,9 +579,8 @@ where
                         }
                         Ok(other) => {
                             self.role_tx.send(other).map_err(|e| {
-                                let error_str = format!("{e:?}");
-                                error!("Failed to resend role event: {}", error_str);
-                                crate::Error::Fatal(error_str)
+                                error!("Failed to resend role event: {:?}", e);
+                                crate::Error::Fatal(e.to_string())
                             })?;
                             break;
                         }
@@ -597,28 +595,20 @@ where
 
                 self.notify_new_commit(new_commit_data);
             }
-
             RoleEvent::LeaderDiscovered(leader_id, term) => {
                 debug!("LeaderDiscovered: leader_id={}, term={}", leader_id, term);
                 // Notify leader change listeners - no state transition
                 // Note: mpsc channels do not deduplicate; consumers handle dedup if needed
                 self.notify_leader_change(Some(leader_id), term);
             }
-
             RoleEvent::ReprocessEvent(raft_event) => {
                 info!("Replay the RaftEvent: {:?}", &raft_event);
-                self.event_tx.send(*raft_event).await.map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
+                self.buffered_raft_event.push_front(*raft_event);
             }
-
             RoleEvent::LogFlushed { durable_index } => {
                 debug!("LogFlushed: durable_index={}", durable_index);
                 self.role.handle_log_flushed(durable_index, &self.ctx, &self.role_tx).await;
             }
-
             RoleEvent::AppendResult {
                 follower_id,
                 result,
@@ -632,19 +622,16 @@ where
                     error!("handle_append_result failed: {:?}", e);
                 }
             }
-
             RoleEvent::NoopCommitted { term } => {
                 debug!("NoopCommitted: term={}", term);
                 // on_noop_committed already called directly in drain_commit_actions.
                 // Only notify leader change listeners here (requires Raft<T> access).
                 self.notify_leader_change(Some(self.node_id), term);
             }
-
             RoleEvent::FatalError { source, error } => {
                 error!(%self.node_id, %source, %error, "Fatal error from SM worker — shutting down");
                 return Err(crate::Error::Fatal(format!("{source}: {error}")));
             }
-
             RoleEvent::ApplyCompleted {
                 last_index,
                 results,
@@ -662,12 +649,10 @@ where
                     warn!(%self.node_id, ?e, "Non-fatal error in ApplyCompleted handler");
                 }
             }
-
             RoleEvent::PeerStreamError { peer_id } => {
                 debug!(%peer_id, "PeerStreamError: bidi stream disconnected, resetting next_index");
                 self.role.handle_peer_stream_error(peer_id);
             }
-
             RoleEvent::ZombieDetected(node_id) => {
                 debug!(%node_id, "ZombieDetected: forwarding to leader for BatchRemove");
                 if let Err(e) =
@@ -676,7 +661,6 @@ where
                     error!(%node_id, ?e, "handle_zombie_detected failed");
                 }
             }
-
             RoleEvent::SnapshotPushCompleted { peer_id, success } => {
                 debug!(%peer_id, %success, "SnapshotPushCompleted");
                 if success {
@@ -693,6 +677,59 @@ where
                 // failures reach the configured threshold (leader protection highest priority).
                 let policy = &self.ctx.node_config.retry.install_snapshot;
                 self.role.handle_snapshot_push_completed(peer_id, success, policy, self.node_id);
+            }
+            RoleEvent::CreateSnapshotEvent => {
+                if let Err(e) = self.role.handle_create_snapshot(&self.ctx, &self.role_tx).await {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_create_snapshot failed");
+                }
+            }
+            RoleEvent::SnapshotCreated(result) => {
+                if let Err(e) =
+                    self.role.handle_snapshot_created(result, &self.ctx, &self.role_tx).await
+                {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_snapshot_created failed");
+                }
+            }
+            RoleEvent::StepDownSelfRemoved => {
+                if let Err(e) = self.role.handle_self_removed(&self.role_tx) {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_self_removed failed");
+                }
+            }
+            RoleEvent::MembershipApplied => {
+                if let Err(e) = self.role.handle_membership_applied(&self.ctx, &self.role_tx).await
+                {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_membership_applied failed");
+                }
+            }
+            RoleEvent::PromoteReadyLearners => {
+                if let Err(e) =
+                    self.role.handle_promote_ready_learners(&self.ctx, &self.role_tx).await
+                {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_promote_ready_learners failed");
+                }
+            }
+            RoleEvent::LogPurgeCompleted(log_id) => {
+                if let Err(e) = self.role.handle_log_purge_completed(log_id) {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_log_purge_completed failed");
+                }
             }
         };
 

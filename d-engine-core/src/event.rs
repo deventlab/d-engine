@@ -105,6 +105,30 @@ pub enum RoleEvent {
         results: Vec<ApplyResult>,
     },
 
+    /// Trigger state machine snapshot creation — routed via P2 (unbounded role_tx) to
+    /// prevent deadlock when P4 event_tx is saturated by inbound RPCs.
+    CreateSnapshotEvent,
+
+    /// Snapshot file is ready; contains metadata and final path.
+    /// Leader: schedules log purge. Follower/Learner: updates snapshot state.
+    SnapshotCreated(Result<(SnapshotMetadata, std::path::PathBuf)>),
+
+    /// Node removed itself from cluster membership
+    /// Leader must step down immediately after self-removal per Raft protocol
+    StepDownSelfRemoved,
+
+    /// Membership change has been applied to state
+    /// Leader should refresh cluster metadata cache
+    MembershipApplied,
+
+    /// Check pending learners for promotion eligibility after a membership change or heartbeat.
+    /// Re-queued via role_tx until all pending promotions are resolved.
+    PromoteReadyLearners,
+
+    /// Log entries up to `LogId` have been purged from storage after snapshot creation.
+    /// Leader updates `last_purged_index` to track the safe purge boundary.
+    LogPurgeCompleted(LogId),
+
     /// Bidi replication stream to a follower broke (network disconnect or error).
     /// Emitted by the replication worker's recv task when it gets an Err from the stream.
     /// Raft loop resets `next_index[peer] = match_index[peer] + 1` so that the next
@@ -171,23 +195,6 @@ pub enum RaftEvent {
         MaybeCloneOneshotSender<std::result::Result<LeaderDiscoveryResponse, Status>>,
     ),
 
-    CreateSnapshotEvent,
-
-    LogPurgeCompleted(LogId),
-
-    SnapshotCreated(Result<(SnapshotMetadata, std::path::PathBuf)>),
-
-    // Lightweight promotion trigger
-    PromoteReadyLearners,
-
-    /// Node removed itself from cluster membership
-    /// Leader must step down immediately after self-removal per Raft protocol
-    StepDownSelfRemoved,
-
-    /// Membership change has been applied to state
-    /// Leader should refresh cluster metadata cache
-    MembershipApplied,
-
     /// State machine apply failed - node must shutdown.
     /// Conservative: treat all SM errors as fatal (future: distinguish fatal vs application errors).
     FatalError {
@@ -251,19 +258,6 @@ pub(crate) fn raft_event_to_test_event(event: &RaftEvent) -> TestEvent {
         RaftEvent::StreamSnapshot(_, _, _) => TestEvent::StreamSnapshot,
         RaftEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
         RaftEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
-        RaftEvent::CreateSnapshotEvent => TestEvent::CreateSnapshotEvent,
-        RaftEvent::SnapshotCreated(_result) => TestEvent::SnapshotCreated,
-        RaftEvent::LogPurgeCompleted(id) => TestEvent::LogPurgeCompleted(*id),
-        RaftEvent::PromoteReadyLearners => TestEvent::PromoteReadyLearners,
-        RaftEvent::StepDownSelfRemoved => {
-            // StepDownSelfRemoved is handled at Raft level, not converted to TestEvent
-            // This is a control flow event, not a user-facing event
-            TestEvent::CreateSnapshotEvent // Placeholder - this event won't be emitted to tests
-        }
-        RaftEvent::MembershipApplied => {
-            // MembershipApplied is internal event for cache refresh
-            TestEvent::CreateSnapshotEvent // Placeholder
-        }
         RaftEvent::FatalError { source, error } => TestEvent::FatalError {
             source: source.clone(),
             error: error.clone(),

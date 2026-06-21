@@ -958,9 +958,7 @@ async fn test_step_down_self_removed_sends_become_follower() {
     let mut leader_state = LeaderState::<MockTypeConfig>::new(1, node_config);
 
     let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let result = leader_state
-        .handle_raft_event(RaftEvent::StepDownSelfRemoved, &raft_context, role_tx)
-        .await;
+    let result = leader_state.handle_self_removed(&role_tx);
 
     assert!(result.is_ok(), "StepDownSelfRemoved must return Ok");
 

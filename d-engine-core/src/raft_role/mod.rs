@@ -25,7 +25,9 @@ use std::sync::atomic::Ordering;
 
 use candidate_state::CandidateState;
 use d_engine_proto::client::ClientReadRequest;
+use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use follower_state::FollowerState;
 pub use leader_state::ClusterMetadata;
 use leader_state::LeaderState;
@@ -500,6 +502,73 @@ impl<T: TypeConfig> RaftRole<T> {
         role_tx: &mpsc::UnboundedSender<RoleEvent>,
     ) -> crate::Result<()> {
         self.state_mut().handle_append_result(follower_id, result, ctx, role_tx).await
+    }
+
+    /// Trigger an independent snapshot on this role (Raft §7 — each server snapshots
+    /// independently). Called when `should_snapshot()` returns true after SM apply.
+    /// Candidate: returns `RoleViolation` — transient state, defer to next stable role.
+    pub(crate) async fn handle_create_snapshot(
+        &mut self,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        self.state_mut().handle_create_snapshot(ctx, role_tx).await
+    }
+
+    /// Process the completed snapshot result (success or error).
+    /// Leader: schedules log purge up to `last_included`.
+    /// Follower/Learner: updates local snapshot path.
+    /// Candidate: returns `RoleViolation`.
+    pub(crate) async fn handle_snapshot_created(
+        &mut self,
+        result: crate::Result<(SnapshotMetadata, std::path::PathBuf)>,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        self.state_mut().handle_snapshot_created(result, ctx, role_tx).await
+    }
+
+    /// Advance the purge boundary after log entries up to `purged_id` are removed.
+    /// Leader only: updates `last_purged_index`.
+    /// Non-leader: no-op (unexpected; logs a warning).
+    pub(crate) fn handle_log_purge_completed(
+        &mut self,
+        purged_id: LogId,
+    ) -> Result<()> {
+        self.state_mut().handle_log_purge_completed(purged_id)
+    }
+
+    /// Check pending learners for promotion eligibility after a membership change.
+    /// Leader only: evaluates `pending_promotions`, proposes config change if ready.
+    /// Non-leader: no-op (logs a warning — unexpected in steady state).
+    pub(crate) async fn handle_promote_ready_learners(
+        &mut self,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        self.state_mut().handle_promote_ready_learners(ctx, role_tx).await
+    }
+
+    /// Node was removed from cluster membership; step down immediately per Raft protocol.
+    /// Leader: emits `BecomeFollower`. Non-leader: unreachable (only Leader proposes
+    /// self-removal via config change).
+    pub(crate) fn handle_self_removed(
+        &mut self,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        self.state_mut().handle_self_removed(role_tx)
+    }
+
+    /// Membership config change applied to state — refresh any role-local derived state.
+    /// Leader: invalidates `cluster_metadata` cache for hot-path reads.
+    /// Learner: checks if it was promoted to Voter; emits `BecomeFollower` if so.
+    /// Follower/Candidate: no-op.
+    pub(crate) async fn handle_membership_applied(
+        &mut self,
+        ctx: &RaftContext<T>,
+        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+    ) -> Result<()> {
+        self.state_mut().handle_membership_applied(ctx, role_tx).await
     }
 }
 
