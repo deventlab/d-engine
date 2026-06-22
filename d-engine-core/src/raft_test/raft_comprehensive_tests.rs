@@ -1225,6 +1225,113 @@ async fn test_log_purge_completed_dispatch_on_follower() {
     assert!(is_follower(raft.role.as_i32()));
 }
 
+/// B14 — SnapshotCreated dispatched to Candidate
+///
+/// Candidate has no snapshot state. The default handler returns RoleViolation (non-fatal).
+/// The dispatch layer swallows it and returns Ok — role is unchanged.
+///
+/// This guards against a regression where RoleViolation is reclassified as fatal,
+/// which would cause the Raft process to exit on a stale in-flight event.
+#[tokio::test]
+async fn test_snapshot_created_dispatch_on_candidate() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    assert!(is_candidate(raft.role.as_i32()));
+
+    let err_result = Err(crate::SnapshotError::OperationFailed("simulated".into()).into());
+    raft.handle_internal_event(InternalEvent::SnapshotCreated(err_result))
+        .await
+        .expect("SnapshotCreated on Candidate must return Ok (RoleViolation swallowed)");
+
+    assert!(
+        is_candidate(raft.role.as_i32()),
+        "Role must remain Candidate"
+    );
+}
+
+/// B15 — MembershipApplied dispatched to Candidate
+///
+/// Candidate has no membership cache to refresh. The default handler returns RoleViolation
+/// (non-fatal). The dispatch layer swallows it and returns Ok — role is unchanged.
+///
+/// This guards against a regression where a stale MembershipApplied event arriving during
+/// an election causes the Raft process to exit instead of being silently ignored.
+#[tokio::test]
+async fn test_membership_applied_dispatch_on_candidate() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    assert!(is_candidate(raft.role.as_i32()));
+
+    raft.handle_internal_event(InternalEvent::MembershipApplied)
+        .await
+        .expect("MembershipApplied on Candidate must return Ok (RoleViolation swallowed)");
+
+    assert!(
+        is_candidate(raft.role.as_i32()),
+        "Role must remain Candidate"
+    );
+}
+
+/// B16 — PromoteReadyLearners dispatched to Candidate
+///
+/// Candidate has no pending_promotions state. The default handler returns RoleViolation
+/// (non-fatal). The dispatch layer swallows it and returns Ok — role is unchanged.
+///
+/// This guards against a regression where a stale PromoteReadyLearners event arriving
+/// during an election causes the Raft process to exit.
+#[tokio::test]
+async fn test_promote_ready_learners_dispatch_on_candidate() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    assert!(is_candidate(raft.role.as_i32()));
+
+    raft.handle_internal_event(InternalEvent::PromoteReadyLearners)
+        .await
+        .expect("PromoteReadyLearners on Candidate must return Ok (RoleViolation swallowed)");
+
+    assert!(
+        is_candidate(raft.role.as_i32()),
+        "Role must remain Candidate"
+    );
+}
+
+/// B17 — LogPurgeCompleted dispatched to Candidate
+///
+/// Candidate has no last_purged_index to update. The default handler returns RoleViolation
+/// (non-fatal). The dispatch layer swallows it and returns Ok — role is unchanged.
+///
+/// Candidate cannot receive stale Leader events in practice (role_tx is fully drained
+/// between Leader→Follower and Follower→Candidate). This test pins the non-fatal
+/// classification so a future refactor cannot silently break the invariant.
+#[tokio::test]
+async fn test_log_purge_completed_dispatch_on_candidate() {
+    use d_engine_proto::common::LogId;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    assert!(is_candidate(raft.role.as_i32()));
+
+    raft.handle_internal_event(InternalEvent::LogPurgeCompleted(LogId {
+        term: 1,
+        index: 50,
+    }))
+    .await
+    .expect("LogPurgeCompleted on Candidate must return Ok (RoleViolation swallowed)");
+
+    assert!(
+        is_candidate(raft.role.as_i32()),
+        "Role must remain Candidate"
+    );
+}
+
 // ============================================================================
 // C. LEADER INITIALIZATION TESTS (Peer State Setup)
 // ============================================================================

@@ -548,7 +548,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             let result = state_machine_handler.create_snapshot().await;
             info!("SnapshotCreated event will be processed in another event thread");
             if let Err(e) = internal_event_tx.send(InternalEvent::SnapshotCreated(result)) {
-                error!("Follower failed to send snapshot creation result: {}", e);
+                error!("Learner failed to send snapshot creation result: {}", e);
             }
         });
 

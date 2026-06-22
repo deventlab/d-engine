@@ -649,7 +649,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
             current_role: "None Leader",
             required_role: "Leader",
             context: format!(
-                "None Leader node {} receives InboundEvent::PromoteReadyLearners",
+                "None Leader node {} receives InternalEvent::PromoteReadyLearners",
                 ctx.node_id
             ),
         }
@@ -686,7 +686,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
             current_role: "None Leader/Learner",
             required_role: "Leader/Learner",
             context: format!(
-                "None Leader/Learner node {} receives InboundEvent::PromoteReadyLearners",
+                "None Leader/Learner node {} receives InternalEvent::PromoteReadyLearners",
                 ctx.node_id
             ),
         }

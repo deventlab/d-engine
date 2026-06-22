@@ -6,7 +6,7 @@
 //!
 //! Three key behaviors:
 //! 1. `drain_commit_actions` fires `InternalEvent::NoopCommitted` when a `LeaderNoop` entry commits.
-//! 2. `drain_commit_actions` fires `InternalEvent::JoinCommitted` when a `NodeJoin` entry commits.
+//! 2. `drain_commit_actions` delivers `NodeJoin` completion directly to the join response sender //!     (no `InternalEvent` is emitted for NodeJoin).
 //! 3. tick() sends `InternalEvent::BecomeFollower` for expired noop entries (leadership lost).
 
 use std::time::Duration;

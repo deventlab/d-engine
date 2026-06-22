@@ -104,18 +104,22 @@
 //!
 //! #### B9. SnapshotCreated (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B9.1**: Follower + Err payload — dispatch returns Ok (non-fatal error swallowed)
+//! - **B9.2**: Candidate — RoleViolation non-fatal, swallowed by dispatch layer
 //!
 //! #### B10. StepDownSelfRemoved (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B10.1**: Leader — handle_self_removed enqueues BecomeFollower; role transitions to Follower
 //!
 //! #### B11. MembershipApplied (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B11.1**: Follower — RoleViolation swallowed; leader-specific logic in membership_change_test
+//! - **B11.2**: Candidate — RoleViolation non-fatal, swallowed by dispatch layer
 //!
 //! #### B12. PromoteReadyLearners (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B12.1**: Follower — RoleViolation swallowed; leader-specific logic in membership_change_test
+//! - **B12.2**: Candidate — RoleViolation non-fatal, swallowed by dispatch layer
 //!
 //! #### B13. LogPurgeCompleted (migrated from P4 event_tx → P2 internal_event_tx)
 //! - **B13.1**: Follower — dispatch returns Ok, last_purged_index updated
+//! - **B13.2**: Candidate — RoleViolation non-fatal, swallowed by dispatch layer
 //!
 //! ### C. Leader Initialization Tests (Peer State Setup)
 //!

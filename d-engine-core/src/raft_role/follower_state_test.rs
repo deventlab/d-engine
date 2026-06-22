@@ -1348,28 +1348,25 @@ async fn test_handle_join_cluster_rejects_on_follower() {
     );
 }
 
-/// Test: FollowerState rejects LeaderDiscovery request
+/// Test: Follower returns Unavailable when it has not yet learned the leader.
 ///
 /// Scenario:
-/// - Follower receives LeaderDiscoveryRequest (client wants to find leader)
-/// - Follower doesn't know current leader or is not the leader
+/// - Follower has no current_leader (e.g. node just started, no heartbeat received yet)
+/// - Client sends DiscoverLeader
 ///
 /// Expected:
-/// - Returns Status error with Code::PermissionDenied
 /// - handle_inbound_event returns Ok() (not a fatal error)
-/// - No state changes
-///
-/// This validates that follower correctly rejects leader discovery
-/// when it cannot provide leader information.
+/// - Response carries Status::Unavailable — tells the client to retry later
 ///
 /// Original: test_handle_inbound_event_case11
 #[tokio::test]
-async fn test_handle_leader_discovery_rejects_on_follower() {
+async fn test_discover_leader_returns_unavailable_when_leader_unknown() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    // No set_current_leader call — follower has no leader info.
 
     let request = LeaderDiscoveryRequest {
         node_id: 2,
@@ -1379,23 +1376,126 @@ async fn test_handle_leader_discovery_rejects_on_follower() {
     let inbound_event = InboundEvent::DiscoverLeader(request, resp_tx);
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
-    // Action: Handle DiscoverLeader event
     let result = state.handle_inbound_event(inbound_event, &context, internal_event_tx).await;
 
-    // Verify: Returns Ok (not a fatal error)
-    assert!(
-        result.is_ok(),
-        "handle_inbound_event should return Ok for DiscoverLeader"
-    );
+    assert!(result.is_ok(), "handle_inbound_event must not be fatal");
 
-    // Verify: Response with PermissionDenied
     let response = resp_rx.recv().await.expect("Should receive response");
-    assert!(response.is_err(), "Response should be error");
-    let status = response.unwrap_err();
+    assert!(response.is_err());
     assert_eq!(
-        status.code(),
-        Code::PermissionDenied,
-        "Should return PermissionDenied"
+        response.unwrap_err().code(),
+        Code::Unavailable,
+        "Unknown leader → Unavailable (client should retry)"
+    );
+}
+
+/// Test: Follower redirects client to known leader address.
+///
+/// Scenario:
+/// - Follower received a heartbeat from node 3 and stored it as current_leader
+/// - Client sends DiscoverLeader
+/// - Membership returns node 3's address
+///
+/// Expected:
+/// - Response carries leader_id=3, leader_address, and current term
+///
+/// Note: The returned leader_id may be stale if the leader stepped down after the last heartbeat.
+/// This is acceptable — the client will get a NotLeader error from that node and retry.
+/// The term returned alongside helps the client detect staleness.
+#[tokio::test]
+async fn test_discover_leader_returns_known_leader_address() {
+    use d_engine_proto::common::{NodeRole::Leader, NodeStatus};
+    use d_engine_proto::server::cluster::NodeMeta;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut membership = MockMembership::new();
+    membership
+        .expect_retrieve_node_meta()
+        .with(mockall::predicate::eq(3u32))
+        .returning(|_| {
+            Some(NodeMeta {
+                id: 3,
+                address: "10.0.0.3:50051".to_string(),
+                role: Leader.into(),
+                status: NodeStatus::Active.into(),
+            })
+        });
+    context.membership = Arc::new(membership);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state.set_current_leader(3);
+    state.update_current_term(5);
+
+    let request = LeaderDiscoveryRequest {
+        node_id: 2,
+        requester_address: "127.0.0.1:9090".to_string(),
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::DiscoverLeader(request, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    assert!(result.is_ok());
+    let response = resp_rx.recv().await.expect("Should receive response").unwrap();
+    assert_eq!(response.leader_id, 3);
+    assert_eq!(response.leader_address, "10.0.0.3:50051");
+    assert_eq!(
+        response.term, 5,
+        "Response must carry current term for staleness detection"
+    );
+}
+
+/// Test: Follower knows a leader ID but cannot find its metadata — returns NotFound.
+///
+/// Scenario:
+/// - Follower has current_leader=3 but membership has no metadata for node 3
+///   (e.g. membership config not yet propagated after cluster reconfiguration)
+///
+/// Expected:
+/// - Response carries Status::NotFound
+#[tokio::test]
+async fn test_discover_leader_returns_not_found_when_metadata_missing() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut membership = MockMembership::new();
+    membership.expect_retrieve_node_meta().returning(|_| None);
+    context.membership = Arc::new(membership);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state.set_current_leader(3);
+
+    let request = LeaderDiscoveryRequest {
+        node_id: 2,
+        requester_address: "127.0.0.1:9090".to_string(),
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::DiscoverLeader(request, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    assert!(result.is_ok());
+    let response = resp_rx.recv().await.expect("Should receive response");
+    assert_eq!(
+        response.unwrap_err().code(),
+        Code::NotFound,
+        "Known leader ID but missing metadata → NotFound"
     );
 }
 

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -411,14 +412,22 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
 
             InboundEvent::DiscoverLeader(request, sender) => {
                 debug!(?request, "Follower::InboundEvent::DiscoverLeader");
-                sender
-                    .send(Err(Status::permission_denied(
-                        "Follower should not response DiscoverLeader event.",
-                    )))
-                    .map_err(|e| {
-                        error!("Failed to send: {:?}", e);
-                        NetworkError::SingalSendFailed(format!("{:?}", e))
-                    })?;
+                let response = match self.shared_state().current_leader() {
+                    Some(leader_id) => match ctx.membership().retrieve_node_meta(leader_id).await {
+                        Some(meta) => Ok(LeaderDiscoveryResponse {
+                            leader_id,
+                            leader_address: meta.address,
+                            term: self.current_term(),
+                        }),
+                        None => Err(Status::not_found("Leader metadata not found")),
+                    },
+                    None => Err(Status::unavailable("Leader not discovered")),
+                };
+
+                sender.send(response).map_err(|e| {
+                    error!("Failed to send: {:?}", e);
+                    NetworkError::SingalSendFailed(format!("{:?}", e))
+                })?;
 
                 return Ok(());
             }
