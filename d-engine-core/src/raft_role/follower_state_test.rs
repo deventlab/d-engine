@@ -2908,3 +2908,52 @@ async fn test_follower_cluster_conf_always_exposes_current_leader() {
         "follower must expose known leader ID"
     );
 }
+
+// ============================================================================
+// StreamSnapshot Rejection Tests
+// ============================================================================
+
+/// Test: Follower rejects StreamSnapshot — only Leader streams snapshots to Learners.
+///
+/// Scenario:
+/// - Follower receives StreamSnapshot (misdirected from a Learner)
+///
+/// Expected:
+/// - startup_tx receives Err(FailedPrecondition) — tells caller this node is not the leader
+/// - handle_inbound_event returns Ok() (not a fatal error)
+#[tokio::test]
+async fn test_follower_rejects_stream_snapshot() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (_ack_tx, ack_rx) =
+        tokio::sync::mpsc::channel::<d_engine_proto::server::storage::SnapshotAck>(4);
+    let (chunk_tx, _chunk_rx) = tokio::sync::mpsc::channel::<
+        std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>,
+    >(4);
+    let (startup_tx, startup_rx) =
+        tokio::sync::oneshot::channel::<std::result::Result<(), tonic::Status>>();
+
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    assert!(result.is_ok(), "StreamSnapshot rejection must not be fatal");
+
+    let startup_result = startup_rx.await.expect("startup_tx must be sent");
+    assert!(startup_result.is_err());
+    assert_eq!(
+        startup_result.unwrap_err().code(),
+        tonic::Code::FailedPrecondition,
+        "Follower must reply FailedPrecondition — not the leader"
+    );
+}

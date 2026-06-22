@@ -1221,3 +1221,56 @@ async fn test_cluster_conf_leader_id_transitions_after_noop_commits() {
         "leader must be visible after noop commits"
     );
 }
+
+/// Test: Leader routes JoinCluster through handle_inbound_event to handle_join_cluster.
+///
+/// Exercises the InboundEvent::JoinCluster dispatch arm in handle_inbound_event.
+/// Uses a node that already exists in the cluster to trigger an early-return path
+/// in handle_join_cluster without requiring full replication mock setup.
+///
+/// Expected:
+/// - sender receives Err(FailedPrecondition) — NodeAlreadyExists
+/// - handle_inbound_event propagates the non-fatal error (swallowed at dispatch layer)
+#[tokio::test]
+async fn test_leader_join_cluster_dispatched_via_handle_inbound_event() {
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use d_engine_proto::server::cluster::JoinRequest;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context =
+        mock_raft_context("/tmp/test_leader_join_cluster_dispatch", graceful_rx, None);
+
+    let mut membership = create_mock_membership();
+    // Node 5 already in cluster → handle_join_cluster returns early via send_join_error
+    membership.expect_contains_node().returning(|_| true);
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+
+    let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
+    let request = JoinRequest {
+        node_id: 5,
+        address: "10.0.0.5:50051".to_string(),
+        node_role: d_engine_proto::common::NodeRole::Learner.into(),
+        status: d_engine_proto::common::NodeStatus::Promotable as i32,
+    };
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::JoinCluster(request, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    // handle_join_cluster returns Err(NodeAlreadyExists) — non-fatal, swallowed by dispatch
+    assert!(
+        result.is_err(),
+        "NodeAlreadyExists must propagate out of handle_inbound_event"
+    );
+
+    let response = resp_rx.recv().await.expect("sender must reply");
+    assert!(response.is_err(), "client must receive an error response");
+    assert_eq!(response.unwrap_err().code(), Code::FailedPrecondition);
+}

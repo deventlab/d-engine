@@ -1955,3 +1955,51 @@ async fn test_learner_install_snapshot_reports_failure_when_apply_fails_after_tr
         "Learner must NOT report success when apply failed after transfer (got success:true — #308 bug)"
     );
 }
+
+// ============================================================================
+// StreamSnapshot Rejection Tests
+// ============================================================================
+
+/// Test: Learner rejects StreamSnapshot — Learner is the requester, not the server.
+///
+/// Scenario:
+/// - Learner receives StreamSnapshot (invalid: Learner pulls from Leader, not the reverse)
+///
+/// Expected:
+/// - startup_tx receives Err(FailedPrecondition)
+/// - handle_inbound_event returns Ok() (not a fatal error)
+#[tokio::test]
+async fn test_learner_rejects_stream_snapshot() {
+    let (_graceful_tx, graceful_rx) = tokio::sync::watch::channel(());
+    let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (_ack_tx, ack_rx) =
+        tokio::sync::mpsc::channel::<d_engine_proto::server::storage::SnapshotAck>(4);
+    let (chunk_tx, _chunk_rx) = tokio::sync::mpsc::channel::<
+        std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>,
+    >(4);
+    let (startup_tx, startup_rx) =
+        tokio::sync::oneshot::channel::<std::result::Result<(), tonic::Status>>();
+
+    let (internal_event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    assert!(result.is_ok(), "StreamSnapshot rejection must not be fatal");
+
+    let startup_result = startup_rx.await.expect("startup_tx must be sent");
+    assert!(startup_result.is_err());
+    assert_eq!(
+        startup_result.unwrap_err().code(),
+        tonic::Code::FailedPrecondition,
+        "Learner must reply FailedPrecondition for StreamSnapshot"
+    );
+}
