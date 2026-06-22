@@ -83,8 +83,8 @@ async fn setup_multi_voter_expired_lease(
 ) -> (
     LeaderState<MockTypeConfig>,
     crate::raft_context::RaftContext<MockTypeConfig>,
-    mpsc::UnboundedSender<crate::event::RoleEvent>,
-    mpsc::UnboundedReceiver<crate::event::RoleEvent>,
+    mpsc::UnboundedSender<crate::event::InternalEvent>,
+    mpsc::UnboundedReceiver<crate::event::InternalEvent>,
 ) {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
@@ -147,8 +147,8 @@ async fn setup_multi_voter_expired_lease(
     state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
     // lease is expired by default (timestamp = 0)
 
-    let (role_tx, role_rx) = mpsc::unbounded_channel();
-    (state, context, role_tx, role_rx)
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+    (state, context, internal_event_tx, internal_event_rx)
 }
 
 // ============================================================================
@@ -161,10 +161,11 @@ async fn setup_multi_voter_expired_lease(
 #[tokio::test]
 #[traced_test]
 async fn test_lease_read_expired_pushes_to_pending_lease_reads() {
-    let (mut state, context, role_tx, _role_rx) = setup_multi_voter_expired_lease(
-        "/tmp/test_lease_read_expired_pushes_to_pending_lease_reads",
-    )
-    .await;
+    let (mut state, context, internal_event_tx, _internal_event_rx) =
+        setup_multi_voter_expired_lease(
+            "/tmp/test_lease_read_expired_pushes_to_pending_lease_reads",
+        )
+        .await;
 
     assert!(!state.is_lease_valid(), "precondition: lease expired");
 
@@ -174,7 +175,7 @@ async fn test_lease_read_expired_pushes_to_pending_lease_reads() {
     // flush_cmd_buffers must return quickly (must not block awaiting quorum)
     let flush_result = tokio::time::timeout(
         Duration::from_millis(200),
-        state.flush_cmd_buffers(&context, &role_tx),
+        state.flush_cmd_buffers(&context, &internal_event_tx),
     )
     .await;
 
@@ -201,7 +202,7 @@ async fn test_lease_read_expired_pushes_to_pending_lease_reads() {
 #[tokio::test]
 #[traced_test]
 async fn test_pending_lease_reads_drained_on_quorum_ack() {
-    let (mut state, mut context, role_tx, _role_rx) =
+    let (mut state, mut context, internal_event_tx, _internal_event_rx) =
         setup_multi_voter_expired_lease("/tmp/test_pending_lease_reads_drained_on_quorum_ack")
             .await;
 
@@ -217,7 +218,7 @@ async fn test_pending_lease_reads_drained_on_quorum_ack() {
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     state.push_client_cmd(make_lease_read_cmd(resp_tx), &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&context, &internal_event_tx).await.unwrap();
 
     assert_eq!(
         state.pending_lease_reads.len(),
@@ -228,7 +229,7 @@ async fn test_pending_lease_reads_drained_on_quorum_ack() {
     // Simulate quorum ACK from peer 2 with match_index=10.
     // Majority = 2/3: leader(self) + peer 2 is sufficient.
     state
-        .handle_append_result(2, Ok(quorum_ack(1, 10)), &context, &role_tx)
+        .handle_append_result(2, Ok(quorum_ack(1, 10)), &context, &internal_event_tx)
         .await
         .unwrap();
 
@@ -292,9 +293,9 @@ async fn test_single_voter_lease_read_served_immediately_on_expired_lease() {
     assert!(!state.is_lease_valid(), "precondition: lease expired");
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state.push_client_cmd(make_lease_read_cmd(resp_tx), &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&context, &internal_event_tx).await.unwrap();
 
     // Must not be queued — single-voter serves immediately
     assert_eq!(
@@ -336,9 +337,9 @@ async fn test_pending_lease_reads_timeout_on_tick() {
         deadline: Instant::now() - Duration::from_secs(1),
     });
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let (raft_tx, _raft_rx) = mpsc::channel(1);
-    state.tick(&role_tx, &raft_tx, &context).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &context).await.unwrap();
 
     // Queue must be cleared
     assert_eq!(
@@ -407,10 +408,11 @@ async fn test_pending_lease_reads_cleared_on_stepdown() {
 #[tokio::test]
 #[traced_test]
 async fn test_multiple_lease_reads_batched_on_single_quorum_ack() {
-    let (mut state, mut context, role_tx, _role_rx) = setup_multi_voter_expired_lease(
-        "/tmp/test_multiple_lease_reads_batched_on_single_quorum_ack",
-    )
-    .await;
+    let (mut state, mut context, internal_event_tx, _internal_event_rx) =
+        setup_multi_voter_expired_lease(
+            "/tmp/test_multiple_lease_reads_batched_on_single_quorum_ack",
+        )
+        .await;
 
     context.handlers.replication_handler.expect_handle_success_response().returning(
         |_, _, _, _| {
@@ -427,7 +429,7 @@ async fn test_multiple_lease_reads_batched_on_single_quorum_ack() {
     for _ in 0..3 {
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         state.push_client_cmd(make_lease_read_cmd(resp_tx), &context);
-        state.flush_cmd_buffers(&context, &role_tx).await.unwrap();
+        state.flush_cmd_buffers(&context, &internal_event_tx).await.unwrap();
         receivers.push(resp_rx);
     }
 
@@ -439,7 +441,7 @@ async fn test_multiple_lease_reads_batched_on_single_quorum_ack() {
 
     // Single quorum ACK must drain all 3
     state
-        .handle_append_result(2, Ok(quorum_ack(1, 10)), &context, &role_tx)
+        .handle_append_result(2, Ok(quorum_ack(1, 10)), &context, &internal_event_tx)
         .await
         .unwrap();
 
@@ -478,13 +480,14 @@ async fn test_multiple_lease_reads_batched_on_single_quorum_ack() {
 #[tokio::test]
 #[traced_test]
 async fn test_pending_lease_reads_drained_on_higher_term_stepdown() {
-    use crate::event::RoleEvent;
+    use crate::event::InternalEvent;
     use d_engine_proto::server::replication::AppendEntriesResponse;
 
-    let (mut state, mut context, role_tx, mut role_rx) = setup_multi_voter_expired_lease(
-        "/tmp/test_pending_lease_reads_drained_on_higher_term_stepdown",
-    )
-    .await;
+    let (mut state, mut context, internal_event_tx, mut internal_event_rx) =
+        setup_multi_voter_expired_lease(
+            "/tmp/test_pending_lease_reads_drained_on_higher_term_stepdown",
+        )
+        .await;
 
     context.handlers.replication_handler.expect_handle_success_response().returning(
         |_, _, _, _| {
@@ -499,7 +502,7 @@ async fn test_pending_lease_reads_drained_on_higher_term_stepdown() {
     // Queue one lease read while lease is expired
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     state.push_client_cmd(make_lease_read_cmd(resp_tx), &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&context, &internal_event_tx).await.unwrap();
     assert_eq!(
         state.pending_lease_reads.len(),
         1,
@@ -512,14 +515,19 @@ async fn test_pending_lease_reads_drained_on_higher_term_stepdown() {
         term: 10, // higher than leader term=1
         result: None,
     };
-    let result = state.handle_append_result(2, Ok(higher_term_resp), &context, &role_tx).await;
+    let result = state
+        .handle_append_result(2, Ok(higher_term_resp), &context, &internal_event_tx)
+        .await;
 
     // handle_append_result must return Err(HigherTerm)
     assert!(result.is_err(), "higher term must return Err");
 
     // BecomeFollower event must be sent to the Raft loop
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::BecomeFollower(_))),
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::BecomeFollower(_))
+        ),
         "BecomeFollower event must be queued"
     );
 

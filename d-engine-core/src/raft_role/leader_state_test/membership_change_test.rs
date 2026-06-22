@@ -429,7 +429,7 @@ async fn test_handle_join_cluster_node_exists() {
 #[tokio::test(start_paused = true)]
 #[traced_test]
 async fn test_handle_join_cluster_quorum_failed() {
-    use crate::event::RaftEvent;
+    use crate::event::InboundEvent;
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
@@ -465,8 +465,8 @@ async fn test_handle_join_cluster_quorum_failed() {
 
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (sender, mut receiver) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let (raft_tx, _raft_rx) = mpsc::channel::<RaftEvent>(1);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (raft_tx, _raft_rx) = mpsc::channel::<InboundEvent>(1);
 
     // Fire-and-forget: returns Ok immediately, entry stored in pending_commit_actions
     let result = state
@@ -479,7 +479,7 @@ async fn test_handle_join_cluster_quorum_failed() {
             },
             sender,
             &context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await;
 
@@ -497,7 +497,7 @@ async fn test_handle_join_cluster_quorum_failed() {
     tokio::time::advance(Duration::from_millis(200)).await;
 
     // tick() detects the expired NodeJoin and sends deadline_exceeded to the client
-    state.tick(&role_tx, &raft_tx, &context).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &context).await.unwrap();
 
     // Client receives deadline_exceeded: join never committed (no quorum)
     let status = receiver.recv().await.unwrap().unwrap_err();
@@ -848,10 +848,10 @@ mod stale_learner_tests {
             },
         );
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
         // Call handle_stale_learner (will timeout, but we captured the config)
-        let _ = leader.handle_stale_learner(101, &role_tx, &ctx).await;
+        let _ = leader.handle_stale_learner(101, &internal_event_tx, &ctx).await;
 
         // Validate: Correct BatchRemove config change was created
         let payloads = captured_payloads.lock();
@@ -898,7 +898,7 @@ mod check_learner_progress_tests {
 
     use crate::MockMembership;
     use crate::RaftContext;
-    use crate::event::{RaftEvent, RoleEvent};
+    use crate::event::InternalEvent;
     use crate::raft_role::leader_state::{LeaderState, PendingPromotion};
     use crate::raft_role::role_state::RaftRoleState;
     use crate::test_utils::mock::MockTypeConfig;
@@ -935,20 +935,26 @@ mod check_learner_progress_tests {
         leader.update_commit_index(100).unwrap();
         leader.last_learner_check = Instant::now() - Duration::from_secs(2); // Force first check
 
-        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::from([(100, Some(95))]);
 
         // First call - should process
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
         assert_eq!(leader.pending_promotions.len(), 1);
 
         // Second call immediately - should be throttled
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
         assert_eq!(leader.pending_promotions.len(), 1); // No change
 
         // Verify only 1 event sent
         let mut event_count = 0;
-        while role_rx.try_recv().is_ok() {
+        while internal_event_rx.try_recv().is_ok() {
             event_count += 1;
         }
         assert_eq!(event_count, 1, "Should only send 1 event");
@@ -963,10 +969,13 @@ mod check_learner_progress_tests {
         leader.update_commit_index(100).unwrap();
         leader.last_learner_check = Instant::now() - Duration::from_secs(2); // Force check
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::from([(100, Some(95))]); // gap = 100 - 95 = 5
 
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
 
         assert_eq!(leader.pending_promotions.len(), 1);
         assert_eq!(leader.pending_promotions[0].node_id, 100);
@@ -982,10 +991,13 @@ mod check_learner_progress_tests {
         leader.update_commit_index(100).unwrap();
         leader.last_learner_check = Instant::now() - Duration::from_secs(2);
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::from([(100, Some(94))]); // gap = 100 - 94 = 6 > 5
 
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
 
         assert_eq!(leader.pending_promotions.len(), 0);
     }
@@ -1000,10 +1012,13 @@ mod check_learner_progress_tests {
         leader.update_commit_index(100).unwrap();
         leader.last_learner_check = Instant::now() - Duration::from_secs(2);
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::from([(100, None)]); // match_index = 0, gap = 100
 
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
 
         assert_eq!(leader.pending_promotions.len(), 0);
     }
@@ -1019,17 +1034,20 @@ mod check_learner_progress_tests {
         // Manually add learner 100 to pending queue
         leader.pending_promotions.push_back(PendingPromotion::new(100, Instant::now()));
 
-        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::from([(100, Some(95))]); // caught_up
 
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
 
         // Should still have only 1 entry
         assert_eq!(leader.pending_promotions.len(), 1);
 
         // Should not send event (all learners already pending)
         assert!(
-            role_rx.try_recv().is_err(),
+            internal_event_rx.try_recv().is_err(),
             "Should not send event for duplicate"
         );
     }
@@ -1054,10 +1072,13 @@ mod check_learner_progress_tests {
         leader.update_commit_index(100).unwrap();
         leader.last_learner_check = Instant::now() - Duration::from_secs(2);
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::from([(100, Some(95))]); // caught_up
 
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
 
         assert_eq!(
             leader.pending_promotions.len(),
@@ -1074,10 +1095,13 @@ mod check_learner_progress_tests {
         leader.update_commit_index(100).unwrap();
         leader.last_learner_check = Instant::now() - Duration::from_secs(2);
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::from([(100, Some(95))]); // caught_up
 
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
 
         assert_eq!(leader.pending_promotions.len(), 1);
     }
@@ -1089,13 +1113,19 @@ mod check_learner_progress_tests {
         let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
         leader.update_commit_index(100).unwrap();
 
-        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::new();
 
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
 
         assert_eq!(leader.pending_promotions.len(), 0);
-        assert!(role_rx.try_recv().is_err(), "Should not send event");
+        assert!(
+            internal_event_rx.try_recv().is_err(),
+            "Should not send event"
+        );
     }
 
     /// Test: Verify node not in membership is skipped
@@ -1124,13 +1154,16 @@ mod check_learner_progress_tests {
         leader.update_commit_index(100).unwrap();
         leader.last_learner_check = Instant::now() - Duration::from_secs(2);
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::from([
             (100, Some(95)), // valid
             (999, Some(95)), // not in membership
         ]);
 
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
 
         // Should only add the valid learner
         assert_eq!(leader.pending_promotions.len(), 1);
@@ -1145,10 +1178,13 @@ mod check_learner_progress_tests {
         leader.update_commit_index(5).unwrap();
         leader.last_learner_check = Instant::now() - Duration::from_secs(2);
 
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::from([(100, Some(10))]); // learner_match > leader_commit
 
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
 
         // checked_sub returns None → caught_up = true
         assert_eq!(leader.pending_promotions.len(), 1);
@@ -1162,10 +1198,13 @@ mod check_learner_progress_tests {
         leader.update_commit_index(100).unwrap();
         leader.last_learner_check = Instant::now() - Duration::from_secs(2);
 
-        let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
         let learner_progress = HashMap::from([(100, Some(95)), (200, Some(96))]);
 
-        leader.check_learner_progress(&learner_progress, &ctx, &role_tx).await.unwrap();
+        leader
+            .check_learner_progress(&learner_progress, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
 
         // Both learners should be in queue
         assert_eq!(leader.pending_promotions.len(), 2);
@@ -1175,10 +1214,8 @@ mod check_learner_progress_tests {
 
         // Should receive exactly 1 event
         let mut event_count = 0;
-        while let Ok(event) = role_rx.try_recv() {
-            if let RoleEvent::ReprocessEvent(inner) = event
-                && matches!(*inner, RaftEvent::PromoteReadyLearners)
-            {
+        while let Ok(event) = internal_event_rx.try_recv() {
+            if matches!(event, InternalEvent::PromoteReadyLearners) {
                 event_count += 1;
             }
         }
@@ -1208,7 +1245,7 @@ mod pending_promotion_tests {
     use crate::MockRaftLog;
     use crate::MockReplicationCore;
     use crate::RaftContext;
-    use crate::event::{RaftEvent, RoleEvent};
+    use crate::event::InternalEvent;
     use crate::raft_role::leader_state::{
         LeaderState, PendingPromotion, calculate_safe_batch_size,
     };
@@ -1225,8 +1262,8 @@ mod pending_promotion_tests {
     struct TestFixture {
         leader_state: LeaderState<MockTypeConfig>,
         raft_context: RaftContext<MockTypeConfig>,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
-        role_rx: mpsc::UnboundedReceiver<RoleEvent>,
+        internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
+        internal_event_rx: mpsc::UnboundedReceiver<InternalEvent>,
         captured_payloads: Arc<Mutex<Vec<EntryPayload>>>,
     }
 
@@ -1268,7 +1305,7 @@ mod pending_promotion_tests {
             );
             raft_context.handlers.replication_handler = replication_handler;
 
-            let (role_tx, role_rx) = mpsc::unbounded_channel();
+            let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
             let mut cfg = node_config(&format!("/tmp/{test_name}"));
             cfg.raft.batching.max_batch_size = 1;
             // Short timeout: quorum cannot complete in unit tests
@@ -1279,8 +1316,8 @@ mod pending_promotion_tests {
             TestFixture {
                 leader_state,
                 raft_context,
-                role_tx,
-                role_rx,
+                internal_event_tx,
+                internal_event_rx,
                 captured_payloads,
             }
         }
@@ -1348,7 +1385,7 @@ mod pending_promotion_tests {
         // Result is Err(Timeout): quorum cannot complete without a running Raft loop
         let _ = fixture
             .leader_state
-            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .handle_promote_ready_learners(&fixture.raft_context, &fixture.internal_event_tx)
             .await;
 
         // Verify the correct BatchPromote config was submitted with all 3 nodes
@@ -1426,10 +1463,10 @@ mod pending_promotion_tests {
         raft_context.node_config = Arc::new(node_config.clone());
 
         let mut leader_state = LeaderState::new(1, Arc::new(node_config));
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
         // Call handle_stale_learner (will timeout, but we captured the config)
-        let _ = leader_state.handle_stale_learner(1, &role_tx, &raft_context).await;
+        let _ = leader_state.handle_stale_learner(1, &internal_event_tx, &raft_context).await;
 
         // Validate: Correct BatchRemove config change was created
         let payloads = captured_payloads.lock();
@@ -1476,7 +1513,7 @@ mod pending_promotion_tests {
 
         let _ = fixture
             .leader_state
-            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .handle_promote_ready_learners(&fixture.raft_context, &fixture.internal_event_tx)
             .await;
 
         // Verify FIFO: node 1 (older) was submitted, not node 2
@@ -1518,7 +1555,7 @@ mod pending_promotion_tests {
 
         let result = fixture
             .leader_state
-            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .handle_promote_ready_learners(&fixture.raft_context, &fixture.internal_event_tx)
             .await;
 
         // Fire-and-forget: 9 submitted successfully, returns Ok
@@ -1530,9 +1567,8 @@ mod pending_promotion_tests {
         // Step 6: exactly one PromoteReadyLearners event emitted for the 1 remaining item
         let reschedule_count = {
             let mut count = 0;
-            while let Ok(event) = fixture.role_rx.try_recv() {
-                if matches!(event, RoleEvent::ReprocessEvent(ref inner) if matches!(**inner, RaftEvent::PromoteReadyLearners))
-                {
+            while let Ok(event) = fixture.internal_event_rx.try_recv() {
+                if matches!(event, InternalEvent::PromoteReadyLearners) {
                     count += 1;
                 }
             }
@@ -1561,7 +1597,7 @@ mod pending_promotion_tests {
             (1..=2).map(|id| PendingPromotion::new(id, Instant::now())).collect();
         let result = fixture
             .leader_state
-            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .handle_promote_ready_learners(&fixture.raft_context, &fixture.internal_event_tx)
             .await;
 
         // Fire-and-forget: 1 submitted, returns Ok
@@ -1585,7 +1621,7 @@ mod pending_promotion_tests {
         fixture.leader_state.update_current_term(2);
         let result = fixture
             .leader_state
-            .process_pending_promotions(&fixture.raft_context, &fixture.role_tx)
+            .handle_promote_ready_learners(&fixture.raft_context, &fixture.internal_event_tx)
             .await;
 
         // Fire-and-forget: term change does not prevent submission
@@ -1697,9 +1733,9 @@ mod zombie_purge_tests {
 
         let node_config = raft_context.node_config();
         let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
-        let result = leader.handle_zombie_node(5, &role_tx, &raft_context).await;
+        let result = leader.handle_zombie_node(5, &internal_event_tx, &raft_context).await;
         assert!(result.is_ok(), "handle_zombie_node must not fail");
     }
 
@@ -1736,9 +1772,9 @@ mod zombie_purge_tests {
 
         let node_config = raft_context.node_config();
         let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
-        let result = leader.handle_zombie_node(5, &role_tx, &raft_context).await;
+        let result = leader.handle_zombie_node(5, &internal_event_tx, &raft_context).await;
         assert!(result.is_ok(), "handle_zombie_node must not fail");
     }
 
@@ -1781,9 +1817,9 @@ mod zombie_purge_tests {
 
         let node_config = raft_context.node_config();
         let mut leader = LeaderState::<MockTypeConfig>::new(1, node_config);
-        let (role_tx, _role_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
-        let result = leader.handle_zombie_node(5, &role_tx, &raft_context).await;
+        let result = leader.handle_zombie_node(5, &internal_event_tx, &raft_context).await;
         assert!(result.is_ok());
         assert!(
             captured_payloads.lock().is_empty(),

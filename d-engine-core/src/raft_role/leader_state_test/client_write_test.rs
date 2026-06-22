@@ -11,7 +11,7 @@ use crate::PrepareResult;
 use crate::RaftRequestWithSignal;
 use crate::client::{ClientWriteRequest, WriteOperation};
 use crate::client_command_to_entry_payloads;
-use crate::event::{NewCommitData, RoleEvent};
+use crate::event::{InternalEvent, NewCommitData};
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::mock_raft_context;
@@ -154,7 +154,7 @@ async fn test_process_raft_request_immediate_execution() {
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx, rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // When: Execute the write request (fire-and-forget replication in new arch)
     let result = test_context
@@ -173,7 +173,7 @@ async fn test_process_raft_request_immediate_execution() {
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await;
 
@@ -186,7 +186,7 @@ async fn test_process_raft_request_immediate_execution() {
     test_context.state.cluster_metadata.single_voter = true;
     test_context
         .state
-        .handle_log_flushed(5, &test_context.raft_context, &role_tx)
+        .handle_log_flushed(5, &test_context.raft_context, &internal_event_tx)
         .await;
 
     // Then: Verify commit index updated to 5
@@ -199,8 +199,8 @@ async fn test_process_raft_request_immediate_execution() {
     // Then: Verify NotifyNewCommitIndex was sent
     assert!(
         matches!(
-            role_rx.try_recv(),
-            Ok(RoleEvent::NotifyNewCommitIndex(NewCommitData {
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::NotifyNewCommitIndex(NewCommitData {
                 new_commit_index: 5,
                 ..
             }))
@@ -218,7 +218,7 @@ async fn test_process_raft_request_immediate_execution() {
                 succeeded: true,
             }],
             &test_context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -259,7 +259,7 @@ async fn test_client_write_waits_for_sm_apply_not_just_commit() {
 
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx, mut rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     test_context
         .state
@@ -271,7 +271,7 @@ async fn test_client_write_waits_for_sm_apply_not_just_commit() {
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .expect("execute should succeed");
@@ -282,7 +282,7 @@ async fn test_client_write_waits_for_sm_apply_not_just_commit() {
     test_context.state.cluster_metadata.single_voter = true;
     test_context
         .state
-        .handle_log_flushed(5, &test_context.raft_context, &role_tx)
+        .handle_log_flushed(5, &test_context.raft_context, &internal_event_tx)
         .await;
 
     // Commit has advanced, but client must NOT have received a response yet.
@@ -307,7 +307,7 @@ async fn test_client_write_waits_for_sm_apply_not_just_commit() {
                 succeeded: true,
             }],
             &test_context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -386,7 +386,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let (tx2, rx2) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // When: Execute first write request (immediate execution) → pending_client_writes[5]
     let result1 = test_context
@@ -406,7 +406,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await;
 
@@ -427,7 +427,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
                 wait_for_apply_event: true,
             },
             &test_context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await;
 
@@ -439,7 +439,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
     test_context.state.cluster_metadata.single_voter = true;
     test_context
         .state
-        .handle_log_flushed(6, &test_context.raft_context, &role_tx)
+        .handle_log_flushed(6, &test_context.raft_context, &internal_event_tx)
         .await;
 
     // Then: Verify commit index updated to 6
@@ -451,7 +451,10 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
 
     // Then: Verify NotifyNewCommitIndex was sent
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::NotifyNewCommitIndex(_))),
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::NotifyNewCommitIndex(_))
+        ),
         "Expected NotifyNewCommitIndex"
     );
 
@@ -468,7 +471,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
     ];
     test_context
         .state
-        .handle_apply_completed(6, results, &test_context.raft_context, &role_tx)
+        .handle_apply_completed(6, results, &test_context.raft_context, &internal_event_tx)
         .await
         .unwrap();
 
@@ -518,7 +521,7 @@ async fn test_process_raft_request_batching_enabled() {
     use crate::ClientCmd;
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx, _rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (_role_tx, _role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (_internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
     // When: Push request into buffer (batching — not immediately sent)
     test_context
@@ -575,7 +578,7 @@ async fn test_drain_single_write_no_delay() {
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: Single write request (simulates low load)
     let start = Instant::now();
@@ -597,14 +600,14 @@ async fn test_drain_single_write_no_delay() {
     );
 
     // Flush immediately (drain pattern: no waiting)
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
     let elapsed = start.elapsed();
 
     // Advance commit via single-voter path (no real peers in test).
     // MemFirst: set last_entry_id=5 before flush.
     last_entry_id.store(5, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
-    state.handle_log_flushed(5, &ctx, &role_tx).await;
+    state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
 
     // Simulate SM apply: resolve pending_write_apply so client gets response
     {
@@ -612,7 +615,10 @@ async fn test_drain_single_write_no_delay() {
             index: 5,
             succeeded: true,
         }];
-        state.handle_apply_completed(5, results, &ctx, &role_tx).await.unwrap();
+        state
+            .handle_apply_completed(5, results, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
     }
 
     // Verify: Request succeeded
@@ -670,7 +676,7 @@ async fn test_drain_multiple_writes_natural_batch() {
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: Push 10 write requests (simulates high load)
     let mut receivers = vec![];
@@ -694,7 +700,7 @@ async fn test_drain_multiple_writes_natural_batch() {
     );
 
     // Action: Single flush processes entire batch
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Verify: Buffer emptied
     assert_eq!(
@@ -707,7 +713,7 @@ async fn test_drain_multiple_writes_natural_batch() {
     // MemFirst: set last_entry_id=14 before flush.
     last_entry_id.store(14, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
-    state.handle_log_flushed(14, &ctx, &role_tx).await;
+    state.handle_log_flushed(14, &ctx, &internal_event_tx).await;
 
     // Simulate SM apply: resolve pending_write_apply so clients get responses
     {
@@ -717,7 +723,10 @@ async fn test_drain_multiple_writes_natural_batch() {
                 succeeded: true,
             })
             .collect();
-        state.handle_apply_completed(14, results, &ctx, &role_tx).await.unwrap();
+        state
+            .handle_apply_completed(14, results, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
     }
 
     // Verify: All 10 requests received responses
@@ -843,7 +852,7 @@ async fn test_write_batch_single_replication() {
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: Push 5 write requests
     let mut receivers = vec![];
@@ -860,13 +869,13 @@ async fn test_write_batch_single_replication() {
     }
 
     // Action: Flush batch (triggers single prepare_batch_requests call)
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Advance commit via single-voter path: 5 writes at indices 5..9.
     // MemFirst: set last_entry_id=9 before flush.
     last_entry_id.store(9, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
-    state.handle_log_flushed(9, &ctx, &role_tx).await;
+    state.handle_log_flushed(9, &ctx, &internal_event_tx).await;
 
     // Simulate SM apply: resolve pending_write_apply so clients get responses
     {
@@ -876,7 +885,10 @@ async fn test_write_batch_single_replication() {
                 succeeded: true,
             })
             .collect();
-        state.handle_apply_completed(9, results, &ctx, &role_tx).await.unwrap();
+        state
+            .handle_apply_completed(9, results, &ctx, &internal_event_tx)
+            .await
+            .unwrap();
     }
 
     // Verify: All 5 writes succeeded
@@ -1068,7 +1080,7 @@ async fn test_client_write_deferred_until_sm_apply() {
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let req = ClientWriteRequest {
         client_id: 1,
@@ -1080,13 +1092,13 @@ async fn test_client_write_deferred_until_sm_apply() {
     state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
 
     // Flush: fires prepare_batch_requests, write stored in pending_client_writes
-    state.flush_cmd_buffers(&ctx, &role_tx).await.unwrap();
+    state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
     // Advance commit via single-voter path: moves write to pending_write_apply (wait_for_apply=true).
     // MemFirst: set last_entry_id=5 before flush.
     last_entry_id.store(5, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
-    state.handle_log_flushed(5, &ctx, &role_tx).await;
+    state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
 
     // CRITICAL: response must NOT arrive before SM apply (wait_for_apply_event = true)
     assert!(
@@ -1099,7 +1111,10 @@ async fn test_client_write_deferred_until_sm_apply() {
         index: 5,
         succeeded: true,
     }];
-    state.handle_apply_completed(5, results, &ctx, &role_tx).await.unwrap();
+    state
+        .handle_apply_completed(5, results, &ctx, &internal_event_tx)
+        .await
+        .unwrap();
 
     // Response must arrive after apply
     assert!(
@@ -1153,7 +1168,7 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
     state.update_commit_index(4).expect("Should succeed");
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Noop payload — used for leadership/quorum verification (wait_for_apply_event = false)
     let payloads = vec![EntryPayload::noop()];
@@ -1167,7 +1182,7 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
                 wait_for_apply_event: false, // KEY: noop path does NOT wait for SM apply
             },
             &ctx,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -1177,7 +1192,7 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
     // Since wait_for_apply_event=false, response is sent immediately upon commit (no ApplyCompleted needed)
     last_entry_id.store(5, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
-    state.handle_log_flushed(5, &ctx, &role_tx).await;
+    state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
 
     // CRITICAL: response must be available WITHOUT ApplyCompleted
     // If wait_for_apply_event were true, it would still be in pending_write_apply (awaiting SM apply)
@@ -1234,7 +1249,7 @@ async fn test_config_change_quorum_check_responds_immediately_without_sm_apply()
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
     state.update_commit_index(4).expect("Should succeed");
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Config change payload — used for membership change quorum verification (wait_for_apply_event = false)
     let change = Change::AddNode(AddNode {
@@ -1253,7 +1268,7 @@ async fn test_config_change_quorum_check_responds_immediately_without_sm_apply()
                 wait_for_apply_event: false, // KEY: config-change path does NOT wait for SM apply
             },
             &ctx,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -1263,7 +1278,7 @@ async fn test_config_change_quorum_check_responds_immediately_without_sm_apply()
     // Since wait_for_apply_event=false, response is sent immediately upon commit (no ApplyCompleted needed)
     last_entry_id.store(5, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
-    state.handle_log_flushed(5, &ctx, &role_tx).await;
+    state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
 
     // CRITICAL: response must be available WITHOUT ApplyCompleted
     let response = rx
@@ -1353,11 +1368,14 @@ async fn test_single_voter_client_write_completes_after_log_flushed() {
         "must be single_voter for this test"
     );
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Step 1: Client sends write request
     let (req, mut client_rx) = write_request();
-    state.process_batch(VecDeque::from(vec![req]), &role_tx, &ctx).await.unwrap();
+    state
+        .process_batch(VecDeque::from(vec![req]), &internal_event_tx, &ctx)
+        .await
+        .unwrap();
 
     // Step 2: Verify pending_client_writes was populated
     assert_eq!(
@@ -1380,7 +1398,7 @@ async fn test_single_voter_client_write_completes_after_log_flushed() {
     // Step 4: LogFlushed(1) event arrives — entry is now crash-safe.
     // MemFirst: set last_entry_id=1 to simulate log having entry 1 in memory.
     last_entry_id.store(1, Ordering::Relaxed);
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     // Step 5: Verify commit has advanced to 1
     assert_eq!(
@@ -1392,8 +1410,8 @@ async fn test_single_voter_client_write_completes_after_log_flushed() {
     // Step 6: Verify NotifyNewCommitIndex was sent
     assert!(
         matches!(
-            role_rx.try_recv().unwrap(),
-            RoleEvent::NotifyNewCommitIndex(_)
+            internal_event_rx.try_recv().unwrap(),
+            InternalEvent::NotifyNewCommitIndex(_)
         ),
         "NotifyNewCommitIndex must fire after commit advances"
     );
@@ -1495,8 +1513,11 @@ async fn test_speculative_next_index_before_receiving_append_result() {
         });
 
     let (req, _rx) = write_request();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    state.process_batch(VecDeque::from(vec![req]), &role_tx, &ctx).await.unwrap();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .process_batch(VecDeque::from(vec![req]), &internal_event_tx, &ctx)
+        .await
+        .unwrap();
     assert_eq!(
         state.next_index(2),
         Some(follower_2_prev_log_index + 1 + 1),

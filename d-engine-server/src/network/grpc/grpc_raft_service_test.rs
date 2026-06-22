@@ -3,13 +3,13 @@ use std::time::Duration;
 
 use crate::ApplyResult;
 use d_engine_core::AppendResponseWithUpdates;
+use d_engine_core::InternalEvent;
 use d_engine_core::MockElectionCore;
 use d_engine_core::MockMembership;
 use d_engine_core::MockRaftLog;
 use d_engine_core::MockReplicationCore;
 use d_engine_core::MockTypeConfig;
 use d_engine_core::RaftNodeConfig;
-use d_engine_core::RoleEvent;
 use d_engine_core::convert::safe_kv_bytes;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
@@ -266,11 +266,11 @@ async fn test_handle_rpc_services_successfully() {
     // Create role channel so the test can inject LogFlushed events directly into the raft loop.
     // Commit in single-voter mode is now async (driven by LogFlushed from BufferedRaftLog);
     // since this test uses MockRaftLog (no real batch_processor), we send LogFlushed manually.
-    let (role_tx, role_rx) = mpsc::unbounded_channel::<RoleEvent>();
-    let test_role_tx = role_tx.clone();
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let test_internal_event_tx = internal_event_tx.clone();
     let mut builder = MockBuilder::new(graceful_rx);
-    builder.role_tx = Some(role_tx);
-    builder.role_rx = Some(role_rx);
+    builder.internal_event_tx = Some(internal_event_tx);
+    builder.internal_event_rx = Some(internal_event_rx);
     let node = builder
         .with_raft_log(raft_log)
         .with_membership(membership)
@@ -322,15 +322,15 @@ async fn test_handle_rpc_services_successfully() {
             // Advance commit_index via LogFlushed — moves entries from
             // pending_client_writes into pending_write_apply (drain_pending_client_writes).
             let flush_idx = li_flush.load(Ordering::Relaxed);
-            let _ = test_role_tx.send(RoleEvent::LogFlushed {
+            let _ = test_internal_event_tx.send(InternalEvent::LogFlushed {
                 durable_index: flush_idx,
             });
             // Yield again so the raft loop processes LogFlushed before ApplyCompleted.
             for _ in 0..5 {
                 tokio::task::yield_now().await;
             }
-            // ApplyCompleted is now sent via role_tx (P2) to avoid priority inversion.
-            let _ = test_role_tx.send(RoleEvent::ApplyCompleted {
+            // ApplyCompleted is now sent via internal_event_tx (P2) to avoid priority inversion.
+            let _ = test_internal_event_tx.send(InternalEvent::ApplyCompleted {
                 last_index: 2,
                 results: vec![ApplyResult {
                     index: 2,

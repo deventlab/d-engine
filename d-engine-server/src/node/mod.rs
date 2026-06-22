@@ -42,9 +42,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use d_engine_core::InboundEvent;
 use d_engine_core::Membership;
 use d_engine_core::Raft;
-use d_engine_core::RaftEvent;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::ReadLease;
 use d_engine_core::Result;
@@ -81,7 +81,7 @@ where
 
     // Network & Storage events, (copied from Raft)
     // TODO: find a better solution
-    pub(crate) event_tx: mpsc::Sender<RaftEvent>,
+    pub(crate) event_tx: mpsc::Sender<InboundEvent>,
 
     // Client commands (drain-driven)
     pub(crate) cmd_tx: mpsc::Sender<d_engine_core::ClientCmd>,
@@ -156,7 +156,7 @@ where
     /// - **Learner**: Skip cluster ready check, join cluster after warmup
     /// - **Voter**: Wait for cluster ready, then warmup connections
     ///
-    /// Both paths converge to the Raft event processing loop.
+    /// Both paths converge to the inbound event processing loop.
     ///
     /// # Errors
     /// Returns `Err` if any bootstrap step or Raft execution fails.

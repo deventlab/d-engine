@@ -7,7 +7,7 @@ and configuration recommendations for production deployments.
 
 **Write operations are never blocked by snapshot generation.**
 Snapshot creation runs in a background `tokio::spawn` task, isolating compression I/O
-from the Raft event loop. Writes continue uninterrupted while a snapshot is being
+from the Inbound event loop. Writes continue uninterrupted while a snapshot is being
 compressed and written to disk.
 
 **Committed data is never lost during interrupted transfers.**
@@ -65,15 +65,15 @@ disk after a new one is created. Keep at least 2 for rollback and debugging head
 
 ## Configuration Reference
 
-| Field | Default | Description |
-|---|---|---|
-| `max_log_entries_before_snapshot` | 1000 | Log entries before snapshot triggers |
-| `retained_log_entries` | 1 | Log entries to retain after snapshot |
-| `chunk_size` | 1024 (1 KB) | Size of each transfer chunk in bytes |
-| `receive_chunk_timeout_in_sec` | 30 | Per-chunk receive timeout on follower |
-| `transfer_timeout_in_sec` | 600 | Overall transfer timeout |
-| `max_bandwidth_mbps` | 1 | Transfer bandwidth cap (Mbps) |
-| `cleanup_retain_count` | 2 | Number of past snapshot files to keep |
+| Field                             | Default     | Description                           |
+| --------------------------------- | ----------- | ------------------------------------- |
+| `max_log_entries_before_snapshot` | 1000        | Log entries before snapshot triggers  |
+| `retained_log_entries`            | 1           | Log entries to retain after snapshot  |
+| `chunk_size`                      | 1024 (1 KB) | Size of each transfer chunk in bytes  |
+| `receive_chunk_timeout_in_sec`    | 30          | Per-chunk receive timeout on follower |
+| `transfer_timeout_in_sec`         | 600         | Overall transfer timeout              |
+| `max_bandwidth_mbps`              | 1           | Transfer bandwidth cap (Mbps)         |
+| `cleanup_retain_count`            | 2           | Number of past snapshot files to keep |
 
 ## Further Reading
 

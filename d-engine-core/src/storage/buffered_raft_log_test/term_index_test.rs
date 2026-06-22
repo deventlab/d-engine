@@ -207,7 +207,7 @@ async fn test_term_index_functions_with_purged_logs() {
 /// Sequential multi-term insertion correctness test.
 ///
 /// Production invariant: all writes to BufferedRaftLog go through the single
-/// Raft event-loop task; there are no concurrent writers. The previous version
+/// inbound event-loop task; there are no concurrent writers. The previous version
 /// of this test spawned multiple tasks writing concurrently, which is not a
 /// production scenario and masked the real invariant. This test verifies
 /// first/last index tracking across five consecutive term segments.

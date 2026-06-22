@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 
 use crate::SnapshotError;
 use crate::config::RaftNodeConfig as CoreRaftNodeConfig;
-use crate::event::RaftEvent;
+use crate::event::InboundEvent;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
@@ -48,18 +48,18 @@ async fn test_create_snapshot_event_starts_and_ignores_duplicates() {
     // Initially, no snapshot in progress
     assert!(!state.snapshot_in_progress.load(Ordering::SeqCst));
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // First event should set the flag and spawn the task
     state
-        .handle_raft_event(RaftEvent::CreateSnapshotEvent, &context, role_tx.clone())
+        .handle_create_snapshot(&context, &internal_event_tx)
         .await
         .expect("Should start snapshot creation");
     assert!(state.snapshot_in_progress.load(Ordering::SeqCst));
 
     // Second event should be ignored (flag still set)
     state
-        .handle_raft_event(RaftEvent::CreateSnapshotEvent, &context, role_tx)
+        .handle_create_snapshot(&context, &internal_event_tx)
         .await
         .expect("Should ignore duplicate snapshot creation");
     // Still true, no panic, no duplicate task
@@ -90,24 +90,33 @@ async fn test_snapshot_in_progress_flag_reset_on_created_event() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
     state.snapshot_in_progress.store(true, Ordering::SeqCst);
 
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
     // Success case
-    let raft_event = RaftEvent::SnapshotCreated(Ok((
-        SnapshotMetadata {
-            last_included: Some(LogId { term: 1, index: 10 }),
-            checksum: "abc".into(),
-        },
-        PathBuf::from("/tmp/fake"),
-    )));
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let _ = state.handle_raft_event(raft_event, &context, role_tx).await;
+    let _ = state
+        .handle_snapshot_created(
+            Ok((
+                SnapshotMetadata {
+                    last_included: Some(LogId { term: 1, index: 10 }),
+                    checksum: "abc".into(),
+                },
+                PathBuf::from("/tmp/fake"),
+            )),
+            &context,
+            &internal_event_tx,
+        )
+        .await;
     assert!(!state.snapshot_in_progress.load(Ordering::SeqCst));
 
     // Error case
     state.snapshot_in_progress.store(true, Ordering::SeqCst);
-    let raft_event =
-        RaftEvent::SnapshotCreated(Err(SnapshotError::OperationFailed("fail".into()).into()));
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let _ = state.handle_raft_event(raft_event, &context, role_tx).await;
+    let _ = state
+        .handle_snapshot_created(
+            Err(SnapshotError::OperationFailed("fail".into()).into()),
+            &context,
+            &internal_event_tx,
+        )
+        .await;
     assert!(!state.snapshot_in_progress.load(Ordering::SeqCst));
 }
 
@@ -131,10 +140,10 @@ async fn test_create_snapshot_event_is_non_blocking() {
     let context = MockBuilder::new(graceful_rx).build_context();
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let start = std::time::Instant::now();
-    let _ = state.handle_raft_event(RaftEvent::CreateSnapshotEvent, &context, role_tx).await;
+    let _ = state.handle_create_snapshot(&context, &internal_event_tx).await;
     let elapsed = start.elapsed();
 
     // Should return quickly (not wait for snapshot)
@@ -162,15 +171,8 @@ async fn test_create_snapshot_event_is_non_blocking() {
 /// - Event handling returns error
 /// - No role transition events sent
 /// - snapshot_in_progress flag is reset
-#[tokio::test]
-async fn test_handle_log_purge_completed() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let case_path = temp_dir.path().join("test_handle_log_purge_completed");
-
-    // Setup
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = MockBuilder::new(graceful_rx).with_db_path(&case_path).build_context();
-
+#[test]
+fn test_handle_log_purge_completed() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, Arc::new(CoreRaftNodeConfig::default()));
     state.last_purged_index = Some(LogId {
         term: 1,
@@ -178,13 +180,11 @@ async fn test_handle_log_purge_completed() {
     });
 
     // Test updating to a higher index
-    let event = RaftEvent::LogPurgeCompleted(LogId {
-        term: 1,
-        index: 150,
-    });
     state
-        .handle_raft_event(event, &context, mpsc::unbounded_channel().0)
-        .await
+        .handle_log_purge_completed(LogId {
+            term: 1,
+            index: 150,
+        })
         .unwrap();
     assert_eq!(
         state.last_purged_index,
@@ -195,13 +195,11 @@ async fn test_handle_log_purge_completed() {
     );
 
     // Test updating to a lower index (should be ignored)
-    let event = RaftEvent::LogPurgeCompleted(LogId {
-        term: 1,
-        index: 120,
-    });
     state
-        .handle_raft_event(event, &context, mpsc::unbounded_channel().0)
-        .await
+        .handle_log_purge_completed(LogId {
+            term: 1,
+            index: 120,
+        })
         .unwrap();
     assert_eq!(
         state.last_purged_index,
@@ -213,11 +211,7 @@ async fn test_handle_log_purge_completed() {
 
     // Test first purge
     state.last_purged_index = None;
-    let event = RaftEvent::LogPurgeCompleted(LogId { term: 1, index: 50 });
-    state
-        .handle_raft_event(event, &context, mpsc::unbounded_channel().0)
-        .await
-        .unwrap();
+    state.handle_log_purge_completed(LogId { term: 1, index: 50 }).unwrap();
     assert_eq!(state.last_purged_index, Some(LogId { term: 1, index: 50 }));
 }
 
@@ -248,12 +242,12 @@ async fn test_stream_snapshot_rejects_when_no_metadata() {
         mpsc::channel::<std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>>(4);
     let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<(), tonic::Status>>();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state
-        .handle_raft_event(
-            RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
+        .handle_inbound_event(
+            InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
             &context,
-            role_tx,
+            internal_event_tx,
         )
         .await
         .expect("handler must not return Err");
@@ -344,12 +338,12 @@ async fn test_stream_snapshot_confirms_startup_when_metadata_exists() {
         mpsc::channel::<std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>>(4);
     let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<(), tonic::Status>>();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state
-        .handle_raft_event(
-            RaftEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
+        .handle_inbound_event(
+            InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
             &context,
-            role_tx,
+            internal_event_tx,
         )
         .await
         .expect("handler must not return Err");

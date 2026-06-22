@@ -25,7 +25,9 @@ use std::sync::atomic::Ordering;
 
 use candidate_state::CandidateState;
 use d_engine_proto::client::ClientReadRequest;
+use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use follower_state::FollowerState;
 pub use leader_state::ClusterMetadata;
 use leader_state::LeaderState;
@@ -42,9 +44,9 @@ use tokio::time::Instant;
 use tracing::debug;
 use tracing::trace;
 
+use super::InboundEvent;
+use super::InternalEvent;
 use super::RaftContext;
-use super::RaftEvent;
-use super::RoleEvent;
 use crate::Result;
 use crate::TypeConfig;
 
@@ -379,13 +381,13 @@ impl<T: TypeConfig> RaftRole<T> {
     pub(crate) async fn handle_zombie_detected(
         &mut self,
         node_id: u32,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()>
     where
         T: TypeConfig,
     {
-        self.state_mut().handle_zombie_detected(node_id, role_tx, ctx).await
+        self.state_mut().handle_zombie_detected(node_id, internal_event_tx, ctx).await
     }
 
     pub(crate) fn handle_snapshot_push_completed(
@@ -401,27 +403,29 @@ impl<T: TypeConfig> RaftRole<T> {
 
     pub(crate) async fn tick(
         &mut self,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-        event_tx: &mpsc::Sender<RaftEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+        event_tx: &mpsc::Sender<InboundEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()>
     where
         T: TypeConfig,
     {
         trace!("raft_role:tick");
-        self.state_mut().tick(role_tx, event_tx, ctx).await
+        self.state_mut().tick(internal_event_tx, event_tx, ctx).await
     }
 
-    pub(crate) async fn handle_raft_event(
+    pub(crate) async fn handle_inbound_event(
         &mut self,
-        raft_event: RaftEvent,
+        inbound_event: InboundEvent,
         ctx: &RaftContext<T>,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()>
     where
         T: TypeConfig,
     {
-        self.state_mut().handle_raft_event(raft_event, ctx, role_tx).await
+        self.state_mut()
+            .handle_inbound_event(inbound_event, ctx, internal_event_tx)
+            .await
     }
 
     /// Fire-and-forget noop to confirm quorum; delegates to LeaderState only.
@@ -429,10 +433,10 @@ impl<T: TypeConfig> RaftRole<T> {
     pub(crate) async fn initiate_noop_commit(
         &mut self,
         ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         if let RaftRole::Leader(state) = self {
-            state.initiate_noop_commit(ctx, role_tx).await
+            state.initiate_noop_commit(ctx, internal_event_tx).await
         } else {
             Ok(())
         }
@@ -461,9 +465,9 @@ impl<T: TypeConfig> RaftRole<T> {
     pub(crate) async fn flush_cmd_buffers(
         &mut self,
         ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
-        self.state_mut().flush_cmd_buffers(ctx, role_tx).await
+        self.state_mut().flush_cmd_buffers(ctx, internal_event_tx).await
     }
 
     /// Dispatch ApplyCompleted to the current role state.
@@ -472,12 +476,14 @@ impl<T: TypeConfig> RaftRole<T> {
         last_index: u64,
         results: Vec<crate::ApplyResult>,
         ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> crate::Result<()>
     where
         T: TypeConfig,
     {
-        self.state_mut().handle_apply_completed(last_index, results, ctx, role_tx).await
+        self.state_mut()
+            .handle_apply_completed(last_index, results, ctx, internal_event_tx)
+            .await
     }
 
     /// Dispatch LogFlushed(durable) to the current role state.
@@ -486,9 +492,9 @@ impl<T: TypeConfig> RaftRole<T> {
         &mut self,
         durable: u64,
         ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) {
-        self.state_mut().handle_log_flushed(durable, ctx, role_tx).await
+        self.state_mut().handle_log_flushed(durable, ctx, internal_event_tx).await
     }
 
     /// Dispatch AppendResult from a per-follower worker back to the current role state.
@@ -497,9 +503,78 @@ impl<T: TypeConfig> RaftRole<T> {
         follower_id: u32,
         result: crate::Result<d_engine_proto::server::replication::AppendEntriesResponse>,
         ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> crate::Result<()> {
-        self.state_mut().handle_append_result(follower_id, result, ctx, role_tx).await
+        self.state_mut()
+            .handle_append_result(follower_id, result, ctx, internal_event_tx)
+            .await
+    }
+
+    /// Trigger an independent snapshot on this role (Raft §7 — each server snapshots
+    /// independently). Called when `should_snapshot()` returns true after SM apply.
+    /// Candidate: returns `RoleViolation` — transient state, defer to next stable role.
+    pub(crate) async fn handle_create_snapshot(
+        &mut self,
+        ctx: &RaftContext<T>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> Result<()> {
+        self.state_mut().handle_create_snapshot(ctx, internal_event_tx).await
+    }
+
+    /// Process the completed snapshot result (success or error).
+    /// Leader: schedules log purge up to `last_included`.
+    /// Follower/Learner: updates local snapshot path.
+    /// Candidate: returns `RoleViolation`.
+    pub(crate) async fn handle_snapshot_created(
+        &mut self,
+        result: crate::Result<(SnapshotMetadata, std::path::PathBuf)>,
+        ctx: &RaftContext<T>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> Result<()> {
+        self.state_mut().handle_snapshot_created(result, ctx, internal_event_tx).await
+    }
+
+    /// Advance the purge boundary after log entries up to `purged_id` are removed.
+    /// Leader only: updates `last_purged_index`.
+    /// Non-leader: no-op (unexpected; logs a warning).
+    pub(crate) fn handle_log_purge_completed(
+        &mut self,
+        purged_id: LogId,
+    ) -> Result<()> {
+        self.state_mut().handle_log_purge_completed(purged_id)
+    }
+
+    /// Check pending learners for promotion eligibility after a membership change.
+    /// Leader only: evaluates `pending_promotions`, proposes config change if ready.
+    /// Non-leader: no-op (logs a warning — unexpected in steady state).
+    pub(crate) async fn handle_promote_ready_learners(
+        &mut self,
+        ctx: &RaftContext<T>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> Result<()> {
+        self.state_mut().handle_promote_ready_learners(ctx, internal_event_tx).await
+    }
+
+    /// Node was removed from cluster membership; step down immediately per Raft protocol.
+    /// Leader: emits `BecomeFollower`. Non-leader: unreachable (only Leader proposes
+    /// self-removal via config change).
+    pub(crate) fn handle_self_removed(
+        &mut self,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> Result<()> {
+        self.state_mut().handle_self_removed(internal_event_tx)
+    }
+
+    /// Membership config change applied to state — refresh any role-local derived state.
+    /// Leader: invalidates `cluster_metadata` cache for hot-path reads.
+    /// Learner: checks if it was promoted to Voter; emits `BecomeFollower` if so.
+    /// Follower/Candidate: no-op.
+    pub(crate) async fn handle_membership_applied(
+        &mut self,
+        ctx: &RaftContext<T>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> Result<()> {
+        self.state_mut().handle_membership_applied(ctx, internal_event_tx).await
     }
 }
 

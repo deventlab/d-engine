@@ -33,15 +33,15 @@ type ReadResponse = WriteResponse;
 async fn setup() -> (
     LeaderState<MockTypeConfig>,
     crate::RaftContext<MockTypeConfig>,
-    mpsc::UnboundedSender<crate::RoleEvent>,
-    mpsc::Sender<crate::RaftEvent>,
+    mpsc::UnboundedSender<crate::InternalEvent>,
+    mpsc::Sender<crate::InboundEvent>,
 ) {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let ctx = MockBuilder::new(shutdown_rx).build_context();
     let state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let (raft_tx, _raft_rx) = mpsc::channel(1);
-    (state, ctx, role_tx, raft_tx)
+    (state, ctx, internal_event_tx, raft_tx)
 }
 
 fn expired() -> Instant {
@@ -95,12 +95,12 @@ fn read_batch(
 /// Expired write: tick() sends deadline_exceeded and removes the entry.
 #[tokio::test]
 async fn test_tick_drains_expired_pending_write() {
-    let (mut state, ctx, role_tx, raft_tx) = setup().await;
+    let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (meta, mut rx) = write_metadata(expired());
     state.pending_client_writes.insert(1, meta);
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     // Sender must have received deadline_exceeded.
     let result = rx.recv().await.expect("channel closed");
@@ -117,12 +117,12 @@ async fn test_tick_drains_expired_pending_write() {
 /// Live write: tick() leaves the entry untouched and sends nothing.
 #[tokio::test]
 async fn test_tick_keeps_non_expired_pending_write() {
-    let (mut state, ctx, role_tx, raft_tx) = setup().await;
+    let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (meta, mut rx) = write_metadata(far_future());
     state.pending_client_writes.insert(1, meta);
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     // Channel must still be open (no message sent).
     assert!(
@@ -145,12 +145,12 @@ async fn test_tick_keeps_non_expired_pending_write() {
 /// Expired read: tick() sends deadline_exceeded and removes the batch.
 #[tokio::test]
 async fn test_tick_drains_expired_pending_read() {
-    let (mut state, ctx, role_tx, raft_tx) = setup().await;
+    let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (batch, mut rx) = read_batch(expired());
     state.pending_reads.insert(10, batch);
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     let result = rx.recv().await.expect("channel closed");
     let status = result.expect_err("expected Err(Status)");
@@ -165,12 +165,12 @@ async fn test_tick_drains_expired_pending_read() {
 /// Live read: tick() leaves the batch untouched and sends nothing.
 #[tokio::test]
 async fn test_tick_keeps_non_expired_pending_read() {
-    let (mut state, ctx, role_tx, raft_tx) = setup().await;
+    let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (batch, mut rx) = read_batch(far_future());
     state.pending_reads.insert(10, batch);
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     assert!(
         rx.try_recv().is_err(),
@@ -190,7 +190,7 @@ async fn test_tick_keeps_non_expired_pending_read() {
 /// Expired lease read: tick() sends deadline_exceeded and removes the entry.
 #[tokio::test]
 async fn test_tick_drains_expired_pending_lease_read() {
-    let (mut state, ctx, role_tx, raft_tx) = setup().await;
+    let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (tx, mut rx) = MaybeCloneOneshot::new();
     state.pending_lease_reads.push_back(PendingLeaseRead {
@@ -203,7 +203,7 @@ async fn test_tick_drains_expired_pending_lease_read() {
         deadline: expired(),
     });
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     let result = rx.recv().await.expect("channel closed");
     assert_eq!(
@@ -220,7 +220,7 @@ async fn test_tick_drains_expired_pending_lease_read() {
 /// Live lease read: tick() leaves the entry untouched.
 #[tokio::test]
 async fn test_tick_keeps_non_expired_pending_lease_read() {
-    let (mut state, ctx, role_tx, raft_tx) = setup().await;
+    let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (tx, mut rx) = MaybeCloneOneshot::new();
     state.pending_lease_reads.push_back(PendingLeaseRead {
@@ -233,7 +233,7 @@ async fn test_tick_keeps_non_expired_pending_lease_read() {
         deadline: far_future(),
     });
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     assert!(
         rx.try_recv().is_err(),
@@ -246,7 +246,7 @@ async fn test_tick_keeps_non_expired_pending_lease_read() {
 /// tick() drains only the expired entry; the live entry survives.
 #[tokio::test]
 async fn test_tick_drains_only_expired_lease_reads_in_mixed_queue() {
-    let (mut state, ctx, role_tx, raft_tx) = setup().await;
+    let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (exp_tx, mut exp_rx) = MaybeCloneOneshot::new();
     let (live_tx, mut live_rx) = MaybeCloneOneshot::new();
@@ -270,7 +270,7 @@ async fn test_tick_drains_only_expired_lease_reads_in_mixed_queue() {
         deadline: far_future(),
     });
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     assert_eq!(
         exp_rx.recv().await.expect("channel closed").expect_err("expected Err").code(),
@@ -294,7 +294,7 @@ async fn test_tick_drains_only_expired_lease_reads_in_mixed_queue() {
 /// Expired NodeJoin action: tick() sends deadline_exceeded to the join sender.
 #[tokio::test]
 async fn test_tick_drains_expired_node_join_commit_action() {
-    let (mut state, ctx, role_tx, raft_tx) = setup().await;
+    let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (tx, mut rx) = MaybeCloneOneshot::new();
     state.pending_commit_actions.insert(
@@ -309,7 +309,7 @@ async fn test_tick_drains_expired_node_join_commit_action() {
         },
     );
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     let result = rx.recv().await.expect("channel closed");
     assert_eq!(
@@ -326,7 +326,7 @@ async fn test_tick_drains_expired_node_join_commit_action() {
 /// Live NodeJoin action: tick() leaves it untouched.
 #[tokio::test]
 async fn test_tick_keeps_non_expired_node_join_commit_action() {
-    let (mut state, ctx, role_tx, raft_tx) = setup().await;
+    let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (tx, mut rx) = MaybeCloneOneshot::new();
     state.pending_commit_actions.insert(
@@ -341,7 +341,7 @@ async fn test_tick_keeps_non_expired_node_join_commit_action() {
         },
     );
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     assert!(rx.try_recv().is_err(), "live NodeJoin must not be drained");
     assert_eq!(
@@ -351,15 +351,15 @@ async fn test_tick_keeps_non_expired_node_join_commit_action() {
     );
 }
 
-/// Expired LeaderNoop action: tick() emits BecomeFollower to role_tx.
+/// Expired LeaderNoop action: tick() emits BecomeFollower to internal_event_tx.
 /// A noop that times out means quorum cannot be confirmed — leader must step down.
 #[tokio::test]
 async fn test_tick_expired_leader_noop_triggers_step_down() {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let ctx = MockBuilder::new(shutdown_rx).build_context();
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
-    // Keep role_rx alive to receive the BecomeFollower event.
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    // Keep internal_event_rx alive to receive the BecomeFollower event.
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let (raft_tx, _raft_rx) = mpsc::channel(1);
 
     state.pending_commit_actions.insert(
@@ -370,7 +370,7 @@ async fn test_tick_expired_leader_noop_triggers_step_down() {
         },
     );
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     assert!(
         state.pending_commit_actions.is_empty(),
@@ -378,9 +378,9 @@ async fn test_tick_expired_leader_noop_triggers_step_down() {
     );
 
     // tick() must have sent BecomeFollower
-    let event = role_rx.try_recv().expect("expected BecomeFollower event");
+    let event = internal_event_rx.try_recv().expect("expected BecomeFollower event");
     assert!(
-        matches!(event, crate::RoleEvent::BecomeFollower(_)),
+        matches!(event, crate::InternalEvent::BecomeFollower(_)),
         "expected BecomeFollower, got {:?}",
         event
     );
@@ -390,7 +390,7 @@ async fn test_tick_expired_leader_noop_triggers_step_down() {
 /// tick() drains only the expired one; the live entry survives.
 #[tokio::test]
 async fn test_tick_drains_only_expired_writes_in_mixed_map() {
-    let (mut state, ctx, role_tx, raft_tx) = setup().await;
+    let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (expired_meta, mut expired_rx) = write_metadata(expired());
     let (live_meta, mut live_rx) = write_metadata(far_future());
@@ -398,7 +398,7 @@ async fn test_tick_drains_only_expired_writes_in_mixed_map() {
     state.pending_client_writes.insert(1, expired_meta);
     state.pending_client_writes.insert(2, live_meta);
 
-    state.tick(&role_tx, &raft_tx, &ctx).await.unwrap();
+    state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
     // Expired entry notified.
     let result = expired_rx.recv().await.expect("channel closed");

@@ -11,7 +11,7 @@ use crate::MockReplicationCore;
 use crate::RaftContext;
 use crate::RaftRequestWithSignal;
 use crate::client::ClientResponse;
-use crate::event::RoleEvent;
+use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
@@ -192,8 +192,11 @@ async fn test_process_batch_quorum_achieved() {
     let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
     let receivers = vec![rx1, rx2];
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let result = context
+        .state
+        .process_batch(batch, &internal_event_tx, &context.raft_context)
+        .await;
 
     assert!(result.is_ok());
 
@@ -201,12 +204,15 @@ async fn test_process_batch_quorum_achieved() {
     // MemFirst: set last_entry_id=6 before flush.
     last_entry_id.store(6, Ordering::Relaxed);
     context.state.cluster_metadata.single_voter = true;
-    context.state.handle_log_flushed(6, &context.raft_context, &role_tx).await;
+    context
+        .state
+        .handle_log_flushed(6, &context.raft_context, &internal_event_tx)
+        .await;
 
     assert_eq!(context.state.shared_state().commit_index, 6);
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::NotifyNewCommitIndex(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::NotifyNewCommitIndex(_))
     ));
 
     // Verify client responses
@@ -372,10 +378,13 @@ async fn test_process_batch_higher_term() {
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx1, mut rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // process_batch queues the write and returns Ok
-    let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
+    let result = context
+        .state
+        .process_batch(batch, &internal_event_tx, &context.raft_context)
+        .await;
     assert!(result.is_ok());
 
     // Trigger step-down via higher-term peer response
@@ -386,14 +395,19 @@ async fn test_process_batch_higher_term() {
     };
     let ha_result = context
         .state
-        .handle_append_result(2, Ok(higher_term_resp), &context.raft_context, &role_tx)
+        .handle_append_result(
+            2,
+            Ok(higher_term_resp),
+            &context.raft_context,
+            &internal_event_tx,
+        )
         .await;
     assert!(ha_result.is_err());
 
     assert_eq!(context.state.current_term(), 10);
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeFollower(_))
     ));
 
     // Pending write receives TermOutdated error
@@ -684,15 +698,21 @@ async fn test_single_node_cluster_commit_index() {
 
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
-    let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
+    let result = context
+        .state
+        .process_batch(batch, &internal_event_tx, &context.raft_context)
+        .await;
     assert!(result.is_ok());
 
     // Simulate the async LogFlushed event that BufferedRaftLog's batch_processor fires
     // after fsync. MemFirst: set last_entry_id=7 before flush.
     last_entry_id.store(7, Ordering::Relaxed);
-    context.state.handle_log_flushed(7, &context.raft_context, &role_tx).await;
+    context
+        .state
+        .handle_log_flushed(7, &context.raft_context, &internal_event_tx)
+        .await;
 
     assert_eq!(
         context.state.shared_state().commit_index,
@@ -700,8 +720,8 @@ async fn test_single_node_cluster_commit_index() {
         "Single-node: commit_index should advance to last_entry_id after LogFlushed"
     );
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::NotifyNewCommitIndex(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::NotifyNewCommitIndex(_))
     ));
 
     let mut rx = rx1;
@@ -750,9 +770,12 @@ async fn test_multi_node_cluster_empty_peer_updates_commit_index() {
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
-    let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
+    let result = context
+        .state
+        .process_batch(batch, &internal_event_tx, &context.raft_context)
+        .await;
 
     assert!(result.is_ok());
     assert_eq!(
@@ -761,7 +784,7 @@ async fn test_multi_node_cluster_empty_peer_updates_commit_index() {
         "Multi-node: commit does not advance without peer ACKs"
     );
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "No NotifyNewCommitIndex without commit advancement"
     );
 
@@ -830,9 +853,12 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let (tx2, rx2) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
-    let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
+    let result = context
+        .state
+        .process_batch(batch, &internal_event_tx, &context.raft_context)
+        .await;
     assert!(result.is_ok());
 
     // Simulate peer 2 responding — triggers calculate_majority_matched_index → commit=6
@@ -842,15 +868,15 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
             2,
             Ok(success_response(1, 6)),
             &context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
 
     assert_eq!(context.state.shared_state().commit_index, 6);
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::NotifyNewCommitIndex(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::NotifyNewCommitIndex(_))
     ));
 
     let mut rx = rx1;
@@ -932,17 +958,20 @@ async fn test_verify_internal_quorum_success() {
         wait_for_apply_event: false,
     };
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    state.execute_request_immediately(req, &raft_context, &role_tx).await.unwrap();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .execute_request_immediately(req, &raft_context, &internal_event_tx)
+        .await
+        .unwrap();
 
     // Simulate the async LogFlushed event. MemFirst: set last_entry_id=5 before flush.
     last_entry_id.store(5, Ordering::Relaxed);
-    state.handle_log_flushed(5, &raft_context, &role_tx).await;
+    state.handle_log_flushed(5, &raft_context, &internal_event_tx).await;
 
     assert_eq!(state.shared_state().commit_index, 5);
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::NotifyNewCommitIndex(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::NotifyNewCommitIndex(_))
     ));
 
     // Response received: write_success
@@ -1000,8 +1029,11 @@ async fn test_verify_internal_quorum_verifiable_failure() {
         wait_for_apply_event: false,
     };
 
-    let (role_tx, _) = mpsc::unbounded_channel();
-    state.execute_request_immediately(req, &raft_context, &role_tx).await.unwrap();
+    let (internal_event_tx, _) = mpsc::unbounded_channel();
+    state
+        .execute_request_immediately(req, &raft_context, &internal_event_tx)
+        .await
+        .unwrap();
 
     // Write stays pending — no commit advancement
     assert!(
@@ -1089,8 +1121,11 @@ async fn test_verify_internal_quorum_non_verifiable_failure() {
         wait_for_apply_event: false,
     };
 
-    let (role_tx, _) = mpsc::unbounded_channel();
-    state.execute_request_immediately(req, &raft_context, &role_tx).await.unwrap();
+    let (internal_event_tx, _) = mpsc::unbounded_channel();
+    state
+        .execute_request_immediately(req, &raft_context, &internal_event_tx)
+        .await
+        .unwrap();
 
     // Write is pending — 4-node cluster, no peer ACKs received
     assert!(
@@ -1147,8 +1182,11 @@ async fn test_verify_internal_quorum_partial_timeouts() {
         wait_for_apply_event: false,
     };
 
-    let (role_tx, _) = mpsc::unbounded_channel();
-    state.execute_request_immediately(req, &raft_context, &role_tx).await.unwrap();
+    let (internal_event_tx, _) = mpsc::unbounded_channel();
+    state
+        .execute_request_immediately(req, &raft_context, &internal_event_tx)
+        .await
+        .unwrap();
 
     // Write is pending — partial peer timeouts, no commit advancement
     assert!(
@@ -1202,8 +1240,11 @@ async fn test_verify_internal_quorum_all_timeouts() {
         wait_for_apply_event: false,
     };
 
-    let (role_tx, _) = mpsc::unbounded_channel();
-    state.execute_request_immediately(req, &raft_context, &role_tx).await.unwrap();
+    let (internal_event_tx, _) = mpsc::unbounded_channel();
+    state
+        .execute_request_immediately(req, &raft_context, &internal_event_tx)
+        .await
+        .unwrap();
 
     // Write is pending — all peers timed out
     assert!(
@@ -1264,8 +1305,11 @@ async fn test_verify_internal_quorum_higher_term() {
         wait_for_apply_event: false,
     };
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    state.execute_request_immediately(req, &raft_context, &role_tx).await.unwrap();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .execute_request_immediately(req, &raft_context, &internal_event_tx)
+        .await
+        .unwrap();
 
     // Trigger step-down via higher-term peer response
     let higher_term_resp = AppendEntriesResponse {
@@ -1274,13 +1318,13 @@ async fn test_verify_internal_quorum_higher_term() {
         result: None,
     };
     let result = state
-        .handle_append_result(2, Ok(higher_term_resp), &raft_context, &role_tx)
+        .handle_append_result(2, Ok(higher_term_resp), &raft_context, &internal_event_tx)
         .await;
 
     assert!(result.is_err());
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::BecomeFollower(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeFollower(_))
     ));
 
     // Pending write receives TermOutdated error
@@ -1336,8 +1380,8 @@ async fn test_verify_internal_quorum_critical_failure() {
         wait_for_apply_event: false,
     };
 
-    let (role_tx, _) = mpsc::unbounded_channel();
-    let result = state.execute_request_immediately(req, &raft_context, &role_tx).await;
+    let (internal_event_tx, _) = mpsc::unbounded_channel();
+    let result = state.execute_request_immediately(req, &raft_context, &internal_event_tx).await;
 
     assert!(result.is_err());
     assert!(matches!(
@@ -1416,8 +1460,11 @@ async fn test_execute_and_process_raft_rpc_multi_node_empty_peer_updates() {
         "clock failed to advance past 0 within 50ms"
     );
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    let result = context.state.process_batch(batch, &role_tx, &context.raft_context).await;
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let result = context
+        .state
+        .process_batch(batch, &internal_event_tx, &context.raft_context)
+        .await;
 
     assert!(result.is_ok());
     assert_eq!(
@@ -1426,7 +1473,7 @@ async fn test_execute_and_process_raft_rpc_multi_node_empty_peer_updates() {
         "Multi-node cluster: commit stays at 5 without peer ACKs (not last_entry_id=10)"
     );
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "No NotifyNewCommitIndex without commit advancement"
     );
 
@@ -1566,13 +1613,13 @@ async fn test_handle_append_result_two_node_quorum_achieved() {
     state.init_cluster_metadata(&raft_context.membership).await.unwrap();
     // initial commit_index = 0
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     state
         .handle_append_result(
             peer2_id,
             Ok(success_response(1, 3)),
             &raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -1583,8 +1630,8 @@ async fn test_handle_append_result_two_node_quorum_achieved() {
         "two-node: commit advances to 3 (quorum: leader + peer2 = 2/2)"
     );
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::NotifyNewCommitIndex(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::NotifyNewCommitIndex(_))
     ));
 }
 
@@ -1633,7 +1680,7 @@ async fn test_handle_append_result_three_node_quorum_all_peers() {
         );
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Peer 2 responds → quorum (2/3), commit advances
     context
@@ -1642,7 +1689,7 @@ async fn test_handle_append_result_three_node_quorum_all_peers() {
             2,
             Ok(success_response(1, 10)),
             &context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -1653,8 +1700,8 @@ async fn test_handle_append_result_three_node_quorum_all_peers() {
         "commit advances after peer 2"
     );
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::NotifyNewCommitIndex(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::NotifyNewCommitIndex(_))
     ));
 
     // Peer 3 responds → already committed, calculate_majority returns None
@@ -1664,7 +1711,7 @@ async fn test_handle_append_result_three_node_quorum_all_peers() {
             3,
             Ok(success_response(1, 10)),
             &context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -1715,7 +1762,7 @@ async fn test_handle_append_result_three_node_quorum_partial_timeout() {
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(10));
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Only peer 2 responds; peer 3 never does
     context
@@ -1724,7 +1771,7 @@ async fn test_handle_append_result_three_node_quorum_partial_timeout() {
             2,
             Ok(success_response(1, 10)),
             &context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -1735,8 +1782,8 @@ async fn test_handle_append_result_three_node_quorum_partial_timeout() {
         "quorum achieved with partial timeout (2/3 nodes = majority)"
     );
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::NotifyNewCommitIndex(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::NotifyNewCommitIndex(_))
     ));
 }
 
@@ -1801,7 +1848,7 @@ async fn test_handle_append_result_five_node_quorum_majority() {
         );
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // 3 peers respond → majority of 5 (need ≥3) achieved
     context
@@ -1810,7 +1857,7 @@ async fn test_handle_append_result_five_node_quorum_majority() {
             2,
             Ok(success_response(1, 10)),
             &context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -1821,8 +1868,8 @@ async fn test_handle_append_result_five_node_quorum_majority() {
         "commit advances (4/5 ≥ majority)"
     );
     assert!(matches!(
-        role_rx.try_recv(),
-        Ok(RoleEvent::NotifyNewCommitIndex(_))
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::NotifyNewCommitIndex(_))
     ));
 
     // Remaining peers just confirm — no second commit advance
@@ -1833,7 +1880,7 @@ async fn test_handle_append_result_five_node_quorum_majority() {
                 peer_id,
                 Ok(success_response(1, 10)),
                 &context.raft_context,
-                &role_tx,
+                &internal_event_tx,
             )
             .await
             .unwrap();
@@ -1864,7 +1911,7 @@ async fn test_handle_append_result_three_node_no_quorum_all_timeouts() {
 
     // No handle_success_response or calculate_majority_matched_index expected (early return on Err)
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     for peer_id in [2u32, 3u32] {
         let result = context
@@ -1873,7 +1920,7 @@ async fn test_handle_append_result_three_node_no_quorum_all_timeouts() {
                 peer_id,
                 Err(crate::Error::Fatal("simulated timeout".to_string())),
                 &context.raft_context,
-                &role_tx,
+                &internal_event_tx,
             )
             .await;
         assert!(result.is_ok(), "RPC failure is tolerated, not propagated");
@@ -1885,7 +1932,7 @@ async fn test_handle_append_result_three_node_no_quorum_all_timeouts() {
         "commit unchanged — all peers timed out, no quorum"
     );
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "no NotifyNewCommitIndex without commit advancement"
     );
 }
@@ -1929,7 +1976,7 @@ async fn test_handle_append_result_three_node_no_quorum_single_peer_insufficient
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     context
         .state
@@ -1937,7 +1984,7 @@ async fn test_handle_append_result_three_node_no_quorum_single_peer_insufficient
             2,
             Ok(success_response(1, 4)),
             &context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -1948,7 +1995,7 @@ async fn test_handle_append_result_three_node_no_quorum_single_peer_insufficient
         "commit unchanged — calculate_majority returned None"
     );
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "no NotifyNewCommitIndex without commit advancement"
     );
 }
@@ -2009,7 +2056,7 @@ async fn test_handle_append_result_five_node_no_quorum_minority() {
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     context
         .state
@@ -2017,7 +2064,7 @@ async fn test_handle_append_result_five_node_no_quorum_minority() {
             2,
             Ok(success_response(1, 10)),
             &context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await
         .unwrap();
@@ -2028,7 +2075,7 @@ async fn test_handle_append_result_five_node_no_quorum_minority() {
         "commit unchanged — minority response (2/5 < majority)"
     );
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "no NotifyNewCommitIndex without quorum"
     );
 }
@@ -2054,7 +2101,7 @@ async fn test_handle_append_result_stale_term_ignored() {
 
     // No mock expectations — stale response triggers early return before any handler call
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // term=0 is stale (leader_term=1), response ignored
     let stale_response = AppendEntriesResponse {
@@ -2066,7 +2113,12 @@ async fn test_handle_append_result_stale_term_ignored() {
     };
     let result = context
         .state
-        .handle_append_result(2, Ok(stale_response), &context.raft_context, &role_tx)
+        .handle_append_result(
+            2,
+            Ok(stale_response),
+            &context.raft_context,
+            &internal_event_tx,
+        )
         .await;
 
     assert!(result.is_ok(), "stale term response returns Ok (ignored)");
@@ -2076,7 +2128,7 @@ async fn test_handle_append_result_stale_term_ignored() {
         "commit unchanged — stale term response ignored"
     );
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "no event emitted for stale response"
     );
 }
@@ -2104,7 +2156,7 @@ async fn test_handle_append_result_rpc_failure_ignored() {
 
     // No mock expectations — Err triggers early return before any handler call
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     let result = context
         .state
@@ -2112,7 +2164,7 @@ async fn test_handle_append_result_rpc_failure_ignored() {
             2,
             Err(crate::Error::Fatal("connection refused".to_string())),
             &context.raft_context,
-            &role_tx,
+            &internal_event_tx,
         )
         .await;
 
@@ -2126,7 +2178,7 @@ async fn test_handle_append_result_rpc_failure_ignored() {
         "commit unchanged — RPC failure ignored"
     );
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "no event emitted for RPC failure"
     );
 }
@@ -2224,7 +2276,7 @@ async fn test_stale_conflict_ack_does_not_regress_next_index() {
     state.match_index.insert(peer_id, 100);
     state.next_index.insert(peer_id, 101);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Stale CONFLICT from Batch B: follower's log was empty when it arrived.
     let stale_conflict = AppendEntriesResponse {
@@ -2237,7 +2289,12 @@ async fn test_stale_conflict_ack_does_not_regress_next_index() {
     };
 
     let result = state
-        .handle_append_result(peer_id, Ok(stale_conflict), &context_inner, &role_tx)
+        .handle_append_result(
+            peer_id,
+            Ok(stale_conflict),
+            &context_inner,
+            &internal_event_tx,
+        )
         .await;
 
     assert!(result.is_ok(), "stale conflict must not return an error");
@@ -2368,9 +2425,14 @@ async fn test_stale_conflict_floor_guard_prevents_regression() {
     )
     .await;
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let result = state
-        .handle_append_result(follower2_id, Ok(stale_conflict), &context_inner, &role_tx)
+        .handle_append_result(
+            follower2_id,
+            Ok(stale_conflict),
+            &context_inner,
+            &internal_event_tx,
+        )
         .await;
 
     assert!(result.is_ok(), "stale conflict must not return an error");
@@ -2399,10 +2461,15 @@ async fn test_conflict_response_resets_speculative_next_index() {
     )
     .await;
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let result = state
-        .handle_append_result(follower2_id, Ok(stale_conflict), &context_inner, &role_tx)
+        .handle_append_result(
+            follower2_id,
+            Ok(stale_conflict),
+            &context_inner,
+            &internal_event_tx,
+        )
         .await;
 
     assert!(result.is_ok(), "stale conflict must not return an error");

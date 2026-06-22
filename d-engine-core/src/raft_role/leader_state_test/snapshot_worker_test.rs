@@ -7,7 +7,7 @@
 //!   3. Skip subsequent `Snapshot` tasks that arrive while in progress.
 //!   4. Skip `Append` tasks that arrive while snapshot is in progress
 //!      (they are meaningless until the peer has the snapshot base).
-//!   5. After transfer completes, emit `RoleEvent::SnapshotPushCompleted`.
+//!   5. After transfer completes, emit `InternalEvent::SnapshotPushCompleted`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +25,7 @@ use crate::MockRaftLog;
 use crate::MockStateMachine;
 use crate::MockTransport;
 use crate::RaftRequestWithSignal;
-use crate::event::RoleEvent;
+use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
@@ -109,11 +109,11 @@ fn one_entry_batch() -> std::collections::VecDeque<RaftRequestWithSignal> {
 
 /// Worker routes snapshot task: when `prepare_batch_requests` returns a
 /// snapshot target, the worker receives `ReplicationTask::Snapshot` and
-/// emits `RoleEvent::SnapshotPushCompleted` once the transfer finishes.
+/// emits `InternalEvent::SnapshotPushCompleted` once the transfer finishes.
 ///
 /// # Scenario
 /// - `prepare_batch_requests` returns snapshot_targets = [2], append_requests = []
-/// - Expected: `RoleEvent::SnapshotPushCompleted { peer_id: 2, success: true }` arrives
+/// - Expected: `InternalEvent::SnapshotPushCompleted { peer_id: 2, success: true }` arrives
 ///
 /// # Before fix (will FAIL)
 /// `ReplicationTask` doesn't exist; worker only handles AppendEntries.
@@ -170,19 +170,19 @@ async fn test_worker_handles_snapshot_task_and_emits_completed_event() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
 
     // Allow worker task to run and complete the (mock) snapshot transfer.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let event = role_rx
+    let event = internal_event_rx
         .try_recv()
         .expect("SnapshotPushCompleted should arrive after snapshot transfer");
     assert!(
         matches!(
             event,
-            RoleEvent::SnapshotPushCompleted {
+            InternalEvent::SnapshotPushCompleted {
                 peer_id: 2,
                 success: true
             }
@@ -256,12 +256,12 @@ async fn test_worker_skips_duplicate_snapshot_while_in_progress() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // First batch: snapshot task sent to worker (transfer begins).
-    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
     // Second batch arrives before first snapshot completes.
-    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
 
     // Allow worker time to finish processing.
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -346,12 +346,12 @@ async fn test_worker_skips_append_while_snapshot_in_progress() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // First batch: snapshot task.
-    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
     // Second batch: append task arrives while snapshot is still running.
-    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
 
     // Wait for snapshot to finish.
     tokio::time::sleep(Duration::from_millis(200)).await;

@@ -48,7 +48,7 @@ use crate::PeerUpdate;
 use crate::RaftNodeConfig;
 use crate::ReadConsistencyPolicy;
 use crate::convert::safe_kv_bytes;
-use crate::event::RaftEvent;
+use crate::event::InboundEvent;
 use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
 use crate::raft_role::leader_state::{LeaderState, PendingReadBatch};
 use crate::raft_role::role_state::RaftRoleState;
@@ -107,8 +107,8 @@ fn sm_with_last_applied(index: u64) -> MockStateMachine {
 type MultiVoterFixture = (
     LeaderState<MockTypeConfig>,
     crate::raft_context::RaftContext<MockTypeConfig>,
-    mpsc::UnboundedSender<crate::event::RoleEvent>,
-    mpsc::UnboundedReceiver<crate::event::RoleEvent>,
+    mpsc::UnboundedSender<crate::event::InternalEvent>,
+    mpsc::UnboundedReceiver<crate::event::InternalEvent>,
 );
 
 /// Set up a 3-voter cluster (leader=1, peers=2,3) ready for LinearizableRead tests.
@@ -152,8 +152,8 @@ async fn setup_multi_voter(
     membership.expect_replication_peers().returning(move || peers.clone());
     state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
 
-    let (role_tx, role_rx) = mpsc::unbounded_channel();
-    (state, context, role_tx, role_rx)
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+    (state, context, internal_event_tx, internal_event_rx)
 }
 
 /// Build a `MockRaftLog` that returns `Some(match_index)` for every
@@ -208,7 +208,7 @@ async fn test_multi_voter_fast_path_linear_read_is_queued() {
         .times(1)
         .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
-    let (mut state, context, role_tx, _role_rx) = setup_multi_voter(
+    let (mut state, context, internal_event_tx, _internal_event_rx) = setup_multi_voter(
         "/tmp/test_multi_voter_fast_path_linear_read_is_queued",
         replication,
         raft_log_no_quorum(),
@@ -222,7 +222,10 @@ async fn test_multi_voter_fast_path_linear_read_is_queued() {
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     state.push_client_cmd(linear_read_cmd(resp_tx), &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush must succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("flush must succeed");
 
     // After the fix: read is queued, not served.
     assert_eq!(
@@ -272,7 +275,7 @@ async fn test_pending_reads_drained_by_quorum_ack() {
     });
 
     // quorum_confirmed = calculate_majority_matched_index(...).is_some()
-    let (mut state, context, role_tx, _role_rx) = setup_multi_voter(
+    let (mut state, context, internal_event_tx, _internal_event_rx) = setup_multi_voter(
         "/tmp/test_pending_reads_drained_by_quorum_ack",
         replication,
         raft_log_with_quorum(0),
@@ -303,7 +306,7 @@ async fn test_pending_reads_drained_by_quorum_ack() {
     // Simulate quorum ACK from peer 2.
     // Majority = 2/3: self + peer 2 is sufficient.
     state
-        .handle_append_result(2, Ok(quorum_ack(1, 0)), &context, &role_tx)
+        .handle_append_result(2, Ok(quorum_ack(1, 0)), &context, &internal_event_tx)
         .await
         .expect("handle_append_result must succeed");
 
@@ -371,11 +374,11 @@ async fn test_pending_reads_slow_path_drained_by_apply_completed() {
     );
     assert_eq!(state.pending_reads.len(), 1, "precondition: read is queued");
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // SM applies entries up to index 5 — this is the commit chain completing.
     state
-        .handle_apply_completed(5, vec![], &context, &role_tx)
+        .handle_apply_completed(5, vec![], &context, &internal_event_tx)
         .await
         .expect("handle_apply_completed must succeed");
 
@@ -442,10 +445,13 @@ async fn test_pending_reads_partition_scenario_times_out() {
         },
     );
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    let (raft_tx, _raft_rx) = mpsc::channel::<RaftEvent>(1);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (raft_tx, _raft_rx) = mpsc::channel::<InboundEvent>(1);
 
-    state.tick(&role_tx, &raft_tx, &context).await.expect("tick must succeed");
+    state
+        .tick(&internal_event_tx, &raft_tx, &context)
+        .await
+        .expect("tick must succeed");
 
     // tick() must remove the expired entry.
     assert_eq!(
@@ -568,7 +574,7 @@ async fn test_linearizable_read_served_immediately_with_valid_lease_in_multi_vot
         .times(1)
         .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
-    let (mut state, context, role_tx, _role_rx) = setup_multi_voter(
+    let (mut state, context, internal_event_tx, _internal_event_rx) = setup_multi_voter(
         "/tmp/test_linearizable_read_served_immediately_with_valid_lease_in_multi_voter",
         replication,
         raft_log_no_quorum(),
@@ -584,7 +590,10 @@ async fn test_linearizable_read_served_immediately_with_valid_lease_in_multi_vot
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     state.push_client_cmd(linear_read_cmd(resp_tx), &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush must succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("flush must succeed");
 
     // Fast path taken: read must NOT be queued.
     assert_eq!(
@@ -637,7 +646,7 @@ async fn test_linearizable_read_queued_when_sm_behind_despite_valid_lease() {
         .times(1)
         .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
-    let (mut state, context, role_tx, _role_rx) = setup_multi_voter(
+    let (mut state, context, internal_event_tx, _internal_event_rx) = setup_multi_voter(
         "/tmp/test_linearizable_read_queued_when_sm_behind_despite_valid_lease",
         replication,
         raft_log_no_quorum(),
@@ -653,7 +662,10 @@ async fn test_linearizable_read_queued_when_sm_behind_despite_valid_lease() {
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     state.push_client_cmd(linear_read_cmd(resp_tx), &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush must succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("flush must succeed");
 
     // SM not caught up: read must be queued regardless of lease validity.
     assert_eq!(
@@ -704,7 +716,7 @@ async fn test_linearizable_read_not_served_when_lease_expired_in_multi_voter() {
         .times(1)
         .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
-    let (mut state, context, role_tx, _role_rx) = setup_multi_voter(
+    let (mut state, context, internal_event_tx, _internal_event_rx) = setup_multi_voter(
         "/tmp/test_linearizable_read_not_served_when_lease_expired_in_multi_voter",
         replication,
         raft_log_no_quorum(),
@@ -720,7 +732,10 @@ async fn test_linearizable_read_not_served_when_lease_expired_in_multi_voter() {
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     state.push_client_cmd(linear_read_cmd(resp_tx), &context);
-    state.flush_cmd_buffers(&context, &role_tx).await.expect("flush must succeed");
+    state
+        .flush_cmd_buffers(&context, &internal_event_tx)
+        .await
+        .expect("flush must succeed");
 
     // Expired lease → slow path: read must be queued, not served inline.
     assert_eq!(

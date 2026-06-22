@@ -282,7 +282,7 @@ where
     /// Used when a peer's `next_index` falls below the leader's purge boundary and
     /// AppendEntries would carry a stale `prev_log_term = 0`, causing a perpetual
     /// conflict loop.  The worker calls this and awaits completion before emitting
-    /// `RoleEvent::SnapshotPushCompleted`.
+    /// `InternalEvent::SnapshotPushCompleted`.
     ///
     /// # Parameters
     /// - `peer_id`: Target follower node ID
@@ -333,7 +333,7 @@ where
     ///
     /// When the stream breaks (network error, peer restart), the receiver yields
     /// an `Err(tonic::Status)` and the caller should emit
-    /// `RoleEvent::PeerStreamError { peer_id }` so the Raft loop can reset
+    /// `InternalEvent::PeerStreamError { peer_id }` so the Raft loop can reset
     /// `next_index` and schedule reconnection.
     ///
     /// # Errors

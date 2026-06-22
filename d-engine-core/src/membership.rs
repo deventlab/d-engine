@@ -43,7 +43,7 @@ where
 
     /// All non-self nodes (including Syncing and Active)
     /// Note:
-    /// Joining node has not start its Raft event processing engine yet.
+    /// Joining node has not start its inbound event processing engine yet.
     async fn replication_peers(&self) -> Vec<NodeMeta>;
 
     /// All non-self nodes in Active state

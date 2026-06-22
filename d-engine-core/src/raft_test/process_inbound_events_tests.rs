@@ -1,6 +1,6 @@
-//! # process_raft_events drain loop tests
+//! # process_inbound_events drain loop tests
 //!
-//! Tests for the in-loop `matches!()` merge guard in `Raft::process_raft_events`.
+//! Tests for the in-loop `matches!()` merge guard in `Raft::process_inbound_events`.
 //! These tests verify that `merge_append_entries` fires per-iteration when the
 //! front of the queue is an `AppendEntries` event — not only once at the start
 //! of the loop (which was the pre-fix behavior flagged in CodeRabbit review #407).
@@ -13,12 +13,12 @@
 //!   Mock expectations are verified on drop at the end of each test.
 
 use crate::AppendResponseWithUpdates;
-use crate::RoleEvent;
+use crate::InternalEvent;
 use crate::StateUpdate;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::test_utils::MockBuilder;
-use crate::{MockElectionCore, MockReplicationCore, RaftEvent, mock_entries};
+use crate::{InboundEvent, MockElectionCore, MockReplicationCore, mock_entries};
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
 use std::collections::VecDeque;
@@ -44,21 +44,21 @@ fn make_request(
     }
 }
 
-fn make_ae_event(req: AppendEntriesRequest) -> RaftEvent {
+fn make_ae_event(req: AppendEntriesRequest) -> InboundEvent {
     let (tx, _rx) = MaybeCloneOneshot::new();
-    RaftEvent::AppendEntries(req, vec![tx])
+    InboundEvent::AppendEntries(req, vec![tx])
 }
 
-fn make_fatal_event() -> RoleEvent {
-    RoleEvent::FatalError {
+fn make_fatal_event() -> InternalEvent {
+    InternalEvent::FatalError {
         source: "core".to_string(),
         error: "fatal-error".to_string(),
     }
 }
 
-fn make_vr_event() -> RaftEvent {
+fn make_vr_event() -> InboundEvent {
     let (tx, _rx) = MaybeCloneOneshot::new();
-    RaftEvent::ReceiveVoteRequest(
+    InboundEvent::ReceiveVoteRequest(
         VoteRequest {
             term: 1,
             candidate_id: 2,
@@ -123,9 +123,9 @@ async fn test_non_ae_prefix_does_not_block_ae_merge_in_drain() {
     queue.push_back(make_vr_event());
     queue.push_back(make_ae_event(make_request(5, 9, 5, 1)));
     queue.push_back(make_ae_event(make_request(5, 14, 5, 1)));
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
-    raft.process_raft_events().await.unwrap();
+    raft.process_inbound_events().await.unwrap();
     // mock drop verifies: handle_vote_request×1, handle_append_entries×1
 }
 
@@ -171,9 +171,9 @@ async fn test_ae_runs_on_both_sides_of_non_ae_are_each_merged() {
     // second run: entries 20-29 (new entries, continues after first run)
     queue.push_back(make_ae_event(make_request(5, 19, 5, 1)));
     queue.push_back(make_ae_event(make_request(5, 24, 5, 1)));
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
-    raft.process_raft_events().await.unwrap();
+    raft.process_inbound_events().await.unwrap();
 }
 
 /// Buffer with only non-AE events drains without calling merge and without panicking.
@@ -208,9 +208,9 @@ async fn test_all_non_ae_drain_no_merge_no_panic() {
     let mut queue = VecDeque::new();
     queue.push_back(make_vr_event());
     queue.push_back(make_vr_event());
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
-    raft.process_raft_events().await.unwrap();
+    raft.process_inbound_events().await.unwrap();
 }
 
 /// A single AE sandwiched between non-AE events is dispatched alone.
@@ -250,36 +250,36 @@ async fn test_isolated_ae_between_non_ae_dispatched_alone() {
     queue.push_back(make_vr_event());
     // isolated AE: entries 15-19
     queue.push_back(make_ae_event(make_request(5, 14, 5, 1)));
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
-    raft.process_raft_events().await.unwrap();
+    raft.process_inbound_events().await.unwrap();
 }
 
 // -----------------------------------------------------------------------
-// process_role_events error propagation
+// process_internal_events error propagation
 // -----------------------------------------------------------------------
 
-/// A RoleEvent::FatalError in the buffer causes process_role_events to
+/// A InternalEvent::FatalError in the buffer causes process_internal_events to
 /// return Err immediately rather than swallowing the error and continuing.
 ///
 /// This guards against the node silently continuing after a fatal signal
 /// (e.g. state machine worker crash).
 ///
-/// Buffer before: [RoleEvent::FatalError { source: "sm_worker", error: "disk full" }]
+/// Buffer before: [InternalEvent::FatalError { source: "sm_worker", error: "disk full" }]
 ///
 /// Expected:
 /// - returns Err(e) where e.is_fatal() == true
 /// - does NOT return Ok(())
 #[tokio::test]
-async fn test_process_role_events_propagates_fatal_error() {
+async fn test_process_internal_events_propagates_fatal_error() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     let mut queue = VecDeque::new();
     queue.push_back(make_fatal_event());
-    raft.buffered_role_event = queue;
+    raft.buffered_internal_event = queue;
 
-    let err = raft.process_role_events().await.unwrap_err();
+    let err = raft.process_internal_events().await.unwrap_err();
     assert!(err.is_fatal());
 }

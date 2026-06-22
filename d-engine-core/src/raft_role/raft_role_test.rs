@@ -697,7 +697,7 @@ fn test_update_voted_for_learner_discovers_leader() {
 // Only the leader can propose membership changes (BatchRemove).  When a
 // ZombieDetected signal arrives while the node is a Follower, Candidate, or
 // Learner the call must return Ok(()) immediately without emitting any event on
-// role_tx.  Recovery from the lost signal is handled by the health-monitor
+// internal_event_tx.  Recovery from the lost signal is handled by the health-monitor
 // counter-reset mechanism (see health_monitor_test).
 // ============================================================================
 
@@ -721,14 +721,14 @@ async fn test_handle_zombie_detected_is_noop_on_follower() {
     let cfg = make_test_config();
     let mut role = RaftRole::Follower(Box::new(FollowerState::new(1, cfg, None, None)));
     let (ctx, _shutdown_tx) = make_test_context();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
-    let result = role.handle_zombie_detected(42, &role_tx, &ctx).await;
+    let result = role.handle_zombie_detected(42, &internal_event_tx, &ctx).await;
 
     assert!(result.is_ok(), "Follower must not error on ZombieDetected");
     assert!(
-        role_rx.try_recv().is_err(),
-        "Follower must not emit any RoleEvent for ZombieDetected"
+        internal_event_rx.try_recv().is_err(),
+        "Follower must not emit any InternalEvent for ZombieDetected"
     );
 }
 
@@ -737,14 +737,14 @@ async fn test_handle_zombie_detected_is_noop_on_candidate() {
     let cfg = make_test_config();
     let mut role = RaftRole::Candidate(Box::new(CandidateState::new(1, cfg)));
     let (ctx, _shutdown_tx) = make_test_context();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
-    let result = role.handle_zombie_detected(42, &role_tx, &ctx).await;
+    let result = role.handle_zombie_detected(42, &internal_event_tx, &ctx).await;
 
     assert!(result.is_ok(), "Candidate must not error on ZombieDetected");
     assert!(
-        role_rx.try_recv().is_err(),
-        "Candidate must not emit any RoleEvent for ZombieDetected"
+        internal_event_rx.try_recv().is_err(),
+        "Candidate must not emit any InternalEvent for ZombieDetected"
     );
 }
 
@@ -753,13 +753,13 @@ async fn test_handle_zombie_detected_is_noop_on_learner() {
     let cfg = make_test_config();
     let mut role = RaftRole::Learner(Box::new(LearnerState::new(1, cfg)));
     let (ctx, _shutdown_tx) = make_test_context();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
-    let result = role.handle_zombie_detected(42, &role_tx, &ctx).await;
+    let result = role.handle_zombie_detected(42, &internal_event_tx, &ctx).await;
 
     assert!(result.is_ok(), "Learner must not error on ZombieDetected");
     assert!(
-        role_rx.try_recv().is_err(),
-        "Learner must not emit any RoleEvent for ZombieDetected"
+        internal_event_rx.try_recv().is_err(),
+        "Learner must not emit any InternalEvent for ZombieDetected"
     );
 }

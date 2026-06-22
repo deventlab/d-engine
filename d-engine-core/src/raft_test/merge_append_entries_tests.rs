@@ -1,7 +1,7 @@
 //! # AppendEntries Merge Tests
 //!
 //! Tests for `Raft::merge_append_entries()` — the function that coalesces
-//! consecutive contiguous `RaftEvent::AppendEntries` events in the buffer
+//! consecutive contiguous `InboundEvent::AppendEntries` events in the buffer
 //! into a single event before dispatch.
 //!
 //! ## Design decisions under test
@@ -14,12 +14,12 @@
 //!
 //! ## Setup pattern
 //! Each test builds a `Raft<MockTypeConfig>` via `MockBuilder`, pushes events
-//! directly into `raft.buffered_raft_event`, calls `raft.merge_append_entries()`,
+//! directly into `raft.buffered_inbound_event`, calls `raft.merge_append_entries()`,
 //! then inspects the resulting buffer.
 
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::test_utils::MockBuilder;
-use crate::{MaybeCloneOneshotReceiver, RaftEvent, RaftNodeConfig, RaftOneshot, mock_entries};
+use crate::{InboundEvent, MaybeCloneOneshotReceiver, RaftNodeConfig, RaftOneshot, mock_entries};
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::{VoteRequest, VoteResponse};
 use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
@@ -50,25 +50,25 @@ fn make_request(
     }
 }
 
-/// Wrap a request and a fresh oneshot sender into `RaftEvent::AppendEntries`.
+/// Wrap a request and a fresh oneshot sender into `InboundEvent::AppendEntries`.
 /// Returns `(event, receiver)` — the receiver lets tests verify send results.
 fn make_event(
     req: AppendEntriesRequest
 ) -> (
-    RaftEvent,
+    InboundEvent,
     MaybeCloneOneshotReceiver<Result<AppendEntriesResponse, tonic::Status>>,
 ) {
     let (tx, rx) = MaybeCloneOneshot::new();
-    (RaftEvent::AppendEntries(req, vec![tx]), rx)
+    (InboundEvent::AppendEntries(req, vec![tx]), rx)
 }
 
 fn make_none_append_entries_event() -> (
-    RaftEvent,
+    InboundEvent,
     MaybeCloneOneshotReceiver<Result<VoteResponse, tonic::Status>>,
 ) {
     let (tx, rx) = MaybeCloneOneshot::new();
     (
-        RaftEvent::ReceiveVoteRequest(
+        InboundEvent::ReceiveVoteRequest(
             VoteRequest {
                 term: 1,
                 candidate_id: 2,
@@ -96,10 +96,10 @@ fn make_none_append_entries_event() -> (
 fn test_empty_buffer_is_noop() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
-    raft.buffered_raft_event = VecDeque::new();
+    raft.buffered_inbound_event = VecDeque::new();
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 0);
+    assert_eq!(raft.buffered_inbound_event.len(), 0);
 }
 
 /// A buffer with exactly one AppendEntries event is returned unchanged.
@@ -122,19 +122,19 @@ fn test_single_append_entries_event_returned_unchanged() {
     let (event, _receiver) = make_event(request);
     queue.push_back(event);
 
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 1);
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    assert_eq!(raft.buffered_inbound_event.len(), 1);
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.term, 5);
             assert_eq!(request.prev_log_index, 9);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -163,29 +163,29 @@ fn test_first_non_append_entries_event_is_noop() {
             queue.push_back(event);
         }
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 2);
+    assert_eq!(raft.buffered_inbound_event.len(), 2);
 
     // VoteRequest
-    if let Some(RaftEvent::ReceiveVoteRequest(request, _senders)) =
-        raft.buffered_raft_event.pop_front()
+    if let Some(InboundEvent::ReceiveVoteRequest(request, _senders)) =
+        raft.buffered_inbound_event.pop_front()
     {
         assert_eq!(request.last_log_index, 11);
     } else {
-        panic!("expected RaftEvent::ReceiveVoteRequest, got something else");
+        panic!("expected InboundEvent::ReceiveVoteRequest, got something else");
     }
 
     // AE
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.prev_log_index, 9);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -216,19 +216,19 @@ fn test_merge_three_contiguous_entries_same_term() {
         queue.push_back(event);
     }
 
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 1);
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    assert_eq!(raft.buffered_inbound_event.len(), 1);
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 15);
             assert_eq!(senders.len(), 3);
             assert_eq!(request.term, 5);
             assert_eq!(request.prev_log_index, 9);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -256,14 +256,14 @@ fn test_merge_preserves_first_request_metadata() {
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 1);
+    assert_eq!(raft.buffered_inbound_event.len(), 1);
 
     // front
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 10);
             assert_eq!(senders.len(), 2);
@@ -271,7 +271,7 @@ fn test_merge_preserves_first_request_metadata() {
             assert_eq!(request.prev_log_index, 9);
             assert_eq!(request.leader_commit_index, 99);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -300,33 +300,33 @@ fn test_term_mismatch_stops_merge() {
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 2);
+    assert_eq!(raft.buffered_inbound_event.len(), 2);
 
     // front
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 10);
             assert_eq!(senders.len(), 2);
             assert_eq!(request.term, 5);
             assert_eq!(request.prev_log_index, 9);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 
     // back
-    match raft.buffered_raft_event.pop_back() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_back() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.term, 6);
             assert_eq!(request.prev_log_index, 19);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -354,33 +354,33 @@ fn test_non_contiguous_prev_log_index_stops_merge() {
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 2);
+    assert_eq!(raft.buffered_inbound_event.len(), 2);
 
     // front
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.term, 5);
             assert_eq!(request.prev_log_index, 9);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 
     // back
-    match raft.buffered_raft_event.pop_back() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_back() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.term, 5);
             assert_eq!(request.prev_log_index, 20);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -414,21 +414,21 @@ fn test_heartbeat_absorbed_into_merge() {
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 1);
+    assert_eq!(raft.buffered_inbound_event.len(), 1);
 
     // front
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 10);
             assert_eq!(senders.len(), 3);
             assert_eq!(request.prev_log_index, 9);
             assert_eq!(request.leader_commit_index, 15);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -456,21 +456,21 @@ fn test_heartbeat_commit_index_promoted_via_max() {
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 1);
+    assert_eq!(raft.buffered_inbound_event.len(), 1);
 
     // front
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 10);
             assert_eq!(senders.len(), 3);
             assert_eq!(request.prev_log_index, 9);
             assert_eq!(request.leader_commit_index, 99);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -509,40 +509,40 @@ fn test_non_append_entries_event_stops_merge_fifo_preserved() {
             queue.push_back(event);
         }
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 3);
+    assert_eq!(raft.buffered_inbound_event.len(), 3);
 
     // AE
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.prev_log_index, 9);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 
     // VoteRequest
-    if let Some(RaftEvent::ReceiveVoteRequest(request, _senders)) =
-        raft.buffered_raft_event.pop_front()
+    if let Some(InboundEvent::ReceiveVoteRequest(request, _senders)) =
+        raft.buffered_inbound_event.pop_front()
     {
         assert_eq!(request.last_log_index, 11);
     } else {
-        panic!("expected RaftEvent::ReceiveVoteRequest, got something else");
+        panic!("expected InboundEvent::ReceiveVoteRequest, got something else");
     }
 
     // AE
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.prev_log_index, 14);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -571,12 +571,13 @@ async fn test_all_senders_collected_in_merge_order() {
         receivers.push(rx);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 1);
+    assert_eq!(raft.buffered_inbound_event.len(), 1);
 
-    let Some(RaftEvent::AppendEntries(_, senders)) = raft.buffered_raft_event.pop_front() else {
+    let Some(InboundEvent::AppendEntries(_, senders)) = raft.buffered_inbound_event.pop_front()
+    else {
         panic!("expected AppendEntries");
     };
     assert_eq!(senders.len(), 3);
@@ -605,7 +606,7 @@ async fn test_all_senders_collected_in_merge_order() {
 }
 
 /// Dropping a receiver before merge does not prevent or corrupt the merge.
-/// The merge is a structural operation on RaftEvent variants; receiver
+/// The merge is a structural operation on InboundEvent variants; receiver
 /// validity is only checked at dispatch time (send()), not during merge.
 ///
 /// Buffer before: [AE(prev=9, [10..14], rx dropped), AE(prev=14, [15..19])]
@@ -630,20 +631,20 @@ fn test_dropped_receiver_does_not_affect_merge() {
             queue.push_back(event);
         }
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 1);
+    assert_eq!(raft.buffered_inbound_event.len(), 1);
 
     // front
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 10);
             assert_eq!(senders.len(), 2);
             assert_eq!(request.prev_log_index, 9);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -673,21 +674,21 @@ fn test_heartbeat_at_sequence_end_absorbed() {
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 1);
+    assert_eq!(raft.buffered_inbound_event.len(), 1);
 
     // front
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 2);
             assert_eq!(request.prev_log_index, 9);
             assert_eq!(request.leader_commit_index, 50);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -715,19 +716,19 @@ fn test_consecutive_heartbeats_absorbed() {
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 1);
+    assert_eq!(raft.buffered_inbound_event.len(), 1);
 
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             assert_eq!(request.entries.len(), 10); // 5 + 0 + 0 + 5
             assert_eq!(senders.len(), 4);
             assert_eq!(request.prev_log_index, 9);
             assert_eq!(request.leader_commit_index, 30); // max(10, 20, 30, 10)
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -752,21 +753,21 @@ fn test_all_heartbeats_merged_into_one() {
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 1);
+    assert_eq!(raft.buffered_inbound_event.len(), 1);
 
     // front
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 0);
             assert_eq!(senders.len(), 2);
             assert_eq!(request.prev_log_index, 9);
             assert_eq!(request.leader_commit_index, 99);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -798,32 +799,32 @@ fn test_newer_term_first_older_term_second_stops_merge() {
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 2);
+    assert_eq!(raft.buffered_inbound_event.len(), 2);
 
     // front
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.prev_log_index, 9);
             assert_eq!(request.term, 6);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
     // back
-    match raft.buffered_raft_event.pop_back() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_back() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.prev_log_index, 14);
             assert_eq!(request.term, 5);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }
 
@@ -857,31 +858,31 @@ fn test_max_merge_entries_limit_stops_merge() {
         let (event, _receiver) = make_event(request);
         queue.push_back(event);
     }
-    raft.buffered_raft_event = queue;
+    raft.buffered_inbound_event = queue;
 
     raft.merge_append_entries();
-    assert_eq!(raft.buffered_raft_event.len(), 2);
+    assert_eq!(raft.buffered_inbound_event.len(), 2);
 
     // front
-    match raft.buffered_raft_event.pop_front() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_front() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.prev_log_index, 9);
             assert_eq!(request.term, 6);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
     // back
-    match raft.buffered_raft_event.pop_back() {
-        Some(RaftEvent::AppendEntries(request, senders)) => {
+    match raft.buffered_inbound_event.pop_back() {
+        Some(InboundEvent::AppendEntries(request, senders)) => {
             let entries = request.entries;
             assert_eq!(entries.len(), 5);
             assert_eq!(senders.len(), 1);
             assert_eq!(request.prev_log_index, 14);
             assert_eq!(request.term, 6);
         }
-        _ => panic!("expected RaftEvent::AppendEntries, got something else"),
+        _ => panic!("expected InboundEvent::AppendEntries, got something else"),
     }
 }

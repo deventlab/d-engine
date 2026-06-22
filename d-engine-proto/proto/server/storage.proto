@@ -50,11 +50,12 @@ message SnapshotAck {
   uint32 next_requested = 3;
 
   enum ChunkStatus {
-    ACCEPTED = 0;
-    CHECKSUM_MISMATCH = 1;
-    OUT_OF_ORDER = 2;
-    REQUESTED = 3;
-    FAILED = 4;
+    CHUNK_STATUS_UNSPECIFIED = 0;
+    CHUNK_STATUS_ACCEPTED = 1;
+    CHUNK_STATUS_CHECKSUM_MISMATCH = 2;
+    CHUNK_STATUS_OUT_OF_ORDER = 3;
+    CHUNK_STATUS_REQUESTED = 4;
+    CHUNK_STATUS_FAILED = 5;
   }
 }
 

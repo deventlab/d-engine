@@ -151,7 +151,7 @@ async fn setup_multi_voter_leader(
 async fn test_single_voter_lease_refreshed_on_log_flushed() {
     let (mut state, ctx, last_entry_id) =
         setup_single_voter_leader("/tmp/test_single_voter_lease_refresh", 1000).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: Lease is invalid initially
     assert!(
@@ -162,7 +162,7 @@ async fn test_single_voter_lease_refreshed_on_log_flushed() {
     // Action: Simulate log flush with durable=1 (commit advances from 0 to 1).
     // MemFirst: set last_entry_id=1 before flush (log has entry 1, IO confirms it).
     last_entry_id.store(1, Ordering::Relaxed);
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     // Verify: Lease is now valid
     assert!(
@@ -194,14 +194,14 @@ async fn test_single_voter_lease_expires_and_refreshes() {
     let lease_duration_ms = 100; // Short duration for testing
     let (mut state, ctx, last_entry_id) =
         setup_single_voter_leader("/tmp/test_single_voter_lease_expiry", lease_duration_ms).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // T0: Lease invalid
     assert!(!state.is_lease_valid());
 
     // T1: Log flush → lease valid
     last_entry_id.store(1, Ordering::Relaxed);
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
     assert!(state.is_lease_valid());
 
     // T2: Wait for lease to expire
@@ -213,7 +213,7 @@ async fn test_single_voter_lease_expires_and_refreshes() {
 
     // T3: Another log flush → lease valid again
     last_entry_id.store(2, Ordering::Relaxed);
-    state.handle_log_flushed(2, &ctx, &role_tx).await;
+    state.handle_log_flushed(2, &ctx, &internal_event_tx).await;
     assert!(
         state.is_lease_valid(),
         "Lease should be refreshed by subsequent log flush"
@@ -240,14 +240,14 @@ async fn test_single_voter_lease_expires_and_refreshes() {
 async fn test_single_voter_lease_not_refreshed_when_commit_unchanged() {
     let (mut state, ctx, last_entry_id) =
         setup_single_voter_leader("/tmp/test_single_voter_noop_flush", 1000).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: commit=0, lease invalid
     assert_eq!(state.commit_index(), 0);
     assert!(!state.is_lease_valid());
 
     // Action: Flush with durable=0, last_entry_id=0 (no new entries, commit unchanged)
-    state.handle_log_flushed(0, &ctx, &role_tx).await;
+    state.handle_log_flushed(0, &ctx, &internal_event_tx).await;
 
     // Verify: Lease remains invalid (no leadership proof)
     assert!(!state.is_lease_valid());
@@ -255,7 +255,7 @@ async fn test_single_voter_lease_not_refreshed_when_commit_unchanged() {
 
     // Action: Flush with durable=1 (commit advances); set last_entry_id=1 to match
     last_entry_id.store(1, Ordering::Relaxed);
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     // Verify: Now lease is valid
     assert!(state.is_lease_valid());
@@ -285,12 +285,12 @@ async fn test_single_voter_continuous_flushes_maintain_lease() {
     let (mut state, ctx, last_entry_id) =
         setup_single_voter_leader("/tmp/test_single_voter_continuous_flush", lease_duration_ms)
             .await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Simulate continuous write activity
     for i in 1..=10u64 {
         last_entry_id.store(i, Ordering::Relaxed);
-        state.handle_log_flushed(i, &ctx, &role_tx).await;
+        state.handle_log_flushed(i, &ctx, &internal_event_tx).await;
         assert!(
             state.is_lease_valid(),
             "Lease should remain valid after flush {i}"
@@ -327,7 +327,7 @@ async fn test_single_voter_continuous_flushes_maintain_lease() {
 async fn test_multi_voter_lease_not_refreshed_on_log_flushed() {
     let (mut state, ctx) =
         setup_multi_voter_leader("/tmp/test_multi_voter_no_lease_refresh", 1000).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: Multi-voter cluster, lease invalid
     assert!(!state.cluster_metadata.single_voter);
@@ -336,7 +336,7 @@ async fn test_multi_voter_lease_not_refreshed_on_log_flushed() {
     // Action: Log flush with durable=1
     // Note: In multi-voter, commit won't advance without follower ACKs,
     // but we're testing that even if it did, lease wouldn't refresh here.
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     // Verify: Lease remains invalid (must wait for handle_append_result)
     assert!(
@@ -369,13 +369,13 @@ async fn test_multi_voter_lease_not_refreshed_on_log_flushed() {
 async fn test_multi_voter_lease_refresh_requires_append_result() {
     let (mut state, ctx) =
         setup_multi_voter_leader("/tmp/test_multi_voter_append_result_lease", 1000).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: Lease invalid
     assert!(!state.is_lease_valid());
 
     // Action 1: Log flush → no lease refresh
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
     assert!(!state.is_lease_valid());
 
     // Action 2: Simulate append_result path (via test helper)
@@ -407,11 +407,11 @@ async fn test_multi_voter_lease_refresh_requires_append_result() {
 async fn test_single_voter_durable_regression_does_not_refresh_lease() {
     let (mut state, ctx, last_entry_id) =
         setup_single_voter_leader("/tmp/test_durable_regression", 1000).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // T1: Flush(5) → commit=5, lease valid
     last_entry_id.store(5, Ordering::Relaxed);
-    state.handle_log_flushed(5, &ctx, &role_tx).await;
+    state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
     assert_eq!(state.commit_index(), 5);
     assert!(state.is_lease_valid());
 
@@ -420,7 +420,7 @@ async fn test_single_voter_durable_regression_does_not_refresh_lease() {
 
     // T2: Flush(3) → should be no-op (last_entry_id=5 > commit=5 is false, no advance)
     // last_entry_id stays at 5; durable regressing to 3 is the scenario.
-    state.handle_log_flushed(3, &ctx, &role_tx).await;
+    state.handle_log_flushed(3, &ctx, &internal_event_tx).await;
 
     // Verify: Commit unchanged, lease not updated (timestamp same as T1)
     assert_eq!(state.commit_index(), 5, "Commit should not regress");
@@ -446,14 +446,14 @@ async fn test_single_voter_very_short_lease_expires_quickly() {
     let lease_duration_ms = 50; // Short but stable — avoids 1ms clock-boundary race
     let (mut state, ctx, last_entry_id) =
         setup_single_voter_leader("/tmp/test_very_short_lease", lease_duration_ms).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // T0: Lease invalid
     assert!(!state.is_lease_valid());
 
     // T1: Flush updates lease
     last_entry_id.store(1, Ordering::Relaxed);
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
     assert!(
         state.is_lease_valid(),
         "Lease should be valid immediately after flush"
@@ -483,11 +483,11 @@ async fn test_single_voter_large_lease_duration() {
     let lease_duration_ms = 10_000; // 10 seconds
     let (mut state, ctx, last_entry_id) =
         setup_single_voter_leader("/tmp/test_large_lease", lease_duration_ms).await;
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: Single flush
     last_entry_id.store(1, Ordering::Relaxed);
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
     assert!(state.is_lease_valid());
 
     // Wait 1 second (much less than 10s lease)

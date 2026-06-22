@@ -76,11 +76,12 @@ pub mod snapshot_ack {
     )]
     #[repr(i32)]
     pub enum ChunkStatus {
-        Accepted = 0,
-        ChecksumMismatch = 1,
-        OutOfOrder = 2,
-        Requested = 3,
-        Failed = 4,
+        Unspecified = 0,
+        Accepted = 1,
+        ChecksumMismatch = 2,
+        OutOfOrder = 3,
+        Requested = 4,
+        Failed = 5,
     }
     impl ChunkStatus {
         /// String value of the enum field names used in the ProtoBuf definition.
@@ -89,21 +90,23 @@ pub mod snapshot_ack {
         /// (if the ProtoBuf definition does not change) and safe for programmatic use.
         pub fn as_str_name(&self) -> &'static str {
             match self {
-                Self::Accepted => "ACCEPTED",
-                Self::ChecksumMismatch => "CHECKSUM_MISMATCH",
-                Self::OutOfOrder => "OUT_OF_ORDER",
-                Self::Requested => "REQUESTED",
-                Self::Failed => "FAILED",
+                Self::Unspecified => "CHUNK_STATUS_UNSPECIFIED",
+                Self::Accepted => "CHUNK_STATUS_ACCEPTED",
+                Self::ChecksumMismatch => "CHUNK_STATUS_CHECKSUM_MISMATCH",
+                Self::OutOfOrder => "CHUNK_STATUS_OUT_OF_ORDER",
+                Self::Requested => "CHUNK_STATUS_REQUESTED",
+                Self::Failed => "CHUNK_STATUS_FAILED",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
         pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
             match value {
-                "ACCEPTED" => Some(Self::Accepted),
-                "CHECKSUM_MISMATCH" => Some(Self::ChecksumMismatch),
-                "OUT_OF_ORDER" => Some(Self::OutOfOrder),
-                "REQUESTED" => Some(Self::Requested),
-                "FAILED" => Some(Self::Failed),
+                "CHUNK_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+                "CHUNK_STATUS_ACCEPTED" => Some(Self::Accepted),
+                "CHUNK_STATUS_CHECKSUM_MISMATCH" => Some(Self::ChecksumMismatch),
+                "CHUNK_STATUS_OUT_OF_ORDER" => Some(Self::OutOfOrder),
+                "CHUNK_STATUS_REQUESTED" => Some(Self::Requested),
+                "CHUNK_STATUS_FAILED" => Some(Self::Failed),
                 _ => None,
             }
         }

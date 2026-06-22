@@ -759,7 +759,7 @@ impl<T> RaftMembership<T>
 where
     T: TypeConfig,
 {
-    /// Returns `(Self, zombie_rx)`. Caller must pass `zombie_rx` to the Raft event loop
+    /// Returns `(Self, zombie_rx)`. Caller must pass `zombie_rx` to the internal event loop
     /// so that `ZombieDetected` signals reach the leader.
     ///
     /// Call [`subscribe_membership`] on the returned `Self` to obtain a
@@ -820,7 +820,7 @@ where
     /// Returns true if the zombie signal for `node_id` should still be acted on.
     ///
     /// Delegates to the inner health monitor. The bridge task calls this before
-    /// forwarding a `ZombieDetected` signal to the Raft event loop so that a
+    /// forwarding a `ZombieDetected` signal to the internal event loop so that a
     /// stale signal (peer already recovered via `record_success`) is dropped.
     pub(crate) fn is_zombie_valid(
         &self,

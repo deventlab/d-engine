@@ -24,7 +24,7 @@ use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockTransport;
 use crate::RaftRequestWithSignal;
-use crate::event::RoleEvent;
+use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
@@ -158,8 +158,8 @@ async fn test_worker_spawned_on_first_request() {
         "precondition: no workers before first batch"
     );
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
 
     // A worker must have been inserted for peer 2.
     assert_eq!(
@@ -238,10 +238,10 @@ async fn test_worker_reused_on_subsequent_requests() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // First batch — spawns the worker.
-    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
     assert_eq!(
         state.worker_count_for_test(),
         1,
@@ -249,7 +249,7 @@ async fn test_worker_reused_on_subsequent_requests() {
     );
 
     // Second batch — must reuse the same worker, not spawn a second one.
-    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
     assert_eq!(
         state.worker_count_for_test(),
         1,
@@ -263,11 +263,11 @@ async fn test_worker_reused_on_subsequent_requests() {
 /// - A dead worker handle is injected for peer 2 via `inject_dead_worker_for_test`.
 /// - `process_batch` returns one request for peer 2.
 /// - `send_to_worker_or_spawn` detects the dead channel and rebuilds the worker.
-/// - The new worker calls `send_append_request` and emits `RoleEvent::AppendResult`.
+/// - The new worker calls `send_append_request` and emits `InternalEvent::AppendResult`.
 ///
 /// # Guarantees checked
 /// - `worker_count_for_test() == 1` after the rebuild (old dead handle replaced).
-/// - `RoleEvent::AppendResult` arrives on `role_rx`, confirming the request was delivered.
+/// - `InternalEvent::AppendResult` arrives on `internal_event_rx`, confirming the request was delivered.
 #[tokio::test]
 #[traced_test]
 async fn test_worker_rebuilt_after_death() {
@@ -288,7 +288,7 @@ async fn test_worker_rebuilt_after_death() {
         });
 
     // Transport: allow async calls from the rebuilt worker. We verify delivery
-    // indirectly via AppendResult on role_rx rather than mock call count.
+    // indirectly via AppendResult on internal_event_rx rather than mock call count.
     let mut transport = MockTransport::<MockTypeConfig>::new();
     transport
         .expect_send_append_request()
@@ -330,8 +330,8 @@ async fn test_worker_rebuilt_after_death() {
         "precondition: dead handle present"
     );
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
 
     // The dead handle must be replaced by a live one (still 1, not 0 or 2).
     assert_eq!(
@@ -344,9 +344,11 @@ async fn test_worker_rebuilt_after_death() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // The rebuilt worker must relay AppendResult back to the Raft loop.
-    let event = role_rx.try_recv().expect("AppendResult should arrive from rebuilt worker");
+    let event = internal_event_rx
+        .try_recv()
+        .expect("AppendResult should arrive from rebuilt worker");
     assert!(
-        matches!(event, RoleEvent::AppendResult { follower_id: 2, .. }),
+        matches!(event, InternalEvent::AppendResult { follower_id: 2, .. }),
         "expected AppendResult for peer 2, got {event:?}"
     );
 }
@@ -363,7 +365,7 @@ async fn test_worker_rebuilt_after_death() {
 /// # Guarantees checked
 /// - After the handle is dropped, `open_replication_stream` call count stops increasing.
 ///   This proves the `if task_rx.is_closed() { return; }` guard fires correctly,
-///   preventing an infinite reconnect loop that would flood the Raft event loop with
+///   preventing an infinite reconnect loop that would flood the inbound event loop with
 ///   zombie signals and block heartbeats (regression: zombie detection + dead peer).
 #[tokio::test]
 #[traced_test]
@@ -418,8 +420,8 @@ async fn test_replication_worker_exits_when_handle_dropped() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
-    state.process_batch(one_entry_batch(), &role_tx, &ctx).await.unwrap();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
 
     // Wait until the worker has attempted at least one connection (entered inner loop).
     tokio::time::timeout(std::time::Duration::from_secs(5), first_attempt_rx.recv())

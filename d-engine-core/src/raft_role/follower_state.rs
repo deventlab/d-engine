@@ -1,16 +1,17 @@
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
+use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
 use d_engine_proto::server::election::VoteResponse;
-
-use async_trait::async_trait;
 use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::SnapshotResponse;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
@@ -33,15 +34,15 @@ use super::role_state::check_and_trigger_snapshot;
 use crate::ConsensusError;
 use crate::ElectionCore;
 use crate::ElectionTimer;
+use crate::InboundEvent;
+use crate::InternalEvent;
 use crate::Membership;
 use crate::NetworkError;
 use crate::PurgeExecutor;
 use crate::RaftContext;
-use crate::RaftEvent;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
-use crate::RoleEvent;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
@@ -158,8 +159,8 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
     ///  step as Candidate
     async fn tick(
         &mut self,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
-        _event_tx: &mpsc::Sender<RaftEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+        _event_tx: &mpsc::Sender<InboundEvent>,
         _ctx: &RaftContext<T>,
     ) -> Result<()> {
         if Instant::now() < self.timer.next_deadline() {
@@ -171,26 +172,25 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
 
         debug!("follower::start_election...");
 
-        role_tx.send(RoleEvent::BecomeCandidate).map_err(|e| {
-            let error_str = format!("{e:?}");
-            error!("Failed to send: {}", error_str);
-            NetworkError::SingalSendFailed(error_str)
+        internal_event_tx.send(InternalEvent::BecomeCandidate).map_err(|e| {
+            error!("Failed to send: {:?}", e);
+            NetworkError::SingalSendFailed(format!("{:?}", e))
         })?;
 
         Ok(())
     }
 
-    async fn handle_raft_event(
+    async fn handle_inbound_event(
         &mut self,
-        raft_event: RaftEvent,
+        inbound_event: InboundEvent,
         ctx: &RaftContext<T>,
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         let state_snapshot = self.state_snapshot();
         let my_term = self.current_term();
 
-        match raft_event {
-            RaftEvent::ReceiveVoteRequest(vote_request, sender) => {
+        match inbound_event {
+            InboundEvent::ReceiveVoteRequest(vote_request, sender) => {
                 let candidate_id = vote_request.candidate_id;
 
                 let LogId {
@@ -242,9 +242,8 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                         );
 
                         sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{e:?}");
-                            error!("Failed to send: {}", error_str);
-                            NetworkError::SingalSendFailed(error_str)
+                            error!("Failed to send: {:?}", e);
+                            NetworkError::SingalSendFailed(format!("{:?}", e))
                         })?;
                     }
                     Err(e) => {
@@ -255,17 +254,16 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                             last_log_term,
                         };
                         sender.send(Ok(response)).map_err(|e| {
-                            let error_str = format!("{e:?}");
-                            error!("Failed to send: {}", error_str);
-                            NetworkError::SingalSendFailed(error_str)
+                            error!("Failed to send: {:?}", e);
+                            NetworkError::SingalSendFailed(format!("{:?}", e))
                         })?;
-                        error("handle_raft_event::RaftEvent::ReceiveVoteRequest", &e);
+                        error("handle_inbound_event::InboundEvent::ReceiveVoteRequest", &e);
                         return Err(e);
                     }
                 }
             }
 
-            RaftEvent::ClusterConf(_metadata_request, sender) => {
+            InboundEvent::ClusterConf(_metadata_request, sender) => {
                 let cluster_conf = ctx
                     .membership()
                     .retrieve_cluster_membership_config(self.shared_state().current_leader())
@@ -273,13 +271,12 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 debug!("Follower receive ClusterConf: {:?}", &cluster_conf);
 
                 sender.send(Ok(cluster_conf)).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
+                    error!("Failed to send: {:?}", e);
+                    NetworkError::SingalSendFailed(format!("{:?}", e))
                 })?;
             }
 
-            RaftEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
+            InboundEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
                 let current_conf_version = ctx.membership().get_cluster_conf_version().await;
 
                 let current_leader_id = self.shared_state().current_leader();
@@ -316,23 +313,22 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     my_id, &response
                 );
                 sender.send(Ok(response)).map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
+                    error!("Failed to send: {:?}", e);
+                    NetworkError::SingalSendFailed(format!("{:?}", e))
                 })?;
             }
-            RaftEvent::AppendEntries(append_entries_request, sender) => {
+            InboundEvent::AppendEntries(append_entries_request, sender) => {
                 self.handle_append_entries_request_workflow(
                     append_entries_request,
                     sender,
                     ctx,
-                    role_tx,
+                    internal_event_tx,
                     &state_snapshot,
                 )
                 .await?;
             }
 
-            RaftEvent::InstallSnapshotChunk(stream, sender) => {
+            InboundEvent::InstallSnapshotChunk(stream, sender) => {
                 // ack_tx is passed to process_snapshot_stream for per-chunk validation.
                 // In push mode the receiver is never read, so we drain it in a background
                 // task to prevent backpressure: process_snapshot_stream awaits each send,
@@ -393,115 +389,51 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     }
                 }
             }
-
-            RaftEvent::LogPurgeCompleted(_purged_id) => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Follower",
-                    required_role: "Leader",
-                    context: format!(
-                        "Follower node {} should not receive LogPurgeCompleted event.",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
-
-            RaftEvent::CreateSnapshotEvent => {
-                // Prevent duplicate snapshot creation
-                if self.snapshot_in_progress.load(Ordering::Acquire) {
-                    info!(
-                        "Follower snapshot creation already in progress. Skipping duplicate request."
-                    );
-                    return Ok(());
-                }
-
-                self.snapshot_in_progress.store(true, Ordering::Release);
-                let state_machine_handler = ctx.state_machine_handler().clone();
-
-                // Use spawn to perform snapshot creation in the background
-                tokio::spawn(async move {
-                    let result = state_machine_handler.create_snapshot().await;
-                    info!(
-                        "Follower SnapshotCreated event will be processed in another event thread"
-                    );
-                    if let Err(e) = super::role_state::send_replay_raft_event(
-                        &role_tx,
-                        RaftEvent::SnapshotCreated(result),
-                    ) {
-                        error!("Follower failed to send snapshot creation result: {}", e);
-                    }
-                });
-            }
-
-            RaftEvent::SnapshotCreated(result) => {
-                // Reset snapshot_in_progress flag
-                self.snapshot_in_progress.store(false, Ordering::SeqCst);
-
-                // Per Raft §7: Follower independently purges logs after snapshot generation
-                match result {
-                    Ok((metadata, _path)) => {
-                        if let Some(last_included) = metadata.last_included {
-                            info!(?last_included, "Follower snapshot created, purging logs");
-
-                            // Follower independently decides to purge after snapshot
-                            if self.can_purge_logs(self.last_purged_index, last_included) {
-                                match ctx.purge_executor().execute_purge(last_included).await {
-                                    Ok(_) => {
-                                        self.last_purged_index = Some(last_included);
-                                        info!(?last_included, "Follower logs purged successfully");
-                                    }
-                                    Err(e) => {
-                                        error!(?e, "Failed to purge logs after snapshot");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!(?e, "Follower snapshot creation failed");
-                    }
-                }
-            }
-
-            RaftEvent::JoinCluster(_join_request, sender) => {
+            InboundEvent::JoinCluster(_join_request, sender) => {
                 sender
                     .send(Err(Status::permission_denied(
                         "Follower should not receive JoinCluster event.",
                     )))
                     .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
+                        error!("Failed to send: {:?}", e);
+                        NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
 
                 return Err(ConsensusError::RoleViolation {
                     current_role: "Follower",
                     required_role: "Leader",
                     context: format!(
-                        "Follower node {} receives RaftEvent::JoinCluster",
+                        "Follower node {} receives InboundEvent::JoinCluster",
                         ctx.node_id
                     ),
                 }
                 .into());
             }
 
-            RaftEvent::DiscoverLeader(request, sender) => {
-                debug!(?request, "Follower::RaftEvent::DiscoverLeader");
-                sender
-                    .send(Err(Status::permission_denied(
-                        "Follower should not response DiscoverLeader event.",
-                    )))
-                    .map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+            InboundEvent::DiscoverLeader(request, sender) => {
+                debug!(?request, "Follower::InboundEvent::DiscoverLeader");
+                let response = match self.shared_state().current_leader() {
+                    Some(leader_id) => match ctx.membership().retrieve_node_meta(leader_id).await {
+                        Some(meta) => Ok(LeaderDiscoveryResponse {
+                            leader_id,
+                            leader_address: meta.address,
+                            term: self.current_term(),
+                        }),
+                        None => Err(Status::not_found("Leader metadata not found")),
+                    },
+                    None => Err(Status::unavailable("Leader not discovered")),
+                };
+
+                sender.send(response).map_err(|e| {
+                    error!("Failed to send: {:?}", e);
+                    NetworkError::SingalSendFailed(format!("{:?}", e))
+                })?;
 
                 return Ok(());
             }
 
-            RaftEvent::StreamSnapshot(_ack_rx, _chunk_tx, startup_tx) => {
-                debug!("Follower::RaftEvent::StreamSnapshot");
+            InboundEvent::StreamSnapshot(_ack_rx, _chunk_tx, startup_tx) => {
+                debug!("Follower::InboundEvent::StreamSnapshot");
                 warn!("Follower should not receive StreamSnapshot event.");
                 if let Err(e) = startup_tx.send(Err(Status::failed_precondition("Not the leader")))
                 {
@@ -513,34 +445,11 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 return Ok(());
             }
 
-            RaftEvent::PromoteReadyLearners => {
-                return Err(ConsensusError::RoleViolation {
-                    current_role: "Follower",
-                    required_role: "Leader",
-                    context: format!(
-                        "Follower node {} receives RaftEvent::PromoteReadyLearners",
-                        ctx.node_id
-                    ),
-                }
-                .into());
-            }
-
-            RaftEvent::MembershipApplied => {
-                // Followers don't maintain cluster metadata cache
-                // This event is only relevant for leaders
-                trace!("Follower ignoring MembershipApplied event");
-            }
-
-            RaftEvent::FatalError { source, error } => {
+            InboundEvent::FatalError { source, error } => {
                 error!("[Follower] Fatal error from {}: {}", source, error);
                 return Err(crate::Error::Fatal(format!(
                     "Fatal error from {source}: {error}"
                 )));
-            }
-
-            RaftEvent::StepDownSelfRemoved => {
-                // Unreachable: handled at Raft level before reaching RoleState
-                unreachable!("StepDownSelfRemoved should be handled in Raft::run()");
             }
         }
 
@@ -552,7 +461,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         last_index: u64,
         _results: Vec<crate::ApplyResult>,
         ctx: &RaftContext<T>,
-        role_tx: &mpsc::UnboundedSender<RoleEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> crate::Result<()> {
         // Per Raft §7: each server takes snapshots independently.
         check_and_trigger_snapshot(
@@ -560,8 +469,106 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             Follower as i32,
             self.current_term(),
             ctx,
-            role_tx,
+            internal_event_tx,
         )
+    }
+
+    /// Trigger an independent snapshot on this role (Raft §7 — each server snapshots
+    /// independently). Called when `should_snapshot()` returns true after SM apply.
+    /// Default: no-op. Candidate overrides to return `RoleViolation`.
+    async fn handle_create_snapshot(
+        &mut self,
+        ctx: &RaftContext<Self::T>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> Result<()> {
+        // Prevent duplicate snapshot creation
+        if self.snapshot_in_progress.load(Ordering::Acquire) {
+            info!("Snapshot creation already in progress. Skipping duplicate request.");
+            return Ok(());
+        }
+
+        self.snapshot_in_progress.store(true, Ordering::Release);
+        let state_machine_handler = ctx.state_machine_handler().clone();
+
+        // Use spawn to perform snapshot creation in the background
+        let internal_event_tx = internal_event_tx.clone();
+        tokio::spawn(async move {
+            let result = state_machine_handler.create_snapshot().await;
+            info!("SnapshotCreated event will be processed in another event thread");
+            if let Err(e) = internal_event_tx.send(InternalEvent::SnapshotCreated(result)) {
+                error!("Follower failed to send snapshot creation result: {e:?}");
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Process the completed snapshot result (success or error).
+    /// Leader: schedules log purge up to `last_included`.
+    /// Follower/Learner: updates local snapshot path.
+    /// Default: no-op. Candidate overrides to return `RoleViolation`.
+    async fn handle_snapshot_created(
+        &mut self,
+        result: crate::Result<(SnapshotMetadata, std::path::PathBuf)>,
+        ctx: &RaftContext<Self::T>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> Result<()> {
+        // Reset snapshot_in_progress flag
+        self.snapshot_in_progress.store(false, Ordering::SeqCst);
+
+        // Per Raft §7: Follower independently purges logs after snapshot generation
+        match result {
+            Ok((metadata, _path)) => {
+                if let Some(last_included) = metadata.last_included {
+                    info!(?last_included, "Follower snapshot created, purging logs");
+
+                    // Follower independently decides to purge after snapshot
+                    if self.can_purge_logs(self.last_purged_index, last_included) {
+                        match ctx.purge_executor().execute_purge(last_included).await {
+                            Ok(_) => {
+                                self.last_purged_index = Some(last_included);
+                                info!(?last_included, "Follower logs purged successfully");
+                            }
+                            Err(e) => {
+                                error!(?e, "Failed to purge logs after snapshot");
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!(?e, "Follower snapshot creation failed");
+            }
+        }
+
+        Ok(())
+    }
+
+    // Stale in-flight events — these are Leader-only operations that may arrive
+    // after a step-down due to internal_event_tx (unbounded, P2) race with BecomeFollower.
+    // Both orderings are valid; Follower silently ignores them rather than erroring.
+
+    fn handle_log_purge_completed(
+        &mut self,
+        _purged_id: d_engine_proto::common::LogId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn handle_promote_ready_learners(
+        &mut self,
+        _ctx: &RaftContext<Self::T>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn handle_membership_applied(
+        &mut self,
+        _ctx: &RaftContext<Self::T>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> Result<()> {
+        Ok(())
     }
 }
 

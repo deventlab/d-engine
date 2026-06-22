@@ -10,15 +10,15 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
+use super::InboundEvent;
+use super::InternalEvent;
 use super::NewCommitData;
 use super::RaftContext;
 use super::RaftCoreHandlers;
-use super::RaftEvent;
 use super::RaftRole;
 use super::RaftStorageHandles;
-use super::RoleEvent;
 #[cfg(test)]
-use super::raft_event_to_test_event;
+use super::inbound_event_to_test_event;
 use crate::Membership;
 use crate::NetworkError;
 use crate::RaftLog;
@@ -39,18 +39,18 @@ where
     pub ctx: RaftContext<T>,
 
     // Network & Storage events
-    event_tx: mpsc::Sender<RaftEvent>,
-    event_rx: mpsc::Receiver<RaftEvent>,
-    buffered_raft_event: VecDeque<RaftEvent>,
+    event_tx: mpsc::Sender<InboundEvent>,
+    event_rx: mpsc::Receiver<InboundEvent>,
+    buffered_inbound_event: VecDeque<InboundEvent>,
 
     // Client commands (drain-driven)
     cmd_tx: mpsc::Sender<super::ClientCmd>,
     cmd_rx: mpsc::Receiver<super::ClientCmd>,
 
     // Timer
-    role_tx: mpsc::UnboundedSender<RoleEvent>,
-    role_rx: mpsc::UnboundedReceiver<RoleEvent>,
-    buffered_role_event: VecDeque<RoleEvent>,
+    internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
+    internal_event_rx: mpsc::UnboundedReceiver<InternalEvent>,
+    buffered_internal_event: VecDeque<InternalEvent>,
 
     // For business logic to apply logs into state machine
     new_commit_listener: Vec<mpsc::UnboundedSender<NewCommitData>>,
@@ -67,14 +67,14 @@ where
     test_role_transition_listener: Vec<mpsc::UnboundedSender<i32>>,
 
     #[cfg(test)]
-    test_raft_event_listener: Vec<mpsc::UnboundedSender<super::TestEvent>>,
+    test_inbound_event_listener: Vec<mpsc::UnboundedSender<super::TestEvent>>,
 }
 
 pub struct SignalParams {
-    pub(crate) role_tx: mpsc::UnboundedSender<RoleEvent>,
-    pub(crate) role_rx: mpsc::UnboundedReceiver<RoleEvent>,
-    pub(crate) event_tx: mpsc::Sender<RaftEvent>,
-    pub(crate) event_rx: mpsc::Receiver<RaftEvent>,
+    pub(crate) internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
+    pub(crate) internal_event_rx: mpsc::UnboundedReceiver<InternalEvent>,
+    pub(crate) event_tx: mpsc::Sender<InboundEvent>,
+    pub(crate) event_rx: mpsc::Receiver<InboundEvent>,
     pub(crate) cmd_tx: mpsc::Sender<super::ClientCmd>,
     pub(crate) cmd_rx: mpsc::Receiver<super::ClientCmd>,
     pub(crate) shutdown_signal: watch::Receiver<()>,
@@ -86,17 +86,17 @@ impl SignalParams {
     /// This is the only way to construct SignalParams from outside d-engine-core,
     /// ensuring controlled initialization of the internal communication channels.
     pub fn new(
-        role_tx: mpsc::UnboundedSender<RoleEvent>,
-        role_rx: mpsc::UnboundedReceiver<RoleEvent>,
-        event_tx: mpsc::Sender<RaftEvent>,
-        event_rx: mpsc::Receiver<RaftEvent>,
+        internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
+        internal_event_rx: mpsc::UnboundedReceiver<InternalEvent>,
+        event_tx: mpsc::Sender<InboundEvent>,
+        event_rx: mpsc::Receiver<InboundEvent>,
         cmd_tx: mpsc::Sender<super::ClientCmd>,
         cmd_rx: mpsc::Receiver<super::ClientCmd>,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
         Self {
-            role_tx,
-            role_rx,
+            internal_event_tx,
+            internal_event_rx,
             event_tx,
             event_rx,
             cmd_tx,
@@ -137,14 +137,14 @@ where
 
             event_tx: signal_params.event_tx,
             event_rx: signal_params.event_rx,
-            buffered_raft_event: VecDeque::new(),
+            buffered_inbound_event: VecDeque::new(),
 
             cmd_tx: signal_params.cmd_tx,
             cmd_rx: signal_params.cmd_rx,
 
-            role_tx: signal_params.role_tx,
-            role_rx: signal_params.role_rx,
-            buffered_role_event: VecDeque::new(),
+            internal_event_tx: signal_params.internal_event_tx,
+            internal_event_rx: signal_params.internal_event_rx,
+            buffered_internal_event: VecDeque::new(),
 
             new_commit_listener: Vec::new(),
 
@@ -156,7 +156,7 @@ where
             test_role_transition_listener: Vec::new(),
 
             #[cfg(test)]
-            test_raft_event_listener: Vec::new(),
+            test_inbound_event_listener: Vec::new(),
         }
     }
 
@@ -281,21 +281,21 @@ where
                 // P1: Tick: start Heartbeat(replication) or start Election
                 _ = tick => {
                     trace!("receive tick");
-                    let role_tx = &self.role_tx;
+                    let internal_event_tx = &self.internal_event_tx;
                     let event_tx = &self.event_tx;
 
-                    if let Err(e) = self.role.tick(role_tx, event_tx, &self.ctx).await {
+                    if let Err(e) = self.role.tick(internal_event_tx, event_tx, &self.ctx).await {
                         error!("tick failed: {:?}", e);
                     } else {
                         trace!("tick success");
                     }
                 }
 
-                // P2: Role events — handle first, drain rest after select
-                Some(role_event) = self.role_rx.recv() => {
-                    debug!(%self.node_id, ?role_event, "receive role event");
-                    self.buffered_role_event.push_back(role_event);
-                    self.drain_role_events().await?;
+                // P2: internal events — handle first, drain rest after select
+                Some(internal_event) = self.internal_event_rx.recv() => {
+                    debug!(%self.node_id, ?internal_event, "receive internal event");
+                    self.buffered_internal_event.push_back(internal_event);
+                    self.drain_internal_events().await?;
                 }
 
                 // P3: Client commands — push first, drain rest after select
@@ -306,28 +306,28 @@ where
                 }
 
                 // P4: Other events — handle first, drain rest after select
-                Some(raft_event) = self.event_rx.recv() => {
-                    trace!(%self.node_id, ?raft_event, "receive raft event");
-                    self.buffered_raft_event.push_back(raft_event);
-                    self.drain_raft_events().await?;
+                Some(inbound_event) = self.event_rx.recv() => {
+                    trace!(%self.node_id, ?inbound_event, "receive inbound event");
+                    self.buffered_inbound_event.push_back(inbound_event);
+                    self.drain_inbound_events().await?;
                 }
 
             }
 
-            self.process_role_events().await?;
+            self.process_internal_events().await?;
             self.process_client_cmds().await?;
-            self.process_raft_events().await?;
+            self.process_inbound_events().await?;
         }
     }
 
-    /// Drain all pending raft events (up to max_batch_size).
-    async fn drain_raft_events(&mut self) -> Result<()> {
+    /// Drain all pending inbound events (up to max_batch_size).
+    async fn drain_inbound_events(&mut self) -> Result<()> {
         let max = self.ctx.node_config.raft.batching.max_batch_size;
         let mut count = 0;
         while count < max {
             match self.event_rx.try_recv() {
-                Ok(raft_event) => {
-                    self.buffered_raft_event.push_back(raft_event);
+                Ok(inbound_event) => {
+                    self.buffered_inbound_event.push_back(inbound_event);
                     count += 1;
                 }
                 Err(_) => break,
@@ -336,14 +336,14 @@ where
         Ok(())
     }
 
-    /// Drain all pending role events (up to max_batch_size).
-    async fn drain_role_events(&mut self) -> Result<()> {
+    /// Drain all pending internal events (up to max_batch_size).
+    async fn drain_internal_events(&mut self) -> Result<()> {
         let max = self.ctx.node_config.raft.batching.max_batch_size;
         let mut count = 0;
         while count < max {
-            match self.role_rx.try_recv() {
-                Ok(role_event) => {
-                    self.buffered_role_event.push_back(role_event);
+            match self.internal_event_rx.try_recv() {
+                Ok(internal_event) => {
+                    self.buffered_internal_event.push_back(internal_event);
                     count += 1;
                 }
                 Err(_) => break,
@@ -371,48 +371,50 @@ where
         Ok(())
     }
 
-    async fn process_role_events(&mut self) -> Result<()> {
-        while let Some(event) = self.buffered_role_event.pop_front() {
-            if let Err(e) = self.handle_role_event(event).await {
+    async fn process_internal_events(&mut self) -> Result<()> {
+        while let Some(event) = self.buffered_internal_event.pop_front() {
+            if let Err(e) = self.handle_internal_event(event).await {
                 if e.is_fatal() {
-                    error!(%self.node_id, ?e, "Fatal error in process_role_events, shutting down");
+                    error!(%self.node_id, ?e, "Fatal error in process_internal_events, shutting down");
                     return Err(e);
                 }
-                warn!(%self.node_id, ?e, "Non-fatal error in process_role_events, continuing");
+                warn!(%self.node_id, ?e, "Non-fatal error in process_internal_events, continuing");
             }
         }
         Ok(())
     }
 
-    async fn process_raft_events(&mut self) -> Result<()> {
-        while !self.buffered_raft_event.is_empty() {
+    async fn process_inbound_events(&mut self) -> Result<()> {
+        while !self.buffered_inbound_event.is_empty() {
             // Avoid none AE event pop and push into queue
             if matches!(
-                self.buffered_raft_event.front(),
-                Some(RaftEvent::AppendEntries(..))
+                self.buffered_inbound_event.front(),
+                Some(InboundEvent::AppendEntries(..))
             ) {
                 self.merge_append_entries();
             }
 
-            let Some(event) = self.buffered_raft_event.pop_front() else {
+            let Some(event) = self.buffered_inbound_event.pop_front() else {
                 break;
             };
 
             #[cfg(test)]
-            let test_event = raft_event_to_test_event(&event);
+            let test_event = inbound_event_to_test_event(&event);
 
-            if let Err(e) =
-                self.role.handle_raft_event(event, &self.ctx, self.role_tx.clone()).await
+            if let Err(e) = self
+                .role
+                .handle_inbound_event(event, &self.ctx, self.internal_event_tx.clone())
+                .await
             {
                 if e.is_fatal() {
-                    error!(%self.node_id, ?e, "Fatal error in drain_raft_events, shutting down");
+                    error!(%self.node_id, ?e, "Fatal error in drain_inbound_events, shutting down");
                     return Err(e);
                 }
-                warn!(%self.node_id, ?e, "Non-fatal error in drain_raft_events, continuing");
+                warn!(%self.node_id, ?e, "Non-fatal error in drain_inbound_events, continuing");
             }
 
             #[cfg(test)]
-            self.notify_raft_event(test_event);
+            self.notify_inbound_event(test_event);
         }
         Ok(())
     }
@@ -420,17 +422,17 @@ where
     async fn process_client_cmds(&mut self) -> Result<()> {
         // Always flush: the P3 select arm may have pushed a command before this drain ran.
         // flush_cmd_buffers checks is_empty() internally and is a no-op when nothing is buffered.
-        self.role.flush_cmd_buffers(&self.ctx, &self.role_tx).await
+        self.role.flush_cmd_buffers(&self.ctx, &self.internal_event_tx).await
     }
 
-    /// Drain all pending raft events (up to max_batch_size).
+    /// Drain all pending inbound events (up to max_batch_size).
     fn merge_append_entries(&mut self) {
-        let Some(event) = self.buffered_raft_event.pop_front() else {
+        let Some(event) = self.buffered_inbound_event.pop_front() else {
             return;
         };
 
-        let RaftEvent::AppendEntries(mut first_req, first_senders) = event else {
-            self.buffered_raft_event.push_front(event);
+        let InboundEvent::AppendEntries(mut first_req, first_senders) = event else {
+            self.buffered_inbound_event.push_front(event);
             return;
         };
 
@@ -441,13 +443,14 @@ where
         let term = first_req.term;
         let mut merged_senders = first_senders;
 
-        while let Some(event) = self.buffered_raft_event.pop_front() {
+        while let Some(event) = self.buffered_inbound_event.pop_front() {
             match event {
-                RaftEvent::AppendEntries(mut req, mut senders)
+                InboundEvent::AppendEntries(mut req, mut senders)
                     if next_prev == req.prev_log_index && term == req.term =>
                 {
                     if merged_entries.len() + req.entries.len() > max {
-                        self.buffered_raft_event.push_front(RaftEvent::AppendEntries(req, senders));
+                        self.buffered_inbound_event
+                            .push_front(InboundEvent::AppendEntries(req, senders));
                         break;
                     }
 
@@ -461,26 +464,26 @@ where
                     merged_senders.append(&mut senders);
                 }
                 _ => {
-                    self.buffered_raft_event.push_front(event);
+                    self.buffered_inbound_event.push_front(event);
                     break;
                 }
             }
         }
         first_req.entries = merged_entries;
-        self.buffered_raft_event
-            .push_front(RaftEvent::AppendEntries(first_req, merged_senders));
+        self.buffered_inbound_event
+            .push_front(InboundEvent::AppendEntries(first_req, merged_senders));
     }
 
-    /// `handle_role_event` will be responsbile to process role trasnsition and
+    /// `handle_internal_event` will be responsbile to process role trasnsition and
     /// role state events.
-    pub async fn handle_role_event(
+    pub async fn handle_internal_event(
         &mut self,
-        role_event: RoleEvent,
+        internal_event: InternalEvent,
     ) -> Result<()> {
-        // All inbound and outbound raft event
+        // All inbound and outbound inbound event
 
-        match role_event {
-            RoleEvent::BecomeFollower(leader_id_option) => {
+        match internal_event {
+            InternalEvent::BecomeFollower(leader_id_option) => {
                 // Drain read buffer when stepping down from Leader; skip otherwise.
                 let _ = self.role.drain_read_buffer();
 
@@ -499,7 +502,7 @@ where
 
                 //TODO: update membership
             }
-            RoleEvent::BecomeCandidate => {
+            InternalEvent::BecomeCandidate => {
                 // Drain read buffer when stepping down from Leader; skip otherwise.
                 let _ = self.role.drain_read_buffer();
 
@@ -513,7 +516,7 @@ where
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            RoleEvent::BecomeLeader => {
+            InternalEvent::BecomeLeader => {
                 debug!("BecomeLeader");
                 self.role = self.role.become_leader()?;
 
@@ -536,20 +539,23 @@ where
                 self.role.state_mut().init_cluster_metadata(&self.ctx.membership()).await?;
 
                 // Fire-and-forget noop to confirm quorum.
-                // Completion is delivered asynchronously via RoleEvent::NoopCommitted.
-                if let Err(e) = self.role.initiate_noop_commit(&self.ctx, &self.role_tx).await {
+                // Completion is delivered asynchronously via InternalEvent::NoopCommitted.
+                if let Err(e) =
+                    self.role.initiate_noop_commit(&self.ctx, &self.internal_event_tx).await
+                {
                     warn!(?e, "initiate_noop_commit failed — stepping down");
-                    self.role_tx.send(RoleEvent::BecomeFollower(None)).map_err(|e| {
-                        let error_str = format!("{e:?}");
-                        error!("Failed to send: {}", error_str);
-                        NetworkError::SingalSendFailed(error_str)
-                    })?;
+                    self.internal_event_tx.send(InternalEvent::BecomeFollower(None)).map_err(
+                        |e| {
+                            error!("Failed to send: {:?}", e);
+                            NetworkError::SingalSendFailed(format!("{:?}", e))
+                        },
+                    )?;
                 }
 
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            RoleEvent::BecomeLearner => {
+            InternalEvent::BecomeLearner => {
                 // Drain read buffer when stepping down from Leader; skip otherwise.
                 let _ = self.role.drain_read_buffer();
 
@@ -563,15 +569,15 @@ where
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            RoleEvent::NotifyNewCommitIndex(mut new_commit_data) => {
+            InternalEvent::NotifyNewCommitIndex(mut new_commit_data) => {
                 // Drain all pending NotifyNewCommitIndex events (max_batch_size limit)
                 // This batches multiple committed entries into a single notification
                 let max_batch = self.ctx.node_config.raft.batching.max_batch_size;
                 let mut count = 1;
 
                 while count < max_batch {
-                    match self.role_rx.try_recv() {
-                        Ok(RoleEvent::NotifyNewCommitIndex(next)) => {
+                    match self.internal_event_rx.try_recv() {
+                        Ok(InternalEvent::NotifyNewCommitIndex(next)) => {
                             // Only keep the largest commit_index
                             if next.new_commit_index > new_commit_data.new_commit_index {
                                 new_commit_data = next;
@@ -579,10 +585,9 @@ where
                             count += 1;
                         }
                         Ok(other) => {
-                            self.role_tx.send(other).map_err(|e| {
-                                let error_str = format!("{e:?}");
-                                error!("Failed to resend role event: {}", error_str);
-                                crate::Error::Fatal(error_str)
+                            self.internal_event_tx.send(other).map_err(|e| {
+                                error!("Failed to resend internal event: {:?}", e);
+                                crate::Error::Fatal(e.to_string())
                             })?;
                             break;
                         }
@@ -597,62 +602,53 @@ where
 
                 self.notify_new_commit(new_commit_data);
             }
-
-            RoleEvent::LeaderDiscovered(leader_id, term) => {
+            InternalEvent::LeaderDiscovered(leader_id, term) => {
                 debug!("LeaderDiscovered: leader_id={}, term={}", leader_id, term);
                 // Notify leader change listeners - no state transition
                 // Note: mpsc channels do not deduplicate; consumers handle dedup if needed
                 self.notify_leader_change(Some(leader_id), term);
             }
-
-            RoleEvent::ReprocessEvent(raft_event) => {
-                info!("Replay the RaftEvent: {:?}", &raft_event);
-                self.event_tx.send(*raft_event).await.map_err(|e| {
-                    let error_str = format!("{e:?}");
-                    error!("Failed to send: {}", error_str);
-                    NetworkError::SingalSendFailed(error_str)
-                })?;
+            InternalEvent::ReprocessEvent(inbound_event) => {
+                info!("Replay the InboundEvent: {:?}", &inbound_event);
+                self.buffered_inbound_event.push_front(*inbound_event);
             }
-
-            RoleEvent::LogFlushed { durable_index } => {
+            InternalEvent::LogFlushed { durable_index } => {
                 debug!("LogFlushed: durable_index={}", durable_index);
-                self.role.handle_log_flushed(durable_index, &self.ctx, &self.role_tx).await;
+                self.role
+                    .handle_log_flushed(durable_index, &self.ctx, &self.internal_event_tx)
+                    .await;
             }
-
-            RoleEvent::AppendResult {
+            InternalEvent::AppendResult {
                 follower_id,
                 result,
             } => {
                 debug!("AppendResult: follower_id={}", follower_id);
                 if let Err(e) = self
                     .role
-                    .handle_append_result(follower_id, result, &self.ctx, &self.role_tx)
+                    .handle_append_result(follower_id, result, &self.ctx, &self.internal_event_tx)
                     .await
                 {
                     error!("handle_append_result failed: {:?}", e);
                 }
             }
-
-            RoleEvent::NoopCommitted { term } => {
+            InternalEvent::NoopCommitted { term } => {
                 debug!("NoopCommitted: term={}", term);
                 // on_noop_committed already called directly in drain_commit_actions.
                 // Only notify leader change listeners here (requires Raft<T> access).
                 self.notify_leader_change(Some(self.node_id), term);
             }
-
-            RoleEvent::FatalError { source, error } => {
+            InternalEvent::FatalError { source, error } => {
                 error!(%self.node_id, %source, %error, "Fatal error from SM worker — shutting down");
                 return Err(crate::Error::Fatal(format!("{source}: {error}")));
             }
-
-            RoleEvent::ApplyCompleted {
+            InternalEvent::ApplyCompleted {
                 last_index,
                 results,
             } => {
-                // Routed via role_tx (P2) to avoid priority inversion against AppendEntries at P4.
+                // Routed via internal_event_tx (P2) to avoid priority inversion against AppendEntries at P4.
                 if let Err(e) = self
                     .role
-                    .handle_apply_completed(last_index, results, &self.ctx, &self.role_tx)
+                    .handle_apply_completed(last_index, results, &self.ctx, &self.internal_event_tx)
                     .await
                 {
                     if e.is_fatal() {
@@ -662,22 +658,21 @@ where
                     warn!(%self.node_id, ?e, "Non-fatal error in ApplyCompleted handler");
                 }
             }
-
-            RoleEvent::PeerStreamError { peer_id } => {
+            InternalEvent::PeerStreamError { peer_id } => {
                 debug!(%peer_id, "PeerStreamError: bidi stream disconnected, resetting next_index");
                 self.role.handle_peer_stream_error(peer_id);
             }
-
-            RoleEvent::ZombieDetected(node_id) => {
+            InternalEvent::ZombieDetected(node_id) => {
                 debug!(%node_id, "ZombieDetected: forwarding to leader for BatchRemove");
-                if let Err(e) =
-                    self.role.handle_zombie_detected(node_id, &self.role_tx, &self.ctx).await
+                if let Err(e) = self
+                    .role
+                    .handle_zombie_detected(node_id, &self.internal_event_tx, &self.ctx)
+                    .await
                 {
                     error!(%node_id, ?e, "handle_zombie_detected failed");
                 }
             }
-
-            RoleEvent::SnapshotPushCompleted { peer_id, success } => {
+            InternalEvent::SnapshotPushCompleted { peer_id, success } => {
                 debug!(%peer_id, %success, "SnapshotPushCompleted");
                 if success {
                     // Reset next_index to last_entry_id + 1 so the peer is no longer below
@@ -693,6 +688,66 @@ where
                 // failures reach the configured threshold (leader protection highest priority).
                 let policy = &self.ctx.node_config.retry.install_snapshot;
                 self.role.handle_snapshot_push_completed(peer_id, success, policy, self.node_id);
+            }
+            InternalEvent::CreateSnapshotEvent => {
+                if let Err(e) =
+                    self.role.handle_create_snapshot(&self.ctx, &self.internal_event_tx).await
+                {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_create_snapshot failed");
+                }
+            }
+            InternalEvent::SnapshotCreated(result) => {
+                if let Err(e) = self
+                    .role
+                    .handle_snapshot_created(result, &self.ctx, &self.internal_event_tx)
+                    .await
+                {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_snapshot_created failed");
+                }
+            }
+            InternalEvent::StepDownSelfRemoved => {
+                if let Err(e) = self.role.handle_self_removed(&self.internal_event_tx) {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_self_removed failed");
+                }
+            }
+            InternalEvent::MembershipApplied => {
+                if let Err(e) =
+                    self.role.handle_membership_applied(&self.ctx, &self.internal_event_tx).await
+                {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_membership_applied failed");
+                }
+            }
+            InternalEvent::PromoteReadyLearners => {
+                if let Err(e) = self
+                    .role
+                    .handle_promote_ready_learners(&self.ctx, &self.internal_event_tx)
+                    .await
+                {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_promote_ready_learners failed");
+                }
+            }
+            InternalEvent::LogPurgeCompleted(log_id) => {
+                if let Err(e) = self.role.handle_log_purge_completed(log_id) {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    error!(%self.node_id, ?e, "handle_log_purge_completed failed");
+                }
             }
         };
 
@@ -736,21 +791,21 @@ where
     }
 
     #[cfg(test)]
-    pub fn register_raft_event_listener(
+    pub fn register_inbound_event_listener(
         &mut self,
         tx: mpsc::UnboundedSender<super::TestEvent>,
     ) {
-        self.test_raft_event_listener.push(tx);
+        self.test_inbound_event_listener.push(tx);
     }
 
     #[cfg(test)]
-    pub fn notify_raft_event(
+    pub fn notify_inbound_event(
         &self,
         event: super::TestEvent,
     ) {
-        debug!("unit test:: notify new raft event: {:?}", &event);
+        debug!("unit test:: notify new inbound event: {:?}", &event);
 
-        for tx in &self.test_raft_event_listener {
+        for tx in &self.test_inbound_event_listener {
             assert!(tx.send(event.clone()).is_ok(), "should succeed");
         }
     }
@@ -765,15 +820,15 @@ where
 
     /// Returns a cloned event sender for external use.
     ///
-    /// This provides controlled access to send validated RaftEvents to the Raft core.
+    /// This provides controlled access to send validated InboundEvents to the Raft core.
     /// Events sent through this sender are still processed through the normal validation
     /// pipeline in the main event loop.
     ///
     /// # Security Note
     /// While this provides access to the event channel, all events are still validated
-    /// by the Raft state machine before being applied. The event handler in `handle_raft_event`
+    /// by the Raft state machine before being applied. The event handler in `handle_inbound_event`
     /// performs necessary checks based on current term, role, and state.
-    pub fn event_sender(&self) -> mpsc::Sender<RaftEvent> {
+    pub fn event_sender(&self) -> mpsc::Sender<InboundEvent> {
         self.event_tx.clone()
     }
 
@@ -789,14 +844,14 @@ where
         self.role.state().current_term()
     }
 
-    /// Returns a cloned role event sender for internal use.
+    /// Returns a cloned internal event sender for internal use.
     ///
     /// # Warning
     /// This is primarily for internal components that need to trigger role transitions.
     /// External callers should not use this unless they understand the Raft protocol deeply.
     #[doc(hidden)]
-    pub fn role_event_sender(&self) -> mpsc::UnboundedSender<RoleEvent> {
-        self.role_tx.clone()
+    pub fn internal_event_sender(&self) -> mpsc::UnboundedSender<InternalEvent> {
+        self.internal_event_tx.clone()
     }
 }
 
@@ -829,8 +884,8 @@ mod leader_discovered_tests;
 #[path = "raft_test/merge_append_entries_tests.rs"]
 mod merge_append_entries_tests;
 #[cfg(test)]
-#[path = "raft_test/process_raft_events_tests.rs"]
-mod process_raft_events_tests;
+#[path = "raft_test/process_inbound_events_tests.rs"]
+mod process_inbound_events_tests;
 #[cfg(test)]
 #[path = "raft_test/raft_comprehensive_tests.rs"]
 mod raft_comprehensive_tests;

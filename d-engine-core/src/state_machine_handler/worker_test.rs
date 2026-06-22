@@ -2,8 +2,8 @@
 //!
 //! Tests verify SM Worker's core responsibilities:
 //! - Apply entries asynchronously via apply_chunk
-//! - Send ApplyCompleted events on success via role_tx (P2)
-//! - Send FatalError events on apply failures via role_tx (P2)
+//! - Send ApplyCompleted events on success via internal_event_tx (P2)
+//! - Send FatalError events on apply failures via internal_event_tx (P2)
 //! - Gracefully drain remaining entries on shutdown
 
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use d_engine_proto::common::Entry;
 use tokio::sync::{mpsc, watch};
 
 use super::StateMachineWorker;
-use crate::{Error, MockStateMachineHandler, MockTypeConfig, RoleEvent};
+use crate::{Error, InternalEvent, MockStateMachineHandler, MockTypeConfig};
 
 /// Helper: Create test entry
 fn create_test_entry(
@@ -32,7 +32,7 @@ fn create_test_entry(
 ///
 /// # Test Objective
 /// Verify that when apply_chunk succeeds, SM Worker sends
-/// RoleEvent::ApplyCompleted with correct results via role_tx (P2, unbounded).
+/// InternalEvent::ApplyCompleted with correct results via internal_event_tx (P2, unbounded).
 ///
 /// # Given
 /// - Mock StateMachineHandler with successful apply_chunk
@@ -42,7 +42,7 @@ fn create_test_entry(
 /// - apply_chunk returns Ok(results)
 ///
 /// # Then
-/// - RoleEvent::ApplyCompleted is sent to role_tx
+/// - InternalEvent::ApplyCompleted is sent to internal_event_tx
 /// - Event contains correct last_index and results
 #[tokio::test]
 async fn test_apply_success_sends_apply_completed() {
@@ -54,14 +54,14 @@ async fn test_apply_success_sends_apply_completed() {
     });
 
     let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let worker = StateMachineWorker::<MockTypeConfig>::new(
         1,
         Arc::new(mock_smh),
         sm_apply_rx,
-        role_tx,
+        internal_event_tx,
         shutdown_rx,
     );
 
@@ -73,8 +73,13 @@ async fn test_apply_success_sends_apply_completed() {
         .send(vec![create_test_entry(1, 1), create_test_entry(2, 1)])
         .unwrap();
 
-    match tokio::time::timeout(std::time::Duration::from_millis(100), role_rx.recv()).await {
-        Ok(Some(RoleEvent::ApplyCompleted {
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        internal_event_rx.recv(),
+    )
+    .await
+    {
+        Ok(Some(InternalEvent::ApplyCompleted {
             last_index,
             results,
         })) => {
@@ -93,7 +98,7 @@ async fn test_apply_success_sends_apply_completed() {
 ///
 /// # Test Objective
 /// Verify that when apply_chunk fails, SM Worker sends
-/// RoleEvent::FatalError via role_tx (P2, unbounded) and exits with error.
+/// InternalEvent::FatalError via internal_event_tx (P2, unbounded) and exits with error.
 ///
 /// # Given
 /// - Mock StateMachineHandler with failing apply_chunk
@@ -102,7 +107,7 @@ async fn test_apply_success_sends_apply_completed() {
 /// - apply_chunk returns Err(Error::Fatal)
 ///
 /// # Then
-/// - RoleEvent::FatalError is sent to role_tx
+/// - InternalEvent::FatalError is sent to internal_event_tx
 /// - Worker returns error (exits run loop)
 #[tokio::test]
 async fn test_apply_failure_sends_fatal_error() {
@@ -114,14 +119,14 @@ async fn test_apply_failure_sends_fatal_error() {
     });
 
     let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let worker = StateMachineWorker::<MockTypeConfig>::new(
         1,
         Arc::new(mock_smh),
         sm_apply_rx,
-        role_tx,
+        internal_event_tx,
         shutdown_rx,
     );
 
@@ -129,8 +134,13 @@ async fn test_apply_failure_sends_fatal_error() {
 
     sm_apply_tx.send(vec![create_test_entry(1, 1)]).unwrap();
 
-    match tokio::time::timeout(std::time::Duration::from_millis(100), role_rx.recv()).await {
-        Ok(Some(RoleEvent::FatalError { source, error })) => {
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        internal_event_rx.recv(),
+    )
+    .await
+    {
+        Ok(Some(InternalEvent::FatalError { source, error })) => {
             assert_eq!(source, "StateMachine");
             assert!(
                 error.contains("Disk failure") || error.contains("storage"),
@@ -156,7 +166,7 @@ async fn test_apply_failure_sends_fatal_error() {
 /// pending entries before exit (no data loss).
 ///
 /// # Success Criteria
-/// - All 3 entries applied (verified via ApplyCompleted count on role_rx)
+/// - All 3 entries applied (verified via ApplyCompleted count on internal_event_rx)
 /// - Worker run() returns Ok(())
 #[tokio::test]
 async fn test_shutdown_drains_remaining_entries() {
@@ -168,14 +178,14 @@ async fn test_shutdown_drains_remaining_entries() {
     });
 
     let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
     let worker = StateMachineWorker::<MockTypeConfig>::new(
         1,
         Arc::new(mock_smh),
         sm_apply_rx,
-        role_tx,
+        internal_event_tx,
         shutdown_rx,
     );
 
@@ -190,8 +200,13 @@ async fn test_shutdown_drains_remaining_entries() {
 
     let mut apply_count = 0;
     while apply_count < 3 {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), role_rx.recv()).await {
-            Ok(Some(RoleEvent::ApplyCompleted { .. })) => apply_count += 1,
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            internal_event_rx.recv(),
+        )
+        .await
+        {
+            Ok(Some(InternalEvent::ApplyCompleted { .. })) => apply_count += 1,
             Ok(Some(other)) => panic!("Expected ApplyCompleted, got {other:?}"),
             Ok(None) => break,
             Err(_) => panic!("Timeout waiting for ApplyCompleted events"),
@@ -215,14 +230,14 @@ async fn test_channel_closed_worker_exits() {
     let mock_smh = MockStateMachineHandler::new();
 
     let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
-    let (role_tx, _role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let worker = StateMachineWorker::<MockTypeConfig>::new(
         1,
         Arc::new(mock_smh),
         sm_apply_rx,
-        role_tx,
+        internal_event_tx,
         shutdown_rx,
     );
 
@@ -243,7 +258,7 @@ async fn test_channel_closed_worker_exits() {
 /// Verify SM Worker processes batches in order, last_index increases monotonically.
 ///
 /// # Success Criteria
-/// - 3 ApplyCompleted events received on role_rx with last_index: 2, 4, 6
+/// - 3 ApplyCompleted events received on internal_event_rx with last_index: 2, 4, 6
 #[tokio::test]
 async fn test_multiple_batches_sequential_processing() {
     let mut mock_smh = MockStateMachineHandler::new();
@@ -254,14 +269,14 @@ async fn test_multiple_batches_sequential_processing() {
     });
 
     let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel::<RoleEvent>();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let worker = StateMachineWorker::<MockTypeConfig>::new(
         1,
         Arc::new(mock_smh),
         sm_apply_rx,
-        role_tx,
+        internal_event_tx,
         shutdown_rx,
     );
 
@@ -280,8 +295,13 @@ async fn test_multiple_batches_sequential_processing() {
         .unwrap();
 
     for expected_index in [2u64, 4, 6] {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), role_rx.recv()).await {
-            Ok(Some(RoleEvent::ApplyCompleted { last_index, .. })) => {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            internal_event_rx.recv(),
+        )
+        .await
+        {
+            Ok(Some(InternalEvent::ApplyCompleted { last_index, .. })) => {
                 assert_eq!(
                     last_index, expected_index,
                     "last_index should match expected"

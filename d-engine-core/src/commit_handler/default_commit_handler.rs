@@ -11,9 +11,9 @@ use tracing::trace;
 use tracing::warn;
 
 use super::CommitHandler;
+use crate::InternalEvent;
 use crate::Membership;
 use crate::NewCommitData;
-use crate::RaftEvent;
 use crate::RaftLog;
 use crate::Result;
 use crate::StateMachineHandler;
@@ -28,7 +28,7 @@ pub struct CommitHandlerDependencies<T: TypeConfig> {
     pub state_machine_handler: Arc<SMHOF<T>>,
     pub raft_log: Arc<ROF<T>>,
     pub membership: Arc<MOF<T>>,
-    pub event_tx: mpsc::Sender<RaftEvent>,
+    pub internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
     pub sm_apply_tx: mpsc::UnboundedSender<Vec<Entry>>,
     pub shutdown_signal: watch::Receiver<()>,
     pub max_batch_size: usize,
@@ -47,8 +47,8 @@ where
     new_commit_rx: Option<mpsc::UnboundedReceiver<NewCommitData>>,
     membership: Arc<MOF<T>>,
 
-    event_tx: mpsc::Sender<RaftEvent>, // Cloned from Raft
-    sm_apply_tx: mpsc::UnboundedSender<Vec<Entry>>, // Send entries to SM Worker
+    internal_event_tx: mpsc::UnboundedSender<InternalEvent>, // Cloned from Raft
+    sm_apply_tx: mpsc::UnboundedSender<Vec<Entry>>,          // Send entries to SM Worker
 
     // Shutdown signal
     shutdown_signal: watch::Receiver<()>,
@@ -130,7 +130,7 @@ where
             raft_log: deps.raft_log,
             membership: deps.membership,
             new_commit_rx: Some(new_commit_rx),
-            event_tx: deps.event_tx,
+            internal_event_tx: deps.internal_event_tx,
             sm_apply_tx: deps.sm_apply_tx,
             shutdown_signal: deps.shutdown_signal,
             max_batch_size: deps.max_batch_size,
@@ -198,7 +198,7 @@ where
             self.send_to_sm_worker(&mut command_batch).await?;
         }
 
-        // Snapshot check moved to ApplyCompleted handler in Raft event loop.
+        // Snapshot check moved to ApplyCompleted handler in inbound event loop.
         // SM Worker applies entries asynchronously, so last_applied is stale here.
 
         Ok(())
@@ -254,7 +254,7 @@ where
 
             // 2.5. Notify leader to refresh cluster metadata cache
             // This must happen AFTER membership is applied
-            if let Err(e) = self.event_tx.send(RaftEvent::MembershipApplied).await {
+            if let Err(e) = self.internal_event_tx.send(InternalEvent::MembershipApplied) {
                 warn!("Failed to send MembershipApplied event: {:?}", e);
             }
 
@@ -265,7 +265,7 @@ where
                     self.my_id, entry.index
                 );
                 // Signal step down - error is non-fatal as removal is already committed
-                if let Err(e) = self.event_tx.send(RaftEvent::StepDownSelfRemoved).await {
+                if let Err(e) = self.internal_event_tx.send(InternalEvent::StepDownSelfRemoved) {
                     error!(
                         "[{}] Failed to send StepDownSelfRemoved event: {:?}",
                         self.my_id, e
@@ -299,3 +299,7 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "default_commit_handler_test.rs"]
+mod default_commit_handler_test;

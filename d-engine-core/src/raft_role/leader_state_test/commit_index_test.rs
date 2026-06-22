@@ -4,7 +4,7 @@
 //! never `last_entry_id` (in-memory). Covers both the single-voter fast path and
 //! the multi-voter quorum path. Fixed by ticket #329.
 
-use crate::event::RoleEvent;
+use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
@@ -112,8 +112,11 @@ async fn test_single_voter_commit_must_not_advance_before_durable() {
         .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (req, _rx) = write_request();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    state.process_batch(VecDeque::from(vec![req]), &role_tx, &ctx).await.unwrap();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .process_batch(VecDeque::from(vec![req]), &internal_event_tx, &ctx)
+        .await
+        .unwrap();
     // Single-voter: commit driven by handle_log_flushed; durable=0 → no advance yet.
 
     // CORRECT: commit must NOT advance — entry is in memory but not crash-safe
@@ -123,7 +126,7 @@ async fn test_single_voter_commit_must_not_advance_before_durable() {
         "CORRECT: single-voter commit must not advance until durable_index catches up"
     );
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "CORRECT: NotifyNewCommitIndex must not fire before durable"
     );
 }
@@ -154,10 +157,13 @@ async fn test_single_voter_commit_advances_after_durable() {
         .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (req, _rx) = write_request();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    state.process_batch(VecDeque::from(vec![req]), &role_tx, &ctx).await.unwrap();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .process_batch(VecDeque::from(vec![req]), &internal_event_tx, &ctx)
+        .await
+        .unwrap();
     // Single-voter: commit driven by handle_log_flushed; durable=1 → advances.
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     assert_eq!(
         state.shared_state().commit_index,
@@ -165,7 +171,10 @@ async fn test_single_voter_commit_advances_after_durable() {
         "single-voter commit must advance to durable_index after flush"
     );
     assert!(
-        matches!(role_rx.try_recv(), Ok(RoleEvent::NotifyNewCommitIndex(_))),
+        matches!(
+            internal_event_rx.try_recv(),
+            Ok(InternalEvent::NotifyNewCommitIndex(_))
+        ),
         "NotifyNewCommitIndex must fire after commit advances"
     );
 }
@@ -232,12 +241,15 @@ async fn test_multi_voter_commit_respects_quorum_result() {
         });
 
     let (req, _rx) = write_request();
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
-    state.process_batch(VecDeque::from(vec![req]), &role_tx, &ctx).await.unwrap();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .process_batch(VecDeque::from(vec![req]), &internal_event_tx, &ctx)
+        .await
+        .unwrap();
     // Simulate peer responses: both succeed, but calculate_majority_matched_index returns None.
     let resp = success_response(1, 1);
-    state.handle_append_result(2, Ok(resp), &ctx, &role_tx).await.unwrap();
-    state.handle_append_result(3, Ok(resp), &ctx, &role_tx).await.unwrap();
+    state.handle_append_result(2, Ok(resp), &ctx, &internal_event_tx).await.unwrap();
+    state.handle_append_result(3, Ok(resp), &ctx, &internal_event_tx).await.unwrap();
 
     assert_eq!(
         state.shared_state().commit_index,
@@ -245,7 +257,7 @@ async fn test_multi_voter_commit_respects_quorum_result() {
         "multi-voter commit must not advance when calculate_majority returns None"
     );
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "NotifyNewCommitIndex must not fire"
     );
 }
@@ -273,13 +285,13 @@ async fn test_leader_single_voter_commit_advances_on_log_flushed() {
     )
     .await;
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: commit_index still at 0 (process_batch saw durable=0)
     assert_eq!(state.commit_index(), 0);
 
     // Action: LogFlushed(1) — entry 1 is now crash-safe
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     // Verify: commit_index advanced to 1
     assert_eq!(
@@ -291,8 +303,8 @@ async fn test_leader_single_voter_commit_advances_on_log_flushed() {
     // Verify: NotifyNewCommitIndex event sent to state machine
     assert!(
         matches!(
-            role_rx.try_recv().unwrap(),
-            RoleEvent::NotifyNewCommitIndex(_)
+            internal_event_rx.try_recv().unwrap(),
+            InternalEvent::NotifyNewCommitIndex(_)
         ),
         "NotifyNewCommitIndex must fire after commit advances"
     );
@@ -316,15 +328,15 @@ async fn test_leader_single_voter_log_flushed_noop_when_already_committed() {
     // Pre-set commit_index to 1 (already committed)
     state.update_commit_index(1).unwrap();
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: LogFlushed(1) — durable == commit_index, nothing to do
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     // Verify: commit_index unchanged, no event fired
     assert_eq!(state.commit_index(), 1, "commit_index must not change");
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "NotifyNewCommitIndex must NOT fire when durable <= commit_index"
     );
 }
@@ -385,11 +397,11 @@ async fn test_update_match_index_only_advances() {
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
     assert!(!state.cluster_metadata.single_voter);
 
-    let (role_tx, _role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // T1: response match=10 → stored
     state
-        .handle_append_result(2, Ok(success_response(1, 10)), &ctx, &role_tx)
+        .handle_append_result(2, Ok(success_response(1, 10)), &ctx, &internal_event_tx)
         .await
         .unwrap();
     assert_eq!(
@@ -400,7 +412,7 @@ async fn test_update_match_index_only_advances() {
 
     // T2: out-of-order stale response match=7 → ignored
     state
-        .handle_append_result(2, Ok(success_response(1, 7)), &ctx, &role_tx)
+        .handle_append_result(2, Ok(success_response(1, 7)), &ctx, &internal_event_tx)
         .await
         .unwrap();
     assert_eq!(
@@ -411,7 +423,7 @@ async fn test_update_match_index_only_advances() {
 
     // T3: later response match=12 → advances
     state
-        .handle_append_result(2, Ok(success_response(1, 12)), &ctx, &role_tx)
+        .handle_append_result(2, Ok(success_response(1, 12)), &ctx, &internal_event_tx)
         .await
         .unwrap();
     assert_eq!(
@@ -526,10 +538,10 @@ async fn test_handle_log_flushed_excludes_learner_from_quorum() {
     state.update_match_index(3, 4).unwrap();
     state.update_commit_index(4).unwrap();
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: leader flushes entry 5 to disk
-    state.handle_log_flushed(5, &ctx, &role_tx).await;
+    state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
 
     assert_eq!(
         state.commit_index(),
@@ -538,8 +550,8 @@ async fn test_handle_log_flushed_excludes_learner_from_quorum() {
     );
     assert!(
         matches!(
-            role_rx.try_recv().unwrap(),
-            RoleEvent::NotifyNewCommitIndex(_)
+            internal_event_rx.try_recv().unwrap(),
+            InternalEvent::NotifyNewCommitIndex(_)
         ),
         "NotifyNewCommitIndex must fire after commit advances"
     );
@@ -603,11 +615,11 @@ async fn test_handle_append_result_excludes_learner_from_quorum() {
     state.update_match_index(3, 4).unwrap();
     state.update_commit_index(4).unwrap();
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: voter(2) ACKs entry 5 — triggers quorum re-calculation
     state
-        .handle_append_result(2, Ok(success_response(1, 5)), &ctx, &role_tx)
+        .handle_append_result(2, Ok(success_response(1, 5)), &ctx, &internal_event_tx)
         .await
         .unwrap();
 
@@ -618,8 +630,8 @@ async fn test_handle_append_result_excludes_learner_from_quorum() {
     );
     assert!(
         matches!(
-            role_rx.try_recv().unwrap(),
-            RoleEvent::NotifyNewCommitIndex(_)
+            internal_event_rx.try_recv().unwrap(),
+            InternalEvent::NotifyNewCommitIndex(_)
         ),
         "NotifyNewCommitIndex must fire after commit advances"
     );
@@ -709,13 +721,13 @@ async fn test_multi_voter_commit_advances_when_log_flushed_enables_quorum() {
     state.update_match_index(2, 1).unwrap();
     state.update_match_index(3, 1).unwrap();
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: commit still at 0 (durable_index was 0 during process_batch)
     assert_eq!(state.commit_index(), 0);
 
     // Action: LogFlushed(1) — leader's entry is now crash-safe, quorum can be calculated
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     // Verify: commit_index advanced to 1 (quorum of [1,1,1] satisfied)
     assert_eq!(
@@ -727,8 +739,8 @@ async fn test_multi_voter_commit_advances_when_log_flushed_enables_quorum() {
     // Verify: NotifyNewCommitIndex event sent to state machine
     assert!(
         matches!(
-            role_rx.try_recv().unwrap(),
-            RoleEvent::NotifyNewCommitIndex(_)
+            internal_event_rx.try_recv().unwrap(),
+            InternalEvent::NotifyNewCommitIndex(_)
         ),
         "NotifyNewCommitIndex must fire after commit advances"
     );
@@ -770,13 +782,13 @@ async fn test_multi_voter_log_flushed_no_commit_when_quorum_insufficient() {
     state.update_match_index(2, 0).unwrap();
     state.update_match_index(3, 0).unwrap();
 
-    let (role_tx, mut role_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: commit at 0
     assert_eq!(state.commit_index(), 0);
 
     // Action: LogFlushed(1) — leader durable, but peers haven't replicated yet
-    state.handle_log_flushed(1, &ctx, &role_tx).await;
+    state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     // Verify: commit_index must stay at 0 (quorum not satisfied)
     assert_eq!(
@@ -787,7 +799,7 @@ async fn test_multi_voter_log_flushed_no_commit_when_quorum_insufficient() {
 
     // Verify: no commit event should be sent
     assert!(
-        role_rx.try_recv().is_err(),
+        internal_event_rx.try_recv().is_err(),
         "NotifyNewCommitIndex must NOT fire when quorum not satisfied"
     );
 }
