@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
 use d_engine::{
-    common::{Entry, LogId},
     Error, HardState, LogStore, MetaStore, ProstError, Result, StorageEngine, StorageError,
+    common::{Entry, LogId},
 };
 use prost::Message;
 use sled::Batch;
@@ -13,7 +13,6 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::error;
 use tracing::info;
-use tracing::instrument;
 use tracing::trace;
 
 const HARD_STATE_KEY: &[u8] = b"hard_state";
@@ -74,7 +73,6 @@ impl LogStore for SledLogStore {
         Ok(())
     }
 
-    #[instrument(skip(self))]
     async fn entry(
         &self,
         index: u64,
@@ -89,7 +87,6 @@ impl LogStore for SledLogStore {
         }
     }
 
-    #[instrument(skip(self))]
     fn get_entries(
         &self,
         range: RangeInclusive<u64>,
@@ -107,7 +104,6 @@ impl LogStore for SledLogStore {
         Ok(entries)
     }
 
-    #[instrument(skip(self))]
     async fn purge(
         &self,
         cutoff_index: LogId,
@@ -125,7 +121,6 @@ impl LogStore for SledLogStore {
         Ok(())
     }
 
-    #[instrument(skip(self))]
     async fn truncate(
         &self,
         from_index: u64,
@@ -177,7 +172,6 @@ impl LogStore for SledLogStore {
         false
     }
 
-    #[instrument(skip(self))]
     fn flush(&self) -> Result<()> {
         trace!("LogStore flush");
         self.tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
@@ -193,13 +187,11 @@ impl LogStore for SledLogStore {
         Ok(())
     }
 
-    #[instrument(skip(self))]
     async fn reset(&self) -> Result<()> {
         self.tree.clear().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
 
-    #[instrument(skip(self))]
     fn last_index(&self) -> u64 {
         match self.tree.last() {
             Ok(Some((key, _))) => {

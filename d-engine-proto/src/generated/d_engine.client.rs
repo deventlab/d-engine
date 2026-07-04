@@ -3,7 +3,7 @@
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WriteCommand {
-    #[prost(oneof = "write_command::Operation", tags = "1, 2, 3")]
+    #[prost(oneof = "write_command::Operation", tags = "1, 2, 3, 4")]
     pub operation: ::core::option::Option<write_command::Operation>,
 }
 /// Nested message and enum types in `WriteCommand`.
@@ -39,6 +39,29 @@ pub mod write_command {
         pub new_value: ::prost::bytes::Bytes,
     }
     #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct BatchOp {
+        #[prost(oneof = "batch_op::Op", tags = "1, 2")]
+        pub op: ::core::option::Option<batch_op::Op>,
+    }
+    /// Nested message and enum types in `BatchOp`.
+    pub mod batch_op {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        #[derive(Clone, PartialEq, ::prost::Oneof)]
+        pub enum Op {
+            #[prost(message, tag = "1")]
+            Insert(super::Insert),
+            #[prost(message, tag = "2")]
+            Delete(super::Delete),
+        }
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Batch {
+        #[prost(message, repeated, tag = "1")]
+        pub ops: ::prost::alloc::vec::Vec<BatchOp>,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Operation {
         #[prost(message, tag = "1")]
@@ -47,6 +70,8 @@ pub mod write_command {
         Delete(Delete),
         #[prost(message, tag = "3")]
         CompareAndSwap(CompareAndSwap),
+        #[prost(message, tag = "4")]
+        Batch(Batch),
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]

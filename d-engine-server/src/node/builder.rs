@@ -28,10 +28,6 @@
 //! - **Configuration Loading**: Supports loading cluster configuration from file or in-memory
 //!   config.
 
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
 use crate::read_actor::run_read_actor;
 use d_engine_core::ClusterConfig;
 use d_engine_core::CommitHandler;
@@ -67,6 +63,9 @@ use d_engine_core::learner_state::LearnerState;
 use d_engine_core::watch::WatchDispatcher;
 #[cfg(feature = "watch")]
 use d_engine_core::watch::WatchRegistry;
+use std::fmt::Debug;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;

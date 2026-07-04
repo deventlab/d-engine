@@ -3,12 +3,6 @@
 //! This module tests the `handle_inbound_event` method for various inbound events
 //! including vote requests, append entries, client operations, and more.
 
-use crate::client::WriteOperation;
-use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
-use tonic::Code;
-use tracing_test::traced_test;
-
 use crate::ClientCmd;
 use crate::Error;
 use crate::MockRaftLog;
@@ -26,12 +20,19 @@ use crate::test_utils::create_test_chunk;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
 use crate::utils::convert::safe_kv_bytes;
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
 use d_engine_proto::server::cluster::{
     ClusterConfChangeRequest, ClusterMembership, MetadataRequest,
 };
 use d_engine_proto::server::election::{VoteRequest, VoteResponse};
 use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
+use prost::Message;
+use std::sync::Arc;
+use tokio::sync::{mpsc, watch};
+use tonic::Code;
 use tonic::Status;
+use tracing_test::traced_test;
 
 // ============================================================================
 // Test Helper Functions
@@ -537,9 +538,9 @@ async fn test_handle_client_propose_success() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
-            command: Some(WriteOperation::Delete {
-                key: bytes::Bytes::new(),
-            }),
+            command: Some(Bytes::from(
+                WriteCommand::delete(Bytes::new()).encode_to_vec(),
+            )),
         },
         resp_tx,
     );

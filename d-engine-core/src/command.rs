@@ -17,6 +17,7 @@
 use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::Operation;
+use d_engine_proto::client::write_command::batch_op;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::entry_payload::Payload;
 use prost::Message;
@@ -55,6 +56,16 @@ pub enum Command {
         expected: Option<Bytes>,
         value: Bytes,
     },
+
+    Batch {
+        ops: Vec<BatchOp>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BatchOp {
+    Insert { key: Bytes, value: Bytes },
+    Delete { key: Bytes },
 }
 
 /// A decoded Raft log entry ready for state machine application.
@@ -92,6 +103,24 @@ impl TryFrom<WriteCommand> for Command {
                 expected: c.expected_value,
                 value: c.new_value,
             }),
+            Some(Operation::Batch(b)) => {
+                let ops = b
+                    .ops
+                    .into_iter()
+                    .map(|op| match op.op {
+                        Some(batch_op::Op::Insert(i)) => Ok(BatchOp::Insert {
+                            key: i.key,
+                            value: i.value,
+                        }),
+                        Some(batch_op::Op::Delete(d)) => Ok(BatchOp::Delete { key: d.key }),
+                        None => Err(StorageError::StateMachineError(
+                            "BatchOp has no operation".into(),
+                        )
+                        .into()),
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
+                Ok(Command::Batch { ops })
+            }
             None => {
                 Err(StorageError::StateMachineError("WriteCommand has no operation".into()).into())
             }
@@ -155,105 +184,5 @@ pub fn decode_entries(entries: Vec<Entry>) -> Result<Vec<ApplyEntry>, Error> {
 }
 
 #[cfg(test)]
-mod tests {
-    use bytes::Bytes;
-    use d_engine_proto::common::EntryPayload;
-    use d_engine_proto::common::MembershipChange;
-    use d_engine_proto::common::Noop;
-    use d_engine_proto::common::entry_payload::Payload;
-
-    use super::*;
-
-    fn noop_entry(index: u64) -> Entry {
-        Entry {
-            index,
-            term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Noop(Noop {})),
-            }),
-        }
-    }
-
-    fn config_entry(index: u64) -> Entry {
-        Entry {
-            index,
-            term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Config(MembershipChange { change: None })),
-            }),
-        }
-    }
-
-    fn insert_entry(
-        index: u64,
-        key: &str,
-        value: &str,
-    ) -> Entry {
-        use d_engine_proto::client::WriteCommand;
-        use d_engine_proto::client::write_command::{Insert, Operation};
-        use prost::Message;
-
-        let wc = WriteCommand {
-            operation: Some(Operation::Insert(Insert {
-                key: Bytes::from(key.to_owned()),
-                value: Bytes::from(value.to_owned()),
-                ttl_secs: 0,
-            })),
-        };
-        let mut buf = Vec::new();
-        wc.encode(&mut buf).unwrap();
-        Entry {
-            index,
-            term: 1,
-            payload: Some(EntryPayload {
-                payload: Some(Payload::Command(Bytes::from(buf))),
-            }),
-        }
-    }
-
-    /// Config entries must produce Command::Noop, not be dropped.
-    /// Dropping them leaves sm.last_applied stuck, breaking ReadIndex drain.
-    #[test]
-    fn config_entry_becomes_noop() {
-        let entries = vec![config_entry(5)];
-        let result = decode_entries(entries).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].index, 5);
-        assert_eq!(result[0].command, Command::Noop);
-    }
-
-    /// last_applied continuity: a mixed batch of Insert→Config→Insert must yield
-    /// three ApplyEntry values with no index gaps.
-    #[test]
-    fn config_entry_preserves_index_continuity() {
-        let entries = vec![
-            insert_entry(10, "k1", "v1"),
-            config_entry(11), // membership change
-            insert_entry(12, "k2", "v2"),
-        ];
-        let result = decode_entries(entries).unwrap();
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].index, 10);
-        assert_eq!(result[1].index, 11);
-        assert!(matches!(result[1].command, Command::Noop));
-        assert_eq!(result[2].index, 12);
-    }
-
-    /// A chunk that is entirely Config entries must still produce one Noop per entry,
-    /// so the SM can advance last_applied to the highest config index.
-    #[test]
-    fn all_config_chunk_produces_noops() {
-        let entries = vec![config_entry(3), config_entry(4), config_entry(5)];
-        let result = decode_entries(entries).unwrap();
-        assert_eq!(result.len(), 3);
-        assert!(result.iter().all(|e| e.command == Command::Noop));
-        assert_eq!(result.last().unwrap().index, 5);
-    }
-
-    #[test]
-    fn noop_entry_produces_noop() {
-        let result = decode_entries(vec![noop_entry(1)]).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].command, Command::Noop);
-    }
-}
+#[path = "command_test.rs"]
+mod tests;

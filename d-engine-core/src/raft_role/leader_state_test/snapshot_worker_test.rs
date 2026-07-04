@@ -76,7 +76,6 @@ fn state_machine_with_snapshot() -> MockStateMachine {
     sm.expect_stop().returning(|| Ok(()));
     sm.expect_is_running().returning(|| true);
     sm.expect_get().returning(|_| Ok(None));
-    sm.expect_entry_term().returning(|_| None);
     sm.expect_apply_chunk().returning(|_| Ok(vec![]));
     sm.expect_len().returning(|| 0);
     sm.expect_update_last_applied().returning(|_| ());

@@ -1,13 +1,16 @@
 use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::{CompareAndSwap, Delete, Insert, Operation};
+use d_engine_proto::client::write_command::batch_op;
+use d_engine_proto::client::write_command::{
+    Batch, BatchOp, CompareAndSwap, Delete, Insert, Operation,
+};
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::membership_change::Change;
 use prost::Message;
 
-use crate::command::{ApplyEntry, Command, decode_entries};
+use crate::command::{ApplyEntry, BatchOp as CommandBatchOp, Command, decode_entries};
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -99,6 +102,43 @@ fn cas_entry(
                 new_value: Bytes::copy_from_slice(new_value),
             }),
         ))),
+    }
+}
+
+// ── batch helpers ───────────────────────────────────────────────────────────
+
+fn batch_insert_op(
+    key: &[u8],
+    value: &[u8],
+) -> BatchOp {
+    BatchOp {
+        op: Some(batch_op::Op::Insert(Insert {
+            key: Bytes::copy_from_slice(key),
+            value: Bytes::copy_from_slice(value),
+            ttl_secs: 0,
+        })),
+    }
+}
+
+fn batch_delete_op(key: &[u8]) -> BatchOp {
+    BatchOp {
+        op: Some(batch_op::Op::Delete(Delete {
+            key: Bytes::copy_from_slice(key),
+        })),
+    }
+}
+
+fn batch_entry(
+    index: u64,
+    term: u64,
+    ops: Vec<BatchOp>,
+) -> Entry {
+    Entry {
+        index,
+        term,
+        payload: Some(EntryPayload::command(encode_write_cmd(Operation::Batch(
+            Batch { ops },
+        )))),
     }
 }
 
@@ -242,6 +282,125 @@ fn test_decode_mixed_batch_config_becomes_noop_keeps_order() {
     assert!(matches!(result[2].command, Command::Insert { .. }));
     assert_eq!(result[3].index, 4);
     assert!(matches!(result[3].command, Command::Delete { .. }));
+}
+
+#[test]
+fn test_decode_all_config_entries_become_noops() {
+    // All entries are config changes — each must become Noop so last_applied
+    // advances to the highest config index without gaps.
+    let entries = vec![config_entry(3, 1), config_entry(4, 1), config_entry(5, 1)];
+    let result = decode_entries(entries).unwrap();
+    assert_eq!(result.len(), 3);
+    assert!(result.iter().all(|e| e.command == Command::Noop));
+    assert_eq!(result.last().unwrap().index, 5);
+}
+
+// ── decode: batch command ───────────────────────────────────────────────────
+
+#[test]
+fn test_decode_batch_inserts_only() {
+    // Batch with only Insert ops — each op becomes CommandBatchOp::Insert.
+    let ops = vec![batch_insert_op(b"k1", b"v1"), batch_insert_op(b"k2", b"v2")];
+    let entries = vec![batch_entry(7, 2, ops)];
+    let result = decode_entries(entries).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result[0].command,
+        Command::Batch {
+            ops: vec![
+                CommandBatchOp::Insert {
+                    key: Bytes::from_static(b"k1"),
+                    value: Bytes::from_static(b"v1"),
+                },
+                CommandBatchOp::Insert {
+                    key: Bytes::from_static(b"k2"),
+                    value: Bytes::from_static(b"v2"),
+                },
+            ]
+        }
+    );
+}
+
+#[test]
+fn test_decode_batch_deletes_only() {
+    // Batch with only Delete ops — each op becomes CommandBatchOp::Delete.
+    let ops = vec![batch_delete_op(b"k1"), batch_delete_op(b"k2")];
+    let entries = vec![batch_entry(8, 2, ops)];
+    let result = decode_entries(entries).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result[0].command,
+        Command::Batch {
+            ops: vec![
+                CommandBatchOp::Delete {
+                    key: Bytes::from_static(b"k1"),
+                },
+                CommandBatchOp::Delete {
+                    key: Bytes::from_static(b"k2"),
+                },
+            ]
+        }
+    );
+}
+
+#[test]
+fn test_decode_batch_mixed_ops() {
+    // Batch with Insert and Delete interleaved — order is preserved.
+    let ops = vec![
+        batch_insert_op(b"k1", b"v1"),
+        batch_delete_op(b"k2"),
+        batch_insert_op(b"k3", b"v3"),
+    ];
+    let entries = vec![batch_entry(9, 2, ops)];
+    let result = decode_entries(entries).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result[0].command,
+        Command::Batch {
+            ops: vec![
+                CommandBatchOp::Insert {
+                    key: Bytes::from_static(b"k1"),
+                    value: Bytes::from_static(b"v1"),
+                },
+                CommandBatchOp::Delete {
+                    key: Bytes::from_static(b"k2"),
+                },
+                CommandBatchOp::Insert {
+                    key: Bytes::from_static(b"k3"),
+                    value: Bytes::from_static(b"v3"),
+                },
+            ]
+        }
+    );
+}
+
+#[test]
+fn test_decode_batch_empty_ops() {
+    // Batch with zero ops — decoded as Batch { ops: [] }.
+    let entries = vec![batch_entry(10, 2, vec![])];
+    let result = decode_entries(entries).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].command, Command::Batch { ops: vec![] });
+}
+
+#[test]
+fn test_decode_batch_preserves_index_and_term() {
+    // The ApplyEntry wrapping a Batch command carries the correct index and term.
+    let ops = vec![batch_insert_op(b"k", b"v")];
+    let entries = vec![batch_entry(42, 7, ops)];
+    let result = decode_entries(entries).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].index, 42);
+    assert_eq!(result[0].term, 7);
+}
+
+#[test]
+fn test_decode_batch_op_without_operation_returns_error() {
+    // BatchOp with op = None must produce an error — no silent skip.
+    let malformed_op = BatchOp { op: None };
+    let entries = vec![batch_entry(11, 2, vec![malformed_op])];
+    let result = decode_entries(entries);
+    assert!(result.is_err(), "BatchOp with no operation must return Err");
 }
 
 // ── decode: error cases ─────────────────────────────────────────────────────

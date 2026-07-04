@@ -147,13 +147,6 @@ pub trait StateMachine: Send + Sync + 'static {
         keys.iter().map(|k| self.get(k)).collect()
     }
 
-    /// Returns the term of a specific log entry by its ID.
-    /// Sync operation as it queries in-memory data.
-    fn entry_term(
-        &self,
-        entry_id: u64,
-    ) -> Option<u64>;
-
     /// Applies a batch of decoded log entries to the state machine.
     ///
     /// Receives `&[ApplyEntry]` (already decoded by the framework) instead of raw

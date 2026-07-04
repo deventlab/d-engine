@@ -125,8 +125,8 @@ This one line:
 2. Created `./data/single-node/db/` (single RocksDB instance)
 3. Initialized 4 column families: `logs`, `meta`, `state_machine`, `state_machine_meta`
 4. Built Raft node with node_id=1
-6. Spawned `node.run()` in background (Raft protocol)
-7. Returned immediately (non-blocking)
+5. Spawned `node.run()` in background (Raft protocol)
+6. Returned immediately (non-blocking)
 
 ```rust,ignore
 engine.wait_ready(Duration::from_secs(5)).await?
@@ -205,9 +205,16 @@ No manual `tokio::spawn()`, no leaked tasks.
 DefaultEmbeddedEngine::start(data_dir: impl AsRef<Path>) -> Result<Self>
 
 // Use explicit config file
-DefaultEmbeddedEngine::start_with(config_path: &str) -> Result<Self>
+DefaultEmbeddedEngine::start_with(config_path: impl AsRef<Path>) -> Result<Self>
 
-// Advanced (custom storage + state machine — define your own TypeConfig)
+// Start with programmatic config — no config file needed
+EmbeddedEngine::<YourTypeConfig>::start_node(
+    config: RaftNodeConfig,
+    storage: Arc<impl StorageEngine>,
+    state_machine: Arc<impl StateMachine>
+) -> Result<Self>
+
+// Advanced (custom storage + state machine with optional config file)
 EmbeddedEngine::<YourTypeConfig>::start_custom(
     storage: Arc<impl StorageEngine>,
     state_machine: Arc<impl StateMachine>,

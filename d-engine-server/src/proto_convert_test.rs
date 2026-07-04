@@ -1,107 +1,19 @@
 use bytes::Bytes;
 use d_engine_core::client::{
     ClientReadRequest, ClientResponse, ClientResponsePayload, ClientWriteRequest, ErrorCode,
-    KvEntry, LeaderHint, ReadResults, WriteOperation, WriteResult,
+    KvEntry, LeaderHint, ReadResults, WriteResult,
 };
 use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_proto::client as proto_client;
-use d_engine_proto::client::write_command::{CompareAndSwap, Delete, Insert, Operation};
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::{Insert, Operation};
 use d_engine_proto::error::ErrorCode as ProtoErrorCode;
+use prost::Message;
 
 use crate::proto_convert::{
     core_error_to_proto, proto_error_to_core, to_core_read_req, to_core_response,
-    to_core_write_req, to_proto_response, write_command_to_op,
+    to_core_write_req, to_proto_response,
 };
-
-// ─── write_command_to_op ──────────────────────────────────────────────────────
-
-#[test]
-fn test_write_command_insert_with_ttl_converts_correctly() {
-    let wc = proto_client::WriteCommand {
-        operation: Some(Operation::Insert(Insert {
-            key: Bytes::from("k"),
-            value: Bytes::from("v"),
-            ttl_secs: 60,
-        })),
-    };
-    let op = write_command_to_op(wc);
-    assert_eq!(
-        op,
-        WriteOperation::Insert {
-            key: Bytes::from("k"),
-            value: Bytes::from("v"),
-            ttl_secs: Some(60),
-        }
-    );
-}
-
-/// Proto convention: ttl_secs == 0 means "no expiration". Must become None in core.
-#[test]
-fn test_write_command_insert_ttl_zero_becomes_none() {
-    let wc = proto_client::WriteCommand {
-        operation: Some(Operation::Insert(Insert {
-            key: Bytes::from("k"),
-            value: Bytes::from("v"),
-            ttl_secs: 0,
-        })),
-    };
-    let op = write_command_to_op(wc);
-    assert!(matches!(op, WriteOperation::Insert { ttl_secs: None, .. }));
-}
-
-#[test]
-fn test_write_command_delete_converts_correctly() {
-    let wc = proto_client::WriteCommand {
-        operation: Some(Operation::Delete(Delete {
-            key: Bytes::from("del"),
-        })),
-    };
-    let op = write_command_to_op(wc);
-    assert_eq!(
-        op,
-        WriteOperation::Delete {
-            key: Bytes::from("del")
-        }
-    );
-}
-
-#[test]
-fn test_write_command_cas_with_expected_value_converts_correctly() {
-    let wc = proto_client::WriteCommand {
-        operation: Some(Operation::CompareAndSwap(CompareAndSwap {
-            key: Bytes::from("k"),
-            expected_value: Some(Bytes::from("old")),
-            new_value: Bytes::from("new"),
-        })),
-    };
-    let op = write_command_to_op(wc);
-    assert_eq!(
-        op,
-        WriteOperation::CompareAndSwap {
-            key: Bytes::from("k"),
-            expected: Some(Bytes::from("old")),
-            new_value: Bytes::from("new"),
-        }
-    );
-}
-
-/// CAS with expected_value=None means "key must not exist" — distinct semantic.
-#[test]
-fn test_write_command_cas_key_must_not_exist_when_expected_none() {
-    let wc = proto_client::WriteCommand {
-        operation: Some(Operation::CompareAndSwap(CompareAndSwap {
-            key: Bytes::from("k"),
-            expected_value: None,
-            new_value: Bytes::from("new"),
-        })),
-    };
-    let op = write_command_to_op(wc);
-    assert!(matches!(
-        op,
-        WriteOperation::CompareAndSwap { expected: None, .. }
-    ));
-}
-
 // ─── to_core_write_req ────────────────────────────────────────────────────────
 
 #[test]
@@ -118,10 +30,15 @@ fn test_to_core_write_req_insert_roundtrip() {
     };
     let core_req = to_core_write_req(proto_req);
     assert_eq!(core_req.client_id, 7);
-    assert!(matches!(
-        core_req.command,
-        Some(WriteOperation::Insert { ttl_secs: None, .. })
-    ));
+    let bytes = core_req.command.expect("command must be Some");
+    let decoded = WriteCommand::decode(bytes).expect("must decode to WriteCommand");
+    assert!(
+        matches!(
+            decoded.operation,
+            Some(Operation::Insert(Insert { ttl_secs: 0, .. }))
+        ),
+        "decoded command must be an Insert operation"
+    );
 }
 
 #[test]

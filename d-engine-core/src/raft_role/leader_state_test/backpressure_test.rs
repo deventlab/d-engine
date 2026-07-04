@@ -1,7 +1,8 @@
 use crate::client::ClientReadRequest;
 use crate::client::ClientWriteRequest;
-use crate::client::WriteOperation;
 use crate::config::ReadConsistencyPolicy;
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
 use tokio::sync::watch;
 
 use crate::BackpressureConfig;
@@ -40,8 +41,9 @@ async fn test_backpressure_write_limit_enforcement() {
         let cmd = ClientCmd::Propose(
             ClientWriteRequest {
                 client_id: i,
-                command: Some(WriteOperation::Delete {
-                    key: bytes::Bytes::new(),
+                command: Some({
+                    use prost::Message;
+                    Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
                 }),
             },
             resp_tx,
@@ -60,8 +62,9 @@ async fn test_backpressure_write_limit_enforcement() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 3,
-            command: Some(WriteOperation::Delete {
-                key: bytes::Bytes::new(),
+            command: Some({
+                use prost::Message;
+                Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
             }),
         },
         resp_tx,
@@ -177,8 +180,9 @@ async fn test_backpressure_unlimited_when_zero() {
         let cmd = ClientCmd::Propose(
             ClientWriteRequest {
                 client_id: i,
-                command: Some(WriteOperation::Delete {
-                    key: bytes::Bytes::new(),
+                command: Some({
+                    use prost::Message;
+                    Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
                 }),
             },
             resp_tx,
@@ -220,8 +224,9 @@ async fn test_backpressure_write_and_read_independent() {
         let cmd = ClientCmd::Propose(
             ClientWriteRequest {
                 client_id: i,
-                command: Some(WriteOperation::Delete {
-                    key: bytes::Bytes::new(),
+                command: Some({
+                    use prost::Message;
+                    Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
                 }),
             },
             resp_tx,
@@ -234,8 +239,9 @@ async fn test_backpressure_write_and_read_independent() {
     let write_cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 99,
-            command: Some(WriteOperation::Delete {
-                key: bytes::Bytes::new(),
+            command: Some({
+                use prost::Message;
+                Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
             }),
         },
         write_tx,

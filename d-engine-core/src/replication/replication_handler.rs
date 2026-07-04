@@ -337,7 +337,6 @@ where
         None
     }
 
-    #[tracing::instrument(skip(self, raft_log))]
     fn check_append_entries_request_is_legal(
         &self,
         my_term: u64,

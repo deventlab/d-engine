@@ -206,6 +206,22 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         Ok(())
     }
 
+    /// Trigger an independent snapshot on this role (Raft §7 — each server snapshots
+    /// independently). Called when `should_snapshot()` returns true after SM apply.
+    /// Default: no-op. Candidate overrides to return `RoleViolation`.
+    async fn handle_create_snapshot(
+        &mut self,
+        _ctx: &RaftContext<Self::T>,
+        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> Result<()> {
+        Err(ConsensusError::RoleViolation {
+            current_role: "Candidate",
+            required_role: "Follower/Leader/Learner",
+            context: ("Candidate node attempted to create snapshot.").to_string(),
+        }
+        .into())
+    }
+
     async fn handle_inbound_event(
         &mut self,
         inbound_event: InboundEvent,

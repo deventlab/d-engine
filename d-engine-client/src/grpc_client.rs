@@ -1,10 +1,14 @@
-use std::sync::Arc;
-
+use super::ClientInner;
+use crate::ClientApiError;
+use crate::ClientResponseExt;
+use crate::scoped_timer::ScopedTimer;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
+use d_engine_core::BatchOp;
 use d_engine_core::ScanResult;
 use d_engine_core::client::ErrorCode;
 use d_engine_core::client::KvEntry;
+use d_engine_core::client::{ClientApi, ClientApiResult};
 use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
@@ -15,20 +19,19 @@ use d_engine_proto::client::WatchRequest;
 use d_engine_proto::client::WatchResponse;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::raft_client_service_client::RaftClientServiceClient;
+use d_engine_proto::client::write_command::BatchOp as ProtoBatchOp;
+use d_engine_proto::client::write_command::Delete;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::batch_op;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
-
-use super::ClientInner;
-use crate::ClientApiError;
-use crate::ClientResponseExt;
-use crate::scoped_timer::ScopedTimer;
-use d_engine_core::client::{ClientApi, ClientApiResult};
 
 /// gRPC-based KV client for standalone mode. Obtained via [`crate::ClientBuilder`].
 ///
@@ -333,6 +336,51 @@ impl ClientApi for GrpcClient {
             Bytes::copy_from_slice(value.as_ref()),
             ttl_secs,
         );
+
+        let request = ClientWriteRequest {
+            client_id: client_inner.client_id,
+            command: Some(command),
+        };
+
+        // Send write request to leader node (strong consistency required)
+        let mut client = self.make_leader_client().await?;
+        match client.handle_client_write(request).await {
+            Ok(response) => {
+                debug!("[:GrpcClient:put_with_ttl] response: {:?}", response);
+                let client_response = response.get_ref();
+                client_response.validate_error()
+            }
+            Err(status) => {
+                error!("[:GrpcClient:put_with_ttl] status: {:?}", status);
+                Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
+            }
+        }
+    }
+
+    async fn batch(
+        &self,
+        ops: Vec<BatchOp>,
+    ) -> ClientApiResult<()> {
+        // Performance tracking for put_with_ttl operation
+        let _timer = ScopedTimer::new("client::put_with_ttl");
+
+        let client_inner = self.client_inner.load();
+        let proto_ops: Vec<ProtoBatchOp> = ops
+            .into_iter()
+            .map(|op| match op {
+                BatchOp::Insert { key, value } => ProtoBatchOp {
+                    op: Some(batch_op::Op::Insert(Insert {
+                        key,
+                        value,
+                        ttl_secs: 0,
+                    })),
+                },
+                BatchOp::Delete { key } => ProtoBatchOp {
+                    op: Some(batch_op::Op::Delete(Delete { key })),
+                },
+            })
+            .collect();
+        let command = WriteCommand::batch(proto_ops);
 
         let request = ClientWriteRequest {
             client_id: client_inner.client_id,

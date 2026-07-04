@@ -18,7 +18,6 @@ use tonic::Status;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 
@@ -38,7 +37,6 @@ use crate::InboundEvent;
 use crate::InternalEvent;
 use crate::Membership;
 use crate::NetworkError;
-use crate::PurgeExecutor;
 use crate::RaftContext;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
@@ -46,6 +44,7 @@ use crate::Result;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
+use crate::role_state::schedule_and_execute_purge;
 use crate::utils::cluster::error;
 
 /// Follower node's state in Raft consensus.
@@ -60,6 +59,16 @@ pub struct FollowerState<T: TypeConfig> {
     pub shared_state: SharedState,
 
     // -- Log Compaction & Purge --
+    /// === Volatile State ===
+    /// The upper bound (exclusive) of log entries scheduled for asynchronous physical deletion.
+    ///
+    /// This value is set immediately after a new snapshot is successfully created.
+    /// It represents the next log position that will trigger compaction.
+    ///
+    /// The actual log purge is performed by a background task, which may be delayed
+    /// due to resource constraints or retry mechanisms.
+    pub scheduled_purge_upto: Option<LogId>,
+
     /// === Persistent State ===
     /// Last physically purged log index (inclusive)
     pub last_purged_index: Option<LogId>,
@@ -473,85 +482,46 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         )
     }
 
-    /// Trigger an independent snapshot on this role (Raft §7 — each server snapshots
-    /// independently). Called when `should_snapshot()` returns true after SM apply.
-    /// Default: no-op. Candidate overrides to return `RoleViolation`.
-    async fn handle_create_snapshot(
-        &mut self,
-        ctx: &RaftContext<Self::T>,
-        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
-    ) -> Result<()> {
-        // Prevent duplicate snapshot creation
-        if self.snapshot_in_progress.load(Ordering::Acquire) {
-            info!("Snapshot creation already in progress. Skipping duplicate request.");
-            return Ok(());
-        }
-
-        self.snapshot_in_progress.store(true, Ordering::Release);
-        let state_machine_handler = ctx.state_machine_handler().clone();
-
-        // Use spawn to perform snapshot creation in the background
-        let internal_event_tx = internal_event_tx.clone();
-        tokio::spawn(async move {
-            let result = state_machine_handler.create_snapshot().await;
-            info!("SnapshotCreated event will be processed in another event thread");
-            if let Err(e) = internal_event_tx.send(InternalEvent::SnapshotCreated(result)) {
-                error!("Follower failed to send snapshot creation result: {e:?}");
-            }
-        });
-
-        Ok(())
+    fn snapshot_in_progress(&self) -> Option<&AtomicBool> {
+        Some(&self.snapshot_in_progress)
     }
 
-    /// Process the completed snapshot result (success or error).
-    /// Leader: schedules log purge up to `last_included`.
-    /// Follower/Learner: updates local snapshot path.
-    /// Default: no-op. Candidate overrides to return `RoleViolation`.
     async fn handle_snapshot_created(
         &mut self,
         result: crate::Result<(SnapshotMetadata, std::path::PathBuf)>,
         ctx: &RaftContext<Self::T>,
-        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
-        // Reset snapshot_in_progress flag
         self.snapshot_in_progress.store(false, Ordering::SeqCst);
-
-        // Per Raft §7: Follower independently purges logs after snapshot generation
         match result {
-            Ok((metadata, _path)) => {
+            Err(e) => error!(?e, "Follower snapshot creation failed"),
+            Ok((metadata, _)) => {
                 if let Some(last_included) = metadata.last_included {
-                    info!(?last_included, "Follower snapshot created, purging logs");
-
-                    // Follower independently decides to purge after snapshot
-                    if self.can_purge_logs(self.last_purged_index, last_included) {
-                        match ctx.purge_executor().execute_purge(last_included).await {
-                            Ok(_) => {
-                                self.last_purged_index = Some(last_included);
-                                info!(?last_included, "Follower logs purged successfully");
-                            }
-                            Err(e) => {
-                                error!(?e, "Failed to purge logs after snapshot");
-                            }
-                        }
-                    }
+                    schedule_and_execute_purge(
+                        last_included,
+                        ctx,
+                        self.commit_index(),
+                        self.last_purged_index,
+                        &mut self.scheduled_purge_upto,
+                        internal_event_tx,
+                    )
+                    .await?;
                 }
             }
-            Err(e) => {
-                error!(?e, "Follower snapshot creation failed");
-            }
         }
-
         Ok(())
     }
 
     // Stale in-flight events — these are Leader-only operations that may arrive
     // after a step-down due to internal_event_tx (unbounded, P2) race with BecomeFollower.
     // Both orderings are valid; Follower silently ignores them rather than erroring.
-
     fn handle_log_purge_completed(
         &mut self,
-        _purged_id: d_engine_proto::common::LogId,
+        purged_id: d_engine_proto::common::LogId,
     ) -> Result<()> {
+        if self.last_purged_index.is_none_or(|cur| purged_id.index > cur.index) {
+            self.last_purged_index = Some(purged_id);
+        }
         Ok(())
     }
 
@@ -593,13 +563,12 @@ impl<T: TypeConfig> FollowerState<T> {
             node_config,
             snapshot_in_progress: AtomicBool::new(false),
             _marker: PhantomData,
-            last_purged_index: None, /*TODO
-                                      * scheduled_purge_upto: None, */
+            last_purged_index: None,
+            scheduled_purge_upto: None,
         }
     }
 
     /// The fun will retrieve current state snapshot
-    #[tracing::instrument]
     pub fn state_snapshot(&self) -> StateSnapshot {
         StateSnapshot {
             role: Follower as i32,
@@ -607,44 +576,6 @@ impl<T: TypeConfig> FollowerState<T> {
             voted_for: None,
             commit_index: self.commit_index(),
         }
-    }
-
-    /// Determines if logs prior to `last_included_in_request` can be safely discarded.
-    ///
-    /// Implements the critical log compaction safety check from Raft paper §7.2:
-    /// > "Raft never commits log entries from previous terms by counting replicas"
-    ///
-    /// # Invariants (MUST ALL hold)
-    /// 1. Leader-guaranteed stability: `last_included_in_request.index` < self.commit_index
-    ///    - Ensures we never truncate uncommitted entries (gap prevents Figure 8 bugs)
-    ///    - Leader must have replicated this index to a quorum before sending purge
-    ///
-    /// 2. Monotonic advancement: `last_purge_index` < last_included_in_request.index
-    ///    - Prevents out-of-order purge operations
-    ///    - Maintains purge sequence strictly increasing
-    ///
-    /// 3. State machine safety:
-    ///    - A valid snapshot covering `last_included_in_request` must exist
-    ///    - Verified before entering this function via snapshot integrity checks
-    ///
-    /// # Gap Design Intent
-    /// The `index < commit_index` (not ≤) ensures:
-    /// - At least one committed entry remains after purge
-    /// - Critical for follower's log matching property during reelections
-    /// - Prevents "phantom entries" when combined with §5.4.2 election restriction
-    #[instrument(skip(self))]
-    pub fn can_purge_logs(
-        &self,
-        last_purge_index: Option<LogId>,
-        last_included_in_request: LogId,
-    ) -> bool {
-        let commit_check = last_included_in_request.index < self.commit_index();
-
-        let monotonic_check = last_purge_index
-            .map(|lid| lid.index < last_included_in_request.index)
-            .unwrap_or(true);
-
-        commit_check && monotonic_check
     }
 }
 impl<T: TypeConfig> From<&CandidateState<T>> for FollowerState<T> {
@@ -660,6 +591,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for FollowerState<T> {
             last_purged_index: candidate_state.last_purged_index,
             // scheduled_purge_upto: None,
             _marker: PhantomData,
+            scheduled_purge_upto: None,
         }
     }
 }
@@ -677,6 +609,7 @@ impl<T: TypeConfig> From<&LeaderState<T>> for FollowerState<T> {
             ),
             last_purged_index: leader_state.last_purged_index,
             // scheduled_purge_upto: None,
+            scheduled_purge_upto: leader_state.scheduled_purge_upto,
             _marker: PhantomData,
         }
     }
@@ -692,7 +625,8 @@ impl<T: TypeConfig> From<&LearnerState<T>> for FollowerState<T> {
             )),
             node_config: learner_state.node_config.clone(),
             snapshot_in_progress: AtomicBool::new(false),
-            last_purged_index: None, //TODO
+            last_purged_index: learner_state.last_purged_index,
+            scheduled_purge_upto: learner_state.scheduled_purge_upto,
             _marker: PhantomData,
         }
     }

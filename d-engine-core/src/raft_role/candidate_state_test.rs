@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crate::client::ClientReadRequest;
 use crate::client::ClientWriteRequest;
 use crate::client::ErrorCode;
-use crate::client::WriteOperation;
 use crate::config::ReadConsistencyPolicy;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
@@ -32,12 +31,15 @@ use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
 use crate::RaftOneshot;
 use crate::raft_role::candidate_state::CandidateState;
+use crate::raft_role::follower_state::FollowerState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_election_core;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::node_config;
+use d_engine_proto::client::WriteCommand;
+use prost::Message;
 use tokio::sync::{mpsc, watch};
 
 /// Test: CandidateState can_vote_myself returns true for new candidate
@@ -906,9 +908,9 @@ async fn test_handle_client_write_returns_not_leader() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
-            command: Some(WriteOperation::Delete {
-                key: bytes::Bytes::new(),
-            }),
+            command: Some(bytes::Bytes::from(
+                WriteCommand::delete(bytes::Bytes::new()).encode_to_vec(),
+            )),
         },
         resp_tx,
     );
@@ -1319,11 +1321,13 @@ async fn test_new_leader_initializes_empty_buffers() {
         let (response_tx, _response_rx) = crate::MaybeCloneOneshot::new();
         let write_req = ClientWriteRequest {
             client_id: 1,
-            command: Some(WriteOperation::Insert {
-                key: bytes::Bytes::from("first_key"),
-                value: bytes::Bytes::from("first_value"),
-                ttl_secs: None,
-            }),
+            command: Some(bytes::Bytes::from(
+                WriteCommand::insert(
+                    bytes::Bytes::from("first_key"),
+                    bytes::Bytes::from("first_value"),
+                )
+                .encode_to_vec(),
+            )),
         };
 
         let cmd = crate::ClientCmd::Propose(write_req, response_tx);
@@ -1449,5 +1453,28 @@ async fn test_candidate_rejects_stream_snapshot() {
         startup_result.unwrap_err().code(),
         tonic::Code::FailedPrecondition,
         "Candidate must reply FailedPrecondition for StreamSnapshot"
+    );
+}
+
+// ============================================================================
+// Role Transition Tests — last_purged_index
+// ============================================================================
+
+/// From<&FollowerState>: last_purged_index preserved.
+///
+/// CandidateState has no scheduled_purge_upto field — candidates do not purge logs.
+/// The watermark is carried forward so the new candidate knows which log entries are
+/// already gone and does not attempt to read or re-purge them.
+#[test]
+fn test_candidate_from_follower_preserves_last_purged_index() {
+    let cfg = Arc::new(node_config("/tmp/test_candidate_from_follower_purge"));
+    let mut follower = FollowerState::<MockTypeConfig>::new(1, cfg, None, None);
+    follower.last_purged_index = Some(LogId { term: 1, index: 9 });
+
+    let candidate = CandidateState::from(&follower);
+
+    assert_eq!(
+        candidate.last_purged_index,
+        Some(LogId { term: 1, index: 9 })
     );
 }

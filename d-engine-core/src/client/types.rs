@@ -29,31 +29,7 @@ pub use crate::config::ReadConsistencyPolicy;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientWriteRequest {
     pub client_id: u32,
-    pub command: Option<WriteOperation>,
-}
-
-/// Decoded write operation — the unit submitted by a client.
-///
-/// Mirrors proto `WriteCommand` in shape but carries no prost annotations.
-/// Core owns the serialization to Raft log bytes (`WriteOperation → proto::WriteCommand → bytes`);
-/// transport adapters work with this native type only.
-#[derive(Debug, Clone, PartialEq)]
-pub enum WriteOperation {
-    Insert {
-        key: Bytes,
-        value: Bytes,
-        /// `None` = no expiration. Proto encodes this as `ttl_secs = 0`.
-        ttl_secs: Option<u64>,
-    },
-    Delete {
-        key: Bytes,
-    },
-    CompareAndSwap {
-        key: Bytes,
-        /// `None` means the key must not exist for the swap to succeed.
-        expected: Option<Bytes>,
-        new_value: Bytes,
-    },
+    pub command: Option<Bytes>,
 }
 
 // ─── Read request ─────────────────────────────────────────────────────────────

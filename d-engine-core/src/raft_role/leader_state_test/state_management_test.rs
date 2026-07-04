@@ -1,24 +1,25 @@
 //! Tests for leader state management utilities and helper functions
 //!
 //! This module tests various state management functions including:
-//! - Log purge validation (can_purge_logs)
 //! - Leader discovery event handling
 //! - State size tracking
 
 use std::mem::size_of;
 use std::sync::Arc;
 
+use d_engine_proto::common::LogId;
 use tokio::sync::{mpsc, watch};
 use tracing_test::traced_test;
 
+use crate::candidate_state::CandidateState;
 use crate::event::InboundEvent;
 use crate::maybe_clone_oneshot::RaftOneshot;
+use crate::node_config;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
-use crate::test_utils::node_config;
-use d_engine_proto::common::{LogId, NodeRole::Leader, NodeStatus};
+use d_engine_proto::common::{NodeRole::Leader, NodeStatus};
 use d_engine_proto::server::cluster::{LeaderDiscoveryRequest, NodeMeta};
 
 // ============================================================================
@@ -68,187 +69,6 @@ fn test_state_size() {
 
     // For reference: Modern CPU cache line is 64 bytes
     println!("Cache lines occupied: {}", size.div_ceil(64));
-}
-
-// ============================================================================
-// Log Purge Validation Tests
-// ============================================================================
-
-/// Test can_purge_logs with valid purge conditions
-///
-/// # Test Scenario
-/// Validates proper purge window according to Raft paper §7.2 requirements.
-///
-/// # Given
-/// - commit_index = 100
-/// - peer_purge_progress: all peers at 100
-/// - last_purge_index = 90
-///
-/// # When
-/// - Attempt to purge up to index 99
-///
-/// # Then
-/// - Purge allowed (90 < 99 < 100)
-/// - Boundary case: 99 == commit_index - 1 (valid gap)
-/// - Invalid case: 100 not < 100 (violates gap rule)
-#[test]
-fn test_can_purge_logs_valid_conditions() {
-    let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_valid_conditions"));
-    let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-
-    // Setup per Raft paper §7.2 requirements
-    state.shared_state.commit_index = 100;
-
-    // Valid purge window (last_purge=90 < snapshot=99 < commit=100)
-    assert!(state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }), // last_purge_index
-        LogId { index: 99, term: 1 }        // last_included_in_snapshot
-    ));
-
-    // Boundary check: 99 == commit_index - 1 (valid gap)
-    assert!(state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId { index: 99, term: 1 }
-    ));
-
-    // Violate gap rule: 100 not < 100
-    assert!(!state.can_purge_logs(
-        Some(LogId { index: 90, term: 1 }),
-        LogId {
-            index: 100,
-            term: 1
-        }
-    ));
-}
-
-/// Test can_purge_logs rejects uncommitted purge
-///
-/// # Test Scenario
-/// Reject purge attempts beyond commit index (Raft §5.4.2).
-///
-/// # Given
-/// - commit_index = 50
-/// - peer_purge_progress: peer 2 at 100
-///
-/// # When
-/// - Attempt to purge beyond commit index
-///
-/// # Then
-/// - Purge rejected when snapshot_index > commit_index
-/// - Boundary: snapshot_index == commit_index also rejected
-#[test]
-fn test_can_purge_logs_reject_uncommitted() {
-    let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_reject_uncommitted"));
-    let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-
-    state.shared_state.commit_index = 50;
-
-    // Attempt to purge beyond commit index
-    assert!(!state.can_purge_logs(
-        Some(LogId { index: 40, term: 1 }),
-        LogId { index: 51, term: 1 } // 51 > commit_index(50)
-    ));
-
-    // Boundary violation: 50 == commit_index (requires <)
-    assert!(!state.can_purge_logs(
-        Some(LogId { index: 40, term: 1 }),
-        LogId { index: 50, term: 1 }
-    ));
-}
-
-/// Test can_purge_logs enforces monotonicity
-///
-/// # Test Scenario
-/// Enforce purge sequence monotonicity (Raft §7.2).
-/// Prevent backward or duplicate purges.
-///
-/// # Given
-/// - commit_index = 200
-/// - last_purge_index = 150
-///
-/// # When
-/// - Attempt various purge sequences
-///
-/// # Then
-/// - Forward purge allowed (150 -> 199)
-/// - Backward purge rejected (150 -> 120)
-/// - Duplicate purge rejected (150 -> 150)
-#[test]
-fn test_can_purge_logs_enforce_monotonicity() {
-    let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_enforce_monotonicity"));
-    let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-
-    state.shared_state.commit_index = 200;
-
-    // Valid sequence: 100 → 150 → 199
-    assert!(state.can_purge_logs(
-        Some(LogId {
-            index: 150,
-            term: 1
-        }),
-        LogId {
-            index: 199,
-            term: 1
-        }
-    ));
-
-    // Invalid backward purge (150 → 120)
-    assert!(!state.can_purge_logs(
-        Some(LogId {
-            index: 150,
-            term: 1
-        }),
-        LogId {
-            index: 120,
-            term: 1
-        }
-    ));
-
-    // Same index purge attempt
-    assert!(!state.can_purge_logs(
-        Some(LogId {
-            index: 150,
-            term: 1
-        }),
-        LogId {
-            index: 150,
-            term: 1
-        }
-    ));
-}
-
-/// Test can_purge_logs verifies cluster progress
-///
-/// # Test Scenario
-/// Enhanced durability check - ensure peers have progressed sufficiently.
-///
-/// # Given
-/// - last_purge_index = None (first purge)
-///
-/// # When
-/// - Attempt first purge
-///
-/// # Then
-/// - First purge allowed (None -> 99)
-/// - Must still respect commit_index gap
-#[test]
-fn test_can_purge_logs_initial_purge() {
-    let node_config = Arc::new(node_config("/tmp/test_can_purge_logs_initial_purge"));
-    let mut state = LeaderState::<MockTypeConfig>::new(1, node_config);
-
-    state.shared_state.commit_index = 100;
-
-    // First purge (last_purge_index = None)
-    assert!(state.can_purge_logs(None, LogId { index: 99, term: 1 }));
-
-    // Must still respect commit_index gap
-    assert!(!state.can_purge_logs(
-        None,
-        LogId {
-            index: 100,
-            term: 1
-        } // 100 not < 100
-    ));
 }
 
 // ============================================================================
@@ -483,4 +303,24 @@ async fn test_handle_discover_leader_invalid_node_id() {
 
     let response = resp_rx.recv().await.unwrap().unwrap();
     assert_eq!(response.leader_id, 1);
+}
+
+// ============================================================================
+// Role Transition Tests — scheduled_purge_upto / last_purged_index
+// ============================================================================
+
+/// From<&CandidateState>: last_purged_index preserved, scheduled_purge_upto always None.
+///
+/// Leaders start each term with a clean purge schedule to avoid applying a stale purge
+/// boundary computed in a prior term under a different last_applied index.
+#[test]
+fn test_leader_from_candidate_preserves_last_purged_index_resets_scheduled() {
+    let cfg = Arc::new(node_config("/tmp/test_leader_from_candidate_purge"));
+    let mut candidate = CandidateState::<MockTypeConfig>::new(1, cfg);
+    candidate.last_purged_index = Some(LogId { term: 2, index: 8 });
+
+    let leader = LeaderState::from(&candidate);
+
+    assert_eq!(leader.last_purged_index, Some(LogId { term: 2, index: 8 }));
+    assert_eq!(leader.scheduled_purge_upto, None);
 }

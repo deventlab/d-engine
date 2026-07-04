@@ -38,7 +38,7 @@ pub struct ClusterConfig {
 
     /// Seed nodes for cluster initialization
     ///
-    /// Default: `default_initial_cluster()` (empty vector)
+    /// Default: `default_initial_cluster()`
     ///
     /// # Note
     /// Should contain at least 3 nodes for production deployment
@@ -62,7 +62,7 @@ impl Default for ClusterConfig {
         Self {
             node_id: default_node_id(),
             listen_address: default_listen_addr(),
-            initial_cluster: vec![],
+            initial_cluster: default_initial_cluster(),
             db_root_dir: default_db_dir(),
             log_dir: default_log_dir(),
         }

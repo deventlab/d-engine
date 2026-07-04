@@ -1,17 +1,15 @@
-use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
-
-use async_trait::async_trait;
-use bytes::Bytes;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use tempfile::TempDir;
-
 use crate::ApplyEntry;
 use crate::Command;
 use crate::Error;
 use crate::storage::StateMachine;
+use async_trait::async_trait;
+use bytes::Bytes;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
+use tempfile::TempDir;
 
 /// Test suite for StateMachine implementations
 ///
@@ -1256,13 +1254,6 @@ mod default_scan_prefix_tests {
             _key_buffer: &[u8],
         ) -> Result<Option<Bytes>, Error> {
             Ok(None)
-        }
-
-        fn entry_term(
-            &self,
-            _entry_id: u64,
-        ) -> Option<u64> {
-            None
         }
 
         async fn apply_chunk(

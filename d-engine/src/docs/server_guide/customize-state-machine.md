@@ -55,11 +55,6 @@ impl StateMachine for CustomStateMachine {
         self.backend.get(key_buffer)
     }
 
-    fn entry_term(&self, entry_id: u64) -> Option<u64> {
-        // Return term for specific entry
-        Some(1)
-    }
-
     async fn apply_chunk(&self, chunk: &[ApplyEntry]) -> Result<Vec<ApplyResult>, Error> {
         // The framework pre-decodes proto bytes — match on Command directly, no prost needed.
         let mut results = Vec::with_capacity(chunk.len());
@@ -83,6 +78,19 @@ impl StateMachine for CustomStateMachine {
                     } else {
                         ApplyResult::failure(entry.index)
                     }
+                }
+                Command::Batch { ops } => {
+                    for op in ops {
+                        match op {
+                            d_engine::BatchOp::Insert { key, value } => {
+                                self.backend.put(key, value, None)?;
+                            }
+                            d_engine::BatchOp::Delete { key } => {
+                                self.backend.delete(key)?;
+                            }
+                        }
+                    }
+                    ApplyResult::success(entry.index)
                 }
                 Command::Noop => ApplyResult::success(entry.index),
             };
@@ -112,29 +120,28 @@ impl StateMachine for CustomStateMachine {
 
 ## 3. StateMachine API Reference
 
-| Method                             | Purpose                            | Sync/Async | Criticality |
-| ---------------------------------- | ---------------------------------- | ---------- | ----------- |
-| `start()`                          | Initialize state machine service   | Sync       | High        |
-| `stop()`                           | Graceful shutdown (reversible)     | Sync       | High        |
-| `close_storage()`                  | Release exclusive OS resources (e.g. DB lock file). Default no-op — override only if needed. | Sync | Medium |
-| `is_running()`                     | Check service status               | Sync       | Medium      |
-| `get()`                            | Read value by key                  | Sync       | High        |
-| `entry_term()`                     | Get term for log index             | Sync       | Medium      |
-| `apply_chunk()`                    | Apply committed entries            | Async      | Critical    |
-| `len()`                            | Get entry count                    | Sync       | Low         |
-| `is_empty()`                       | Check if empty                     | Sync       | Low         |
-| `update_last_applied()`            | Update applied index in memory     | Sync       | High        |
-| `last_applied()`                   | Get last applied index             | Sync       | High        |
-| `persist_last_applied()`           | Persist applied index              | Sync       | High        |
-| `update_last_snapshot_metadata()`  | Update snapshot metadata in memory | Sync       | Medium      |
-| `snapshot_metadata()`              | Get current snapshot metadata      | Sync       | Medium      |
-| `persist_last_snapshot_metadata()` | Persist snapshot metadata          | Sync       | Medium      |
-| `apply_snapshot_from_file()`       | Replace state with snapshot        | Async      | Critical    |
-| `generate_snapshot_data()`         | Create new snapshot                | Async      | High        |
-| `save_hard_state()`                | Persist term/vote state            | Sync       | High        |
-| `flush()`                          | Sync writes to storage             | Sync       | High        |
-| `flush_async()`                    | Async flush                        | Async      | High        |
-| `reset()`                          | Reset to initial state             | Async      | Medium      |
+| Method                             | Purpose                                                                                      | Sync/Async | Criticality |
+| ---------------------------------- | -------------------------------------------------------------------------------------------- | ---------- | ----------- |
+| `start()`                          | Initialize state machine service                                                             | Sync       | High        |
+| `stop()`                           | Graceful shutdown (reversible)                                                               | Sync       | High        |
+| `close_storage()`                  | Release exclusive OS resources (e.g. DB lock file). Default no-op — override only if needed. | Sync       | Medium      |
+| `is_running()`                     | Check service status                                                                         | Sync       | Medium      |
+| `get()`                            | Read value by key                                                                            | Sync       | High        |
+| `apply_chunk()`                    | Apply committed entries                                                                      | Async      | Critical    |
+| `len()`                            | Get entry count                                                                              | Sync       | Low         |
+| `is_empty()`                       | Check if empty                                                                               | Sync       | Low         |
+| `update_last_applied()`            | Update applied index in memory                                                               | Sync       | High        |
+| `last_applied()`                   | Get last applied index                                                                       | Sync       | High        |
+| `persist_last_applied()`           | Persist applied index                                                                        | Sync       | High        |
+| `update_last_snapshot_metadata()`  | Update snapshot metadata in memory                                                           | Sync       | Medium      |
+| `snapshot_metadata()`              | Get current snapshot metadata                                                                | Sync       | Medium      |
+| `persist_last_snapshot_metadata()` | Persist snapshot metadata                                                                    | Sync       | Medium      |
+| `apply_snapshot_from_file()`       | Replace state with snapshot                                                                  | Async      | Critical    |
+| `generate_snapshot_data()`         | Create new snapshot                                                                          | Async      | High        |
+| `save_hard_state()`                | Persist term/vote state                                                                      | Sync       | High        |
+| `flush()`                          | Sync writes to storage                                                                       | Sync       | High        |
+| `flush_async()`                    | Async flush                                                                                  | Async      | High        |
+| `reset()`                          | Reset to initial state                                                                       | Async      | Medium      |
 
 ## 4. Testing Your Implementation
 

@@ -175,7 +175,6 @@ impl BenchFixture {
         state_machine.expect_stop().returning(|| Ok(()));
         state_machine.expect_is_running().returning(|| true);
         state_machine.expect_get().returning(|_| Ok(None));
-        state_machine.expect_entry_term().returning(|_| None);
         state_machine.expect_apply_chunk().returning(|_| Ok(vec![]));
         state_machine.expect_len().returning(|| 0);
         state_machine.expect_update_last_applied().returning(|_| ());

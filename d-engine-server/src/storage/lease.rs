@@ -62,7 +62,7 @@ pub struct TtlLease {
     /// Apply counter for piggyback cleanup frequency
     apply_counter: AtomicU64,
 
-    /// ✅ Single index: key → expiration_time (completely lock-free)
+    /// Single index: key → expiration_time (completely lock-free)
     /// - Register/Unregister: O(1), single shard lock
     /// - Cleanup: O(N) iteration with shard read locks
     key_to_expiry: DashMap<Bytes, SystemTime>,

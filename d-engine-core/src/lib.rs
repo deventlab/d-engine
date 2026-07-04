@@ -129,8 +129,6 @@ pub use utils::*;
 pub(crate) use timer::*;
 
 #[cfg(test)]
-mod command_test;
-#[cfg(test)]
 mod maybe_clone_oneshot_test;
 
 #[cfg(test)]
@@ -175,7 +173,6 @@ pub(crate) fn if_higher_term_found(
 /// entries in the  logs. If the logs have last entries with different terms, then the log with the
 /// later term is more up-to-date. If the logs end with the same term, then whichever log is longer
 /// is more up-to-date.
-#[tracing::instrument]
 pub(crate) fn is_target_log_more_recent(
     my_last_log_index: u64,
     my_last_log_term: u64,

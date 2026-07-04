@@ -1,11 +1,5 @@
-use std::ops::RangeInclusive;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
+#[cfg(feature = "watch")]
+use crate::BatchOp;
 
 use crate::client::KvEntry;
 use async_compression::tokio::bufread::GzipDecoder;
@@ -22,6 +16,14 @@ use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use futures::stream::BoxStream;
 use memmap2::Mmap;
 use memmap2::MmapOptions;
+use std::ops::RangeInclusive;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tempfile::tempdir;
 use tokio::fs;
 use tokio::fs::File;
@@ -38,7 +40,6 @@ use tokio_tar::Archive;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tracing::instrument;
 use tracing::trace;
 
 use super::SnapshotAssembler;
@@ -320,7 +321,6 @@ where
         }
     }
 
-    #[instrument(skip(self))]
     async fn apply_snapshot_stream_from_leader(
         &self,
         current_term: u64,
@@ -393,22 +393,7 @@ where
 
         // 2: Prepare temp snapshot file and final snapshot file
         debug!("create_snapshot 2: Prepare temp snapshot file and final snapshot file");
-        let raw_last_included = self.state_machine.last_applied();
-
-        // Apply retention policy
-        let last_included = LogId {
-            index: raw_last_included
-                .index
-                .saturating_sub(self.snapshot_config.retained_log_entries),
-            term: self
-                .state_machine
-                .entry_term(
-                    raw_last_included
-                        .index
-                        .saturating_sub(self.snapshot_config.retained_log_entries),
-                )
-                .unwrap_or(raw_last_included.term),
-        };
+        let last_included = self.state_machine.last_applied();
 
         let temp_path = self.path_mgr.temp_work_path(&last_included);
 
@@ -457,7 +442,6 @@ where
         ))
     }
 
-    #[tracing::instrument]
     async fn cleanup_snapshot(
         &self,
         retain_count: u64,
@@ -540,7 +524,6 @@ where
     }
 
     /// Load snapshot data as a stream of chunks (ZERO-COPY)
-    #[instrument(skip(self))]
     async fn load_snapshot_data(
         &self,
         metadata: SnapshotMetadata,
@@ -690,6 +673,7 @@ where
                     Some(prev.unwrap_or_default())
                 }
                 Command::Noop => None,
+                Command::Batch { ops: _ } => None,
             };
             result.push(prev);
         }
@@ -720,43 +704,66 @@ where
             let prev_value =
                 prev_values.and_then(|pv| pv.get(i)).and_then(|v| v.clone()).unwrap_or_default();
 
-            let event = match &entry.command {
-                Command::Insert { key, value, .. } => Some(WatchResponse {
+            let events: Vec<WatchResponse> = match &entry.command {
+                Command::Insert { key, value, .. } => vec![WatchResponse {
                     key: key.clone(),
                     value: value.clone(),
                     prev_value,
                     event_type: WatchEventType::Put as i32,
                     error: 0,
                     revision: entry.index,
-                }),
-                Command::Delete { key } => Some(WatchResponse {
+                }],
+                Command::Delete { key } => vec![WatchResponse {
                     key: key.clone(),
                     value: bytes::Bytes::new(),
                     prev_value,
                     event_type: WatchEventType::Delete as i32,
                     error: 0,
                     revision: entry.index,
-                }),
+                }],
                 Command::CompareAndSwap { key, value, .. } => {
                     // Only broadcast if CAS actually mutated the value.
                     // A failed CAS leaves the key unchanged — no watch event.
                     if results.get(i).is_some_and(|r| r.succeeded) {
-                        Some(WatchResponse {
+                        vec![WatchResponse {
                             key: key.clone(),
                             value: value.clone(),
                             prev_value,
                             event_type: WatchEventType::Put as i32,
                             error: 0,
                             revision: entry.index,
-                        })
+                        }]
                     } else {
-                        None
+                        vec![]
                     }
                 }
-                Command::Noop => None,
+                Command::Noop => vec![],
+                // Batch: one event per op. prev_value is not supported per-op yet
+                // (read_prev_values returns one value per ApplyEntry, not per BatchOp).
+                Command::Batch { ops } => ops
+                    .iter()
+                    .map(|op| match op {
+                        BatchOp::Insert { key, value } => WatchResponse {
+                            key: key.clone(),
+                            value: value.clone(),
+                            prev_value: bytes::Bytes::new(),
+                            event_type: WatchEventType::Put as i32,
+                            error: 0,
+                            revision: entry.index,
+                        },
+                        BatchOp::Delete { key } => WatchResponse {
+                            key: key.clone(),
+                            value: bytes::Bytes::new(),
+                            prev_value: bytes::Bytes::new(),
+                            event_type: WatchEventType::Delete as i32,
+                            error: 0,
+                            revision: entry.index,
+                        },
+                    })
+                    .collect(),
             };
 
-            if let Some(ev) = event {
+            for ev in events {
                 // Fire-and-forget: ignore send errors (no receivers or lagging)
                 let _ = tx.send(ev);
             }
@@ -828,7 +835,6 @@ where
     }
 
     #[allow(dead_code)]
-    #[instrument(skip(self))]
     async fn create_snapshot_chunk_stream(
         &self,
         snapshot_file: PathBuf,
@@ -897,7 +903,6 @@ where
     }
 
     /// Helper function to process snapshot stream
-    #[instrument(skip(self, stream_chunk_receiver))]
     async fn process_snapshot_stream(
         &self,
         mut stream_chunk_receiver: mpsc::Receiver<SnapshotChunk>,

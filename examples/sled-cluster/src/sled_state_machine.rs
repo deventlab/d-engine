@@ -1,13 +1,15 @@
 //! It works as KV storage for client business CRUDs.
 
+use crate::compute_checksum_from_folder_path;
+use crate::{safe_kv, safe_vk_ivec};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
+use d_engine::BatchOp;
 use d_engine::{
-    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotError, StateMachine, StorageError,
-    common::LogId,
-    server_storage::SnapshotMetadata,
+    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotError, StateMachine,
+    StorageError, common::LogId, server_storage::SnapshotMetadata,
 };
 use parking_lot::Mutex;
 use sled::Batch;
@@ -22,11 +24,7 @@ use tokio::sync::RwLock;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tracing::instrument;
 use tracing::trace;
-
-use crate::compute_checksum_from_folder_path;
-use crate::{safe_kv, safe_vk, safe_vk_ivec};
 
 /// Sled database tree namespaces
 pub(crate) const STATE_MACHINE_TREE: &str = "_state_machine_tree";
@@ -174,21 +172,10 @@ impl StateMachine for SledStateMachine {
         }
     }
 
-    fn entry_term(
+    async fn apply_chunk(
         &self,
-        entry_id: u64,
-    ) -> Option<u64> {
-        match self.get(&safe_kv(entry_id)) {
-            Ok(Some(term_bytes)) => safe_vk(&term_bytes).ok(),
-            Ok(None) => None,
-            Err(e) => {
-                error!("Failed to retrieve term for entry {}: {}", entry_id, e);
-                None
-            }
-        }
-    }
-
-    async fn apply_chunk(&self, chunk: &[ApplyEntry]) -> Result<Vec<ApplyResult>> {
+        chunk: &[ApplyEntry],
+    ) -> Result<Vec<ApplyResult>> {
         trace!("Applying chunk: {} entries", chunk.len());
 
         let mut highest_log_id: Option<LogId> = None;
@@ -204,7 +191,10 @@ impl StateMachine for SledStateMachine {
                     prev.index
                 );
             }
-            highest_log_id = Some(LogId { index: entry.index, term: entry.term });
+            highest_log_id = Some(LogId {
+                index: entry.index,
+                term: entry.term,
+            });
 
             match &entry.command {
                 Command::Noop => {
@@ -219,7 +209,11 @@ impl StateMachine for SledStateMachine {
                     batch.remove(key.as_ref());
                     results.push(ApplyResult::success(entry.index));
                 }
-                Command::CompareAndSwap { key, expected, value: new_value } => {
+                Command::CompareAndSwap {
+                    key,
+                    expected,
+                    value: new_value,
+                } => {
                     // Flush pending batch before CAS (Sled batch doesn't support atomic CAS)
                     self.apply_batch(std::mem::take(&mut batch))?;
 
@@ -248,6 +242,17 @@ impl StateMachine for SledStateMachine {
                     } else {
                         ApplyResult::failure(entry.index)
                     });
+                }
+                Command::Batch { ops } => {
+                    ops.iter().for_each(|op| match op {
+                        BatchOp::Insert { key, value } => {
+                            batch.insert(key.as_ref(), value.as_ref())
+                        }
+                        BatchOp::Delete { key } => {
+                            batch.remove(key.as_ref());
+                        }
+                    });
+                    results.push(ApplyResult::success(entry.index));
                 }
             }
         }
@@ -335,7 +340,6 @@ impl StateMachine for SledStateMachine {
         self.flush()
     }
 
-    #[instrument(skip(self))]
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: PathBuf,
@@ -403,7 +407,6 @@ impl StateMachine for SledStateMachine {
         Ok(Bytes::copy_from_slice(&checksum))
     }
 
-    #[instrument(skip(self))]
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
@@ -494,7 +497,11 @@ impl StateMachine for SledStateMachine {
 
     async fn reset(&self) -> Result<()> {
         let db = self.db.load();
-        for tree_name in &[STATE_MACHINE_TREE, STATE_MACHINE_META_NAMESPACE, STATE_SNAPSHOT_METADATA_TREE] {
+        for tree_name in &[
+            STATE_MACHINE_TREE,
+            STATE_MACHINE_META_NAMESPACE,
+            STATE_SNAPSHOT_METADATA_TREE,
+        ] {
             db.open_tree(tree_name)
                 .map_err(|e| StorageError::DbError(e.to_string()))?
                 .clear()

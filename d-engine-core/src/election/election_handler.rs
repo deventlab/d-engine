@@ -277,7 +277,6 @@ where
     /// - candidate s log is at least as up-to-date as receiver s log
     /// e.g. { my_id: 2 } request=VoteRequest { term: 3, candidate_id: 1, last_log_index: 2,
     /// last_log_term: 10 } current_term=3 last_log_index=3 last_log_term=8 voted_for_option=None
-    #[tracing::instrument]
     fn check_vote_request_is_legal(
         &self,
         request: &VoteRequest,

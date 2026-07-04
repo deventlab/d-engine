@@ -93,7 +93,7 @@ impl StandaloneEngine {
     /// ```
     #[cfg(feature = "rocksdb")]
     pub async fn run_with(
-        config_path: &str,
+        config_path: impl AsRef<std::path::Path>,
         shutdown_rx: watch::Receiver<()>,
     ) -> Result<()> {
         let config = d_engine_core::RaftNodeConfig::new()?
@@ -136,7 +136,7 @@ impl StandaloneEngine {
     /// Blocks until shutdown signal is received.
     ///
     /// # Arguments
-    /// * `config` - Node configuration
+    /// * `config` - config_path - Optional path to configuration file
     /// * `storage_engine` - Custom storage engine implementation
     /// * `state_machine` - Custom state machine implementation
     /// * `shutdown_rx` - Shutdown signal receiver
@@ -153,7 +153,7 @@ impl StandaloneEngine {
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
         shutdown_rx: watch::Receiver<()>,
-        config_path: Option<&str>,
+        config_path: Option<impl AsRef<std::path::Path>>,
     ) -> Result<()>
     where
         SE: StorageEngine + std::fmt::Debug + 'static,
@@ -169,7 +169,13 @@ impl StandaloneEngine {
         Self::start_node(config, storage_engine, state_machine, shutdown_rx).await
     }
 
-    async fn start_node<SE, SM>(
+    /// Start standalone server with custom storage, state machine, and programmatic config.
+    ///
+    /// For library wrappers that build their own config layer and
+    /// translate to `RaftNodeConfig` in Rust — no config file required.
+    ///
+    /// Blocks until `shutdown_rx` receives a signal.
+    pub async fn start_node<SE, SM>(
         config: d_engine_core::RaftNodeConfig,
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
@@ -179,7 +185,7 @@ impl StandaloneEngine {
         SE: StorageEngine + std::fmt::Debug + 'static,
         SM: StateMachine + std::fmt::Debug + 'static,
     {
-        let node = NodeBuilder::init(config, shutdown_rx)
+        let node = NodeBuilder::init(config.validate()?, shutdown_rx)
             .storage_engine(storage_engine)
             .state_machine(state_machine)
             .start()

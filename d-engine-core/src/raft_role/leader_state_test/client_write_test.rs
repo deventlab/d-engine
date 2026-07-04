@@ -9,8 +9,7 @@ use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::PrepareResult;
 use crate::RaftRequestWithSignal;
-use crate::client::{ClientWriteRequest, WriteOperation};
-use crate::client_command_to_entry_payloads;
+use crate::client::ClientWriteRequest;
 use crate::event::{InternalEvent, NewCommitData};
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
@@ -22,6 +21,7 @@ use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::node_config;
 use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
@@ -146,11 +146,13 @@ async fn test_process_raft_request_immediate_execution() {
     .await;
 
     // Prepare test request
+    let cmd_bytes = {
+        use prost::Message;
+        Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
+    };
     let request = ClientWriteRequest {
         client_id: 0,
-        command: Some(WriteOperation::Delete {
-            key: bytes::Bytes::new(),
-        }),
+        command: Some(cmd_bytes.clone()),
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx, rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
@@ -162,13 +164,7 @@ async fn test_process_raft_request_immediate_execution() {
         .execute_request_immediately(
             RaftRequestWithSignal {
                 id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
-                payloads: client_command_to_entry_payloads(
-                    request
-                        .command
-                        .into_iter()
-                        .map(crate::raft_role::leader_state::write_op_to_proto)
-                        .collect(),
-                ),
+                payloads: request.command.into_iter().map(EntryPayload::command).collect(),
                 senders: vec![tx],
                 wait_for_apply_event: true,
             },
@@ -377,11 +373,13 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
     };
 
     // Prepare test requests
+    let cmd_bytes = {
+        use prost::Message;
+        Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
+    };
     let request = ClientWriteRequest {
         client_id: 0,
-        command: Some(WriteOperation::Delete {
-            key: bytes::Bytes::new(),
-        }),
+        command: Some(cmd_bytes),
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
@@ -394,14 +392,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
         .execute_request_immediately(
             RaftRequestWithSignal {
                 id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
-                payloads: client_command_to_entry_payloads(
-                    request
-                        .command
-                        .clone()
-                        .into_iter()
-                        .map(crate::raft_role::leader_state::write_op_to_proto)
-                        .collect(),
-                ),
+                payloads: request.command.clone().into_iter().map(EntryPayload::command).collect(),
                 senders: vec![tx1],
                 wait_for_apply_event: true,
             },
@@ -416,13 +407,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
         .execute_request_immediately(
             RaftRequestWithSignal {
                 id: rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 21),
-                payloads: client_command_to_entry_payloads(
-                    request
-                        .command
-                        .into_iter()
-                        .map(crate::raft_role::leader_state::write_op_to_proto)
-                        .collect(),
-                ),
+                payloads: request.command.into_iter().map(EntryPayload::command).collect(),
                 senders: vec![tx2],
                 wait_for_apply_event: true,
             },
@@ -514,8 +499,9 @@ async fn test_process_raft_request_batching_enabled() {
     // Prepare test request
     let request = ClientWriteRequest {
         client_id: 0,
-        command: Some(WriteOperation::Delete {
-            key: bytes::Bytes::new(),
+        command: Some({
+            use prost::Message;
+            Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
         }),
     };
     use crate::ClientCmd;
@@ -584,8 +570,9 @@ async fn test_drain_single_write_no_delay() {
     let start = Instant::now();
     let req = ClientWriteRequest {
         client_id: 1,
-        command: Some(WriteOperation::Delete {
-            key: bytes::Bytes::new(),
+        command: Some({
+            use prost::Message;
+            Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
         }),
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();
@@ -683,8 +670,9 @@ async fn test_drain_multiple_writes_natural_batch() {
     for i in 0..10 {
         let req = ClientWriteRequest {
             client_id: i,
-            command: Some(WriteOperation::Delete {
-                key: bytes::Bytes::new(),
+            command: Some({
+                use prost::Message;
+                Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
             }),
         };
         let (tx, rx) = MaybeCloneOneshot::new();
@@ -771,8 +759,9 @@ async fn test_drain_max_batch_size_limit() {
     for i in 0..10 {
         let req = ClientWriteRequest {
             client_id: i,
-            command: Some(WriteOperation::Delete {
-                key: bytes::Bytes::new(),
+            command: Some({
+                use prost::Message;
+                Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
             }),
         };
         let (tx, _rx) = MaybeCloneOneshot::new();
@@ -859,8 +848,9 @@ async fn test_write_batch_single_replication() {
     for i in 0..5 {
         let req = ClientWriteRequest {
             client_id: i,
-            command: Some(WriteOperation::Delete {
-                key: bytes::Bytes::new(),
+            command: Some({
+                use prost::Message;
+                Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
             }),
         };
         let (tx, rx) = MaybeCloneOneshot::new();
@@ -903,110 +893,8 @@ async fn test_write_batch_single_replication() {
     drop(_shutdown_tx);
 }
 
-// ============================================================================
-// write_op_to_proto conversion tests
-// ============================================================================
-
-/// Verify Insert with TTL converts correctly to proto WriteCommand.
-#[test]
-fn test_write_op_to_proto_insert_with_ttl() {
-    use crate::client::WriteOperation;
-    use crate::raft_role::leader_state::write_op_to_proto;
-    use d_engine_proto::client::write_command::Operation;
-
-    let op = WriteOperation::Insert {
-        key: Bytes::from("k"),
-        value: Bytes::from("v"),
-        ttl_secs: Some(60),
-    };
-    let cmd = write_op_to_proto(op);
-    match cmd.operation {
-        Some(Operation::Insert(ins)) => {
-            assert_eq!(ins.key, Bytes::from("k"));
-            assert_eq!(ins.value, Bytes::from("v"));
-            assert_eq!(ins.ttl_secs, 60);
-        }
-        other => panic!("expected Insert, got {:?}", other),
-    }
-}
-
-/// Verify Insert with no TTL maps ttl_secs=None → proto ttl_secs=0.
-#[test]
-fn test_write_op_to_proto_insert_no_ttl_maps_to_zero() {
-    use crate::client::WriteOperation;
-    use crate::raft_role::leader_state::write_op_to_proto;
-    use d_engine_proto::client::write_command::Operation;
-
-    let op = WriteOperation::Insert {
-        key: Bytes::from("k"),
-        value: Bytes::from("v"),
-        ttl_secs: None,
-    };
-    let cmd = write_op_to_proto(op);
-    match cmd.operation {
-        Some(Operation::Insert(ins)) => assert_eq!(ins.ttl_secs, 0),
-        other => panic!("expected Insert, got {:?}", other),
-    }
-}
-
-/// Verify Delete converts correctly to proto WriteCommand.
-#[test]
-fn test_write_op_to_proto_delete() {
-    use crate::client::WriteOperation;
-    use crate::raft_role::leader_state::write_op_to_proto;
-    use d_engine_proto::client::write_command::Operation;
-
-    let op = WriteOperation::Delete {
-        key: Bytes::from("del-key"),
-    };
-    let cmd = write_op_to_proto(op);
-    match cmd.operation {
-        Some(Operation::Delete(del)) => assert_eq!(del.key, Bytes::from("del-key")),
-        other => panic!("expected Delete, got {:?}", other),
-    }
-}
-
-/// Verify CAS with expected value converts correctly.
-#[test]
-fn test_write_op_to_proto_cas_with_expected() {
-    use crate::client::WriteOperation;
-    use crate::raft_role::leader_state::write_op_to_proto;
-    use d_engine_proto::client::write_command::Operation;
-
-    let op = WriteOperation::CompareAndSwap {
-        key: Bytes::from("k"),
-        expected: Some(Bytes::from("old")),
-        new_value: Bytes::from("new"),
-    };
-    let cmd = write_op_to_proto(op);
-    match cmd.operation {
-        Some(Operation::CompareAndSwap(cas)) => {
-            assert_eq!(cas.key, Bytes::from("k"));
-            assert_eq!(cas.expected_value, Some(Bytes::from("old")));
-            assert_eq!(cas.new_value, Bytes::from("new"));
-        }
-        other => panic!("expected CompareAndSwap, got {:?}", other),
-    }
-}
-
-/// CAS with expected=None maps to expected_value=None (key-must-not-exist semantics).
-#[test]
-fn test_write_op_to_proto_cas_key_must_not_exist() {
-    use crate::client::WriteOperation;
-    use crate::raft_role::leader_state::write_op_to_proto;
-    use d_engine_proto::client::write_command::Operation;
-
-    let op = WriteOperation::CompareAndSwap {
-        key: Bytes::from("k"),
-        expected: None,
-        new_value: Bytes::from("new"),
-    };
-    let cmd = write_op_to_proto(op);
-    match cmd.operation {
-        Some(Operation::CompareAndSwap(cas)) => assert!(cas.expected_value.is_none()),
-        other => panic!("expected CompareAndSwap, got {:?}", other),
-    }
-}
+// WriteOperation → WriteCommand conversion tests live in d-engine-server/src/api/types_test.rs
+// (WriteOperation was moved to server layer as part of Type B refactor)
 
 // ============================================================================
 // wait_for_apply_event Semantic Contract Tests
@@ -1084,8 +972,9 @@ async fn test_client_write_deferred_until_sm_apply() {
 
     let req = ClientWriteRequest {
         client_id: 1,
-        command: Some(WriteOperation::Delete {
-            key: bytes::Bytes::new(),
+        command: Some({
+            use prost::Message;
+            Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
         }),
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();

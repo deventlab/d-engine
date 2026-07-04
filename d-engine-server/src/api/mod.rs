@@ -5,6 +5,7 @@ mod embedded_client;
 mod embedded_read_handle;
 mod standalone;
 mod standalone_read_handle;
+pub(crate) mod types;
 
 pub use standalone::StandaloneEngine;
 pub(crate) use standalone_read_handle::StandaloneReadHandle;

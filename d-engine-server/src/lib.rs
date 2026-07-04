@@ -4,10 +4,10 @@
 //!
 //! ## When to use this crate directly
 //!
-//! - ✅ Embedding server in a larger Rust application
-//! - ✅ Need programmatic access to server APIs
-//! - ✅ Building custom tooling around d-engine
-//! - ✅ Already have your own client implementation
+//! - Embedding server in a larger Rust application
+//! - Need programmatic access to server APIs
+//! - Building custom tooling around d-engine
+//! - Already have your own client implementation
 //!
 //! ## When to use `d-engine` instead
 //!
@@ -143,6 +143,11 @@ pub use d_engine_core::Result;
 pub use d_engine_core::ScanResult;
 /// Storage-specific error type
 pub use d_engine_core::StorageError;
+// Raft Node Config
+pub use d_engine_core::RaftNodeConfig;
+// Batch operation variants (Insert, Delete) used in [`Command::Batch`].
+pub use d_engine_core::BatchOp;
+
 // Internal types required by storage implementations — not part of user API
 #[doc(hidden)]
 pub use d_engine_core::HardState;

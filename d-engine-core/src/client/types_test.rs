@@ -84,101 +84,19 @@ fn test_error_code_discriminants_match_proto_wire_values() {
     assert_eq!(ErrorCode::Uncategorized as i32, 9999);
 }
 
-// ─── WriteOperation ───────────────────────────────────────────────────────────
-
-#[test]
-fn test_write_operation_insert_carries_correct_fields() {
-    let op = WriteOperation::Insert {
-        key: Bytes::from("k"),
-        value: Bytes::from("v"),
-        ttl_secs: Some(30),
-    };
-    match op {
-        WriteOperation::Insert {
-            key,
-            value,
-            ttl_secs,
-        } => {
-            assert_eq!(key, Bytes::from("k"));
-            assert_eq!(value, Bytes::from("v"));
-            assert_eq!(ttl_secs, Some(30));
-        }
-        _ => panic!("wrong variant"),
-    }
-}
-
-#[test]
-fn test_write_operation_insert_no_ttl_is_none() {
-    let op = WriteOperation::Insert {
-        key: Bytes::from("k"),
-        value: Bytes::from("v"),
-        ttl_secs: None,
-    };
-    match op {
-        WriteOperation::Insert { ttl_secs: None, .. } => {}
-        _ => panic!("expected None ttl"),
-    }
-}
-
-#[test]
-fn test_write_operation_delete_carries_key() {
-    let op = WriteOperation::Delete {
-        key: Bytes::from("del-key"),
-    };
-    match op {
-        WriteOperation::Delete { key } => assert_eq!(key, Bytes::from("del-key")),
-        _ => panic!("wrong variant"),
-    }
-}
-
-#[test]
-fn test_write_operation_cas_with_expected_value() {
-    let op = WriteOperation::CompareAndSwap {
-        key: Bytes::from("k"),
-        expected: Some(Bytes::from("old")),
-        new_value: Bytes::from("new"),
-    };
-    match op {
-        WriteOperation::CompareAndSwap {
-            key,
-            expected,
-            new_value,
-        } => {
-            assert_eq!(key, Bytes::from("k"));
-            assert_eq!(expected, Some(Bytes::from("old")));
-            assert_eq!(new_value, Bytes::from("new"));
-        }
-        _ => panic!("wrong variant"),
-    }
-}
-
-/// CAS where expected=None means "key must not exist" — a distinct semantic from
-/// "any value is accepted". This test encodes that contract.
-#[test]
-fn test_write_operation_cas_key_must_not_exist_when_expected_is_none() {
-    let op = WriteOperation::CompareAndSwap {
-        key: Bytes::from("k"),
-        expected: None,
-        new_value: Bytes::from("new"),
-    };
-    match op {
-        WriteOperation::CompareAndSwap { expected: None, .. } => {}
-        _ => panic!("expected None should mean key-must-not-exist"),
-    }
-}
-
 // ─── ClientWriteRequest ───────────────────────────────────────────────────────
+// WriteOperation was moved to d-engine-server (server transport layer).
+// ClientWriteRequest.command is now pre-serialized Bytes — core is encoding-agnostic.
 
 #[test]
-fn test_client_write_request_fields() {
+fn test_client_write_request_carries_pre_serialized_bytes() {
+    let payload = Bytes::from_static(b"\x08\x01"); // any valid proto bytes
     let req = ClientWriteRequest {
         client_id: 42,
-        command: Some(WriteOperation::Delete {
-            key: Bytes::from("k"),
-        }),
+        command: Some(payload.clone()),
     };
     assert_eq!(req.client_id, 42);
-    assert!(req.command.is_some());
+    assert_eq!(req.command.as_ref().unwrap(), &payload);
 }
 
 #[test]

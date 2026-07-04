@@ -7,12 +7,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::SnapshotError;
 use crate::config::RaftNodeConfig as CoreRaftNodeConfig;
 use crate::event::InboundEvent;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
-use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
+use crate::test_utils::mock::{MockBuilder, MockTypeConfig, mock_raft_log};
+use crate::{MockPurgeExecutor, SnapshotError};
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use tokio::sync::{mpsc, watch};
@@ -85,7 +85,13 @@ async fn test_create_snapshot_event_starts_and_ignores_duplicates() {
 #[tokio::test]
 async fn test_snapshot_in_progress_flag_reset_on_created_event() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = MockBuilder::new(graceful_rx).build_context();
+    let mut raft_log = mock_raft_log();
+    raft_log
+        .expect_entry_term()
+        .withf(|&idx| idx == 9)
+        .times(1)
+        .returning(|_| Some(1));
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
     state.snapshot_in_progress.store(true, Ordering::SeqCst);
@@ -293,7 +299,6 @@ async fn test_stream_snapshot_confirms_startup_when_metadata_exists() {
     sm.expect_stop().returning(|| Ok(()));
     sm.expect_is_running().returning(|| true);
     sm.expect_get().returning(|_| Ok(None));
-    sm.expect_entry_term().returning(|_| None);
     sm.expect_apply_chunk().returning(|_| Ok(vec![]));
     sm.expect_len().returning(|| 0);
     sm.expect_update_last_applied().returning(|_| ());
@@ -363,4 +368,272 @@ async fn test_stream_snapshot_confirms_startup_when_metadata_exists() {
         .expect("chunk_rx closed before first chunk");
 
     assert_eq!(chunk.seq, 0);
+}
+
+// ============================================================================
+// Purge Boundary Tests (#415 fix — log retention decoupled from snapshot label)
+// ============================================================================
+
+/// Purge boundary must be last_included.index - retained_log_entries.
+///
+/// # Purpose
+/// Log retention is decoupled from the snapshot label.
+/// After a truthful snapshot at last_included=100, the leader must purge only up to
+/// index 90 (given retained=10), keeping entries 91~100 available for lagging followers
+/// to catch up via AppendEntries instead of InstallSnapshot.
+/// The purge boundary is computed in handle_snapshot_created using entry_term from the
+/// actual log — no term is fabricated.
+///
+/// # Criteria
+/// - last_included = LogId { index: 100, term: 2 }
+/// - retained_log_entries = 10
+/// - raft_log.entry_term(90) returns Some(1)  (entry 90 was written in term 1)
+/// - commit_index = 200  (ensures can_purge_logs returns true)
+///
+/// # Expected
+/// - state.scheduled_purge_upto == Some(LogId { index: 90, term: 1 })
+/// - entry_term is queried with index 90
+/// - no LogId with a fabricated term is constructed
+#[tokio::test]
+async fn test_purge_boundary_is_last_included_minus_retained_log_entries() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    // entry_term(90) → Some(1): entry 90 was written in term 1, not term 2
+    // withf(idx == 90) also verifies the correct purge boundary index is queried
+    let mut raft_log = mock_raft_log();
+    raft_log
+        .expect_entry_term()
+        .withf(|&idx| idx == 90)
+        .times(1)
+        .returning(|_| Some(1));
+
+    // retained_log_entries = 10 → purge_upto_index = 100 - 10 = 90
+    let mut nc = CoreRaftNodeConfig::default();
+    nc.raft.snapshot.retained_log_entries = 10;
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    // commit_index must be > last_included.index (100) for can_purge_logs to return true
+    state.update_commit_index(200).unwrap();
+
+    let _ = state
+        .handle_snapshot_created(
+            Ok((
+                SnapshotMetadata {
+                    last_included: Some(LogId {
+                        term: 2,
+                        index: 100,
+                    }),
+                    checksum: "abc".into(),
+                },
+                PathBuf::from("/tmp/fake"),
+            )),
+            &context,
+            &internal_event_tx,
+        )
+        .await;
+
+    // Purge boundary = last_included.index - retained = 90
+    // term comes from entry_term(90) = 1 — NOT the fabricated term=2 from last_included
+    assert_eq!(
+        state.scheduled_purge_upto,
+        Some(LogId { term: 1, index: 90 })
+    );
+}
+
+/// Purge is skipped entirely when retained_log_entries >= last_included.index.
+///
+/// # Purpose
+/// Guards the saturating_sub(retained) == 0 branch. When the cluster is still young
+/// (e.g., only 5 entries written) and retained_log_entries >= last_included.index,
+/// the computed purge_upto_index underflows to 0. The code must detect this and skip
+/// the purge — not schedule a no-op, not call entry_term, not panic.
+///
+/// # Criteria
+/// - last_included = LogId { index: 5, term: 1 }
+/// - retained_log_entries = 10  (10 >= 5 → saturating_sub = 0)
+/// - commit_index = 200
+///
+/// # Expected
+/// - state.scheduled_purge_upto remains None
+/// - raft_log.entry_term is NOT called
+/// - purge_executor.execute_purge is NOT called
+#[tokio::test]
+async fn test_purge_skipped_when_retained_exceeds_last_included_index() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let mut raft_log = mock_raft_log();
+    raft_log.expect_entry_term().times(0).returning(|_| Some(1));
+
+    let mut purge_executor = MockPurgeExecutor::new();
+    purge_executor.expect_execute_purge().times(0).returning(|_| Ok(()));
+
+    let mut nc = CoreRaftNodeConfig::default();
+    nc.raft.snapshot.retained_log_entries = 10;
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_purge_executor(purge_executor)
+        .with_node_config(nc)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    // commit_index must be > last_included.index (100) for can_purge_logs to return true
+    state.update_commit_index(200).unwrap();
+
+    let _ = state
+        .handle_snapshot_created(
+            Ok((
+                SnapshotMetadata {
+                    last_included: Some(LogId { term: 1, index: 5 }),
+                    checksum: "abc".into(),
+                },
+                PathBuf::from("/tmp/fake"),
+            )),
+            &context,
+            &internal_event_tx,
+        )
+        .await;
+
+    assert_eq!(state.scheduled_purge_upto, None);
+}
+
+/// Purge advances to last_included.index - 1 when retained_log_entries is at minimum (1).
+///
+/// # Purpose
+/// Validates the minimum-retained case. retained_log_entries = 1 (the minimum allowed
+/// value) means exactly one trailing entry is kept for replication continuity.
+/// The purge boundary is last_included.index - 1.
+///
+/// # Criteria
+/// - last_included = LogId { index: 100, term: 2 }
+/// - retained_log_entries = 1
+/// - raft_log.entry_term(99) returns Some(2)
+/// - commit_index = 200
+///
+/// # Expected
+/// - state.scheduled_purge_upto == Some(LogId { index: 99, term: 2 })
+#[tokio::test]
+async fn test_purge_boundary_with_minimum_retained_log_entries() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let mut raft_log = mock_raft_log();
+    raft_log
+        .expect_entry_term()
+        .withf(|&idx| idx == 99)
+        .times(1)
+        .returning(|_| Some(2));
+
+    let mut purge_executor = MockPurgeExecutor::new();
+    purge_executor.expect_execute_purge().times(1).returning(|_| Ok(()));
+
+    let mut nc = CoreRaftNodeConfig::default();
+    nc.raft.snapshot.retained_log_entries = 1;
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_purge_executor(purge_executor)
+        .with_node_config(nc)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    // commit_index must be > last_included.index (100) for can_purge_logs to return true
+    state.update_commit_index(200).unwrap();
+
+    let _ = state
+        .handle_snapshot_created(
+            Ok((
+                SnapshotMetadata {
+                    last_included: Some(LogId {
+                        term: 2,
+                        index: 100,
+                    }),
+                    checksum: "abc".into(),
+                },
+                PathBuf::from("/tmp/fake"),
+            )),
+            &context,
+            &internal_event_tx,
+        )
+        .await;
+
+    assert_eq!(
+        state.scheduled_purge_upto,
+        Some(LogId { term: 2, index: 99 })
+    );
+}
+
+/// Purge is skipped when entry_term returns None for the computed purge boundary.
+///
+/// # Purpose
+/// Protocol safety guard: the purge boundary requires a valid
+/// LogId { index, term }. If raft_log.entry_term(purge_upto_index) returns None
+/// (entry already purged or out of range), fabricating a LogId with term=0 would
+/// violate the Raft protocol — term=0 is the sentinel for "never voted" and must
+/// never appear in a LogId. The correct behavior is to skip this purge cycle;
+/// the next snapshot cycle will recompute a valid boundary.
+///
+/// # Criteria
+/// - last_included = LogId { index: 100, term: 2 }
+/// - retained_log_entries = 10  (purge_upto_index = 90)
+/// - raft_log.entry_term(90) returns None
+/// - commit_index = 200
+///
+/// # Expected
+/// - state.scheduled_purge_upto remains None
+/// - purge_executor.execute_purge is NOT called
+/// - no LogId with term=0 is constructed
+#[tokio::test]
+async fn test_purge_skipped_when_entry_term_returns_none() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let mut raft_log = mock_raft_log();
+    raft_log
+        .expect_entry_term()
+        .withf(|&idx| idx == 90)
+        .times(1)
+        .returning(|_| None);
+
+    let mut purge_executor = MockPurgeExecutor::new();
+    purge_executor.expect_execute_purge().times(0).returning(|_| Ok(()));
+
+    let mut nc = CoreRaftNodeConfig::default();
+    nc.raft.snapshot.retained_log_entries = 10;
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_purge_executor(purge_executor)
+        .with_node_config(nc)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config());
+    // commit_index must be > last_included.index (100) for can_purge_logs to return true
+    state.update_commit_index(200).unwrap();
+
+    let _ = state
+        .handle_snapshot_created(
+            Ok((
+                SnapshotMetadata {
+                    last_included: Some(LogId {
+                        term: 2,
+                        index: 100,
+                    }),
+                    checksum: "abc".into(),
+                },
+                PathBuf::from("/tmp/fake"),
+            )),
+            &context,
+            &internal_event_tx,
+        )
+        .await;
+
+    assert_eq!(state.scheduled_purge_upto, None);
 }

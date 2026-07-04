@@ -17,6 +17,8 @@ mod follower_state_test;
 mod leader_state_test;
 #[cfg(test)]
 mod learner_state_test;
+#[cfg(test)]
+mod role_state_test;
 
 use std::collections::HashMap;
 use std::sync::Arc;
