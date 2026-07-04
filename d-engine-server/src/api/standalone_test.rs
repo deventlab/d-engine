@@ -492,7 +492,7 @@ mod run_custom_tests {
 
     /// `run_custom` with a valid config file: server starts, shuts down cleanly.
     #[tokio::test]
-    #[serial(run_custom)]
+    #[serial]
     async fn test_run_custom_with_valid_config_path_starts_and_stops() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let (storage, sm) = create_rocksdb_se_and_sm(&temp_dir);
@@ -511,7 +511,7 @@ mod run_custom_tests {
 
     /// `run_custom` without a config file uses default config — must still work.
     #[tokio::test]
-    #[serial(run_custom)]
+    #[serial]
     async fn test_run_custom_without_config_path_uses_defaults() {
         // CONFIG_PATH must be cleared so RaftNodeConfig::new() doesn't pick up
         // an env-configured file and fail.
@@ -541,7 +541,7 @@ mod run_custom_tests {
 
     /// `run_custom` with a nonexistent config file path must return an error.
     #[tokio::test]
-    #[serial(run_custom)]
+    #[serial]
     async fn test_run_custom_with_nonexistent_config_returns_error() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let (storage, sm) = create_rocksdb_se_and_sm(&temp_dir);
@@ -562,7 +562,7 @@ mod run_custom_tests {
 
     /// `run_custom` with config containing `node_id = 0` must fail validation.
     #[tokio::test]
-    #[serial(run_custom)]
+    #[serial]
     async fn test_run_custom_with_invalid_config_returns_error() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let (storage, sm) = create_rocksdb_se_and_sm(&temp_dir);

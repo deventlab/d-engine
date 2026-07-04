@@ -1753,6 +1753,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 "Updating last purged index after successful execution"
             );
             self.last_purged_index = Some(purged_id);
+
+            // purge completed, clear to prevent re-execution
+            self.scheduled_purge_upto = None;
         } else {
             warn!(
                 ?purged_id,

@@ -25,7 +25,8 @@ use d_engine_core::RaftOneshot;
 use d_engine_core::ScanResult;
 use d_engine_core::TypeConfig;
 use d_engine_core::client::{
-    ClientApi, ClientApiResult, ClientResponsePayload, ClientWriteRequest, ErrorCode,
+    ClientApi, ClientApiError, ClientApiResult, ClientResponsePayload, ClientWriteRequest,
+    ErrorCode,
 };
 use d_engine_core::config::ReadConsistencyPolicy;
 #[cfg(feature = "watch")]
@@ -38,8 +39,6 @@ pub(crate) use super::standalone_read_handle::{
     channel_closed_error, map_error_response, server_error, timeout_error,
 };
 
-#[cfg(feature = "watch")]
-use d_engine_core::client::ClientApiError;
 #[cfg(feature = "watch")]
 use d_engine_core::watch::WatchRegistry;
 
@@ -623,6 +622,14 @@ impl<T: TypeConfig> ClientApi for EmbeddedClient<T> {
         &self,
         ops: Vec<BatchOp>,
     ) -> ClientApiResult<()> {
+        if ops.is_empty() {
+            return Err(ClientApiError::Business {
+                code: ErrorCode::InvalidRequest,
+                message: "batch ops must not be empty".into(),
+                required_action: None,
+            });
+        }
+
         let request = ClientWriteRequest {
             client_id: self.client_id,
             command: Some(proto_convert::write_op_to_bytes(WriteOperation::Batch {

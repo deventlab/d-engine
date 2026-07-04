@@ -217,8 +217,13 @@ fn test_handle_log_purge_completed() {
 
     // Test first purge
     state.last_purged_index = None;
+    state.scheduled_purge_upto = Some(LogId { term: 1, index: 50 });
     state.handle_log_purge_completed(LogId { term: 1, index: 50 }).unwrap();
     assert_eq!(state.last_purged_index, Some(LogId { term: 1, index: 50 }));
+    assert!(
+        state.scheduled_purge_upto.is_none(),
+        "handle_log_purge_completed must clear scheduled_purge_upto after successful purge"
+    );
 }
 
 // ============================================================================

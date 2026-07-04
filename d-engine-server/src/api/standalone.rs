@@ -136,10 +136,10 @@ impl StandaloneEngine {
     /// Blocks until shutdown signal is received.
     ///
     /// # Arguments
-    /// * `config` - config_path - Optional path to configuration file
     /// * `storage_engine` - Custom storage engine implementation
     /// * `state_machine` - Custom state machine implementation
     /// * `shutdown_rx` - Shutdown signal receiver
+    /// * `config` - config_path - Optional path to configuration file
     ///
     /// # Example
     /// ```ignore

@@ -1529,10 +1529,16 @@ mod snapshot_tests {
             FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
         let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
-        // LogPurgeCompleted: leader-only, but stale events after step-down must not error
+        // LogPurgeCompleted: leader-only, but stale events after step-down must not error.
+        // Must also clear scheduled_purge_upto to prevent duplicate execution.
+        state.scheduled_purge_upto = Some(LogId { term: 1, index: 1 });
         assert!(
             state.handle_log_purge_completed(LogId { term: 1, index: 1 }).is_ok(),
             "Stale LogPurgeCompleted should be silently ignored"
+        );
+        assert!(
+            state.scheduled_purge_upto.is_none(),
+            "handle_log_purge_completed must clear scheduled_purge_upto"
         );
 
         // PromoteReadyLearners: leader-only, same reasoning

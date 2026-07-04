@@ -128,6 +128,21 @@ fn batch_delete_op(key: &[u8]) -> BatchOp {
     }
 }
 
+/// Helper: create a BatchOp::Insert with non-zero TTL for rejection testing.
+fn batch_insert_op_with_ttl(
+    key: &[u8],
+    value: &[u8],
+    ttl_secs: u64,
+) -> BatchOp {
+    BatchOp {
+        op: Some(batch_op::Op::Insert(Insert {
+            key: Bytes::copy_from_slice(key),
+            value: Bytes::copy_from_slice(value),
+            ttl_secs,
+        })),
+    }
+}
+
 fn batch_entry(
     index: u64,
     term: u64,
@@ -401,6 +416,15 @@ fn test_decode_batch_op_without_operation_returns_error() {
     let entries = vec![batch_entry(11, 2, vec![malformed_op])];
     let result = decode_entries(entries);
     assert!(result.is_err(), "BatchOp with no operation must return Err");
+}
+
+#[test]
+fn test_decode_batch_insert_with_ttl_returns_error() {
+    // Batch ops do not support TTL — reject with a clear error.
+    let ops = vec![batch_insert_op_with_ttl(b"k", b"v", 60)];
+    let entries = vec![batch_entry(12, 2, ops)];
+    let result = decode_entries(entries);
+    assert!(result.is_err(), "BatchOp with non-zero TTL must return Err");
 }
 
 // ── decode: error cases ─────────────────────────────────────────────────────

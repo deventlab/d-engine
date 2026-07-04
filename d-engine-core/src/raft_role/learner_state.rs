@@ -619,6 +619,9 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     ) -> Result<()> {
         if self.last_purged_index.is_none_or(|cur| purged_id.index > cur.index) {
             self.last_purged_index = Some(purged_id);
+
+            // purge completed, clear to prevent re-execution
+            self.scheduled_purge_upto = None;
         }
         Ok(())
     }

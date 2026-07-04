@@ -361,8 +361,16 @@ impl ClientApi for GrpcClient {
         &self,
         ops: Vec<BatchOp>,
     ) -> ClientApiResult<()> {
-        // Performance tracking for put_with_ttl operation
-        let _timer = ScopedTimer::new("client::put_with_ttl");
+        if ops.is_empty() {
+            return Err(ClientApiError::Business {
+                code: ErrorCode::InvalidRequest,
+                message: "batch ops must not be empty".into(),
+                required_action: None,
+            });
+        }
+
+        // Performance tracking for batch operation
+        let _timer = ScopedTimer::new("client::batch");
 
         let client_inner = self.client_inner.load();
         let proto_ops: Vec<ProtoBatchOp> = ops
@@ -391,12 +399,12 @@ impl ClientApi for GrpcClient {
         let mut client = self.make_leader_client().await?;
         match client.handle_client_write(request).await {
             Ok(response) => {
-                debug!("[:GrpcClient:put_with_ttl] response: {:?}", response);
+                debug!("[:GrpcClient:batch] response: {:?}", response);
                 let client_response = response.get_ref();
                 client_response.validate_error()
             }
             Err(status) => {
-                error!("[:GrpcClient:put_with_ttl] status: {:?}", status);
+                error!("[:GrpcClient:batch] status: {:?}", status);
                 Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
             }
         }

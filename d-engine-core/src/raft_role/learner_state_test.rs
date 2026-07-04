@@ -1241,9 +1241,14 @@ mod snapshot_tests {
         let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
         let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
+        state.scheduled_purge_upto = Some(LogId { term: 1, index: 1 });
         assert!(
             state.handle_log_purge_completed(LogId { term: 1, index: 1 }).is_ok(),
             "Stale LogPurgeCompleted should be silently ignored"
+        );
+        assert!(
+            state.scheduled_purge_upto.is_none(),
+            "handle_log_purge_completed must clear scheduled_purge_upto"
         );
         assert!(
             state.handle_promote_ready_learners(&context, &internal_event_tx).await.is_ok(),

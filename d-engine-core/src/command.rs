@@ -57,15 +57,28 @@ pub enum Command {
         value: Bytes,
     },
 
+    /// Atomic batch of Insert/Delete operations — all succeed or all fail.
+    ///
+    /// Individual ops within a batch do not support TTL. Batch is designed for
+    /// atomic multi-key writes (service registration, config updates, distributed
+    /// locks) where per-key expiration does not apply.
     Batch {
         ops: Vec<BatchOp>,
     },
 }
 
+/// Single operation within a [`Command::Batch`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum BatchOp {
-    Insert { key: Bytes, value: Bytes },
-    Delete { key: Bytes },
+    /// Insert a key-value pair. TTL is not supported in batch mode —
+    /// use [`Command::Insert`] directly if you need per-key expiration.
+    Insert {
+        key: Bytes,
+        value: Bytes,
+    },
+    Delete {
+        key: Bytes,
+    },
 }
 
 /// A decoded Raft log entry ready for state machine application.
@@ -108,10 +121,18 @@ impl TryFrom<WriteCommand> for Command {
                     .ops
                     .into_iter()
                     .map(|op| match op.op {
-                        Some(batch_op::Op::Insert(i)) => Ok(BatchOp::Insert {
-                            key: i.key,
-                            value: i.value,
-                        }),
+                        Some(batch_op::Op::Insert(i)) => {
+                            if i.ttl_secs != 0 {
+                                return Err(StorageError::StateMachineError(
+                                    "BatchOp does not support TTL; use Command::Insert directly for per-key expiration".into(),
+                                )
+                                .into());
+                            }
+                            Ok(BatchOp::Insert {
+                                key: i.key,
+                                value: i.value,
+                            })
+                        }
                         Some(batch_op::Op::Delete(d)) => Ok(BatchOp::Delete { key: d.key }),
                         None => Err(StorageError::StateMachineError(
                             "BatchOp has no operation".into(),

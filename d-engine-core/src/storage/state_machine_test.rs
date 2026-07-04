@@ -36,6 +36,7 @@ impl StateMachineTestSuite {
         Self::test_basic_kv_operations(builder.build().await?).await?;
         Self::test_apply_chunk_functionality(builder.build().await?).await?;
         Self::test_cas_operations(builder.build().await?).await?;
+        Self::test_batch_operations(builder.build().await?).await?;
         Self::test_last_applied_detection(builder.build().await?).await?;
         Self::test_snapshot_operations(builder.build().await?).await?;
         Self::test_persistence(builder.build().await?).await?;
@@ -43,6 +44,7 @@ impl StateMachineTestSuite {
         Self::test_drop_flushes_data(&builder).await?;
         Self::test_drop_persists_last_applied(&builder).await?;
         Self::test_data_survives_reopen(&builder).await?;
+        Self::test_batch_survives_reopen(&builder).await?;
         Self::test_ungraceful_shutdown_recovery(&builder).await?;
         Self::test_reset_operation(builder.build().await?).await?;
 
@@ -142,6 +144,48 @@ impl StateMachineTestSuite {
         );
         sm.apply_chunk(&[entry3]).await?;
         assert_eq!(sm.get(b"lock")?, Some(b"owner2".to_vec().into())); // Still owner2
+
+        sm.stop()?;
+        Ok(())
+    }
+
+    /// Verify that Command::Batch applies all ops atomically — inserts and deletes
+    /// within a single entry must all take effect.
+    pub async fn test_batch_operations(sm: Arc<dyn StateMachine>) -> Result<(), Error> {
+        use crate::BatchOp;
+
+        sm.start().await?;
+
+        let entry = create_batch_entry(
+            1,
+            vec![
+                BatchOp::Insert {
+                    key: b"k1".to_vec().into(),
+                    value: b"v1".to_vec().into(),
+                },
+                BatchOp::Insert {
+                    key: b"k2".to_vec().into(),
+                    value: b"v2".to_vec().into(),
+                },
+                BatchOp::Delete {
+                    key: b"k1".to_vec().into(),
+                },
+            ],
+        );
+        sm.apply_chunk(&[entry]).await?;
+
+        // k1 was deleted after insert, k2 survived
+        assert_eq!(
+            sm.get(b"k1")?,
+            None,
+            "k1 inserted then deleted in batch must be gone"
+        );
+        assert_eq!(
+            sm.get(b"k2")?,
+            Some(b"v2".to_vec().into()),
+            "k2 inserted in batch must survive"
+        );
+        assert_eq!(sm.last_applied().index, 1);
 
         sm.stop()?;
         Ok(())
@@ -658,6 +702,65 @@ impl StateMachineTestSuite {
             "last_applied index should be restored after reopen"
         );
 
+        Ok(())
+    }
+
+    /// Batch ops must survive WAL encode → crash → decode round-trip.
+    ///
+    /// Covers the #415 fix: Command::Batch encoding in file-based state machines
+    /// must produce records that replay correctly after an ungraceful shutdown.
+    pub async fn test_batch_survives_reopen<B: StateMachineBuilder>(
+        builder: &B
+    ) -> Result<(), Error> {
+        use crate::BatchOp;
+
+        // Step 1: apply a batch with mixed Insert + Delete, then drop without stop()
+        {
+            let sm = builder.build().await?;
+            sm.start().await?;
+
+            let entry = create_batch_entry(
+                1,
+                vec![
+                    BatchOp::Insert {
+                        key: b"bk1".to_vec().into(),
+                        value: b"bv1".to_vec().into(),
+                    },
+                    BatchOp::Insert {
+                        key: b"bk2".to_vec().into(),
+                        value: b"bv2".to_vec().into(),
+                    },
+                    BatchOp::Delete {
+                        key: b"bk1".to_vec().into(),
+                    },
+                ],
+            );
+            sm.apply_chunk(&[entry]).await?;
+
+            assert_eq!(sm.get(b"bk1")?, None);
+            assert_eq!(sm.get(b"bk2")?, Some(b"bv2".to_vec().into()));
+            assert_eq!(sm.last_applied().index, 1);
+        } // drop → crash simulation
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Step 2: reopen from same path — WAL must replay correctly
+        let sm2 = builder.build().await?;
+        sm2.start().await?;
+
+        assert_eq!(
+            sm2.get(b"bk1")?,
+            None,
+            "deleted key must be absent after recovery"
+        );
+        assert_eq!(
+            sm2.get(b"bk2")?,
+            Some(b"bv2".to_vec().into()),
+            "inserted key must survive recovery"
+        );
+        assert_eq!(sm2.last_applied().index, 1, "last_applied must be restored");
+
+        sm2.stop()?;
         Ok(())
     }
 
@@ -1206,6 +1309,18 @@ fn create_cas_entry(
             expected,
             value,
         },
+    }
+}
+
+/// Helper: create a single Batch entry with the given ops.
+fn create_batch_entry(
+    index: u64,
+    ops: Vec<crate::BatchOp>,
+) -> ApplyEntry {
+    ApplyEntry {
+        index,
+        term: 1,
+        command: Command::Batch { ops },
     }
 }
 

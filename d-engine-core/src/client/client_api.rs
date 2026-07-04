@@ -105,7 +105,7 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - `InvalidArgument` if `ops` is empty or exceeds the cluster's max batch size
+    /// - `InvalidArgument` if `ops` is empty
     /// - `Network` if the node is shutting down or the request times out
     /// - `Business` for server-side rejections (e.g., not the current leader)
     ///

@@ -225,22 +225,31 @@ fn encode_wal_entry(
             }
         }
         Command::Batch { ops } => {
-            ops.iter().for_each(|op| match op {
-                d_engine_core::BatchOp::Insert { key, value } => {
-                    buf.push(WalOpCode::Insert as u8);
-                    buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
-                    buf.extend_from_slice(key);
-                    buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
-                    buf.extend_from_slice(value);
+            for (i, op) in ops.iter().enumerate() {
+                // After the first op, each subsequent op needs its own index+term
+                // prefix so replay_wal can parse independent records.
+                if i > 0 {
+                    buf.extend_from_slice(&entry.index.to_be_bytes());
+                    buf.extend_from_slice(&entry.term.to_be_bytes());
                 }
-                d_engine_core::BatchOp::Delete { key } => {
-                    buf.push(WalOpCode::Delete as u8);
-                    buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
-                    buf.extend_from_slice(key);
-                    buf.extend_from_slice(&0u64.to_be_bytes()); // val_len = 0
-                    buf.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
+                match op {
+                    d_engine_core::BatchOp::Insert { key, value } => {
+                        buf.push(WalOpCode::Insert as u8);
+                        buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
+                        buf.extend_from_slice(key);
+                        buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
+                        buf.extend_from_slice(value);
+                        buf.extend_from_slice(&0u64.to_be_bytes()); // no TTL in batch inserts
+                    }
+                    d_engine_core::BatchOp::Delete { key } => {
+                        buf.push(WalOpCode::Delete as u8);
+                        buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
+                        buf.extend_from_slice(key);
+                        buf.extend_from_slice(&0u64.to_be_bytes()); // val_len = 0
+                        buf.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
+                    }
                 }
-            });
+            }
         }
     }
 }

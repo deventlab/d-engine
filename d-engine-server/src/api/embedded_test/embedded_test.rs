@@ -558,6 +558,7 @@ listen_addr = "127.0.0.1:0"
         use serial_test::serial;
 
         use bytes::Bytes;
+        use d_engine_core::ClientApi;
         use d_engine_core::StateMachine;
         use d_engine_core::config::ClusterConfig;
         use d_engine_proto::common::NodeRole;
@@ -653,6 +654,33 @@ listen_addr = "127.0.0.1:0"
                 value,
                 Some(Bytes::from_static(b"world")),
                 "data written through client must be visible via the original SM reference"
+            );
+
+            engine.stop().await.expect("stop should succeed");
+        }
+
+        /// `client.batch(vec![])` must return InvalidArgument — empty batch is a no-op
+        /// that should be rejected at the API boundary, not committed as an empty Raft entry.
+        #[tokio::test]
+        #[serial(start_node)]
+        async fn test_batch_empty_ops_returns_invalid_argument() {
+            let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
+            let config = make_config(&temp_dir, 1);
+
+            let engine = TestEngine::start_node(config, storage, sm)
+                .await
+                .expect("start_node should succeed");
+            engine
+                .wait_ready(Duration::from_secs(5))
+                .await
+                .expect("single-node engine should elect leader");
+
+            let client = engine.client();
+            let result = client.batch(vec![]).await;
+            assert!(
+                result.is_err(),
+                "empty batch must return error, got: {:?}",
+                result
             );
 
             engine.stop().await.expect("stop should succeed");
