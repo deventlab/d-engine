@@ -357,6 +357,37 @@ fn bench_apply_with_1_watcher(c: &mut Criterion) {
                             revision: 0,
                         });
                     }
+                    Command::Batch { ops } => {
+                        for op in ops {
+                            match op {
+                                d_engine_core::BatchOp::Insert { key, value } => {
+                                    let _ =
+                                        broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                                            key: key.clone(),
+                                            value: value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
+                                            prev_value: bytes::Bytes::new(),
+                                            error: 0,
+                                            revision: 0,
+                                        });
+                                }
+                                d_engine_core::BatchOp::Delete { key } => {
+                                    let _ =
+                                        broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                                            key: key.clone(),
+                                            value: bytes::Bytes::new(),
+                                            event_type:
+                                                d_engine_proto::client::WatchEventType::Delete
+                                                    as i32,
+                                            prev_value: bytes::Bytes::new(),
+                                            error: 0,
+                                            revision: 0,
+                                        });
+                                }
+                            }
+                        }
+                    }
                     Command::Noop => {}
                 }
             }
@@ -417,6 +448,37 @@ fn bench_apply_with_10_watchers(c: &mut Criterion) {
                             revision: 0,
                         });
                     }
+                    Command::Batch { ops } => {
+                        for op in ops {
+                            match op {
+                                d_engine_core::BatchOp::Insert { key, value } => {
+                                    let _ =
+                                        broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                                            key: key.clone(),
+                                            value: value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
+                                            prev_value: bytes::Bytes::new(),
+                                            error: 0,
+                                            revision: 0,
+                                        });
+                                }
+                                d_engine_core::BatchOp::Delete { key } => {
+                                    let _ =
+                                        broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                                            key: key.clone(),
+                                            value: bytes::Bytes::new(),
+                                            event_type:
+                                                d_engine_proto::client::WatchEventType::Delete
+                                                    as i32,
+                                            prev_value: bytes::Bytes::new(),
+                                            error: 0,
+                                            revision: 0,
+                                        });
+                                }
+                            }
+                        }
+                    }
                     Command::Noop => {}
                 }
             }
@@ -476,6 +538,37 @@ fn bench_apply_with_100_watchers(c: &mut Criterion) {
                             error: 0,
                             revision: 0,
                         });
+                    }
+                    Command::Batch { ops } => {
+                        for op in ops {
+                            match op {
+                                d_engine_core::BatchOp::Insert { key, value } => {
+                                    let _ =
+                                        broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                                            key: key.clone(),
+                                            value: value.clone(),
+                                            event_type: d_engine_proto::client::WatchEventType::Put
+                                                as i32,
+                                            prev_value: bytes::Bytes::new(),
+                                            error: 0,
+                                            revision: 0,
+                                        });
+                                }
+                                d_engine_core::BatchOp::Delete { key } => {
+                                    let _ =
+                                        broadcast_tx.send(d_engine_proto::client::WatchResponse {
+                                            key: key.clone(),
+                                            value: bytes::Bytes::new(),
+                                            event_type:
+                                                d_engine_proto::client::WatchEventType::Delete
+                                                    as i32,
+                                            prev_value: bytes::Bytes::new(),
+                                            error: 0,
+                                            revision: 0,
+                                        });
+                                }
+                            }
+                        }
                     }
                     Command::Noop => {}
                 }

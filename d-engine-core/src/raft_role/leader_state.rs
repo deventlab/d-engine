@@ -20,7 +20,6 @@ use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
 use crate::PeerUpdate;
-use crate::PurgeExecutor;
 use crate::RaftContext;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
@@ -45,6 +44,7 @@ use crate::alias::TROF;
 use crate::client::{ClientReadRequest, ClientResponse, ErrorCode};
 use crate::event::ClientCmd;
 use crate::network::Transport;
+use crate::role_state::schedule_and_execute_purge;
 use async_trait::async_trait;
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::BatchPromote;
@@ -53,6 +53,7 @@ use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeStatus;
+use d_engine_proto::common::entry_payload::Payload;
 use d_engine_proto::common::membership_change::Change;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::JoinRequest;
@@ -83,7 +84,6 @@ use tonic::Status;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
-use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 
@@ -530,7 +530,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     ///Overwrite default behavior.
     /// As leader, I should not receive commit index,
     ///     which is lower than my current one
-    #[tracing::instrument]
     fn update_commit_index(
         &mut self,
         new_commit_index: u64,
@@ -918,8 +917,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         cmd: ClientCmd,
         ctx: &RaftContext<Self::T>,
     ) {
-        use crate::client_command_to_entry_payloads;
-
         let backpressure = &ctx.node_config.raft.backpressure;
 
         match cmd {
@@ -950,11 +947,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                 // Convert command to payload (will be merged in drain_batch)
                 if let Some(cmd) = req.command {
-                    let payload = client_command_to_entry_payloads(vec![write_op_to_proto(cmd)])
-                        .into_iter()
-                        .next()
-                        .expect("client_command_to_entry_payloads should return 1 element");
-
+                    let payload = EntryPayload {
+                        payload: Some(Payload::Command(cmd)),
+                    };
                     // Push lightweight tuple directly (zero-copy, no Vec allocation)
                     self.propose_buffer.push(payload, sender);
                 } else {
@@ -1758,6 +1753,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 "Updating last purged index after successful execution"
             );
             self.last_purged_index = Some(purged_id);
+
+            // purge completed, clear to prevent re-execution
+            self.scheduled_purge_upto = None;
         } else {
             warn!(
                 ?purged_id,
@@ -1769,39 +1767,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(())
     }
 
-    /// Trigger an independent snapshot on this role (Raft §7 — each server snapshots
-    /// independently). Called when `should_snapshot()` returns true after SM apply.
-    /// Default: no-op. Candidate overrides to return `RoleViolation`.
-    async fn handle_create_snapshot(
-        &mut self,
-        ctx: &RaftContext<Self::T>,
-        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
-    ) -> Result<()> {
-        // Prevent duplicate snapshot creation
-        if self.snapshot_in_progress.load(std::sync::atomic::Ordering::Acquire) {
-            info!("Snapshot creation already in progress. Skipping duplicate request.");
-            return Ok(());
-        }
-
-        self.snapshot_in_progress.store(true, std::sync::atomic::Ordering::Release);
-        let state_machine_handler = ctx.state_machine_handler().clone();
-
-        // Use spawn to perform snapshot creation in the background
-        let internal_event_tx = internal_event_tx.clone();
-        tokio::spawn(async move {
-            let result = state_machine_handler.create_snapshot().await;
-            info!("SnapshotCreated event will be processed in another event thread");
-            if let Err(e) = internal_event_tx.send(InternalEvent::SnapshotCreated(result)) {
-                error!("Failed to send snapshot creation result: {e:?}");
-            }
-        });
-
-        Ok(())
-    }
-    /// Process the completed snapshot result (success or error).
-    /// Leader: schedules log purge up to `last_included`.
-    /// Follower/Learner: updates local snapshot path.
-    /// Default: no-op. Candidate overrides to return `RoleViolation`.
     async fn handle_snapshot_created(
         &mut self,
         result: crate::Result<(SnapshotMetadata, std::path::PathBuf)>,
@@ -1809,55 +1774,27 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         self.snapshot_in_progress.store(false, Ordering::SeqCst);
-
         match result {
-            Err(e) => {
-                error!(%e, "State machine snapshot creation failed");
-            }
-            Ok((
-                SnapshotMetadata {
-                    last_included: last_included_option,
-                    checksum: _,
-                },
-                _final_path,
-            )) => {
-                info!("Initiating log purge after snapshot creation");
-
-                if let Some(last_included) = last_included_option {
-                    // ----------------------
-                    // Phase 1: Schedule log purge if possible
-                    // ----------------------
-                    trace!("Phase 1: Schedule log purge if possible");
-                    if self.can_purge_logs(self.last_purged_index, last_included) {
-                        trace!(?last_included, "Phase 1: Scheduling log purge");
-                        self.scheduled_purge_upto(last_included);
-                    }
-
-                    // ----------------------
-                    // Phase 2: Execute local purge
-                    // ----------------------
-                    // Per Raft §7: Leader purges independently without peer coordination
-                    trace!("Phase 2: Execute scheduled purge task");
-                    debug!(?last_included, "Execute scheduled purge task");
-                    if let Some(scheduled) = self.scheduled_purge_upto {
-                        let purge_executor = ctx.purge_executor();
-                        match purge_executor.execute_purge(scheduled).await {
-                            Ok(_) => {
-                                if let Err(e) = internal_event_tx
-                                    .send(InternalEvent::LogPurgeCompleted(scheduled))
-                                {
-                                    error!(%e, "Failed to notify purge completion");
-                                }
-                            }
-                            Err(e) => {
-                                error!(?e, ?scheduled, "Log purge execution failed");
-                            }
-                        }
-                    }
+            Err(e) => error!(?e, "Leader snapshot creation failed"),
+            Ok((metadata, _)) => {
+                if let Some(last_included) = metadata.last_included {
+                    schedule_and_execute_purge(
+                        last_included,
+                        ctx,
+                        self.commit_index(),
+                        self.last_purged_index,
+                        &mut self.scheduled_purge_upto,
+                        internal_event_tx,
+                    )
+                    .await?;
                 }
             }
         }
         Ok(())
+    }
+
+    fn snapshot_in_progress(&self) -> Option<&AtomicBool> {
+        Some(&self.snapshot_in_progress)
     }
 
     /// Check pending learners for promotion eligibility after a membership change.
@@ -2609,7 +2546,6 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// The fun will retrieve current Leader state snapshot
-    #[tracing::instrument]
     pub fn leader_state_snapshot(&self) -> LeaderStateSnapshot {
         LeaderStateSnapshot {
             next_index: self.next_index.clone(),
@@ -2736,7 +2672,6 @@ impl<T: TypeConfig> LeaderState<T> {
     ///   advance; the ACK is a lower-bound confirmation, not a correction.
     /// - Conflict: `next_index = conflict_hint` (floor-guarded by `match_index + 1`) —
     ///   the follower explicitly corrects the leader's assumption; retreat is required.
-    #[instrument(skip(self))]
     pub(super) fn update_peer_index(
         &mut self,
         follower_id: u32,
@@ -2982,7 +2917,6 @@ impl<T: TypeConfig> LeaderState<T> {
     }
 
     /// Calculate new submission index
-    #[instrument(skip(self))]
     fn calculate_new_commit_index(
         &self,
         raft_log: &Arc<ROF<T>>,
@@ -3052,25 +2986,6 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    fn scheduled_purge_upto(
-        &mut self,
-        received_last_included: LogId,
-    ) {
-        if let Some(existing) = self.scheduled_purge_upto
-            && existing.index >= received_last_included.index
-        {
-            warn!(
-                ?received_last_included,
-                ?existing,
-                "Will not update scheduled_purge_upto, received invalid last_included log"
-            );
-            return;
-        }
-        info!(?self.scheduled_purge_upto, ?received_last_included, "Updte scheduled_purge_upto.");
-        self.scheduled_purge_upto = Some(received_last_included);
-    }
-
     fn send_become_follower_event(
         &self,
         new_leader_id: Option<u32>,
@@ -3088,54 +3003,6 @@ impl<T: TypeConfig> LeaderState<T> {
             })?;
 
         Ok(())
-    }
-
-    /// Determines if logs prior to `last_included_in_snapshot` can be permanently discarded.
-    ///
-    /// Implements Leader-side log compaction safety checks per Raft paper §7.2:
-    /// > "The leader uses a new RPC called InstallSnapshot to send snapshots to followers that are
-    /// > too far behind"
-    ///
-    /// # Safety Invariants (ALL must hold)
-    ///
-    /// 1. **Committed Entry Guarantee**   `last_included_in_snapshot.index < self.commit_index`
-    ///    - Ensures we never discard uncommitted entries (Raft §5.4.2)
-    ///    - Maintains at least one committed entry after purge for log matching property
-    ///
-    /// 2. **Monotonic Snapshot Advancement**   `last_purge_index < last_included_in_snapshot.index`
-    ///    - Enforces snapshot indices strictly increase (prevents rollback attacks)
-    ///    - Maintains sequential purge ordering (FSM safety requirement)
-    ///
-    /// 3. **Operation Atomicity**   `pending_purge.is_none()`
-    ///    - Ensures only one concurrent purge operation
-    ///    - Critical for linearizable state machine semantics
-    ///
-    /// # Implementation Notes
-    /// - Per Raft §7: "Each server compacts its log independently"
-    /// - Leader purges immediately after snapshot without waiting for followers
-    /// - Lagging followers recover via InstallSnapshot RPC
-    /// - Actual log discard should be deferred until storage confirms snapshot persistence
-    #[instrument(skip(self))]
-    pub fn can_purge_logs(
-        &self,
-        last_purge_index: Option<LogId>,
-        last_included_in_snapshot: LogId,
-    ) -> bool {
-        let commit_index = self.commit_index();
-        debug!(
-            ?commit_index,
-            ?last_purge_index,
-            ?last_included_in_snapshot,
-            "can_purge_logs"
-        );
-
-        let monotonic_check = last_purge_index
-            .map(|lid| lid.index < last_included_in_snapshot.index)
-            .unwrap_or(true);
-
-        // Per Raft §7: Leader purges independently after snapshot
-        // No peer coordination required - lagging followers get InstallSnapshot
-        last_included_in_snapshot.index < commit_index && monotonic_check
     }
 
     pub async fn handle_join_cluster(
@@ -4175,44 +4042,5 @@ pub fn calculate_safe_batch_size(
         // We can only promote (available - 1) to keep the invariant
         // But if available - 1 == 0, then we cannot promote any?
         available.saturating_sub(1)
-    }
-}
-
-// Serialize a native WriteOperation to a proto WriteCommand for Raft log encoding.
-// Proto bytes in the log must remain stable; this conversion is the only place
-// that touches prost types on the write path.
-#[inline]
-pub(crate) fn write_op_to_proto(
-    op: crate::client::WriteOperation
-) -> d_engine_proto::client::WriteCommand {
-    use crate::client::WriteOperation;
-    use d_engine_proto::client::WriteCommand;
-    use d_engine_proto::client::write_command::{CompareAndSwap, Delete, Insert, Operation};
-    match op {
-        WriteOperation::Insert {
-            key,
-            value,
-            ttl_secs,
-        } => WriteCommand {
-            operation: Some(Operation::Insert(Insert {
-                key,
-                value,
-                ttl_secs: ttl_secs.unwrap_or(0),
-            })),
-        },
-        WriteOperation::Delete { key } => WriteCommand {
-            operation: Some(Operation::Delete(Delete { key })),
-        },
-        WriteOperation::CompareAndSwap {
-            key,
-            expected,
-            new_value,
-        } => WriteCommand {
-            operation: Some(Operation::CompareAndSwap(CompareAndSwap {
-                key,
-                expected_value: expected,
-                new_value,
-            })),
-        },
     }
 }

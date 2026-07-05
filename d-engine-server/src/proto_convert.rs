@@ -14,54 +14,30 @@
 //! - `Bytes` fields are moved (refcount unchanged, zero allocation)
 //! - `ErrorCode` conversion uses exhaustive match — LLVM optimises to identity;
 //!   a missing variant is a compile error (correctness guarantee)
-
+use crate::api::types::WriteOperation;
+use bytes::Bytes;
 use d_engine_core::client::{
     ClientReadRequest, ClientResponse, ClientResponsePayload, ClientWriteRequest, ErrorCode,
-    KvEntry, LeaderHint, ReadResults, WriteOperation, WriteResult,
+    KvEntry, LeaderHint, ReadResults, WriteResult,
 };
 use d_engine_core::config::ReadConsistencyPolicy;
-use d_engine_proto::client::write_command::Operation;
 use d_engine_proto::client::{
-    self as proto_client, ClientResult, ReadResults as ProtoReadResults,
+    self as proto_client, ClientResult, ReadResults as ProtoReadResults, WriteCommand,
     WriteResult as ProtoWriteResult,
 };
 use d_engine_proto::error::{ErrorCode as ProtoErrorCode, ErrorMetadata};
+use prost::Message;
 
-// ─── proto → core ─────────────────────────────────────────────────────────────
-
-/// Convert a proto `WriteCommand` to a core `WriteOperation`.
-///
-/// Panics if `wc.operation` is `None`.  Callers must validate the nested
-/// operation field before calling — the gRPC handler does this at the network
-/// boundary via an explicit `invalid_argument` check.
 #[inline]
-pub(crate) fn write_command_to_op(wc: proto_client::WriteCommand) -> WriteOperation {
-    match wc.operation {
-        Some(Operation::Insert(i)) => WriteOperation::Insert {
-            key: i.key,
-            value: i.value,
-            // Proto convention: 0 == no expiration → None in core
-            ttl_secs: if i.ttl_secs == 0 {
-                None
-            } else {
-                Some(i.ttl_secs)
-            },
-        },
-        Some(Operation::Delete(d)) => WriteOperation::Delete { key: d.key },
-        Some(Operation::CompareAndSwap(c)) => WriteOperation::CompareAndSwap {
-            key: c.key,
-            expected: c.expected_value,
-            new_value: c.new_value,
-        },
-        None => unreachable!("WriteCommand must have an operation"),
-    }
+pub(crate) fn write_op_to_bytes(op: WriteOperation) -> Bytes {
+    Bytes::from(WriteCommand::from(op).encode_to_vec())
 }
 
 #[inline]
 pub(crate) fn to_core_write_req(req: proto_client::ClientWriteRequest) -> ClientWriteRequest {
     ClientWriteRequest {
         client_id: req.client_id,
-        command: req.command.map(write_command_to_op),
+        command: req.command.map(|wc| Bytes::from(wc.encode_to_vec())),
     }
 }
 

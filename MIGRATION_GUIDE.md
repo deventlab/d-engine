@@ -128,13 +128,13 @@ grep "WAL" /var/log/d-engine.log
 
 ## Timeline
 
-| Version       | WAL Format          | Wire Protocol        | Migration Required                                      |
-| ------------- | ------------------- | -------------------- | ------------------------------------------------------- |
-| v0.1.x        | Relative TTL        | Compatible           | -                                                       |
-| v0.2.0–v0.2.2 | Absolute expiration | Compatible           | ✅ Yes (clear WAL from v0.1.x)                          |
-| v0.2.3        | Same as v0.2.0+     | **Incompatible**     | ✅ Yes (protobuf enum changes + API changes)             |
-| v0.2.4        | Same as v0.2.0+     | Compatible (additive)| ✅ Yes (delete `snapshot/` — format changed to CF export)|
-| v0.2.5        | Same as v0.2.0+     | Compatible (additive)| ⚠️ Minor (remove `lease.enabled` from config if present) |
+| Version       | WAL Format          | Wire Protocol         | Migration Required                                                                                                              |
+| ------------- | ------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| v0.1.x        | Relative TTL        | Compatible            | -                                                                                                                               |
+| v0.2.0–v0.2.2 | Absolute expiration | Compatible            | ✅ Yes (clear WAL from v0.1.x)                                                                                                  |
+| v0.2.3        | Same as v0.2.0+     | **Incompatible**      | ✅ Yes (protobuf enum changes + API changes)                                                                                    |
+| v0.2.4        | Same as v0.2.0+     | Compatible (additive) | ✅ Yes (delete `snapshot/` — format changed to CF export)                                                                       |
+| v0.2.5        | Same as v0.2.0+     | Compatible (additive) | ⚠️ Minor (remove `lease.enabled`; remove `entry_term()` from custom SM; use `start_node` instead of `start_custom_with_config`) |
 
 ---
 
@@ -463,6 +463,7 @@ Existing v0.2.3 snapshots cannot be loaded by v0.2.4 nodes.
 ### What Changed
 
 Watch buffer overflow is no longer silent. When a per-watcher channel fills up, the server now:
+
 1. Sends a `CANCELED` sentinel (`event_type = WATCH_EVENT_TYPE_CANCELED`, `error = WATCH_BUFFER_OVERFLOW`)
 2. Unregisters the watcher — no further events are delivered on that stream
 
@@ -493,6 +494,65 @@ while let Some(event) = stream.next().await {
 See [Watch Feature Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_guide/watch_feature/index.html) for details.
 
 ---
+
+## For v0.2.4 Users: `StateMachine::entry_term()` Removed in v0.2.5 (#418)
+
+### What Changed
+
+The `entry_term()` method has been removed from the `StateMachine` trait. Term lookup belongs
+to the Raft log layer, not the state machine — this was always an architectural layering issue.
+
+### Impact
+
+⚠️ **Breaking for custom `StateMachine` implementations.**
+
+If you implemented a custom `StateMachine`, delete the `entry_term` method from your impl block.
+Built-in implementations (`FileStateMachine`, `RocksDBStateMachine`, `SledStateMachine`) are
+already updated and require no changes.
+
+```rust
+// Old (v0.2.4) — delete this block
+fn entry_term(&self, entry_id: u64) -> Option<u64> {
+    Some(1)
+}
+```
+
+Compilation will fail with "method not found in trait" if you forget to remove it.
+
+---
+
+## For v0.2.4 Users: `start_custom_with_config` → `start_node()` (#415)
+
+### What Changed
+
+The public API now exposes `start_node()` directly instead of routing through a thin wrapper.
+
+```rust
+// Old (v0.2.4) — removed
+EmbeddedEngine::start_custom_with_config(storage, sm, config).await?;
+
+// New (v0.2.5)
+EmbeddedEngine::start_node(config, storage, sm).await?;           // embedded
+StandaloneEngine::start_node(config, storage, sm, shutdown_rx).await?;  // standalone
+```
+
+`start_node` calls `config.validate()` internally — callers may pass validated or unvalidated configs.
+
+---
+
+## For v0.2.4 Users: Snapshot Label Fix (#418)
+
+### What Changed
+
+Snapshot `last_included` was previously computed by subtracting `retained_log_entries`
+from `last_applied`, introducing a label/data mismatch. Fixed: `last_included == last_applied`
+always.
+
+### Impact
+
+Transparent — no action required. Nodes that installed snapshots with the old label may have
+double-applied entries; upgrading to v0.2.5 prevents this from recurring. Existing snapshots
+are compatible.
 
 ---
 

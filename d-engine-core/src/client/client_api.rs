@@ -25,6 +25,7 @@
 //! }
 //! ```
 
+use crate::BatchOp;
 use crate::ScanResult;
 use crate::client::client_api_error::ClientApiResult;
 use crate::config::ReadConsistencyPolicy;
@@ -95,6 +96,30 @@ pub trait ClientApi: Send + Sync {
         key: impl AsRef<[u8]> + Send,
         value: impl AsRef<[u8]> + Send,
         ttl_secs: u64,
+    ) -> ClientApiResult<()>;
+
+    /// Atomically commits multiple write operations as a single Raft log entry.
+    ///
+    /// All operations succeed or none apply — all-or-nothing. Accepts only writes
+    /// (insert / delete); conditional writes belong to transactions (#298).
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidArgument` if `ops` is empty
+    /// - `Network` if the node is shutting down or the request times out
+    /// - `Business` for server-side rejections (e.g., not the current leader)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// client.batch(vec![
+    ///     BatchOp::Insert { key: Bytes::from("a"), value: Bytes::from("1") },
+    ///     BatchOp::Delete { key: Bytes::from("b") },
+    /// ]).await?;
+    /// ```
+    async fn batch(
+        &self,
+        ops: Vec<BatchOp>,
     ) -> ClientApiResult<()>;
 
     /// Retrieves the value associated with a key.

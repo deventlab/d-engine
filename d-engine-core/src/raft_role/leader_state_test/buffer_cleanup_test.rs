@@ -5,8 +5,10 @@ use crate::MockBuilder;
 use crate::RaftOneshot;
 use crate::RaftRole;
 use crate::client::ClientWriteRequest;
-use crate::client::WriteOperation;
 use crate::raft_role::role_state::RaftRoleState;
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
+use prost::Message;
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -70,11 +72,13 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
 
             let write_req = ClientWriteRequest {
                 client_id: 1,
-                command: Some(WriteOperation::Insert {
-                    key: bytes::Bytes::from(format!("key_{i}")),
-                    value: bytes::Bytes::from(format!("value_{i}")),
-                    ttl_secs: None,
-                }),
+                command: Some(bytes::Bytes::from(
+                    WriteCommand::insert(
+                        bytes::Bytes::from(format!("key_{i}")),
+                        bytes::Bytes::from(format!("value_{i}")),
+                    )
+                    .encode_to_vec(),
+                )),
             };
 
             let cmd = ClientCmd::Propose(write_req, response_tx);
@@ -151,11 +155,13 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
         let (response_tx, mut response_rx) = MaybeCloneOneshot::new();
         let write_req = ClientWriteRequest {
             client_id: 1,
-            command: Some(WriteOperation::Insert {
-                key: bytes::Bytes::from("new_key"),
-                value: bytes::Bytes::from("new_value"),
-                ttl_secs: None,
-            }),
+            command: Some(Bytes::from(
+                WriteCommand::insert(
+                    bytes::Bytes::from("new_key"),
+                    bytes::Bytes::from("new_value"),
+                )
+                .encode_to_vec(),
+            )),
         };
 
         let cmd = ClientCmd::Propose(write_req, response_tx);

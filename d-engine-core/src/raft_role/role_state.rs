@@ -1,11 +1,12 @@
-use crate::ConsensusError;
 use crate::client::{ClientReadRequest, ClientResponse, KvEntry, LeaderHint};
+use crate::{ConsensusError, PurgeExecutor};
 use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
@@ -590,18 +591,51 @@ pub trait RaftRoleState: Send + Sync + 'static {
 
     /// Trigger an independent snapshot on this role (Raft §7 — each server snapshots
     /// independently). Called when `should_snapshot()` returns true after SM apply.
-    /// Default: no-op. Candidate overrides to return `RoleViolation`.
+    /// Candidate short-circuits via `snapshot_in_progress()` returning `None`.
     async fn handle_create_snapshot(
         &mut self,
-        _ctx: &RaftContext<Self::T>,
-        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+        ctx: &RaftContext<Self::T>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
-        Err(ConsensusError::RoleViolation {
-            current_role: "Candidate",
-            required_role: "Follower/Leader/Learner",
-            context: ("Candidate node attempted to create snapshot.").to_string(),
+        let Some(flag) = self.snapshot_in_progress() else {
+            return Err(ConsensusError::RoleViolation {
+                current_role: "Candidate",
+                required_role: "Follower/Leader/Learner",
+                context: "Candidate node attempted to create snapshot.".to_string(),
+            }
+            .into());
+        };
+
+        if flag.load(Ordering::Acquire) {
+            info!("Snapshot creation already in progress. Skipping duplicate request.");
+            return Ok(());
         }
-        .into())
+
+        flag.store(true, Ordering::Release);
+        let state_machine_handler = ctx.state_machine_handler().clone();
+
+        // Use spawn to perform snapshot creation in the background
+        let internal_event_tx = internal_event_tx.clone();
+        tokio::spawn(async move {
+            let result = state_machine_handler.create_snapshot().await;
+            info!("SnapshotCreated event will be processed in another event thread");
+            if let Err(e) = internal_event_tx.send(InternalEvent::SnapshotCreated(result)) {
+                error!("Failed to send snapshot creation result: {e:?}");
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Returns the snapshot deduplication flag for roles that support independent snapshot creation.
+    ///
+    /// Returns `None` for roles without snapshot capability (Candidate). The default
+    /// `handle_create_snapshot` uses this to short-circuit with `RoleViolation` instead of
+    /// silently operating on a dummy value.
+    ///
+    /// Leader, Follower, and Learner override this to return `Some(&self.snapshot_in_progress)`.
+    fn snapshot_in_progress(&self) -> Option<&AtomicBool> {
+        None
     }
 
     /// Process the completed snapshot result (success or error).
@@ -617,7 +651,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
         Err(ConsensusError::RoleViolation {
             current_role: "Candidate",
             required_role: "Follower/Leader/Learner",
-            context: ("Candidate role node attempted to handle created snapshot.").to_string(),
+            context: "Candidate node attempted to handle created snapshot.".to_string(),
         }
         .into())
     }
@@ -692,6 +726,62 @@ pub trait RaftRoleState: Send + Sync + 'static {
         }
         .into())
     }
+}
+
+pub(super) async fn schedule_and_execute_purge<T: TypeConfig>(
+    last_included: LogId,
+    ctx: &RaftContext<T>,
+    commit_index: u64,
+    last_purged_index: Option<LogId>,
+    scheduled_purge_upto: &mut Option<LogId>,
+    internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+) -> Result<()> {
+    // ----------------------
+    // Phase 1: Schedule log purge if possible
+    // ----------------------
+    // Log retention is intentionally decoupled from the snapshot boundary.
+    // last_included == last_applied (snapshot is always truthful).
+    // purge_upto is set back by retained_log_entries so lagging followers
+    // can still catch up via AppendEntries instead of InstallSnapshot.
+    let retained = ctx.node_config().raft.snapshot.retained_log_entries;
+    let purge_upto_index = last_included.index.saturating_sub(retained);
+    println!("purge_upto_index={purge_upto_index}");
+    // retained >= last_included.index → nothing to purge; skip log lookup entirely.
+    if purge_upto_index == 0 {
+        return Ok(());
+    }
+    if let Some(term) = ctx.raft_log().entry_term(purge_upto_index) {
+        let purge_upto = LogId {
+            index: purge_upto_index,
+            term,
+        };
+        let idx = purge_upto.index;
+        let monotonic = last_purged_index.map(|l| l.index < idx).unwrap_or(true);
+        if idx > 0
+            && idx < commit_index
+            && monotonic
+            && scheduled_purge_upto.map(|e| e.index < idx).unwrap_or(true)
+        {
+            *scheduled_purge_upto = Some(purge_upto);
+        }
+    }
+
+    // ----------------------
+    // Phase 2: Execute local purge
+    // ----------------------
+    // Per Raft §7: Leader purges independently without peer coordination
+    if let Some(scheduled) = *scheduled_purge_upto {
+        match ctx.purge_executor().execute_purge(scheduled).await {
+            Ok(_) => {
+                if let Err(e) = internal_event_tx.send(InternalEvent::LogPurgeCompleted(scheduled))
+                {
+                    error!(%e, "Failed to notify purge completion");
+                }
+            }
+            Err(e) => error!(?e, ?scheduled, "Log purge execution failed"),
+        }
+    }
+    Ok(())
 }
 
 /// Send a InboundEvent back into the internal event loop for reprocessing.

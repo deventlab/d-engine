@@ -12,13 +12,27 @@ All notable changes to this project will be documented in this file.
 
 - **ReadActor fast path for Eventual/LeaseRead** (#392): Dedicated `ReadActor` serves `EventualConsistency` and `LeaseRead` off the Raft loop, eliminating channel contention under high read concurrency. Lease Read +10.9%, Eventual Read +13.1% vs v0.2.4 (100 concurrent clients, local embedded).
 
+- **`Command::Batch` — atomic multi-key writes** (#415): New `client.batch(ops)` API commits multiple Insert/Delete operations as a single Raft entry. All ops in a batch succeed or fail together. Library wrappers (e.g. service registration, distributed locks) no longer need workarounds like reserved-key encoding.
+
+- **`start_node()` public API** (#415): Both `EmbeddedEngine` and `StandaloneEngine` now expose `start_node(config, storage, sm)` — start an engine with a programmatic `RaftNodeConfig`, no config file required. For library wrappers that build their own config layer in Rust.
+
+- **`start_with()` accepts `impl AsRef<Path>`** (#415): Callers can now pass `&str`, `String`, `&Path`, or `PathBuf` — backward compatible, no migration needed.
+
 ### Fixed
 
 - **fix(ttl) #398**: Removed `lease.enabled` flag — TTL expiration is always active. Fixes fatal crash when calling `put_with_ttl` without setting the (now-removed) `lease.enabled = true`.
 
+- **🛑 Snapshot data corruption — label/data mismatch** (#418): `last_included` in snapshot metadata was computed by subtracting `retained_log_entries` from `last_applied`, but the snapshot data already reflected the full `last_applied` state. Followers installing such snapshots would re-apply entries 91–100 after restoring state through index 100, causing double-application and permanent cluster state divergence. Also fixes a fabricated `LogId` where `last_included.term` was copied from `last_applied.term` instead of queried from the log. Snapshot label is now always truthful: `last_included == last_applied`.
+
+- **`ClusterConfig::default()` now consistent with serde default** (#415): `Default::default()` previously produced an empty `initial_cluster`, but `#[serde(default)]` returned `[{id:1, ...}]`. `RaftNodeConfig::new()` uses the Rust `Default` impl, so programmatic configs always got an empty cluster. Fixed.
+
 ### Changed
 
 - `[raft.read_actor]` replaces the previous flat `read_actor_channel_capacity` / `read_actor_max_drain` fields in `[raft]`. Update existing config files accordingly.
+
+- **⚠️ `StateMachine::entry_term()` removed from trait** (#418): Term lookup belongs to the log layer, not the state machine. Custom `StateMachine` implementations must delete this method — it is no longer part of the trait. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
+
+- **KV encoding moved out of `d-engine-core`** (#415): `ClientWriteRequest.command` is now `Option<Bytes>` (pre-serialized). Serialization happens in the server transport layer (embedded/standalone/gRPC handler). Core is encoding-agnostic.
 
 ---
 

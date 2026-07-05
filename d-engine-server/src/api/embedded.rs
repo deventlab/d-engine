@@ -34,10 +34,10 @@
 //!
 //! ## What EmbeddedEngine Provides
 //!
-//! - ✅ `is_leader()` - Check if current node is leader
-//! - ✅ `leader_info()` - Get leader ID and term
-//! - ✅ `EmbeddedClient` returns `NotLeader` error on follower writes
-//! - ✅ Zero-overhead in-process communication (<0.1ms)
+//! - `is_leader()` - Check if current node is leader
+//! - `leader_info()` - Get leader ID and term
+//! - `EmbeddedClient` returns `NotLeader` error on follower writes
+//! - Zero-overhead in-process communication (<0.1ms)
 //!
 //! ## What Applications Must Handle
 //!
@@ -264,9 +264,14 @@ impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
     /// let engine = EmbeddedEngine::start_with("config/node1.toml").await?;
     /// engine.wait_ready(Duration::from_secs(5)).await?;
     /// ```
-    pub async fn start_with(config_path: &str) -> Result<Self> {
+    pub async fn start_with(config_path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path_str = config_path
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| crate::Error::Fatal("config path is not valid UTF-8".into()))?;
+
         let config = d_engine_core::RaftNodeConfig::new()?
-            .with_override_config(config_path)?
+            .with_override_config(path_str)?
             .validate()?;
         let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
 
@@ -296,7 +301,7 @@ impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
         ));
         sm.set_lease(lease);
 
-        Self::start_custom(Arc::new(storage), Arc::new(sm), Some(config_path)).await
+        Self::start_custom(Arc::new(storage), Arc::new(sm), Some(path_str)).await
     }
 }
 
@@ -338,8 +343,11 @@ where
         Self::start_node(node_config, storage_engine, state_machine).await
     }
 
-    /// Build and launch the node from a validated config and pre-built storage.
-    async fn start_node(
+    /// Start engine with custom storage, state machine, and programmatic config.
+    ///
+    /// For library wrappers that build their own config layer and
+    /// translate to `RaftNodeConfig` in Rust — no config file required.
+    pub async fn start_node(
         node_config: d_engine_core::RaftNodeConfig,
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
@@ -356,7 +364,7 @@ where
 
         let sm_for_engine = Arc::clone(&state_machine);
 
-        let node = NodeBuilder::init(node_config, shutdown_rx)
+        let node = NodeBuilder::init(node_config.validate()?, shutdown_rx)
             .storage_engine(storage_engine)
             .state_machine(state_machine)
             .start()

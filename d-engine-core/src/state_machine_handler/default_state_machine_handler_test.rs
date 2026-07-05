@@ -1,28 +1,3 @@
-use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
-use bytes::Bytes;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
-use futures::StreamExt;
-use mockall::Sequence;
-use tempfile::TempDir;
-use tempfile::tempdir;
-use tokio::fs::File;
-use tokio::fs::create_dir_all;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
-use tracing::debug;
-use tracing_test::traced_test;
-
 use super::DefaultStateMachineHandler;
 use super::StateMachineHandler;
 use crate::ConsensusError;
@@ -35,6 +10,65 @@ use crate::StorageError;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_compressed_snapshot;
 use crate::test_utils::snapshot_config;
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::batch_op::Op;
+use d_engine_proto::client::write_command::{
+    Batch, BatchOp as ProtoBatchOp, Insert, Operation, batch_op,
+};
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
+use futures::StreamExt;
+use mockall::Sequence;
+use prost::Message;
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::time::Duration;
+use tempfile::TempDir;
+use tempfile::tempdir;
+use tokio::fs::File;
+use tokio::fs::create_dir_all;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+use tracing::debug;
+use tracing_test::traced_test;
+
+fn batch_entry(
+    index: u64,
+    key: &[u8],
+    value: &[u8],
+) -> Entry {
+    let write_cmd = WriteCommand {
+        operation: Some(Operation::Batch(Batch {
+            ops: vec![ProtoBatchOp {
+                op: Some(Op::Insert(Insert {
+                    key: Bytes::copy_from_slice(key),
+                    value: Bytes::copy_from_slice(value),
+                    ttl_secs: 0,
+                })),
+            }],
+        })),
+    };
+    let mut buf = Vec::new();
+    write_cmd.encode(&mut buf).unwrap();
+    Entry {
+        index,
+        term: 1,
+        payload: Some(EntryPayload {
+            payload: Some(Payload::Command(Bytes::from(buf))),
+        }),
+    }
+}
 
 // Case 1: normal update
 #[test]
@@ -236,6 +270,11 @@ mod apply_chunk_test {
         assert_eq!(handler.last_applied(), 2);
     }
 
+    /// apply_chunk must NOT advance last_applied when the state machine returns an error.
+    ///
+    /// Raft at-most-once: an entry that fails to apply must not be acknowledged.
+    /// last_applied advancing past a failed entry would cause the leader to believe
+    /// it was committed into the SM, silently losing the write.
     #[tokio::test]
     async fn test_apply_chunk_with_state_machine_io_error() {
         let handler = create_test_handler(
@@ -249,6 +288,66 @@ mod apply_chunk_test {
         let result = handler.apply_chunk(vec![noop_entry(50)]).await;
         assert!(result.is_err());
         assert_eq!(handler.last_applied(), 0);
+    }
+
+    /// A Command::Batch that fails must not advance last_applied and must not
+    /// broadcast any watch events.
+    ///
+    /// Batch is an atomic operation: partial application is not allowed.
+    /// Watch subscribers must not see events for keys that were never mutated.
+    #[cfg(feature = "watch")]
+    #[tokio::test]
+    async fn test_apply_chunk_batch_failure_is_atomic_no_side_effects() {
+        // Build a proto-encoded Batch entry with one Insert op
+        let cmd = WriteCommand {
+            operation: Some(Operation::Batch(Batch {
+                ops: vec![ProtoBatchOp {
+                    op: Some(batch_op::Op::Insert(Insert {
+                        key: Bytes::from_static(b"k1"),
+                        value: Bytes::from_static(b"v1"),
+                        ttl_secs: 0,
+                    })),
+                }],
+            })),
+        };
+        let mut buf = Vec::new();
+        cmd.encode(&mut buf).unwrap();
+        let batch_entry = Entry {
+            index: 5,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Command(Bytes::from(buf))),
+            }),
+        };
+
+        // Handler with watch channel so we can observe broadcast behaviour
+        let (watch_tx, mut watch_rx) = tokio::sync::broadcast::channel(16);
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk()
+            .returning(|_| Err(Error::Fatal("batch failed".to_string())));
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_config(PathBuf::from("/tmp/test_batch_failure_atomic")),
+            MockSnapshotPolicy::new(),
+            Some(watch_tx),
+            Arc::new(AtomicUsize::new(0)),
+        );
+
+        let result = handler.apply_chunk(vec![batch_entry]).await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            handler.last_applied(),
+            0,
+            "last_applied must not advance on batch failure"
+        );
+        assert!(
+            watch_rx.try_recv().is_err(),
+            "failed batch must not emit watch events"
+        );
     }
 }
 
@@ -268,7 +367,9 @@ mod decode_boundary_tests {
 
     use super::*;
     use crate::test_utils::snapshot_config;
-    use crate::{ApplyResult, Command, MockSnapshotPolicy, MockStateMachine, MockTypeConfig};
+    use crate::{
+        ApplyResult, BatchOp, Command, MockSnapshotPolicy, MockStateMachine, MockTypeConfig,
+    };
 
     fn noop_entry(index: u64) -> Entry {
         Entry {
@@ -416,6 +517,40 @@ mod decode_boundary_tests {
         let result = handler.apply_chunk(chunk).await;
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 12);
+    }
+
+    /// Handler decodes a proto-encoded Batch entry and forwards Command::Batch
+    /// with correct ops to the state machine — no raw bytes reach the SM.
+    ///
+    /// Mirrors test_handler_decodes_insert_before_sm_receives_it for the Batch path.
+    #[tokio::test]
+    async fn test_handler_decodes_batch_before_sm_receives_it() {
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk()
+            .withf(|entries| {
+                entries.len() == 1
+                    && matches!(
+                        &entries[0].command,
+                        Command::Batch { ops } if ops.len() == 1
+                            && matches!(&ops[0], BatchOp::Insert { key, .. } if key == &Bytes::from_static(b"mykey"))
+
+                    )
+            })
+            .returning(|chunk| Ok(vec![ApplyResult::success(chunk[0].index)]));
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_config(std::path::PathBuf::from(
+                "/tmp/test_handler_decodes_batch_before_sm_receives_it",
+            )),
+            MockSnapshotPolicy::new(),
+        );
+
+        let result = handler.apply_chunk(vec![batch_entry(5, b"mykey", b"myval")]).await;
+        assert!(result.is_ok());
+        assert_eq!(handler.last_applied(), 5);
     }
 }
 
@@ -827,7 +962,6 @@ mod create_snapshot_tests {
             .times(1)
             .in_sequence(&mut seq)
             .returning(|| LogId { index: 5, term: 1 });
-        sm.expect_entry_term().returning(|_| Some(1));
         sm.expect_generate_snapshot_data()
             .times(1)
             .withf(|path, last_included| {
@@ -895,7 +1029,6 @@ mod create_snapshot_tests {
                 checksum: Bytes::from(vec![1; 8]),
             })
         });
-        sm.expect_entry_term().returning(|_| Some(1));
         sm.expect_generate_snapshot_data().times(1..=2).returning(move |path, _| {
             // Track invocation count
             let mut count = counter_clone.lock().unwrap();
@@ -982,7 +1115,6 @@ mod create_snapshot_tests {
                 index: count,
             }
         });
-        sm.expect_entry_term().returning(|_| Some(1));
         sm.expect_generate_snapshot_data().returning(|path, _| {
             debug!(?path, "expect_generate_snapshot_data");
             std::fs::create_dir_all(path).expect("Failed to create directory");
@@ -1030,7 +1162,6 @@ mod create_snapshot_tests {
 
         // Setup failing snapshot generation
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
-        sm.expect_entry_term().returning(|_| Some(1));
         sm.expect_generate_snapshot_data()
             .returning(|_, _| Err(SnapshotError::OperationFailed("test failure".into()).into()));
 
@@ -1061,7 +1192,6 @@ mod create_snapshot_tests {
         let mut sm = MockStateMachine::new();
 
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
-        sm.expect_entry_term().returning(|_| Some(1));
         sm.expect_generate_snapshot_data().returning(|path, _| {
             fs::create_dir_all(path).unwrap();
             Ok(Bytes::from(vec![0; 32]))
@@ -1097,7 +1227,6 @@ mod create_snapshot_tests {
         let mut sm = MockStateMachine::new();
 
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
-        sm.expect_entry_term().returning(|_| Some(1));
         sm.expect_generate_snapshot_data()
             .returning(|_, _| Err(SnapshotError::OperationFailed("test error".into()).into()));
 
@@ -1121,6 +1250,193 @@ mod create_snapshot_tests {
 
         // Critical assertion: Flag must be reset even after failure
         assert!(!handler.snapshot_in_progress());
+    }
+
+    /// create_snapshot with retained_log_entries > 0 must still produce
+    /// last_included == last_applied — retained_log_entries must NOT affect the snapshot label.
+    ///
+    /// # Purpose
+    /// Regression guard for Bug #418: the old implementation subtracted
+    /// retained_log_entries from last_applied to compute last_included, producing a
+    /// snapshot whose label lied about how far the state had advanced.
+    /// With retained=10 and last_applied=100, the old code emitted last_included=90
+    /// while the snapshot file actually captured state through index 100.
+    /// A follower installing that snapshot would re-apply entries 91~100, executing
+    /// non-idempotent operations twice and corrupting cluster state.
+    /// Log retention must be enforced at the purge layer (leader_state), not here.
+    ///
+    /// # Criteria
+    /// - retained_log_entries = 10
+    /// - last_applied = LogId { index: 100, term: 1 }
+    ///
+    /// # Expected
+    /// - generate_snapshot_data is called with last_included = { index: 100, term: 1 }
+    /// - metadata.last_included == Some(LogId { index: 100, term: 1 })  (NOT index 90)
+    /// - re-apply gap = 0: follower installs at 100 and applies from 101, not 91
+    #[tokio::test]
+    async fn test_create_snapshot_respects_retained_log_entries() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir.path().join("test_create_snapshot_respects_retained_log_entries");
+        let mut sm = MockStateMachine::new();
+
+        sm.expect_last_applied().returning(|| LogId {
+            term: 1,
+            index: 100,
+        });
+        sm.expect_generate_snapshot_data()
+            .times(1)
+            .withf(|_path, last_included| {
+                last_included.index == 100 && last_included.term == 1 // NOT 90
+            })
+            .returning(|path, _| {
+                fs::create_dir_all(path).unwrap();
+                Ok(Bytes::from(vec![0; 32]))
+            });
+
+        let mut config = snapshot_config(temp_path);
+        config.retained_log_entries = 10;
+
+        let handler = Arc::new(
+            DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+                1,
+                0,
+                Arc::new(sm),
+                config,
+                MockSnapshotPolicy::new(),
+            ),
+        );
+
+        // Verify initial state
+        assert!(!handler.snapshot_in_progress());
+
+        let handler_clone = handler.clone();
+        let result = handler_clone.create_snapshot().await;
+        assert!(result.is_ok());
+        let (metadata, _) = result.unwrap();
+        assert_eq!(
+            metadata.last_included,
+            Some(LogId {
+                term: 1,
+                index: 100
+            })
+        );
+    }
+
+    /// Snapshot last_included must carry the correct term from last_applied across a term boundary.
+    ///
+    /// # Purpose
+    /// Regression guard for Bug #418: the old code used last_applied.term for
+    /// last_included.term even when last_included.index fell in an earlier term.
+    /// Example: term 1 wrote entries 1~90, term 2 wrote entries 91~100.
+    /// With retained=60, old code computed last_included = { index: 40, term: 2 } —
+    /// a LogId that never existed in the Raft log (entry 40 was in term 1, not term 2).
+    /// With the fix, last_included is taken directly from last_applied, so both
+    /// index and term are truthful and no LogId is fabricated.
+    ///
+    /// # Criteria
+    /// - last_applied = LogId { index: 100, term: 2 }  (term 1: entries 1~90, term 2: 91~100)
+    /// - retained_log_entries = 60
+    ///
+    /// # Expected
+    /// - generate_snapshot_data is called with last_included = { index: 100, term: 2 }
+    /// - metadata.last_included == Some(LogId { index: 100, term: 2 })
+    /// - no forged LogId { index: 40, term: 2 } is produced
+    #[tokio::test]
+    async fn test_create_snapshot_last_included_equals_last_applied_across_term_boundary() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir
+            .path()
+            .join("test_create_snapshot_last_included_equals_last_applied_across_term_boundary");
+        let mut sm = MockStateMachine::new();
+
+        // term 1: entries 1~90, term 2: entries 91~100
+        // last_applied is at the head of term 2
+        sm.expect_last_applied().returning(|| LogId {
+            term: 2,
+            index: 100,
+        });
+        sm.expect_generate_snapshot_data()
+            .times(1)
+            .withf(|path, last_included| {
+                fs::create_dir_all(path).unwrap();
+                // Old code: index = 100 - 60 = 40, term = 2 (copied from last_applied.term)
+                // → forged LogId { index: 40, term: 2 } — entry 40 was in term 1, not term 2
+                // New code: last_included = last_applied = { index: 100, term: 2 } — truthful
+                last_included.index == 100 && last_included.term == 2
+            })
+            .returning(|_, _| Ok(Bytes::from(vec![0; 32])));
+
+        let mut config = snapshot_config(temp_path.to_path_buf());
+        // retained=60: old code would subtract and land in term 1 territory (index 40)
+        // while stamping term 2 — that LogId never existed
+        config.retained_log_entries = 60;
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+            1,
+            0,
+            Arc::new(sm),
+            config,
+            MockSnapshotPolicy::new(),
+        );
+
+        let result = handler.create_snapshot().await;
+        assert!(result.is_ok());
+        let (metadata, _) = result.unwrap();
+        assert_eq!(
+            metadata.last_included,
+            Some(LogId {
+                term: 2,
+                index: 100
+            })
+        );
+    }
+
+    /// create_snapshot when last_applied.index is zero must not panic or produce an invalid snapshot.
+    ///
+    /// # Purpose
+    /// Boundary: snapshot triggered before any entry has been applied.
+    /// Old and new code both produce last_included.index = 0 here
+    /// (0.saturating_sub(retained) = 0), but this test documents the boundary is
+    /// safe and regression-free under both implementations.
+    ///
+    /// # Criteria
+    /// - last_applied = LogId { index: 0, term: 0 }
+    /// - retained_log_entries = 10
+    ///
+    /// # Expected
+    /// - create_snapshot returns Ok (no panic)
+    /// - metadata.last_included == Some(LogId { index: 0, term: 0 })
+    #[tokio::test]
+    async fn test_create_snapshot_when_last_applied_index_is_zero() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path =
+            temp_dir.path().join("test_create_snapshot_when_last_applied_index_is_zero");
+        let mut sm = MockStateMachine::new();
+
+        sm.expect_last_applied().returning(|| LogId { term: 0, index: 0 });
+        sm.expect_generate_snapshot_data()
+            .times(1)
+            .withf(|_, last_included| last_included.index == 0 && last_included.term == 0)
+            .returning(|path, _| {
+                fs::create_dir_all(path).unwrap();
+                Ok(Bytes::from(vec![0; 32]))
+            });
+
+        let mut config = snapshot_config(temp_path.to_path_buf());
+        config.retained_log_entries = 10;
+
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+            1,
+            0,
+            Arc::new(sm),
+            config,
+            MockSnapshotPolicy::new(),
+        );
+
+        let result = handler.create_snapshot().await;
+        assert!(result.is_ok());
+        let (metadata, _) = result.unwrap();
+        assert_eq!(metadata.last_included, Some(LogId { term: 0, index: 0 }));
     }
 }
 
@@ -1612,7 +1928,6 @@ async fn test_snapshot_compression() {
 
     // Mock state machine to create test data
     sm.expect_last_applied().returning(|| LogId { index: 10, term: 2 });
-    sm.expect_entry_term().returning(|_| Some(2));
     sm.expect_generate_snapshot_data().returning(|path, _| {
         // Create the directory structure correctly
         fs::create_dir_all(path.clone()).unwrap();
@@ -1802,7 +2117,7 @@ mod broadcast_watch_events_tests {
     use d_engine_proto::client::WatchEventType;
 
     use super::*;
-    use crate::{ApplyEntry, ApplyResult, Command};
+    use crate::{ApplyEntry, ApplyResult, BatchOp, Command};
 
     /// Build an `ApplyEntry` directly from a `Command` — no proto encoding needed.
     /// `broadcast_watch_events` receives already-decoded entries; tests mirror that reality.
@@ -2062,6 +2377,166 @@ mod broadcast_watch_events_tests {
 
         assert!(rx.try_recv().is_err(), "Noop must not emit a watch event");
     }
+
+    /// Command::Batch with multiple Insert ops must broadcast one Put event per key.
+    ///
+    /// # Purpose
+    /// Batch is an atomic write of multiple ops. Each BatchOp::Insert must independently
+    /// produce a watch event so subscribers watching individual keys are notified.
+    /// This mirrors test_broadcast_insert_event but for the Batch command path.
+    ///
+    /// # Criteria
+    /// - Command::Batch with 2 Insert ops: (k1 → v1), (k2 → v2)
+    /// - apply succeeds for the batch entry
+    ///
+    /// # Expected
+    /// - broadcast channel receives exactly 2 Put events
+    /// - event 1: key=k1, value=v1, event_type=Put
+    /// - event 2: key=k2, value=v2, event_type=Put
+    /// - no extra events
+    #[tokio::test]
+    async fn test_broadcast_batch_insert_ops_each_produce_put_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch_batch_insert"), Some(0));
+
+        let entry = apply_entry(
+            1,
+            Command::Batch {
+                ops: vec![
+                    BatchOp::Insert {
+                        key: Bytes::from_static(b"k1"),
+                        value: Bytes::from_static(b"v1"),
+                    },
+                    BatchOp::Insert {
+                        key: Bytes::from_static(b"k2"),
+                        value: Bytes::from_static(b"v2"),
+                    },
+                ],
+            },
+        );
+
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
+
+        let event1 = rx.recv().await.unwrap();
+        assert_eq!(event1.key, Bytes::from_static(b"k1"));
+        assert_eq!(event1.value, Bytes::from_static(b"v1"));
+        assert_eq!(event1.event_type, WatchEventType::Put as i32);
+
+        let event2 = rx.recv().await.unwrap();
+        assert_eq!(event2.key, Bytes::from_static(b"k2"));
+        assert_eq!(event2.value, Bytes::from_static(b"v2"));
+        assert_eq!(event2.event_type, WatchEventType::Put as i32);
+
+        assert!(rx.try_recv().is_err(), "Expected no further events");
+    }
+
+    /// Command::Batch with multiple Delete ops must broadcast one Delete event per key.
+    ///
+    /// # Purpose
+    /// Mirrors test_broadcast_batch_insert_ops_each_produce_put_event for the Delete path.
+    /// Each BatchOp::Delete must produce a Delete watch event with the correct key.
+    ///
+    /// # Criteria
+    /// - Command::Batch with 2 Delete ops: keys k1, k2
+    /// - apply succeeds for the batch entry
+    ///
+    /// # Expected
+    /// - broadcast channel receives exactly 2 Delete events
+    /// - event 1: key=k1, event_type=Delete
+    /// - event 2: key=k2, event_type=Delete
+    /// - no extra events
+    #[tokio::test]
+    async fn test_broadcast_batch_delete_ops_each_produce_delete_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch_batch_delete"), Some(0));
+
+        let entry = apply_entry(
+            1,
+            Command::Batch {
+                ops: vec![
+                    BatchOp::Delete {
+                        key: Bytes::from_static(b"k1"),
+                    },
+                    BatchOp::Delete {
+                        key: Bytes::from_static(b"k2"),
+                    },
+                ],
+            },
+        );
+
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
+
+        let event1 = rx.recv().await.unwrap();
+        assert_eq!(event1.key, Bytes::from_static(b"k1"));
+        assert_eq!(event1.value, Bytes::new());
+        assert_eq!(event1.event_type, WatchEventType::Delete as i32);
+
+        let event2 = rx.recv().await.unwrap();
+        assert_eq!(event2.key, Bytes::from_static(b"k2"));
+        assert_eq!(event2.value, Bytes::new());
+        assert_eq!(event2.event_type, WatchEventType::Delete as i32);
+
+        assert!(rx.try_recv().is_err(), "Expected no further events");
+    }
+
+    /// Command::Batch with mixed Insert and Delete ops produces events in op order.
+    ///
+    /// # Purpose
+    /// Op ordering within a batch must be preserved in the broadcast stream.
+    /// Subscribers may rely on event order to reconstruct final state correctly
+    /// (e.g., insert k1, then delete k1 must not arrive reversed).
+    ///
+    /// # Criteria
+    /// - Command::Batch: [Insert(k1=v1), Delete(k2), Insert(k3=v3)]
+    /// - apply succeeds for the batch entry
+    ///
+    /// # Expected
+    /// - broadcast channel receives exactly 3 events in order:
+    ///   Put(k1=v1), Delete(k2), Put(k3=v3)
+    /// - no reordering, no missing events
+    #[tokio::test]
+    async fn test_broadcast_batch_mixed_ops_events_preserve_order() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(10);
+        let handler = create_test_handler(Path::new("/tmp/test_watch_batch_mixed"), Some(0));
+
+        let entry = apply_entry(
+            1,
+            Command::Batch {
+                ops: vec![
+                    BatchOp::Insert {
+                        key: Bytes::from_static(b"k1"),
+                        value: Bytes::from_static(b"v1"),
+                    },
+                    BatchOp::Delete {
+                        key: Bytes::from_static(b"k2"),
+                    },
+                    BatchOp::Insert {
+                        key: Bytes::from_static(b"k3"),
+                        value: Bytes::from_static(b"v3"),
+                    },
+                ],
+            },
+        );
+
+        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
+
+        let event1 = rx.recv().await.unwrap();
+        assert_eq!(event1.key, Bytes::from_static(b"k1"));
+        assert_eq!(event1.value, Bytes::from_static(b"v1"));
+        assert_eq!(event1.event_type, WatchEventType::Put as i32);
+
+        let event2 = rx.recv().await.unwrap();
+        assert_eq!(event2.key, Bytes::from_static(b"k2"));
+        assert_eq!(event2.value, Bytes::new());
+        assert_eq!(event2.event_type, WatchEventType::Delete as i32);
+
+        let event3 = rx.recv().await.unwrap();
+        assert_eq!(event3.key, Bytes::from_static(b"k3"));
+        assert_eq!(event3.value, Bytes::from_static(b"v3"));
+        assert_eq!(event3.event_type, WatchEventType::Put as i32);
+
+        assert!(rx.try_recv().is_err(), "Expected no further events");
+    }
 }
 
 // =============================================================================
@@ -2232,5 +2707,203 @@ mod prev_kv_apply_tests {
         let entry2 = insert_entry(2, b"k", b"v2");
         handler.apply_chunk(vec![entry2]).await.unwrap();
         // mockall verifies on drop: exactly 1 get() call was made
+    }
+}
+
+mod wait_applied_tests {
+    use super::*;
+    use crate::test_utils::snapshot_config;
+    use crate::{MockSnapshotPolicy, MockStateMachine, MockTypeConfig};
+
+    /// wait_applied returns immediately when last_applied is already >= target index.
+    ///
+    /// # Purpose
+    /// Raft ReadIndex fast path: if the SM has already applied up to or past the target
+    /// commit index, the read may proceed without suspending. Blocking unnecessarily
+    /// would stall linearizable reads and degrade throughput.
+    ///
+    /// # Criteria
+    /// - handler initialized with last_applied = 10
+    /// - wait_applied(target = 5) called  (5 <= 10, already satisfied)
+    ///
+    /// # Expected
+    /// - returns Ok(()) immediately (< 10ms, no suspension)
+    #[tokio::test]
+    async fn test_wait_applied_returns_immediately_when_already_applied() {
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+            1,
+            10, // last_applied = 10
+            Arc::new(MockStateMachine::new()),
+            snapshot_config(PathBuf::from("/tmp/test_wait_applied_fast_path")),
+            MockSnapshotPolicy::new(),
+        );
+
+        let start = std::time::Instant::now();
+        let result = handler.wait_applied(5, Duration::from_millis(100)).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_ok(),
+            "Should return Ok when target <= last_applied"
+        );
+        assert!(
+            elapsed < Duration::from_millis(10),
+            "Fast path must not suspend, actual: {elapsed:?}"
+        );
+    }
+
+    /// wait_applied blocks until apply_chunk advances last_applied to the target index.
+    ///
+    /// # Purpose
+    /// Raft ReadIndex blocking path: when the SM has not yet reached the commit index,
+    /// the read must wait. A concurrent apply_chunk call advancing last_applied to the
+    /// target must unblock the waiter at the correct index (not before, not after).
+    ///
+    /// # Criteria
+    /// - handler starts with last_applied = 0
+    /// - wait_applied(target = 5) is spawned concurrently
+    /// - apply_chunk(entries 1..=5) is called from another task
+    ///
+    /// # Expected
+    /// - wait_applied blocks until index 5 is applied
+    /// - returns Ok(()) after unblocking
+    /// - does not unblock at index 4 or earlier
+    #[tokio::test]
+    async fn test_wait_applied_blocks_until_target_index_reached() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let handler = Arc::new(
+            DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+                1,
+                0,
+                Arc::new(MockStateMachine::new()),
+                snapshot_config(PathBuf::from("/tmp/test_wait_applied_blocking")),
+                MockSnapshotPolicy::new(),
+            ),
+        );
+
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_clone = completed.clone();
+        let h = handler.clone();
+
+        tokio::spawn(async move {
+            let _ = h.wait_applied(5, Duration::from_millis(500)).await;
+            completed_clone.store(true, Ordering::SeqCst);
+        });
+
+        // Advance to 4 — waiter must remain blocked
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        handler.test_simulate_apply(4);
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        assert!(
+            !completed.load(Ordering::SeqCst),
+            "must not unblock at index 4"
+        );
+
+        // Advance to 5 — waiter must unblock
+        handler.test_simulate_apply(5);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(completed.load(Ordering::SeqCst), "must unblock at index 5");
+    }
+
+    /// Multiple concurrent waiters at different indices all wake correctly and independently.
+    ///
+    /// # Purpose
+    /// Prevents starvation and validates the broadcast-style notify under concurrent load.
+    /// The ReadIndex path can have many in-flight linearizable reads simultaneously,
+    /// each waiting on a different commit index. Each waiter must wake exactly at its
+    /// own threshold — no earlier, no later.
+    ///
+    /// # Criteria
+    /// - 3 concurrent waiters: wait_applied(3), wait_applied(5), wait_applied(7)
+    /// - apply_chunk progresses entry by entry: 1, 2, 3, 4, 5, 6, 7
+    ///
+    /// # Expected
+    /// - waiter at 3 unblocks after index 3, not before
+    /// - waiter at 5 unblocks after index 5, not before
+    /// - waiter at 7 unblocks after index 7, not before
+    /// - all 3 return Ok(())
+    #[tokio::test]
+    async fn test_wait_applied_multiple_waiters_all_wake_correctly() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let handler = Arc::new(
+            DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+                1,
+                0,
+                Arc::new(MockStateMachine::new()),
+                snapshot_config(PathBuf::from("/tmp/test_wait_applied_multiple_waiters")),
+                MockSnapshotPolicy::new(),
+            ),
+        );
+
+        let (c3, c5, c7) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        for (target, flag) in [(3u64, c3.clone()), (5, c5.clone()), (7, c7.clone())] {
+            let h = handler.clone();
+            tokio::spawn(async move {
+                let _ = h.wait_applied(target, Duration::from_millis(500)).await;
+                flag.store(true, Ordering::SeqCst);
+            });
+        }
+
+        // Give spawned tasks a moment to enter their wait loops
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // Advance to 2 — no waiter should unblock
+        handler.test_simulate_apply(2);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(
+            !c3.load(Ordering::SeqCst),
+            "waiter@3 must not unblock at index 2"
+        );
+        assert!(
+            !c5.load(Ordering::SeqCst),
+            "waiter@5 must not unblock at index 2"
+        );
+        assert!(
+            !c7.load(Ordering::SeqCst),
+            "waiter@7 must not unblock at index 2"
+        );
+
+        // Advance to 3 — only waiter@3 should unblock
+        handler.test_simulate_apply(3);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            c3.load(Ordering::SeqCst),
+            "waiter@3 must unblock at index 3"
+        );
+        assert!(
+            !c5.load(Ordering::SeqCst),
+            "waiter@5 must not unblock at index 3"
+        );
+        assert!(
+            !c7.load(Ordering::SeqCst),
+            "waiter@7 must not unblock at index 3"
+        );
+
+        // Advance to 5 — waiter@5 should unblock, waiter@7 still waiting
+        handler.test_simulate_apply(5);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            c5.load(Ordering::SeqCst),
+            "waiter@5 must unblock at index 5"
+        );
+        assert!(
+            !c7.load(Ordering::SeqCst),
+            "waiter@7 must not unblock at index 5"
+        );
+
+        // Advance to 7 — waiter@7 unblocks
+        handler.test_simulate_apply(7);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            c7.load(Ordering::SeqCst),
+            "waiter@7 must unblock at index 7"
+        );
     }
 }

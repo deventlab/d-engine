@@ -14,6 +14,9 @@ use crate::client::WriteCommand;
 use crate::client::WriteResult;
 use crate::client::client_response::SuccessResult;
 use crate::client::write_command;
+use crate::client::write_command::Batch;
+use crate::client::write_command::BatchOp;
+use crate::client::write_command::Operation;
 use crate::error::ErrorCode;
 use crate::error::ErrorMetadata;
 
@@ -86,6 +89,12 @@ impl WriteCommand {
         }
     }
 
+    pub fn batch(ops: Vec<BatchOp>) -> Self {
+        Self {
+            operation: Some(Operation::Batch(Batch { ops })),
+        }
+    }
+
     /// Create deletion command for specified key
     ///
     /// # Parameters
@@ -118,6 +127,8 @@ impl WriteCommand {
         }
     }
 }
+
+impl Batch {}
 
 impl ClientResponse {
     /// Build success response for write operations

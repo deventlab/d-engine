@@ -776,15 +776,6 @@ impl StateMachine for RocksDBStateMachine {
         })
     }
 
-    fn entry_term(
-        &self,
-        _entry_id: u64,
-    ) -> Option<u64> {
-        // In RocksDB state machine, we don't store term per key. This method is not typically used.
-        // If needed, we might need to change the design to store term along with value.
-        None
-    }
-
     /// Thread-safe: called serially by single-task CommitHandler
     #[instrument(skip(self, chunk))]
     async fn apply_chunk(
@@ -882,6 +873,21 @@ impl StateMachine for RocksDBStateMachine {
                         cas_success
                     );
                 }
+
+                Command::Batch { ops } => {
+                    ops.iter().for_each(|op| match op {
+                        d_engine_core::BatchOp::Insert { key, value } => {
+                            batch.put_cf(&cf, key, value)
+                        }
+                        d_engine_core::BatchOp::Delete { key } => {
+                            batch.delete_cf(&cf, key);
+                            if let Some(ref lease) = self.lease {
+                                lease.unregister(key);
+                            }
+                        }
+                    });
+                    results.push(ApplyResult::success(entry.index));
+                }
             }
         }
 
@@ -949,7 +955,6 @@ impl StateMachine for RocksDBStateMachine {
         self.persist_snapshot_metadata()
     }
 
-    #[instrument(skip(self))]
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
@@ -976,7 +981,6 @@ impl StateMachine for RocksDBStateMachine {
         result
     }
 
-    #[instrument(skip(self))]
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
@@ -1068,7 +1072,6 @@ impl StateMachine for RocksDBStateMachine {
         self.flush()
     }
 
-    #[instrument(skip(self))]
     async fn reset(&self) -> Result<(), Error> {
         self.with_db(|db| {
             let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {

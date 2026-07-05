@@ -15,21 +15,23 @@
 //! client.put(b"key", b"value").await?;
 //! ```
 
-#[cfg(feature = "watch")]
-use std::sync::Arc;
-use std::time::Duration;
-
+use crate::api::types::WriteOperation;
+use crate::proto_convert;
 use bytes::Bytes;
+use d_engine_core::BatchOp;
 use d_engine_core::InboundEvent;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftOneshot;
 use d_engine_core::ScanResult;
 use d_engine_core::TypeConfig;
 use d_engine_core::client::{
-    ClientApi, ClientApiResult, ClientResponsePayload, ClientWriteRequest, ErrorCode,
-    WriteOperation,
+    ClientApi, ClientApiError, ClientApiResult, ClientResponsePayload, ClientWriteRequest,
+    ErrorCode,
 };
 use d_engine_core::config::ReadConsistencyPolicy;
+#[cfg(feature = "watch")]
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use super::embedded_read_handle::EmbeddedReadHandle;
@@ -37,8 +39,6 @@ pub(crate) use super::standalone_read_handle::{
     channel_closed_error, map_error_response, server_error, timeout_error,
 };
 
-#[cfg(feature = "watch")]
-use d_engine_core::client::ClientApiError;
 #[cfg(feature = "watch")]
 use d_engine_core::watch::WatchRegistry;
 
@@ -110,11 +110,11 @@ impl<T: TypeConfig> EmbeddedClient<T> {
     ) -> ClientApiResult<()> {
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(WriteOperation::Insert {
+            command: Some(proto_convert::write_op_to_bytes(WriteOperation::Insert {
                 key: Bytes::copy_from_slice(key.as_ref()),
                 value: Bytes::copy_from_slice(value.as_ref()),
                 ttl_secs: None,
-            }),
+            })),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -281,9 +281,9 @@ impl<T: TypeConfig> EmbeddedClient<T> {
     ) -> ClientApiResult<()> {
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(WriteOperation::Delete {
+            command: Some(proto_convert::write_op_to_bytes(WriteOperation::Delete {
                 key: Bytes::copy_from_slice(key.as_ref()),
-            }),
+            })),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -575,11 +575,66 @@ impl<T: TypeConfig> ClientApi for EmbeddedClient<T> {
     ) -> ClientApiResult<()> {
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(WriteOperation::Insert {
+            command: Some(proto_convert::write_op_to_bytes(WriteOperation::Insert {
                 key: Bytes::copy_from_slice(key.as_ref()),
                 value: Bytes::copy_from_slice(value.as_ref()),
                 ttl_secs: Some(ttl_secs),
-            }),
+            })),
+        };
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+
+        self.read_handle
+            .cmd_tx
+            .send(d_engine_core::ClientCmd::Propose(request, resp_tx))
+            .await
+            .map_err(|_| channel_closed_error())?;
+
+        let result = tokio::time::timeout(self.timeout, resp_rx)
+            .await
+            .map_err(|_| timeout_error(self.timeout))?
+            .map_err(|_| channel_closed_error())?;
+
+        let response =
+            result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
+
+        if response.error != ErrorCode::Success {
+            return Err(map_error_response(
+                response.error,
+                response.leader_hint,
+                response.retry_after_ms,
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Atomically commits multiple write operations as a single Raft log entry.
+    ///
+    /// All operations succeed or none apply (all-or-nothing).
+    /// Op ordering within the batch is preserved by the state machine.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `ops` is empty, the node is not the leader, the channel
+    /// is closed, the request times out, or the state machine returns a server error.
+    async fn batch(
+        &self,
+        ops: Vec<BatchOp>,
+    ) -> ClientApiResult<()> {
+        if ops.is_empty() {
+            return Err(ClientApiError::Business {
+                code: ErrorCode::InvalidRequest,
+                message: "batch ops must not be empty".into(),
+                required_action: None,
+            });
+        }
+
+        let request = ClientWriteRequest {
+            client_id: self.client_id,
+            command: Some(proto_convert::write_op_to_bytes(WriteOperation::Batch {
+                ops,
+            })),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
@@ -638,11 +693,13 @@ impl<T: TypeConfig> ClientApi for EmbeddedClient<T> {
     ) -> ClientApiResult<bool> {
         let request = ClientWriteRequest {
             client_id: self.client_id,
-            command: Some(WriteOperation::CompareAndSwap {
-                key: Bytes::copy_from_slice(key.as_ref()),
-                expected: expected_value.map(|v| Bytes::copy_from_slice(v.as_ref())),
-                new_value: Bytes::copy_from_slice(new_value.as_ref()),
-            }),
+            command: Some(proto_convert::write_op_to_bytes(
+                WriteOperation::CompareAndSwap {
+                    key: Bytes::copy_from_slice(key.as_ref()),
+                    expected: expected_value.map(|v| Bytes::copy_from_slice(v.as_ref())),
+                    new_value: Bytes::copy_from_slice(new_value.as_ref()),
+                },
+            )),
         };
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();

@@ -224,6 +224,33 @@ fn encode_wal_entry(
                 buf.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
             }
         }
+        Command::Batch { ops } => {
+            for (i, op) in ops.iter().enumerate() {
+                // After the first op, each subsequent op needs its own index+term
+                // prefix so replay_wal can parse independent records.
+                if i > 0 {
+                    buf.extend_from_slice(&entry.index.to_be_bytes());
+                    buf.extend_from_slice(&entry.term.to_be_bytes());
+                }
+                match op {
+                    d_engine_core::BatchOp::Insert { key, value } => {
+                        buf.push(WalOpCode::Insert as u8);
+                        buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
+                        buf.extend_from_slice(key);
+                        buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
+                        buf.extend_from_slice(value);
+                        buf.extend_from_slice(&0u64.to_be_bytes()); // no TTL in batch inserts
+                    }
+                    d_engine_core::BatchOp::Delete { key } => {
+                        buf.push(WalOpCode::Delete as u8);
+                        buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
+                        buf.extend_from_slice(key);
+                        buf.extend_from_slice(&0u64.to_be_bytes()); // val_len = 0
+                        buf.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1058,14 +1085,6 @@ impl StateMachine for FileStateMachine {
         Ok(data.get(key_buffer).map(|(value, _)| value.clone()))
     }
 
-    fn entry_term(
-        &self,
-        entry_id: u64,
-    ) -> Option<u64> {
-        let data = self.data.read();
-        data.values().find(|(_, index)| *index == entry_id).map(|(_, term)| *term)
-    }
-
     /// Thread-safe: called serially by single-task CommitHandler
     async fn apply_chunk(
         &self,
@@ -1158,6 +1177,17 @@ impl StateMachine for FileStateMachine {
                             }
                             success
                         }
+                        Command::Batch { ops } => {
+                            ops.iter().for_each(|op| match op {
+                                d_engine_core::BatchOp::Insert { key, value } => {
+                                    delta.insert(key.clone(), Some((value.clone(), entry.term)));
+                                }
+                                d_engine_core::BatchOp::Delete { key } => {
+                                    delta.insert(key.clone(), None);
+                                }
+                            });
+                            false
+                        }
                         Command::Noop => false,
                     };
                     encode_wal_entry(&mut wal_buf, entry, success);
@@ -1231,6 +1261,21 @@ impl StateMachine for FileStateMachine {
                         if cas_success {
                             data.insert(key.clone(), (new_value.clone(), entry.term));
                         }
+                    }
+
+                    Command::Batch { ops } => {
+                        ops.iter().for_each(|op| match op {
+                            d_engine_core::BatchOp::Insert { key, value } => {
+                                data.insert(key.clone(), (value.clone(), entry.term));
+                            }
+                            d_engine_core::BatchOp::Delete { key } => {
+                                data.remove(key.as_ref());
+                                if let Some(ref lease) = self.lease {
+                                    lease.unregister(key);
+                                }
+                            }
+                        });
+                        results.push(ApplyResult::success(entry.index));
                     }
                 }
             }

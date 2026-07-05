@@ -140,11 +140,16 @@ impl RaftNodeConfig {
     /// ```
     pub fn with_override_config(
         &self,
-        path: &str,
+        path: impl AsRef<std::path::Path>,
     ) -> Result<Self> {
+        let path_str = path
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| crate::Error::Fatal("config path is not valid UTF-8".into()))?;
+
         let config: Self = Config::builder()
             .add_source(Config::try_from(self)?)
-            .add_source(File::with_name(path))
+            .add_source(File::with_name(path_str))
             .add_source(
                 Environment::with_prefix("RAFT")
                     .separator("__")

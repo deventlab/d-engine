@@ -1,9 +1,10 @@
 //! Mock node builder for fluent configuration of test Raft instances
 
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
+use super::MockTypeConfig;
+use crate::Node;
+use crate::membership::MembershipSnapshot;
+use crate::network::grpc;
+use crate::node::LeaderNotifier;
 use bytes::Bytes;
 use d_engine_core::ElectionConfig;
 use d_engine_core::InboundEvent;
@@ -30,17 +31,14 @@ use d_engine_core::follower_state::FollowerState;
 use d_engine_core::mock_membership as mock_membership_fn;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterMembership;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tracing::error;
 use tracing::trace;
-
-use super::MockTypeConfig;
-use crate::Node;
-use crate::membership::MembershipSnapshot;
-use crate::network::grpc;
-use crate::node::LeaderNotifier;
 
 /// Builder for constructing mock Raft components with customizable defaults
 ///
@@ -574,7 +572,6 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
     mock.expect_is_running().returning(|| true);
 
     mock.expect_get().returning(|_| Ok(None));
-    mock.expect_entry_term().returning(|_| None);
     mock.expect_apply_chunk().returning(|_| Ok(vec![]));
     mock.expect_len().returning(|| 0);
 

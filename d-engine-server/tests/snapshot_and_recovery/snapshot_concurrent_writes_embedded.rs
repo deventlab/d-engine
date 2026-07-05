@@ -48,11 +48,11 @@ use crate::common::get_available_ports;
 ///
 /// ## Expected Results
 ///
-/// ✅ All 145 writes succeed (no blocking during snapshot)
-/// ✅ Leader can read all 145 entries after completion
-/// ✅ Followers replicate all 145 entries correctly
-/// ✅ Snapshot contains entries 1-90 (100 - retained_log_entries)
-/// ✅ Log entries 1-90 are purged after snapshot
+/// All 145 writes succeed (no blocking during snapshot)
+/// Leader can read all 145 entries after completion
+/// Followers replicate all 145 entries correctly
+/// Snapshot label last_included == last_applied (all 100 entries, no subtraction)
+/// Log entries before (last_applied - retained_log_entries) are purged after snapshot
 ///
 /// ## Implementation Details
 ///
@@ -203,7 +203,7 @@ snapshots_dir = '{}'
         failed_writes.is_empty(),
         "All writes should succeed during snapshot generation. Failed writes: {failed_writes:?}"
     );
-    info!("✅ All 145 writes succeeded (snapshot did not block writes)");
+    info!("All 145 writes succeeded (snapshot did not block writes)");
 
     // Phase 4: Verify data integrity on Leader
     info!("Phase 4: Verifying all 145 entries readable on Leader");
@@ -219,7 +219,7 @@ snapshots_dir = '{}'
 
         assert_eq!(actual_value, expected_value, "Value mismatch for key {i}");
     }
-    info!("✅ All 145 entries verified on Leader");
+    info!("All 145 entries verified on Leader");
 
     // Phase 5: Verify data replicated to Followers
     info!("Phase 5: Verifying replication to Followers");
@@ -249,7 +249,7 @@ snapshots_dir = '{}'
             );
         }
     }
-    info!("✅ Data successfully replicated to all Followers");
+    info!("Data successfully replicated to all Followers");
 
     // Phase 6: Verify snapshot was generated and contains correct data
     info!("Phase 6: Verifying snapshot generation");
@@ -279,7 +279,7 @@ snapshots_dir = '{}'
     );
 
     info!(
-        "✅ Snapshot generated successfully: {} file(s) in {:?}",
+        "Snapshot generated successfully: {} file(s) in {:?}",
         snapshot_files.len(),
         leader_snapshot_dir
     );

@@ -286,6 +286,14 @@ impl MockBuilder {
         self
     }
 
+    pub fn with_purge_executor(
+        mut self,
+        purge_executor: MockPurgeExecutor,
+    ) -> Self {
+        self.purge_executor = Some(purge_executor);
+        self
+    }
+
     pub fn with_node_config(
         mut self,
         node_config: RaftNodeConfig,
@@ -352,7 +360,6 @@ pub fn mock_state_machine() -> MockStateMachine {
     mock.expect_is_running().returning(|| true);
 
     mock.expect_get().returning(|_| Ok(None));
-    mock.expect_entry_term().returning(|_| None);
     mock.expect_apply_chunk().returning(|_| Ok(vec![]));
     mock.expect_len().returning(|| 0);
 

@@ -549,6 +549,144 @@ listen_addr = "127.0.0.1:0"
         }
     }
 
+    /// Tests for `start_node` — the programmatic-config entry point for
+    /// library wrappers that build their own `RaftNodeConfig` in Rust.
+    mod start_node_tests {
+        use std::net::SocketAddr;
+
+        use super::*;
+        use serial_test::serial;
+
+        use bytes::Bytes;
+        use d_engine_core::ClientApi;
+        use d_engine_core::StateMachine;
+        use d_engine_core::config::ClusterConfig;
+        use d_engine_proto::common::NodeRole;
+        use d_engine_proto::common::NodeStatus;
+        use d_engine_proto::server::cluster::NodeMeta;
+
+        /// Build a minimal valid `RaftNodeConfig` backed by a temp directory.
+        /// Uses a fixed high port; tests are serialized to avoid conflicts.
+        fn make_config(
+            temp_dir: &tempfile::TempDir,
+            node_id: u32,
+        ) -> d_engine_core::RaftNodeConfig {
+            let listen_addr: SocketAddr = "127.0.0.1:19731".parse().unwrap();
+            d_engine_core::RaftNodeConfig {
+                cluster: ClusterConfig {
+                    node_id,
+                    listen_address: listen_addr,
+                    initial_cluster: vec![NodeMeta {
+                        id: node_id,
+                        address: listen_addr.to_string(),
+                        role: NodeRole::Follower as i32,
+                        status: NodeStatus::Active.into(),
+                    }],
+                    db_root_dir: temp_dir.path().join("engine"),
+                    log_dir: temp_dir.path().join("logs"),
+                },
+                ..Default::default()
+            }
+        }
+
+        /// Verify that `start_node` accepts a programmatic `RaftNodeConfig`,
+        /// starts the engine successfully, and stops cleanly — no config file needed.
+        #[tokio::test]
+        #[serial(start_node)]
+        async fn test_start_node_with_programmatic_config_starts_and_stops() {
+            let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
+            let config = make_config(&temp_dir, 1);
+
+            let engine = TestEngine::start_node(config, storage, sm)
+                .await
+                .expect("start_node should succeed with valid programmatic config");
+
+            engine
+                .wait_ready(Duration::from_secs(5))
+                .await
+                .expect("single-node engine should elect itself as leader");
+
+            engine.stop().await.expect("stop should succeed");
+        }
+
+        /// `node_id = 0` is rejected by `ClusterConfig::validate()`.
+        /// `start_node` calls `validate()` internally, so the error must propagate to the caller.
+        #[tokio::test]
+        #[serial(start_node)]
+        async fn test_start_node_unvalidated_config_returns_error() {
+            let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
+            let config = make_config(&temp_dir, 0);
+
+            let result = TestEngine::start_node(config, storage, sm).await;
+            assert!(
+                result.is_err(),
+                "start_node with node_id=0 should return validation error"
+            );
+        }
+
+        /// Write through the engine's client, then read directly from the
+        /// original SM reference — proves the engine uses the passed-in instance.
+        #[tokio::test]
+        #[serial(start_node)]
+        async fn test_start_node_uses_passed_se_and_sm_instances() {
+            let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
+            let sm_for_direct_read = Arc::clone(&sm);
+            let config = make_config(&temp_dir, 1);
+
+            let engine = TestEngine::start_node(config, storage, sm)
+                .await
+                .expect("start_node should succeed");
+            engine
+                .wait_ready(Duration::from_secs(5))
+                .await
+                .expect("single-node engine should elect leader");
+
+            // Write through the embedded client
+            let client = engine.client();
+            client
+                .put(b"hello".to_vec(), b"world".to_vec())
+                .await
+                .expect("put should succeed");
+
+            // Read directly from the original SM reference — same instance
+            let value = sm_for_direct_read.get(b"hello").unwrap();
+            assert_eq!(
+                value,
+                Some(Bytes::from_static(b"world")),
+                "data written through client must be visible via the original SM reference"
+            );
+
+            engine.stop().await.expect("stop should succeed");
+        }
+
+        /// `client.batch(vec![])` must return InvalidArgument — empty batch is a no-op
+        /// that should be rejected at the API boundary, not committed as an empty Raft entry.
+        #[tokio::test]
+        #[serial(start_node)]
+        async fn test_batch_empty_ops_returns_invalid_argument() {
+            let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
+            let config = make_config(&temp_dir, 1);
+
+            let engine = TestEngine::start_node(config, storage, sm)
+                .await
+                .expect("start_node should succeed");
+            engine
+                .wait_ready(Duration::from_secs(5))
+                .await
+                .expect("single-node engine should elect leader");
+
+            let client = engine.client();
+            let result = client.batch(vec![]).await;
+            assert!(
+                result.is_err(),
+                "empty batch must return error, got: {:?}",
+                result
+            );
+
+            engine.stop().await.expect("stop should succeed");
+        }
+    }
+
     #[cfg(feature = "watch")]
     mod watch_tests {
         use serial_test::serial;
@@ -974,6 +1112,40 @@ listen_addr = "127.0.0.1:0"
             panic!("Leader info should be available");
         }
 
+        engine.stop().await.expect("Failed to stop engine");
+    }
+
+    /// Single-voter LinearizableRead must complete and return the committed value.
+    ///
+    /// Regression: on single-voter cluster, when `last_applied < read_index` at the
+    /// moment the read arrived, the read was queued in `pending_reads` with no drain
+    /// path — Path A (peer ACK) is impossible without peers; Path B (SM apply) is
+    /// impossible for a pure read. The fix must serve single-voter linearizable reads
+    /// directly from SM without going through the quorum path.
+    ///
+    /// If this test hangs and times out, the regression is present.
+    #[tokio::test]
+    async fn test_linearizable_read_single_voter_returns_committed_value() {
+        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+
+        // Start embedded engine (single node)
+        let engine = TestEngine::start_custom(storage, sm, None)
+            .await
+            .expect("Failed to start engine");
+
+        // Wait for leader election (should succeed quickly in single-node mode)
+        let result = engine.wait_ready(Duration::from_secs(5)).await;
+
+        assert!(
+            result.is_ok(),
+            "Leader election should succeed in single-node mode"
+        );
+        let client = engine.client();
+        assert!(client.put(b"key", b"value").await.is_ok());
+        let got = client.get_linearizable(b"key").await.expect("linearizable read must succeed");
+        assert_eq!(got.as_deref(), Some(b"value".as_ref()));
+
+        // Cleanup
         engine.stop().await.expect("Failed to stop engine");
     }
 }

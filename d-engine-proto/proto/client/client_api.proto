@@ -22,10 +22,20 @@ message WriteCommand {
     optional bytes expected_value = 2; // None means key must not exist
     bytes new_value = 3; // New value to set if comparison succeeds
   }
+  message BatchOp {
+    oneof op {
+      Insert insert = 1;
+      Delete delete = 2;
+    }
+  }
+  message Batch {
+    repeated BatchOp ops = 1;
+  }
   oneof operation {
     Insert insert = 1;
     Delete delete = 2;
     CompareAndSwap compare_and_swap = 3;
+    Batch batch = 4;
   }
 }
 

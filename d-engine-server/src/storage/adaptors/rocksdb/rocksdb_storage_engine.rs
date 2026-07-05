@@ -212,7 +212,6 @@ impl LogStore for RocksDBLogStore {
         Ok(())
     }
 
-    #[instrument(skip(self))]
     async fn entry(
         &self,
         index: u64,
@@ -231,7 +230,6 @@ impl LogStore for RocksDBLogStore {
         }
     }
 
-    #[instrument(skip(self))]
     fn get_entries(
         &self,
         range: RangeInclusive<u64>,
@@ -271,7 +269,6 @@ impl LogStore for RocksDBLogStore {
         Ok(entries)
     }
 
-    #[instrument(skip(self))]
     async fn purge(
         &self,
         cutoff_index: LogId,
@@ -320,7 +317,6 @@ impl LogStore for RocksDBLogStore {
         Ok(())
     }
 
-    #[instrument(skip(self))]
     async fn truncate(
         &self,
         from_index: u64,
@@ -434,7 +430,6 @@ impl LogStore for RocksDBLogStore {
         }
     }
 
-    #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
         // WAL fsync is sufficient for crash-safety: data in WAL can be replayed on restart.
         // memtable flush is RocksDB's internal concern — triggered automatically in background.
@@ -447,12 +442,10 @@ impl LogStore for RocksDBLogStore {
         Ok(())
     }
 
-    #[instrument(skip(self))]
     async fn flush_async(&self) -> Result<(), Error> {
         self.flush()
     }
 
-    #[instrument(skip(self))]
     async fn reset(&self) -> Result<(), Error> {
         let cf = self
             .db
@@ -473,7 +466,6 @@ impl LogStore for RocksDBLogStore {
         Ok(())
     }
 
-    #[instrument(skip(self))]
     fn last_index(&self) -> u64 {
         self.last_index.load(Ordering::SeqCst)
     }
@@ -519,7 +511,6 @@ impl MetaStore for RocksDBMetaStore {
         Ok(())
     }
 
-    #[instrument(skip(self))]
     fn load_hard_state(&self) -> Result<Option<HardState>, Error> {
         let cf = self
             .db
@@ -539,7 +530,6 @@ impl MetaStore for RocksDBMetaStore {
         }
     }
 
-    #[instrument(skip(self))]
     fn flush(&self) -> Result<(), Error> {
         // WAL fsync is sufficient: HardState in WAL survives crashes.
         // memtable flush is RocksDB's internal concern — triggered automatically in background.
@@ -549,7 +539,6 @@ impl MetaStore for RocksDBMetaStore {
         Ok(())
     }
 
-    #[instrument(skip(self))]
     async fn flush_async(&self) -> Result<(), Error> {
         self.flush()
     }

@@ -12,14 +12,18 @@ use crate::client::ClientReadRequest;
 use crate::client::ClientResponsePayload;
 use crate::client::ClientWriteRequest;
 use crate::client::KvEntry;
-use crate::client::WriteOperation;
 use crate::config::ReadConsistencyPolicy;
+use crate::raft_role::candidate_state::CandidateState;
+use crate::raft_role::follower_state::FollowerState;
 use crate::raft_role::learner_state::LearnerState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::mock_raft_context_with_temp;
+use crate::test_utils::mock::mock_raft_log;
 use crate::test_utils::node_config;
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
 use d_engine_proto::common::NodeStatus;
@@ -33,6 +37,7 @@ use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use mockall::predicate::eq;
+use prost::Message;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tonic::Code;
@@ -501,9 +506,9 @@ async fn test_learner_rejects_client_write_request() {
     let cmd = ClientCmd::Propose(
         ClientWriteRequest {
             client_id: 1,
-            command: Some(WriteOperation::Delete {
-                key: bytes::Bytes::new(),
-            }),
+            command: Some(Bytes::from(
+                WriteCommand::delete(Bytes::new()).encode_to_vec(),
+            )),
         },
         resp_tx,
     );
@@ -1236,9 +1241,14 @@ mod snapshot_tests {
         let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
         let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
+        state.scheduled_purge_upto = Some(LogId { term: 1, index: 1 });
         assert!(
             state.handle_log_purge_completed(LogId { term: 1, index: 1 }).is_ok(),
             "Stale LogPurgeCompleted should be silently ignored"
+        );
+        assert!(
+            state.scheduled_purge_upto.is_none(),
+            "handle_log_purge_completed must clear scheduled_purge_upto"
         );
         assert!(
             state.handle_promote_ready_learners(&context, &internal_event_tx).await.is_ok(),
@@ -1299,12 +1309,23 @@ mod snapshot_tests {
     #[tokio::test]
     async fn test_learner_resets_snapshot_flag_on_success() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
-        let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+        // Default retained_log_entries = 1, last_included.index = 50 → purge_upto_index = 49
+        let mut raft_log = mock_raft_log();
+        raft_log
+            .expect_entry_term()
+            .withf(|&idx| idx == 49)
+            .times(1)
+            .returning(|_| Some(1));
+        let _temp_dir = tempfile::tempdir().unwrap();
+        let nc = node_config(_temp_dir.path().to_str().unwrap());
+        let context = MockBuilder::new(graceful_rx)
+            .with_raft_log(raft_log)
+            .with_node_config(nc)
+            .build_context();
 
         let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
         state.snapshot_in_progress.store(true, Ordering::SeqCst);
-        // Prerequisite: commit_index must exceed last_included for can_purge_logs to allow purge.
-        // In real operation, entries are committed before they can be snapshotted.
         state.update_commit_index(100).unwrap();
 
         let last_included = LogId { term: 1, index: 50 };
@@ -1314,7 +1335,7 @@ mod snapshot_tests {
         };
         let snapshot_result = Ok((metadata, std::path::PathBuf::from("/tmp/test_snapshot.bin")));
 
-        let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+        let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
         let result = state
             .handle_snapshot_created(snapshot_result, &context, &internal_event_tx)
             .await;
@@ -1324,10 +1345,17 @@ mod snapshot_tests {
             !state.snapshot_in_progress.load(Ordering::SeqCst),
             "snapshot_in_progress should be false after SnapshotCreated"
         );
-        assert_eq!(
-            state.last_purged_index,
-            Some(last_included),
-            "last_purged_index must advance to last_included after log purge"
+        // last_purged_index is updated via LogPurgeCompleted event (processed by event loop).
+        // Verify the event was dispatched with purge_upto = last_included - retained_log_entries.
+        let event = internal_event_rx
+            .try_recv()
+            .expect("LogPurgeCompleted event must be dispatched after successful purge");
+        assert!(
+            matches!(
+                event,
+                InternalEvent::LogPurgeCompleted(LogId { index: 49, .. })
+            ),
+            "purge boundary must be last_included.index(50) - retained(1) = 49, got: {event:?}"
         );
     }
 
@@ -2002,4 +2030,50 @@ async fn test_learner_rejects_stream_snapshot() {
         tonic::Code::FailedPrecondition,
         "Learner must reply FailedPrecondition for StreamSnapshot"
     );
+}
+
+// ============================================================================
+// Role Transition Tests — scheduled_purge_upto / last_purged_index
+// ============================================================================
+
+/// From<&FollowerState>: both fields preserved across follower-to-learner demotion.
+///
+/// A follower with a pending purge intent must hand it off so the learner can resume
+/// without recomputing the purge boundary.
+#[test]
+fn test_learner_from_follower_preserves_both_purge_fields() {
+    let cfg = Arc::new(node_config("/tmp/test_learner_from_follower_purge"));
+    let mut follower = FollowerState::<MockTypeConfig>::new(1, cfg, None, None);
+    follower.last_purged_index = Some(LogId { term: 1, index: 12 });
+    follower.scheduled_purge_upto = Some(LogId { term: 1, index: 10 });
+
+    let learner = LearnerState::from(&follower);
+
+    assert_eq!(
+        learner.last_purged_index,
+        Some(LogId { term: 1, index: 12 })
+    );
+    assert_eq!(
+        learner.scheduled_purge_upto,
+        Some(LogId { term: 1, index: 10 })
+    );
+}
+
+/// From<&CandidateState>: last_purged_index preserved, scheduled_purge_upto reset.
+///
+/// Candidate has no scheduled_purge_upto field; the resulting learner always starts
+/// with None so it does not replay a stale purge boundary from a prior election.
+#[test]
+fn test_learner_from_candidate_preserves_last_purged_index_resets_scheduled() {
+    let cfg = Arc::new(node_config("/tmp/test_learner_from_candidate_purge"));
+    let mut candidate = CandidateState::<MockTypeConfig>::new(1, cfg);
+    candidate.last_purged_index = Some(LogId { term: 3, index: 15 });
+
+    let learner = LearnerState::from(&candidate);
+
+    assert_eq!(
+        learner.last_purged_index,
+        Some(LogId { term: 3, index: 15 })
+    );
+    assert_eq!(learner.scheduled_purge_upto, None);
 }

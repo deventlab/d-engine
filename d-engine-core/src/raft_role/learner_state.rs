@@ -11,7 +11,6 @@ use crate::InternalEvent;
 use crate::Membership;
 use crate::MembershipError;
 use crate::NetworkError;
-use crate::PurgeExecutor;
 use crate::RaftContext;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
@@ -21,6 +20,7 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::alias::MOF;
+use crate::role_state::schedule_and_execute_purge;
 use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
@@ -63,6 +63,17 @@ pub struct LearnerState<T: TypeConfig> {
     // -- Core State --
     /// Shared cluster state with concurrency control
     pub shared_state: SharedState,
+
+    // -- Log Compaction & Purge --
+    /// === Volatile State ===
+    /// The upper bound (exclusive) of log entries scheduled for asynchronous physical deletion.
+    ///
+    /// This value is set immediately after a new snapshot is successfully created.
+    /// It represents the next log position that will trigger compaction.
+    ///
+    /// The actual log purge is performed by a background task, which may be delayed
+    /// due to resource constraints or retry mechanisms.
+    pub scheduled_purge_upto: Option<LogId>,
 
     /// === Persistent State (MUST be on disk) ===
     /// The last log position that has been **physically removed** from stable storage.
@@ -525,71 +536,31 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         )
     }
 
-    /// Trigger an independent snapshot on this role (Raft §7 — each server snapshots
-    /// independently). Called when `should_snapshot()` returns true after SM apply.
-    /// Default: no-op. Candidate overrides to return `RoleViolation`.
-    async fn handle_create_snapshot(
-        &mut self,
-        ctx: &RaftContext<Self::T>,
-        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
-    ) -> Result<()> {
-        // Prevent duplicate snapshot creation
-        if self.snapshot_in_progress.load(Ordering::Acquire) {
-            info!("Snapshot creation already in progress. Skipping duplicate request.");
-            return Ok(());
-        }
-
-        self.snapshot_in_progress.store(true, Ordering::Release);
-        let state_machine_handler = ctx.state_machine_handler().clone();
-
-        // Use spawn to perform snapshot creation in the background
-        let internal_event_tx = internal_event_tx.clone();
-        tokio::spawn(async move {
-            let result = state_machine_handler.create_snapshot().await;
-            info!("SnapshotCreated event will be processed in another event thread");
-            if let Err(e) = internal_event_tx.send(InternalEvent::SnapshotCreated(result)) {
-                error!("Learner failed to send snapshot creation result: {}", e);
-            }
-        });
-
-        Ok(())
+    fn snapshot_in_progress(&self) -> Option<&AtomicBool> {
+        Some(&self.snapshot_in_progress)
     }
 
-    /// Process the completed snapshot result (success or error).
-    /// Leader: schedules log purge up to `last_included`.
-    /// Follower/Learner: updates local snapshot path.
-    /// Default: no-op. Candidate overrides to return `RoleViolation`.
     async fn handle_snapshot_created(
         &mut self,
         result: crate::Result<(SnapshotMetadata, std::path::PathBuf)>,
         ctx: &RaftContext<Self::T>,
-        _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
-        // Reset snapshot_in_progress flag
         self.snapshot_in_progress.store(false, Ordering::SeqCst);
-
-        // Per Raft §7: Learner independently purges logs after snapshot generation
         match result {
-            Ok((metadata, _path)) => {
+            Err(e) => error!(?e, "Learner snapshot creation failed"),
+            Ok((metadata, _)) => {
                 if let Some(last_included) = metadata.last_included {
-                    info!(?last_included, "Learner snapshot created, purging logs");
-
-                    // Learner independently decides to purge after snapshot
-                    if self.can_purge_logs(self.last_purged_index, last_included) {
-                        match ctx.purge_executor().execute_purge(last_included).await {
-                            Ok(_) => {
-                                self.last_purged_index = Some(last_included);
-                                info!(?last_included, "Learner logs purged successfully");
-                            }
-                            Err(e) => {
-                                error!(?e, "Failed to purge logs after snapshot");
-                            }
-                        }
-                    }
+                    schedule_and_execute_purge(
+                        last_included,
+                        ctx,
+                        self.commit_index(),
+                        self.last_purged_index,
+                        &mut self.scheduled_purge_upto,
+                        internal_event_tx,
+                    )
+                    .await?;
                 }
-            }
-            Err(e) => {
-                error!(?e, "Learner snapshot creation failed");
             }
         }
         Ok(())
@@ -642,11 +613,16 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     // Stale in-flight events — these are Leader-only operations that may arrive
     // after a step-down due to internal_event_tx (unbounded, P2) race with BecomeFollower.
     // Both orderings are valid; Learner silently ignores them rather than erroring.
-
     fn handle_log_purge_completed(
         &mut self,
-        _purged_id: d_engine_proto::common::LogId,
+        purged_id: d_engine_proto::common::LogId,
     ) -> Result<()> {
+        if self.last_purged_index.is_none_or(|cur| purged_id.index > cur.index) {
+            self.last_purged_index = Some(purged_id);
+
+            // purge completed, clear to prevent re-execution
+            self.scheduled_purge_upto = None;
+        }
         Ok(())
     }
 
@@ -682,28 +658,8 @@ impl<T: TypeConfig> LearnerState<T> {
             snapshot_in_progress: AtomicBool::new(false),
             node_config,
             _marker: PhantomData,
+            scheduled_purge_upto: None,
         }
-    }
-
-    /// Determines if logs can be safely purged up to the given index
-    ///
-    /// Per Raft §7: Learner independently purges logs after snapshot generation
-    ///
-    /// # Safety Checks
-    /// 1. Committed Entry Guarantee: last_included < commit_index
-    /// 2. Monotonic Purge: last_purged_index < last_included
-    pub fn can_purge_logs(
-        &self,
-        last_purge_index: Option<LogId>,
-        last_included_in_request: LogId,
-    ) -> bool {
-        let commit_check = last_included_in_request.index < self.commit_index();
-
-        let monotonic_check = last_purge_index
-            .map(|lid| lid.index < last_included_in_request.index)
-            .unwrap_or(true);
-
-        commit_check && monotonic_check
     }
 
     pub async fn broadcast_discovery(
@@ -809,7 +765,8 @@ impl<T: TypeConfig> From<&FollowerState<T>> for LearnerState<T> {
             shared_state: follower_state.shared_state.clone(),
             node_config: follower_state.node_config.clone(),
             snapshot_in_progress: AtomicBool::new(false),
-            last_purged_index: None, //TODO
+            last_purged_index: follower_state.last_purged_index,
+            scheduled_purge_upto: follower_state.scheduled_purge_upto,
             _marker: PhantomData,
         }
     }
@@ -821,6 +778,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LearnerState<T> {
             node_config: candidate_state.node_config.clone(),
             snapshot_in_progress: AtomicBool::new(false),
             last_purged_index: candidate_state.last_purged_index,
+            scheduled_purge_upto: None,
             _marker: PhantomData,
         }
     }
