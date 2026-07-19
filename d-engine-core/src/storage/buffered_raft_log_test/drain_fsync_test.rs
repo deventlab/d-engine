@@ -84,11 +84,15 @@ async fn test_writes_become_durable_via_io_thread() {
     );
 }
 
-/// A single `append_entries` call with 100 entries produces exactly one fsync.
+/// A single `append_entries` call with 100 entries batches into far fewer fsyncs
+/// than individual writes.
 ///
 /// `append_entries` calls `write_notify.notify_one()` once regardless of how many
-/// entries are in the batch. The IO thread wakes once and calls fsync exactly once.
-/// N entries in one call → 1 fsync, always, regardless of storage speed.
+/// entries are in the batch. The IO thread wakes once, persists all entries to page
+/// cache, then dispatches fsync via `FsyncCoordinator`. The explicit `flush()` call
+/// may race with the spawned fsync task: if it observes `durable_index` before the
+/// first task completes, it submits a second round (coalesced by the coordinator).
+/// N entries in one call → ≤2 fsyncs (not N), regardless of storage speed.
 #[tokio::test]
 async fn test_batch_append_produces_one_flush() {
     let (ctx, flush_count) = BufferedRaftLogTestContext::new_not_durable(
@@ -98,7 +102,7 @@ async fn test_batch_append_produces_one_flush() {
         "batch_append_one_flush",
     );
 
-    // All 100 entries in one append_entries call → one notify_one() → one fsync.
+    // All 100 entries in one append_entries call.
     let entries: Vec<Entry> = (1u64..=100)
         .map(|i| Entry {
             index: i,
@@ -112,11 +116,13 @@ async fn test_batch_append_produces_one_flush() {
 
     assert_eq!(ctx.raft_log.durable_index(), 100);
 
-    // One notify_one() → IO thread wakes once → exactly one flush() call.
+    // One notify_one() → IO thread wakes once → far fewer fsyncs than entries.
+    // With FsyncCoordinator the explicit flush() may add one extra round if it
+    // races with the in-flight spawned task; the invariant is "not N flushes".
     let flushes = flush_count.load(Ordering::Relaxed);
-    assert_eq!(
-        flushes, 1,
-        "one append_entries batch must produce exactly one flush (got {flushes})"
+    assert!(
+        (1..=2).contains(&flushes),
+        "one append_entries batch must produce ≤2 flushes, not {flushes}"
     );
 }
 
