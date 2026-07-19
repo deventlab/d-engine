@@ -21,7 +21,7 @@ election_timeout_max = 2000
 
 [raft.read_consistency]
 default_policy = "LeaseRead"
-lease_duration_ms = 100
+lease_duration_ms = 500
 
 [raft.read_actor]
 channel_capacity = 10240

@@ -133,15 +133,23 @@ impl StorageEngine for RocksDBStorageEngine {
 
 impl Drop for RocksDBLogStore {
     fn drop(&mut self) {
-        // On graceful shutdown, flushing memtable to SST is appropriate here —
-        // this is the ONE correct place for db.flush(), not in the hot write path.
+        // WAL fsync makes LOG_CF durable — memtable content survives via WAL
+        // replay on next open even without the flush below. The flush is an
+        // optimization only: it shrinks the WAL that must be replayed on the
+        // next restart. db.flush() (no CF argument) targets RocksDB's unused
+        // "default" CF and would be a no-op here — LOG_CF must be named explicitly.
         if let Err(e) = self.db.flush_wal(true) {
             tracing::error!("Failed to flush WAL on drop: {}", e);
         }
-        if let Err(e) = self.db.flush() {
-            tracing::error!("Failed to flush memtable on drop: {}", e);
-        } else {
-            tracing::debug!("RocksDBLogStore flushed successfully on drop");
+        match self.db.cf_handle(LOG_CF) {
+            Some(cf) => {
+                if let Err(e) = self.db.flush_cf(&cf) {
+                    tracing::error!("Failed to flush LOG_CF memtable on drop: {}", e);
+                } else {
+                    tracing::debug!("RocksDBLogStore flushed successfully on drop");
+                }
+            }
+            None => tracing::error!("Failed to flush on drop: LOG_CF not found"),
         }
     }
 }
@@ -437,8 +445,8 @@ impl LogStore for RocksDBLogStore {
         self.db
             .flush_wal(true)
             .map_err(|e| StorageError::DbError(format!("Failed to flush WAL: {e}")))?;
-        let ms = t0.elapsed().as_millis();
-        metrics::histogram!("server.storage.rocksdb.wal_flush_ms").record(ms as f64);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        metrics::histogram!("server.storage.rocksdb.wal_flush_ms").record(ms);
         Ok(())
     }
 
@@ -473,14 +481,24 @@ impl LogStore for RocksDBLogStore {
 
 impl Drop for RocksDBMetaStore {
     fn drop(&mut self) {
-        // On graceful shutdown, memtable flush is appropriate here.
+        // WAL fsync makes META_CF (hard_state) durable — memtable content
+        // survives via WAL replay on next open even without the flush below.
+        // The flush is an optimization only: it shrinks the WAL that must be
+        // replayed on the next restart. db.flush() (no CF argument) targets
+        // RocksDB's unused "default" CF and would be a no-op here — META_CF
+        // must be named explicitly.
         if let Err(e) = self.db.flush_wal(true) {
             tracing::error!("Failed to flush meta WAL on drop: {}", e);
         }
-        if let Err(e) = self.db.flush() {
-            tracing::error!("Failed to flush meta memtable on drop: {}", e);
-        } else {
-            tracing::debug!("RocksDBMetaStore flushed successfully on drop");
+        match self.db.cf_handle(META_CF) {
+            Some(cf) => {
+                if let Err(e) = self.db.flush_cf(&cf) {
+                    tracing::error!("Failed to flush META_CF memtable on drop: {}", e);
+                } else {
+                    tracing::debug!("RocksDBMetaStore flushed successfully on drop");
+                }
+            }
+            None => tracing::error!("Failed to flush on drop: META_CF not found"),
         }
     }
 }

@@ -43,8 +43,11 @@ SNAPPY_PREFIX    := $(shell brew --prefix snappy 2>/dev/null)
 LZ4_PREFIX       := $(shell brew --prefix lz4    2>/dev/null)
 ZSTD_PREFIX      := $(shell brew --prefix zstd   2>/dev/null)
 BREW_ROCKSDB_ENV :=
+
+ifneq ($(SNAPPY_PREFIX),)
 ifneq ($(wildcard $(SNAPPY_PREFIX)/lib),)
   BREW_ROCKSDB_ENV += SNAPPY_LIB_DIR=$(SNAPPY_PREFIX)/lib
+endif
 endif
 ifneq ($(LZ4_PREFIX),)
   BREW_ROCKSDB_ENV += LZ4_LIB_DIR=$(LZ4_PREFIX)/lib

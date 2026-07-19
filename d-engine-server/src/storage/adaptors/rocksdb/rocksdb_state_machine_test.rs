@@ -626,8 +626,6 @@ async fn test_drop_after_close_db_does_not_panic() {
     // reaching here without panic means the test passes
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 fn insert_at(
     key: &[u8],
     value: &[u8],

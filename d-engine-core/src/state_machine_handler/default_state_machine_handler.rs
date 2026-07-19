@@ -247,8 +247,11 @@ where
         let apply_t0 = std::time::Instant::now();
         let apply_result = sm.apply_chunk(&apply_entries).await;
         let apply_elapsed = apply_t0.elapsed();
-        metrics::counter!("core.state_machine.apply.busy_nanos_total")
-            .increment(apply_elapsed.as_nanos() as u64);
+        metrics::counter!(
+            "core.state_machine.apply.busy_nanos_total",
+            &[("node_id", self.node_id.to_string())]
+        )
+        .increment(apply_elapsed.as_nanos() as u64);
 
         // Fire-and-forget watch events on success (non-blocking)
         #[cfg(feature = "watch")]
@@ -259,7 +262,7 @@ where
         }
 
         // Record latency and chunk size histogram *after* the operation
-        let duration_ms = start.elapsed().as_millis() as f64;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
         metrics::histogram!(
             "core.state_machine.apply_chunk.duration_ms",
             &[("node_id", self.node_id.to_string())]
@@ -279,7 +282,11 @@ where
                 if let Some(idx) = last_index {
                     self.last_applied.store(idx, Ordering::Release);
 
-                    metrics::gauge!("core.raft.apply_index").set(idx as f64);
+                    metrics::gauge!(
+                        "core.raft.apply_index",
+                        &[("node_id", self.node_id.to_string())]
+                    )
+                    .set(idx as f64);
 
                     // Notify waiters that last_applied has advanced
                     if let Err(e) = self.applied_notify_tx.send(idx) {

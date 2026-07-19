@@ -700,12 +700,15 @@ impl RocksDBStateMachine {
         if let Err(e) = self.persist_ttl_metadata() {
             error!("close_db: failed to persist TTL metadata: {e:?}");
         }
-        if let Err(e) = self.save_hard_state() {
-            error!("close_db: failed to save hard state: {e:?}");
-        }
+
         if let Err(e) = self.flush() {
             error!("close_db: failed to flush: {e:?}");
         }
+
+        if let Err(e) = self.save_hard_state() {
+            error!("close_db: failed to save hard state: {e:?}");
+        }
+
         {
             let guard = self.db.load();
             if let Some(db) = guard.as_deref() {
@@ -826,6 +829,9 @@ impl StateMachine for RocksDBStateMachine {
         let cf = db
             .cf_handle(STATE_MACHINE_CF)
             .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
+        let meta_cf = db
+            .cf_handle(STATE_MACHINE_META_CF)
+            .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
 
         let mut batch = WriteBatchWithIndex::new(0, true);
         let mut highest_index_entry: Option<LogId> = None;
@@ -923,6 +929,18 @@ impl StateMachine for RocksDBStateMachine {
                     results.push(ApplyResult::success(entry.index));
                 }
             }
+        }
+
+        // Add last_applied to the same batch as the SM data writes above, so the
+        // single write_wbwi_opt() call below commits both together — never one
+        // without the other.
+        if let Some(highest) = highest_index_entry {
+            batch.put_cf(
+                &meta_cf,
+                LAST_APPLIED_INDEX_KEY,
+                highest.index.to_be_bytes(),
+            );
+            batch.put_cf(&meta_cf, LAST_APPLIED_TERM_KEY, highest.term.to_be_bytes());
         }
 
         let _t0 = std::time::Instant::now();
@@ -1091,18 +1109,33 @@ impl StateMachine for RocksDBStateMachine {
     }
 
     fn save_hard_state(&self) -> Result<(), Error> {
-        self.persist_state_machine_metadata()?;
-        self.persist_snapshot_metadata()?;
-        Ok(())
+        // last_applied_index/term are now persisted atomically with each
+        // apply_chunk() batch (see apply_chunk()) — no longer written here.
+        self.persist_snapshot_metadata()
     }
 
     fn flush(&self) -> Result<(), Error> {
         self.with_db(|db| {
             db.flush_wal(true).map_err(|e| StorageError::DbError(e.to_string()))?;
-            db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+
+            // db.flush() with no CF argument only flushes RocksDB's implicit
+            // "default" column family, which this state machine never writes to —
+            // it is a silent no-op for STATE_MACHINE_CF and STATE_MACHINE_META_CF.
+            // Both must be flushed explicitly, matching the precedent already used
+            // in create_snapshot()'s pre-export flush.
+            let cf_sm = db
+                .cf_handle(STATE_MACHINE_CF)
+                .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
+            let cf_sm_meta = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
+                StorageError::DbError("State machine meta CF not found".to_string())
+            })?;
+            let flush_opts = rocksdb::FlushOptions::default();
+            db.flush_cfs_opt(&[&cf_sm, &cf_sm_meta], &flush_opts)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
             Ok(())
-        })?;
-        self.persist_state_machine_metadata()
+        })
+        // last_applied is already durable as of apply_chunk() — no separate
+        // persist_state_machine_metadata() call needed here anymore.
     }
 
     async fn flush_async(&self) -> Result<(), Error> {
@@ -1241,17 +1274,20 @@ impl Drop for RocksDBStateMachine {
             return;
         }
 
-        // save_hard_state() persists last_applied metadata before flush
-        // This is critical to prevent replay of already-applied entries on restart
-        if let Err(e) = self.save_hard_state() {
-            error!("Failed to save hard state on drop: {}", e);
-        }
-
-        // Then flush data to disk
+        // last_applied durability no longer depends on ordering here — it is
+        // already atomic with the SM data as of apply_chunk(). flush() persists
+        // both the SM data and snapshot_metadata (via save_hard_state) to SST.
         if let Err(e) = self.flush() {
             error!("Failed to flush on drop: {}", e);
         } else {
             debug!("RocksDBStateMachine flushed successfully on drop");
+        }
+
+        // save_hard_state() only persists snapshot_metadata now — last_applied is
+        // already durable as of apply_chunk(), so there is no ordering hazard
+        // between this call and the flush() above.
+        if let Err(e) = self.save_hard_state() {
+            error!("Failed to save hard state on drop: {}", e);
         }
 
         // Ensure flush operations are truly finished (no Arc clone needed — just &DB)

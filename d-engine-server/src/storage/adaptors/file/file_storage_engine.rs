@@ -392,8 +392,8 @@ impl LogStore for FileLogStore {
         inner.file.flush()?;
         inner.file.sync_all()?;
         drop(inner);
-        let ms = t0.elapsed().as_millis();
-        metrics::histogram!("server.storage.file.flush_ms").record(ms as f64);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        metrics::histogram!("server.storage.file.flush_ms").record(ms);
         Ok(())
     }
 

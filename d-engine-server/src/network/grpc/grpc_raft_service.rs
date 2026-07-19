@@ -470,7 +470,7 @@ where
                 .map_err(|_| Status::internal("Command channel closed"))?;
 
             metrics::histogram!("server.rpc.cmd_channel_send_wait_ms", "op" => "propose")
-                .record(t0.elapsed().as_millis() as f64);
+                .record(t0.elapsed().as_secs_f64() * 1000.0);
 
             handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_write")
                 .await
@@ -558,7 +558,7 @@ where
             .await
             .map_err(|_| Status::internal("Command channel closed"))?;
         metrics::histogram!("server.rpc.cmd_channel_send_wait_ms", "op" => "read")
-            .record(t0.elapsed().as_millis() as f64);
+            .record(t0.elapsed().as_secs_f64() * 1000.0);
         handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read")
             .await
             .map(|resp| resp.map(proto_convert::to_proto_response))
@@ -587,7 +587,7 @@ where
             .await
             .map_err(|_| Status::internal("Command channel closed"))?;
         metrics::histogram!("server.rpc.cmd_channel_send_wait_ms", "op" => "scan")
-            .record(t0.elapsed().as_millis() as f64);
+            .record(t0.elapsed().as_secs_f64() * 1000.0);
 
         let timeout_duration =
             Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);

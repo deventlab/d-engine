@@ -81,6 +81,7 @@ impl FsyncCoordinator {
                     let _ = reply.send(Err(Error::Fatal("raft log storage is poisoned".into())));
                 }
                 self.inflight.store(false, Ordering::Release);
+                metrics::gauge!("core.raft.fsync.inflight").set(0.0);
                 return;
             }
 
