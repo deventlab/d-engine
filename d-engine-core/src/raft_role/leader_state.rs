@@ -74,7 +74,6 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -197,88 +196,6 @@ pub struct ClusterMetadata {
     pub total_voters: usize,
     /// Cached replication targets (voters + learners, excluding self)
     pub replication_targets: Vec<NodeMeta>,
-}
-
-/// Metrics context for backpressure monitoring (zero-allocation hot path)
-///
-/// Encapsulates all metrics-related state to avoid polluting the core LeaderState structure.
-/// Pre-allocated labels ensure zero allocations in the request hot path.
-pub struct BackpressureMetrics {
-    /// Pre-allocated labels for write rejections: [("node_id", "\<id>"), ("type", "write")]
-    labels_write: Arc<[(String, String)]>,
-    /// Pre-allocated labels for read rejections: [("node_id", "\<id>"), ("type", "read")]
-    labels_read: Arc<[(String, String)]>,
-    /// Runtime switch (branch prediction optimized, ~0ns overhead when false)
-    enabled: bool,
-    /// Sample counter for gauge metrics (reduces overhead at high QPS)
-    sample_counter: AtomicU32,
-    /// Sampling rate (1 = no sampling, 10 = sample 1 in 10)
-    sample_rate: u32,
-}
-
-impl BackpressureMetrics {
-    /// Create new metrics context with pre-allocated labels
-    pub fn new(
-        node_id: u32,
-        enabled: bool,
-        sample_rate: u32,
-    ) -> Self {
-        let sample_rate = if sample_rate == 0 { 1 } else { sample_rate };
-        let node_id_str = node_id.to_string();
-        let labels_write = Arc::new([
-            ("node_id".to_string(), node_id_str.clone()),
-            ("type".to_string(), "write".to_string()),
-        ]);
-        let labels_read = Arc::new([
-            ("node_id".to_string(), node_id_str),
-            ("type".to_string(), "read".to_string()),
-        ]);
-
-        Self {
-            labels_write,
-            labels_read,
-            enabled,
-            sample_counter: AtomicU32::new(0),
-            sample_rate,
-        }
-    }
-
-    /// Record rejection metric (always counted, not sampled)
-    #[inline]
-    pub fn record_rejection(
-        &self,
-        is_write: bool,
-    ) {
-        if self.enabled {
-            let labels = if is_write {
-                &self.labels_write
-            } else {
-                &self.labels_read
-            };
-            metrics::counter!("backpressure.rejections", labels.as_ref()).increment(1);
-        }
-    }
-
-    /// Record buffer utilization gauge (with sampling)
-    #[inline]
-    pub fn record_buffer_utilization(
-        &self,
-        utilization: f64,
-        is_write: bool,
-    ) {
-        if self.enabled {
-            let counter = self.sample_counter.fetch_add(1, Ordering::Relaxed);
-            if counter % self.sample_rate == 0 {
-                let labels = if is_write {
-                    &self.labels_write
-                } else {
-                    &self.labels_read
-                };
-                metrics::gauge!("backpressure.buffer_utilization", labels.as_ref())
-                    .set(utilization);
-            }
-        }
-    }
 }
 
 /// Task routed to a per-follower replication worker.
@@ -501,14 +418,16 @@ pub struct LeaderState<T: TypeConfig> {
     /// Key: log entry index. Cleared on apply or error drain.
     write_propose_times: HashMap<u64, std::time::Instant>,
 
+    /// DIAG: wall-clock timestamp when each write entry's commit was observed.
+    /// Key: log entry index. Populated in `drain_pending_client_writes`, consumed in
+    /// `handle_apply_completed` to measure the commit→apply segment in isolation.
+    /// Cleared on apply or error drain.
+    write_commit_times: HashMap<u64, std::time::Instant>,
+
     /// Per-follower replication worker handles. Key = follower node_id.
     /// Workers send AppendEntries via transport and relay results back as InternalEvent::AppendResult.
     /// Dropped on role change (LeaderState drop) → workers exit via channel close.
     replication_workers: HashMap<u32, ReplicationWorkerHandle>,
-
-    // -- Metrics (optional, encapsulated) --
-    /// Backpressure metrics context (None when metrics disabled)
-    backpressure_metrics: Option<Arc<BackpressureMetrics>>,
 
     // -- Type System Marker --
     /// Phantom data for type parameter anchoring
@@ -537,6 +456,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         if self.commit_index() < new_commit_index {
             debug!("update_commit_index to: {:?}", new_commit_index);
             self.shared_state.commit_index = new_commit_index;
+            metrics::gauge!("core.raft.commit_index").set(new_commit_index as f64);
         } else {
             warn!(
                 "Illegal operation, might be a bug! I am Leader old_commit_index({}) >= new_commit_index:({})",
@@ -550,15 +470,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
     /// As Leader should not vote any more
     fn voted_for(&self) -> Result<Option<VotedFor>> {
         self.shared_state().voted_for()
-    }
-
-    /// As Leader might also be able to vote ,
-    ///     if new legal Leader found
-    fn update_voted_for(
-        &mut self,
-        voted_for: VotedFor,
-    ) -> Result<bool> {
-        self.shared_state_mut().update_voted_for(voted_for)
     }
 
     fn next_index(
@@ -923,22 +834,14 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             ClientCmd::Propose(req, sender) => {
                 let current_pending = self.propose_buffer.len();
 
-                // Record buffer utilization metric (with sampling)
-                if let Some(ref metrics) = self.backpressure_metrics
-                    && backpressure.max_pending_writes > 0
-                {
-                    let utilization =
-                        (current_pending as f64 / backpressure.max_pending_writes as f64) * 100.0;
-                    metrics.record_buffer_utilization(utilization, true);
-                }
-
                 // Check write backpressure limit
                 if backpressure.should_reject_write(current_pending) {
-                    // Record rejection metric
-                    if let Some(ref metrics) = self.backpressure_metrics {
-                        metrics.record_rejection(true);
-                    }
-
+                    metrics::counter!(
+                        "core.raft.backpressure.rejections",
+                        "node_id" => self.node_id().to_string(),
+                        "type" => "write"
+                    )
+                    .increment(1);
                     let _ = sender.send(Err(Status::resource_exhausted(
                         "Too many pending write requests",
                     )));
@@ -966,23 +869,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     ServerReadConsistencyPolicy::LinearizableRead => {
                         let current_pending = self.linearizable_read_buffer.len();
 
-                        // Record buffer utilization metric (with sampling)
-                        if let Some(ref metrics) = self.backpressure_metrics
-                            && backpressure.max_pending_reads > 0
-                        {
-                            let utilization = (current_pending as f64
-                                / backpressure.max_pending_reads as f64)
-                                * 100.0;
-                            metrics.record_buffer_utilization(utilization, false);
-                        }
-
-                        // Check read backpressure limit
                         if backpressure.should_reject_read(current_pending) {
-                            // Record rejection metric
-                            if let Some(ref metrics) = self.backpressure_metrics {
-                                metrics.record_rejection(false);
-                            }
-
+                            metrics::counter!(
+                                "core.raft.backpressure.rejections",
+                                "node_id" => self.node_id().to_string(),
+                                "type" => "read"
+                            )
+                            .increment(1);
                             let _ = sender.send(Err(Status::resource_exhausted(
                                 "Too many pending read requests",
                             )));
@@ -994,23 +887,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     ServerReadConsistencyPolicy::LeaseRead => {
                         let current_pending = self.lease_read_queue.len();
 
-                        // Record buffer utilization metric (with sampling)
-                        if let Some(ref metrics) = self.backpressure_metrics
-                            && backpressure.max_pending_reads > 0
-                        {
-                            let utilization = (current_pending as f64
-                                / backpressure.max_pending_reads as f64)
-                                * 100.0;
-                            metrics.record_buffer_utilization(utilization, false);
-                        }
-
-                        // Check read backpressure limit
                         if backpressure.should_reject_read(current_pending) {
-                            // Record rejection metric
-                            if let Some(ref metrics) = self.backpressure_metrics {
-                                metrics.record_rejection(false);
-                            }
-
+                            metrics::counter!(
+                                "core.raft.backpressure.rejections",
+                                "node_id" => self.node_id().to_string(),
+                                "type" => "read"
+                            )
+                            .increment(1);
                             let _ = sender.send(Err(Status::resource_exhausted(
                                 "Too many pending read requests",
                             )));
@@ -1022,23 +905,13 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     ServerReadConsistencyPolicy::EventualConsistency => {
                         let current_pending = self.eventual_read_queue.len();
 
-                        // Record buffer utilization metric (with sampling)
-                        if let Some(ref metrics) = self.backpressure_metrics
-                            && backpressure.max_pending_reads > 0
-                        {
-                            let utilization = (current_pending as f64
-                                / backpressure.max_pending_reads as f64)
-                                * 100.0;
-                            metrics.record_buffer_utilization(utilization, false);
-                        }
-
-                        // Check read backpressure limit
                         if backpressure.should_reject_read(current_pending) {
-                            // Record rejection metric
-                            if let Some(ref metrics) = self.backpressure_metrics {
-                                metrics.record_rejection(false);
-                            }
-
+                            metrics::counter!(
+                                "core.raft.backpressure.rejections",
+                                "node_id" => self.node_id().to_string(),
+                                "type" => "read"
+                            )
+                            .increment(1);
                             let _ = sender.send(Err(Status::resource_exhausted(
                                 "Too many pending read requests",
                             )));
@@ -1119,7 +992,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
                 let my_term = self.current_term();
                 if my_term < vote_request.term {
-                    self.update_current_term(vote_request.term);
+                    self.commit_hard_state(ctx, Some(vote_request.term), None)?;
+
                     // Revoke lease immediately — before the Raft loop processes BecomeFollower,
                     // a concurrent ReadActor could still see the old valid lease (window-period bug).
                     self.shared_state.lease.revoke();
@@ -1335,6 +1209,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 error!("[Leader] Fatal error from {}: {}", source, error);
                 let fatal_status = || tonic::Status::internal(format!("Node fatal error: {error}"));
                 // Notify all pending write requests
+                self.write_commit_times.clear();
                 let pending: Vec<_> = self.pending_write_apply.drain().collect();
                 if !pending.is_empty() {
                     warn!(
@@ -1417,10 +1292,15 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             let e2e_ms = self
                 .write_propose_times
                 .remove(&result.index)
-                .map(|t| t.elapsed().as_millis())
-                .unwrap_or(0);
-            if e2e_ms > 0 {
-                metrics::histogram!("raft.write.propose_to_apply_ms").record(e2e_ms as f64);
+                .map(|t| t.elapsed().as_secs_f64() * 1000.0)
+                .unwrap_or(0.0);
+            if e2e_ms > 0.0 {
+                metrics::histogram!("core.raft.write.propose_to_apply_ms").record(e2e_ms);
+            }
+            if let Some(t) = self.write_commit_times.remove(&result.index) {
+                let commit_to_apply_ms = t.elapsed().as_secs_f64() * 1000.0;
+                metrics::histogram!("core.raft.write.commit_to_apply_ms")
+                    .record(commit_to_apply_ms);
             }
 
             let response = if result.succeeded {
@@ -1590,7 +1470,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 "HigherTerm {} from peer {} — stepping down",
                 response.term, follower_id
             );
-            self.update_current_term(response.term);
+            self.commit_hard_state(ctx, Some(response.term), None)?;
+
             self.drain_pending_writes_with_error(ErrorCode::TermOutdated);
             // Revoke lease immediately — window-period fix (see VoteRequest branch).
             self.shared_state.lease.revoke();
@@ -1619,7 +1500,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
             Some(append_entries_response::Result::HigherTerm(term)) => {
                 if term > leader_term {
-                    self.update_current_term(term);
+                    self.commit_hard_state(ctx, Some(term), None)?;
+
                     self.drain_pending_writes_with_error(ErrorCode::TermOutdated);
                     // Revoke lease immediately — window-period fix (see VoteRequest branch).
                     self.shared_state.lease.revoke();
@@ -2289,7 +2171,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 delay.as_secs()
             );
             metrics::counter!(
-                "raft.snapshot.push_consecutive_failures",
+                "core.raft.snapshot.push_consecutive_failures",
                 "peer_id" => peer_id.to_string(),
                 "node_id" => node_id.to_string(),
             )
@@ -2315,6 +2197,10 @@ impl<T: TypeConfig> LeaderState<T> {
             BTreeMap::new()
         };
         let committed = std::mem::replace(&mut self.pending_client_writes, remaining);
+        // Single timestamp reused for every entry drained in this call — all of them
+        // are observed as committed at the same logical instant, so per-entry
+        // Instant::now() calls would be redundant syscalls.
+        let commit_ts = std::time::Instant::now();
         for (_, meta) in committed {
             let (start_idx, senders, wait_for_apply) =
                 (meta.start_idx, meta.senders, meta.wait_for_apply);
@@ -2322,9 +2208,10 @@ impl<T: TypeConfig> LeaderState<T> {
                 for (i, sender) in senders.into_iter().enumerate() {
                     let idx = start_idx + i as u64;
                     if let Some(t) = self.write_propose_times.get(&idx) {
-                        let ms = t.elapsed().as_millis();
-                        metrics::histogram!("raft.write.propose_to_commit_ms").record(ms as f64);
+                        let ms = t.elapsed().as_secs_f64() * 1000.0;
+                        metrics::histogram!("core.raft.write.propose_to_commit_ms").record(ms);
                     }
+                    self.write_commit_times.insert(idx, commit_ts);
                     self.pending_write_apply.insert(idx, sender);
                 }
             } else {
@@ -3159,18 +3046,6 @@ impl<T: TypeConfig> LeaderState<T> {
 
         let batch_size = node_config.raft.batching.max_batch_size;
 
-        let enable_batch = node_config.raft.metrics.enable_batch;
-        // Initialize backpressure metrics (None if disabled)
-        let backpressure_metrics = if node_config.raft.metrics.enable_backpressure {
-            Some(Arc::new(BackpressureMetrics::new(
-                node_id,
-                true,
-                node_config.raft.metrics.sample_rate,
-            )))
-        } else {
-            None
-        };
-
         LeaderState {
             cluster_metadata: ClusterMetadata {
                 single_voter: false,
@@ -3183,11 +3058,9 @@ impl<T: TypeConfig> LeaderState<T> {
             match_index: HashMap::new(),
             noop_log_id: None,
 
-            propose_buffer: Box::new(ProposeBatchBuffer::new(batch_size).with_length_gauge(
-                node_id,
-                "propose",
-                enable_batch,
-            )),
+            propose_buffer: Box::new(
+                ProposeBatchBuffer::new(batch_size).with_length_gauge(node_id, "propose"),
+            ),
 
             node_config,
             scheduled_purge_upto: None,
@@ -3197,11 +3070,9 @@ impl<T: TypeConfig> LeaderState<T> {
             snapshot_in_progress: AtomicBool::new(false),
             stale_check_deadline: None,
             pending_promotions: VecDeque::new(),
-            linearizable_read_buffer: Box::new(BatchBuffer::new(batch_size).with_length_gauge(
-                node_id,
-                "linearizable",
-                enable_batch,
-            )),
+            linearizable_read_buffer: Box::new(
+                BatchBuffer::new(batch_size).with_length_gauge(node_id, "linearizable"),
+            ),
             lease_read_queue: VecDeque::new(),
             eventual_read_queue: VecDeque::new(),
             pending_write_apply: HashMap::new(),
@@ -3211,7 +3082,7 @@ impl<T: TypeConfig> LeaderState<T> {
             pending_client_writes: BTreeMap::new(),
             pending_commit_actions: BTreeMap::new(),
             write_propose_times: HashMap::new(),
-            backpressure_metrics,
+            write_commit_times: HashMap::new(),
             _marker: PhantomData,
         }
     }
@@ -3603,7 +3474,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 "Stale learner detected: pending promotion threshold exceeded"
             );
             metrics::counter!(
-                "membership.stale_learner_removed",
+                "core.membership.stale_learner_removed",
                 &[("node_id", node_id.to_string())]
             )
             .increment(1);
@@ -3946,17 +3817,6 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
         let shared_state = candidate.shared_state.clone();
         shared_state.set_current_leader(candidate.node_id());
 
-        // Initialize backpressure metrics (None if disabled)
-        let backpressure_metrics = if candidate.node_config.raft.metrics.enable_backpressure {
-            Some(Arc::new(BackpressureMetrics::new(
-                candidate.node_id(),
-                true,
-                candidate.node_config.raft.metrics.sample_rate,
-            )))
-        } else {
-            None
-        };
-
         Self {
             shared_state,
             timer: Box::new(ReplicationTimer::new(rpc_append_entries_clock_in_ms)),
@@ -3966,11 +3826,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 
             propose_buffer: Box::new(
                 ProposeBatchBuffer::new(candidate.node_config.raft.batching.max_batch_size)
-                    .with_length_gauge(
-                        candidate.node_id(),
-                        "propose",
-                        candidate.node_config.raft.metrics.enable_batch,
-                    ),
+                    .with_length_gauge(candidate.node_id(), "propose"),
             ),
 
             node_config: candidate.node_config.clone(),
@@ -3989,11 +3845,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             },
             linearizable_read_buffer: Box::new(
                 BatchBuffer::new(candidate.node_config.raft.batching.max_batch_size)
-                    .with_length_gauge(
-                        candidate.node_id(),
-                        "linearizable",
-                        candidate.node_config.raft.metrics.enable_batch,
-                    ),
+                    .with_length_gauge(candidate.node_id(), "linearizable"),
             ),
             lease_read_queue: VecDeque::new(),
             eventual_read_queue: VecDeque::new(),
@@ -4004,7 +3856,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             pending_client_writes: BTreeMap::new(),
             pending_commit_actions: BTreeMap::new(),
             write_propose_times: HashMap::new(),
-            backpressure_metrics,
+            write_commit_times: HashMap::new(),
             _marker: PhantomData,
         }
     }

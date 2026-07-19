@@ -185,12 +185,14 @@ pub trait RaftRoleState: Send + Sync + 'static {
     fn current_term(&self) -> u64 {
         self.shared_state().current_term()
     }
+    #[cfg(test)]
     fn update_current_term(
         &mut self,
         term: u64,
     ) {
         self.shared_state_mut().update_current_term(term)
     }
+    #[cfg(test)]
     fn increase_current_term(&mut self) {
         self.shared_state_mut().increase_current_term()
     }
@@ -243,14 +245,55 @@ pub trait RaftRoleState: Send + Sync + 'static {
     fn voted_for(&self) -> Result<Option<VotedFor>> {
         self.shared_state().voted_for()
     }
+    #[cfg(test)]
     fn reset_voted_for(&mut self) -> Result<()> {
         self.shared_state_mut().reset_voted_for()
     }
+    #[cfg(test)]
     fn update_voted_for(
         &mut self,
-        voted_for: VotedFor,
+        ctx: &RaftContext<Self::T>,
+        term: Option<u64>,
+        voted_for: Option<VotedFor>,
     ) -> Result<bool> {
-        self.shared_state_mut().update_voted_for(voted_for)
+        if term.is_none() && voted_for.is_none() {
+            return Ok(false);
+        }
+        let result = self.shared_state_mut().set_hard_state(term, voted_for);
+        if result.changed {
+            ctx.raft_log().save_hard_state(&self.shared_state().hard_state())?;
+        }
+        Ok(result.is_new_leader_commitment)
+    }
+
+    /// Only sanctioned way to change current_term/voted_for: mutate + persist in
+    /// one call. Persist failure propagates via `?`, no rollback.
+    fn commit_hard_state(
+        &mut self,
+        ctx: &RaftContext<Self::T>,
+        term: Option<u64>,
+        voted_for: Option<VotedFor>,
+    ) -> Result<bool> {
+        if term.is_none() && voted_for.is_none() {
+            return Ok(false);
+        }
+        let result = self.shared_state_mut().set_hard_state(term, voted_for);
+        if result.changed {
+            ctx.raft_log().save_hard_state(&self.shared_state().hard_state())?;
+        }
+        Ok(result.is_new_leader_commitment)
+    }
+
+    /// Reset counterpart to `commit_hard_state()` — clears voted_for and
+    /// persists. Needed because `commit_hard_state`'s `Option<VotedFor>` can't
+    /// distinguish "don't touch" from "clear to None".
+    fn commit_vote_reset(
+        &mut self,
+        ctx: &RaftContext<Self::T>,
+    ) -> Result<()> {
+        self.shared_state_mut().clear_voted_for();
+        ctx.raft_log().save_hard_state(&self.shared_state().hard_state())?;
+        Ok(())
     }
 
     //--- Timer related ---
@@ -485,25 +528,31 @@ pub trait RaftRoleState: Send + Sync + 'static {
         let new_leader_id = append_entries_request.leader_id;
         let request_term = append_entries_request.term;
 
-        // CRITICAL: Check is_new_leader BEFORE setting current_leader
-        // This ensures node restart scenario works correctly:
-        // - After restart, current_leader is None (memory cleared)
-        // - update_voted_for() detects None and returns true
-        // - Triggers LeaderDiscovered event for wait_ready()
-        // Mark vote as committed (follower confirms leader)
-        // Returns true only on state transition (committed: false->true or leader/term change)
-        let is_new_leader = self.update_voted_for(VotedFor {
-            voted_for_id: new_leader_id,
-            voted_for_term: request_term,
-            committed: true,
-        })?;
+        let term_update = if my_term < request_term {
+            Some(request_term)
+        } else {
+            None
+        };
+
+        // CRITICAL: capture is_new_leader BEFORE setting current_leader — after a
+        // restart, current_leader is None (memory cleared), so commit_hard_state's
+        // transition check (committed: false->true, leader/term change, or no
+        // current leader) correctly re-fires LeaderDiscovered for wait_ready().
+        let is_new_leader = self.commit_hard_state(
+            ctx,
+            term_update,
+            Some(VotedFor {
+                voted_for_id: new_leader_id,
+                voted_for_term: request_term,
+                committed: true,
+            }),
+        )?;
 
         // Keep syncing leader_id (hot-path: ~5ns atomic store vs ~50ns RwLock)
         self.shared_state().set_current_leader(new_leader_id);
 
-        // Trigger leader discovery notification only on state transition
-        // Event-driven: avoids redundant notifications on every heartbeat
-        // Performance: ~9ns check overhead, saves ~100ns redundant sends
+        // Trigger leader discovery notification only on state transition —
+        // now safely AFTER hard_state is durably persisted.
         if is_new_leader {
             internal_event_tx
                 .send(InternalEvent::LeaderDiscovered(new_leader_id, request_term))
@@ -511,10 +560,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
                     error!("Failed to send LeaderDiscovered: {e:?}");
                     NetworkError::SingalSendFailed(format!("{:?}", e))
                 })?;
-        }
-
-        if my_term < request_term {
-            self.update_current_term(request_term);
         }
 
         // My term might be updated, has to fetch it again

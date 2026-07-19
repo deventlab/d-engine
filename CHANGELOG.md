@@ -26,6 +26,12 @@ All notable changes to this project will be documented in this file.
 
 - **`ClusterConfig::default()` now consistent with serde default** (#415): `Default::default()` previously produced an empty `initial_cluster`, but `#[serde(default)]` returned `[{id:1, ...}]`. `RaftNodeConfig::new()` uses the Rust `Default` impl, so programmatic configs always got an empty cluster. Fixed.
 
+- **WAL fsync serialization regression (#422)**: #407 enabled per-batch `flush_wal(true)` (Level 3 durability),
+  but the IO thread blocked inline on fsync — every entry paid the full fsync penalty individually under
+  moderate load. Introduced `FsyncCoordinator`: fsync is dispatched to `spawn_blocking`, the IO thread
+  returns immediately, and entries arriving during an in-flight fsync are coalesced into the same physical
+  disk flush. Storage-level group commit is restored without artificial batching windows.
+
 ### Changed
 
 - `[raft.read_actor]` replaces the previous flat `read_actor_channel_capacity` / `read_actor_max_drain` fields in `[raft]`. Update existing config files accordingly.
@@ -33,6 +39,14 @@ All notable changes to this project will be documented in this file.
 - **⚠️ `StateMachine::entry_term()` removed from trait** (#418): Term lookup belongs to the log layer, not the state machine. Custom `StateMachine` implementations must delete this method — it is no longer part of the trait. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
 
 - **KV encoding moved out of `d-engine-core`** (#415): `ClientWriteRequest.command` is now `Option<Bytes>` (pre-serialized). Serialization happens in the server transport layer (embedded/standalone/gRPC handler). Core is encoding-agnostic.
+
+- **Metrics renamed with `core.` namespace prefix**: all `d-engine-core` metrics now use the `core.*`
+  prefix (e.g. `core.raft.fsync.duration_ms`, `core.raft.write.propose_to_apply_ms`,
+  `core.state_machine.apply_chunk.duration_ms`). The `[raft.metrics]` config section (`MetricsConfig`)
+  has been removed — metrics are always-on, disabled only by not installing a recorder.
+
+- **New `shutdown_timeout_ms` in `[raft.persistence]`** (default `5000`): bounds `close()` wait
+  against a stuck fsync task. The task itself continues running in the background.
 
 ---
 

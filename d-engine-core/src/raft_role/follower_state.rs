@@ -218,26 +218,18 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     .await
                 {
                     Ok(state_update) => {
+                        let vote_granted = state_update.new_voted_for.is_some();
+                        if vote_granted {
+                            self.reset_timer();
+                        }
+
                         debug!(
                             "handle_vote_request success with state_update: {:?}",
                             &state_update
                         );
 
-                        // 1. Update term FIRST if needed
-                        if let Some(new_term) = state_update.term_update {
-                            self.update_current_term(new_term);
-                        }
-                        // 2. If update my voted_for
                         let new_voted_for = state_update.new_voted_for;
-                        if let Some(v) = new_voted_for {
-                            match self.update_voted_for(v) {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    error("update_voted_for", &e);
-                                    return Err(e);
-                                }
-                            }
-                        }
+                        self.commit_hard_state(ctx, state_update.term_update, new_voted_for)?;
 
                         let response = VoteResponse {
                             term: my_term,

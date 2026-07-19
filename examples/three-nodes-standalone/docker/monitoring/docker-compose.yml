@@ -45,10 +45,25 @@ services:
       - prometheus
       - loki
 
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "8085:8080"
+    restart: unless-stopped
+    networks:
+      - docker_mynetwork
+
 volumes:
   prometheus_data:
   grafana_data:
 
 networks:
   docker_mynetwork:
-    driver: bridge
+    external: true

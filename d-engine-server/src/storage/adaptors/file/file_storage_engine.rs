@@ -387,9 +387,13 @@ impl LogStore for FileLogStore {
     }
 
     fn flush(&self) -> Result<(), Error> {
+        let t0 = std::time::Instant::now();
         let mut inner = self.inner.lock().unwrap();
         inner.file.flush()?;
         inner.file.sync_all()?;
+        drop(inner);
+        let ms = t0.elapsed().as_millis();
+        metrics::histogram!("server.storage.file.flush_ms").record(ms as f64);
         Ok(())
     }
 

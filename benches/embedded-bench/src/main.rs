@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 
 // Batch test configuration constants
 const BATCH_TEST_TOTAL_REQUESTS: u64 = 100000;
-const BATCH_TEST_CONCURRENT_CLIENTS: usize = 100;
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -185,6 +184,14 @@ async fn main() {
         cli.config_path = path;
     }
 
+    // Same port scheme as examples/three-nodes-standalone (8081/8082/8083 per node) —
+    // the two never run at the same time, so reusing the ports keeps the existing
+    // Prometheus "dengine-host" scrape job working for both.
+    let metrics_port: u16 = std::env::var("METRICS_PORT")
+        .map(|v| v.parse::<u16>().expect("METRICS_PORT must be a valid port"))
+        .unwrap_or(8081);
+    tokio::spawn(start_metrics_server(metrics_port));
+
     match cli.mode.as_str() {
         "local" => run_local_benchmark(cli).await,
         "server" => run_http_server(cli).await,
@@ -197,6 +204,28 @@ async fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// Starts the Prometheus metrics exporter with exponential _ms buckets matching
+/// examples/three-nodes-standalone/src/main.rs, so bench data stays comparable
+/// with that setup's Grafana dashboards. Default Prometheus buckets start at
+/// 5ms, collapsing all sub-5ms detail; these exponential buckets cover 0.1ms–1.6s.
+async fn start_metrics_server(port: u16) {
+    println!("Metrics server will start at http://0.0.0.0:{port}/metrics");
+
+    const MS_BUCKETS: &[f64] = &[
+        0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8, 409.6, 819.2, 1638.4,
+    ];
+
+    metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], port))
+        .set_buckets_for_metric(
+            metrics_exporter_prometheus::Matcher::Suffix("_ms".to_string()),
+            MS_BUCKETS,
+        )
+        .expect("failed to configure _ms buckets")
+        .install()
+        .expect("failed to start Prometheus metrics exporter");
 }
 
 /// Run a single benchmark test with specified parameters
@@ -325,7 +354,7 @@ async fn run_batch_tests(
         "High Concurrency Write (100K requests)",
         Commands::Put,
         BATCH_TEST_TOTAL_REQUESTS,
-        BATCH_TEST_CONCURRENT_CLIENTS,
+        cli.clients,
         cli,
     )
     .await
@@ -345,7 +374,7 @@ async fn run_batch_tests(
             consistency: "l".to_string(),
         },
         BATCH_TEST_TOTAL_REQUESTS,
-        BATCH_TEST_CONCURRENT_CLIENTS,
+        cli.clients,
         cli,
     )
     .await
@@ -364,7 +393,7 @@ async fn run_batch_tests(
             consistency: "s".to_string(),
         },
         BATCH_TEST_TOTAL_REQUESTS,
-        BATCH_TEST_CONCURRENT_CLIENTS,
+        cli.clients,
         cli,
     )
     .await
@@ -383,7 +412,7 @@ async fn run_batch_tests(
             consistency: "e".to_string(),
         },
         BATCH_TEST_TOTAL_REQUESTS,
-        BATCH_TEST_CONCURRENT_CLIENTS,
+        cli.clients,
         cli,
     )
     .await
@@ -404,7 +433,7 @@ async fn run_batch_tests(
             consistency: "l".to_string(),
         },
         BATCH_TEST_TOTAL_REQUESTS,
-        BATCH_TEST_CONCURRENT_CLIENTS,
+        cli.clients,
         &cli_hotkey,
     )
     .await

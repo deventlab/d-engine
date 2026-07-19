@@ -5,22 +5,6 @@
 //! cleanup on step-down, batching of multiple requests, and
 //! Unavailable delivery when leadership is lost via higher-term step-down.
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use crate::client::ClientReadRequest;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::replication::SuccessResult;
-use d_engine_proto::server::replication::append_entries_response;
-use tokio::sync::{mpsc, watch};
-use tokio::time::Instant;
-use tonic::Code;
-use tracing_test::traced_test;
-
 use crate::ClientCmd;
 use crate::MockMembership;
 use crate::MockRaftLog;
@@ -28,12 +12,26 @@ use crate::MockReplicationCore;
 use crate::PeerUpdate;
 use crate::RaftNodeConfig;
 use crate::ReadConsistencyPolicy;
+use crate::client::ClientReadRequest;
 use crate::convert::safe_kv_bytes;
 use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
 use crate::raft_role::leader_state::{LeaderState, PendingLeaseRead};
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{mpsc, watch};
+use tokio::time::Instant;
+use tonic::Code;
+use tracing_test::traced_test;
 
 // ============================================================================
 // Helpers
@@ -96,6 +94,7 @@ async fn setup_multi_voter_expired_lease(
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 10);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(10));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.read_consistency.allow_client_override = true;

@@ -257,10 +257,11 @@ where
             self.role.reset_timer();
         }
 
-        loop {
-            // Note: next_deadline wil be reset in each role's tick function
-            let tick = sleep_until(self.role.next_deadline());
+        // Note: next_deadline wil be reset in each role's tick function
+        let tick = sleep_until(self.role.next_deadline());
+        tokio::pin!(tick);
 
+        loop {
             tokio::select! {
                 // Use biased to ensure branch order
                 biased;
@@ -279,7 +280,7 @@ where
                 }
 
                 // P1: Tick: start Heartbeat(replication) or start Election
-                _ = tick => {
+                _ = &mut tick => {
                     trace!("receive tick");
                     let internal_event_tx = &self.internal_event_tx;
                     let event_tx = &self.event_tx;
@@ -289,6 +290,8 @@ where
                     } else {
                         trace!("tick success");
                     }
+
+                    tick.as_mut().reset(self.role.next_deadline());
                 }
 
                 // P2: internal events — handle first, drain rest after select
@@ -317,6 +320,11 @@ where
             self.process_internal_events().await?;
             self.process_client_cmds().await?;
             self.process_inbound_events().await?;
+
+            let new_deadline = self.role.next_deadline();
+            if new_deadline != tick.deadline() {
+                tick.as_mut().reset(new_deadline);
+            }
         }
     }
 
@@ -491,7 +499,7 @@ where
                 self.role = self.role.become_follower()?;
 
                 // Reset vote when stepping down (new term, no vote yet)
-                self.role.state_mut().reset_voted_for()?;
+                self.role.state_mut().commit_vote_reset(&self.ctx)?;
 
                 // Notify leader change listeners
                 let current_term = self.role.current_term();
@@ -522,11 +530,15 @@ where
 
                 // Mark vote as committed (candidate → leader transition)
                 let current_term = self.role.current_term();
-                let _ = self.role.state_mut().update_voted_for(VotedFor {
-                    voted_for_id: self.node_id,
-                    voted_for_term: current_term,
-                    committed: true,
-                })?;
+                self.role.state_mut().commit_hard_state(
+                    &self.ctx,
+                    None,
+                    Some(VotedFor {
+                        voted_for_id: self.node_id,
+                        voted_for_term: current_term,
+                        committed: true,
+                    }),
+                )?;
 
                 let peer_ids = self.ctx.membership().get_peers_id_with_condition(|_| true).await;
 
@@ -865,7 +877,7 @@ where
         if let Err(e) = self
             .ctx
             .raft_log()
-            .save_hard_state(&self.role.state().shared_state().hard_state)
+            .save_hard_state(&self.role.state().shared_state().hard_state())
         {
             error!(?e, "State storage persist node hard state failed.");
         }

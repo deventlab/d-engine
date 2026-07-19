@@ -13,6 +13,12 @@ mod common_test;
 #[cfg(test)]
 mod entry_builder_test;
 
+#[cfg(test)]
+mod log_capture;
+
+#[cfg(test)]
+pub use log_capture::*;
+
 pub use buffered_raft_log_test_helpers::*;
 pub use common::*;
 pub use entry_builder::*;

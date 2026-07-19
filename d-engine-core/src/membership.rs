@@ -227,9 +227,9 @@ pub fn ensure_safe_join(
     if (total_voters + 1).is_multiple_of(2) {
         Ok(())
     } else {
-        // metrics::counter!("cluster.unsafe_join_attempts", 1);
+        // metrics::counter!("core.cluster.unsafe_join_attempts", 1);
         metrics::counter!(
-            "cluster.unsafe_join_attempts",
+            "core.cluster.unsafe_join_attempts",
             &[("node_id", node_id.to_string())]
         )
         .increment(1);

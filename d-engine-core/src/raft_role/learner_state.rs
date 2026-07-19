@@ -204,7 +204,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 info!("handle_inbound_event::ReceiveVoteRequest. Learner cannot vote.");
                 // 1. Update term FIRST if needed
                 if vote_request.term > my_term {
-                    self.update_current_term(vote_request.term);
+                    self.commit_hard_state(ctx, Some(vote_request.term), None)?;
                 }
 
                 // 2. Response sender with vote_granted=false

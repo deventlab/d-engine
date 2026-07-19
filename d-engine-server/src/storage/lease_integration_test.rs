@@ -416,8 +416,7 @@ mod file_state_machine_tests {
 
     /// WAL replay stops at the first truncated entry and discards the tail.
     ///
-    /// A WAL tail truncation is the expected outcome of a crash mid-write. Per the same
-    /// principle used by etcd and TiKV, replay stops at the first incomplete entry rather
+    /// A WAL tail truncation is the expected outcome of a crash mid-write. Replay stops at the first incomplete entry rather
     /// than continuing with garbage bytes or silently loading a partial entry with wrong TTL.
     /// Complete entries before the truncation point are applied; the truncated entry and
     /// anything after it are dropped.

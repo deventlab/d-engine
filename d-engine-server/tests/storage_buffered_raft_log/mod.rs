@@ -54,6 +54,7 @@ impl TestContext {
                 strategy: strategy.clone(),
                 flush_policy: flush_policy.clone(),
                 max_buffered_entries: 10000,
+                shutdown_timeout_ms: 5000,
             },
             storage.clone(),
         );
@@ -94,6 +95,7 @@ impl TestContext {
                 strategy: self.strategy.clone(),
                 flush_policy: self.flush_policy.clone(),
                 max_buffered_entries: 10000,
+                shutdown_timeout_ms: 5000,
             },
             storage.clone(),
         );

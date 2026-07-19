@@ -3,8 +3,7 @@
 //! Lives in `d-engine-server`, not `d-engine-core`, because it is a
 //! performance optimisation component, not a Raft protocol component.
 //! Removing it does not affect correctness of consensus, election, or
-//! log replication.  (Contrast: TiKV's LocalReader lives in tikv/src/server/,
-//! not in raft-rs.)
+//! log replication.
 //!
 //! # Routing contract
 //!
@@ -19,13 +18,12 @@
 //! `read_rx` is drained and closed, at which point `Arc<SM>` is dropped and the
 //! RocksDB LOCK file is released — before `stop()` signals the Raft loop.
 
-use std::sync::Arc;
-
 use bytes::Bytes;
 use d_engine_core::ReadLease;
 use d_engine_core::StateMachine;
 use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_core::now_ms;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 // ── ReadCmd ────────────────────────────────────────────────────────────────────

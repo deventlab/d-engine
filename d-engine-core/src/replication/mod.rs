@@ -167,6 +167,16 @@ where
     ///    - Check `response.term_update` for term conflicts
     ///    - If higher term exists, transition to Follower
     ///    - Apply other state updates via internal_event_tx
+    ///
+    /// # Return value
+    /// `Ok(_)` covers all *protocol-level* outcomes, including a log conflict
+    /// (`response.result` is `Conflict`, not `Err`) — that's expected Raft
+    /// behavior, not a failure. `Err(_)` means the storage layer itself
+    /// failed while resolving/appending entries (e.g. `reset()` or a
+    /// truncate+replace write actually erroring), or — more rarely — the
+    /// node is mid-shutdown and its IO command channel is already closed.
+    /// Either way `Err` signals something at or below the storage layer,
+    /// never "the logs don't match" (that's a normal `Ok` + `Conflict`).
     async fn handle_append_entries(
         &self,
         request: AppendEntriesRequest,

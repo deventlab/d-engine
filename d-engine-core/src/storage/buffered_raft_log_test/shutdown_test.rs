@@ -52,6 +52,7 @@ fn test_io_thread_survives_runtime_drop() {
                     idle_flush_interval_ms: 50,
                 },
                 max_buffered_entries: 1000,
+                shutdown_timeout_ms: 5000,
             },
             storage,
         );
@@ -163,6 +164,7 @@ async fn test_shutdown_handles_slow_workers() {
                 idle_flush_interval_ms: 100,
             },
             max_buffered_entries: 1000,
+            shutdown_timeout_ms: 5000,
         },
         storage,
     );
@@ -240,12 +242,22 @@ async fn test_shutdown_with_multiple_flushes() {
 
 /// Verifies that a fatal IOTask::ReplaceRange failure:
 /// 1. Propagates the error synchronously to the caller via the done channel.
-/// 2. Shuts down the IO thread — subsequent flush() is rejected because the
-///    command channel is closed.
+/// 2. Shuts down the IO thread.
+/// 3. Poisons the log — writes after the failure are rejected outright, not
+///    silently accepted into memory with no IO thread left to persist them.
 ///
 /// Root issue: without `return` after done.send(Err), batch_processor continues
 /// running on a storage whose on-disk state is now inconsistent with memory.
 /// With the fix, it exits immediately so no further IO is attempted.
+///
+/// ## Update (2026-07-19)
+/// Point 3 and the poisoning check are new. The old version of this test
+/// asserted the opposite of point 3 — that a write after the fatal error
+/// "succeeds (in-memory only)". That was accurate but was itself a bug this
+/// session closed: a write silently accepted with no live IO thread to ever
+/// persist it. The trailing `flush()` check is removed — with writes now
+/// rejected, `max_index` never gets ahead of `durable_index`, so `flush()`
+/// short-circuits to `Ok(())` and no longer exercises the dead-channel path.
 #[tokio::test]
 async fn test_replace_range_failure_propagates_error_and_shuts_down_io_thread() {
     let mut log_store = MockLogStore::new();
@@ -282,6 +294,7 @@ async fn test_replace_range_failure_propagates_error_and_shuts_down_io_thread() 
                 idle_flush_interval_ms: 60_000, // no auto-flush
             },
             max_buffered_entries: 1000,
+            shutdown_timeout_ms: 5000,
         },
         storage,
     );
@@ -306,18 +319,19 @@ async fn test_replace_range_failure_propagates_error_and_shuts_down_io_thread() 
         "expected ReplaceRange failure to be propagated to caller"
     );
 
-    // Append entry 5 (in-memory only — succeeds even with dead IO thread).
-    // This pushes max_index to 5, above durable_index=4, so flush() will not
-    // short-circuit and will attempt to send IOTask::Flush to the dead channel.
-    raft_log.append_entries(vec![entry(5, 2)]).await.unwrap();
-
     // Allow IO thread time to fully exit after the fatal error.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // flush() must fail: the IO thread exited, the command channel is closed.
-    let flush_result = raft_log.flush().await;
     assert!(
-        flush_result.is_err(),
-        "expected flush to fail after IO thread fatal error"
+        raft_log.is_poisoned(),
+        "a replace_range() failure must poison the log"
+    );
+
+    // Writes after the failure must be rejected outright, not silently
+    // accepted into memory with no live IO thread to ever persist them.
+    let append_result = raft_log.append_entries(vec![entry(5, 2)]).await;
+    assert!(
+        append_result.is_err(),
+        "writes must be rejected once poisoned"
     );
 }

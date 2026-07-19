@@ -165,12 +165,17 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
         debug!("candidate::start_election...");
 
-        self.increase_current_term();
-        self.reset_voted_for()?;
-
+        let new_term = self.current_term() + 1;
+        self.commit_hard_state(
+            ctx,
+            Some(new_term),
+            Some(VotedFor {
+                voted_for_id: self.node_id(),
+                voted_for_term: new_term,
+                committed: false,
+            }),
+        )?;
         debug!("candidate new term: {}", self.current_term());
-
-        self.vote_myself()?;
 
         match ctx
             .election_handler()
@@ -195,8 +200,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(
                 higher_term,
             )))) => {
-                // Immediately update the Term and become a Follower.
-                self.update_current_term(higher_term);
+                self.commit_hard_state(ctx, Some(higher_term), None)?;
+
                 self.send_become_follower_event(internal_event_tx)?;
             }
             Err(e) => {
@@ -248,7 +253,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     last_log_term,
                     self.voted_for().unwrap(),
                 ) {
-                    self.update_current_term(vote_request.term);
+                    self.commit_hard_state(ctx, Some(vote_request.term), None)?;
+
                     // Step down as Follower
                     self.send_become_follower_event(&internal_event_tx)?;
 
@@ -354,7 +360,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     self.shared_state().set_current_leader(append_entries_request.leader_id);
 
                     if append_entries_request.term > my_term {
-                        self.update_current_term(append_entries_request.term);
+                        self.commit_hard_state(ctx, Some(append_entries_request.term), None)?;
                     }
                     // Step down as Follower
                     self.send_become_follower_event(&internal_event_tx)?;
@@ -466,7 +472,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 }
 
 impl<T: TypeConfig> CandidateState<T> {
-    pub fn can_vote_myself(&self) -> bool {
+    #[cfg(test)]
+    pub(super) fn can_vote_myself(&self) -> bool {
         if let Ok(Some(vf)) = self.voted_for() {
             let current_term = self.current_term();
             debug!(
@@ -480,20 +487,6 @@ impl<T: TypeConfig> CandidateState<T> {
             debug!("[candiate::can_vote_myself] true");
             true
         }
-    }
-    pub fn vote_myself(&mut self) -> Result<()> {
-        info!("vote myself as candidate");
-        trace!(
-            "Vote myself: my_id: {}, my_new_term:{}",
-            self.node_id(),
-            self.current_term()
-        );
-        let _ = self.update_voted_for(VotedFor {
-            voted_for_id: self.node_id(),
-            voted_for_term: self.current_term(),
-            committed: false,
-        })?;
-        Ok(())
     }
 
     /// The fun will retrieve current state snapshot

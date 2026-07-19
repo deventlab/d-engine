@@ -12,8 +12,6 @@ pub struct BatchBuffer<E> {
     pub(super) last_flush: Instant,
     /// Pre-allocated metric labels for zero-allocation hot path
     metrics_labels: Option<Arc<[(String, String)]>>,
-    /// Runtime switch for buffer length gauge
-    metrics_enabled: bool,
 }
 
 impl<E> BatchBuffer<E> {
@@ -22,24 +20,21 @@ impl<E> BatchBuffer<E> {
             buffer: Vec::with_capacity(initial_capacity),
             last_flush: Instant::now(),
             metrics_labels: None,
-            metrics_enabled: false,
         }
     }
 
     /// Enable buffer length gauge with a distinguishing buffer name label.
     ///
-    /// Emits: `batch.buffer_length{node_id="..", buffer="propose"|"linearizable"}`
+    /// Emits: `core.raft.buffer.length{node_id="..", buffer="propose"|"linearizable"}`
     pub fn with_length_gauge(
         mut self,
         node_id: u32,
         buffer_name: &'static str,
-        enabled: bool,
     ) -> Self {
         self.metrics_labels = Some(Arc::from(vec![
             ("node_id".to_string(), node_id.to_string()),
             ("buffer".to_string(), buffer_name.to_string()),
         ]));
-        self.metrics_enabled = enabled;
         self
     }
 
@@ -54,10 +49,9 @@ impl<E> BatchBuffer<E> {
     ) {
         self.buffer.push(request);
 
-        if self.metrics_enabled
-            && let Some(ref labels) = self.metrics_labels
-        {
-            metrics::gauge!("batch.buffer_length", labels.as_ref()).set(self.buffer.len() as f64);
+        if let Some(ref labels) = self.metrics_labels {
+            metrics::gauge!("core.raft.buffer.length", labels.as_ref())
+                .set(self.buffer.len() as f64);
         }
     }
 
@@ -66,10 +60,8 @@ impl<E> BatchBuffer<E> {
         self.last_flush = Instant::now();
         let items = std::mem::take(&mut self.buffer);
 
-        if self.metrics_enabled
-            && let Some(ref labels) = self.metrics_labels
-        {
-            metrics::gauge!("batch.buffer_length", labels.as_ref()).set(0.0);
+        if let Some(ref labels) = self.metrics_labels {
+            metrics::gauge!("core.raft.buffer.length", labels.as_ref()).set(0.0);
         }
 
         items

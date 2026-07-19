@@ -32,6 +32,7 @@ use rocksdb::Options;
 use rocksdb::ReadOptions;
 use rocksdb::WriteBatch;
 use rocksdb::WriteBatchWithIndex;
+use rocksdb::WriteOptions;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::debug;
@@ -49,6 +50,16 @@ const LAST_APPLIED_INDEX_KEY: &[u8] = b"last_applied_index";
 const LAST_APPLIED_TERM_KEY: &[u8] = b"last_applied_term";
 const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
 const TTL_STATE_KEY: &[u8] = b"ttl_state";
+
+thread_local! {
+    // SM WAL is redundant — Raft log WAL guarantees entry durability.
+    // disableWAL=true eliminates wal_write_mutex_ contention with the Raft log WAL path.
+    static SM_WRITE_OPTS: WriteOptions = {
+        let mut opts = WriteOptions::new();
+        opts.disable_wal(true);
+        opts
+    };
+}
 
 /// Persisted representation of `ExportImportFilesMetaData` for cross-node snapshot transfer.
 ///
@@ -706,6 +717,29 @@ impl RocksDBStateMachine {
         self.db.store(None);
         info!("RocksDB state machine: DB closed, LOCK released");
     }
+
+    /// Test-only: quiesce RocksDB's background compaction/flush WITHOUT flushing
+    /// MemTable, saving hard state, or persisting TTL metadata — simulates what a
+    /// real `kill -9` leaves behind on disk (no "dying gasp" persistence a real
+    /// crash would never get). Callers copy the data directory to a fresh path
+    /// immediately after calling this, then open the copy to simulate restart —
+    /// `cancel_all_background_work` stops SST files from being renamed/deleted
+    /// mid-copy. This is DB-wide: since `RocksDBLogStore`/`RocksDBMetaStore` share
+    /// the same underlying `rocksdb::DB`, calling this via the SM handle alone
+    /// quiesces the whole physical DB.
+    ///
+    /// Do not use on any graceful-shutdown path — use `close_db()` for that.
+    #[cfg(any(test, feature = "__test_support"))]
+    pub fn close_db_for_crash_simulation(&self) {
+        self.is_serving.store(false, Ordering::SeqCst);
+        {
+            let guard = self.db.load();
+            if let Some(db) = guard.as_deref() {
+                db.cancel_all_background_work(true);
+            }
+        }
+        self.db.store(None);
+    }
 }
 
 #[async_trait]
@@ -891,7 +925,10 @@ impl StateMachine for RocksDBStateMachine {
             }
         }
 
-        db.write_wbwi(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
+        let _t0 = std::time::Instant::now();
+        SM_WRITE_OPTS
+            .with(|opts| db.write_wbwi_opt(&batch, opts))
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
 
         if let Some(highest) = highest_index_entry {
             self.update_last_applied(highest);
@@ -1174,6 +1211,16 @@ impl StateMachine for RocksDBStateMachine {
                     "State machine CF not found".to_string(),
                 )))
             })?;
+
+            // Single-key reads don't need cross-key point-in-time consistency,
+            // so skip snapshot creation to avoid RocksDB's internal snapshot-list lock.
+            if keys.len() == 1 {
+                return db
+                    .get_cf(&cf, &keys[0])
+                    .map(|v| vec![v.map(|b| Bytes::copy_from_slice(&b))])
+                    .map_err(|e| StorageError::DbError(e.to_string()).into());
+            }
+
             // One snapshot covers the full batch: all keys read from the same point-in-time.
             // Snapshot lives only within this call — no lifetime escaping, no unsafe.
             let snap = db.snapshot();

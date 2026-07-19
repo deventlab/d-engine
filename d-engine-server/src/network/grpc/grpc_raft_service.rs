@@ -463,10 +463,14 @@ where
             let core_req = proto_convert::to_core_write_req(proto_req);
 
             let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+            let t0 = std::time::Instant::now();
             cmd_tx
                 .send(d_engine_core::ClientCmd::Propose(core_req, resp_tx))
                 .await
                 .map_err(|_| Status::internal("Command channel closed"))?;
+
+            metrics::histogram!("server.rpc.cmd_channel_send_wait_ms", "op" => "propose")
+                .record(t0.elapsed().as_millis() as f64);
 
             handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_write")
                 .await
@@ -547,12 +551,14 @@ where
 
         // cmd_tx path: Linearizable or unrecognized policy.
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+        let t0 = std::time::Instant::now();
         self.read_handle
             .cmd_tx
             .send(d_engine_core::ClientCmd::Read(core_req, resp_tx))
             .await
             .map_err(|_| Status::internal("Command channel closed"))?;
-
+        metrics::histogram!("server.rpc.cmd_channel_send_wait_ms", "op" => "read")
+            .record(t0.elapsed().as_millis() as f64);
         handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_read")
             .await
             .map(|resp| resp.map(proto_convert::to_proto_response))
@@ -575,11 +581,13 @@ where
 
         let req = request.into_inner();
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-
+        let t0 = std::time::Instant::now();
         self.cmd_tx
             .send(d_engine_core::ClientCmd::Scan(req.prefix, resp_tx))
             .await
             .map_err(|_| Status::internal("Command channel closed"))?;
+        metrics::histogram!("server.rpc.cmd_channel_send_wait_ms", "op" => "scan")
+            .record(t0.elapsed().as_millis() as f64);
 
         let timeout_duration =
             Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);

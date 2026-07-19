@@ -83,8 +83,4 @@ mockall = "0.12.1"
 tonic-health = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
-
-# Benchmark configuration
-[[bench]]
-name = "leader_state_bench"
-harness = false
+tracing-subscriber = { version = "0.3", features = ["registry"] }

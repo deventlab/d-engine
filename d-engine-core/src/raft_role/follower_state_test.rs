@@ -33,6 +33,7 @@ use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotSender;
 use crate::MockElectionCore;
 use crate::MockMembership;
+use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
 use crate::NetworkError;
@@ -335,6 +336,321 @@ async fn test_handle_vote_request_grants_and_updates_term() {
     assert_eq!(state.current_term(), updated_term, "Term should update");
 }
 
+/// Test: Follower persists hard_state BEFORE the vote-granted response is observable
+/// to the caller.
+///
+/// Scenario:
+/// - Same setup as test_handle_vote_request_grants_and_updates_term above: Follower
+///   grants a vote, term updates to 100.
+/// - `RaftLog::save_hard_state` is documented as required "Before voting for a candidate"
+///   (raft_log.rs "When to Call") — this is the Raft paper's core safety requirement:
+///   currentTerm/votedFor must be durable before the RPC response is sent, otherwise a
+///   crash right after responding "yes" can make the node forget it already voted this
+///   term and grant a second, conflicting vote after restart (double-voting, breaks
+///   election safety).
+///
+/// Expected:
+/// - `save_hard_state` is called exactly once with term=100 and the granted `voted_for`.
+/// - The call happens BEFORE `resp_rx` observes the `vote_granted=true` response
+#[tokio::test]
+async fn test_handle_vote_request_grants_vote_persists_hard_state_before_responding() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let updated_term = 100;
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_handle_vote_request()
+        .times(1)
+        .returning(move |_, _, _, _| {
+            Ok(StateUpdate {
+                new_voted_for: Some(VotedFor {
+                    voted_for_id: 1,
+                    voted_for_term: 1,
+                    committed: false,
+                }),
+                term_update: Some(updated_term),
+            })
+        });
+    context.handlers.election_handler = election_handler;
+
+    let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+    let resp_rx = Arc::new(std::sync::Mutex::new(resp_rx));
+    let resp_rx_for_ordering_check = Arc::clone(&resp_rx);
+
+    // Custom MockRaftLog wired directly into context — NOT mock_raft_log()'s permissive
+    // default, whose no-op save_hard_state stub is registered first and (per mockall's
+    // FIFO expectation matching) would silently absorb every call before this stricter
+    // expectation ever gets a chance to run.
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_log_id().returning(|| None);
+    raft_log
+        .expect_save_hard_state()
+        .withf(move |s| {
+            // Ordering proof: at the moment save_hard_state runs, the vote-granted
+            // response must not have been sent yet — try_recv() on the still-empty
+            // broadcast channel returns Err. Mirrors the candidate_state.rs tests;
+            // MaybeCloneOneshotReceiver exposes a non-blocking try_recv() in test
+            // builds, so the same channel-peek technique applies here too.
+            assert!(
+                resp_rx_for_ordering_check.lock().unwrap().try_recv().is_err(),
+                "save_hard_state must be called BEFORE the vote-granted response is sent"
+            );
+            s.current_term == updated_term
+                && s.voted_for
+                    == Some(VotedFor {
+                        voted_for_id: 1,
+                        voted_for_term: 1,
+                        committed: false,
+                    })
+        })
+        .times(1)
+        .returning(|_| Ok(()));
+    context.storage.raft_log = Arc::new(raft_log);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = create_vote_request_event(1, 1, resp_tx);
+
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
+
+    // By this point handle_inbound_event has fully completed, so the response (if any)
+    // was already broadcast synchronously — try_recv() should find it immediately.
+    let r = resp_rx.lock().unwrap().try_recv().unwrap().unwrap();
+    assert!(r.vote_granted, "Should grant vote");
+    assert!(
+        internal_event_rx.try_recv().is_err(),
+        "Should remain Follower"
+    );
+    assert_eq!(state.current_term(), updated_term, "Term should update");
+}
+
+/// Test: Granting a vote resets the election timer.
+///
+/// Scenario:
+/// - Follower's timer is set to an already-expired deadline before the request
+///   arrives (simulates "haven't heard from anyone in a while").
+/// - `VoteRequest` arrives and is legitimately granted.
+///
+/// Expected:
+/// - After processing, `state.is_timer_expired()` is false — the timer was
+///   reset to a fresh future deadline as part of granting the vote, giving the
+///   new candidate a fair window to complete its election before this node
+///   also times out and starts a competing campaign (see decision doc for
+///   ticket #422: this exact gap caused a real election-storm regression,
+///   confirmed pre-existing via `git diff` before this test was added).
+///
+/// Known bug (fixed as of 2026-07-18, ticket #422 follow-up): the vote-granting
+/// branch in `handle_inbound_event`'s `ReceiveVoteRequest` arm previously never
+/// called `self.reset_timer()`.
+#[tokio::test]
+async fn test_handle_vote_request_grants_vote_resets_election_timer() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    // This test only cares about timer behavior, not persistence — use the
+    // permissive default raft_log so save_hard_state is a harmless no-op.
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_handle_vote_request()
+        .times(1)
+        .returning(move |_, _, _, _| {
+            Ok(StateUpdate {
+                new_voted_for: Some(VotedFor {
+                    voted_for_id: 1,
+                    voted_for_term: 1,
+                    committed: false,
+                }),
+                term_update: Some(100),
+            })
+        });
+    context.handlers.election_handler = election_handler;
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    // Force the timer into an already-expired state before the request arrives.
+    state.timer.next_deadline = tokio::time::Instant::now() - tokio::time::Duration::from_millis(1);
+    assert!(
+        state.is_timer_expired(),
+        "precondition: timer must start out expired"
+    );
+
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = create_vote_request_event(1, 1, resp_tx);
+
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
+
+    assert!(
+        !state.is_timer_expired(),
+        "granting a vote must reset the election timer — otherwise this node can time out \
+         and disrupt the candidate it just voted for before that candidate's first \
+         heartbeat arrives"
+    );
+}
+
+/// Test: A VoteRequest rejected for an illegitimate term does NOT reset the timer.
+///
+/// Scenario:
+/// - VoteRequest carries a term that is not >= this follower's own term (stale
+///   candidate), so the request is illegitimate and must be rejected outright.
+///
+/// Expected:
+/// - The timer is untouched. If every incoming VoteRequest reset the timer
+///   regardless of legitimacy, a stale/misbehaving peer could keep this node
+///   from ever timing out and starting its own election — an availability bug
+///   distinct from (but as real as) the missing-reset one above. This is the
+///   negative case that proves the fix is scoped correctly, not blanket-applied.
+#[tokio::test]
+async fn test_handle_vote_request_rejected_does_not_reset_timer() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    // Illegitimate request — handler rejects it (e.g. stale term), so no vote is granted.
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler.expect_handle_vote_request().times(1).returning(|_, _, _, _| {
+        Ok(StateUpdate {
+            new_voted_for: None,
+            term_update: None,
+        })
+    });
+    context.handlers.election_handler = election_handler;
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let deadline_before = state.timer.next_deadline;
+
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let inbound_event = create_vote_request_event(1, 1, resp_tx);
+
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
+
+    assert_eq!(
+        state.timer.next_deadline, deadline_before,
+        "a rejected vote request must NOT reset the timer — otherwise a stale/misbehaving \
+         peer could keep this node from ever starting its own election"
+    );
+}
+
+/// Test: hard_state persists BEFORE `LeaderDiscovered` is observable, on the
+/// shared AppendEntries path (role_state.rs::handle_append_entries_request_workflow,
+/// used by both Follower and Learner).
+///
+/// Scenario:
+/// - Follower has never seen a leader (`current_leader()` is `None`).
+/// - Receives a legitimate AppendEntries from a real leader for the first time.
+///
+/// Expected:
+/// - `save_hard_state` is called with the leader's committed vote.
+/// - The call happens BEFORE `InternalEvent::LeaderDiscovered` is sent — mirrors
+///   the BecomeFollower ordering tests in candidate_state_test.rs, applied here
+///   to the notification this codebase uses for `wait_ready()`.
+///
+/// Known bug (fixed as of 2026-07-18, ticket #422 follow-up): this handler used
+/// to send `LeaderDiscovered` before the single consolidated `commit_hard_state`
+/// call that replaced the old separate update_voted_for/update_current_term
+/// sequence — confirmed via code review during the #422 investigation, not
+/// caught by any test until now.
+#[tokio::test]
+async fn test_handle_append_entries_persists_before_leader_discovered_notification() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let follower_term = 1;
+    let new_leader_term = follower_term + 1;
+    let new_leader_id = 5;
+
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler.expect_handle_append_entries().returning(move |_, _, _| {
+        Ok(AppendResponseWithUpdates {
+            response: AppendEntriesResponse::success(1, new_leader_term, None),
+            commit_index_update: None,
+        })
+    });
+    context.membership = Arc::new(MockMembership::new());
+    context.handlers.replication_handler = replication_handler;
+
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+    let internal_event_rx = Arc::new(std::sync::Mutex::new(internal_event_rx));
+    let rx_for_ordering_check = Arc::clone(&internal_event_rx);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log
+        .expect_save_hard_state()
+        .withf(move |s| {
+            // Ordering proof: at the moment save_hard_state runs, LeaderDiscovered
+            // must not have been sent yet — try_recv() on the still-empty channel
+            // returns Err. Mirrors candidate_state_test.rs's step-down ordering test.
+            assert!(
+                rx_for_ordering_check.lock().unwrap().try_recv().is_err(),
+                "save_hard_state must be called BEFORE LeaderDiscovered is sent"
+            );
+            s.current_term == new_leader_term
+                && s.voted_for
+                    == Some(VotedFor {
+                        voted_for_id: new_leader_id,
+                        voted_for_term: new_leader_term,
+                        committed: true,
+                    })
+        })
+        .times(1)
+        .returning(|_| Ok(()));
+    context.storage.raft_log = Arc::new(raft_log);
+
+    // Fresh state: never seen a leader, so this AppendEntries is a genuine
+    // first discovery and must fire LeaderDiscovered.
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state_mut().update_current_term(follower_term);
+
+    let append_entries_request = AppendEntriesRequest {
+        term: new_leader_term,
+        leader_id: new_leader_id,
+        prev_log_index: 0,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
+
+    assert!(
+        matches!(
+            internal_event_rx.lock().unwrap().try_recv().unwrap(),
+            InternalEvent::LeaderDiscovered(id, term) if id == new_leader_id && term == new_leader_term
+        ),
+        "Should send LeaderDiscovered only after hard_state is durably persisted"
+    );
+}
+
 /// Test: FollowerState handles vote request error from handler
 ///
 /// Scenario:
@@ -576,7 +892,7 @@ async fn test_handle_append_entries_success_from_new_leader() {
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(follower_term);
+    state.shared_state_mut().update_current_term(follower_term);
 
     // Prepare AppendEntries request from leader
     let append_entries_request = AppendEntriesRequest {
@@ -676,7 +992,7 @@ async fn test_handle_append_entries_rejects_stale_term() {
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(follower_term);
+    state.shared_state_mut().update_current_term(follower_term);
 
     // Prepare AppendEntries request with stale term
     let append_entries_request = AppendEntriesRequest {
@@ -759,7 +1075,7 @@ async fn test_handle_append_entries_with_handler_error() {
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(follower_term);
+    state.shared_state_mut().update_current_term(follower_term);
 
     // Prepare AppendEntries request
     let append_entries_request = AppendEntriesRequest {
@@ -987,7 +1303,7 @@ async fn test_handle_cluster_conf_update_rejects_stale_term() {
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(5); // Follower has higher term
+    state.shared_state_mut().update_current_term(5); // Follower has higher term
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
@@ -1432,7 +1748,7 @@ async fn test_discover_leader_returns_known_leader_address() {
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
     state.shared_state.set_current_leader(3);
-    state.update_current_term(5);
+    state.shared_state_mut().update_current_term(5);
 
     let request = LeaderDiscoveryRequest {
         node_id: 2,
@@ -2403,7 +2719,7 @@ async fn test_follower_acks_immediately_after_memory_write() {
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(leader_term);
+    state.shared_state_mut().update_current_term(leader_term);
 
     let append_request = AppendEntriesRequest {
         term: leader_term,
@@ -2449,7 +2765,7 @@ async fn test_follower_acks_immediately_for_heartbeat() {
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(leader_term);
+    state.shared_state_mut().update_current_term(leader_term);
 
     let append_request = AppendEntriesRequest {
         term: leader_term,
@@ -2503,7 +2819,7 @@ async fn test_follower_commit_index_and_ack_both_sent_immediately() {
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-    state.update_current_term(leader_term);
+    state.shared_state_mut().update_current_term(leader_term);
 
     let append_request = AppendEntriesRequest {
         term: leader_term,

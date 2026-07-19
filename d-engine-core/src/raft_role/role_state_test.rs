@@ -7,12 +7,17 @@ use tokio::sync::{mpsc, watch};
 
 use d_engine_proto::common::LogId;
 
+use d_engine_proto::server::election::VotedFor;
+
 use crate::Error;
 use crate::InternalEvent;
 use crate::MockPurgeExecutor;
-use crate::test_utils::mock::{MockBuilder, mock_raft_log};
+use crate::MockRaftLog;
+use crate::raft_role::candidate_state::CandidateState;
+use crate::test_utils::mock::{MockBuilder, MockTypeConfig, mock_raft_log};
 use crate::test_utils::node_config;
 
+use super::role_state::RaftRoleState;
 use super::role_state::schedule_and_execute_purge;
 
 // ============================================================================
@@ -339,4 +344,198 @@ async fn test_schedule_and_execute_purge_execute_failure_suppresses_completion_e
     );
     // scheduled_purge_upto preserved — fault recovery will retry on next snapshot
     assert_eq!(scheduled_purge_upto, Some(LogId { index: 49, term: 1 }));
+}
+
+// ============================================================================
+// commit_hard_state / commit_vote_reset Tests
+//
+// CandidateState is used as the host — commit_hard_state/commit_vote_reset
+// are role-agnostic default methods on RaftRoleState, only touching
+// shared_state_mut() and ctx.raft_log(), so any concrete state works.
+//
+// IMPORTANT: use MockRaftLog::new() fresh, NOT mock_raft_log() — the latter
+// pre-registers a permissive save_hard_state stub with no call-count limit,
+// which (per mockall's FIFO expectation matching) silently absorbs every
+// call before a stricter .times(n) expectation added afterward ever runs.
+// ============================================================================
+
+/// Both term and voted_for are None → no-op: no persist, returns Ok(false).
+#[tokio::test]
+async fn test_commit_hard_state_noop_when_both_none() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_save_hard_state().times(0);
+
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let result = state.commit_hard_state(&context, None, None);
+
+    assert!(
+        matches!(result, Ok(false)),
+        "expected Ok(false), got {result:?}"
+    );
+}
+
+/// Calling commit_hard_state twice with the identical voted_for value must
+/// only persist once — the second call is a redundant re-confirmation (e.g.
+/// a routine heartbeat from an already-known leader) and must not trigger a
+/// second disk write. Locks in the `changed` gate on HardStateChange.
+#[tokio::test]
+async fn test_commit_hard_state_skips_persist_when_value_unchanged() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_log = MockRaftLog::new();
+    // Not 2 — the second call must be skipped since nothing changed.
+    raft_log.expect_save_hard_state().times(1).returning(|_| Ok(()));
+
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let vote = VotedFor {
+        voted_for_id: 2,
+        voted_for_term: 1,
+        committed: true,
+    };
+
+    state.commit_hard_state(&context, None, Some(vote)).unwrap();
+    state.commit_hard_state(&context, None, Some(vote)).unwrap();
+}
+
+/// term changes, voted_for untouched (None) → persists with the new term.
+/// Returns Ok(false) — no vote involved, so is_new_leader_commitment is false
+/// even though the write genuinely happened (this is the exact case that a
+/// naive "gate on is_new_leader_commitment instead of changed" refactor
+/// would silently break — see conversation history).
+#[tokio::test]
+async fn test_commit_hard_state_persists_when_term_changes() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_save_hard_state()
+        .withf(|s| s.current_term == 5)
+        .times(1)
+        .returning(|_| Ok(()));
+
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let result = state.commit_hard_state(&context, Some(5), None);
+
+    assert!(
+        matches!(result, Ok(false)),
+        "expected Ok(false), got {result:?}"
+    );
+    assert_eq!(state.current_term(), 5);
+}
+
+/// voted_for changes to a genuinely different value each time → both calls
+/// persist (contrast with test_commit_hard_state_skips_persist_when_value_unchanged
+/// above, where the second call is a no-op because the value repeats).
+#[tokio::test]
+async fn test_commit_hard_state_persists_when_vote_value_changes() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_save_hard_state().times(2).returning(|_| Ok(()));
+
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let v1 = VotedFor {
+        voted_for_id: 2,
+        voted_for_term: 1,
+        committed: true,
+    };
+    let v2 = VotedFor {
+        voted_for_id: 3,
+        voted_for_term: 1,
+        committed: true,
+    };
+
+    state.commit_hard_state(&context, None, Some(v1)).unwrap();
+    state.commit_hard_state(&context, None, Some(v2)).unwrap();
+}
+
+/// is_new_leader_commitment is true only for a genuine committed transition
+/// (e.g. None -> Some(committed: true)), false for a provisional self-vote
+/// (committed: false) and false for reconfirming the same committed leader.
+#[tokio::test]
+async fn test_commit_hard_state_is_new_leader_commitment_semantics() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_log = MockRaftLog::new();
+    // Only 2 persists: case 1 (None -> provisional) and case 2 (provisional ->
+    // committed) both change the value. Case 3 repeats case 2's exact value,
+    // so it's a no-op — no third persist, even though is_new_leader_commitment
+    // is still computed correctly from the in-memory transition.
+    raft_log.expect_save_hard_state().times(2).returning(|_| Ok(()));
+
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    // 1) Provisional self-vote (committed: false) — never a "new commitment".
+    let provisional = VotedFor {
+        voted_for_id: 1,
+        voted_for_term: 1,
+        committed: false,
+    };
+    let result1 = state.commit_hard_state(&context, None, Some(provisional));
+    assert!(
+        matches!(result1, Ok(false)),
+        "provisional vote must not report new commitment, got {result1:?}"
+    );
+
+    // 2) First committed vote — genuine new commitment.
+    let committed = VotedFor {
+        voted_for_id: 2,
+        voted_for_term: 1,
+        committed: true,
+    };
+    let result2 = state.commit_hard_state(&context, None, Some(committed));
+    assert!(
+        matches!(result2, Ok(true)),
+        "first committed vote must report new commitment, got {result2:?}"
+    );
+    // Mirrors the real caller (role_state.rs): commit_hard_state is checked
+    // BEFORE set_current_leader is called. Without this, current_leader()
+    // stays None forever in this test and the "node restart" branch of
+    // is_new_leader_commitment would fire on every subsequent call.
+    state.shared_state().set_current_leader(committed.voted_for_id);
+
+    // 3) Reconfirming the identical committed vote — not new.
+    let result3 = state.commit_hard_state(&context, None, Some(committed));
+    assert!(
+        matches!(result3, Ok(false)),
+        "reconfirming the same committed vote must not report new commitment, got {result3:?}"
+    );
+}
+
+/// commit_vote_reset clears voted_for to None and persists exactly once.
+#[tokio::test]
+async fn test_commit_vote_reset_clears_and_persists() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_log = MockRaftLog::new();
+    // One persist to seed an initial vote, one more for the reset itself.
+    raft_log.expect_save_hard_state().times(2).returning(|_| Ok(()));
+
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let vote = VotedFor {
+        voted_for_id: 2,
+        voted_for_term: 1,
+        committed: true,
+    };
+    state.commit_hard_state(&context, None, Some(vote)).unwrap();
+    assert_eq!(
+        state.voted_for().unwrap(),
+        Some(vote),
+        "precondition: vote is set"
+    );
+
+    state.commit_vote_reset(&context).unwrap();
+
+    assert_eq!(
+        state.voted_for().unwrap(),
+        None,
+        "voted_for must be cleared by commit_vote_reset"
+    );
 }

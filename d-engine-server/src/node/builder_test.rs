@@ -63,6 +63,7 @@ async fn test_set_raft_log_replaces_default() {
                     idle_flush_interval_ms: 1,
                 },
                 max_buffered_entries: 1000,
+                shutdown_timeout_ms: 5000,
             },
             mock_storage_engine.clone(),
         );

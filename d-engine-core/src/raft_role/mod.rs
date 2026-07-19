@@ -77,11 +77,24 @@ pub struct HardState {
     pub voted_for: Option<VotedFor>,
 }
 
+/// Outcome of a `set_hard_state()` call — two independent signals with
+/// different purposes, do not conflate them.
+pub(crate) struct HardStateChange {
+    /// True if the persisted HardState actually differs from before this
+    /// call. Gates whether `save_hard_state` needs to run at all.
+    changed: bool,
+    /// True only if `voted_for`'s transition represents a NEW leader
+    /// commitment (committed:false->true, leader/term change while
+    /// committed, or node restart). Gates `LeaderDiscovered`. A term-only
+    /// change has `changed=true` but this stays `false`.
+    is_new_leader_commitment: bool,
+}
+
 pub struct SharedState {
     pub node_id: u32,
 
     /// === Persistent State (MUST be on disk)
-    pub hard_state: HardState,
+    hard_state: HardState,
 
     /// === Volatile state on all servers:
     /// index of highest log entry known to be committed (initialized to 0,
@@ -192,6 +205,77 @@ impl SharedState {
         self.hard_state.current_term
     }
 
+    /// Applies term/vote changes to in-memory state and reports whether this
+    /// represents a NEW leader commitment — used by callers to decide whether to
+    /// fire a `LeaderDiscovered` notification. Must NOT fire on every heartbeat
+    /// that merely reconfirms an already-known leader, only on a genuine
+    /// transition (see match arms below).
+    ///
+    /// Private by design: this is the only method allowed to touch `hard_state`
+    /// directly. Its one and only caller is `commit_hard_state()` on
+    /// `RaftRoleState`, which always follows it with `save_hard_state()` —
+    /// nothing may split "mutate" from "persist" into two separately-callable
+    /// steps.
+    fn set_hard_state(
+        &mut self,
+        term: Option<u64>,
+        voted_for: Option<VotedFor>,
+    ) -> HardStateChange {
+        let mut changed = false;
+
+        if let Some(t) = term
+            && t != self.hard_state.current_term
+        {
+            self.hard_state.current_term = t;
+            changed = true;
+        }
+
+        let Some(new_vote) = voted_for else {
+            return HardStateChange {
+                changed,
+                is_new_leader_commitment: false,
+            };
+        };
+
+        if self.hard_state.voted_for != Some(new_vote) {
+            changed = true;
+        }
+
+        let is_new_leader_commitment = match self.hard_state.voted_for {
+            Some(old) => {
+                new_vote.committed
+                    && (old.voted_for_id != new_vote.voted_for_id
+                        || old.voted_for_term != new_vote.voted_for_term
+                        || !old.committed
+                        || self.current_leader().is_none())
+            }
+            None => new_vote.committed,
+        };
+
+        self.hard_state.voted_for = Some(new_vote);
+        HardStateChange {
+            changed,
+            is_new_leader_commitment,
+        }
+    }
+
+    /// Clears voted_for to None (e.g. entering a fresh term with no vote cast
+    /// yet). Private — only `commit_vote_reset()` may call this.
+    fn clear_voted_for(&mut self) {
+        self.hard_state.voted_for = None;
+    }
+
+    fn voted_for(&self) -> Result<Option<VotedFor>> {
+        Ok(self.hard_state.voted_for)
+    }
+
+    #[cfg(test)]
+    fn reset_voted_for(&mut self) -> Result<()> {
+        self.hard_state.voted_for = None;
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn update_current_term(
         &mut self,
         term: u64,
@@ -199,24 +283,11 @@ impl SharedState {
         self.hard_state.current_term = term;
     }
 
+    #[cfg(test)]
     fn increase_current_term(&mut self) {
         self.hard_state.current_term += 1;
     }
 
-    pub fn voted_for(&self) -> Result<Option<VotedFor>> {
-        Ok(self.hard_state.voted_for)
-    }
-    pub fn reset_voted_for(&mut self) -> Result<()> {
-        self.hard_state.voted_for = None;
-        Ok(())
-    }
-    /// Update voted_for and return true if this represents a new leader commitment
-    ///
-    /// Returns true only when:
-    /// - committed transitions from false to true, OR
-    /// - leader/term changes with committed=true
-    ///
-    /// This enables event-driven leader discovery notifications without hot-path overhead.
     /// Update voted_for and return true if this represents a new leader commitment
     ///
     /// Returns true when:
@@ -225,24 +296,28 @@ impl SharedState {
     /// - current_leader is None (node restart scenario)
     ///
     /// This enables event-driven leader discovery notifications without hot-path overhead.
-    pub fn update_voted_for(
+    #[cfg(test)]
+    fn update_voted_for(
         &mut self,
         new_vote: VotedFor,
     ) -> Result<bool> {
         let is_new_commit = match self.hard_state.voted_for {
             Some(old) => {
-                // Only care about transitions TO committed=true
                 new_vote.committed
                     && (old.voted_for_id != new_vote.voted_for_id
                         || old.voted_for_term != new_vote.voted_for_term
-                        || !old.committed // committed: false → true
-                        || self.current_leader().is_none()) // Node restart: memory cleared
+                        || !old.committed
+                        || self.current_leader().is_none())
             }
             None => new_vote.committed,
         };
 
         self.hard_state.voted_for = Some(new_vote);
         Ok(is_new_commit)
+    }
+
+    pub(crate) fn hard_state(&self) -> HardState {
+        self.hard_state
     }
 }
 
@@ -291,7 +366,6 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state().next_deadline()
     }
 
-    #[allow(dead_code)]
     #[inline]
     pub fn as_i32(&self) -> i32 {
         match self {

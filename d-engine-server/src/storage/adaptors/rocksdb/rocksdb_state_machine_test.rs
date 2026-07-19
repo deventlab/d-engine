@@ -437,6 +437,142 @@ async fn test_get_multi_rocksdb_snapshot_reads_consistent_state() {
     }
 }
 
+// ── get_multi single-key fast path tests ───────────────────────────────────────
+//
+// `get_multi` skips `db.snapshot()` when `keys.len() == 1`, reading directly via
+// `db.get_cf()` instead. Cross-key point-in-time consistency (the reason the
+// snapshot exists) is meaningless for a single key, so the fast path must be
+// behaviorally identical to the snapshot path for every case a caller can hit —
+// these tests exist to pin that equivalence down explicitly, not just performance.
+
+/// A single existing key must resolve to `Some(value)` on the fast path, the
+/// same as it would via the (now-skipped) snapshot path.
+#[tokio::test]
+async fn test_get_multi_single_key_present_returns_value() {
+    let dir = TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
+
+    let result = sm.get_multi(&[Bytes::from_static(b"k")]).unwrap();
+    assert_eq!(result, vec![Some(Bytes::from_static(b"v"))]);
+}
+
+/// A single absent key must resolve to `None`, not an error — `db.get_cf()`
+/// returning `Ok(None)` for a missing key must be distinguished from the
+/// `Err` path (CF missing / SM not serving).
+#[tokio::test]
+async fn test_get_multi_single_key_absent_returns_none() {
+    let dir = TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    let result = sm.get_multi(&[Bytes::from_static(b"missing")]).unwrap();
+    assert_eq!(result, vec![None]);
+}
+
+/// `get_multi(&[key])` and `get(key)` must return identical results for both
+/// a present and an absent key — the fast path is documented as "equivalent to
+/// a single get_cf() call", so this pins that claim down as a regression test
+/// rather than leaving it as an unverified comment.
+#[tokio::test]
+async fn test_get_multi_single_key_matches_get_for_present_and_absent_keys() {
+    let dir = TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
+
+    let present_key = Bytes::from_static(b"k");
+    let absent_key = Bytes::from_static(b"missing");
+
+    assert_eq!(
+        sm.get_multi(std::slice::from_ref(&present_key)).unwrap(),
+        vec![sm.get(&present_key).unwrap()]
+    );
+    assert_eq!(
+        sm.get_multi(std::slice::from_ref(&absent_key)).unwrap(),
+        vec![sm.get(&absent_key).unwrap()]
+    );
+}
+
+/// Mirrors `test_get_multi_rocksdb_snapshot_reads_consistent_state` but for the
+/// single-key fast path: after a second `apply_chunk` updates the key, a
+/// subsequent `get_multi` must observe the new value, not a stale one. Confirms
+/// the fast path reads live state and isn't accidentally holding on to
+/// anything resembling a cached view.
+#[tokio::test]
+async fn test_get_multi_single_key_reflects_latest_applied_value() {
+    let dir = TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(&[insert_at(b"/svc/version", b"v1", 1)]).await.unwrap();
+    let v1_result = sm.get_multi(&[Bytes::from_static(b"/svc/version")]).unwrap();
+    assert_eq!(v1_result, vec![Some(Bytes::from_static(b"v1"))]);
+
+    sm.apply_chunk(&[insert_at(b"/svc/version", b"v2", 2)]).await.unwrap();
+    let v2_result = sm.get_multi(&[Bytes::from_static(b"/svc/version")]).unwrap();
+    assert_eq!(v2_result, vec![Some(Bytes::from_static(b"v2"))]);
+}
+
+/// `keys.len() == 0` falls through to the snapshot path (the `== 1` check is
+/// false), which must still handle an empty key list gracefully — no
+/// snapshot-on-nothing panic, just an empty result vec.
+#[tokio::test]
+async fn test_get_multi_empty_keys_returns_empty_vec() {
+    let dir = TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    let result = sm.get_multi(&[]).unwrap();
+    assert_eq!(result, Vec::<Option<Bytes>>::new());
+}
+
+/// Boundary check one key above the fast-path threshold: exactly two keys must
+/// still take the `db.snapshot()` path and preserve cross-key point-in-time
+/// consistency — guards against an off-by-one in the `keys.len() == 1` check
+/// silently widening the fast path to cases that need the snapshot guarantee.
+#[tokio::test]
+async fn test_get_multi_two_keys_still_uses_snapshot_isolation() {
+    let dir = TempDir::new().unwrap();
+    let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
+
+    sm.apply_chunk(&[
+        insert_at(b"/svc/addr", b"10.0.0.1:8080", 1),
+        insert_at(b"/svc/version", b"v1", 2),
+    ])
+    .await
+    .unwrap();
+
+    let keys = vec![
+        Bytes::from_static(b"/svc/addr"),
+        Bytes::from_static(b"/svc/version"),
+    ];
+
+    let v1_result = sm.get_multi(&keys).unwrap();
+    assert_eq!(v1_result[0], Some(Bytes::from_static(b"10.0.0.1:8080")));
+    assert_eq!(v1_result[1], Some(Bytes::from_static(b"v1")));
+
+    sm.apply_chunk(&[
+        insert_at(b"/svc/addr", b"10.0.0.2:8080", 3),
+        insert_at(b"/svc/version", b"v2", 4),
+    ])
+    .await
+    .unwrap();
+
+    let v2_result = sm.get_multi(&keys).unwrap();
+    assert_eq!(v2_result[0], Some(Bytes::from_static(b"10.0.0.2:8080")));
+    assert_eq!(v2_result[1], Some(Bytes::from_static(b"v2")));
+
+    for (label, result) in [("v1_result", &v1_result), ("v2_result", &v2_result)] {
+        let is_v1 = result[0] == Some(Bytes::from_static(b"10.0.0.1:8080"))
+            && result[1] == Some(Bytes::from_static(b"v1"));
+        let is_v2 = result[0] == Some(Bytes::from_static(b"10.0.0.2:8080"))
+            && result[1] == Some(Bytes::from_static(b"v2"));
+        assert!(
+            is_v1 || is_v2,
+            "{label}: torn read detected — result is neither pure v1 nor pure v2: {result:?}"
+        );
+    }
+}
+
 // ── close_db() tests ──────────────────────────────────────────────────────────
 //
 // close_db() is a permanent, one-way shutdown that releases the RocksDB LOCK file

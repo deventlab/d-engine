@@ -438,7 +438,7 @@ impl LogStore for RocksDBLogStore {
             .flush_wal(true)
             .map_err(|e| StorageError::DbError(format!("Failed to flush WAL: {e}")))?;
         let ms = t0.elapsed().as_millis();
-        metrics::histogram!("raft.storage.wal_flush_ms").record(ms as f64);
+        metrics::histogram!("server.storage.rocksdb.wal_flush_ms").record(ms as f64);
         Ok(())
     }
 

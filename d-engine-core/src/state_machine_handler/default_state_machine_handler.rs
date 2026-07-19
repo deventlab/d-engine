@@ -213,7 +213,7 @@ where
         let chunk_size = chunk.len();
 
         metrics::counter!(
-            "state_machine.apply_chunk.count",
+            "core.state_machine.apply_chunk.count",
             &[("node_id", self.node_id.to_string())]
         )
         .increment(1);
@@ -244,7 +244,11 @@ where
         };
 
         // Apply the chunk and track errors
+        let apply_t0 = std::time::Instant::now();
         let apply_result = sm.apply_chunk(&apply_entries).await;
+        let apply_elapsed = apply_t0.elapsed();
+        metrics::counter!("core.state_machine.apply.busy_nanos_total")
+            .increment(apply_elapsed.as_nanos() as u64);
 
         // Fire-and-forget watch events on success (non-blocking)
         #[cfg(feature = "watch")]
@@ -257,13 +261,13 @@ where
         // Record latency and chunk size histogram *after* the operation
         let duration_ms = start.elapsed().as_millis() as f64;
         metrics::histogram!(
-            "state_machine.apply_chunk.duration_ms",
+            "core.state_machine.apply_chunk.duration_ms",
             &[("node_id", self.node_id.to_string())]
         )
         .record(duration_ms);
 
         metrics::histogram!(
-            "state_machine.apply_chunk.batch_size",
+            "core.state_machine.apply_chunk.batch_size",
             &[("node_id", self.node_id.to_string())]
         )
         .record(chunk_size as f64);
@@ -274,6 +278,9 @@ where
                 // Efficiently obtain the maximum index: directly get the index of the last entry
                 if let Some(idx) = last_index {
                     self.last_applied.store(idx, Ordering::Release);
+
+                    metrics::gauge!("core.raft.apply_index").set(idx as f64);
+
                     // Notify waiters that last_applied has advanced
                     if let Err(e) = self.applied_notify_tx.send(idx) {
                         debug_assert!(false, "apply notify send failed: {e:?}");
@@ -281,7 +288,7 @@ where
                 }
 
                 metrics::counter!(
-                    "state_machine.apply_chunk.success",
+                    "core.state_machine.apply_chunk.success",
                     &[("node_id", self.node_id.to_string())]
                 )
                 .increment(1);
@@ -289,7 +296,7 @@ where
             Err(e) => {
                 let error_type = classify_error(e);
                 metrics::counter!(
-                    "state_machine.apply_chunk.error",
+                    "core.state_machine.apply_chunk.error",
                     &[
                         ("node_id", self.node_id.to_string()),
                         ("error_type", error_type)

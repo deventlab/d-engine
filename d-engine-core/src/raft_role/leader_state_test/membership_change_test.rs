@@ -1618,7 +1618,7 @@ mod pending_promotion_tests {
         fixture.leader_state.pending_promotions =
             (1..=2).map(|id| PendingPromotion::new(id, Instant::now())).collect();
 
-        fixture.leader_state.update_current_term(2);
+        fixture.leader_state.shared_state_mut().update_current_term(2);
         let result = fixture
             .leader_state
             .handle_promote_ready_learners(&fixture.raft_context, &fixture.internal_event_tx)

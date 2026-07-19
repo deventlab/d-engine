@@ -268,7 +268,7 @@ async fn test_handle_cluster_conf_update_reject_stale_term() {
     context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
-    state.update_current_term(5);
+    state.shared_state_mut().update_current_term(5);
 
     let request = ClusterConfChangeRequest {
         id: 2,
@@ -324,7 +324,7 @@ async fn test_handle_cluster_conf_update_step_down_on_higher_term() {
     context.membership = Arc::new(membership);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
-    state.update_current_term(3);
+    state.shared_state_mut().update_current_term(3);
 
     let request = ClusterConfChangeRequest {
         id: 2,
@@ -390,7 +390,7 @@ async fn test_handle_append_entries_reject_same_term() {
     // Update my term higher than request one
     let my_term = 10;
     let request_term = my_term;
-    state.update_current_term(my_term);
+    state.shared_state_mut().update_current_term(my_term);
 
     // Prepare request
     let append_entries_request = AppendEntriesRequest {
@@ -453,7 +453,7 @@ async fn test_handle_append_entries_step_down_on_higher_term() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     // Update my term higher than request one
-    state.update_current_term(my_term);
+    state.shared_state_mut().update_current_term(my_term);
 
     // Prepare request
     let new_leader_id = 7;
