@@ -1,51 +1,52 @@
-//! High-performance buffered Raft log — notify-then-fsync architecture.
+//! High-performance buffered Raft log — notify-then-spawn-fsync architecture.
 //!
-//! ## Durability guarantee (MemFirst strategy)
+//! ## Durability guarantee (Level 3 — concurrent pipeline, #422)
 //!
-//! **Level 2 (current)**: `db.write()` → OS page cache (no fsync every write)
-//! - Process crash safe (RocksDB replays WAL on restart)
-//! - Power loss unsafe (OS page cache lost)
-//! - Tradeoff: Skip per-write fsync (1–5ms) for ~3x throughput vs Level 3
+//! **Level 3 (current)**: `db.write()` → OS page cache → concurrent `fdatasync` via `spawn_blocking`
+//! - Power-loss safe: `durable_index` advances only after physical fsync completes
+//! - Process crash safe: RocksDB WAL replay on restart
+//! - Performance: IO thread never blocks on fsync — batches pipeline at OS/RocksDB layer
 //!
-//! **DiskFirst removed** (was Level 3: fsync every write = blocking, safe but slow)
-//! **MemFirst + idle timer** (current = Level 2: batch fsync, natural window from IO work)
+//! **Level 2 (pre-#407)**: `db.write()` → OS page cache only, no fdatasync
+//! - Was the default; superseded by Level 3 for correctness
 //!
 //! ## Write path
 //!
 //! `append_entries` inserts entries into in-memory SkipMap, calls `write_notify.notify_one()`.
-//! Multiple concurrent writers coalesce into single IO thread wakeup (no channel, no per-write syscall).
+//! Multiple concurrent writers coalesce into a single IO thread wakeup.
 //!
-//! ## IO thread (notify-then-fsync)
+//! ## IO thread (notify-then-spawn-fsync)
 //!
 //! On wakeup from `write_notify`:
 //! 1. **Read** — scan SkipMap range `(durable_index, max_index]`
-//! 2. **Persist** — write to OS page cache (no fsync)
-//! 3. **Fsync once** — call `log_store.flush()` (WAL sync to disk)
-//!    Entries arriving during fsync batch into next wakeup
-//! 4. **Advance durable_index** and reply to any pending `IOTask::Flush` caller.
+//! 2. **Persist** — write range to OS page cache via `persist_entries`
+//! 3. **Spawn fsync** — dispatch fdatasync to `spawn_blocking` pool via `spawn_fsync`, return immediately
+//! 4. **Loop** — back to `select!` for next wakeup; prior fsync runs concurrently in pool
 //!
-//! Fsync execution time is the natural batch window — no timer needed.
+//! `durable_index` is advanced inside the blocking task via `advance_durable_and_notify`
+//! (`fetch_max`, AcqRel). Multiple concurrent tasks completing out of order are safe:
+//! a late-arriving lower index is a no-op.
 //!
 //! ## Fsync triggers
 //!
-//! 1. **Notify-driven** (normal): Multiple writes → single IO thread wakeup → batch fsync
-//! 2. **Explicit** (flush API): `flush()` → `IOTask::Flush(tx)` → IO thread fsyncs and sends `Result` back
-//! 3. **Idle timer** (safety net): No activity for `idle_flush_interval_ms` → fsync pending
+//! All four triggers below funnel through `run_batch_turn` (persist pending
+//! entries, drain any queued commands, then dispatch) into the single
+//! `FsyncCoordinator::submit()` entry point — there is no separate inline path.
+//!
+//! 1. **Notify-driven** (normal): `write_notify` → `run_batch_turn` (no reply)
+//! 2. **Explicit** (flush API): `flush()` → `IOTask::Flush(tx)` → `run_batch_turn` with reply sender
+//! 3. **Idle timer** (safety net): `idle_flush_interval_ms` elapsed → `persist_pending_range` + `submit()`
+//! 4. **Shutdown**: `IOTask::Shutdown` → `run_batch_turn`, then `close()` waits (bounded by
+//!    `shutdown_timeout_ms`) for the IO thread's runtime to drain any in-flight fsync task
 //!
 //! ## Durability contract
 //!
-//! `durable_index` advanced only after fsync.
-//! **Assumption**: Host crashes gracefully (UPS-backed, OS cache writeback guaranteed on shutdown).
-//! **Not safe for**: Power loss scenarios without UPS or host without battery-backed cache.
+//! `durable_index` advances only after physical fdatasync in the blocking task.
+//! Concurrent fsyncs coalesce at the storage layer: if batch B's fsync covers A's WAL
+//! position, A's `flush_wal` returns fast with no extra disk IO — storage-layer group commit.
 
-use std::collections::HashMap;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-
+use super::fsync_coordinator::FsyncCoordinator;
+use crate::Error;
 use crate::FlushPolicy;
 use crate::HardState;
 use crate::LogStore;
@@ -62,6 +63,14 @@ use async_trait::async_trait;
 use crossbeam_skiplist::SkipMap;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
+use std::collections::HashMap;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -235,6 +244,11 @@ where
     /// Safety-net timer interval (ms). Normal-path latency is determined by fsync time.
     idle_flush_interval_ms: u64,
 
+    /// Max time to wait, on shutdown, for an in-flight fsync task to finish before
+    /// giving up. Bounds `close()` against a stuck/slow disk — the task itself is
+    /// not cancelled, it keeps running in the background regardless.
+    shutdown_timeout_ms: u64,
+
     // --- In-memory state ---
     // Pending entries
     pub(crate) entries: SkipMap<u64, Entry>,
@@ -275,6 +289,11 @@ where
 
     // IO thread handle — set by start(), used by close() to join before returning.
     io_thread_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+
+    fsync_coordinator: Arc<FsyncCoordinator>,
+
+    // set once on first fsync failure, never cleared for this instance's lifetime
+    pub(super) poisoned: AtomicBool,
 }
 
 #[async_trait]
@@ -416,6 +435,13 @@ where
         &self,
         entries: Vec<Entry>,
     ) -> Result<()> {
+        // Fast-fail optimization, not a correctness gate — the real durability
+        // boundary is persist_pending_range()/fsync_coordinator. Poisoned data
+        // reaching memory here is harmless as long as it never gets marked durable.
+        if self.is_poisoned() {
+            return Err(Error::Fatal("raft log storage is poisoned".into()));
+        }
+
         let _timer = ScopedTimer::new("append_entries");
         if entries.is_empty() {
             return Ok(());
@@ -680,7 +706,17 @@ where
         &self,
         hard_state: &HardState,
     ) -> Result<()> {
-        self.meta_store.save_hard_state(hard_state)
+        if self.is_poisoned() {
+            return Err(Error::Fatal("raft log storage is poisoned".into()));
+        }
+        self.meta_store.save_hard_state(hard_state).inspect_err(|e| {
+            error!("save_hard_state failed (fatal): {e:?}");
+            self.mark_poisoned_and_notify(format!("save_hard_state failed: {e:?}"));
+        })
+    }
+
+    fn is_poisoned(&self) -> bool {
+        self.is_poisoned()
     }
 
     async fn close(&self) {
@@ -719,6 +755,8 @@ where
             "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, idle_flush_interval_ms: {:?}, disk_len: {:?}",
             node_id, persistence_config.strategy, idle_flush_interval_ms, disk_len
         );
+
+        let shutdown_timeout_ms = persistence_config.shutdown_timeout_ms;
 
         //TODO: if switch to UnboundedChannel?
         let (command_sender, command_receiver) = mpsc::unbounded_channel();
@@ -793,6 +831,7 @@ where
                 log_store,
                 meta_store,
                 idle_flush_interval_ms,
+                shutdown_timeout_ms,
                 entries,
                 min_index: AtomicU64::new(min_index),
                 max_index: AtomicU64::new(max_index),
@@ -805,8 +844,10 @@ where
                 term_first_index,
                 term_last_index,
                 term_segments,
-                log_flush_tx: None,                            // set in start()
-                io_thread_handle: std::sync::Mutex::new(None), // set in start()
+                log_flush_tx: None, // set in start()
+                io_thread_handle: std::sync::Mutex::new(None),
+                fsync_coordinator: Arc::new(FsyncCoordinator::new()),
+                poisoned: AtomicBool::new(false),
             },
             command_receiver,
         )
@@ -829,6 +870,7 @@ where
         let weak_self = Arc::downgrade(&arc_self);
 
         let idle_flush_interval_ms = arc_self.idle_flush_interval_ms;
+        let shutdown_timeout_ms = arc_self.shutdown_timeout_ms;
         let node_id = arc_self.node_id;
         let io_handle = std::thread::Builder::new()
             .name(format!("raft-io-{}", node_id))
@@ -842,6 +884,17 @@ where
                     receiver,
                     idle_flush_interval_ms,
                 ));
+                // Explicit bounded shutdown instead of an implicit Drop — an
+                // implicit Drop blocks this thread indefinitely on any still-running
+                // spawn_blocking task (confirmed with the not_durable_gated_flush test).
+                // Healthy path: a real fsync is millisecond-scale, so this virtually
+                // always completes well inside the window — same behavior as before.
+                // Stuck-disk path: this thread's (and therefore close()'s) wait is now
+                // bounded by this timeout instead of hanging forever. The stuck task
+                // itself is not killed — it keeps running in the background until
+                // flush() actually returns, so durable_index advancement and reply
+                // delivery are unaffected; nobody is just waiting for it anymore.
+                rt.shutdown_timeout(Duration::from_millis(shutdown_timeout_ms));
             })
             .expect("failed to spawn raft-io thread");
 
@@ -883,216 +936,125 @@ where
         loop {
             tokio::select! {
                 _ = this.write_notify.notified() => {
-                    // Persist all entries written to SkipMap since last fsync.
-                    let end = this.max_index.load(Ordering::Acquire);
-                    let start = this.durable_index.load(Ordering::Acquire) + 1;
-                    if start <= end {
-                        match this.get_entries_range(start..=end) {
-                            Ok(entries) if !entries.is_empty() => {
-                                if let Err(e) = this.log_store.persist_entries(entries).await {
-                                    error!("write_notify persist_entries failed: {e:?}");
-                                } else {
-                                    pending_max = pending_max.max(end);
-                                }
-                            }
-                            Ok(_) => {}
-                            Err(e) => error!("write_notify get_entries_range failed: {e:?}"),
-                        }
-                    }
-                    // Drain any pending control commands before fsync.
-                    // Shutdown in the drain path must be handled here — it won't reach
-                    // the outer receiver arm if consumed in try_recv().
-                    // Collect any Flush senders: they must be replied to AFTER fsync.
-                    let mut seen_shutdown = false;
-                    let mut fatal_exit = false;
-                    // None until the first Flush arrives — avoids heap allocation on the hot
-                    // write path where flush() is rarely called concurrently with writes.
-                    let mut flush_replies: Option<Vec<oneshot::Sender<Result<()>>>> = None;
-                    while let Ok(cmd) = receiver.try_recv() {
-                        match cmd {
-                            IOTask::Shutdown => { seen_shutdown = true; break; }
-                            IOTask::Flush(reply) => { flush_replies.get_or_insert_with(Vec::new).push(reply); }
-                            cmd => {
-                                if Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await {
-                                    fatal_exit = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if fatal_exit {
-                        break; // disk state corrupted — exit without fsync
-                    }
-                    // Flush callers capture max_index BEFORE sending the task. Entries
-                    // appended between the initial `end` read above and now are in the
-                    // SkipMap but not yet in page cache. Persist them before fsyncing so
-                    // durable_index will reach the level the Flush callers expect.
-                    if flush_replies.is_some() {
-                        let current_max = this.max_index.load(Ordering::Acquire);
-                        if current_max > pending_max {
-                            let new_start = pending_max + 1;
-                            if new_start <= current_max {
-                                match this.get_entries_range(new_start..=current_max) {
-                                    Ok(entries) if !entries.is_empty() => {
-                                        if let Ok(()) = this.log_store.persist_entries(entries).await {
-                                            pending_max = current_max;
-                                        }
-                                    }
-                                    Ok(_) => {}
-                                    Err(e) => error!("write_notify flush catch-up persist failed: {e:?}"),
-                                }
-                            }
-                        }
-                    }
-                    let fsync_ok = if pending_max > 0 {
-                        match this.advance_durable_after_write(pending_max).await {
-                            Ok(()) => { pending_max = 0; true }
-                            Err(e) => { error!("write_notify fsync failed: {e:?}"); false }
-                        }
-                    } else {
-                        true
-                    };
-                    if let Some(replies) = flush_replies {
-                        for reply in replies {
-                            let _ = if fsync_ok {
-                                reply.send(Ok(()))
-                            } else {
-                                reply.send(Err(NetworkError::SingalSendFailed("fsync failed".into()).into()))
-                            };
-                        }
-                    }
-                    if seen_shutdown {
-                        let _ = this.log_store.flush();
-                        let _ = this.meta_store.flush();
+                    if Self::run_batch_turn(&this, &mut receiver, &mut pending_max, Vec::new(), false).await {
                         break;
                     }
                 }
                 cmd = receiver.recv() => {
                     let Some(cmd) = cmd else { break };
-                    match cmd {
-                        IOTask::Shutdown => {
-                            // Persist any entries not yet in page cache before final flush.
-                            let end = this.max_index.load(Ordering::Acquire);
-                            let start = this.durable_index.load(Ordering::Acquire) + 1;
-                            if start <= end
-                                && let Ok(entries) = this.get_entries_range(start..=end)
-                                && !entries.is_empty()
-                            {
-                                if let Err(e) = this.log_store.persist_entries(entries).await {
-                                    error!("Shutdown persist_entries failed: {e:?}");
-                                } else {
-                                    pending_max = pending_max.max(end);
-                                }
-                            }
-                            if pending_max > 0 {
-                                let _ = this.advance_durable_after_write(pending_max).await;
-                            }
-                            let _ = this.log_store.flush();
-                            let _ = this.meta_store.flush();
-                            break;
-                        }
-                        IOTask::Flush(reply) => {
-                            // Persist any entries not yet in page cache, then fsync.
-                            let end = this.max_index.load(Ordering::Acquire);
-                            let start = this.durable_index.load(Ordering::Acquire) + 1;
-                            if start <= end
-                                && let Ok(entries) = this.get_entries_range(start..=end)
-                                && !entries.is_empty()
-                            {
-                                if let Err(e) = this.log_store.persist_entries(entries).await {
-                                    error!("Flush persist_entries failed: {e:?}");
-                                    let _ = reply.send(Err(e));
-                                    continue;
-                                } else {
-                                    pending_max = pending_max.max(end);
-                                }
-                            }
-                            // Drain remaining control cmds before fsync so they are
-                            // included in the same fsync batch.
-                            // Collect any extra Flush senders — reply after fsync.
-                            let mut seen_shutdown = false;
-                            let mut fatal_exit = false;
-                            let mut extra_replies: Vec<oneshot::Sender<Result<()>>> = Vec::new();
-                            while let Ok(cmd) = receiver.try_recv() {
-                                match cmd {
-                                    IOTask::Shutdown => { seen_shutdown = true; break; }
-                                    IOTask::Flush(extra) => { extra_replies.push(extra); }
-                                    cmd => {
-                                        if Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await {
-                                            fatal_exit = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            if fatal_exit {
-                                break; // disk state corrupted — exit without fsync
-                            }
-                            let fsync_result = if pending_max > 0 {
-                                match this.advance_durable_after_write(pending_max).await {
-                                    Ok(()) => {
-                                        pending_max = 0;
-                                        Ok(())
-                                    }
-                                    Err(e) => {
-                                        error!("Flush fsync failed: {e:?}");
-                                        Err(e)
-                                    }
-                                }
-                            } else {
-                                Ok(())
-                            };
-                            // Reply to the original Flush and any that arrived during drain.
-                            let send_result = |r: oneshot::Sender<Result<()>>| {
-                                let _ = match &fsync_result {
-                                    Ok(()) => r.send(Ok(())),
-                                    Err(e) => r.send(Err(NetworkError::SingalSendFailed(
-                                        format!("{e:?}"),
-                                    )
-                                    .into())),
-                                };
-                            };
-                            send_result(reply);
-                            for extra in extra_replies {
-                                send_result(extra);
-                            }
-                            if seen_shutdown {
-                                let _ = this.log_store.flush();
-                                let _ = this.meta_store.flush();
-                                break;
-                            }
-                        }
+                    let should_break = match cmd {
+                        IOTask::Shutdown => Self::run_batch_turn(&this, &mut receiver, &mut pending_max, Vec::new(), true).await,
+                        IOTask::Flush(reply) => Self::run_batch_turn(&this, &mut receiver, &mut pending_max, vec![reply], false).await,
                         cmd => {
                             if Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await {
-                                break; // disk state corrupted — exit batch_processor
+                                break;
                             }
+                            continue;
                         }
-                    }
+                    };
+                    if should_break { break; }
                 }
                 _ = safety_timer.tick() => {
-                    // Safety-net: persist and fsync any entries not yet durable.
-                    let end = this.max_index.load(Ordering::Acquire);
                     let start = this.durable_index.load(Ordering::Acquire) + 1;
-                    if start <= end
-                        && let Ok(entries) = this.get_entries_range(start..=end)
-                        && !entries.is_empty()
-                    {
-                        if let Err(e) = this.log_store.persist_entries(entries).await {
-                            error!("safety-net persist_entries failed: {e:?}");
-                        } else {
-                            pending_max = pending_max.max(end);
-                        }
-                    }
+                    let end = this.max_index.load(Ordering::Acquire);
+                    let _ = Self::persist_pending_range(&this, start, end, &mut pending_max, "safety-net").await;
+
                     if pending_max > 0 {
-                        if let Err(e) = this.advance_durable_after_write(pending_max).await {
-                            error!("safety-net timer fsync failed: {e:?}");
-                        } else {
-                            pending_max = 0;
-                        }
+                        this.fsync_coordinator.submit(&this, pending_max, vec![]);
+                        pending_max = 0;
                     }
                 }
             }
         }
+    }
+
+    /// Writes entries in `(from, to]` that haven't reached page cache yet
+    /// (no fsync). Advances `pending_max` on success; propagates the error
+    /// as-is on failure — whether to notify any waiting `Flush` caller is
+    /// left to the caller.
+    async fn persist_pending_range(
+        this: &Arc<Self>,
+        from: u64,
+        to: u64,
+        pending_max: &mut u64,
+        ctx: &str,
+    ) -> Result<()> {
+        if this.is_poisoned() {
+            return Err(Error::Fatal("raft log storage is poisoned".to_string()));
+        }
+
+        if from > to {
+            return Ok(());
+        }
+        let entries = this.get_entries_range(from..=to)?;
+        if entries.is_empty() {
+            return Ok(());
+        }
+        this.log_store
+            .persist_entries(entries)
+            .await
+            .inspect(|_| {
+                *pending_max = (*pending_max).max(to);
+            })
+            .inspect_err(|e| {
+                error!("{ctx} persist_entries failed: {e:?}");
+                this.mark_poisoned_and_notify(format!("{ctx}: persist_entries failed: {e:?}"));
+            })
+    }
+
+    async fn run_batch_turn(
+        this: &Arc<Self>,
+        receiver: &mut mpsc::UnboundedReceiver<IOTask>,
+        pending_max: &mut u64,
+        mut replies: Vec<oneshot::Sender<Result<()>>>,
+        mut seen_shutdown: bool,
+    ) -> bool {
+        let start = this.durable_index.load(Ordering::Acquire) + 1;
+        let end = this.max_index.load(Ordering::Acquire);
+        let mut persist_failed = false;
+        if let Err(e) = Self::persist_pending_range(this, start, end, pending_max, "batch").await {
+            for reply in replies.drain(..) {
+                let _ = reply.send(Err(Error::Fatal(format!("persist_entries failed: {e:?}"))));
+            }
+            persist_failed = true;
+        }
+
+        // `seen_shutdown` is not a gate here — regardless of whether the
+        // caller already knows shutdown is happening, any commands still
+        // queued must be drained and replied to. Whether to drain the queue
+        // and whether to eventually break the loop are separate concerns
+        // and must not share one flag.
+        while let Ok(cmd) = receiver.try_recv() {
+            match cmd {
+                IOTask::Shutdown => {
+                    seen_shutdown = true;
+                }
+                IOTask::Flush(reply) => replies.push(reply),
+                cmd => {
+                    if Self::handle_non_write_cmd(cmd, this, pending_max).await {
+                        for reply in replies {
+                            let _ = reply
+                                .send(Err(Error::Fatal("fatal IO error, batch aborted".into())));
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if !replies.is_empty() && !persist_failed {
+            let start = *pending_max + 1;
+            let end = this.max_index.load(Ordering::Acquire);
+            let _ =
+                Self::persist_pending_range(this, start, end, pending_max, "batch catch-up").await;
+        }
+
+        this.fsync_coordinator.submit(this, *pending_max, replies);
+        *pending_max = 0;
+        if seen_shutdown {
+            let _ = this.meta_store.flush();
+        }
+        seen_shutdown
     }
 
     /// Handle IOTask variants that are NOT `Flush` or `Shutdown`.
@@ -1120,10 +1082,19 @@ where
                 new_entries,
                 done,
             } => {
+                // Result is relied on immediately for protocol answers
+                // (entry_term(), AppendEntries consistency checks) — must not
+                // proceed on an already-untrusted disk.
+                if this.is_poisoned() {
+                    let _ = done.send(Err(Error::Fatal("raft log storage is poisoned".into())));
+                    return true;
+                }
+
                 let max_idx = new_entries.last().map(|e| e.index).unwrap_or(0);
                 let result = this.log_store.replace_range(truncate_from, new_entries).await;
                 if let Err(ref e) = result {
                     error!("IOTask::ReplaceRange failed (fatal): {e:?}");
+                    this.mark_poisoned_and_notify(format!("ReplaceRange failed: {e:?}"));
                     let _ = done.send(result);
                     return true; // signal batch_processor to exit — disk state is corrupted
                 }
@@ -1134,12 +1105,34 @@ where
                 false
             }
             IOTask::Purge { cutoff, done } => {
-                let _ = this.log_store.purge(cutoff).await;
+                // Same reasoning as ReplaceRange: purge changes what future
+                // protocol queries see.
+                if this.is_poisoned() {
+                    let _ = done.send(());
+                    return true;
+                }
+
+                if let Err(ref e) = this.log_store.purge(cutoff).await {
+                    error!("IOTask::Purge failed (fatal): {e:?}");
+                    this.mark_poisoned_and_notify(format!("Purge failed: {e:?}"));
+                    let _ = done.send(());
+                    return true; // signal batch_processor to exit — disk state is corrupted
+                }
                 let _ = done.send(());
                 false
             }
             IOTask::Reset { done } => {
+                // Deliberately NO is_poisoned() check: Reset makes no new
+                // durability promise — it's a clean wipe, not a write the
+                // cluster will rely on. Allowing it to run even when poisoned
+                // lets the node reach a known-clean state before it exits.
                 let result = this.log_store.reset().await;
+                if let Err(ref e) = result {
+                    error!("IOTask::Reset failed (fatal): {e:?}");
+                    this.mark_poisoned_and_notify(format!("Reset failed: {e:?}"));
+                    let _ = done.send(result);
+                    return true; // signal batch_processor to exit — disk state is corrupted
+                }
                 *pending_max = 0; // disk wiped — pending page-cache watermark must be zeroed
                 let _ = done.send(result);
                 false
@@ -1147,24 +1140,11 @@ where
         }
     }
 
-    /// Advance durable_index to `max_index` after ensuring WAL durability.
-    ///
-    /// Batched Level 3 (current): `is_write_durable=false` → flush_wal(sync=true) first,
-    ///   coalescing multiple db.write() calls into a single fdatasync before notifying Raft.
-    /// Per-write durable mode:    `is_write_durable=true`  → skip flush_wal, advance immediately.
-    ///   (backend guarantees each write() is already durable, e.g. write_options.sync=true)
-    async fn advance_durable_after_write(
-        &self,
-        max_index: u64,
-    ) -> Result<()> {
-        if !self.log_store.is_write_durable() {
-            self.log_store.flush()?;
-        }
-        self.advance_durable_and_notify(max_index);
-        Ok(())
-    }
-
     async fn reset_internal(&self) -> Result<()> {
+        // Fence first: bump generation before clearing state, so any fsync task
+        // still in flight will observe a mismatch and discard its stale result.
+        self.fsync_coordinator.fence_reset();
+
         self.entries.clear();
         self.durable_index.store(0, Ordering::Release);
         self.next_id.store(1, Ordering::Release);
@@ -1238,7 +1218,7 @@ where
     }
 
     /// Advance `durable_index` to `new_durable` (monotonically) and send `LogFlushed`.
-    fn advance_durable_and_notify(
+    pub(super) fn advance_durable_and_notify(
         &self,
         new_durable: u64,
     ) {
@@ -1249,6 +1229,42 @@ where
             let _ = tx.send(crate::InternalEvent::LogFlushed {
                 durable_index: new_durable,
             });
+        }
+    }
+
+    /// Mark the log as permanently poisoned and notify the Raft driving loop.
+    /// Single choke point for both failure surfaces (persist_entries write
+    /// failure and fsync failure) — do not set `poisoned` or call `notify_fatal`
+    /// directly from anywhere else.
+    pub(super) fn mark_poisoned_and_notify(
+        &self,
+        error: String,
+    ) {
+        self.poisoned.store(true, Ordering::Release);
+        self.notify_fatal(error);
+    }
+
+    /// Send `InternalEvent::FatalError` to the Raft driving loop, mirroring the
+    /// pattern SM-worker failures already use (state_machine_handler/worker.rs).
+    /// Idempotent in effect: even if called multiple times (e.g. both
+    /// persist_entries and a later fsync fail), raft.rs::run() only needs to
+    /// see it once to exit.
+    pub(super) fn notify_fatal(
+        &self,
+        error: String,
+    ) {
+        if let Some(ref tx) = self.log_flush_tx
+            && tx
+                .send(crate::InternalEvent::FatalError {
+                    source: "RaftLog".to_string(),
+                    error,
+                })
+                .is_err()
+        {
+            error!(
+                "FatalError delivery failed (channel closed) — node may be poisoned \
+                     but still running; durability is no longer guaranteed"
+            );
         }
     }
 
@@ -1355,6 +1371,10 @@ where
         }
     }
 
+    pub(super) fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Relaxed)
+    }
+
     /// Returns the number of entries in the buffer.
     ///
     /// # Visibility
@@ -1410,3 +1430,71 @@ where
         f.debug_struct("BufferedRaftLog").finish()
     }
 }
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/basic_operations_test.rs"]
+mod basic_operations_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/concurrent_fsync_test.rs"]
+mod concurrent_fsync_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/concurrent_operations_test.rs"]
+mod concurrent_operations_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/drain_fsync_test.rs"]
+mod drain_fsync_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/durable_index_test.rs"]
+mod durable_index_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/edge_cases_test.rs"]
+mod edge_cases_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/flush_strategy_test.rs"]
+mod flush_strategy_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/id_allocation_test.rs"]
+mod id_allocation_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/performance_test.rs"]
+mod performance_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/pipeline_overlap_test.rs"]
+mod pipeline_overlap_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/quorum_durability_test.rs"]
+mod quorum_durability_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/raft_properties_test.rs"]
+mod raft_properties_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/remove_range_test.rs"]
+mod remove_range_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/shutdown_test.rs"]
+mod shutdown_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/term_index_test.rs"]
+mod term_index_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/term_segments_test.rs"]
+mod term_segments_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/worker_test.rs"]
+mod worker_test;

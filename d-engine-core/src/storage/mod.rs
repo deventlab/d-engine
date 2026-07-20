@@ -1,4 +1,5 @@
 mod buffered_raft_log;
+pub(super) mod fsync_coordinator;
 mod lease;
 mod raft_log;
 mod snapshot_path_manager;

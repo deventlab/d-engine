@@ -51,6 +51,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                     idle_flush_interval_ms,
                 },
                 max_buffered_entries: 10000,
+                shutdown_timeout_ms: 5000,
             };
 
             let temp_dir = tempdir().unwrap();
@@ -121,6 +122,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                     idle_flush_interval_ms,
                 },
                 max_buffered_entries: 10000,
+                shutdown_timeout_ms: 5000,
             };
 
             let temp_dir = tempdir().unwrap();

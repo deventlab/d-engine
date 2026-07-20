@@ -133,6 +133,7 @@ async fn test_partial_flush_with_graceful_shutdown() {
                         idle_flush_interval_ms: 100,
                     },
                     max_buffered_entries: 10000,
+                    shutdown_timeout_ms: 5000,
                 },
                 storage,
             );
@@ -169,6 +170,7 @@ async fn test_partial_flush_with_graceful_shutdown() {
                     idle_flush_interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
+                shutdown_timeout_ms: 5000,
             },
             storage,
         );
@@ -213,6 +215,7 @@ async fn test_partial_flush_after_crash() {
                         idle_flush_interval_ms: 100,
                     },
                     max_buffered_entries: 10000,
+                    shutdown_timeout_ms: 5000,
                 },
                 storage,
             );
@@ -261,6 +264,7 @@ async fn test_partial_flush_after_crash() {
                     idle_flush_interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
+                shutdown_timeout_ms: 5000,
             },
             storage,
         );
@@ -391,6 +395,7 @@ async fn test_memfirst_crash_recovery_durability() {
                     idle_flush_interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
+                shutdown_timeout_ms: 5000,
             },
             storage,
         );
@@ -424,6 +429,7 @@ async fn test_diskfirst_crash_recovery_durability() {
                         idle_flush_interval_ms: 1,
                     },
                     max_buffered_entries: 10000,
+                    shutdown_timeout_ms: 5000,
                 },
                 storage,
             );
@@ -457,6 +463,7 @@ async fn test_diskfirst_crash_recovery_durability() {
                     idle_flush_interval_ms: 1,
                 },
                 max_buffered_entries: 10000,
+                shutdown_timeout_ms: 5000,
             },
             storage,
         );

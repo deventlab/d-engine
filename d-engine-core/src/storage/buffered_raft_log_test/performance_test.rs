@@ -67,6 +67,7 @@ async fn test_reset_performance_during_active_flush() {
             strategy: strategy.clone(),
             flush_policy: flush_policy.clone(),
             max_buffered_entries: 1000,
+            shutdown_timeout_ms: 5000,
         };
 
         let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, storage);
@@ -128,6 +129,7 @@ async fn test_filter_conflicts_performance_during_flush() {
                 idle_flush_interval_ms,
             },
             max_buffered_entries: 1000,
+            shutdown_timeout_ms: 5000,
         };
 
         let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(1, config, storage);
@@ -216,6 +218,7 @@ async fn test_fresh_cluster_performance_consistency() {
             strategy: strategy.clone(),
             flush_policy: flush_policy.clone(),
             max_buffered_entries: 1000,
+            shutdown_timeout_ms: 5000,
         };
 
         let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(

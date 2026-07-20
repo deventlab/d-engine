@@ -40,6 +40,7 @@ impl BufferedRaftLogTestContext {
                 strategy: strategy.clone(),
                 flush_policy: flush_policy.clone(),
                 max_buffered_entries: 1000,
+                shutdown_timeout_ms: 5000,
             },
             storage.clone(),
         );
@@ -94,6 +95,7 @@ impl BufferedRaftLogTestContext {
                 strategy: PersistenceStrategy::MemFirst,
                 flush_policy: flush_policy.clone(),
                 max_buffered_entries: 1000,
+                shutdown_timeout_ms: 5000,
             },
             storage.clone(),
         );
@@ -121,6 +123,7 @@ impl BufferedRaftLogTestContext {
                 strategy: self.strategy.clone(),
                 flush_policy: self.flush_policy.clone(),
                 max_buffered_entries: 1000,
+                shutdown_timeout_ms: 5000,
             },
             storage.clone(),
         );

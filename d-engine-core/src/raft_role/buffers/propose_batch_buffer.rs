@@ -48,8 +48,6 @@ pub struct ProposeBatchBuffer {
     pub last_flush: Instant,
     /// Pre-allocated metric labels for zero-allocation hot path.
     metrics_labels: Option<Arc<[(String, String)]>>,
-    /// Runtime switch for buffer length gauge.
-    metrics_enabled: bool,
 }
 
 impl ProposeBatchBuffer {
@@ -61,24 +59,21 @@ impl ProposeBatchBuffer {
             senders: Vec::with_capacity(initial_capacity),
             last_flush: Instant::now(),
             metrics_labels: None,
-            metrics_enabled: false,
         }
     }
 
     /// Enable buffer length gauge with a distinguishing buffer name label.
     ///
-    /// Emits: `batch.buffer_length{node_id="..", buffer="propose"}`
+    /// Emits: `core.raft.buffer.length{node_id="..", buffer="propose"}`
     pub fn with_length_gauge(
         mut self,
         node_id: u32,
         buffer_name: &'static str,
-        enabled: bool,
     ) -> Self {
         self.metrics_labels = Some(Arc::from(vec![
             ("node_id".to_string(), node_id.to_string()),
             ("buffer".to_string(), buffer_name.to_string()),
         ]));
-        self.metrics_enabled = enabled;
         self
     }
 
@@ -95,10 +90,9 @@ impl ProposeBatchBuffer {
         self.payloads.push(payload);
         self.senders.push(sender);
 
-        if self.metrics_enabled
-            && let Some(ref labels) = self.metrics_labels
-        {
-            metrics::gauge!("batch.buffer_length", labels.as_ref()).set(self.payloads.len() as f64);
+        if let Some(ref labels) = self.metrics_labels {
+            metrics::gauge!("core.raft.buffer.length", labels.as_ref())
+                .set(self.payloads.len() as f64);
         }
     }
 
@@ -123,10 +117,8 @@ impl ProposeBatchBuffer {
         std::mem::swap(&mut self.payloads, &mut payloads);
         std::mem::swap(&mut self.senders, &mut senders);
 
-        if self.metrics_enabled
-            && let Some(ref labels) = self.metrics_labels
-        {
-            metrics::gauge!("batch.buffer_length", labels.as_ref()).set(0.0);
+        if let Some(ref labels) = self.metrics_labels {
+            metrics::gauge!("core.raft.buffer.length", labels.as_ref()).set(0.0);
         }
 
         Some(RaftRequestWithSignal {

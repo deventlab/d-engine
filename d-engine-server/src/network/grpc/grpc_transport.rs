@@ -798,7 +798,13 @@ where
             }
 
             let req = request.clone();
-            async move { client.append_entries(tonic::Request::new(req)).await }
+            async move {
+                let t0 = std::time::Instant::now();
+                let result = client.append_entries(tonic::Request::new(req)).await;
+                metrics::histogram!("server.raft.replicate.rtt_ms", "peer" => peer_id.to_string())
+                    .record(t0.elapsed().as_secs_f64() * 1000.0);
+                result
+            }
         };
 
         match grpc_task_with_timeout_and_exponential_backoff(

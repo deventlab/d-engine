@@ -4,6 +4,24 @@ This document explains how to run the stability (soak) test for the d-engine ben
 
 ---
 
+## Building the `standalone-bench` Image
+
+Must build from the **workspace root** (not `benches/standalone-bench/`), since `Cargo.toml` references `d-engine = { path = "../../d-engine" }`:
+
+```bash
+docker build -t standalone-bench:1.0 -f benches/standalone-bench/docker/Dockerfile .
+```
+
+(`Makefile`'s `build-soak-tester` target uses the wrong context and will fail — use the command above.)
+
+To iterate on `bench-suite.sh`/`soak-test.sh` without rebuilding, bind-mount over the baked-in copy:
+
+```bash
+docker run --rm ... -v "$(pwd)/benches/standalone-bench/docker/bench-suite.sh:/usr/local/bin/bench-suite.sh:ro" standalone-bench:1.0 bench-suite.sh
+```
+
+---
+
 ## Prerequisites
 
 - You must have a **three-node cluster** running successfully.

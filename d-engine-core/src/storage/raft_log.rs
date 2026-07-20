@@ -460,6 +460,12 @@ pub trait RaftLog: Send + Sync + 'static {
         hard_state: &crate::HardState,
     ) -> Result<()>;
 
+    /// Returns `true` if a storage-layer failure has permanently poisoned this
+    /// log — no further writes/commands will be attempted, and callers above
+    /// the storage layer (e.g. the Raft protocol loop) must stop dispatching
+    /// new work to this node.
+    fn is_poisoned(&self) -> bool;
+
     /// Gracefully closes the log, ensuring all pending IO completes and any
     /// background IO threads have exited before returning.
     ///

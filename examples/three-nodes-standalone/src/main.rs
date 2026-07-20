@@ -140,8 +140,27 @@ pub fn init_observability(log_dir: String) -> Result<WorkerGuard, Box<dyn Error 
 async fn start_metrics_server(port: u16) {
     // Start Prometheus exporter with dynamic port
     println!("Metrics server will start at http://0.0.0.0:{port}/metrics",);
+
+    // Exponential buckets: start 0.1ms, factor 2, 15 steps → covers 0.1ms to ~1638ms.
+    // Matches actual d-engine distribution: normal fsyncs ~0.2ms, outliers up to ~1.7s.
+    // Linear or default buckets (max 10.0) lose all sub-10ms detail and miss outliers.
+    const MS_BUCKETS: &[f64] = &[
+        0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8, 409.6, 819.2, 1638.4,
+    ];
+    const BATCH_BUCKETS: &[f64] = &[1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0];
+
     metrics_exporter_prometheus::PrometheusBuilder::new()
         .with_http_listener(([0, 0, 0, 0], port))
+        .set_buckets_for_metric(
+            metrics_exporter_prometheus::Matcher::Suffix("_ms".to_string()),
+            MS_BUCKETS,
+        )
+        .expect("failed to configure _ms buckets")
+        .set_buckets_for_metric(
+            metrics_exporter_prometheus::Matcher::Full("core.raft.fsync.batch_entries".to_string()),
+            BATCH_BUCKETS,
+        )
+        .expect("failed to configure batch_entries buckets")
         .install()
         .expect("failed to start Prometheus metrics exporter");
 }

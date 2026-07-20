@@ -126,9 +126,6 @@ pub trait StateMachine: Send + Sync + 'static {
     /// - Leader election: leader=node-3 + term=43 is a phantom state that never existed
     /// - Quota management: used=850 with a reset window_start blocks valid requests
     ///
-    /// etcd (Range + MVCC), TiKV RawKV (BatchGet + RocksDB snapshot), and Consul stale
-    /// reads all guarantee snapshot consistency even in eventual/stale modes.
-    ///
     /// # Default implementation
     ///
     /// Calls `get()` sequentially. Correct when the caller holds no write locks, but

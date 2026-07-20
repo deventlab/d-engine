@@ -322,6 +322,66 @@ async fn test_append_result_higher_term_lease_revoked_before_become_follower() {
     );
 }
 
+/// Test: Leader persists hard_state when an AppendEntries response reveals a
+/// higher term, BEFORE stepping down to Follower.
+///
+/// Scenario:
+/// - Leader is at term=1, receives an AppendEntries response from a follower
+///   carrying a higher term (999) — this is the response-side term check
+///   (distinct from the request-side ones already covered in candidate/follower
+///   tests), flagged during review as previously uncovered by any test.
+///
+/// Expected:
+/// - `save_hard_state` is called exactly once with term=999.
+/// - The call happens BEFORE `InternalEvent::BecomeFollower` is sent.
+#[tokio::test]
+async fn test_handle_append_result_higher_term_persists_hard_state_before_stepping_down() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+    let internal_event_rx = Arc::new(std::sync::Mutex::new(internal_event_rx));
+    let rx_for_ordering_check = Arc::clone(&internal_event_rx);
+
+    let mut raft_log = crate::MockRaftLog::new();
+    raft_log
+        .expect_save_hard_state()
+        .withf(move |s| {
+            assert!(
+                rx_for_ordering_check.lock().unwrap().try_recv().is_err(),
+                "save_hard_state must be called BEFORE BecomeFollower is sent"
+            );
+            s.current_term == 999
+        })
+        .times(1)
+        .returning(|_| Ok(()));
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_append_result_higher_term_persists_hard_state")
+        .with_raft_log(raft_log)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let higher_term_response = AppendEntriesResponse {
+        node_id: 2,
+        term: 999,
+        result: None,
+    };
+    let result = state
+        .handle_append_result(2, Ok(higher_term_response), &context, &internal_event_tx)
+        .await;
+
+    assert!(result.is_err(), "higher-term AppendResult must return Err");
+    assert!(
+        matches!(
+            internal_event_rx.lock().unwrap().try_recv(),
+            Ok(InternalEvent::BecomeFollower(_))
+        ),
+        "higher-term AppendResult must emit BecomeFollower"
+    );
+    assert_eq!(state.current_term(), 999, "Term should update to 999");
+}
+
 /// Higher-term AppendResult → BecomeFollower event → become_follower() → lease revoked.
 ///
 /// End-to-end pin for the path:

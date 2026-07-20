@@ -22,9 +22,9 @@
 //! - Listener notification verification
 //!
 
-use std::sync::Arc;
-
 use d_engine_proto::common::NodeRole::{Candidate, Follower, Leader, Learner};
+
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 

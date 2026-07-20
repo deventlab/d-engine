@@ -373,6 +373,7 @@ async fn test_process_batch_higher_term() {
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
@@ -1293,6 +1294,7 @@ async fn test_verify_internal_quorum_higher_term() {
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
     raft_context.storage.raft_log = Arc::new(raft_log);
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config());

@@ -9,6 +9,28 @@ SOAK_TEST_ENDPOINTS ?= http://127.0.0.1:9083,http://127.0.0.1:9082,http://127.0.
 SOAK_TEST_TOTAL ?= 100
 SOAK_COMPOSE_FILE ?= docker/docker-compose.yml
 
+# On macOS with Homebrew: auto-detect compression lib paths to skip bundled C++
+# compilation of RocksDB dependencies, which fails under macOS 26 + Xcode 26
+# (Clang 16 lacks __builtin_ctzg/__builtin_clzg from LLVM 18+ SDK headers).
+# brew --prefix resolves correctly on both Apple Silicon (/opt/homebrew) and
+# Intel Mac (/usr/local). Silently no-ops when brew or a lib is absent.
+SNAPPY_PREFIX    := $(shell brew --prefix snappy 2>/dev/null)
+LZ4_PREFIX       := $(shell brew --prefix lz4    2>/dev/null)
+ZSTD_PREFIX      := $(shell brew --prefix zstd   2>/dev/null)
+BREW_ROCKSDB_ENV :=
+
+ifneq ($(SNAPPY_PREFIX),)
+ifneq ($(wildcard $(SNAPPY_PREFIX)/lib),)
+  BREW_ROCKSDB_ENV += SNAPPY_LIB_DIR=$(SNAPPY_PREFIX)/lib
+endif
+endif
+ifneq ($(LZ4_PREFIX),)
+  BREW_ROCKSDB_ENV += LZ4_LIB_DIR=$(LZ4_PREFIX)/lib
+endif
+ifneq ($(ZSTD_PREFIX),)
+  BREW_ROCKSDB_ENV += ZSTD_LIB_DIR=$(ZSTD_PREFIX)/lib
+endif
+
 all: clean build basic-write high-concurrency-write linear-read serial-read
 
 clean:
@@ -18,7 +40,7 @@ clean:
 build:
 	@echo "Building release binary..."
 	@cargo update
-	@cargo build --release --jobs 4
+	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 4
 
 # Basic Write Test (1 connection, 1 client)
 basic-write:

@@ -15,6 +15,11 @@
 //! client.put(b"key", b"value").await?;
 //! ```
 
+use super::embedded_read_handle::EmbeddedReadHandle;
+pub(crate) use super::standalone_read_handle::channel_closed_error;
+pub(crate) use super::standalone_read_handle::map_error_response;
+pub(crate) use super::standalone_read_handle::server_error;
+pub(crate) use super::standalone_read_handle::timeout_error;
 use crate::api::types::WriteOperation;
 use crate::proto_convert;
 use bytes::Bytes;
@@ -24,23 +29,19 @@ use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftOneshot;
 use d_engine_core::ScanResult;
 use d_engine_core::TypeConfig;
-use d_engine_core::client::{
-    ClientApi, ClientApiError, ClientApiResult, ClientResponsePayload, ClientWriteRequest,
-    ErrorCode,
-};
+use d_engine_core::client::ClientApi;
+use d_engine_core::client::ClientApiError;
+use d_engine_core::client::ClientApiResult;
+use d_engine_core::client::ClientResponsePayload;
+use d_engine_core::client::ClientWriteRequest;
+use d_engine_core::client::ErrorCode;
 use d_engine_core::config::ReadConsistencyPolicy;
+#[cfg(feature = "watch")]
+use d_engine_core::watch::WatchRegistry;
 #[cfg(feature = "watch")]
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-
-use super::embedded_read_handle::EmbeddedReadHandle;
-pub(crate) use super::standalone_read_handle::{
-    channel_closed_error, map_error_response, server_error, timeout_error,
-};
-
-#[cfg(feature = "watch")]
-use d_engine_core::watch::WatchRegistry;
 
 /// Zero-overhead KV client for embedded mode. Obtained via `EmbeddedEngine::client()`.
 ///

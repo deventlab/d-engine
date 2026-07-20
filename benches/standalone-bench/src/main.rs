@@ -206,7 +206,7 @@ impl BenchmarkStats {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let stats = Arc::new(BenchmarkStats::new());
-    let semaphore = Arc::new(Semaphore::new(cli.conns));
+    let semaphore = Arc::new(Semaphore::new(cli.clients));
 
     // Initialize the connection pool
     let endpoints = cli.endpoints.clone();

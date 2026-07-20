@@ -117,11 +117,6 @@ pub struct RaftConfig {
     /// Controls event queue sizes and metrics behavior
     #[serde(default)]
     pub watch: WatchConfig,
-
-    /// Performance metrics configuration
-    /// Controls metrics emission and sampling for observability vs performance trade-off
-    #[serde(default)]
-    pub metrics: MetricsConfig,
 }
 
 impl Debug for RaftConfig {
@@ -154,7 +149,6 @@ impl Default for RaftConfig {
             backpressure: BackpressureConfig::default(),
             rpc_compression: RpcCompressionConfig::default(),
             watch: WatchConfig::default(),
-            metrics: MetricsConfig::default(),
         }
     }
 }
@@ -888,6 +882,12 @@ pub struct PersistenceConfig {
     /// high write throughput or when disk persistence is slow.
     #[serde(default = "default_max_buffered_entries")]
     pub max_buffered_entries: usize,
+
+    /// Maximum time to wait, on shutdown, for an in-flight fsync task to finish
+    /// before giving up. Bounds close() against a stuck/slow disk — the task
+    /// itself is not cancelled, it keeps running in the background regardless.
+    #[serde(default = "default_shutdown_timeout_ms")]
+    pub shutdown_timeout_ms: u64,
 }
 
 /// Default persistence strategy (optimized for balanced workloads)
@@ -910,6 +910,10 @@ fn default_max_buffered_entries() -> usize {
     10_000
 }
 
+fn default_shutdown_timeout_ms() -> u64 {
+    5_000
+}
+
 impl PersistenceConfig {
     pub fn validate(&self) -> Result<()> {
         let FlushPolicy::Batch {
@@ -920,6 +924,12 @@ impl PersistenceConfig {
                 "flush_policy.idle_flush_interval_ms must be greater than 0".into(),
             )));
         }
+        if self.shutdown_timeout_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "shutdown_timeout_ms must be greater than 0".into(),
+            )));
+        }
+
         Ok(())
     }
 }
@@ -930,6 +940,7 @@ impl Default for PersistenceConfig {
             strategy: default_persistence_strategy(),
             flush_policy: default_flush_policy(),
             max_buffered_entries: default_max_buffered_entries(),
+            shutdown_timeout_ms: default_shutdown_timeout_ms(),
         }
     }
 }
@@ -1464,72 +1475,4 @@ const fn default_max_watcher_count() -> usize {
 
 const fn default_heartbeat_interval_ms() -> u64 {
     30_000
-}
-
-/// Performance metrics configuration
-///
-/// Controls emission of observability metrics. Disabling metrics reduces overhead
-/// in hot paths but decreases system visibility.
-///
-/// # Example
-/// ```toml
-/// [raft.metrics]
-/// enable_backpressure = true
-/// enable_batch = true
-/// sample_rate = 1  # No sampling (record every event)
-/// ```
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MetricsConfig {
-    /// Enable backpressure metrics (rejections, buffer utilization)
-    ///
-    /// Tracks client request backpressure for capacity planning.
-    /// Disable for absolute maximum performance in trusted environments.
-    ///
-    /// **Default**: false
-    #[serde(default = "default_enable_backpressure_metrics")]
-    pub enable_backpressure: bool,
-
-    /// Enable buffer length gauge (batch.buffer_length for propose and linearizable buffers)
-    ///
-    /// Tracks buffer utilization for capacity planning.
-    /// Disable for absolute maximum performance in trusted environments.
-    ///
-    /// **Default**: false
-    #[serde(default = "default_enable_batch_metrics")]
-    pub enable_batch: bool,
-
-    /// Sample rate for high-frequency gauge metrics
-    ///
-    /// - `1` = record every event (no sampling)
-    /// - `10` = record 1 out of 10 events (10% sampling)
-    /// - `100` = record 1 out of 100 events (1% sampling)
-    ///
-    /// Applies to: buffer_utilization, buffer_length gauges.
-    /// Does NOT apply to: counters (rejections, drain/heartbeat triggers).
-    ///
-    /// **Default**: 1 (no sampling)
-    #[serde(default = "default_metrics_sample_rate")]
-    pub sample_rate: u32,
-}
-
-impl Default for MetricsConfig {
-    fn default() -> Self {
-        Self {
-            enable_backpressure: default_enable_backpressure_metrics(),
-            enable_batch: default_enable_batch_metrics(),
-            sample_rate: default_metrics_sample_rate(),
-        }
-    }
-}
-
-fn default_enable_backpressure_metrics() -> bool {
-    false
-}
-
-fn default_enable_batch_metrics() -> bool {
-    false
-}
-
-fn default_metrics_sample_rate() -> u32 {
-    1 // No sampling by default
 }

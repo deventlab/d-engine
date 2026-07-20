@@ -11,6 +11,10 @@ NODE ?= n1
 CONFIG_PATH := $(CONFIG_DIR)/$(NODE).toml
 SINGLE_NODE_CONFIG_PATH := $(CONFIG_DIR)/single_node.toml
 
+# Metrics port per node — same scheme as examples/three-nodes-standalone
+# (8081/8082/8083), reused because the two setups never run concurrently.
+METRICS_PORT := $(if $(filter n2,$(NODE)),8082,$(if $(filter n3,$(NODE)),8083,8081))
+
 # ===============================
 # Global Variables
 # ===============================
@@ -21,9 +25,37 @@ KEY_SIZE := 8
 VALUE_SIZE := 256
 SEQUENTIAL := --sequential-keys
 
+# Concurrent client tasks (embedded-bench is in-process — no --conns knob exists
+# in the binary, only --clients). Override: make test-high-conc-write CLIENTS=64
+CLIENTS ?= 1000
+
 # Optional write verification (VERIFY=true to enable)
 VERIFY ?= false
 VERIFY_FLAG := $(if $(filter true,$(VERIFY)),--verify-write,)
+
+
+# On macOS with Homebrew: auto-detect compression lib paths to skip bundled C++
+# compilation of RocksDB dependencies, which fails under macOS 26 + Xcode 26
+# (Clang 16 lacks __builtin_ctzg/__builtin_clzg from LLVM 18+ SDK headers).
+# brew --prefix resolves correctly on both Apple Silicon (/opt/homebrew) and
+# Intel Mac (/usr/local). Silently no-ops when brew or a lib is absent.
+SNAPPY_PREFIX    := $(shell brew --prefix snappy 2>/dev/null)
+LZ4_PREFIX       := $(shell brew --prefix lz4    2>/dev/null)
+ZSTD_PREFIX      := $(shell brew --prefix zstd   2>/dev/null)
+BREW_ROCKSDB_ENV :=
+
+ifneq ($(SNAPPY_PREFIX),)
+ifneq ($(wildcard $(SNAPPY_PREFIX)/lib),)
+  BREW_ROCKSDB_ENV += SNAPPY_LIB_DIR=$(SNAPPY_PREFIX)/lib
+endif
+endif
+ifneq ($(LZ4_PREFIX),)
+  BREW_ROCKSDB_ENV += LZ4_LIB_DIR=$(LZ4_PREFIX)/lib
+endif
+ifneq ($(ZSTD_PREFIX),)
+  BREW_ROCKSDB_ENV += ZSTD_LIB_DIR=$(ZSTD_PREFIX)/lib
+endif
+
 
 help:
 	@echo "Embedded-bench Makefile - Performance Testing"
@@ -59,7 +91,7 @@ help:
 
 build:
 	@echo "Building embedded-bench..."
-	cargo build --release --jobs 8
+	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 8
 
 clean:
 	@echo "Cleaning build artifacts and data directories..."
@@ -80,13 +112,14 @@ clean-log-db:
 # ============================================
 
 # Single client write (10K requests)
-# Comparable to: embedded-bench --conns 1 --clients 1 --total 10000
+# Comparable to: embedded-bench --clients 1 --total 10000
 test-single-write: build
 	@echo "========================================"
 	@echo "Single Client Write (10K requests)"
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(SINGLE_NODE_CONFIG_PATH) \
+	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
 		--mode local \
@@ -99,18 +132,19 @@ test-single-write: build
 		put
 
 # High concurrency write (100K requests)
-# Comparable to: embedded-bench --conns 200 --clients 1000 --total 100000
+# Comparable to: embedded-bench --clients $(CLIENTS) --total 100000
 test-high-conc-write: build
 	@echo "========================================"
 	@echo "High Concurrency Write (100K requests)"
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
 		--mode local \
 		--total 100000 \
-		--clients 1000 \
+		--clients $(CLIENTS) \
 		--key-size $(KEY_SIZE) \
 		--value-size $(VALUE_SIZE) \
 		$(SEQUENTIAL) \
@@ -122,72 +156,76 @@ test-high-conc-write: build
 # ============================================
 
 # Linearizable read (100K requests)
-# Comparable to: embedded-bench --conns 200 --clients 1000 --total 100000 range --consistency l
+# Comparable to: embedded-bench --clients $(CLIENTS) --total 100000 range --consistency l
 test-linearizable-read: build
 	@echo "========================================"
 	@echo "Linearizable Read (100K requests)"
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
 		--mode local \
 		--total 100000 \
-		--clients 1000 \
+		--clients $(CLIENTS) \
 		--key-size $(KEY_SIZE) \
 		--value-size $(VALUE_SIZE) \
 		$(SEQUENTIAL) \
 		get --consistency l
 
 # Lease-based read (100K requests)
-# Comparable to: embedded-bench --conns 200 --clients 1000 --total 100000 range --consistency s
+# Comparable to: embedded-bench --clients $(CLIENTS) --total 100000 range --consistency s
 test-lease-read: build
 	@echo "========================================"
 	@echo "Lease-Based Read (100K requests)"
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
 		--mode local \
 		--total 100000 \
-		--clients 1000 \
+		--clients $(CLIENTS) \
 		--key-size $(KEY_SIZE) \
 		--value-size $(VALUE_SIZE) \
 		$(SEQUENTIAL) \
 		get --consistency s
 
 # Eventual consistency read (100K requests)
-# Comparable to: embedded-bench --conns 200 --clients 1000 --total 100000 range --consistency e
+# Comparable to: embedded-bench --clients $(CLIENTS) --total 100000 range --consistency e
 test-eventual-read: build
 	@echo "========================================"
 	@echo "Eventual Consistency Read (100K requests)"
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
 		--mode local \
 		--total 100000 \
-		--clients 1000 \
+		--clients $(CLIENTS) \
 		--key-size $(KEY_SIZE) \
 		--value-size $(VALUE_SIZE) \
 		$(SEQUENTIAL) \
 		get --consistency e
 
 # Hot-key test (100K requests, 10 keys)
-# Comparable to: embedded-bench --conns 200 --clients 1000 --total 100000 --key-space 10 range --consistency l
+# Comparable to: embedded-bench --clients $(CLIENTS) --total 100000 --key-space 10 range --consistency l
 test-hot-key: build
 	@echo "========================================"
 	@echo "Hot-Key Test (100K requests, 10 keys)"
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
 		--mode local \
 		--total 100000 \
-		--clients 1000 \
+		--clients $(CLIENTS) \
 		--key-size $(KEY_SIZE) \
 		--key-space 10 \
 		$(SEQUENTIAL) \
@@ -203,11 +241,12 @@ all-tests: build
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
 		--mode local \
 		--batch \
-		--clients 1000 \
+		--clients $(CLIENTS) \
 		--key-size $(KEY_SIZE) \
 		--value-size $(VALUE_SIZE) \
 		$(SEQUENTIAL) \

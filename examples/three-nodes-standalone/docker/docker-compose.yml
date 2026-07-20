@@ -1,6 +1,6 @@
 services:
   node1: &node-base
-    image: demo:v0.2.4
+    image: demo:v0.2.5
     cap_add:
       - NET_ADMIN # Add the NET_ADMIN capability
     environment:

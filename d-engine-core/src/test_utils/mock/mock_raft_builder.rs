@@ -333,6 +333,7 @@ pub fn mock_raft_log() -> MockRaftLog {
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
     raft_log.expect_close().returning(|| ());
+    raft_log.expect_is_poisoned().returning(|| false);
     raft_log
 }
 

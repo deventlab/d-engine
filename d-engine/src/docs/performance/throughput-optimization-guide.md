@@ -39,10 +39,10 @@ flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
   thread batches them and calls fsync (`flush_wal(true)` / `sync_all()`) before advancing
   `durable_index`. Raft only counts an entry toward quorum after fsync completes.
 - **Durability**:
-  - *Process crash*: OS page cache survives a process restart → full recovery via WAL replay. ✅
-  - *Power loss (single node)*: In a multi-node cluster, Raft quorum ensures committed data
+  - _Process crash_: OS page cache survives a process restart → full recovery via WAL replay. ✅
+  - _Power loss (single node)_: In a multi-node cluster, Raft quorum ensures committed data
     survives a single-node power failure — the other quorum members retain the data. ✅
-  - *Power loss (majority of nodes simultaneously)*: Entries in the current unflushed batch
+  - _Power loss (majority of nodes simultaneously)_: Entries in the current unflushed batch
     (written since the last fsync) may be lost. This window is bounded by
     `idle_flush_interval_ms`. Raft has not yet counted these entries toward quorum, so no
     client-acknowledged write is lost — the leader will re-replicate after re-election. ⚠️
@@ -85,10 +85,10 @@ channel_capacity = 512   # default
 max_drain        = 100   # default
 ```
 
-| Parameter | What it controls | Tune up when… |
-|---|---|---|
-| `channel_capacity` | mpsc buffer depth between client and ReadActor | read latency spikes under high concurrent Eventual/LeaseRead (channel full → backpressure) |
-| `max_drain` | reads batched per ReadActor wakeup (mirrors `max_batch_size`) | read throughput plateaus but CPU is not saturated |
+| Parameter          | What it controls                                              | Tune up when…                                                                              |
+| ------------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `channel_capacity` | mpsc buffer depth between client and ReadActor                | read latency spikes under high concurrent Eventual/LeaseRead (channel full → backpressure) |
+| `max_drain`        | reads batched per ReadActor wakeup (mirrors `max_batch_size`) | read throughput plateaus but CPU is not saturated                                          |
 
 Same tradeoff as write batching: higher `max_drain` → better throughput, higher tail latency. Start with defaults; only tune if profiling shows a bottleneck here.
 
@@ -503,3 +503,143 @@ size_threshold = 100-150  # Works for most workloads
 3. **Granular Control**: The design allows you to optimize based on actual data patterns - snapshot transfers benefit from compression regardless of environment, while high-frequency operations like replication and client responses perform better without compression in low-latency networks.
 
 This implementation provides a clean, configurable approach that follows Rust best practices and provides clear documentation for users.
+
+---
+
+## Diagnosing Bottlenecks with Metrics
+
+d-engine emits Prometheus-compatible metrics at every stage of the write pipeline via the
+[`metrics`](https://docs.rs/metrics) crate. Install any compatible recorder at application
+startup and the metrics flow automatically — no d-engine configuration required.
+
+```rust,ignore
+// Example: install a Prometheus recorder in your application
+metrics_exporter_prometheus::PrometheusBuilder::new()
+    .install()
+    .expect("failed to install recorder");
+
+// Then start d-engine as normal — metrics are emitted automatically
+let engine = DefaultEmbeddedEngine::new(config).await?;
+```
+
+When no recorder is installed, all metric calls are no-ops (~2ns overhead). There is no
+d-engine-side on/off switch — the recorder controls everything.
+
+### Write Pipeline Overview
+
+```text
+Client write
+  → [propose buffer]    ← core.raft.buffer.length{buffer="propose"}
+  → AppendEntries RPC   ← server.raft.replicate.rtt_ms{peer}        (planned)
+  → Follower WAL fsync  ← core.raft.fsync.duration_ms
+                          core.raft.fsync.batch_entries
+                          core.raft.fsync.inflight
+                          core.raft.fsync.busy_nanos_total         (utilization)
+  → commit → SM apply   ← core.raft.buffer.length{buffer="linearizable"}
+                          core.state_machine.apply_chunk.duration_ms
+                          core.state_machine.apply_chunk.batch_size
+                          core.state_machine.apply.busy_nanos_total (utilization)
+  → Client response     ← core.raft.write.propose_to_apply_ms     (end-to-end)
+                          core.raft.write.propose_to_commit_ms
+```
+
+### Metrics Reference
+
+| Metric                                            | Type        | Answers                                |
+| ------------------------------------------------- | ----------- | -------------------------------------- |
+| `core.raft.buffer.length{buffer="propose"}`       | Gauge       | Is the proposal channel backlogged?    |
+| `core.raft.fsync.duration_ms`                     | Histogram   | How long does each fsync take?         |
+| `core.raft.fsync.batch_entries`                   | Histogram   | Is FsyncCoordinator coalescing writes? |
+| `core.raft.fsync.inflight`                        | Gauge (0/1) | Is a fsync task currently running?     |
+| `core.raft.fsync.busy_nanos_total`                | Counter     | fsync thread utilization               |
+| `core.state_machine.apply_chunk.duration_ms`      | Histogram   | SM apply latency                       |
+| `core.state_machine.apply_chunk.batch_size`       | Histogram   | Entries applied per chunk              |
+| `core.state_machine.apply.busy_nanos_total`       | Counter     | SM apply utilization                   |
+| `core.raft.write.propose_to_apply_ms`             | Histogram   | End-to-end write latency               |
+| `core.raft.write.propose_to_commit_ms`            | Histogram   | Propose-to-commit latency              |
+| `core.raft.backpressure.rejections{node_id,type}` | Counter     | Rejected requests (write/read)         |
+
+### Finding the Bottleneck: Utilization Ratio
+
+For any serialized stage (fsync, SM apply), compute utilization over a time window:
+
+```promql
+# fsync thread utilization (0.0 = idle, 1.0 = saturated)
+rate(core_raft_fsync_busy_nanos_total[1m]) / 1e9
+
+# SM apply utilization
+rate(core_state_machine_apply_busy_nanos_total[1m]) / 1e9
+```
+
+**The stage whose utilization approaches 1.0 is the bottleneck.** No tuning elsewhere will
+help until that stage is relieved. This is the USE method (Utilization, Saturation, Errors)
+applied to d-engine's pipeline — no hardware-specific theoretical model needed.
+
+Example interpretation:
+
+| fsync utilization | SM apply utilization | Conclusion                                                            |
+| ----------------- | -------------------- | --------------------------------------------------------------------- |
+| 0.95              | 0.20                 | WAL fsync is saturated — tune batch window or use faster storage      |
+| 0.30              | 0.85                 | SM apply is the bottleneck — check RocksDB compaction pressure        |
+| 0.20              | 0.20                 | Neither stage saturated — bottleneck is elsewhere (network, upstream) |
+
+### Interpreting Common Patterns
+
+**`fsync.batch_entries` p50 = 1 under high write load**
+
+FsyncCoordinator is not coalescing. Each proposal triggers its own fsync. Under a single-
+client benchmark this is expected and correct — batching requires concurrent writers. Under
+multi-client load, if batch_entries stays at 1, investigate whether proposals are arriving
+in rapid bursts or at a steady trickle.
+
+**`fsync.duration_ms` p99 >> p50 (high tail latency)**
+
+Occasional long fsyncs (disk GC, cloud volume throttling). Check storage I/O metrics.
+Increasing `idle_flush_interval_ms` allows larger batches that amortize these spikes.
+
+**End-to-end latency high, both utilization metrics low**
+
+The bottleneck is upstream (network RTT, proposal channel) or downstream (apply notify
+latency). Check `propose_to_commit_ms` vs `propose_to_apply_ms` — the gap between them
+is the commit-to-apply delay.
+
+### Grafana Dashboard Setup
+
+Two panels cover 80% of diagnostic needs:
+
+**Panel 1 — End-to-end write latency (verification)**
+
+```promql
+histogram_quantile(0.99, rate(core_raft_write_propose_to_apply_ms_bucket[1m]))
+histogram_quantile(0.50, rate(core_raft_write_propose_to_apply_ms_bucket[1m]))
+```
+
+**Panel 2 — Stage utilization (bottleneck locator)**
+
+```promql
+rate(core_raft_fsync_busy_nanos_total[1m]) / 1e9
+rate(core_state_machine_apply_busy_nanos_total[1m]) / 1e9
+```
+
+When Panel 1 shows elevated p99 and Panel 2 shows one stage near 1.0, that stage is the
+bottleneck. When both utilization values are well below 1.0, the bottleneck is elsewhere.
+
+### Histogram Bucket Note
+
+d-engine's storage operations span three orders of magnitude under load (100µs to seconds).
+Configure your recorder with exponential buckets to preserve this range:
+
+```rust,ignore
+metrics_exporter_prometheus::PrometheusBuilder::new()
+    .set_buckets_for_metric(
+        metrics_exporter_prometheus::Matcher::Prefix("core.raft.fsync".to_string()),
+        &[0.0001, 0.0002, 0.0004, 0.0008, 0.0016, 0.003, 0.006, 0.012,
+          0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 3.3],
+    )
+    .unwrap()
+    .install()
+    .unwrap();
+```
+
+Default Prometheus buckets (5ms minimum) collapse the 100µs–5ms region where healthy
+operations live, making percentile calculations meaningless for this use case.

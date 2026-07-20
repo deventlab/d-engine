@@ -90,6 +90,8 @@
 // Current test modules - combined functions will be split in phase 2
 mod leader_failover_embedded;
 mod leader_failover_standalone;
+mod sm_metadata_atomicity_embedded;
+mod sm_wal_disabled_crash_recovery_embedded;
 // mod minority_failure_blocks_writes_embedded;
 // mod minority_failure_blocks_writes_standalone;
 // mod node_rejoin_embedded;

@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use crate::MockRaftLog;
 use crate::client::ClientReadRequest;
 use crate::client::ClientWriteRequest;
 use crate::client::ErrorCode;
 use crate::config::ReadConsistencyPolicy;
+
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -109,7 +111,10 @@ async fn test_can_vote_myself_returns_false_after_voting() {
         voted_for_term: state.current_term(),
         committed: false,
     };
-    state.update_voted_for(voted_for).expect("Should succeed to update voted_for");
+    state
+        .shared_state_mut()
+        .update_voted_for(voted_for)
+        .expect("Should succeed to update voted_for");
 
     // Verify: Cannot vote again in same term
     assert!(
@@ -207,6 +212,78 @@ async fn test_tick_triggers_new_election_round_on_success() {
     );
 }
 
+/// Test: CandidateState tick() persists hard_state BEFORE broadcasting vote requests.
+///
+/// Scenario:
+/// - Candidate ticks (election timeout): term increments (1 → 2), votes for itself.
+/// - `RaftLog::save_hard_state` is documented (raft_log.rs "When to Call") as required
+///   "When becoming candidate (incrementing term)".
+///
+/// Expected:
+/// - `save_hard_state` is called exactly once, with the new term (2) and the
+///   self-vote (`voted_for_id: 1, voted_for_term: 2`).
+/// - The call happens BEFORE `broadcast_vote_requests` is invoked — a candidate must
+///   not ask other nodes to vote for a term it hasn't durably committed to itself
+#[tokio::test(start_paused = true)]
+async fn test_tick_election_timeout_persists_hard_state_before_broadcasting_votes() {
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_log = MockRaftLog::new();
+    let mut seq = mockall::Sequence::new();
+
+    raft_log
+        .expect_save_hard_state()
+        .withf(|s| {
+            s.current_term == 2
+                && s.voted_for
+                    == Some(VotedFor {
+                        voted_for_id: 1,
+                        voted_for_term: 2,
+                        committed: false,
+                    })
+        })
+        .times(1)
+        .in_sequence(&mut seq)
+        .returning(|_| Ok(()));
+
+    let _temp_dir = tempfile::tempdir().unwrap();
+    let nc = node_config(_temp_dir.path().to_str().unwrap());
+
+    let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    election_core
+        .expect_broadcast_vote_requests()
+        .times(1)
+        .in_sequence(&mut seq)
+        .returning(|_, _, _, _, _| Ok(()));
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .with_election_handler(election_core)
+        .build_context();
+
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let election_timeout_max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(election_timeout_max + 1)).await;
+
+    let (event_tx, _event_rx) = mpsc::channel(1);
+    assert!(state.tick(&internal_event_tx, &event_tx, &context).await.is_ok());
+
+    // Verify: term updated to higher term
+    assert_eq!(state.current_term(), 2, "Term should update to 2");
+
+    // Verify: BecomeLeader sent after the election round completed
+    assert!(
+        matches!(
+            internal_event_rx.try_recv().unwrap(),
+            InternalEvent::BecomeLeader
+        ),
+        "Should send BecomeLeader event after successful election"
+    );
+}
+
 /// Test: CandidateState tick discovers higher term and steps down
 ///
 /// Scenario:
@@ -263,6 +340,103 @@ async fn test_tick_discovers_higher_term_and_steps_down() {
     assert!(
         matches!(
             internal_event_rx.try_recv().unwrap(),
+            InternalEvent::BecomeFollower(_)
+        ),
+        "Should send BecomeFollower event"
+    );
+}
+
+/// Test: CandidateState tick() persists hard_state when discovering a higher term
+/// via the election response, BEFORE stepping down to Follower.
+///
+/// Scenario:
+/// - Candidate ticks, `broadcast_vote_requests` returns `HigherTerm(100)`.
+/// - `RaftLog::save_hard_state` is documented as required "When discovering higher term".
+///
+/// Expected:
+/// - `save_hard_state` is called exactly once with term=100 (the discovered higher term,
+///   not the candidate's own pre-election term).
+/// - The call happens BEFORE `InternalEvent::BecomeFollower` is sent — per the Raft
+///   safety invariant, a node must not act on (or announce) a term change until it is
+///   durable, otherwise a crash between "step down" and "persist" resurrects the stale
+///   term on restart (this is exactly the class of bug the sm_wal_disabled_crash_recovery
+///   integration test surfaced).
+#[tokio::test(start_paused = true)]
+async fn test_tick_discovers_higher_term_via_election_persists_hard_state() {
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+    let internal_event_rx = Arc::new(std::sync::Mutex::new(internal_event_rx));
+    let rx_for_ordering_check = Arc::clone(&internal_event_rx);
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft_log = MockRaftLog::new();
+
+    // First invocation: persistence when `tick()` becomes Candidate
+    // (term=2 + self-vote).
+    // This is already verified by
+    // `test_tick_election_timeout_persists_hard_state_before_broadcasting_votes`.
+    // No need to assert it again here; just let it pass, otherwise the unmatched
+    // expectation will panic.
+    raft_log
+        .expect_save_hard_state()
+        .withf(|s| {
+            s.current_term == 2
+                && s.voted_for
+                    == Some(VotedFor {
+                        voted_for_id: 1,
+                        voted_for_term: 2,
+                        committed: false,
+                    })
+        })
+        .times(1)
+        .returning(|_| Ok(()));
+
+    // Second invocation: persistence triggered by discovering a higher term.
+    // This is the behavior the test is actually verifying.
+    raft_log
+        .expect_save_hard_state()
+        .withf(move |s| {
+            // Ordering proof: at the moment save_hard_state runs, BecomeFollower
+            // must not have been sent yet — try_recv() on an empty channel returns Err.
+            assert!(
+                rx_for_ordering_check.lock().unwrap().try_recv().is_err(),
+                "save_hard_state must be called BEFORE BecomeFollower is sent"
+            );
+            s.current_term == 100
+        })
+        .times(1)
+        .returning(|_| Ok(()));
+
+    let _temp_dir = tempfile::tempdir().unwrap();
+    let nc = node_config(_temp_dir.path().to_str().unwrap());
+
+    let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    election_core.expect_broadcast_vote_requests().returning(|_, _, _, _, _| {
+        Err(Error::Consensus(ConsensusError::Election(
+            ElectionError::HigherTerm(100),
+        )))
+    });
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .with_election_handler(election_core)
+        .build_context();
+
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let election_timeout_max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(election_timeout_max + 1)).await;
+
+    let (event_tx, _event_rx) = mpsc::channel(1);
+    assert!(state.tick(&internal_event_tx, &event_tx, &context).await.is_ok());
+
+    // Verify: term updated to higher term
+    assert_eq!(state.current_term(), 100, "Term should update to 100");
+
+    // Verify: sent BecomeFollower event
+    assert!(
+        matches!(
+            internal_event_rx.lock().unwrap().try_recv().unwrap(),
             InternalEvent::BecomeFollower(_)
         ),
         "Should send BecomeFollower event"
@@ -581,7 +755,7 @@ async fn test_handle_append_entries_steps_down_to_follower() {
     context.handlers.replication_handler = replication_handler;
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-    state.update_current_term(term);
+    state.shared_state_mut().update_current_term(term);
 
     // Prepare AppendEntries request
     let append_entries_request = AppendEntriesRequest {
@@ -635,7 +809,7 @@ async fn test_handle_append_entries_rejects_lower_term() {
     context.handlers.replication_handler = replication_handler;
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-    state.update_current_term(term);
+    state.shared_state_mut().update_current_term(term);
 
     let append_entries_request = AppendEntriesRequest {
         term: new_leader_term,
@@ -694,7 +868,7 @@ async fn test_handle_append_entries_rejects_stale_leader() {
     context.handlers.replication_handler = replication_handler;
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-    state.update_current_term(term);
+    state.shared_state_mut().update_current_term(term);
 
     let append_entries_request = AppendEntriesRequest {
         term: stale_leader_term,
@@ -761,7 +935,7 @@ async fn test_handle_append_entries_same_term_log_conflict_steps_down() {
     context.handlers.replication_handler = replication_handler;
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-    state.update_current_term(term);
+    state.shared_state_mut().update_current_term(term);
 
     // request.term == my_term: legitimate leader, but prev_log_index beyond our log
     let append_entries_request = AppendEntriesRequest {
@@ -843,7 +1017,7 @@ async fn test_handle_append_entries_higher_term_log_conflict_steps_down_and_upda
     context.handlers.replication_handler = replication_handler;
 
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-    state.update_current_term(my_term);
+    state.shared_state_mut().update_current_term(my_term);
 
     // request.term > my_term: new leader with higher term, but conflict-triggering prev_log_index
     let append_entries_request = AppendEntriesRequest {
@@ -875,6 +1049,103 @@ async fn test_handle_append_entries_higher_term_log_conflict_steps_down_and_upda
     assert!(
         matches!(
             internal_event_rx.try_recv().unwrap(),
+            InternalEvent::ReprocessEvent(_)
+        ),
+        "Candidate must replay the event so Follower can handle the log conflict"
+    );
+
+    // Term must be updated to the higher leader term
+    assert_eq!(
+        state.current_term(),
+        leader_term,
+        "Candidate must adopt the higher term from AppendEntries"
+    );
+
+    // No response from candidate — Follower responds after reprocessing
+    assert!(
+        resp_rx.recv().await.is_err(),
+        "Candidate must not send a response; Follower will respond after reprocessing"
+    );
+}
+
+/// Test: Candidate persists hard_state when AppendEntries carries a higher term,
+/// BEFORE stepping down to Follower.
+///
+/// Scenario:
+/// - Candidate is in term 2, receives AppendEntries with term=3 (new leader).
+/// - `RaftLog::save_hard_state` is documented as required "When discovering higher term"
+///   — this is a distinct code path from the election-response case above (candidate_state.rs
+///   handles AppendEntries and VoteRequest term-updates separately), so it needs its own test.
+///
+/// Expected:
+/// - `save_hard_state` is called exactly once with term=3.
+/// - The call happens BEFORE `InternalEvent::BecomeFollower` is sent, for the same
+///   crash-safety reason as the election-response case.
+#[tokio::test]
+async fn test_handle_append_entries_higher_term_persists_hard_state_before_stepping_down() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_append_higher_term_conflict_step_down",
+        graceful_rx,
+        None,
+    );
+    let my_term = 2;
+    let leader_term = my_term + 1;
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+    let internal_event_rx = Arc::new(std::sync::Mutex::new(internal_event_rx));
+    let rx_for_ordering_check = Arc::clone(&internal_event_rx);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_save_hard_state()
+        .withf(move |s| {
+            assert!(
+                rx_for_ordering_check.lock().unwrap().try_recv().is_err(),
+                "save_hard_state must be called BEFORE BecomeFollower is sent"
+            );
+            s.current_term == 3 && s.voted_for.is_none()
+        })
+        .times(1)
+        .returning(|_| Ok(()));
+
+    // No expectation on check_append_entries_request_is_legal — panics if called (old code path).
+    let replication_handler = MockReplicationCore::new();
+    context.membership = Arc::new(MockMembership::new());
+    context.handlers.replication_handler = replication_handler;
+    context.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.shared_state_mut().update_current_term(my_term);
+
+    // request.term > my_term: new leader with higher term, but conflict-triggering prev_log_index
+    let append_entries_request = AppendEntriesRequest {
+        term: leader_term,
+        leader_id: 5,
+        prev_log_index: 10,
+        prev_log_term: leader_term,
+        entries: vec![],
+        leader_commit_index: 10,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
+
+    assert!(
+        matches!(
+            internal_event_rx.lock().unwrap().try_recv(),
+            Ok(InternalEvent::BecomeFollower(None))
+        ),
+        "Candidate must step down when receiving AppendEntries with term > currentTerm (Raft §5.2)"
+    );
+    assert!(
+        matches!(
+            internal_event_rx.lock().unwrap().try_recv().unwrap(),
             InternalEvent::ReprocessEvent(_)
         ),
         "Candidate must replay the event so Follower can handle the log conflict"
