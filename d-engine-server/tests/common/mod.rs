@@ -625,6 +625,7 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = T>,
 {
+    assert!(max_attempts > 0, "max_attempts must be at least 1");
     let mut last = f().await;
     for _ in 1..max_attempts {
         if predicate(&last) {

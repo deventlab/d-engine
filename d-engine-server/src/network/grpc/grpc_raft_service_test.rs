@@ -576,6 +576,7 @@ async fn test_handle_client_scan_not_leader_carries_leader_hint_in_metadata() {
     use d_engine_core::client::ClientResponse;
     use d_engine_core::client::LeaderHint;
     use d_engine_proto::client::ScanRequest;
+    use d_engine_proto::error::ErrorCode as ProtoErrorCode;
     use std::sync::atomic::Ordering;
     use tokio::sync::mpsc;
 
@@ -603,6 +604,7 @@ async fn test_handle_client_scan_not_leader_carries_leader_hint_in_metadata() {
         .expect("NotLeader is a business-level response, not an RPC error")
         .into_inner();
 
+    assert_eq!(response.error, ProtoErrorCode::NotLeader as i32);
     let metadata = response.metadata.expect("NotLeader must carry ErrorMetadata");
     assert_eq!(metadata.leader_id.as_deref(), Some("2"));
     assert_eq!(

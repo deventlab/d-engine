@@ -72,9 +72,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
         || client.get_eventual("before-failover"),
         |r| matches!(r, Ok(Some(_))),
     )
-    .await
-    .ok()
-    .flatten();
+    .await?;
     assert_eq!(
         result.expect("Key should exist after write").as_ref(),
         b"initial-value"
@@ -118,9 +116,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
         || client.get_eventual("before-failover"),
         |r| matches!(r, Ok(Some(_))),
     )
-    .await
-    .ok()
-    .flatten();
+    .await?;
     assert_eq!(old_val.unwrap().as_ref(), b"initial-value");
 
     let new_val = retry_until(
@@ -129,9 +125,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
         || client.get_eventual("after-failover"),
         |r| matches!(r, Ok(Some(_))),
     )
-    .await
-    .ok()
-    .flatten();
+    .await?;
     assert_eq!(new_val.unwrap().as_ref(), b"still-works");
 
     info!("Failover test passed. Cluster operational with 2/3 nodes");
@@ -162,9 +156,7 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
         || client.get_eventual("after-failover"),
         |r| matches!(r, Ok(Some(_))),
     )
-    .await
-    .ok()
-    .flatten();
+    .await?;
     assert_eq!(synced_val.unwrap().as_ref(), b"still-works");
 
     info!("Node 1 synced successfully. Test complete");
