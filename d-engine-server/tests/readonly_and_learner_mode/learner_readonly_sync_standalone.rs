@@ -26,6 +26,7 @@ use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
 use crate::common::reset;
+use crate::common::retry_until;
 use crate::common::start_node;
 use crate::common::test_put_get;
 
@@ -195,11 +196,18 @@ general_raft_timeout_duration_in_ms = 5000
     test_put_get(&mut client_manager, 3, 102).await?;
     println!("         ✓ New write succeeded through primary cluster");
 
-    // Verify ReadOnly Learner receives the new data
-    let value3 = ClientManager::read_from_node(
-        &node4_endpoint,
-        3,
-        ReadConsistencyPolicy::EventualConsistency,
+    // Verify ReadOnly Learner receives the new data (poll — replication may lag).
+    let value3 = retry_until(
+        10,
+        Duration::from_millis(50),
+        || {
+            ClientManager::read_from_node(
+                &node4_endpoint,
+                3,
+                ReadConsistencyPolicy::EventualConsistency,
+            )
+        },
+        |r| matches!(r, Ok(v) if *v == 102),
     )
     .await?;
     assert_eq!(

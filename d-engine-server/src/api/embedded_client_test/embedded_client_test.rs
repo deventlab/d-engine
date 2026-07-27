@@ -126,7 +126,8 @@ db_root_dir = "{}"
 single_node = true
 
 [raft]
-general_raft_timeout_duration_in_ms = 100
+# Generous on purpose: tests here check correctness, not speed.
+general_raft_timeout_duration_in_ms = 2000
 
 [raft.commit_handler]
 batch_size_threshold = 1

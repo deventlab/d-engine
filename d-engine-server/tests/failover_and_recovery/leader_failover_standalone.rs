@@ -15,6 +15,7 @@ use crate::common::create_bootstrap_urls;
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
+use crate::common::retry_until;
 use crate::common::start_node;
 use crate::common::wait_for_stable_leader;
 
@@ -65,17 +66,15 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
     // Write test data before failover
     client.put("before-failover", "initial-value").await?;
     // Retry read until replicated (fixed sleep is unreliable under parallel test load)
-    let result = {
-        let mut val = None;
-        for _ in 0..10 {
-            tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-            if let Ok(Some(v)) = client.get_eventual("before-failover").await {
-                val = Some(v);
-                break;
-            }
-        }
-        val
-    };
+    let result = retry_until(
+        10,
+        Duration::from_millis(LATENCY_IN_MS),
+        || client.get_eventual("before-failover"),
+        |r| matches!(r, Ok(Some(_))),
+    )
+    .await
+    .ok()
+    .flatten();
     assert_eq!(
         result.expect("Key should exist after write").as_ref(),
         b"initial-value"
@@ -113,30 +112,26 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
         }
     }
     // Retry reads until replicated after failover and re-election
-    let old_val = {
-        let mut val = None;
-        for _ in 0..10 {
-            tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-            if let Ok(Some(v)) = client.get_eventual("before-failover").await {
-                val = Some(v);
-                break;
-            }
-        }
-        val
-    };
+    let old_val = retry_until(
+        10,
+        Duration::from_millis(LATENCY_IN_MS),
+        || client.get_eventual("before-failover"),
+        |r| matches!(r, Ok(Some(_))),
+    )
+    .await
+    .ok()
+    .flatten();
     assert_eq!(old_val.unwrap().as_ref(), b"initial-value");
 
-    let new_val = {
-        let mut val = None;
-        for _ in 0..10 {
-            tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-            if let Ok(Some(v)) = client.get_eventual("after-failover").await {
-                val = Some(v);
-                break;
-            }
-        }
-        val
-    };
+    let new_val = retry_until(
+        10,
+        Duration::from_millis(LATENCY_IN_MS),
+        || client.get_eventual("after-failover"),
+        |r| matches!(r, Ok(Some(_))),
+    )
+    .await
+    .ok()
+    .flatten();
     assert_eq!(new_val.unwrap().as_ref(), b"still-works");
 
     info!("Failover test passed. Cluster operational with 2/3 nodes");
@@ -161,17 +156,15 @@ async fn test_3_node_failover() -> Result<(), ClientApiError> {
 
     // Retry read until node 1 synced data from cluster
     client.refresh(None).await?;
-    let synced_val = {
-        let mut val = None;
-        for _ in 0..10 {
-            tokio::time::sleep(Duration::from_millis(LATENCY_IN_MS)).await;
-            if let Ok(Some(v)) = client.get_eventual("after-failover").await {
-                val = Some(v);
-                break;
-            }
-        }
-        val
-    };
+    let synced_val = retry_until(
+        10,
+        Duration::from_millis(LATENCY_IN_MS),
+        || client.get_eventual("after-failover"),
+        |r| matches!(r, Ok(Some(_))),
+    )
+    .await
+    .ok()
+    .flatten();
     assert_eq!(synced_val.unwrap().as_ref(), b"still-works");
 
     info!("Node 1 synced successfully. Test complete");

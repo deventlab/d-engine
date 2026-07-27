@@ -613,6 +613,29 @@ pub async fn wait_for_stable_leader(client: &Client) -> Result<(), ClientApiErro
     }
 }
 
+/// Polls `f` until the result satisfies `predicate`, or `max_attempts` is reached.
+/// Sleeps `delay` between attempts. Always returns the last value produced.
+pub async fn retry_until<T, F, Fut>(
+    max_attempts: usize,
+    delay: Duration,
+    mut f: F,
+    predicate: impl Fn(&T) -> bool,
+) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let mut last = f().await;
+    for _ in 1..max_attempts {
+        if predicate(&last) {
+            return last;
+        }
+        tokio::time::sleep(delay).await;
+        last = f().await;
+    }
+    last
+}
+
 /// Checks whether the given snapshot path exists, is a directory, and contains any files or
 /// subdirectories.
 ///

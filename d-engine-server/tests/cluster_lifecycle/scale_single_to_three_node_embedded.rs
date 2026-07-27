@@ -9,6 +9,7 @@ use tracing_test::traced_test;
 use crate::common::create_rejoin_node_config;
 use crate::common::get_available_ports;
 use crate::common::node_config;
+use crate::common::retry_until;
 
 /// Test scaling from single-node to 3-node cluster
 ///
@@ -620,52 +621,41 @@ election_timeout_max = 6000
     // Node 1 rejoins as follower — wait_ready only guarantees leader recognition,
     // not that log replication has caught up. Retry until data is visible locally.
     info!("Phase 6a: Waiting for Node 1 to sync data after rejoin");
+    let client1 = engine1.client();
 
-    let phase1_val = {
-        let mut val = None;
-        for _ in 0..20 {
-            val = engine1.client().get_eventual(b"phase1-key".to_vec()).await?;
-            if val.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        val
-    };
+    let phase1_val = retry_until(
+        20,
+        Duration::from_millis(500),
+        || client1.get_eventual(b"phase1-key".to_vec()),
+        |r| matches!(r, Ok(Some(_))),
+    )
+    .await?;
     assert_eq!(
         phase1_val.as_deref(),
         Some(b"phase1-value".as_ref()),
         "Node 1 should have phase1 data after sync"
     );
 
-    let phase2_val = {
-        let mut val = None;
-        for _ in 0..20 {
-            val = engine1.client().get_eventual(b"phase2-key".to_vec()).await?;
-            if val.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        val
-    };
+    let phase2_val = retry_until(
+        20,
+        Duration::from_millis(500),
+        || client1.get_eventual(b"phase2-key".to_vec()),
+        |r| matches!(r, Ok(Some(_))),
+    )
+    .await?;
     assert_eq!(
         phase2_val.as_deref(),
         Some(b"phase2-value".as_ref()),
         "Node 1 should have phase2 data after sync"
     );
 
-    let phase3_val = {
-        let mut val = None;
-        for _ in 0..20 {
-            val = engine1.client().get_eventual(b"phase3-key".to_vec()).await?;
-            if val.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        val
-    };
+    let phase3_val = retry_until(
+        20,
+        Duration::from_millis(500),
+        || client1.get_eventual(b"phase3-key".to_vec()),
+        |r| matches!(r, Ok(Some(_))),
+    )
+    .await?;
     assert_eq!(
         phase3_val.as_deref(),
         Some(b"phase3-value".as_ref()),
