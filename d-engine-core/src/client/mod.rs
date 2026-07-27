@@ -11,7 +11,7 @@ pub use client_api::ClientApi;
 pub use client_api_error::{ClientApiError, ClientApiResult};
 pub use types::{
     ClientReadRequest, ClientResponse, ClientResponsePayload, ClientWriteRequest, ErrorCode,
-    KvEntry, LeaderHint, ReadResults, WriteResult,
+    KvEntry, LeaderHint, ReadResults, ScanResults, WriteResult,
 };
 // ReadConsistencyPolicy lives in config but is part of the public client API surface.
 pub use crate::config::ReadConsistencyPolicy;

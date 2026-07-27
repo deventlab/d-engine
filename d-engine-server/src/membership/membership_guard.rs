@@ -41,7 +41,7 @@ impl MembershipGuard {
     }
 
     /// Provides read access to the state
-    pub async fn blocking_read<R>(
+    pub fn blocking_read<R>(
         &self,
         f: impl FnOnce(&InnerState) -> R,
     ) -> R {
@@ -91,6 +91,6 @@ impl MembershipGuard {
         &self,
         node_id: u32,
     ) -> bool {
-        self.blocking_read(|state| state.nodes.contains_key(&node_id)).await
+        self.blocking_read(|state| state.nodes.contains_key(&node_id))
     }
 }

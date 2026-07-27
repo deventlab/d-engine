@@ -154,6 +154,10 @@ impl From<Status> for ClientApiError {
             },
 
             Code::FailedPrecondition => {
+                // The `Some(leader)` branch below is dead today: no server code ever
+                // sets the `x-raft-leader` metadata header this reads, so this always
+                // falls through to the `else`. See parse_leader_from_metadata and
+                // decisions/014.
                 if let Some(leader) = parse_leader_from_metadata(&status) {
                     Self::Network {
                         code: ErrorCode::LeaderChanged,
@@ -176,6 +180,10 @@ impl From<Status> for ClientApiError {
                 required_action: None,
             },
 
+            // Dead branch today: the only `Status::permission_denied(...)` constructors
+            // in the codebase (follower/candidate/learner/leader_state.rs) guard internal
+            // Raft-to-Raft role violations on the `InboundEvent` channel — never the
+            // client-facing path that reaches this conversion. See decisions/014.
             Code::PermissionDenied => Self::Business {
                 code: ErrorCode::NotLeader,
                 message,
@@ -191,6 +199,9 @@ impl From<Status> for ClientApiError {
     }
 }
 
+/// Reads the `x-raft-leader` gRPC metadata header. Confirmed dead today: no
+/// server code in this repo ever sets this header, so callers of this fn
+/// never observe `Some(_)`. See decisions/014.
 fn parse_leader_from_metadata(status: &Status) -> Option<LeaderHint> {
     status
         .metadata()
@@ -242,11 +253,16 @@ impl From<ErrorCode> for ClientApiError {
                 retry_after_ms: None,
                 leader_hint: None,
             },
+            // Dead today: no business logic ever constructs a `ClientResponse` with
+            // `error: ErrorCode::LeaderChanged` — the real NotLeader-redirect path
+            // (create_not_leader_response) always uses `ErrorCode::NotLeader`. The
+            // only producer of this variant is the equally-dead Code::FailedPrecondition
+            // + x-raft-leader branch above. See decisions/014.
             ErrorCode::LeaderChanged => ClientApiError::Network {
                 code,
                 message: "Leader changed".to_string(),
                 retry_after_ms: Some(100), // suggest immediate retry
-                leader_hint: None,         // Note: This would ideally be populated from context
+                leader_hint: None,
             },
             ErrorCode::JoinError => ClientApiError::Network {
                 code,
@@ -290,10 +306,11 @@ impl From<ErrorCode> for ClientApiError {
             },
 
             // Business logic errors
-            ErrorCode::NotLeader => ClientApiError::Business {
+            ErrorCode::NotLeader => ClientApiError::Network {
                 code,
                 message: "Not leader".to_string(),
-                required_action: Some("redirect to leader".to_string()),
+                retry_after_ms: Some(100), // suggest quick retry
+                leader_hint: None, // populated by ClientResponseExt::validate_error() when ErrorMetadata is available
             },
             ErrorCode::StaleOperation => ClientApiError::Business {
                 code,

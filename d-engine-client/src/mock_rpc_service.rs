@@ -342,10 +342,10 @@ impl MockNode {
         Ok((channel, port))
     }
 
-    /// Simulate a scan server that returns the given ScanResponse.
+    /// Simulate a scan server that returns the given ClientResponse.
     pub(crate) async fn simulate_scan_mock_server(
         rx: oneshot::Receiver<()>,
-        response: d_engine_proto::client::ScanResponse,
+        response: ClientResponse,
     ) -> std::result::Result<(Channel, u16), tonic::Status> {
         let builder = Box::new(|port: u16| {
             Ok(ClusterMembership {

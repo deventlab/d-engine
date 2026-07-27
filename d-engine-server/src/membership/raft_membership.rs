@@ -84,93 +84,78 @@ impl<T> Membership<T> for RaftMembership<T>
 where
     T: TypeConfig,
 {
-    async fn members(&self) -> Vec<NodeMeta> {
-        self.membership
-            .blocking_read(|guard| guard.nodes.values().cloned().collect())
-            .await
+    fn members(&self) -> Vec<NodeMeta> {
+        self.membership.blocking_read(|guard| guard.nodes.values().cloned().collect())
     }
 
-    async fn replication_peers(&self) -> Vec<NodeMeta> {
-        self.membership
-            .blocking_read(|guard| {
-                guard
-                    .nodes
-                    .values()
-                    .filter(|node| {
-                        node.id != self.node_id
-                            && (node.status == NodeStatus::Active as i32
-                                || node.status == NodeStatus::Promotable as i32
-                                || node.status == NodeStatus::ReadOnly as i32)
-                    })
-                    .cloned()
-                    .collect()
-            })
-            .await
+    fn replication_peers(&self) -> Vec<NodeMeta> {
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .filter(|node| {
+                    node.id != self.node_id
+                        && (node.status == NodeStatus::Active as i32
+                            || node.status == NodeStatus::Promotable as i32
+                            || node.status == NodeStatus::ReadOnly as i32)
+                })
+                .cloned()
+                .collect()
+        })
     }
 
-    async fn voters(&self) -> Vec<NodeMeta> {
-        self.membership
-            .blocking_read(|guard| {
-                guard
-                    .nodes
-                    .values()
-                    .filter(|node| {
-                        node.id != self.node_id && node.status == NodeStatus::Active as i32
-                    })
-                    .cloned()
-                    .collect()
-            })
-            .await
+    fn voters(&self) -> Vec<NodeMeta> {
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .filter(|node| node.id != self.node_id && node.status == NodeStatus::Active as i32)
+                .cloned()
+                .collect()
+        })
     }
 
-    async fn initial_cluster_size(&self) -> usize {
+    fn initial_cluster_size(&self) -> usize {
         self.initial_cluster_size
     }
 
-    async fn nodes_with_status(
+    fn nodes_with_status(
         &self,
         status: NodeStatus,
     ) -> Vec<NodeMeta> {
-        self.membership
-            .blocking_read(|guard| {
-                guard
-                    .nodes
-                    .values()
-                    .filter(|node| node.id != self.node_id && node.status == status as i32)
-                    .cloned()
-                    .collect()
-            })
-            .await
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .filter(|node| node.id != self.node_id && node.status == status as i32)
+                .cloned()
+                .collect()
+        })
     }
 
-    async fn get_node_status(
+    fn get_node_status(
         &self,
         node_id: u32,
     ) -> Option<NodeStatus> {
-        self.membership
-            .blocking_read(|guard| {
-                guard
-                    .nodes
-                    .get(&node_id)
-                    .and_then(|node| NodeStatus::try_from(node.status).ok())
-            })
-            .await
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .get(&node_id)
+                .and_then(|node| NodeStatus::try_from(node.status).ok())
+        })
     }
 
     async fn activate_node(
         &mut self,
         new_node_id: u32,
     ) -> Result<()> {
-        let current_voters = self
-            .membership
-            .blocking_read(|guard| {
-                guard
-                    .nodes
-                    .values()
-                    .filter(|node| node.status == NodeStatus::Active as i32)
-                    .count()
-            })
-            .await;
+        let current_voters = self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .filter(|node| node.status == NodeStatus::Active as i32)
+                .count()
+        });
 
         ensure_safe_join(self.node_id, current_voters)?;
 
@@ -193,7 +178,7 @@ where
         let retry = self.config.retry.clone();
 
         let mut peer_ids = Vec::new();
-        for peer in self.voters().await {
+        for peer in self.voters() {
             let peer_id = peer.id;
             debug!("check_cluster_is_ready for peer: {}", peer_id);
             peer_ids.push(peer_id);
@@ -262,36 +247,32 @@ where
         }
     }
 
-    async fn get_peers_id_with_condition<F>(
+    fn get_peers_id_with_condition<F>(
         &self,
         condition: F,
     ) -> Vec<u32>
     where
         F: Fn(i32) -> bool + Send + Sync + 'static,
     {
-        self.membership
-            .blocking_read(|guard| {
-                guard
-                    .nodes
-                    .values()
-                    .filter(|node| condition(node.role))
-                    .map(|node| node.id)
-                    .collect()
-            })
-            .await
+        self.membership.blocking_read(|guard| {
+            guard
+                .nodes
+                .values()
+                .filter(|node| condition(node.role))
+                .map(|node| node.id)
+                .collect()
+        })
     }
 
-    async fn retrieve_cluster_membership_config(
+    fn retrieve_cluster_membership_config(
         &self,
         current_leader_id: Option<u32>,
     ) -> ClusterMembership {
-        self.membership
-            .blocking_read(|guard| ClusterMembership {
-                version: guard.cluster_conf_version,
-                nodes: guard.nodes.values().cloned().collect(),
-                current_leader_id,
-            })
-            .await
+        self.membership.blocking_read(|guard| ClusterMembership {
+            version: guard.cluster_conf_version,
+            nodes: guard.nodes.values().cloned().collect(),
+            current_leader_id,
+        })
     }
 
     async fn update_cluster_conf_from_leader(
@@ -327,7 +308,7 @@ where
             ));
         }
 
-        if self.get_cluster_conf_version().await > req.version {
+        if self.get_cluster_conf_version() > req.version {
             return Ok(ClusterConfUpdateResponse::version_conflict(
                 my_id,
                 my_current_term,
@@ -409,12 +390,12 @@ where
         Ok(ClusterConfUpdateResponse::success(
             my_id,
             my_current_term,
-            self.get_cluster_conf_version().await,
+            self.get_cluster_conf_version(),
         ))
     }
 
-    async fn get_cluster_conf_version(&self) -> u64 {
-        self.membership.blocking_read(|guard| guard.cluster_conf_version).await
+    fn get_cluster_conf_version(&self) -> u64 {
+        self.membership.blocking_read(|guard| guard.cluster_conf_version)
     }
 
     async fn update_conf_version(
@@ -532,28 +513,26 @@ where
             .await
     }
 
-    async fn contains_node(
+    fn contains_node(
         &self,
         node_id: u32,
     ) -> bool {
-        self.membership.blocking_read(|guard| guard.nodes.contains_key(&node_id)).await
+        self.membership.blocking_read(|guard| guard.nodes.contains_key(&node_id))
     }
 
-    async fn retrieve_node_meta(
+    fn retrieve_node_meta(
         &self,
         node_id: u32,
     ) -> Option<NodeMeta> {
-        self.membership.blocking_read(|guard| guard.nodes.get(&node_id).cloned()).await
+        self.membership.blocking_read(|guard| guard.nodes.get(&node_id).cloned())
     }
 
-    async fn get_all_nodes(&self) -> Vec<NodeMeta> {
-        self.membership
-            .blocking_read(|guard| guard.nodes.values().cloned().collect())
-            .await
+    fn get_all_nodes(&self) -> Vec<NodeMeta> {
+        self.membership.blocking_read(|guard| guard.nodes.values().cloned().collect())
     }
 
     async fn pre_warm_connections(&self) -> Result<()> {
-        let peers = self.replication_peers().await;
+        let peers = self.replication_peers();
 
         if peers.is_empty() {
             info!("No replication peers found");
@@ -603,7 +582,7 @@ where
         node_id: u32,
         conn_type: ConnectionType,
     ) -> Option<Channel> {
-        let addr = match self.get_address(node_id).await {
+        let addr = match self.get_address(node_id) {
             Some(addr) => addr,
             None => {
                 // Record failure if node address is missing
@@ -631,13 +610,12 @@ where
         }
     }
 
-    async fn get_address(
+    fn get_address(
         &self,
         node_id: u32,
     ) -> Option<String> {
         self.membership
             .blocking_read(|guard| guard.nodes.get(&node_id).map(|n| address_str(&n.address)))
-            .await
     }
 
     async fn apply_config_change(
@@ -708,29 +686,26 @@ where
         }
     }
 
-    async fn notify_config_applied(
+    fn notify_config_applied(
         &self,
         index: u64,
     ) {
-        let snapshot = self
-            .membership
-            .blocking_read(|guard| {
-                let mut members = BTreeSet::new();
-                let mut learners = BTreeSet::new();
-                for node in guard.nodes.values() {
-                    if node.role == Learner as i32 {
-                        learners.insert(node.id);
-                    } else {
-                        members.insert(node.id);
-                    }
+        let snapshot = self.membership.blocking_read(|guard| {
+            let mut members = BTreeSet::new();
+            let mut learners = BTreeSet::new();
+            for node in guard.nodes.values() {
+                if node.role == Learner as i32 {
+                    learners.insert(node.id);
+                } else {
+                    members.insert(node.id);
                 }
-                MembershipSnapshot {
-                    members,
-                    learners,
-                    committed_index: index,
-                }
-            })
-            .await;
+            }
+            MembershipSnapshot {
+                members,
+                learners,
+                committed_index: index,
+            }
+        });
         // send_replace never fails — silently drops the value if all receivers are gone.
         self.membership_notifier_tx.send_replace(snapshot);
         info!("Membership change committed at index {}", index);
@@ -746,7 +721,7 @@ where
             return Err(MembershipError::NotLearner.into());
         }
 
-        if !self.contains_node(node_id).await {
+        if !self.contains_node(node_id) {
             return Ok(());
         }
 
@@ -889,13 +864,11 @@ where
     }
 
     #[cfg(test)]
-    pub(crate) async fn get_role_by_node_id(
+    pub(crate) fn get_role_by_node_id(
         &self,
         node_id: u32,
     ) -> Option<i32> {
-        self.membership
-            .blocking_read(|guard| guard.nodes.get(&node_id).map(|n| n.role))
-            .await
+        self.membership.blocking_read(|guard| guard.nodes.get(&node_id).map(|n| n.role))
     }
 
     #[cfg(test)]

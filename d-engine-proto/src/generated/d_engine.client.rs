@@ -112,9 +112,9 @@ pub struct WriteResult {
 pub struct ClientResponse {
     #[prost(enumeration = "super::error::ErrorCode", tag = "1")]
     pub error: i32,
-    #[prost(message, optional, tag = "4")]
+    #[prost(message, optional, tag = "5")]
     pub metadata: ::core::option::Option<super::error::ErrorMetadata>,
-    #[prost(oneof = "client_response::SuccessResult", tags = "2, 3")]
+    #[prost(oneof = "client_response::SuccessResult", tags = "2, 3, 4")]
     pub success_result: ::core::option::Option<client_response::SuccessResult>,
 }
 /// Nested message and enum types in `ClientResponse`.
@@ -126,6 +126,8 @@ pub mod client_response {
         WriteResult(super::WriteResult),
         #[prost(message, tag = "3")]
         ReadData(super::ReadResults),
+        #[prost(message, tag = "4")]
+        ScanData(super::ScanResults),
     }
 }
 /// Renamed from ClientGetResult
@@ -164,10 +166,10 @@ pub struct ScanRequest {
     #[prost(bytes = "bytes", tag = "2")]
     pub prefix: ::prost::bytes::Bytes,
 }
-/// Response from a prefix scan.
+/// Payload carried in a successful ClientResponse for a prefix scan.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ScanResponse {
+pub struct ScanResults {
     /// All (key, value) pairs whose key starts with the requested prefix.
     #[prost(message, repeated, tag = "1")]
     pub entries: ::prost::alloc::vec::Vec<KvEntry>,
@@ -488,7 +490,7 @@ pub mod raft_client_service_client {
         pub async fn handle_client_scan(
             &mut self,
             request: impl tonic::IntoRequest<super::ScanRequest>,
-        ) -> std::result::Result<tonic::Response<super::ScanResponse>, tonic::Status> {
+        ) -> std::result::Result<tonic::Response<super::ClientResponse>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -615,7 +617,7 @@ pub mod raft_client_service_server {
         async fn handle_client_scan(
             &self,
             request: tonic::Request<super::ScanRequest>,
-        ) -> std::result::Result<tonic::Response<super::ScanResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::ClientResponse>, tonic::Status>;
         /// Server streaming response type for the Watch method.
         type WatchStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::WatchResponse, tonic::Status>,
@@ -846,7 +848,7 @@ pub mod raft_client_service_server {
                         T: RaftClientService,
                     > tonic::server::UnaryService<super::ScanRequest>
                     for HandleClientScanSvc<T> {
-                        type Response = super::ScanResponse;
+                        type Response = super::ClientResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,

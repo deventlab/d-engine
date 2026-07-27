@@ -1,6 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_core::client::ClientApiError;
+use d_engine_core::client::ErrorCode;
+use d_engine_core::client::LeaderHint;
 use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
 use tracing::info;
@@ -95,6 +98,38 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
         assert_eq!(val.as_deref(), Some(b"initial-value".as_slice()));
     }
     info!("Initial data written successfully");
+
+    // Writing to a follower must be rejected with the real leader's address, so the
+    // caller (e.g. d-lmdb/d-stream, running fully in-process against EmbeddedClient)
+    // can redirect without ever touching gRPC/tonic. See ticket for #425 follow-up.
+    let follower_idx = (0..3).find(|&i| i != leader_idx).expect("cluster has followers");
+    let follower_result = engines[follower_idx]
+        .client()
+        .put(b"should-reject".to_vec(), b"wrong-node".to_vec())
+        .await;
+    match follower_result {
+        Err(ClientApiError::Network {
+            code: ErrorCode::NotLeader,
+            leader_hint,
+            ..
+        }) => {
+            assert_eq!(
+                leader_hint,
+                Some(LeaderHint {
+                    leader_id: initial_leader.leader_id,
+                    // Membership::get_address normalizes to a scheme-prefixed URI
+                    // (see d-engine-server/src/utils/net.rs::address_str) so the
+                    // hint is directly usable to build a GrpcClient.
+                    address: format!("http://127.0.0.1:{}", ports[leader_idx]),
+                }),
+                "follower rejection must carry the real leader's id and address"
+            );
+        }
+        other => panic!(
+            "write to follower must return Network{{NotLeader, leader_hint}}, got: {other:?}"
+        ),
+    }
+    info!("Confirmed: write to follower carries real leader_hint");
 
     // Kill the actual leader node
     let leader_idx = (initial_leader.leader_id - 1) as usize;

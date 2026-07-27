@@ -96,9 +96,10 @@ message ClientResponse {
   oneof success_result {
     WriteResult write_result = 2;
     ReadResults read_data = 3;
+    ScanResults scan_data = 4;
   }
 
-  d_engine.error.ErrorMetadata metadata = 4;
+  d_engine.error.ErrorMetadata metadata = 5;
 }
 
 message ClientResult { // Renamed from ClientGetResult
@@ -126,8 +127,8 @@ message ScanRequest {
   bytes prefix = 2;
 }
 
-// Response from a prefix scan.
-message ScanResponse {
+// Payload carried in a successful ClientResponse for a prefix scan.
+message ScanResults {
   // All (key, value) pairs whose key starts with the requested prefix.
   repeated KvEntry entries = 1;
 
@@ -223,7 +224,7 @@ message WatchResponse {
 service RaftClientService {
   rpc HandleClientWrite(ClientWriteRequest) returns (ClientResponse);
   rpc HandleClientRead(ClientReadRequest) returns (ClientResponse);
-  rpc HandleClientScan(ScanRequest) returns (ScanResponse);
+  rpc HandleClientScan(ScanRequest) returns (ClientResponse);
 
   // Watch for changes to a specific key.
   //

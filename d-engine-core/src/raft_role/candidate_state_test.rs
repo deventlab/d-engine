@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::MockRaftLog;
 use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
 use crate::client::ClientWriteRequest;
 use crate::client::ErrorCode;
 use crate::config::ReadConsistencyPolicy;
@@ -1189,10 +1190,12 @@ async fn test_handle_client_write_returns_not_leader() {
     state.push_client_cmd(cmd, &context);
 
     let result = resp_rx.recv().await.expect("channel should not be closed");
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-    assert!(err.message().contains("Not leader"));
+    match result {
+        Ok(ClientResponse { error, .. }) => assert_eq!(error, ErrorCode::NotLeader),
+        Err(status) => panic!(
+            "expected Ok(ClientResponse {{ error: NotLeader, .. }}), got bare Err(Status): {status:?}"
+        ),
+    }
 }
 
 /// Test: send_replay_inbound_event sends correct events
@@ -1423,12 +1426,13 @@ mod handle_client_read_request {
         state.push_client_cmd(cmd, &context);
 
         // MaybeCloneOneshot in test mode sends values through broadcast channel
-        // The Status error is sent as a value, not as channel error
         let result = resp_rx.recv().await.expect("channel should not be closed");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-        assert!(err.message().contains("Not leader"));
+        match result {
+            Ok(ClientResponse { error, .. }) => assert_eq!(error, ErrorCode::NotLeader),
+            Err(status) => panic!(
+                "expected Ok(ClientResponse {{ error: NotLeader, .. }}), got bare Err(Status): {status:?}"
+            ),
+        }
     }
 
     /// Test: ClientReadRequest with EventualConsistency succeeds

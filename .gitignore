@@ -43,6 +43,7 @@ docker/monitoring/prometheus/data/
 .clj-kondo
 .lsp
 .zed
+.agents/
 lcov.info
 
 CONTEXT

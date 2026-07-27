@@ -38,16 +38,15 @@ where
     T: TypeConfig,
 {
     /// All nodes (including itself)
-    #[allow(unused)]
-    async fn members(&self) -> Vec<NodeMeta>;
+    fn members(&self) -> Vec<NodeMeta>;
 
     /// All non-self nodes (including Syncing and Active)
     /// Note:
     /// Joining node has not start its inbound event processing engine yet.
-    async fn replication_peers(&self) -> Vec<NodeMeta>;
+    fn replication_peers(&self) -> Vec<NodeMeta>;
 
     /// All non-self nodes in Active state
-    async fn voters(&self) -> Vec<NodeMeta>;
+    fn voters(&self) -> Vec<NodeMeta>;
 
     /// Get the initial cluster size from configuration
     ///
@@ -63,7 +62,7 @@ where
     /// This method is safe to use for cluster topology decisions as it's based on
     /// immutable configuration rather than runtime state that could be affected by
     /// network partitions or bugs.
-    async fn initial_cluster_size(&self) -> usize;
+    fn initial_cluster_size(&self) -> usize;
 
     /// Check if this is a single-node cluster
     ///
@@ -79,25 +78,24 @@ where
     ///
     /// # Safety
     /// Safe for all cluster topology decisions as it's based on immutable configuration.
-    async fn is_single_node_cluster(&self) -> bool {
-        self.initial_cluster_size().await == 1
+    fn is_single_node_cluster(&self) -> bool {
+        self.initial_cluster_size() == 1
     }
 
     /// All pending active nodes in Active state
-    #[allow(unused)]
-    async fn nodes_with_status(
+    fn nodes_with_status(
         &self,
         status: NodeStatus,
     ) -> Vec<NodeMeta>;
 
-    async fn get_node_status(
+    fn get_node_status(
         &self,
         node_id: u32,
     ) -> Option<NodeStatus>;
 
     async fn check_cluster_is_ready(&self) -> Result<()>;
 
-    async fn get_peers_id_with_condition<F>(
+    fn get_peers_id_with_condition<F>(
         &self,
         condition: F,
     ) -> Vec<u32>
@@ -108,7 +106,7 @@ where
     ///
     /// # Parameters
     /// - `current_leader_id`: Optional current leader ID from runtime state
-    async fn retrieve_cluster_membership_config(
+    fn retrieve_cluster_membership_config(
         &self,
         current_leader_id: Option<u32>,
     ) -> ClusterMembership;
@@ -123,7 +121,7 @@ where
         cluster_conf_change_req: &ClusterConfChangeRequest,
     ) -> Result<ClusterConfUpdateResponse>;
 
-    async fn get_cluster_conf_version(&self) -> u64;
+    fn get_cluster_conf_version(&self) -> u64;
 
     async fn update_conf_version(
         &self,
@@ -156,12 +154,12 @@ where
     ) -> Result<()>;
 
     /// Check if the node already exists
-    async fn contains_node(
+    fn contains_node(
         &self,
         node_id: u32,
     ) -> bool;
 
-    async fn retrieve_node_meta(
+    fn retrieve_node_meta(
         &self,
         node_id: u32,
     ) -> Option<NodeMeta>;
@@ -173,15 +171,13 @@ where
     ) -> Result<()>;
 
     /// Forcefully remove faulty nodes
-    #[allow(unused)]
     async fn force_remove_node(
         &self,
         node_id: u32,
     ) -> Result<()>;
 
     /// Get all node status
-    #[allow(unused)]
-    async fn get_all_nodes(&self) -> Vec<NodeMeta>;
+    fn get_all_nodes(&self) -> Vec<NodeMeta>;
 
     /// Pre-warms connection cache for all replication peers
     async fn pre_warm_connections(&self) -> Result<()>;
@@ -192,7 +188,7 @@ where
         conn_type: ConnectionType,
     ) -> Option<Channel>;
 
-    async fn get_address(
+    fn get_address(
         &self,
         node_id: u32,
     ) -> Option<String>;
@@ -203,7 +199,7 @@ where
         change: MembershipChange,
     ) -> Result<()>;
 
-    async fn notify_config_applied(
+    fn notify_config_applied(
         &self,
         index: u64,
     );

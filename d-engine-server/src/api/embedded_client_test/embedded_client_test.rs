@@ -380,3 +380,98 @@ max_batch_size = 1
         }
     } // scan_prefix_operations
 } // integration_tests
+
+// =============================================================================
+// scan_prefix() error-handling unit tests (no real engine needed)
+// =============================================================================
+//
+// EmbeddedClient::scan_prefix() only touches cmd_tx (never sm/lease), so these
+// wire a bare mpsc channel directly instead of booting a real engine — that's
+// also the only way to force a NotLeader response, since a real single-node
+// engine (used by `integration_tests` above) is always its own leader.
+mod scan_prefix_error_handling {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use d_engine_core::ClientCmd;
+    use d_engine_core::MockStateMachine;
+    use d_engine_core::MockTypeConfig;
+    use d_engine_core::ReadLease;
+    use d_engine_core::client::ClientApiError;
+    use d_engine_core::client::ClientResponse;
+    use d_engine_core::client::ErrorCode;
+    use d_engine_core::client::LeaderHint;
+    use tokio::sync::mpsc;
+
+    use crate::api::embedded_client::EmbeddedClient;
+    use crate::api::embedded_read_handle::EmbeddedReadHandle;
+
+    /// Build a client wired to a manually-controlled cmd channel. sm/lease are
+    /// unused by scan_prefix (it only goes through cmd_tx), so bare stand-ins suffice.
+    fn make_client(cmd_tx: mpsc::Sender<ClientCmd>) -> EmbeddedClient<MockTypeConfig> {
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let read_handle = EmbeddedReadHandle::new(
+            Arc::new(MockStateMachine::new()),
+            Arc::new(ReadLease::new()),
+            cmd_tx,
+        );
+        EmbeddedClient::new_internal(event_tx, read_handle, 1, Duration::from_millis(200))
+    }
+
+    /// #425: scan_prefix on a non-leader node must surface the real leader's
+    /// address, not just a bare error — same guarantee already proven for
+    /// put()/get(), now proven for scan() too.
+    #[tokio::test]
+    async fn test_scan_prefix_not_leader_carries_leader_hint() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            if let Some(ClientCmd::Scan(_, resp_tx)) = cmd_rx.recv().await {
+                let _ = resp_tx.send(Ok(ClientResponse::not_leader(Some(LeaderHint {
+                    leader_id: 2,
+                    address: "http://127.0.0.1:9082".into(),
+                }))));
+            }
+        });
+        let client = make_client(cmd_tx);
+
+        let result = client.scan_prefix(b"/services/").await;
+
+        match result {
+            Err(ClientApiError::Network {
+                code: ErrorCode::NotLeader,
+                leader_hint,
+                ..
+            }) => {
+                assert_eq!(
+                    leader_hint,
+                    Some(LeaderHint {
+                        leader_id: 2,
+                        address: "http://127.0.0.1:9082".into(),
+                    }),
+                    "scan_prefix must surface the real leader's address on redirect"
+                );
+            }
+            other => panic!("expected Network{{NotLeader, leader_hint}}, got: {other:?}"),
+        }
+    }
+
+    /// Defensive: a Scan response carrying the wrong payload variant (e.g. Read)
+    /// must error cleanly instead of silently misinterpreting data or panicking.
+    #[tokio::test]
+    async fn test_scan_prefix_wrong_payload_type_errors_cleanly() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            if let Some(ClientCmd::Scan(_, resp_tx)) = cmd_rx.recv().await {
+                let _ = resp_tx.send(Ok(ClientResponse::read_results(vec![])));
+            }
+        });
+        let client = make_client(cmd_tx);
+
+        let result = client.scan_prefix(b"/services/").await;
+
+        assert!(
+            result.is_err(),
+            "wrong payload type must error, not silently succeed with empty/wrong data"
+        );
+    }
+} // scan_prefix_error_handling

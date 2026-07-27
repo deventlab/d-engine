@@ -102,6 +102,11 @@ pub(crate) fn extract_read_payload(
             message: "expected ReadData payload, got WriteResult".to_string(),
             supported_versions: None,
         }),
+        Some(ClientResponsePayload::Scan(_)) => Err(ClientApiError::Protocol {
+            code: ErrorCode::InvalidResponse,
+            message: "expected ReadData payload, got ScanResults".to_string(),
+            supported_versions: None,
+        }),
         None => Err(ClientApiError::Protocol {
             code: ErrorCode::InvalidResponse,
             message: "expected ReadData payload, got None".to_string(),

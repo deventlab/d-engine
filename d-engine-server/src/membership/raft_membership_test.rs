@@ -92,7 +92,7 @@ async fn test_update_single_node_case1() {
     assert!(result.is_ok(), "Failed to update single node");
 
     // Verify node was updated
-    let node_status = membership.get_node_status(node_id).await.unwrap();
+    let node_status = membership.get_node_status(node_id).unwrap();
     assert_eq!(
         node_status,
         NodeStatus::Promotable,
@@ -118,7 +118,7 @@ async fn test_update_single_node_case2() {
     assert!(result.is_err(), "Should return error");
 
     // Verify node was created
-    assert!(membership.get_node_status(node_id).await.is_none());
+    assert!(membership.get_node_status(node_id).is_none());
 }
 
 #[tokio::test]
@@ -138,7 +138,7 @@ async fn test_update_multiple_nodes_case1() {
 
     // Verify all nodes were updated
     for node_id in nodes {
-        let node_status = membership.get_node_status(node_id).await.unwrap();
+        let node_status = membership.get_node_status(node_id).unwrap();
         assert_eq!(
             node_status,
             NodeStatus::Promotable,
@@ -163,7 +163,7 @@ async fn test_update_multiple_nodes_case2() {
     assert!(result.is_ok(), "Failed to update mixed nodes");
 
     // Verify existing node was updated
-    let node4_status = membership.get_node_status(4).await.unwrap();
+    let node4_status = membership.get_node_status(4).unwrap();
     assert_eq!(
         node4_status,
         NodeStatus::Promotable,
@@ -171,7 +171,7 @@ async fn test_update_multiple_nodes_case2() {
     );
 
     // Verify new nodes were created
-    assert!(!membership.contains_node(13).await, "New node should exist");
+    assert!(!membership.contains_node(13), "New node should exist");
 }
 
 #[tokio::test]
@@ -216,7 +216,7 @@ async fn test_replication_peers_case1() {
             initial_cluster,
             RaftNodeConfig::default(),
         );
-    assert_eq!(membership.replication_peers().await.len(), 4);
+    assert_eq!(membership.replication_peers().len(), 4);
 }
 
 /// Test: remove_node allows leader removal (Raft protocol compliance)
@@ -260,7 +260,7 @@ async fn test_remove_node_allows_leader_removal() {
         );
 
     // Verify node 1 exists
-    assert!(membership.contains_node(1).await);
+    assert!(membership.contains_node(1));
 
     // Remove leader node (should succeed per Raft protocol)
     let result = membership.remove_node(1).await;
@@ -270,10 +270,10 @@ async fn test_remove_node_allows_leader_removal() {
     );
 
     // Verify node 1 is removed from membership
-    assert!(!membership.contains_node(1).await);
+    assert!(!membership.contains_node(1));
 
     // Verify cluster still has 2 nodes
-    let members = membership.members().await;
+    let members = membership.members();
     assert_eq!(members.len(), 2);
     assert!(members.iter().all(|n| n.id != 1));
 }
@@ -321,7 +321,7 @@ async fn test_retrieve_cluster_membership_config() {
             RaftNodeConfig::default(),
         );
 
-    let r = membership.retrieve_cluster_membership_config(None).await;
+    let r = membership.retrieve_cluster_membership_config(None);
     assert_eq!(r.nodes.len(), 5);
     assert!(!r.nodes.iter().any(|n| n.role == Leader as i32));
 }
@@ -357,8 +357,8 @@ async fn test_update_cluster_conf_from_leader_case1() {
             .await
             .is_ok()
     );
-    assert!(membership.contains_node(3).await);
-    assert_eq!(membership.get_cluster_conf_version().await, 0); // Version from request
+    assert!(membership.contains_node(3));
+    assert_eq!(membership.get_cluster_conf_version(), 0); // Version from request
 }
 
 #[tokio::test]
@@ -396,8 +396,8 @@ async fn test_update_cluster_conf_from_leader_case2() {
             .await
             .is_ok()
     );
-    assert!(!membership.contains_node(3).await);
-    assert_eq!(membership.get_cluster_conf_version().await, 1);
+    assert!(!membership.contains_node(3));
+    assert_eq!(membership.get_cluster_conf_version(), 1);
 }
 
 #[tokio::test]
@@ -438,11 +438,8 @@ async fn test_update_cluster_conf_from_leader_case3() {
         .expect("should succeed");
 
     assert!(response.success);
-    assert_eq!(
-        membership.get_role_by_node_id(3).await.unwrap(),
-        Follower as i32
-    );
-    assert_eq!(membership.get_cluster_conf_version().await, 1);
+    assert_eq!(membership.get_role_by_node_id(3).unwrap(), Follower as i32);
+    assert_eq!(membership.get_cluster_conf_version(), 1);
 }
 
 #[tokio::test]
@@ -620,11 +617,11 @@ async fn test_batch_remove_nodes() {
 
     // Verify results
     assert!(response.success);
-    assert!(!membership.contains_node(3).await);
-    assert!(!membership.contains_node(4).await);
-    assert!(membership.contains_node(2).await);
-    assert!(membership.contains_node(5).await);
-    assert_eq!(membership.get_cluster_conf_version().await, 1);
+    assert!(!membership.contains_node(3));
+    assert!(!membership.contains_node(4));
+    assert!(membership.contains_node(2));
+    assert!(membership.contains_node(5));
+    assert_eq!(membership.get_cluster_conf_version(), 1);
 }
 
 #[tokio::test]
@@ -714,10 +711,10 @@ async fn test_apply_batch_remove_config_change() {
         .expect("Batch remove should succeed");
 
     // Verify nodes removed and version updated
-    assert!(!membership.contains_node(2).await);
-    assert!(!membership.contains_node(3).await);
-    assert!(membership.contains_node(4).await);
-    assert_eq!(membership.get_cluster_conf_version().await, 1);
+    assert!(!membership.contains_node(2));
+    assert!(!membership.contains_node(3));
+    assert!(membership.contains_node(4));
+    assert_eq!(membership.get_cluster_conf_version(), 1);
 }
 
 // Add to existing test series
@@ -767,10 +764,10 @@ async fn test_update_cluster_conf_from_leader_case7_batch_remove() {
         .expect("Batch remove should succeed");
 
     assert!(response.success);
-    assert!(!membership.contains_node(3).await);
-    assert!(!membership.contains_node(4).await);
-    assert!(membership.contains_node(2).await);
-    assert_eq!(membership.get_cluster_conf_version().await, 1);
+    assert!(!membership.contains_node(3));
+    assert!(!membership.contains_node(4));
+    assert!(membership.contains_node(2));
+    assert_eq!(membership.get_cluster_conf_version(), 1);
 }
 
 #[tokio::test]
@@ -797,7 +794,7 @@ async fn test_update_cluster_conf_from_leader_case8_batch_remove_nonexistent() {
         .expect("Should succeed with no-op");
 
     assert!(response.success);
-    assert_eq!(membership.get_cluster_conf_version().await, 0);
+    assert_eq!(membership.get_cluster_conf_version(), 0);
 }
 
 /// This test covers:
@@ -851,19 +848,18 @@ async fn test_get_peers_id_with_condition() {
 
     // Test 1: Filter followers and candidates
     let mut result = membership
-        .get_peers_id_with_condition(|role| role == Follower as i32 || role == Candidate as i32)
-        .await;
+        .get_peers_id_with_condition(|role| role == Follower as i32 || role == Candidate as i32);
     result.sort_unstable();
     let mut expect = vec![1, 3, 5];
     expect.sort_unstable();
     assert_eq!(result, expect, "Should return follower and candidate IDs");
 
     // Test 2: Filter leaders only
-    let result = membership.get_peers_id_with_condition(|role| role == Leader as i32).await;
+    let result = membership.get_peers_id_with_condition(|role| role == Leader as i32);
     assert_eq!(result, vec![6], "Should return leader ID only");
 
     // Test 3: Empty result case
-    let result = membership.get_peers_id_with_condition(|_| false).await;
+    let result = membership.get_peers_id_with_condition(|_| false);
     assert!(
         result.is_empty(),
         "Should return empty vector when no matches"
@@ -872,7 +868,7 @@ async fn test_get_peers_id_with_condition() {
     expect.sort_unstable();
 
     // Test 4: All items match
-    let mut result = membership.get_peers_id_with_condition(|_| true).await;
+    let mut result = membership.get_peers_id_with_condition(|_| true);
     result.sort_unstable();
     assert_eq!(
         result, expect,
@@ -1049,7 +1045,7 @@ mod add_learner_test {
             .await;
         assert!(result.is_ok(), "Should add learner successfully");
 
-        let replication_members = membership.members().await;
+        let replication_members = membership.members();
         assert_eq!(replication_members.len(), 1);
         assert_eq!(replication_members[0].id, 2);
         assert_eq!(replication_members[0].address, "127.0.0.1:1234");
@@ -1076,7 +1072,7 @@ mod add_learner_test {
             .await;
         assert!(result.is_err(), "Node is follower");
 
-        let replication_members = membership.members().await;
+        let replication_members = membership.members();
         assert_eq!(replication_members.len(), 1);
         assert_eq!(replication_members[0].id, 1);
         assert_eq!(replication_members[0].address, "127.0.0.1:0");
@@ -1407,7 +1403,7 @@ mod single_node_tests {
     async fn test_initial_cluster_size_single_node() {
         let membership = create_single_node_membership();
 
-        let size = membership.initial_cluster_size().await;
+        let size = membership.initial_cluster_size();
 
         assert_eq!(size, 1, "Single-node cluster should report size 1");
     }
@@ -1416,7 +1412,7 @@ mod single_node_tests {
     async fn test_initial_cluster_size_three_nodes() {
         let membership = create_three_node_membership();
 
-        let size = membership.initial_cluster_size().await;
+        let size = membership.initial_cluster_size();
 
         assert_eq!(size, 3, "Three-node cluster should report size 3");
     }
@@ -1425,7 +1421,7 @@ mod single_node_tests {
     async fn test_initial_cluster_size_five_nodes() {
         let membership = create_five_node_membership();
 
-        let size = membership.initial_cluster_size().await;
+        let size = membership.initial_cluster_size();
 
         assert_eq!(size, 5, "Five-node cluster should report size 5");
     }
@@ -1434,7 +1430,7 @@ mod single_node_tests {
     async fn test_is_single_node_cluster_true() {
         let membership = create_single_node_membership();
 
-        let is_single = membership.is_single_node_cluster().await;
+        let is_single = membership.is_single_node_cluster();
 
         assert!(is_single, "Single-node cluster should return true");
     }
@@ -1443,7 +1439,7 @@ mod single_node_tests {
     async fn test_is_single_node_cluster_false_three_nodes() {
         let membership = create_three_node_membership();
 
-        let is_single = membership.is_single_node_cluster().await;
+        let is_single = membership.is_single_node_cluster();
 
         assert!(!is_single, "Three-node cluster should return false");
     }
@@ -1452,7 +1448,7 @@ mod single_node_tests {
     async fn test_is_single_node_cluster_false_five_nodes() {
         let membership = create_five_node_membership();
 
-        let is_single = membership.is_single_node_cluster().await;
+        let is_single = membership.is_single_node_cluster();
 
         assert!(!is_single, "Five-node cluster should return false");
     }
@@ -1462,7 +1458,7 @@ mod single_node_tests {
         let membership = create_three_node_membership();
 
         // Initial size should be 3
-        assert_eq!(membership.initial_cluster_size().await, 3);
+        assert_eq!(membership.initial_cluster_size(), 3);
 
         // Add a learner (simulate cluster expansion)
         membership
@@ -1472,13 +1468,13 @@ mod single_node_tests {
 
         // Initial cluster size should still be 3 (immutable)
         assert_eq!(
-            membership.initial_cluster_size().await,
+            membership.initial_cluster_size(),
             3,
             "initial_cluster_size should remain unchanged after adding learner"
         );
 
         // Verify the learner was actually added
-        assert!(membership.contains_node(4).await, "Node 4 should exist");
+        assert!(membership.contains_node(4), "Node 4 should exist");
     }
 
     #[tokio::test]
@@ -1486,23 +1482,20 @@ mod single_node_tests {
         let membership = create_three_node_membership();
 
         // Initial size should be 3
-        assert_eq!(membership.initial_cluster_size().await, 3);
+        assert_eq!(membership.initial_cluster_size(), 3);
 
         // Remove node 3 (simulate node failure)
         membership.force_remove_node(3).await.expect("Should succeed");
 
         // Initial cluster size should still be 3 (immutable)
         assert_eq!(
-            membership.initial_cluster_size().await,
+            membership.initial_cluster_size(),
             3,
             "initial_cluster_size should remain unchanged after removing node"
         );
 
         // Verify node was actually removed
-        assert!(
-            !membership.contains_node(3).await,
-            "Node 3 should be removed"
-        );
+        assert!(!membership.contains_node(3), "Node 3 should be removed");
     }
 
     #[tokio::test]
@@ -1510,7 +1503,7 @@ mod single_node_tests {
         let membership = create_single_node_membership();
 
         // voters() should return empty (excludes self)
-        let voters = membership.voters().await;
+        let voters = membership.voters();
         assert!(
             voters.is_empty(),
             "voters() should be empty for single-node (excludes self)"
@@ -1518,14 +1511,14 @@ mod single_node_tests {
 
         // But initial_cluster_size() should still be 1
         assert_eq!(
-            membership.initial_cluster_size().await,
+            membership.initial_cluster_size(),
             1,
             "initial_cluster_size should be 1 even when voters() is empty"
         );
 
         // is_single_node_cluster() should be true
         assert!(
-            membership.is_single_node_cluster().await,
+            membership.is_single_node_cluster(),
             "is_single_node_cluster should be true"
         );
     }
@@ -1539,7 +1532,7 @@ mod single_node_tests {
         membership.force_remove_node(3).await.expect("Should succeed");
 
         // voters() should be empty now (simulating partition)
-        let voters = membership.voters().await;
+        let voters = membership.voters();
         assert!(
             voters.is_empty(),
             "voters() should be empty after partition"
@@ -1547,14 +1540,14 @@ mod single_node_tests {
 
         // But initial_cluster_size should still be 3
         assert_eq!(
-            membership.initial_cluster_size().await,
+            membership.initial_cluster_size(),
             3,
             "initial_cluster_size should remain 3 even in network partition"
         );
 
         // is_single_node_cluster() should still return false
         assert!(
-            !membership.is_single_node_cluster().await,
+            !membership.is_single_node_cluster(),
             "is_single_node_cluster should return false (was 3-node cluster)"
         );
     }

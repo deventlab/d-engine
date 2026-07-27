@@ -334,11 +334,12 @@ pub trait RaftRoleState: Send + Sync + 'static {
         match cmd {
             ClientCmd::Propose(_, sender) => {
                 // Writes always require leader - reject immediately
-                let status = tonic::Status::failed_precondition("Not leader");
-                let _ = sender.send(Err(status));
+                let _ = sender.send(Ok(self.create_not_leader_response(ctx)));
             }
             ClientCmd::Scan(_, sender) => {
-                let _ = sender.send(Err(tonic::Status::failed_precondition("Not leader")));
+                // Scan requires leader (linearizable by default); reply with
+                // NotLeader + best-effort leader hint for redirect, same as Propose/Read.
+                let _ = sender.send(Ok(self.create_not_leader_response(ctx)));
             }
             ClientCmd::Read(req, sender) => {
                 // Determine effective read policy, mirroring leader_state logic:
@@ -353,8 +354,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
                         }
                         _ => {
                             // Linear/Lease requires leader
-                            let _ =
-                                sender.send(Err(tonic::Status::failed_precondition("Not leader")));
+                            let _ = sender.send(Ok(self.create_not_leader_response(ctx)));
                             return;
                         }
                     }
@@ -369,7 +369,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
                     }
                     _ => {
                         // Linear/Lease requires leader
-                        let _ = sender.send(Err(tonic::Status::failed_precondition("Not leader")));
+                        let _ = sender.send(Ok(self.create_not_leader_response(ctx)));
                     }
                 }
             }
@@ -461,7 +461,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
     ///
     /// # Returns
     /// ClientResponse with NOT_LEADER error code and optional leader metadata
-    async fn create_not_leader_response(
+    fn create_not_leader_response(
         &self,
         ctx: &RaftContext<Self::T>,
     ) -> ClientResponse {
@@ -469,13 +469,12 @@ pub trait RaftRoleState: Send + Sync + 'static {
 
         if let Some(lid) = leader_id {
             // Get leader address from membership
-            let members = ctx.membership().members().await;
-            let leader_node = members.iter().find(|n| n.id == lid);
+            let leader_node = ctx.membership().get_address(lid);
 
-            if let Some(leader) = leader_node {
+            if let Some(address) = leader_node {
                 return ClientResponse::not_leader(Some(LeaderHint {
                     leader_id: lid,
-                    address: leader.address.clone(),
+                    address,
                 }));
             }
         }

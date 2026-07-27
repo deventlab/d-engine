@@ -7,7 +7,6 @@ use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::MembershipSnapshot;
 use d_engine_proto::client::ScanRequest;
-use d_engine_proto::client::ScanResponse;
 use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WatchRequest;
 use d_engine_proto::client::WatchResponse;
@@ -45,7 +44,7 @@ pub struct MockRpcService {
     pub expected_watch_membership_events: Option<Result<Vec<MembershipSnapshot>, tonic::Status>>,
 
     /// Scan response. None means return unimplemented.
-    pub expected_client_scan_response: Option<Result<ScanResponse, tonic::Status>>,
+    pub expected_client_scan_response: Option<Result<CoreClientResponse, tonic::Status>>,
 }
 impl MockRpcService {
     pub fn with_metadata_response(
@@ -69,8 +68,8 @@ impl MockRpcService {
 fn core_to_proto_response(r: CoreClientResponse) -> ClientResponse {
     use d_engine_core::client::{ClientResponsePayload, WriteResult};
     use d_engine_proto::client::{
-        ClientResult, ReadResults as ProtoReadResults, WriteResult as ProtoWriteResult,
-        client_response::SuccessResult,
+        ClientResult, KvEntry, ReadResults as ProtoReadResults, ScanResults as ProtoScanResults,
+        WriteResult as ProtoWriteResult, client_response::SuccessResult,
     };
     use d_engine_proto::error::ErrorMetadata;
 
@@ -98,6 +97,10 @@ fn core_to_proto_response(r: CoreClientResponse) -> ClientResponse {
                     value: e.value,
                 })
                 .collect(),
+        }),
+        ClientResponsePayload::Scan(sr) => SuccessResult::ScanData(ProtoScanResults {
+            entries: sr.entries.into_iter().map(|(key, value)| KvEntry { key, value }).collect(),
+            revision: sr.revision,
         }),
     });
     ClientResponse {
@@ -230,9 +233,11 @@ impl RaftClientService for MockRpcService {
     async fn handle_client_scan(
         &self,
         _request: tonic::Request<ScanRequest>,
-    ) -> std::result::Result<tonic::Response<ScanResponse>, tonic::Status> {
+    ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         match &self.expected_client_scan_response {
-            Some(Ok(response)) => Ok(tonic::Response::new(response.clone())),
+            Some(Ok(response)) => Ok(tonic::Response::new(core_to_proto_response(
+                response.clone(),
+            ))),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unimplemented("Scan not configured in mock")),
         }

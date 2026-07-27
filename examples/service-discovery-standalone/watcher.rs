@@ -36,7 +36,7 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Parser;
 use d_engine::protocol::{WatchEventType, WatchResponse};
-use d_engine::{Client, ClientApi, ScanResult};
+use d_engine::{Client, ClientApi, ScanResults};
 use futures::StreamExt;
 
 #[derive(Parser)]
@@ -116,10 +116,7 @@ async fn run_exact_watch(
 
     println!("\n=== Watching for Changes (Ctrl+C to exit) ===\n");
 
-    let mut stream = client
-        .watch(key)
-        .await
-        .map_err(|e| anyhow::anyhow!("Watch failed: {e:?}"))?;
+    let mut stream = client.watch(key).await.map_err(|e| anyhow::anyhow!("Watch failed: {e:?}"))?;
 
     while let Some(event_result) = stream.next().await {
         match event_result {
@@ -173,7 +170,7 @@ async fn run_prefix_watch(
         };
 
         // Step 2: linearizable scan — any write before/during scan is in the snapshot
-        let snapshot: ScanResult = match client.scan_prefix(prefix).await {
+        let snapshot: ScanResults = match client.scan_prefix(prefix).await {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[scan error] {e:?} — reconnecting in 1s");
@@ -185,7 +182,12 @@ async fn run_prefix_watch(
         let mut registry: HashMap<Vec<u8>, String> = snapshot
             .entries
             .into_iter()
-            .map(|entry| (entry.0.to_vec(), String::from_utf8_lossy(&entry.1).to_string()))
+            .map(|entry| {
+                (
+                    entry.0.to_vec(),
+                    String::from_utf8_lossy(&entry.1).to_string(),
+                )
+            })
             .collect();
 
         println!("[connected] watching {prefix} (scan_revision={scan_revision})");

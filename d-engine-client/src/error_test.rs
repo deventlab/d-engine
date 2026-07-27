@@ -29,16 +29,22 @@ fn test_network_error_retry_logic() {
 }
 
 #[test]
-fn test_business_error_with_action() {
+fn test_not_leader_error_is_network_variant() {
+    // NotLeader is redirectable (carries a leader_hint when available), so it
+    // must be ClientApiError::Network, not Business — Business has no
+    // leader_hint field. The bare `From<ErrorCode>` conversion has no
+    // metadata to populate leader_hint from; that only happens in
+    // `ClientResponseExt::validate_error()`, which has `self.metadata`.
     let error = ClientApiError::from(ErrorCode::NotLeader);
 
     match error {
-        ClientApiError::Business {
-            required_action, ..
+        ClientApiError::Network {
+            code, leader_hint, ..
         } => {
-            assert_eq!(required_action, Some("redirect to leader".to_string()));
+            assert_eq!(code, ErrorCode::NotLeader);
+            assert_eq!(leader_hint, None);
         }
-        _ => panic!("Expected Business error"),
+        _ => panic!("Expected Network error"),
     }
 }
 

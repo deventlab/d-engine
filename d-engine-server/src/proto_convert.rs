@@ -21,9 +21,10 @@ use d_engine_core::client::{
     KvEntry, LeaderHint, ReadResults, WriteResult,
 };
 use d_engine_core::config::ReadConsistencyPolicy;
+use d_engine_core::types::ScanResults;
 use d_engine_proto::client::{
-    self as proto_client, ClientResult, ReadResults as ProtoReadResults, WriteCommand,
-    WriteResult as ProtoWriteResult,
+    self as proto_client, ClientResult, ReadResults as ProtoReadResults,
+    ScanResults as ProtoScanResults, WriteCommand, WriteResult as ProtoWriteResult,
 };
 use d_engine_proto::error::{ErrorCode as ProtoErrorCode, ErrorMetadata};
 use prost::Message;
@@ -116,6 +117,12 @@ pub(crate) fn to_core_response(r: proto_client::ClientResponse) -> ClientRespons
                     .collect(),
             })
         }
+        proto_client::client_response::SuccessResult::ScanData(sd) => {
+            ClientResponsePayload::Scan(ScanResults {
+                entries: sd.entries.into_iter().map(|e| (e.key, e.value)).collect(),
+                revision: sd.revision,
+            })
+        }
     });
 
     ClientResponse {
@@ -177,6 +184,16 @@ pub(crate) fn to_proto_response(r: ClientResponse) -> proto_client::ClientRespon
                         value: e.value,
                     })
                     .collect(),
+            })
+        }
+        ClientResponsePayload::Scan(sd) => {
+            proto_client::client_response::SuccessResult::ScanData(ProtoScanResults {
+                entries: sd
+                    .entries
+                    .into_iter()
+                    .map(|(key, value)| proto_client::KvEntry { key, value })
+                    .collect(),
+                revision: sd.revision,
             })
         }
     });

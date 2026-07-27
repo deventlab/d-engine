@@ -6,3 +6,11 @@
 [[profile.default.overrides]]
 filter = "test(tmp_db) | test(config_path_env)"
 threads-required = 'num-cpus'
+
+# Force serial execution for wall-clock performance assertions (hardcoded ms/ops-per-sec
+# thresholds). These catch real perf regressions and have run clean across releases —
+# the problem is CPU contention from running alongside ~2000 other tests, not the
+# assertions themselves. Do not #[ignore] them; isolate them instead.
+[[profile.default.overrides]]
+filter = "test(storage_buffered_raft_log::performance_test)"
+threads-required = 'num-cpus'

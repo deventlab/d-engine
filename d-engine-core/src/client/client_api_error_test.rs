@@ -83,13 +83,24 @@ mod client_api_error_tests {
         assert!(matches!(error, ClientApiError::Network { .. }));
     }
 
+    /// Test: NotLeader is redirectable (carries leader_hint when available), so
+    /// it must be ClientApiError::Network, not Business — Business has no
+    /// leader_hint field. The bare `From<ErrorCode>` conversion has no
+    /// ClientResponse.metadata to read, so leader_hint is None here; a
+    /// populated hint only comes from `ClientResponseExt::validate_error()`.
+    #[test]
+    fn test_not_leader_is_network_error() {
+        let error: ClientApiError = ErrorCode::NotLeader.into();
+        assert_eq!(error.code(), ErrorCode::NotLeader);
+        match error {
+            ClientApiError::Network { leader_hint, .. } => assert_eq!(leader_hint, None),
+            _ => panic!("expected Network error"),
+        }
+    }
+
     /// Test: Business logic error variants
     #[test]
     fn test_business_errors() {
-        let error: ClientApiError = ErrorCode::NotLeader.into();
-        assert_eq!(error.code(), ErrorCode::NotLeader);
-        assert!(matches!(error, ClientApiError::Business { .. }));
-
         let error: ClientApiError = ErrorCode::InvalidRequest.into();
         assert_eq!(error.code(), ErrorCode::InvalidRequest);
         assert!(matches!(error, ClientApiError::Business { .. }));

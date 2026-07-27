@@ -140,7 +140,12 @@ pub use d_engine_core::MetaStore;
 /// Unified result type (equivalent to Result<T, Error>)
 pub use d_engine_core::Result;
 /// Prefix scan result: matching entries + revision anchor for watch deduplication
+///
+/// Internal `StateMachine::scan_prefix()` trait return type. For the client-facing
+/// scan result returned by `EmbeddedClient::scan_prefix()`, see [`ScanResults`].
 pub use d_engine_core::ScanResult;
+/// Client-facing prefix scan result, returned by `EmbeddedClient::scan_prefix()`.
+pub use d_engine_core::ScanResults;
 /// Storage-specific error type
 pub use d_engine_core::StorageError;
 // Raft Node Config

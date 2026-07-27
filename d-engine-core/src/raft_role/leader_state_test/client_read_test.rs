@@ -2,10 +2,12 @@ use crate::ClientCmd;
 use crate::MockMembership;
 use crate::MockStateMachineHandler;
 use crate::ReadConsistencyPolicy;
-use crate::client::{ClientReadRequest, ErrorCode};
+use crate::ScanResult;
+use crate::client::{ClientReadRequest, ClientResponsePayload, ErrorCode};
 use crate::convert::safe_kv_bytes;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
+use crate::mock_state_machine;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
@@ -2223,9 +2225,6 @@ async fn test_linearizable_read_served_without_quorum_in_minority_partition() {
 #[tokio::test]
 #[traced_test]
 async fn test_scan_cmd_leader_delivers_result() {
-    use crate::ScanResult;
-    use crate::test_utils::mock_state_machine;
-
     let mut sm = mock_state_machine();
     sm.expect_scan_prefix().returning(|_prefix| {
         Ok(ScanResult {
@@ -2249,8 +2248,13 @@ async fn test_scan_cmd_leader_delivers_result() {
     );
 
     let result = resp_rx.recv().await.expect("channel not closed").expect("scan succeeded");
-    assert_eq!(result.revision, 42);
-    assert!(result.entries.is_empty());
+    match result.result {
+        Some(ClientResponsePayload::Scan(scan_result)) => {
+            assert_eq!(scan_result.revision, 42);
+            assert!(scan_result.entries.is_empty());
+        }
+        other => panic!("expected Scan payload, got {other:?}"),
+    }
 }
 
 /// Test: LeaderState::push_client_cmd with ClientCmd::Scan propagates state-

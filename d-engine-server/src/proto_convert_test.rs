@@ -4,6 +4,7 @@ use d_engine_core::client::{
     KvEntry, LeaderHint, ReadResults, WriteResult,
 };
 use d_engine_core::config::ReadConsistencyPolicy;
+use d_engine_core::types::ScanResults;
 use d_engine_proto::client as proto_client;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::{Insert, Operation};
@@ -196,6 +197,55 @@ fn test_to_proto_response_success_read() {
 }
 
 #[test]
+fn test_to_proto_response_success_scan() {
+    let core_resp = ClientResponse {
+        error: ErrorCode::Success,
+        leader_hint: None,
+        retry_after_ms: None,
+        result: Some(ClientResponsePayload::Scan(ScanResults {
+            entries: vec![(Bytes::from("k1"), Bytes::from("v1"))],
+            revision: 42,
+        })),
+    };
+    let proto_resp = to_proto_response(core_resp);
+
+    assert_eq!(proto_resp.error, ProtoErrorCode::Success as i32);
+    match proto_resp.success_result {
+        Some(proto_client::client_response::SuccessResult::ScanData(sd)) => {
+            assert_eq!(sd.entries.len(), 1);
+            assert_eq!(sd.entries[0].key, Bytes::from("k1"));
+            assert_eq!(sd.entries[0].value, Bytes::from("v1"));
+            assert_eq!(sd.revision, 42);
+        }
+        _ => panic!("expected ScanData"),
+    }
+}
+
+/// revision must survive even when there are no matching entries — it is not
+/// derived from entries.len(), it's the Raft applied index at scan time.
+#[test]
+fn test_to_proto_response_empty_scan_keeps_revision() {
+    let core_resp = ClientResponse {
+        error: ErrorCode::Success,
+        leader_hint: None,
+        retry_after_ms: None,
+        result: Some(ClientResponsePayload::Scan(ScanResults {
+            entries: vec![],
+            revision: 9,
+        })),
+    };
+    let proto_resp = to_proto_response(core_resp);
+
+    match proto_resp.success_result {
+        Some(proto_client::client_response::SuccessResult::ScanData(sd)) => {
+            assert!(sd.entries.is_empty());
+            assert_eq!(sd.revision, 9);
+        }
+        _ => panic!("expected ScanData"),
+    }
+}
+
+#[test]
 fn test_to_proto_response_not_leader_with_hint() {
     let core_resp = ClientResponse {
         error: ErrorCode::NotLeader,
@@ -284,6 +334,56 @@ fn test_to_core_response_not_leader_with_metadata() {
     let hint = core_resp.leader_hint.unwrap();
     assert_eq!(hint.leader_id, 3);
     assert_eq!(hint.address, "10.0.0.3:5003");
+}
+
+#[test]
+fn test_to_core_response_success_scan() {
+    let proto_resp = proto_client::ClientResponse {
+        error: ProtoErrorCode::Success as i32,
+        metadata: None,
+        success_result: Some(proto_client::client_response::SuccessResult::ScanData(
+            proto_client::ScanResults {
+                entries: vec![proto_client::KvEntry {
+                    key: Bytes::from("k1"),
+                    value: Bytes::from("v1"),
+                }],
+                revision: 42,
+            },
+        )),
+    };
+    let core_resp = to_core_response(proto_resp);
+    assert_eq!(core_resp.error, ErrorCode::Success);
+    match core_resp.result {
+        Some(ClientResponsePayload::Scan(sr)) => {
+            assert_eq!(sr.entries, vec![(Bytes::from("k1"), Bytes::from("v1"))]);
+            assert_eq!(sr.revision, 42);
+        }
+        _ => panic!("expected Scan payload"),
+    }
+}
+
+/// revision must survive even when there are no matching entries — it is not
+/// derived from entries.len(), it's the Raft applied index at scan time.
+#[test]
+fn test_to_core_response_empty_scan_keeps_revision() {
+    let proto_resp = proto_client::ClientResponse {
+        error: ProtoErrorCode::Success as i32,
+        metadata: None,
+        success_result: Some(proto_client::client_response::SuccessResult::ScanData(
+            proto_client::ScanResults {
+                entries: vec![],
+                revision: 9,
+            },
+        )),
+    };
+    let core_resp = to_core_response(proto_resp);
+    match core_resp.result {
+        Some(ClientResponsePayload::Scan(sr)) => {
+            assert!(sr.entries.is_empty());
+            assert_eq!(sr.revision, 9);
+        }
+        _ => panic!("expected Scan payload"),
+    }
 }
 
 /// Unparseable leader_id string → LeaderHint is None (not a panic).

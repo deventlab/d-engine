@@ -250,7 +250,7 @@ where
             }
 
             // 2. CRITICAL: Barrier point
-            self.membership.notify_config_applied(entry.index).await;
+            self.membership.notify_config_applied(entry.index);
 
             // 2.5. Notify leader to refresh cluster metadata cache
             // This must happen AFTER membership is applied

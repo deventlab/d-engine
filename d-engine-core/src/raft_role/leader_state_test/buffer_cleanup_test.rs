@@ -4,8 +4,11 @@ use crate::MaybeCloneOneshot;
 use crate::MockBuilder;
 use crate::RaftOneshot;
 use crate::RaftRole;
+use crate::client::ClientResponse;
 use crate::client::ClientWriteRequest;
+use crate::client::ErrorCode;
 use crate::raft_role::role_state::RaftRoleState;
+use crate::test_utils::mock::mock_membership;
 use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
 use prost::Message;
@@ -33,7 +36,22 @@ use tokio::sync::watch;
 #[tokio::test]
 async fn test_leader_stepdown_clears_pending_write_buffer() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    // propose_buffer's drain-on-stepdown (this test's main flow) intentionally
+    // does NOT call get_address — see decisions/013 (#425). The stub below is
+    // for a different call site: the fresh write sent to the settled Follower
+    // further down, which goes through push_client_cmd's default rejection
+    // (create_not_leader_response) and does call Membership::get_address(..).
+    // mock_membership() has no default stub for that, so a catch-all is added
+    // to avoid a panic regardless of which node id ends up queried.
+    let mut membership = mock_membership();
+    membership.expect_get_address().returning(|id| {
+        if id == 2 {
+            Some("127.0.0.1:9082".to_string())
+        } else {
+            None
+        }
+    });
+    let mut raft = MockBuilder::new(graceful_rx).with_membership(membership).build_raft();
 
     // Setup mocks
     let mut raft_log = crate::MockRaftLog::new();
@@ -116,20 +134,16 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
         let result = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
 
         match result {
-            Ok(Ok(Err(err))) => {
-                // Expected: Client receives NOT_LEADER error
-                let err_str = format!("{err:?}");
-                assert!(
-                    err_str.contains("Not leader")
-                        || err_str.contains("NotLeader")
-                        || err_str.contains("NOT_LEADER")
-                        || err_str.contains("FailedPrecondition"),
-                    "Write {i} should return NOT_LEADER error, got: {err:?}"
-                );
+            Ok(Ok(Err(status))) => {
+                // Expected: propose_buffer's stepdown drain rejects with a bare
+                // Status, no leader_hint — see decisions/013 (#425) for why
+                // this path intentionally differs from create_not_leader_response.
+                assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+                assert!(status.message().contains("Not leader"));
                 notified_errors += 1;
             }
-            Ok(Ok(Ok(_))) => {
-                panic!("Write {i} should not succeed after stepdown");
+            Ok(Ok(Ok(response))) => {
+                panic!("Write {i} should not succeed after stepdown, got: {response:?}");
             }
             Ok(Err(_)) => {
                 // Channel closed - buffer was dropped without explicit notification
@@ -173,17 +187,15 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
                 .expect("Timed out waiting for Follower rejection response");
         assert!(result.is_ok(), "Should receive response");
 
-        if let Ok(Err(err)) = result {
-            let err_str = format!("{err:?}");
-            assert!(
-                err_str.contains("Not leader")
-                    || err_str.contains("NotLeader")
-                    || err_str.contains("NOT_LEADER")
-                    || err_str.contains("FailedPrecondition"),
-                "New write should return NOT_LEADER, got: {err:?}"
-            );
-        } else {
-            panic!("New write to Follower should return NOT_LEADER error");
+        match result {
+            Ok(Ok(ClientResponse { error, .. })) => {
+                assert_eq!(
+                    error,
+                    ErrorCode::NotLeader,
+                    "New write should return NOT_LEADER"
+                );
+            }
+            other => panic!("New write to Follower should return NOT_LEADER error, got: {other:?}"),
         }
     } else {
         panic!("Expected Follower state");

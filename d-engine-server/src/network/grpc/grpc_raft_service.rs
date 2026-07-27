@@ -11,13 +11,13 @@ use d_engine_core::RaftOneshot;
 use d_engine_core::TypeConfig;
 #[cfg(feature = "watch")]
 use d_engine_core::WatchError;
+use d_engine_core::client::ClientApiError;
+use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
-use d_engine_proto::client::KvEntry;
 use d_engine_proto::client::MembershipSnapshot as ProtoMembershipSnapshot;
 use d_engine_proto::client::ScanRequest;
-use d_engine_proto::client::ScanResponse;
 use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WatchRequest;
 use d_engine_proto::client::raft_client_service_server::RaftClientService;
@@ -519,8 +519,6 @@ where
 
         // Fast path: Eventual/LeaseRead → ReadHandle (ReadActor + cmd_tx fallback).
         {
-            use d_engine_core::client::ClientApiError;
-            use d_engine_core::config::ReadConsistencyPolicy;
             if let Some(ref policy) = core_req.consistency_policy
                 && matches!(
                     policy,
@@ -573,7 +571,7 @@ where
     async fn handle_client_scan(
         &self,
         request: tonic::Request<ScanRequest>,
-    ) -> std::result::Result<tonic::Response<ScanResponse>, tonic::Status> {
+    ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         if !self.is_rpc_ready() {
             warn!("handle_client_scan: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
@@ -592,18 +590,9 @@ where
         let timeout_duration =
             Duration::from_millis(self.node_config.raft.general_raft_timeout_duration_in_ms);
 
-        let scan_result = handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_scan")
-            .await?
-            .into_inner();
-
-        Ok(tonic::Response::new(ScanResponse {
-            entries: scan_result
-                .entries
-                .into_iter()
-                .map(|(k, v)| KvEntry { key: k, value: v })
-                .collect(),
-            revision: scan_result.revision,
-        }))
+        handle_rpc_timeout(resp_rx, timeout_duration, "handle_client_scan")
+            .await
+            .map(|resp| resp.map(proto_convert::to_proto_response))
     }
 
     /// Watch for changes to a specific key

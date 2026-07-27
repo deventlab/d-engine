@@ -17,19 +17,6 @@ use std::time::Duration;
 use tempfile::tempdir;
 use tokio::time::Instant;
 
-// TODO: Extract 6 real I/O performance tests from legacy_all_tests.rs:
-// - test_filter_out_conflicts_performance_consistent_across_flush_intervals_fresh_cluster (✅ migrated)
-// - test_filter_out_conflicts_performance_consistent_across_flush_intervals (✅ migrated)
-// - test_last_entry_id_performance
-// - test_remove_range_performance
-// - test_performance_benchmarks
-// - test_read_performance_remains_lockfree
-//
-// Note: The following 3 tests were moved to d-engine-core unit tests (require Mock):
-// - test_reset_performance_during_active_flush (moved to core)
-// - test_filter_conflicts_performance_during_flush (moved to core)
-// - test_fresh_cluster_performance_consistency (moved to core)
-
 mod filter_out_conflicts_and_append_performance_tests {
     use super::*;
 
