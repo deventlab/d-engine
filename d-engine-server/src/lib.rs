@@ -166,7 +166,7 @@ pub use api::EmbeddedClient;
 /// Use this to pattern-match error categories without inspecting message strings:
 /// `e.code() == ErrorCode::NotLeader`
 pub use d_engine_core::client::ErrorCode;
-/// Leader location hint, populated on `ErrorCode::NotLeader` so a client can
+/// Optional leader location hint on `ErrorCode::NotLeader`, so a client can
 /// retry against the right node without a blind broadcast.
 pub use d_engine_core::client::LeaderHint;
 /// Unified client operations trait (put/get/delete/CAS/watch).
