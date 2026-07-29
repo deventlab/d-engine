@@ -1,8 +1,66 @@
 # Nextest configuration for d-engine
 
+# Throttles (not serializes) the ~28 real-multi-node-cluster tests — full parallelism let
+# too many race for CPU and fail under load. Two groups: local vs CI (2 vCPU) core counts differ.
+[test-groups.multi-node-cluster-local]
+max-threads = 4
+
+[test-groups.multi-node-cluster-ci]
+max-threads = 2
+
 [profile.default]
 
 # Force serial execution for tests that use /tmp/db
 [[profile.default.overrides]]
 filter = "test(tmp_db) | test(config_path_env)"
 threads-required = 'num-cpus'
+
+# Serialize wall-clock perf assertions — CPU contention causes false failures, not the
+# assertions. Don't #[ignore] them, isolate instead.
+[[profile.default.overrides]]
+filter = "test(storage_buffered_raft_log::performance_test)"
+threads-required = 'num-cpus'
+
+# Per-directory, not per-file — a few dirs also hold light tests, throttled as fallout.
+[[profile.default.overrides]]
+filter = '''
+  test(cas_operations::)
+  | test(cluster_lifecycle::)
+  | test(cluster_membership::)
+  | test(cluster_state_and_metadata::)
+  | test(consistent_reads::)
+  | test(failover_and_recovery::)
+  | test(leader_election::)
+  | test(readonly_and_learner_mode::)
+  | test(replication_and_sync::)
+  | test(snapshot_and_recovery::)
+  | test(watch_and_subscriptions::)
+'''
+test-group = "multi-node-cluster-local"
+
+# CI profile — select with `--profile ci` (see .github/workflows/ci.yml).
+[profile.ci]
+
+[[profile.ci.overrides]]
+filter = "test(tmp_db) | test(config_path_env)"
+threads-required = 'num-cpus'
+
+[[profile.ci.overrides]]
+filter = "test(storage_buffered_raft_log::performance_test)"
+threads-required = 'num-cpus'
+
+[[profile.ci.overrides]]
+filter = '''
+  test(cas_operations::)
+  | test(cluster_lifecycle::)
+  | test(cluster_membership::)
+  | test(cluster_state_and_metadata::)
+  | test(consistent_reads::)
+  | test(failover_and_recovery::)
+  | test(leader_election::)
+  | test(readonly_and_learner_mode::)
+  | test(replication_and_sync::)
+  | test(snapshot_and_recovery::)
+  | test(watch_and_subscriptions::)
+'''
+test-group = "multi-node-cluster-ci"

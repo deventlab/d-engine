@@ -513,3 +513,102 @@ async fn test_handle_client_scan_timeout() {
 
     assert!(result.is_err(), "scan must error when Raft actor is absent");
 }
+
+/// handle_client_scan must forward a successful scan's entries + revision
+/// through to the wire unchanged. Proves the RPC handler's rewritten body
+/// (`proto_convert::to_proto_response`) is actually wired up, not just that
+/// the conversion function works in isolation (already covered separately
+/// in proto_convert_test.rs).
+#[tokio::test]
+#[traced_test]
+async fn test_handle_client_scan_success_returns_entries_and_revision() {
+    use bytes::Bytes;
+    use d_engine_core::ClientCmd;
+    use d_engine_core::client::ClientResponse;
+    use d_engine_proto::client::ScanRequest;
+    use d_engine_proto::client::client_response::SuccessResult;
+    use std::sync::atomic::Ordering;
+    use tokio::sync::mpsc;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut node = mock_node("/tmp/test_handle_client_scan_success", graceful_rx, None);
+    node.ready.store(true, Ordering::SeqCst);
+
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+    node.cmd_tx = cmd_tx;
+    tokio::spawn(async move {
+        if let Some(ClientCmd::Scan(_, resp_tx)) = cmd_rx.recv().await {
+            let _ = resp_tx.send(Ok(ClientResponse::scan_results(
+                vec![(Bytes::from("/services/node1"), Bytes::from("10.0.0.1"))],
+                7,
+            )));
+        }
+    });
+
+    let response = node
+        .handle_client_scan(Request::new(ScanRequest {
+            client_id: 1,
+            prefix: Bytes::from("/services/"),
+        }))
+        .await
+        .expect("scan must succeed")
+        .into_inner();
+
+    match response.success_result {
+        Some(SuccessResult::ScanData(sd)) => {
+            assert_eq!(sd.revision, 7);
+            assert_eq!(sd.entries.len(), 1);
+            assert_eq!(sd.entries[0].key, Bytes::from("/services/node1"));
+            assert_eq!(sd.entries[0].value, Bytes::from("10.0.0.1"));
+        }
+        other => panic!("expected ScanData, got: {other:?}"),
+    }
+}
+
+/// #425: a scan rejected because this node isn't leader must carry the real
+/// leader's id/address through to the wire (`ErrorMetadata`), the same
+/// guarantee already proven for write/read — now proven for the RPC-level
+/// scan handler specifically, not just the role-state layer that builds it.
+#[tokio::test]
+#[traced_test]
+async fn test_handle_client_scan_not_leader_carries_leader_hint_in_metadata() {
+    use d_engine_core::ClientCmd;
+    use d_engine_core::client::ClientResponse;
+    use d_engine_core::client::LeaderHint;
+    use d_engine_proto::client::ScanRequest;
+    use d_engine_proto::error::ErrorCode as ProtoErrorCode;
+    use std::sync::atomic::Ordering;
+    use tokio::sync::mpsc;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut node = mock_node("/tmp/test_handle_client_scan_not_leader", graceful_rx, None);
+    node.ready.store(true, Ordering::SeqCst);
+
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+    node.cmd_tx = cmd_tx;
+    tokio::spawn(async move {
+        if let Some(ClientCmd::Scan(_, resp_tx)) = cmd_rx.recv().await {
+            let _ = resp_tx.send(Ok(ClientResponse::not_leader(Some(LeaderHint {
+                leader_id: 2,
+                address: "http://127.0.0.1:9082".into(),
+            }))));
+        }
+    });
+
+    let response = node
+        .handle_client_scan(Request::new(ScanRequest {
+            client_id: 1,
+            prefix: bytes::Bytes::from("/services/"),
+        }))
+        .await
+        .expect("NotLeader is a business-level response, not an RPC error")
+        .into_inner();
+
+    assert_eq!(response.error, ProtoErrorCode::NotLeader as i32);
+    let metadata = response.metadata.expect("NotLeader must carry ErrorMetadata");
+    assert_eq!(metadata.leader_id.as_deref(), Some("2"));
+    assert_eq!(
+        metadata.leader_address.as_deref(),
+        Some("http://127.0.0.1:9082")
+    );
+}

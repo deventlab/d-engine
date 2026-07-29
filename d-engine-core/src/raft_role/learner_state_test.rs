@@ -9,8 +9,10 @@ use crate::MockStateMachineHandler;
 use crate::NewCommitData;
 use crate::RaftOneshot;
 use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
 use crate::client::ClientResponsePayload;
 use crate::client::ClientWriteRequest;
+use crate::client::ErrorCode;
 use crate::client::KvEntry;
 use crate::config::ReadConsistencyPolicy;
 use crate::raft_role::candidate_state::CandidateState;
@@ -517,10 +519,12 @@ async fn test_learner_rejects_client_write_request() {
     state.push_client_cmd(cmd, &context);
 
     let result = resp_rx.recv().await.expect("channel should not be closed");
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-    assert!(err.message().contains("Not leader"));
+    match result {
+        Ok(ClientResponse { error, .. }) => assert_eq!(error, ErrorCode::NotLeader),
+        Err(status) => panic!(
+            "expected Ok(ClientResponse {{ error: NotLeader, .. }}), got bare Err(Status): {status:?}"
+        ),
+    }
 }
 
 /// Test: LearnerState rejects ClientReadRequest
@@ -553,10 +557,12 @@ async fn test_learner_rejects_client_read_request() {
     state.push_client_cmd(cmd, &context);
 
     let result = resp_rx.recv().await.expect("channel should not be closed");
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-    assert!(err.message().contains("Not leader"));
+    match result {
+        Ok(ClientResponse { error, .. }) => assert_eq!(error, ErrorCode::NotLeader),
+        Err(status) => panic!(
+            "expected Ok(ClientResponse {{ error: NotLeader, .. }}), got bare Err(Status): {status:?}"
+        ),
+    }
 }
 ///
 /// Original: test_handle_inbound_event_case10

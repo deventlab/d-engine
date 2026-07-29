@@ -5,11 +5,11 @@ use crate::scoped_timer::ScopedTimer;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use d_engine_core::BatchOp;
-use d_engine_core::ScanResult;
 use d_engine_core::client::ErrorCode;
 use d_engine_core::client::KvEntry;
 use d_engine_core::client::{ClientApi, ClientApiResult};
 use d_engine_core::config::ReadConsistencyPolicy;
+use d_engine_core::types::ScanResults;
 use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::MembershipSnapshot;
@@ -581,7 +581,7 @@ impl ClientApi for GrpcClient {
     async fn scan_prefix(
         &self,
         prefix: impl AsRef<[u8]> + Send,
-    ) -> ClientApiResult<ScanResult> {
+    ) -> ClientApiResult<ScanResults> {
         let client_inner = self.client_inner.load();
         let mut client = self.make_leader_client().await?;
 
@@ -596,9 +596,6 @@ impl ClientApi for GrpcClient {
             .map_err(ClientApiError::from)?
             .into_inner();
 
-        Ok(ScanResult {
-            entries: response.entries.into_iter().map(|e| (e.key, e.value)).collect(),
-            revision: response.revision,
-        })
+        response.into_scan_results()
     }
 }

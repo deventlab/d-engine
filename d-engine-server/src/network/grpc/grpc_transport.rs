@@ -101,7 +101,7 @@ where
         debug!("Sending cluster configuration update requests");
 
         // Get voting members (control plane operation)
-        let peers = membership.voters().await;
+        let peers = membership.voters();
         if peers.is_empty() {
             warn!("No voting members available for cluster update");
             return Err(NetworkError::EmptyPeerList {
@@ -319,7 +319,7 @@ where
         debug!("Sending vote requests");
 
         // Get voting members (control plane operation)
-        let peers = membership.voters().await;
+        let peers = membership.voters();
         if peers.is_empty() {
             warn!("No voting members available for vote requests");
             return Err(NetworkError::EmptyPeerList {
@@ -445,7 +445,7 @@ where
     ) -> Result<Vec<LeaderDiscoveryResponse>> {
         debug!("Starting leader discovery for node {}", request.node_id);
 
-        let member_ids: Vec<_> = membership.voters().await.iter().map(|m| m.id).collect();
+        let member_ids: Vec<_> = membership.voters().iter().map(|m| m.id).collect();
 
         let tasks = member_ids.into_iter().map(|member_id| {
             Self::process_member(

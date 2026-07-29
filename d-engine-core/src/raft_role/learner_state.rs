@@ -240,7 +240,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             }
 
             InboundEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
-                let current_conf_version = ctx.membership().get_cluster_conf_version().await;
+                let current_conf_version = ctx.membership().get_cluster_conf_version();
 
                 let current_leader_id = self.shared_state().current_leader();
 
@@ -577,7 +577,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
     ) -> Result<()> {
         // Check if this learner has been promoted to Voter
         let my_id = self.node_id();
-        let node_meta = ctx.membership().retrieve_node_meta(my_id).await;
+        let node_meta = ctx.membership().retrieve_node_meta(my_id);
 
         if let Some(meta) = node_meta {
             // Check if role is Voter (any role except LEARNER)

@@ -540,7 +540,7 @@ where
                     }),
                 )?;
 
-                let peer_ids = self.ctx.membership().get_peers_id_with_condition(|_| true).await;
+                let peer_ids = self.ctx.membership().get_peers_id_with_condition(|_| true);
 
                 self.role.init_peers_next_index_and_match_index(
                     self.ctx.raft_log().last_entry_id(),

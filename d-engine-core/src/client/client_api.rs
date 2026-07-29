@@ -26,9 +26,9 @@
 //! ```
 
 use crate::BatchOp;
-use crate::ScanResult;
 use crate::client::client_api_error::ClientApiResult;
 use crate::config::ReadConsistencyPolicy;
+use crate::types::ScanResults;
 use bytes::Bytes;
 
 /// Unified key-value store interface implemented by `EmbeddedClient` and `GrpcClient`.
@@ -57,8 +57,9 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down or timeout occurs
-    /// - [`crate::client::client_api_error::ClientApiError::Business`] for server-side errors (e.g., not leader)
+    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down, timeout
+    ///   occurs, or the node is not leader (carries `leader_hint` for redirect)
+    /// - [`crate::client::client_api_error::ClientApiError::Business`] for other server-side errors
     ///
     /// # Example
     ///
@@ -126,6 +127,13 @@ pub trait ClientApi: Send + Sync {
     ///
     /// Uses linearizable reads by default, ensuring the returned value
     /// reflects all previously committed writes.
+    ///
+    /// # Future direction
+    /// Any TTL-expiry filtering (as noted below) is an application-specific
+    /// semantic layered on top of a generic read, not a consensus concern.
+    /// See d-lmdb's `wire::Value` envelope + `decode_live_payload`, which
+    /// implements TTL entirely outside d-engine. Don't build long-term
+    /// architecture around this method owning TTL semantics.
     ///
     /// # Arguments
     ///
@@ -393,6 +401,14 @@ pub trait ClientApi: Send + Sync {
     /// Linearizable by default — must see the latest committed state to avoid
     /// silent gaps when used for watch reconnection.
     ///
+    /// # Future direction
+    /// d-engine intends to stop growing built-in read operations like this.
+    /// Reads (get/scan/range) are an application/storage-engine concern, not
+    /// a consensus concern — d-engine's job is replicating the write path and
+    /// exposing leadership/lease primitives, not owning the read API surface.
+    /// Don't build long-term architecture around this method continuing to
+    /// exist here.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
@@ -405,5 +421,5 @@ pub trait ClientApi: Send + Sync {
     async fn scan_prefix(
         &self,
         prefix: impl AsRef<[u8]> + Send,
-    ) -> ClientApiResult<ScanResult>;
+    ) -> ClientApiResult<ScanResults>;
 }

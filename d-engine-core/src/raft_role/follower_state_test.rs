@@ -1,6 +1,8 @@
 use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
 use crate::client::ClientWriteRequest;
 use crate::client::ErrorCode;
+use crate::client::LeaderHint;
 use crate::config::ReadConsistencyPolicy;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
@@ -38,6 +40,7 @@ use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
 use crate::NetworkError;
 use crate::NewCommitData;
+use crate::RaftContext;
 use crate::RaftLog;
 use crate::RaftOneshot;
 use crate::StateUpdate;
@@ -49,6 +52,7 @@ use crate::raft_role::learner_state::LearnerState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::mock::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::mock::mock_membership;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::mock_raft_context_with_temp;
 use crate::test_utils::mock::mock_raft_log;
@@ -61,6 +65,41 @@ use tokio::sync::{mpsc, watch};
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Build a mock RaftContext whose `Membership::get_address` resolves only
+/// `known_id` -> `known_address`; any other id returns `None`.
+///
+/// `mock_raft_context_with_temp`'s `peers_meta_option` does NOT wire into
+/// `MockMembership` (it only sets `node_config.cluster.initial_cluster`, a
+/// config field `MockMembership` never reads) — tests that need
+/// `get_address` to resolve must configure it explicitly via
+/// `MockBuilder::with_membership`, which is what this helper does.
+fn mock_context_with_leader_address(
+    graceful_rx: watch::Receiver<()>,
+    known_id: u32,
+    known_address: &str,
+) -> (RaftContext<MockTypeConfig>, tempfile::TempDir) {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let mut node_config = node_config(temp_dir.path().to_str().unwrap());
+    node_config.raft.batching.max_batch_size = 1;
+    node_config.retry.auto_discovery.timeout_ms = 10;
+
+    let known_address = known_address.to_string();
+    let mut membership = mock_membership();
+    membership.expect_get_address().returning(move |id| {
+        if id == known_id {
+            Some(known_address.clone())
+        } else {
+            None
+        }
+    });
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_node_config(node_config)
+        .with_membership(membership)
+        .build_context();
+    (context, temp_dir)
+}
 
 fn create_vote_request_event(
     term: u64,
@@ -1468,24 +1507,25 @@ async fn test_handle_cluster_conf_update_when_leader_unknown() {
 ///
 /// Scenario:
 /// - Follower receives ClientWriteRequest (write must go to leader)
-/// - Follower is not the leader
+/// - Follower is not the leader, but knows who is (id + address in membership)
 ///
 /// Expected:
-/// - Returns response with error_code = NOT_LEADER
-/// - handle_inbound_event returns Ok(())
+/// - Returns Ok(ClientResponse) with error = NotLeader
+/// - `leader_hint` is populated so the caller can actually redirect, not just
+///   told "not leader" with nowhere to go
 /// - No state changes
 ///
 /// This validates the core Raft rule: Only leader can process writes.
-/// Follower must redirect client to leader.
 ///
 /// Original: test_handle_inbound_event_case5
 #[tokio::test]
 async fn test_handle_client_write_request_redirects_to_leader() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    let (context, _temp_dir) = mock_context_with_leader_address(graceful_rx, 2, "127.0.0.1:9082");
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state().set_current_leader(2);
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let cmd = ClientCmd::Propose(
@@ -1501,19 +1541,93 @@ async fn test_handle_client_write_request_redirects_to_leader() {
     // Action: Handle ClientWriteRequest
     state.push_client_cmd(cmd, &context);
 
-    // Verify: Response with NOT_LEADER error
+    // Verify: NOT_LEADER response, structured so the caller can redirect
     let result = resp_rx.recv().await.expect("channel should not be closed");
-    assert!(result.is_err(), "Should return NOT_LEADER error");
-    let err = result.unwrap_err();
-    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-    assert!(err.message().contains("Not leader"));
+    match result {
+        Ok(ClientResponse {
+            error, leader_hint, ..
+        }) => {
+            assert_eq!(error, ErrorCode::NotLeader);
+            assert_eq!(
+                leader_hint,
+                Some(LeaderHint {
+                    leader_id: 2,
+                    address: "127.0.0.1:9082".to_string(),
+                }),
+                "must carry the leader's id and address so the caller can redirect"
+            );
+        }
+        Err(status) => panic!(
+            "expected Ok(ClientResponse {{ error: NotLeader, leader_hint: Some(_) }}), got bare Err(Status): {status:?}"
+        ),
+    }
+}
+
+// ============================================================================
+// create_not_leader_response() Tests
+// ============================================================================
+
+/// Leader known and its address is in cluster membership -> hint populated.
+#[tokio::test]
+async fn test_create_not_leader_response_returns_hint_when_leader_address_known() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (context, _temp_dir) = mock_context_with_leader_address(graceful_rx, 2, "127.0.0.1:9082");
+
+    let state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state().set_current_leader(2);
+
+    let response = state.create_not_leader_response(&context);
+
+    assert_eq!(response.error, ErrorCode::NotLeader);
+    assert_eq!(
+        response.leader_hint,
+        Some(LeaderHint {
+            leader_id: 2,
+            address: "127.0.0.1:9082".to_string(),
+        }),
+        "must return the leader's id and address so the caller can redirect"
+    );
+}
+
+/// Leader id known but missing from membership (stale view) -> no hint, not a crash.
+#[tokio::test]
+async fn test_create_not_leader_response_returns_no_hint_when_leader_address_unknown() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    // Membership only knows about node 2 — id 99 (set as leader below) resolves to None.
+    let (context, _temp_dir) = mock_context_with_leader_address(graceful_rx, 2, "127.0.0.1:9082");
+
+    let state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state().set_current_leader(99); // no membership entry for id 99
+
+    let response = state.create_not_leader_response(&context);
+
+    assert_eq!(response.error, ErrorCode::NotLeader);
+    assert_eq!(
+        response.leader_hint, None,
+        "must degrade to no hint, not panic, when the known leader id isn't in membership"
+    );
+}
+
+/// No leader known at all (e.g. mid-election) -> no hint.
+#[tokio::test]
+async fn test_create_not_leader_response_returns_no_hint_when_leader_unknown() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let state = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    // current_leader() defaults to None; not set here.
+
+    let response = state.create_not_leader_response(&context);
+
+    assert_eq!(response.error, ErrorCode::NotLeader);
+    assert_eq!(response.leader_hint, None);
 }
 
 /// Test: FollowerState rejects ClientCmd::Scan with NotLeader error
 ///
 /// Scan reads require linearizable prefix enumeration from the leader.
-/// Followers must reject immediately with FailedPrecondition so the client
-/// can redirect to the current leader.
+/// Followers must reject with Ok(ClientResponse{ error: NotLeader, .. }), same
+/// as Propose/Read, so the client can redirect to the current leader.
 #[tokio::test]
 async fn test_scan_cmd_follower_rejects_with_not_leader() {
     use bytes::Bytes;
@@ -1530,10 +1644,14 @@ async fn test_scan_cmd_follower_rejects_with_not_leader() {
     state.push_client_cmd(cmd, &context);
 
     let result = resp_rx.recv().await.expect("channel should not be closed");
-    assert!(result.is_err(), "Scan on follower should return error");
-    let err = result.unwrap_err();
-    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-    assert!(err.message().contains("Not leader"));
+    match result {
+        Ok(ClientResponse { error, .. }) => {
+            assert_eq!(error, ErrorCode::NotLeader);
+        }
+        Err(status) => panic!(
+            "expected Ok(ClientResponse {{ error: NotLeader, .. }}), got bare Err(Status): {status:?}"
+        ),
+    }
 }
 
 /// Test: FollowerState rejects ClientReadRequest with LinearizableRead policy
@@ -1572,10 +1690,14 @@ async fn test_handle_client_read_request_linearizable_redirects_to_leader() {
 
     // Verify: Response with NOT_LEADER error
     let result = resp_rx.recv().await.expect("channel should not be closed");
-    assert!(result.is_err(), "Should return NOT_LEADER error");
-    let err = result.unwrap_err();
-    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-    assert!(err.message().contains("Not leader"));
+    match result {
+        Ok(ClientResponse { error, .. }) => {
+            assert_eq!(error, ErrorCode::NotLeader);
+        }
+        Err(status) => panic!(
+            "expected Ok(ClientResponse {{ error: NotLeader, .. }}), got bare Err(Status): {status:?}"
+        ),
+    }
 }
 
 /// Test: FollowerState handles ClientReadRequest with EventualConsistency policy
@@ -2129,10 +2251,18 @@ mod handle_client_read_request {
         state.push_client_cmd(cmd, &context);
 
         let result = resp_rx.recv().await.expect("channel should not be closed");
-        assert!(result.is_err(), "LeaseRead should be rejected by follower");
-        let err = result.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-        assert!(err.message().contains("Not leader"));
+        match result {
+            Ok(ClientResponse { error, .. }) => {
+                assert_eq!(
+                    error,
+                    ErrorCode::NotLeader,
+                    "LeaseRead should be rejected by follower"
+                );
+            }
+            Err(status) => panic!(
+                "expected Ok(ClientResponse {{ error: NotLeader, .. }}), got bare Err(Status): {status:?}"
+            ),
+        }
     }
 
     /// Test: Follower uses server default policy (LinearizableRead)
@@ -2175,13 +2305,18 @@ mod handle_client_read_request {
         state.push_client_cmd(cmd, &context);
 
         let result = resp_rx.recv().await.expect("channel should not be closed");
-        assert!(
-            result.is_err(),
-            "Default LinearizableRead should be rejected by follower"
-        );
-        let err = result.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-        assert!(err.message().contains("Not leader"));
+        match result {
+            Ok(ClientResponse { error, .. }) => {
+                assert_eq!(
+                    error,
+                    ErrorCode::NotLeader,
+                    "Default LinearizableRead should be rejected by follower"
+                );
+            }
+            Err(status) => panic!(
+                "expected Ok(ClientResponse {{ error: NotLeader, .. }}), got bare Err(Status): {status:?}"
+            ),
+        }
     }
 
     /// Test: Follower serves EventualConsistency reads
@@ -2327,13 +2462,18 @@ mod handle_client_read_request {
 
         // Follower must reject: server default is LinearizableRead which requires leader
         let result = resp_rx.recv().await.expect("channel should not be closed");
-        assert!(
-            result.is_err(),
-            "Follower must reject LinearizableRead (requires leader)"
-        );
-        let err = result.unwrap_err();
-        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-        assert!(err.message().contains("Not leader"));
+        match result {
+            Ok(ClientResponse { error, .. }) => {
+                assert_eq!(
+                    error,
+                    ErrorCode::NotLeader,
+                    "Follower must reject LinearizableRead (requires leader)"
+                );
+            }
+            Err(status) => panic!(
+                "expected Ok(ClientResponse {{ error: NotLeader, .. }}), got bare Err(Status): {status:?}"
+            ),
+        }
     }
 }
 
@@ -2629,14 +2769,11 @@ async fn test_follower_rejects_strong_consistency_reads() {
         );
 
         // Verify: Response is NOT_LEADER error
-        if let Ok(Err(err)) = result {
-            let err_str = format!("{err:?}");
-            assert!(
-                err_str.contains("Not leader")
-                    || err_str.contains("NotLeader")
-                    || err_str.contains("NOT_LEADER")
-                    || err_str.contains("FailedPrecondition"),
-                "Expected NOT_LEADER error for Lease read, got: {err:?}"
+        if let Ok(Ok(ClientResponse { error, .. })) = result {
+            assert_eq!(
+                error,
+                ErrorCode::NotLeader,
+                "Expected NOT_LEADER error for Lease read"
             );
         } else {
             panic!("Lease read to Follower should return NOT_LEADER error, got: {result:?}");
@@ -2669,14 +2806,11 @@ async fn test_follower_rejects_strong_consistency_reads() {
         );
 
         // Verify: Response is NOT_LEADER error
-        if let Ok(Err(err)) = result {
-            let err_str = format!("{err:?}");
-            assert!(
-                err_str.contains("Not leader")
-                    || err_str.contains("NotLeader")
-                    || err_str.contains("NOT_LEADER")
-                    || err_str.contains("FailedPrecondition"),
-                "Expected NOT_LEADER error for Linear read, got: {err:?}"
+        if let Ok(Ok(ClientResponse { error, .. })) = result {
+            assert_eq!(
+                error,
+                ErrorCode::NotLeader,
+                "Expected NOT_LEADER error for Linear read"
             );
         } else {
             panic!("Linear read to Follower should return NOT_LEADER error, got: {result:?}");

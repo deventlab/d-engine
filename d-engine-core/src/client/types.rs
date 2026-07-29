@@ -62,6 +62,7 @@ pub struct ClientResponse {
 pub enum ClientResponsePayload {
     Write(WriteResult),
     Read(ReadResults),
+    Scan(ScanResults),
 }
 
 /// Result of a successful write operation.
@@ -74,6 +75,12 @@ pub struct WriteResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadResults {
     pub entries: Vec<KvEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScanResults {
+    pub entries: Vec<(Bytes, Bytes)>,
+    pub revision: u64,
 }
 
 /// A single key-value pair returned in a read response.
@@ -200,6 +207,22 @@ impl ClientResponse {
             leader_hint: None,
             retry_after_ms: None,
             result: Some(ClientResponsePayload::Read(ReadResults { entries })),
+        }
+    }
+
+    #[inline]
+    pub fn scan_results(
+        entries: Vec<(Bytes, Bytes)>,
+        revision: u64,
+    ) -> Self {
+        Self {
+            error: ErrorCode::Success,
+            leader_hint: None,
+            retry_after_ms: None,
+            result: Some(ClientResponsePayload::Scan(ScanResults {
+                entries,
+                revision,
+            })),
         }
     }
 

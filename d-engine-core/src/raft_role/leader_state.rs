@@ -565,11 +565,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         membership: &Arc<T::M>,
     ) -> Result<()> {
         // Calculate total voter count including self as leader
-        let voters = membership.voters().await;
+        let voters = membership.voters();
         let total_voters = voters.len() + 1; // +1 for leader (self)
 
         // Get all replication targets (voters + learners, excluding self)
-        let replication_targets = membership.replication_peers().await;
+        let replication_targets = membership.replication_peers();
 
         // Single-voter cluster: only this node is a voter (quorum = 1)
         let single_voter = total_voters == 1;
@@ -736,6 +736,24 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(())
     }
 
+    /// Drains all buffered/pending client requests on role change (stepdown).
+    ///
+    /// # Note (ticket #425)
+    /// None of the drains below — read queues or `propose_buffer` alike —
+    /// return `leader_hint`. This whole function runs while role is still
+    /// Leader and `current_leader()` hasn't been updated to the new leader yet
+    /// (that happens after, via `notify_leader_change`), so any hint built
+    /// here would be stale/wrong no matter which queue it's for — this is one
+    /// reason applying uniformly to the whole function, not a per-queue
+    /// decision. Unlike client-initiated NotLeader rejections
+    /// (`create_not_leader_response`), this is the node clearing its own
+    /// pending requests during a role-transition window with uncertain leader
+    /// identity, not a stable node redirecting a live request.
+    ///
+    /// TODO: most `BecomeFollower` triggers pass `leader_id: None` anyway
+    /// (e.g. a higher-term RequestVote doesn't guarantee that candidate wins) —
+    /// if revisited, verify the real leader_id is reliably known before adding
+    /// a hint anywhere in this function.
     fn drain_read_buffer(&mut self) -> Result<()> {
         // Drain linearizable read buffer
         let batch = self.linearizable_read_buffer.take_all();
@@ -923,8 +941,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 }
             }
             ClientCmd::Scan(prefix, sender) => {
-                let result = ctx.state_machine().scan_prefix(&prefix);
-                let _ = sender.send(result.map_err(|e| Status::internal(e.to_string())));
+                let response = ctx
+                    .state_machine()
+                    .scan_prefix(&prefix)
+                    .map(|sr| ClientResponse::scan_results(sr.entries, sr.revision))
+                    .map_err(|e| Status::internal(e.to_string()));
+                let _ = sender.send(response);
             }
         }
     }
@@ -1028,7 +1050,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 // `Option::and` returns None if noop_log_id is None, Some(id) otherwise.
                 let current_leader = self.noop_log_id.and(self.shared_state().current_leader());
                 let cluster_conf =
-                    ctx.membership().retrieve_cluster_membership_config(current_leader).await;
+                    ctx.membership().retrieve_cluster_membership_config(current_leader);
                 debug!("Leader receive ClusterConf: {:?}", &cluster_conf);
                 if let Err(e) = sender.send(Ok(cluster_conf)) {
                     // Receiver timed out and dropped — this is normal, do not crash the node
@@ -1040,7 +1062,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             InboundEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
-                let current_conf_version = ctx.membership().get_cluster_conf_version().await;
+                let current_conf_version = ctx.membership().get_cluster_conf_version();
                 debug!(%current_conf_version, ?cluste_conf_change_request,
                     "handle_inbound_event::InboundEvent::ClusterConfUpdate",
                 );
@@ -1145,7 +1167,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             InboundEvent::DiscoverLeader(request, sender) => {
                 debug!(?request, "Leader::InboundEvent::DiscoverLeader");
 
-                if let Some(meta) = ctx.membership().retrieve_node_meta(my_id).await {
+                if let Some(meta) = ctx.membership().retrieve_node_meta(my_id) {
                     let response = LeaderDiscoveryResponse {
                         leader_id: my_id,
                         leader_address: meta.address,
@@ -1715,9 +1737,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
         // Step 2: Get current voter count (including self as leader)
         let membership = ctx.membership();
-        let current_voters = membership.voters().await.len() + 1; // +1 for self (leader)
+        let current_voters = membership.voters().len() + 1; // +1 for self (leader)
         debug!(
-            "[Leader {}] 📊 current_voters: {}, pending: {}",
+            "[Leader {}] current_voters: {}, pending: {}",
             self.node_id(),
             current_voters,
             self.pending_promotions.len()
@@ -1778,7 +1800,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             info!(
                 "Promotion successful. Cluster members: {:?}",
-                membership.voters().await
+                membership.voters()
             );
         }
 
@@ -2398,11 +2420,11 @@ impl<T: TypeConfig> LeaderState<T> {
         membership: &Arc<T::M>,
     ) -> Result<()> {
         // Calculate total voter count including self as leader
-        let voters = membership.voters().await;
+        let voters = membership.voters();
         let total_voters = voters.len() + 1; // +1 for leader (self)
 
         // Get all replication targets (voters + learners, excluding self)
-        let replication_targets = membership.replication_peers().await;
+        let replication_targets = membership.replication_peers();
 
         // Single-voter cluster: only this node is a voter (quorum = 1)
         let single_voter = total_voters == 1;
@@ -2693,7 +2715,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 node_id, match_index_opt
             );
 
-            if !membership.contains_node(node_id).await {
+            if !membership.contains_node(node_id) {
                 trace!(
                     "[FIND-PROMOTABLE-LOOP] ❌ Learner {} NOT in membership, skipping",
                     node_id
@@ -2725,8 +2747,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
             trace!("[FIND-PROMOTABLE-LOOP] ✅ Learner {} IS caught up", node_id);
 
-            let node_status =
-                membership.get_node_status(node_id).await.unwrap_or(NodeStatus::ReadOnly);
+            let node_status = membership.get_node_status(node_id).unwrap_or(NodeStatus::ReadOnly);
             if !node_status.is_promotable() {
                 debug!(
                     ?node_id,
@@ -2907,7 +2928,7 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // 1. Validate join request
         debug!("1. Validate join request");
-        if membership.contains_node(node_id).await {
+        if membership.contains_node(node_id) {
             let error_msg = format!("Node {node_id} already exists in cluster");
             warn!(%error_msg);
             return self.send_join_error(sender, MembershipError::NodeAlreadyExists(node_id)).await;
@@ -2989,10 +3010,9 @@ impl<T: TypeConfig> LeaderState<T> {
             error: String::new(),
             config: Some(
                 ctx.membership()
-                    .retrieve_cluster_membership_config(self.shared_state().current_leader())
-                    .await,
+                    .retrieve_cluster_membership_config(self.shared_state().current_leader()),
             ),
-            config_version: ctx.membership().get_cluster_conf_version().await,
+            config_version: ctx.membership().get_cluster_conf_version(),
             snapshot_metadata,
             leader_id: self.node_id(),
         };
@@ -3498,7 +3518,7 @@ impl<T: TypeConfig> LeaderState<T> {
         _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
-        let status = ctx.membership().get_node_status(node_id).await;
+        let status = ctx.membership().get_node_status(node_id);
 
         if status.is_none() {
             debug!(node_id, "Zombie signal ignored: node not in cluster");

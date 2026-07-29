@@ -27,7 +27,6 @@ use d_engine_core::BatchOp;
 use d_engine_core::InboundEvent;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftOneshot;
-use d_engine_core::ScanResult;
 use d_engine_core::TypeConfig;
 use d_engine_core::client::ClientApi;
 use d_engine_core::client::ClientApiError;
@@ -36,6 +35,7 @@ use d_engine_core::client::ClientResponsePayload;
 use d_engine_core::client::ClientWriteRequest;
 use d_engine_core::client::ErrorCode;
 use d_engine_core::config::ReadConsistencyPolicy;
+use d_engine_core::types::ScanResults;
 #[cfg(feature = "watch")]
 use d_engine_core::watch::WatchRegistry;
 #[cfg(feature = "watch")]
@@ -503,7 +503,7 @@ impl<T: TypeConfig> EmbeddedClient<T> {
     pub async fn scan_prefix(
         &self,
         prefix: impl AsRef<[u8]>,
-    ) -> ClientApiResult<ScanResult> {
+    ) -> ClientApiResult<ScanResults> {
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
 
         self.read_handle
@@ -520,7 +520,23 @@ impl<T: TypeConfig> EmbeddedClient<T> {
             .map_err(|_| timeout_error(self.timeout))?
             .map_err(|_| channel_closed_error())?;
 
-        result.map_err(|status| server_error(format!("RPC error: {}", status.message())))
+        let response =
+            result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
+
+        if response.error != ErrorCode::Success {
+            return Err(map_error_response(
+                response.error,
+                response.leader_hint,
+                response.retry_after_ms,
+            ));
+        }
+
+        match response.result {
+            Some(ClientResponsePayload::Scan(scan_results)) => Ok(scan_results),
+            other => Err(server_error(format!(
+                "Unexpected response type for scan operation: expected Scan, found {other:?}"
+            ))),
+        }
     }
 
     /// Internal helper: Get cluster membership via ClusterConf event
@@ -782,7 +798,7 @@ impl<T: TypeConfig> ClientApi for EmbeddedClient<T> {
     async fn scan_prefix(
         &self,
         prefix: impl AsRef<[u8]> + Send,
-    ) -> ClientApiResult<ScanResult> {
+    ) -> ClientApiResult<ScanResults> {
         self.scan_prefix(prefix).await
     }
 }

@@ -1684,22 +1684,16 @@ mod scan_tests {
     #[tokio::test]
     #[traced_test]
     async fn test_scan_prefix_success() {
-        use d_engine_proto::client::{KvEntry, ScanResponse};
+        use d_engine_core::client::ClientResponse;
 
         let (_tx, rx) = oneshot::channel::<()>();
-        let response = ScanResponse {
-            entries: vec![
-                KvEntry {
-                    key: Bytes::from("/services/node1"),
-                    value: Bytes::from("10.0.0.1"),
-                },
-                KvEntry {
-                    key: Bytes::from("/services/node2"),
-                    value: Bytes::from("10.0.0.2"),
-                },
+        let response = ClientResponse::scan_results(
+            vec![
+                (Bytes::from("/services/node1"), Bytes::from("10.0.0.1")),
+                (Bytes::from("/services/node2"), Bytes::from("10.0.0.2")),
             ],
-            revision: 7,
-        };
+            7,
+        );
         let (_channel, port) = MockNode::simulate_scan_mock_server(rx, response).await.unwrap();
 
         let client = make_client(port).await;
@@ -1722,13 +1716,10 @@ mod scan_tests {
     #[tokio::test]
     #[traced_test]
     async fn test_scan_prefix_empty_result() {
-        use d_engine_proto::client::ScanResponse;
+        use d_engine_core::client::ClientResponse;
 
         let (_tx, rx) = oneshot::channel::<()>();
-        let response = ScanResponse {
-            entries: vec![],
-            revision: 3,
-        };
+        let response = ClientResponse::scan_results(vec![], 3);
         let (_channel, port) = MockNode::simulate_scan_mock_server(rx, response).await.unwrap();
 
         let client = make_client(port).await;

@@ -24,14 +24,12 @@ async fn initial_state_correctly_set() {
     let nodes = vec![create_test_node(1), create_test_node(2)];
     let guard = MembershipGuard::new(nodes.clone(), 100);
 
-    guard
-        .blocking_read(|state| {
-            assert_eq!(state.nodes.len(), 2);
-            assert_eq!(state.nodes.get(&1).unwrap().address, "node-1.test:8080");
-            assert_eq!(state.nodes.get(&2).unwrap().address, "node-2.test:8080");
-            assert_eq!(state.cluster_conf_version, 100);
-        })
-        .await;
+    guard.blocking_read(|state| {
+        assert_eq!(state.nodes.len(), 2);
+        assert_eq!(state.nodes.get(&1).unwrap().address, "node-1.test:8080");
+        assert_eq!(state.nodes.get(&2).unwrap().address, "node-2.test:8080");
+        assert_eq!(state.cluster_conf_version, 100);
+    });
 }
 
 #[tokio::test]
@@ -39,9 +37,7 @@ async fn initial_state_correctly_set() {
 async fn blocking_read_access() {
     let guard = MembershipGuard::new(vec![create_test_node(1)], 1);
 
-    let result = guard
-        .blocking_read(|state| state.nodes.get(&1).map(|n| n.address.clone()))
-        .await;
+    let result = guard.blocking_read(|state| state.nodes.get(&1).map(|n| n.address.clone()));
 
     assert_eq!(result, Some("node-1.test:8080".to_string()));
 }
@@ -58,12 +54,10 @@ async fn blocking_write_updates_state() {
         })
         .await;
 
-    guard
-        .blocking_read(|state| {
-            assert_eq!(state.cluster_conf_version, 200);
-            assert_eq!(state.nodes.len(), 2);
-        })
-        .await;
+    guard.blocking_read(|state| {
+        assert_eq!(state.cluster_conf_version, 200);
+        assert_eq!(state.nodes.len(), 2);
+    });
 }
 
 #[tokio::test]
@@ -78,11 +72,9 @@ async fn update_node_success() {
         .await;
 
     assert!(result.is_ok());
-    guard
-        .blocking_read(|state| {
-            assert_eq!(state.nodes.get(&1).unwrap().address, "updated.test:9090");
-        })
-        .await;
+    guard.blocking_read(|state| {
+        assert_eq!(state.nodes.get(&1).unwrap().address, "updated.test:9090");
+    });
 }
 
 #[tokio::test]
@@ -186,7 +178,7 @@ async fn write_operations_are_serialized() {
     );
 
     // Verify final state
-    let version = guard.blocking_read(|state| state.cluster_conf_version).await;
+    let version = guard.blocking_read(|state| state.cluster_conf_version);
     assert_eq!(version, 3);
 }
 
@@ -220,11 +212,9 @@ async fn reads_are_not_blocked_by_writes() {
     // Time 100 reads during the write
     let start = std::time::Instant::now();
     for _ in 0..100 {
-        guard
-            .blocking_read(|state| {
-                assert_eq!(state.cluster_conf_version, 2);
-            })
-            .await;
+        guard.blocking_read(|state| {
+            assert_eq!(state.cluster_conf_version, 2);
+        });
     }
     let elapsed = start.elapsed();
 
@@ -238,6 +228,6 @@ async fn reads_are_not_blocked_by_writes() {
     );
 
     // Verify write completed
-    let version = guard.blocking_read(|state| state.cluster_conf_version).await;
+    let version = guard.blocking_read(|state| state.cluster_conf_version);
     assert_eq!(version, 2);
 }

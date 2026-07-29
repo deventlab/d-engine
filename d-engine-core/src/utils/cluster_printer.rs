@@ -90,7 +90,7 @@ pub fn status_name(status: i32) -> &'static str {
 /// ================================================================================
 /// ```
 pub async fn print_cluster_membership_table<T: TypeConfig, M: Membership<T>>(membership: &M) {
-    let members = membership.get_all_nodes().await;
+    let members = membership.get_all_nodes();
 
     println!("\n{}", "=".repeat(80));
     println!("  CLUSTER MEMBERSHIP:");

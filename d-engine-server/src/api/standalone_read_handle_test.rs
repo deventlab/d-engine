@@ -613,7 +613,7 @@ mod read_handle_tests {
 mod error_helper_tests {
     use bytes::Bytes;
     use d_engine_core::client::{ClientApiError, ClientResponsePayload, ErrorCode};
-    use d_engine_core::client::{KvEntry, LeaderHint, ReadResults};
+    use d_engine_core::client::{KvEntry, LeaderHint, ReadResults, ScanResults};
 
     use super::super::{extract_read_payload, map_error_response, not_leader_error};
 
@@ -716,6 +716,20 @@ mod error_helper_tests {
         let err = extract_read_payload(payload).unwrap_err();
         assert_eq!(err.code(), ErrorCode::InvalidResponse);
         assert!(err.message().contains("WriteResult"));
+    }
+
+    /// A Scan payload must never be silently treated as read data — it must be
+    /// rejected the same way Write/None are, not accidentally matched by a
+    /// catch-all and misread as an empty successful read.
+    #[test]
+    fn test_extract_read_payload_rejects_scan_payload() {
+        let payload = Some(ClientResponsePayload::Scan(ScanResults {
+            entries: vec![(Bytes::from("k"), Bytes::from("v"))],
+            revision: 1,
+        }));
+        let err = extract_read_payload(payload).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidResponse);
+        assert!(err.message().contains("ScanResults"));
     }
 
     #[test]

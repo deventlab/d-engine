@@ -5,7 +5,6 @@ use d_engine_proto::client::ClientResponse;
 use d_engine_proto::client::ClientWriteRequest;
 use d_engine_proto::client::MembershipSnapshot as ProtoMembershipSnapshot;
 use d_engine_proto::client::ScanRequest;
-use d_engine_proto::client::ScanResponse;
 use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WatchRequest;
 use d_engine_proto::client::WatchResponse;
@@ -221,7 +220,7 @@ impl RaftClientService for MockRpcService {
     async fn handle_client_scan(
         &self,
         _request: tonic::Request<ScanRequest>,
-    ) -> std::result::Result<tonic::Response<ScanResponse>, tonic::Status> {
+    ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("not used in mock"))
     }
 }

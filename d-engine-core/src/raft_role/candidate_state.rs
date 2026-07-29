@@ -282,8 +282,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             InboundEvent::ClusterConf(_metadata_request, sender) => {
                 let cluster_conf = ctx
                     .membership()
-                    .retrieve_cluster_membership_config(self.shared_state().current_leader())
-                    .await;
+                    .retrieve_cluster_membership_config(self.shared_state().current_leader());
                 debug!("Candidate receive ClusterConf: {:?}", &cluster_conf);
 
                 if let Err(e) = sender.send(Ok(cluster_conf)) {
@@ -296,7 +295,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             }
 
             InboundEvent::ClusterConfUpdate(cluste_conf_change_request, sender) => {
-                let current_conf_version = ctx.membership().get_cluster_conf_version().await;
+                let current_conf_version = ctx.membership().get_cluster_conf_version();
 
                 let current_leader_id = self.shared_state().current_leader();
 

@@ -140,7 +140,12 @@ pub use d_engine_core::MetaStore;
 /// Unified result type (equivalent to Result<T, Error>)
 pub use d_engine_core::Result;
 /// Prefix scan result: matching entries + revision anchor for watch deduplication
+///
+/// Internal `StateMachine::scan_prefix()` trait return type. For the client-facing
+/// scan result returned by `EmbeddedClient::scan_prefix()`, see [`ScanResults`].
 pub use d_engine_core::ScanResult;
+/// Client-facing prefix scan result, returned by `EmbeddedClient::scan_prefix()`.
+pub use d_engine_core::ScanResults;
 /// Storage-specific error type
 pub use d_engine_core::StorageError;
 // Raft Node Config
@@ -161,6 +166,9 @@ pub use api::EmbeddedClient;
 /// Use this to pattern-match error categories without inspecting message strings:
 /// `e.code() == ErrorCode::NotLeader`
 pub use d_engine_core::client::ErrorCode;
+/// Optional leader location hint on `ErrorCode::NotLeader`, so a client can
+/// retry against the right node without a blind broadcast.
+pub use d_engine_core::client::LeaderHint;
 /// Unified client operations trait (put/get/delete/CAS/watch).
 /// Re-exported here so embedded-mode users don't need a separate d-engine-client dependency.
 pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};

@@ -23,7 +23,6 @@ use tonic::Status;
 use crate::ApplyResult;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
-use crate::ScanResult;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewCommitData {
@@ -46,7 +45,7 @@ pub enum ClientCmd {
     ),
     Scan(
         bytes::Bytes,
-        MaybeCloneOneshotSender<std::result::Result<ScanResult, Status>>,
+        MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
     ),
 }
 

@@ -2,6 +2,8 @@
 //!
 //! See the [server customization guide](https://github.com/deventlab/d-engine/blob/master/d-engine/src/docs/server_guide/customize-state-machine.md) for details.
 
+use crate::Error;
+use crate::StorageError;
 use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_proto::common::LogId;
@@ -10,9 +12,6 @@ use d_engine_proto::server::storage::SnapshotMetadata;
 use crate::ApplyEntry;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
-
-use crate::Error;
-use crate::StorageError;
 
 /// All `(key, value)` pairs returned by a prefix scan, plus the revision anchor.
 ///
