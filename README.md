@@ -21,6 +21,7 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 ---
 
 ![d-engine 3-node failover demo](./assets/demo.gif)
+
 **→ Full example:** [examples/three-nodes-embedded](https://github.com/deventlab/d-engine/tree/main/examples/three-nodes-embedded)
 
 ---
