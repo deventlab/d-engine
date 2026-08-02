@@ -20,6 +20,11 @@ and pluggable storage backends. Start with one node, scale to a cluster when nee
 
 ---
 
+![d-engine 3-node failover demo](./assets/demo.gif)
+**→ Full example:** [examples/three-nodes-embedded](https://github.com/deventlab/d-engine/tree/main/examples/three-nodes-embedded)
+
+---
+
 ## New in v0.2.4 🎉
 
 - **Async IO Architecture**: Inbound event loop is fully non-blocking — WAL writes, state machine apply, and replication all run off the hot path. AppendEntries uses a persistent bidirectional stream per peer; replication is pipelined across followers.

@@ -48,10 +48,10 @@ async fn main() {
         cli.config_path = path;
     }
 
-    println!("Starting HTTP server mode...");
-    println!("Business API port: {}", cli.port);
-    println!("Health check port: {}", cli.health_port);
-    println!("Config path: {}", cli.config_path);
+    println!(
+        "starting (api::{} health::{} config::{})",
+        cli.port, cli.health_port, cli.config_path
+    );
 
     // ============================================================
     // d-engine Integration (Start & Wait for Leader Election)
@@ -65,13 +65,13 @@ async fn main() {
     let leader_info = match engine.wait_ready(Duration::from_secs(5)).await {
         Ok(info) => info,
         Err(err) => {
-            eprintln!("Failed to wait for engine readiness: {err}");
+            eprintln!("✗ node failed to become ready: {err}");
             std::process::exit(1);
         }
     };
 
     println!(
-        "✓ Node {} is ready - Leader: {}",
+        "✓ node {} ready — leader {}",
         engine.node_id(),
         leader_info.leader_id,
     );
@@ -102,12 +102,8 @@ async fn main() {
     // ============================================================
     // Graceful Shutdown Handling (Application Responsibility)
     // ============================================================
-    println!("Press Ctrl+C to shutdown gracefully");
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            println!("Received Ctrl+C, shutting down gracefully...");
-        }
-    }
+    tokio::signal::ctrl_c().await.ok();
+    println!("shutting down...");
 
     // Stop HTTP servers
     let _ = shutdown_tx.send(());
@@ -116,19 +112,18 @@ async fn main() {
     // ============================================================
     // d-engine Cleanup (Stop & Flush Data)
     // ============================================================
-    println!("Stopping embedded engine...");
     match Arc::try_unwrap(engine) {
         Ok(engine) => {
             if let Err(e) = engine.stop().await {
-                eprintln!("Error during engine shutdown: {e}");
+                eprintln!("✗ error during shutdown: {e}");
             }
         }
         Err(_) => {
-            eprintln!("Warning: Cannot stop engine - references still exist");
+            eprintln!("✗ warning: cannot stop engine - references still exist");
         }
     }
 
-    println!("✓ Shutdown complete");
+    println!("✓ shutdown complete");
 }
 
 async fn start_health_check_server(
@@ -144,8 +139,6 @@ async fn start_health_check_server(
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .expect("Failed to bind health check server");
-
-    println!("Health check server listening on port {port}");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -184,8 +177,6 @@ async fn start_business_server(
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .expect("Failed to bind business server");
-
-    println!("Business API server listening on port {port}");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {

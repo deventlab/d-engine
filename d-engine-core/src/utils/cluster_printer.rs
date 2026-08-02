@@ -262,6 +262,19 @@ pub fn print_role_transition(
     println!("{}", "=".repeat(80));
 }
 
+/// Single-line role transition log (lighter than `print_role_transition`'s banner); no node ID, callers already get one from the Makefile's `sed` prefix.
+pub fn print_role_transition_line(
+    from_role: i32,
+    to_role: i32,
+    term: u64,
+) {
+    println!(
+        "{} → {} (term {term})",
+        role_name(from_role),
+        role_name(to_role)
+    );
+}
+
 /// Print leader accepting new node message
 ///
 /// Part of Plan B: Clear role transition messages

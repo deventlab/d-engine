@@ -45,12 +45,14 @@ use crate::client::{ClientReadRequest, ClientResponse, ErrorCode};
 use crate::event::ClientCmd;
 use crate::network::Transport;
 use crate::role_state::schedule_and_execute_purge;
+use crate::utils::cluster_printer::print_role_transition_line;
 use async_trait::async_trait;
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::BatchPromote;
 use d_engine_proto::common::BatchRemove;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::common::entry_payload::Payload;
@@ -611,11 +613,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             self.node_id(),
             self.current_term(),
         );
-        println!(
-            "[Node {}] Leader → Follower (term {})",
-            self.node_id(),
-            self.current_term()
-        );
+        print_role_transition_line(Leader as i32, Follower as i32, self.current_term());
         // Revoke lease so ReadActor immediately returns LeaseInvalid on the next read.
         self.shared_state.lease.revoke();
         Ok(RaftRole::Follower(Box::new(self.into())))

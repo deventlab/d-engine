@@ -48,9 +48,8 @@ endif
 ifneq ($(ZSTD_PREFIX),)
   BREW_ROCKSDB_ENV += ZSTD_LIB_DIR=$(ZSTD_PREFIX)/lib
 endif
-ifneq ($(BREW_ROCKSDB_ENV),)
-  CARGO := $(BREW_ROCKSDB_ENV) $(CARGO)
-endif
+# Applied directly in recipes below (not folded into CARGO): a command-line
+# `make CARGO=... build` override would otherwise silently skip these vars.
 
 # Rust logging level for tests
 RUST_LOG_LEVEL ?= d_engine_server=debug,d_engine_core=debug,d_engine_client=debug,d_engine=debug
@@ -182,7 +181,7 @@ fmt fmt-fix: install-tools check-workspace
 ## clippy                Run Clippy linter on all crates
 clippy: check-workspace clippy-excluded
 	@echo "$(BLUE)Running Clippy linter on all crates...$(NC)"
-	@$(CARGO) clippy --workspace --lib --tests --all-features -- -D warnings || \
+	@$(BREW_ROCKSDB_ENV) $(CARGO) clippy --workspace --lib --tests --all-features -- -D warnings || \
 		{ echo "$(RED)✗ Clippy warnings found. Run 'make clippy-fix' for suggestions.$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Clippy lint check passed$(NC)"
 
@@ -190,19 +189,19 @@ clippy: check-workspace clippy-excluded
 clippy-excluded:
 	@for example in examples/*/; do \
 		if [ -f "$$example/Cargo.toml" ]; then \
-			(cd "$$example" && $(CARGO) clippy --all-targets --all-features -- -D warnings) || \
+			(cd "$$example" && $(BREW_ROCKSDB_ENV) $(CARGO) clippy --all-targets --all-features -- -D warnings) || \
 			{ echo "$(RED)✗ Clippy check failed for $$example$(NC)"; exit 1; }; \
 		fi \
 	done
 	@for bench in benches/*/; do \
 		if [ -f "$$bench/Cargo.toml" ]; then \
-			(cd "$$bench" && $(CARGO) clippy --all-targets --all-features -- -D warnings) || \
+			(cd "$$bench" && $(BREW_ROCKSDB_ENV) $(CARGO) clippy --all-targets --all-features -- -D warnings) || \
 			{ echo "$(RED)✗ Clippy check failed for $$bench$(NC)"; exit 1; }; \
 		fi \
 	done
 	@for crate_dir in */; do \
 		if [ -d "$$crate_dir/benches" ] && [ "$$crate_dir" != "examples/" ] && [ "$$crate_dir" != "benches/" ]; then \
-			(cd "$$crate_dir" && $(CARGO) clippy --benches --all-features -- -D warnings) || \
+			(cd "$$crate_dir" && $(BREW_ROCKSDB_ENV) $(CARGO) clippy --benches --all-features -- -D warnings) || \
 			{ echo "$(RED)✗ Clippy check failed for $$crate_dir benches$(NC)"; exit 1; }; \
 		fi \
 	done
@@ -210,10 +209,10 @@ clippy-excluded:
 ## clippy-fix           Automatically apply Clippy suggestions (review changes!)
 clippy-fix: install-tools check-workspace
 	@echo "$(BLUE)Applying Clippy suggestions...$(NC)"
-	@$(CARGO) clippy --workspace --lib --tests --all-features --fix \
+	@$(BREW_ROCKSDB_ENV) $(CARGO) clippy --workspace --lib --tests --all-features --fix \
 		--allow-no-vcs --allow-dirty --allow-staged
 	@echo "$(YELLOW)Re-checking for remaining issues...$(NC)"
-	@$(CARGO) clippy --workspace --lib --tests --all-features -- -D warnings || \
+	@$(BREW_ROCKSDB_ENV) $(CARGO) clippy --workspace --lib --tests --all-features -- -D warnings || \
 		{ echo "$(YELLOW)Note: Some warnings require manual review and fixes$(NC)"; }
 	@echo "$(GREEN)✓ Clippy fixes applied$(NC)"
 	@echo "$(MAGENTA)IMPORTANT: Review changes before committing!$(NC)"
@@ -232,7 +231,7 @@ check: fmt-check clippy deny
 ## quick-check          Fast validation (cargo check + fmt-check only)
 quick-check: check-workspace
 	@echo "$(BLUE)Running quick validation...$(NC)"
-	@$(CARGO) check --workspace --lib --tests --all-features
+	@$(BREW_ROCKSDB_ENV) $(CARGO) check --workspace --lib --tests --all-features
 	@$(CARGO) fmt --all -- --check || exit 1
 	@echo "$(GREEN)✓ Quick validation passed$(NC)"
 
@@ -243,13 +242,13 @@ quick-check: check-workspace
 ## build                Build all workspace crates in debug mode
 build: check-workspace
 	@echo "$(BLUE)Building workspace (debug mode)...$(NC)"
-	@$(CARGO) build --workspace --lib --tests --all-features
+	@$(BREW_ROCKSDB_ENV) $(CARGO) build --workspace --lib --tests --all-features
 	@echo "$(GREEN)✓ Debug build completed$(NC)"
 
 ## build-release        Build all workspace crates in release mode (optimized)
 build-release: check check-workspace
 	@echo "$(BLUE)Building workspace (release mode, optimized)...$(NC)"
-	@$(CARGO) build --workspace --all-features --release
+	@$(BREW_ROCKSDB_ENV) $(CARGO) build --workspace --all-features --release
 	@echo "$(GREEN)✓ Release build completed$(NC)"
 	@echo "$(CYAN)Release artifacts: target/release/$(NC)"
 
@@ -261,13 +260,13 @@ build-release: check check-workspace
 test: install-tools check-workspace check-all-projects
 	@echo "$(BLUE)Running all tests with nextest...$(NC)"
 	@CI=1 RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
-		$(CARGO) nextest run --all-features --workspace --no-fail-fast
-	@$(CARGO) test --doc --workspace
+		$(BREW_ROCKSDB_ENV) $(CARGO) nextest run --all-features --workspace --no-fail-fast
+	@$(BREW_ROCKSDB_ENV) $(CARGO) test --doc --workspace
 	@echo "$(BLUE)Verifying examples compilation...$(NC)"
 	@for dir in examples/*/; do \
 		if [ -f "$$dir/Cargo.toml" ]; then \
 			echo "  Checking $$(basename $$dir)..."; \
-			(cd "$$dir" && $(CARGO) check --quiet) || exit 1; \
+			(cd "$$dir" && $(BREW_ROCKSDB_ENV) $(CARGO) check --quiet) || exit 1; \
 		fi \
 	done
 	@echo ""
@@ -283,7 +282,7 @@ test: install-tools check-workspace check-all-projects
 ## bench                Run performance benchmarks
 bench: check-workspace
 	@echo "$(BLUE)Running performance benchmarks...$(NC)"
-	@BENCH_OP_TIMEOUT_MS=200 $(CARGO) bench --workspace --all-features || \
+	@BENCH_OP_TIMEOUT_MS=200 $(BREW_ROCKSDB_ENV) $(CARGO) bench --workspace --all-features || \
 		{ echo "$(RED)✗ Benchmark execution failed$(NC)"; \
 		  echo "$(YELLOW)Tip: On slow machines, try: BENCH_OP_TIMEOUT_MS=500 make bench$(NC)"; \
 		  exit 1; }
@@ -293,7 +292,7 @@ bench: check-workspace
 ## bench-save           Save current benchmark results as new baseline
 bench-save: check-workspace
 	@echo "$(BLUE)Saving benchmark baseline...$(NC)"
-	@$(CARGO) bench --workspace --all-features
+	@$(BREW_ROCKSDB_ENV) $(CARGO) bench --workspace --all-features
 	@echo "$(GREEN)✓ Baseline saved$(NC)"
 
 # ============================================================================
@@ -303,7 +302,7 @@ bench-save: check-workspace
 ## docs                Generate API documentation and open in browser (opens d-engine API hub)
 docs: check-workspace
 	@echo "$(BLUE)Generating API documentation for public crates...$(NC)"
-	@$(CARGO) doc --package d-engine --all-features --no-deps
+	@$(BREW_ROCKSDB_ENV) $(CARGO) doc --package d-engine --all-features --no-deps
 	@echo "$(GREEN)✓ Documentation generated$(NC)"
 	@echo "$(CYAN)Opening documentation at: target/doc/d_engine/index.html$(NC)"
 	@open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || true
@@ -311,7 +310,7 @@ docs: check-workspace
 ## docs-all            Generate documentation for all workspace crates
 docs-all: check-workspace
 	@echo "$(BLUE)Generating documentation for all workspace crates...$(NC)"
-	@$(CARGO) doc --workspace --all-features --no-deps
+	@$(BREW_ROCKSDB_ENV) $(CARGO) doc --workspace --all-features --no-deps
 	@echo "$(GREEN)✓ All documentation generated$(NC)"
 	@echo "$(CYAN)Opening documentation at: target/doc/d_engine/index.html$(NC)"
 	@open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || xdg-open "file://$$(pwd)/target/doc/d_engine/index.html" 2>/dev/null || true
@@ -319,11 +318,11 @@ docs-all: check-workspace
 ## docs-check           Check documentation with all features and strict warnings
 docs-check: check-workspace
 	@echo "$(BLUE)Checking documentation (all features, strict mode)...$(NC)"
-	@RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --all-features --no-deps
+	@RUSTDOCFLAGS="-D warnings" $(BREW_ROCKSDB_ENV) $(CARGO) doc --workspace --all-features --no-deps
 	@echo "$(BLUE)Simulating docs.rs build for each crate...$(NC)"
 	@for crate in d-engine-proto d-engine-core d-engine-client d-engine-server d-engine; do \
 		echo "  Checking $$crate..."; \
-		RUSTDOCFLAGS="-D warnings" $(CARGO) rustdoc --lib -p $$crate --all-features || exit 1; \
+		RUSTDOCFLAGS="-D warnings" $(BREW_ROCKSDB_ENV) $(CARGO) rustdoc --lib -p $$crate --all-features || exit 1; \
 	done
 	@echo "$(GREEN)✓ Documentation compiled without warnings$(NC)"
 
@@ -362,7 +361,7 @@ deny: check-env
 ## clean                Remove all build artifacts and cache files
 clean:
 	@echo "$(BLUE)Cleaning build artifacts...$(NC)"
-	@$(CARGO) clean
+	@$(BREW_ROCKSDB_ENV) $(CARGO) clean
 	@rm -rf target/ coverage/ *.log
 	@echo "$(GREEN)✓ Cleanup completed$(NC)"
 
@@ -394,7 +393,7 @@ pre-release: install-tools check-workspace check docs-check test audit build-rel
 	@for crate in d-engine-proto d-engine-core d-engine-client d-engine-server d-engine; do \
 		echo "  Building docs for $$crate..."; \
 		RUSTDOCFLAGS="--cfg docsrs -D warnings" \
-		$(CARGO) rustdoc --lib -p $$crate --all-features -- --cfg docsrs || exit 1; \
+		$(BREW_ROCKSDB_ENV) $(CARGO) rustdoc --lib -p $$crate --all-features -- --cfg docsrs || exit 1; \
 	done
 	@echo ""
 	@echo "$(GREEN)╔═══════════════════════════════════════════════════════╗$(NC)"
@@ -429,7 +428,7 @@ check-examples:
 		if [ -f "$$example/Cargo.toml" ]; then \
 			example_name=$$(basename "$$example"); \
 			echo "$(YELLOW)→ Checking example: $$example_name$(NC)"; \
-			(cd "$$example" && $(CARGO) check 2>&1) || { \
+			(cd "$$example" && $(BREW_ROCKSDB_ENV) $(CARGO) check 2>&1) || { \
 				echo "$(RED)✗ Example $$example_name failed$(NC)"; \
 				exit 1; \
 			}; \
@@ -445,7 +444,7 @@ check-benches:
 		if [ -f "$$bench/Cargo.toml" ]; then \
 			bench_name=$$(basename "$$bench"); \
 			echo "$(YELLOW)→ Checking benchmark: $$bench_name$(NC)"; \
-			(cd "$$bench" && $(CARGO) check 2>&1) || { \
+			(cd "$$bench" && $(BREW_ROCKSDB_ENV) $(CARGO) check 2>&1) || { \
 				echo "$(RED)✗ Benchmark $$bench_name failed$(NC)"; \
 				exit 1; \
 			}; \

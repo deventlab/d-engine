@@ -189,7 +189,7 @@ where
                             Some(Ok(req)) => {
                                 let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
                                 if event_tx.send(InboundEvent::AppendEntries(req, vec![resp_tx])).await.is_err() {
-                                    warn!("[stream_append_entries|recv] event_tx closed");
+                                    debug!("[stream_append_entries|recv] event_tx closed");
                                     break;
                                 }
                                 if ordered_tx.send(resp_rx).await.is_err() {
@@ -197,7 +197,8 @@ where
                                 }
                             }
                             Some(Err(e)) => {
-                                warn!("[stream_append_entries|recv] stream error: {:?}", e);
+                                // Debug: expected when the peer goes away (crash/restart/shutdown), self-heals.
+                                debug!("[stream_append_entries|recv] stream error: {:?}", e);
                                 break;
                             }
                             None => break,

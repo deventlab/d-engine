@@ -1078,6 +1078,44 @@ mod check_cluster_is_ready_test {
             "must not wait anywhere near the internal retry budget (~500ms); took {elapsed:?}"
         );
     }
+
+    /// #428: `check_cluster_is_ready()` must return at `startup_quorum_timeout`
+    /// (30ms here), not wait out the ~2s retry budget, and must not hang/panic
+    /// while aborting the still-pending per-peer tasks.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_aborts_pending_tasks_on_internal_timeout() {
+        let mut config = RaftNodeConfig::default();
+        config.raft.membership.startup_quorum_timeout = Duration::from_millis(30);
+        config.retry.membership.max_retries = 20;
+        config.retry.membership.timeout_ms = 100;
+        config.retry.membership.base_delay_ms = 100;
+        config.retry.membership.max_delay_ms = 100;
+
+        let (membership, _) =
+            RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+                1,
+                vec![NodeMeta {
+                    id: 2,
+                    address: "127.0.0.1:9999".to_string(), // unreachable
+                    role: Follower as i32,
+                    status: NodeStatus::Active.into(),
+                }],
+                config,
+            );
+
+        let start = Instant::now();
+        let result = membership.check_cluster_is_ready().await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "must return an error once startup_quorum_timeout elapses"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "must return close to startup_quorum_timeout (30ms), not the ~2s unbounded retry budget; took {elapsed:?}"
+        );
+    }
 }
 
 #[cfg(test)]

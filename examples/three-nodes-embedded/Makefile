@@ -33,9 +33,8 @@ endif
 ifneq ($(ZSTD_PREFIX),)
   BREW_ROCKSDB_ENV += ZSTD_LIB_DIR=$(ZSTD_PREFIX)/lib
 endif
-ifneq ($(BREW_ROCKSDB_ENV),)
-  CARGO := $(BREW_ROCKSDB_ENV) $(CARGO)
-endif
+# Applied directly in recipes below (not folded into CARGO): a command-line
+# `make CARGO=... build` override would otherwise silently skip these vars.
 
 # ===============================
 # Global Variables
@@ -47,7 +46,7 @@ BIN := ./target/release/three-nodes-embedded
 # ===============================
 build:
 	@echo "Building release binary..."
-	$(CARGO) build --release --jobs 4
+	$(BREW_ROCKSDB_ENV) $(CARGO) build --release --jobs 4
 
 # ===============================
 # Cluster Management (Normal Mode)
@@ -108,7 +107,7 @@ start-cluster: 	 build
 # ===============================
 clean:
 	@echo "Cleaning build artifacts..."
-	$(CARGO) clean
+	$(BREW_ROCKSDB_ENV) $(CARGO) clean
 	rm -rf logs/*
 	rm -rf db/*
 	rm -rf snapshots/*

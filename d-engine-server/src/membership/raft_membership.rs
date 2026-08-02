@@ -33,7 +33,6 @@ use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::NodeMeta;
-use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tokio::task;
@@ -176,6 +175,7 @@ where
         let settings = self.config.network.clone();
         let raft = self.config.raft.clone();
         let retry = self.config.retry.clone();
+        let startup_quorum_timeout = raft.membership.startup_quorum_timeout;
 
         let mut peer_ids = Vec::new();
         for peer in self.voters() {
@@ -212,16 +212,33 @@ where
                     }
                 }
             });
-            tasks.push(task_handle.boxed());
+            tasks.push(task_handle);
         }
 
-        // Wait for all tasks to complete
+        // Wait for all tasks to complete, but never past startup_quorum_timeout.
+        // On timeout, abort every still-outstanding task before returning so no
+        // per-peer retry survives this call giving up.
         let mut success_count = 0;
-        while let Some(result) = tasks.next().await {
-            match result {
-                Ok(Ok(_)) => success_count += 1,
-                Ok(Err(e)) => error!("Task failed with error: {:?}", e),
-                Err(e) => error!("Task failed with error: {:?}", e),
+        tokio::select! {
+            _ = async {
+                while let Some(result) = tasks.next().await {
+                    match result {
+                        Ok(Ok(_)) => success_count += 1,
+                        Ok(Err(e)) => error!("Task failed with error: {:?}", e),
+                        Err(e) => error!("Task failed with error: {:?}", e),
+                    }
+                }
+            } => {}
+            _ = tokio::time::sleep(startup_quorum_timeout) => {
+                warn!(
+                    "check_cluster_is_ready timed out after {:?} with {} peer check(s) still pending — aborting them",
+                    startup_quorum_timeout,
+                    tasks.len()
+                );
+                for task in tasks.iter() {
+                    task.abort();
+                }
+                return Err(MembershipError::ClusterIsNotReady.into());
             }
         }
 
@@ -553,7 +570,7 @@ where
                             Ok(channel)
                         }
                         Err(e) => {
-                            info!(
+                            debug!(
                                 "Failed to pre-warm {:?} connection to node {}: {}",
                                 conn_type, peer_id, e
                             );

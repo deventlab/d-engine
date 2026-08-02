@@ -20,10 +20,14 @@ use crate::StateTransitionError;
 use crate::Transport;
 use crate::TypeConfig;
 use crate::alias::MOF;
+use crate::cluster_printer::print_learner_join_success;
+use crate::cluster_printer::print_learner_promoted_to_voter;
+use crate::cluster_printer::print_role_transition_line;
 use crate::role_state::schedule_and_execute_purge;
 use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeRole::Learner;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::JoinRequest;
@@ -146,14 +150,10 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             self.node_id(),
             self.current_term(),
         );
-        println!(
-            "[Node {}] Learner → Follower (term {})",
-            self.node_id(),
-            self.current_term()
-        );
+        print_role_transition_line(Learner as i32, Follower as i32, self.current_term());
 
         // Print promotion message (Plan B)
-        crate::utils::cluster_printer::print_learner_promoted_to_voter(self.node_id());
+        print_learner_promoted_to_voter(self.node_id());
 
         Ok(RaftRole::Follower(Box::new(self.into())))
     }
@@ -461,10 +461,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         self.shared_state().set_current_leader(leader_id);
 
         // Print join success message (Plan B)
-        crate::utils::cluster_printer::print_learner_join_success(
-            self.shared_state.node_id,
-            leader_id,
-        );
+        print_learner_join_success(self.shared_state.node_id, leader_id);
 
         Ok(())
     }
