@@ -82,7 +82,7 @@ async fn main() {
     let (shutdown_tx, shutdown_rx) = watch::channel(());
 
     // Health check server (for load balancers)
-    let health_handle = tokio::spawn({
+    let mut health_handle = tokio::spawn({
         let engine = engine.clone();
         let shutdown_rx = shutdown_rx.clone();
         async move {
@@ -91,7 +91,7 @@ async fn main() {
     });
 
     // Business API server (your KV service)
-    let business_handle = tokio::spawn({
+    let mut business_handle = tokio::spawn({
         let engine = engine.clone();
         let shutdown_rx = shutdown_rx.clone();
         async move {
@@ -102,8 +102,20 @@ async fn main() {
     // ============================================================
     // Graceful Shutdown Handling (Application Responsibility)
     // ============================================================
-    tokio::signal::ctrl_c().await.ok();
-    println!("shutting down...");
+    tokio::select! {
+        res = tokio::signal::ctrl_c() => {
+            if let Err(e) = res {
+                eprintln!("✗ failed to install Ctrl+C handler: {e}");
+            }
+            println!("shutting down...");
+        }
+        _ = &mut health_handle => {
+            eprintln!("✗ health check server task exited unexpectedly");
+        }
+        _ = &mut business_handle => {
+            eprintln!("✗ business server task exited unexpectedly");
+        }
+    }
 
     // Stop HTTP servers
     let _ = shutdown_tx.send(());
