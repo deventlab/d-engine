@@ -24,6 +24,7 @@ use futures::stream::BoxStream;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
 use tokio::sync::mpsc;
+use tracing::info;
 
 use crate::BackoffPolicy;
 use crate::NetworkError;
@@ -85,17 +86,7 @@ impl PeerUpdate {
         }
     }
 }
-#[derive(Debug)]
-pub struct AppendResult {
-    pub peer_ids: HashSet<u32>,
-    pub responses: Vec<Result<AppendEntriesResponse>>,
-}
-#[derive(Debug)]
-pub struct VoteResult {
-    pub peer_ids: HashSet<u32>,
-    pub responses: Vec<Result<VoteResponse>>,
-}
-#[allow(dead_code)]
+
 #[derive(Debug)]
 pub struct ClusterUpdateResult {
     pub peer_ids: HashSet<u32>,
@@ -129,7 +120,6 @@ where
     /// - Uses compressed gRPC streams for efficiency
     /// - Maintains response order matching input peers
     /// - Concurrent request processing with ordered aggregation
-    #[allow(dead_code)]
     async fn send_cluster_update(
         &self,
         req: ClusterConfChangeRequest,
@@ -137,69 +127,15 @@ where
         membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<ClusterUpdateResult>;
 
-    /// Replicates log entries to followers and learners.
-    ///
-    /// # Protocol
-    /// - Implements log replication from Raft §5.3
-    /// - Leader-exclusive operation
-    /// - Handles log consistency checks automatically
-    ///
-    /// # Parameters
-    /// - `requests`: Vector of (peer_id, AppendEntriesRequest)
-    /// - `retry`: Network retry configuration
-    /// - `membership`: Cluster membership for channel resolution
-    /// - `response_compress_enabled`: Enable compression for replication responses
-    ///
-    /// # Returns
-    /// - On success: `Ok(AppendResult)` containing aggregated responses
-    /// - On failure: `Err(NetworkError)` for unrecoverable errors
-    ///
-    /// ## **Error Conditions**: Top-level `Err` is returned ONLY when:
-    /// - Input `requests_with_peer_address` is empty (`NetworkError::EmptyPeerList`)
-    /// - Critical failures prevent spawning async tasks (not shown in current impl)
-    ///
-    /// # Errors
-    /// - `NetworkError::EmptyPeerList` for empty input
-    /// - `NetworkError::TaskFailed` for partial execution failures
-    ///
-    /// # Guarantees
-    /// - At-least-once delivery semantics
-    /// - Automatic deduplication of peer entries
-    /// - Non-blocking error handling
-    async fn send_append_requests(
+    /// Sends a vote request to a single peer as part of leader election (Raft §5.2).
+    /// Candidate-exclusive; caller (core layer) fans this out per-peer and tallies results.
+    async fn send_vote_request(
         &self,
-        requests: Vec<(u32, AppendEntriesRequest)>,
+        peer_id: u32,
+        request: VoteRequest,
         retry: &RetryPolicies,
         membership: std::sync::Arc<crate::alias::MOF<T>>,
-        response_compress_enabled: bool,
-    ) -> Result<AppendResult>;
-
-    /// Initiates leader election by requesting votes from cluster peers.
-    ///
-    /// # Protocol
-    /// - Implements leader election from Raft §5.2
-    /// - Candidate-exclusive operation
-    /// - Validates log completeness requirements
-    ///
-    /// # Parameters
-    /// - `req`: Election metadata with candidate's term and log state
-    /// - `retry`: Election-specific retry strategy
-    /// - `membership`: Cluster membership for channel resolution
-    ///
-    /// # Errors
-    /// - `NetworkError::EmptyPeerList` for empty peer list
-    /// - `NetworkError::TaskFailed` for RPC execution failures
-    ///
-    /// # Safety
-    /// - Automatic term validation in responses
-    /// - Strict candidate state enforcement
-    /// - Non-blocking partial failure handling
-    async fn send_vote_requests(
-        &self,
-        req: VoteRequest,
-        retry: &RetryPolicies,
-        membership: std::sync::Arc<crate::alias::MOF<T>>,
-    ) -> Result<VoteResult>;
+    ) -> Result<VoteResponse>;
 
     /// Orchestrates log compaction across cluster peers after snapshot creation.
     ///
@@ -356,7 +292,6 @@ use tokio::time::sleep;
 use tokio::time::timeout;
 use tonic::Code;
 use tracing::debug;
-use tracing::warn;
 
 use crate::Error;
 
@@ -383,27 +318,31 @@ where
         NetworkError::TaskBackoffFailed("Task failed after max retries".to_string());
     while retries < max_retries {
         debug!("[{task_name}] Attempt {} of {}", retries + 1, max_retries);
-        match timeout(timeout_duration, task()).await {
+        let tr = timeout(timeout_duration, task()).await;
+        match tr {
             Ok(Ok(r)) => {
                 return Ok(r); // Exit on success
             }
             Ok(Err(status)) => {
+                // A single attempt failing is expected — e.g. the peer's own raft
+                // component not ready yet during cluster bootstrap. Only
+                // exhausting all retries (below) is worth surfacing at warn (#428).
                 last_error = match status.code() {
                     Code::Unavailable => {
-                        warn!("[{task_name}] Service unavailable: {}", status.message());
+                        debug!("[{task_name}] Service unavailable: {}", status.message());
                         NetworkError::ServiceUnavailable(format!(
                             "Service unavailable: {}",
                             status.message()
                         ))
                     }
                     _ => {
-                        warn!("[{task_name}] RPC error: {}", status);
+                        debug!("[{task_name}] RPC error: {}", status);
                         NetworkError::TonicStatusError(Box::new(status))
                     }
                 };
             }
             Err(_e) => {
-                warn!("[{task_name}] Task timed out after {:?}", timeout_duration);
+                debug!("[{task_name}] Task timed out after {:?}", timeout_duration);
                 last_error = NetworkError::RetryTimeoutError(timeout_duration);
             }
         };
@@ -414,15 +353,9 @@ where
 
             // Exponential backoff (double the delay each time)
             current_delay = (current_delay * 2).min(max_delay);
-        } else {
-            warn!("[{task_name}] Task failed after {} retries", retries);
-            //bug: no need to return if the it is not a business logic error
-            // return Err(Error::RetryTaskFailed("Task failed after max
-            // retries".to_string())); // Return the last error after max
-            // retries
         }
         retries += 1;
     }
-    warn!("[{task_name}] Task failed after {} retries", max_retries);
+    info!("[{task_name}] Task failed after {} retries", max_retries);
     Err(last_error.into()) // Fallback error message if no task returns Ok
 }

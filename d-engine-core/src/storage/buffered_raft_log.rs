@@ -235,7 +235,6 @@ pub struct BufferedRaftLog<T>
 where
     T: TypeConfig,
 {
-    #[allow(dead_code)]
     node_id: u32,
 
     pub(crate) log_store: Arc<<SOF<T> as StorageEngine>::LogStore>,
@@ -1380,7 +1379,6 @@ where
     /// # Visibility
     /// This method is only available in test builds.
     #[cfg(any(test, feature = "__test_support"))]
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -1399,7 +1397,6 @@ where
     /// Clippy requires: Any struct with a public `len` method should also
     /// have a public `is_empty` method.
     #[cfg(any(test, feature = "__test_support"))]
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

@@ -2,7 +2,6 @@
 //! We also want to refactor all the APIs based its similar parttern.
 
 use async_trait::async_trait;
-use d_engine_core::AppendResult;
 use d_engine_core::BackgroundSnapshotTransfer;
 use d_engine_core::BackoffPolicy;
 use d_engine_core::ClusterUpdateResult;
@@ -18,17 +17,16 @@ use d_engine_core::SnapshotConfig;
 use d_engine_core::StateMachineHandler;
 use d_engine_core::Transport;
 use d_engine_core::TypeConfig;
-use d_engine_core::VoteResult;
 use d_engine_core::alias::MOF;
 use d_engine_core::alias::SMHOF;
 use d_engine_core::grpc_task_with_timeout_and_exponential_backoff;
-use d_engine_core::scoped_timer::ScopedTimer;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::JoinResponse;
 use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
 use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
 use d_engine_proto::server::cluster::cluster_management_service_client::ClusterManagementServiceClient;
 use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::raft_election_service_client::RaftElectionServiceClient;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
@@ -52,7 +50,6 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::debug;
 use tracing::error;
-use tracing::info;
 use tracing::warn;
 
 pub struct PeerAppender {
@@ -188,96 +185,6 @@ where
         })
     }
 
-    #[tracing::instrument(skip_all,fields(
-        total_peers = requests.len(),
-        avg_request_size = "N/A", // PLACEHOLDER
-    ))]
-    async fn send_append_requests(
-        &self,
-        requests: Vec<(u32, AppendEntriesRequest)>,
-        retry_policies: &RetryPolicies,
-        membership: Arc<MOF<T>>,
-        response_compress_enabled: bool,
-    ) -> Result<AppendResult> {
-        let _timer = ScopedTimer::new("send_append_requests");
-
-        debug!("Sending append entries requests");
-        if requests.is_empty() {
-            warn!("No append requests to process");
-            return Err(NetworkError::EmptyPeerList {
-                request_type: "send_append_requests",
-            }
-            .into());
-        }
-
-        let mut response_futures = Vec::new();
-        let mut peer_ids = HashSet::new();
-
-        // // Calculate the real value in advance
-        // let avg_request_size = requests
-        //     .iter()
-        //     .map(|(_, r)| r.entries.len())
-        //     .sum::<usize>()
-        //     .saturating_div(requests.len().max(1)); // Prevent zero division
-
-        // // Update log fields
-        // tracing::Span::current().record("avg_request_size", avg_request_size);
-
-        for (peer_id, request) in requests {
-            if peer_id == self.my_id || peer_ids.contains(&peer_id) {
-                continue; // Skip self and duplicates
-            }
-            peer_ids.insert(peer_id);
-
-            // Get or create appender for this peer
-            let appender = match self
-                .get_or_create_appender(
-                    peer_id,
-                    retry_policies.clone(),
-                    membership.clone(),
-                    response_compress_enabled,
-                )
-                .await
-            {
-                Ok(appender) => appender,
-                Err(e) => {
-                    error!("Failed to get appender for peer {}: {}", peer_id, e);
-                    continue;
-                }
-            };
-
-            // Create response channel
-            let (response_tx, response_rx) = oneshot::channel();
-
-            // Send request to peer's dedicated task
-            if let Err(e) = appender
-                .send(AppendRequest {
-                    request,
-                    response_sender: response_tx,
-                })
-                .await
-            {
-                error!("Failed to send request to peer {} appender: {}", peer_id, e);
-                continue;
-            }
-
-            response_futures.push(async move {
-                match response_rx.await {
-                    Ok(result) => result,
-                    Err(_) => Err(Error::from(NetworkError::ResponseChannelClosed)),
-                }
-            });
-        }
-
-        // Wait for all responses
-        let responses = futures::future::join_all(response_futures).await;
-
-        Ok(AppendResult {
-            peer_ids,
-            responses,
-        })
-    }
-
     async fn send_append_request(
         &self,
         peer_id: u32,
@@ -310,97 +217,50 @@ where
         }
     }
 
-    async fn send_vote_requests(
+    async fn send_vote_request(
         &self,
-        req: VoteRequest,
+        peer_id: u32,
+        request: VoteRequest,
         retry: &RetryPolicies,
         membership: Arc<MOF<T>>,
-    ) -> Result<VoteResult> {
-        debug!("Sending vote requests");
+    ) -> Result<VoteResponse> {
+        // Real-time connection fetch for control operations (same pattern as join_cluster).
+        let channel = membership
+            .get_peer_channel(peer_id, ConnectionType::Control)
+            .await
+            .ok_or(NetworkError::PeerConnectionNotFound(peer_id))?;
 
-        // Get voting members (control plane operation)
-        let peers = membership.voters();
-        if peers.is_empty() {
-            warn!("No voting members available for vote requests");
-            return Err(NetworkError::EmptyPeerList {
-                request_type: "send_vote_requests",
+        let req_clone = request;
+        let closure = move || {
+            let channel = channel.clone();
+            let mut client = RaftElectionServiceClient::new(channel)
+                .send_compressed(CompressionEncoding::Gzip)
+                .accept_compressed(CompressionEncoding::Gzip);
+            async move { client.request_vote(tonic::Request::new(req_clone)).await }
+        };
+        let policy = retry.election;
+        let my_id = self.my_id;
+        match grpc_task_with_timeout_and_exponential_backoff("request_vote", closure, policy).await
+        {
+            Ok(response) => {
+                let res = response.into_inner();
+                debug!(
+                    "[send_vote_request | {my_id}->{peer_id}] vote response: {:?}",
+                    res
+                );
+                Ok(res)
             }
-            .into());
-        }
-
-        let mut tasks = FuturesUnordered::new();
-        let mut peer_ids = HashSet::new();
-
-        for peer in peers {
-            let peer_id = peer.id;
-            if peer_id == self.my_id || peer_ids.contains(&peer_id) {
-                continue; // Skip self and duplicates
-            }
-            peer_ids.insert(peer_id);
-
-            // Real-time connection fetch for control operations
-            let channel = match membership.get_peer_channel(peer_id, ConnectionType::Control).await
-            {
-                Some(chan) => chan,
-                None => {
-                    error!("Failed to get control channel for peer {}", peer_id);
-                    continue;
-                }
-            };
-
-            let req_clone = req;
-            let closure = move || {
-                let channel = channel.clone();
-                let mut client = RaftElectionServiceClient::new(channel)
-                    .send_compressed(CompressionEncoding::Gzip)
-                    .accept_compressed(CompressionEncoding::Gzip);
-                async move { client.request_vote(tonic::Request::new(req_clone)).await }
-            };
-            let policy = retry.election;
-            let my_id = self.my_id;
-            let addr = peer.address;
-            let task_handle = task::spawn(async move {
-                match grpc_task_with_timeout_and_exponential_backoff(
-                    "request_vote",
-                    closure,
-                    policy,
-                )
-                .await
-                {
-                    Ok(response) => {
-                        debug!(
-                            "[send_vote_requests | {my_id}->{peer_id}] resquest [peer({:?})] vote response: {:?}",
-                            &addr, response
-                        );
-                        let res = response.into_inner();
-                        Ok(res)
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[send_vote_requests | {my_id}->{peer_id}] Received RPC error: {}",
-                            e
-                        );
-                        Err(e)
-                    }
-                }
-            });
-            tasks.push(task_handle.boxed());
-        }
-
-        let mut responses = Vec::new();
-        while let Some(result) = tasks.next().await {
-            match result {
-                Ok(r) => responses.push(r),
-                Err(e) => {
-                    error!("Task failed with error: {:?}", &e);
-                    responses.push(Err(Error::from(NetworkError::TaskFailed(e))));
-                }
+            Err(e) => {
+                // Debug, not error: a single peer RPC failure here is routinely
+                // caused by the peer not being ready yet (e.g. cluster bootstrap
+                // race) and resolves itself on the next election round (#428).
+                debug!(
+                    "[send_vote_request | {my_id}->{peer_id}] Received RPC error: {}",
+                    e
+                );
+                Err(e)
             }
         }
-        Ok(VoteResult {
-            peer_ids,
-            responses,
-        })
     }
 
     async fn join_cluster(
@@ -642,22 +502,6 @@ where
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn if_mark_learner_as_follower(
-        leader_commit_index: u64,
-        learner_next_id: u64,
-    ) -> bool {
-        info!(
-            "if_mark_learner_as_follower: leader_commit_index: {}, learner_next_id: {}",
-            leader_commit_index, learner_next_id
-        );
-        if leader_commit_index <= learner_next_id {
-            return true;
-        }
-
-        false
-    }
-
     async fn process_member(
         membership: Arc<MOF<T>>,
         member_id: u32,
@@ -822,7 +666,7 @@ where
                 Ok(response.into_inner())
             }
             Err(e) => {
-                warn!(
+                debug!(
                     "[send_append_requests | {my_id}->{peer_id}] Received RPC error: {}",
                     e
                 );

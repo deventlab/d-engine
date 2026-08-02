@@ -57,7 +57,6 @@ pub const LATENCY_IN_MS: u64 = 50;
 // to make sure the result is consistent
 pub const ITERATIONS: u64 = 10;
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ClientCommands {
     Put,
@@ -269,7 +268,6 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
     config
 }
 
-#[allow(dead_code)]
 pub async fn start_cluster(
     nodes_config: Vec<RaftNodeConfig>
 ) -> std::result::Result<(), ClientApiError> {

@@ -49,7 +49,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
     // fn role(&self) -> i32;
 
     // Leader states
-    #[allow(dead_code)]
     fn next_index(
         &self,
         _node_id: u32,
@@ -121,7 +120,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
         // Default: no-op for non-leader roles
         Ok(())
     }
-    #[allow(dead_code)]
     fn noop_log_id(&self) -> Result<Option<u64>> {
         warn!("noop_log_id NotLeader error");
         Err(MembershipError::NotLeader.into())
@@ -143,15 +141,12 @@ pub trait RaftRoleState: Send + Sync + 'static {
         Err(MembershipError::NotLearner.into())
     }
 
-    #[allow(dead_code)]
     fn is_follower(&self) -> bool {
         false
     }
-    #[allow(dead_code)]
     fn is_candidate(&self) -> bool {
         false
     }
-    #[allow(dead_code)]
     fn is_leader(&self) -> bool {
         false
     }

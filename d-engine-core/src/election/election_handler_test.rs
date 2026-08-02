@@ -588,7 +588,6 @@ async fn test_handle_vote_request_large_term_numbers() {
 
 #[cfg(test)]
 mod single_node_election_tests {
-    use std::collections::HashSet;
 
     use d_engine_proto::server::cluster::NodeMeta;
     use d_engine_proto::server::election::VoteResponse;
@@ -600,7 +599,6 @@ mod single_node_election_tests {
     use crate::MockMembership;
     use crate::MockTransport;
     use crate::RaftNodeConfig;
-    use crate::VoteResult;
 
     #[tokio::test]
     async fn test_single_node_auto_wins_election() {
@@ -663,25 +661,16 @@ mod single_node_election_tests {
         let raft_log = Arc::new(create_mock_raft_log(None));
 
         let mut mock_transport = MockTransport::new();
-        // Mock transport to return majority votes
-        mock_transport.expect_send_vote_requests().times(1).returning(
-            |_req, _retry, _membership| {
-                Ok(VoteResult {
-                    peer_ids: HashSet::from([2, 3]),
-                    responses: vec![
-                        Ok(VoteResponse {
-                            term: 1,
-                            vote_granted: true,
-                            last_log_index: 0,
-                            last_log_term: 0,
-                        }),
-                        Ok(VoteResponse {
-                            term: 1,
-                            vote_granted: true,
-                            last_log_index: 0,
-                            last_log_term: 0,
-                        }),
-                    ],
+        // Mock transport to return majority votes — core layer now dispatches
+        // one send_vote_request call per peer (#428), so mock each of the two
+        // peers (2, 3) separately instead of one aggregated call.
+        mock_transport.expect_send_vote_request().times(2).returning(
+            |_peer_id, _req, _retry, _membership| {
+                Ok(VoteResponse {
+                    term: 1,
+                    vote_granted: true,
+                    last_log_index: 0,
+                    last_log_term: 0,
                 })
             },
         );
@@ -769,15 +758,12 @@ mod single_node_election_tests {
 
         // Mock transport - expect NO calls since we fail validation before sending RPCs
         let mut transport_mock = MockTransport::new();
-        transport_mock.expect_send_vote_requests().times(0).returning(|_, _, _| {
-            Ok(VoteResult {
-                peer_ids: vec![2].into_iter().collect(),
-                responses: vec![Ok(VoteResponse {
-                    term: 1,
-                    vote_granted: false,
-                    last_log_index: 1,
-                    last_log_term: 1,
-                })],
+        transport_mock.expect_send_vote_request().times(0).returning(|_, _, _, _| {
+            Ok(VoteResponse {
+                term: 1,
+                vote_granted: false,
+                last_log_index: 1,
+                last_log_term: 1,
             })
         });
 
@@ -819,78 +805,65 @@ mod single_node_election_tests {
         );
     }
 
-    /// Test: broadcast_vote_requests when majority of peers reject vote due to log conflict
+    /// Test: broadcast_vote_requests rejects when peer's log has a higher term
     ///
-    /// FIXME(migration): This test is a FALSE POSITIVE from the original codebase.
+    /// Scenario:
+    /// - Two-node cluster (candidate + 1 peer)
+    /// - Candidate's last log: index=1, term=3
+    /// - Peer denies the vote and reports last_log_term=4 (higher than candidate's)
     ///
-    /// **Problem**: The test uses `if let` pattern matching without `else` or `assert!`,
-    /// causing it to pass silently even when the wrong error type is returned.
-    ///
-    /// **Current behavior**:
-    /// - Uses `mock_membership()` which returns empty voters
-    /// - Function returns `NoVotingMemberFound` error immediately
-    /// - `if let LogConflict` fails to match, skips assertions, test passes silently
-    ///
-    /// **Intended behavior**: Should test the scenario where:
-    /// - Cluster has voting members
-    /// - Peers reject votes because their logs are more up-to-date
-    /// - Should return `LogConflict` error
-    ///
-    /// **Fix required**:
-    /// 1. Configure membership with actual voters
-    /// 2. Configure transport to return `vote_granted=false` responses
-    /// 3. Change `if let` to `assert!(matches!())` for proper validation
-    ///
-    /// **Original test location**:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_broadcast_vote_requests_case2`
-    ///
-    /// Scenario (intended, not currently tested):
-    /// - Cluster has multiple voting members
-    /// - Candidate broadcasts vote requests
-    /// - Majority of peers reject due to having more recent logs
-    ///
-    /// Expected (intended):
-    /// - Returns ElectionError::LogConflict with conflict details
+    /// Expected:
+    /// - Returns ElectionError::LogConflict — a peer with a more recent log
+    ///   term means the candidate must not win this election
     #[tokio::test]
-    #[ignore = "False positive test - needs fix before enabling (see FIXME above)"]
-    async fn test_broadcast_vote_requests_majority_reject_due_to_log_conflict() {
-        // Original test setup - preserved for reference
+    async fn test_broadcast_vote_requests_rejects_on_peer_log_higher_term() {
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
         let term = 1;
+        let my_last_log_index = 1;
+        let my_last_log_term = 3;
 
-        // Mock raft_log - times(0) because function returns early with NoVotingMemberFound
         let mut raft_log_mock = MockRaftLog::new();
-        raft_log_mock
-            .expect_last_log_id()
-            .times(0)
-            .returning(|| Some(LogId { index: 1, term: 1 }));
-
-        // Mock transport - times(0) because function returns early
-        let mut transport_mock = MockTransport::new();
-        transport_mock.expect_send_vote_requests().times(0).returning(|_, _, _| {
-            Ok(VoteResult {
-                peer_ids: vec![2].into_iter().collect(),
-                responses: vec![Ok(VoteResponse {
-                    term: 1,
-                    vote_granted: false,
-                    last_log_index: 1,
-                    last_log_term: 1,
-                })],
+        raft_log_mock.expect_last_log_id().times(1).returning(move || {
+            Some(LogId {
+                index: my_last_log_index,
+                term: my_last_log_term,
             })
         });
 
-        // Mock membership with empty voters (causes immediate NoVotingMemberFound error)
-        let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
-        membership.expect_is_single_node_cluster().returning(|| false);
+        let mut transport_mock = MockTransport::new();
+        transport_mock
+            .expect_send_vote_request()
+            .withf(|peer_id, _, _, _| *peer_id == 2)
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok(VoteResponse {
+                    term,
+                    vote_granted: false,
+                    last_log_index: my_last_log_index,
+                    last_log_term: my_last_log_term + 1,
+                })
+            });
 
-        // Create minimal node_config with TempDir
+        let mut membership = MockMembership::new();
+        membership.expect_is_single_node_cluster().returning(|| false);
+        membership.expect_voters().returning(|| {
+            use d_engine_proto::common::NodeRole::Follower;
+            use d_engine_proto::common::NodeStatus;
+            use d_engine_proto::server::cluster::NodeMeta;
+
+            vec![NodeMeta {
+                id: 2,
+                address: "http://127.0.0.1:55001".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            }]
+        });
+
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let mut node_config = RaftNodeConfig::new().expect("Should create default config");
         node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
         let node_config = node_config.validate().expect("Should validate config");
 
-        // Execute - will return NoVotingMemberFound, not LogConflict
         let e = election_handler
             .broadcast_vote_requests(
                 term,
@@ -902,29 +875,19 @@ mod single_node_election_tests {
             .await
             .unwrap_err();
 
-        // Original assertion - NEVER EXECUTES because pattern doesn't match
-        // Test passes silently without validating anything
-        if let Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
-            index,
-            expected_term,
-            actual_term,
-        })) = e
-        {
-            assert_eq!(index, 1);
-            assert_eq!(actual_term, 1);
-            assert_eq!(expected_term, 1);
-        }
-
-        // TODO: Replace above with proper test implementation:
-        // assert!(
-        //     matches!(
-        //         e,
-        //         Error::Consensus(ConsensusError::Election(
-        //             ElectionError::LogConflict { index: 1, expected_term: 1, actual_term: 1 }
-        //         ))
-        //     ),
-        //     "Expected LogConflict error, got: {:?}", e
-        // );
+        assert!(
+            matches!(
+                e,
+                Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
+                    index,
+                    expected_term,
+                    actual_term,
+                })) if index == my_last_log_index
+                    && expected_term == my_last_log_term
+                    && actual_term == my_last_log_term + 1
+            ),
+            "Expected LogConflict error, got: {e:?}"
+        );
     }
 
     /// Test: broadcast_vote_requests succeeds when receiving majority of positive votes
@@ -955,19 +918,21 @@ mod single_node_election_tests {
             .times(1)
             .returning(|| Some(LogId { index: 1, term: 1 }));
 
-        // Mock transport - returns successful vote from peer
+        // Mock transport - returns successful vote from peer 2 (core layer now
+        // dispatches one send_vote_request call per peer, #428).
         let mut transport_mock = MockTransport::new();
-        transport_mock.expect_send_vote_requests().times(1).returning(|_, _, _| {
-            Ok(VoteResult {
-                peer_ids: vec![2].into_iter().collect(),
-                responses: vec![Ok(VoteResponse {
+        transport_mock
+            .expect_send_vote_request()
+            .withf(|peer_id, _, _, _| *peer_id == 2)
+            .times(1)
+            .returning(|_, _, _, _| {
+                Ok(VoteResponse {
                     term: 1,
                     vote_granted: true,
                     last_log_index: 1,
                     last_log_term: 1,
-                })],
-            })
-        });
+                })
+            });
 
         // Mock membership - two-node cluster with one voting peer
         let mut membership = MockMembership::new();
@@ -1010,56 +975,65 @@ mod single_node_election_tests {
         );
     }
 
-    /// Test: broadcast_vote_requests when peer responds with higher term
+    /// Test: broadcast_vote_requests steps down when a peer responds with a higher term
     ///
-    /// FIXME(migration): This test is a FALSE POSITIVE from the original codebase.
+    /// Scenario:
+    /// - Two-node cluster (candidate + 1 peer)
+    /// - Candidate broadcasts vote request for term=1
+    /// - Peer denies the vote and reports term=2 (higher than the candidate's)
     ///
-    /// **Problem**: Uses `if let` without proper assertion, passes silently with wrong error.
-    ///
-    /// **Current behavior**:
-    /// - Uses `mock_membership()` which returns empty voters
-    /// - Function returns `NoVotingMemberFound` immediately
-    /// - `if let HigherTerm` fails to match, test passes silently
-    ///
-    /// **Intended behavior**: Should test the scenario where:
-    /// - Candidate broadcasts vote requests to peers
-    /// - Peer responds with higher term in vote response
-    /// - Should return `HigherTerm` error causing candidate to step down
-    ///
-    /// **Fix required**:
-    /// 1. Configure membership with actual voters
-    /// 2. Configure transport to return response with higher term
-    /// 3. Change `if let` to `assert!(matches!())` for proper validation
-    ///
-    /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_broadcast_vote_requests_case4`
+    /// Expected:
+    /// - Returns ElectionError::HigherTerm(2), signaling the candidate must
+    ///   step down rather than continue the election (Raft §5.1)
     #[tokio::test]
-    #[ignore = "False positive test - needs fix before enabling (see FIXME above)"]
-    async fn test_broadcast_vote_requests_peer_has_higher_term() {
+    async fn test_broadcast_vote_requests_steps_down_on_peer_higher_term() {
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
-        let my_last_log_term = 3;
+        let term = 1;
+        let higher_term = term + 1;
 
-        // Mock transport - never called because function returns early
-        let transport_mock = MockTransport::new();
+        let mut raft_log_mock = MockRaftLog::new();
+        raft_log_mock
+            .expect_last_log_id()
+            .times(1)
+            .returning(|| Some(LogId { index: 1, term: 1 }));
 
-        // Mock raft_log - never called
-        let raft_log_mock = MockRaftLog::new();
+        let mut transport_mock = MockTransport::new();
+        transport_mock
+            .expect_send_vote_request()
+            .withf(|peer_id, _, _, _| *peer_id == 2)
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok(VoteResponse {
+                    term: higher_term,
+                    vote_granted: false,
+                    last_log_index: 1,
+                    last_log_term: 1,
+                })
+            });
 
-        // Mock membership with empty voters (causes immediate NoVotingMemberFound)
         let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
         membership.expect_is_single_node_cluster().returning(|| false);
+        membership.expect_voters().returning(|| {
+            use d_engine_proto::common::NodeRole::Follower;
+            use d_engine_proto::common::NodeStatus;
+            use d_engine_proto::server::cluster::NodeMeta;
 
-        // Create minimal node_config with TempDir
+            vec![NodeMeta {
+                id: 2,
+                address: "http://127.0.0.1:55001".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            }]
+        });
+
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let mut node_config = RaftNodeConfig::new().expect("Should create default config");
         node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
         let node_config = node_config.validate().expect("Should validate config");
 
-        // Execute - will return NoVotingMemberFound, not HigherTerm
         let e = election_handler
             .broadcast_vote_requests(
-                my_last_log_term,
+                term,
                 Arc::new(membership),
                 &Arc::new(raft_log_mock),
                 &Arc::new(transport_mock),
@@ -1068,67 +1042,77 @@ mod single_node_election_tests {
             .await
             .unwrap_err();
 
-        // Original assertion - NEVER EXECUTES because pattern doesn't match
-        if let Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(higher_term))) =
-            e
-        {
-            assert_eq!(higher_term, my_last_log_term + 1);
-        }
-
-        // TODO: Replace with proper implementation that tests HigherTerm scenario
+        assert!(
+            matches!(
+                e,
+                Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(t))) if t == higher_term
+            ),
+            "Expected HigherTerm({higher_term}), got: {e:?}"
+        );
     }
 
-    /// Test: broadcast_vote_requests when peer has higher log index (same term)
+    /// Test: broadcast_vote_requests rejects when peer has higher log index (same term)
     ///
-    /// FIXME(migration): This test is a FALSE POSITIVE from the original codebase.
+    /// Scenario:
+    /// - Two-node cluster (candidate + 1 peer)
+    /// - Candidate and peer share the same last_log_term
+    /// - Peer's last_log_index is higher (more entries in the same term)
     ///
-    /// **Problem**: Uses `if let` without proper assertion, passes silently with wrong error.
-    ///
-    /// **Current behavior**:
-    /// - Uses `mock_membership()` which returns empty voters
-    /// - Function returns `NoVotingMemberFound` immediately
-    /// - `if let LogConflict` fails to match, test passes silently
-    ///
-    /// **Intended behavior**: Should test the scenario where:
-    /// - Candidate and peer have same last_log_term
-    /// - Peer has higher last_log_index (more entries in same term)
-    /// - Should return `LogConflict` error
-    ///
-    /// **Fix required**:
-    /// 1. Configure membership with actual voters
-    /// 2. Configure transport to return response with higher log index
-    /// 3. Change `if let` to `assert!(matches!())` for proper validation
-    ///
-    /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_broadcast_vote_requests_case5`
+    /// Expected:
+    /// - Returns ElectionError::LogConflict — same-term but more entries
+    ///   means the peer's log is more recent (Raft §5.4.1)
     #[tokio::test]
-    #[ignore = "False positive test - needs fix before enabling (see FIXME above)"]
-    async fn test_broadcast_vote_requests_peer_has_higher_log_index() {
+    async fn test_broadcast_vote_requests_rejects_on_peer_log_higher_index_same_term() {
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
+        let term = 1;
         let my_last_log_index = 1;
         let my_last_log_term = 3;
 
-        // Mock transport - never called
-        let transport_mock = MockTransport::new();
+        let mut raft_log_mock = MockRaftLog::new();
+        raft_log_mock.expect_last_log_id().times(1).returning(move || {
+            Some(LogId {
+                index: my_last_log_index,
+                term: my_last_log_term,
+            })
+        });
 
-        // Mock raft_log - never called
-        let raft_log_mock = MockRaftLog::new();
+        let mut transport_mock = MockTransport::new();
+        transport_mock
+            .expect_send_vote_request()
+            .withf(|peer_id, _, _, _| *peer_id == 2)
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok(VoteResponse {
+                    term,
+                    vote_granted: false,
+                    last_log_index: my_last_log_index + 1,
+                    last_log_term: my_last_log_term,
+                })
+            });
 
-        // Mock membership with empty voters (causes immediate NoVotingMemberFound)
         let mut membership = MockMembership::new();
-        membership.expect_voters().returning(Vec::new);
         membership.expect_is_single_node_cluster().returning(|| false);
+        membership.expect_voters().returning(|| {
+            use d_engine_proto::common::NodeRole::Follower;
+            use d_engine_proto::common::NodeStatus;
+            use d_engine_proto::server::cluster::NodeMeta;
 
-        // Create minimal node_config with TempDir
+            vec![NodeMeta {
+                id: 2,
+                address: "http://127.0.0.1:55001".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            }]
+        });
+
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let mut node_config = RaftNodeConfig::new().expect("Should create default config");
         node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
         let node_config = node_config.validate().expect("Should validate config");
 
-        // Execute - will return NoVotingMemberFound, not LogConflict
         let e = election_handler
             .broadcast_vote_requests(
-                my_last_log_term,
+                term,
                 Arc::new(membership),
                 &Arc::new(raft_log_mock),
                 &Arc::new(transport_mock),
@@ -1137,19 +1121,101 @@ mod single_node_election_tests {
             .await
             .unwrap_err();
 
-        // Original assertion - NEVER EXECUTES because pattern doesn't match
-        if let Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
-            index,
-            expected_term,
-            actual_term,
-        })) = e
-        {
-            assert_eq!(index, my_last_log_index);
-            assert_eq!(expected_term, my_last_log_term);
-            assert_eq!(actual_term, my_last_log_term);
-        }
+        assert!(
+            matches!(
+                e,
+                Error::Consensus(ConsensusError::Election(ElectionError::LogConflict {
+                    index,
+                    expected_term,
+                    actual_term,
+                })) if index == my_last_log_index
+                    && expected_term == my_last_log_term
+                    && actual_term == my_last_log_term
+            ),
+            "Expected LogConflict error, got: {e:?}"
+        );
+    }
 
-        // TODO: Replace with proper implementation that tests LogConflict scenario
+    /// Test: broadcast_vote_requests fails quorum on a plain denial (no term/log escalation)
+    ///
+    /// Scenario:
+    /// - Two-node cluster (candidate + 1 peer)
+    /// - Peer denies the vote with the same term and a strictly older log —
+    ///   neither HigherTerm nor LogConflict applies
+    ///
+    /// Expected:
+    /// - Returns ElectionError::QuorumFailure { required: 2, succeed: 1 } —
+    ///   only the candidate's own vote counts, 1/2 is not a majority
+    #[tokio::test]
+    async fn test_broadcast_vote_requests_fails_quorum_on_plain_denial() {
+        let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
+        let term = 1;
+        let my_last_log_index = 5;
+        let my_last_log_term = 5;
+
+        let mut raft_log_mock = MockRaftLog::new();
+        raft_log_mock.expect_last_log_id().times(1).returning(move || {
+            Some(LogId {
+                index: my_last_log_index,
+                term: my_last_log_term,
+            })
+        });
+
+        let mut transport_mock = MockTransport::new();
+        transport_mock
+            .expect_send_vote_request()
+            .withf(|peer_id, _, _, _| *peer_id == 2)
+            .times(1)
+            .returning(move |_, _, _, _| {
+                Ok(VoteResponse {
+                    term,
+                    vote_granted: false,
+                    last_log_index: my_last_log_index - 1,
+                    last_log_term: my_last_log_term,
+                })
+            });
+
+        let mut membership = MockMembership::new();
+        membership.expect_is_single_node_cluster().returning(|| false);
+        membership.expect_voters().returning(|| {
+            use d_engine_proto::common::NodeRole::Follower;
+            use d_engine_proto::common::NodeStatus;
+            use d_engine_proto::server::cluster::NodeMeta;
+
+            vec![NodeMeta {
+                id: 2,
+                address: "http://127.0.0.1:55001".to_string(),
+                role: Follower.into(),
+                status: NodeStatus::Active.into(),
+            }]
+        });
+
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
+        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let node_config = node_config.validate().expect("Should validate config");
+
+        let e = election_handler
+            .broadcast_vote_requests(
+                term,
+                Arc::new(membership),
+                &Arc::new(raft_log_mock),
+                &Arc::new(transport_mock),
+                &Arc::new(node_config),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                e,
+                Error::Consensus(ConsensusError::Election(ElectionError::QuorumFailure {
+                    required: 2,
+                    succeed: 1,
+                }))
+            ),
+            "Expected QuorumFailure {{ required: 2, succeed: 1 }}, got: {e:?}"
+        );
     }
 
     // ============================================================================

@@ -638,7 +638,6 @@ mod process_batch_test {
     use parking_lot::Mutex;
 
     use super::*;
-    use crate::test_utils::*;
 
     // Test helper setup with configurable mocks
     // fn setup_test_handler<F, G>(
@@ -786,13 +785,6 @@ mod process_batch_test {
         // - apply_config_change called once for entry 2
     }
 
-    #[allow(dead_code)]
-    pub fn build_entries_with_noop(term: u64) -> Vec<Entry> {
-        let (builder, cmd1) = EntryBuilder::new(1, term).command(b"cmd1");
-        let (builder, noop) = builder.noop();
-        let (_, cmd2) = builder.command(b"cmd2");
-        vec![cmd1, noop, cmd2]
-    }
     #[tokio::test]
     async fn flushes_commands_at_noop() {
         let entries = build_entries(

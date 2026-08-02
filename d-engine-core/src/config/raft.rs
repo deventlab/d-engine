@@ -444,6 +444,10 @@ pub struct MembershipConfig {
     /// Configuration settings for ready learners promotion
     #[serde(default)]
     pub promotion: PromotionConfig,
+
+    /// Bound on how long a voter waits at startup for quorum to become reachable before failing fast; independent of retry.membership.
+    #[serde(default = "default_startup_quorum_timeout")]
+    pub startup_quorum_timeout: Duration,
 }
 impl Default for MembershipConfig {
     fn default() -> Self {
@@ -452,6 +456,7 @@ impl Default for MembershipConfig {
             verify_leadership_persistent_timeout: default_verify_leadership_persistent_timeout(),
             zombie: ZombieConfig::default(),
             promotion: PromotionConfig::default(),
+            startup_quorum_timeout: default_startup_quorum_timeout(),
         }
     }
 }
@@ -469,11 +474,21 @@ fn default_verify_leadership_persistent_timeout() -> Duration {
     Duration::from_secs(3600)
 }
 
+/// Default 30s — enough for peers to finish their own bootstrap race, short enough to fail fast if truly unreachable.
+fn default_startup_quorum_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
 impl MembershipConfig {
     fn validate(&self) -> Result<()> {
         if self.cluster_healthcheck_probe_service_name.is_empty() {
             return Err(Error::Config(ConfigError::Message(
                 "cluster_healthcheck_probe_service_name cannot be empty".into(),
+            )));
+        }
+        if self.startup_quorum_timeout.is_zero() {
+            return Err(Error::Config(ConfigError::Message(
+                "startup_quorum_timeout must be greater than 0".into(),
             )));
         }
         Ok(())
@@ -784,6 +799,10 @@ pub struct ZombieConfig {
 
     #[serde(default = "default_zombie_purge_interval")]
     pub purge_interval: Duration,
+
+    /// Grace period after startup during which repeated connection failures.
+    #[serde(default = "default_zombie_startup_grace")]
+    pub startup_grace: Duration,
 }
 
 impl Default for ZombieConfig {
@@ -791,6 +810,7 @@ impl Default for ZombieConfig {
         Self {
             threshold: default_zombie_threshold(),
             purge_interval: default_zombie_purge_interval(),
+            startup_grace: default_zombie_startup_grace(),
         }
     }
 }
@@ -801,6 +821,10 @@ fn default_zombie_threshold() -> u32 {
 // 30 seconds
 fn default_zombie_purge_interval() -> Duration {
     Duration::from_secs(30)
+}
+
+fn default_zombie_startup_grace() -> Duration {
+    Duration::from_secs(20)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Candidate;
 use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Learner;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
 use d_engine_proto::server::election::VoteResponse;
@@ -46,6 +48,7 @@ use crate::StateTransitionError;
 use crate::TypeConfig;
 use crate::role_state::schedule_and_execute_purge;
 use crate::utils::cluster::error;
+use crate::utils::cluster_printer::print_role_transition_line;
 
 /// Follower node's state in Raft consensus.
 ///
@@ -126,11 +129,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             self.node_id(),
             self.current_term(),
         );
-        println!(
-            "[Node {}] Follower → Candidate (term {})",
-            self.node_id(),
-            self.current_term()
-        );
+        print_role_transition_line(Follower as i32, Candidate as i32, self.current_term());
         Ok(RaftRole::Candidate(Box::new(self.into())))
     }
     fn become_follower(&self) -> Result<RaftRole<T>> {
@@ -144,11 +143,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
             self.node_id(),
             self.current_term(),
         );
-        println!(
-            "[Node {}] Follower → Learner (term {})",
-            self.node_id(),
-            self.current_term()
-        );
+        print_role_transition_line(Follower as i32, Learner as i32, self.current_term());
         Ok(RaftRole::Learner(Box::new(self.into())))
     }
 

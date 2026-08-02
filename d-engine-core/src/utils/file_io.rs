@@ -61,7 +61,6 @@ pub fn open_file_for_append(path: PathBuf) -> Result<std::fs::File> {
     Ok(log_file)
 }
 
-#[allow(dead_code)]
 pub async fn write_into_file(
     path: PathBuf,
     buf: Vec<u8>,
@@ -92,7 +91,6 @@ pub async fn write_into_file(
 ///
 /// # Error
 /// Returns a custom FileError error type, including various possible failure scenarios
-#[allow(dead_code)]
 pub async fn delete_file<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
     let display_path = path.display().to_string();
@@ -238,7 +236,6 @@ pub fn convert_vec_checksum(checksum: Vec<u8>) -> Result<[u8; 32]> {
 /// - Processes the entire file content sequentially
 /// - Uses buffered reading to handle large files efficiently
 /// - Consistent across platforms and file systems
-#[allow(dead_code)]
 pub async fn compute_checksum_from_file_path(file_path: &Path) -> Result<[u8; 32]> {
     let mut file = tokio::fs::File::open(file_path).await.map_err(StorageError::IoError)?;
 
@@ -295,7 +292,7 @@ pub(crate) fn validate_compressed_format(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) async fn is_dir(path: &Path) -> Result<bool> {
     let metadata = fs::metadata(path).await.map_err(StorageError::IoError)?;
 

@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Candidate;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Leader;
+use d_engine_proto::common::NodeRole::Learner;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::VotedFor;
@@ -37,6 +40,7 @@ use crate::RaftNodeConfig;
 use crate::ReplicationCore;
 use crate::StateTransitionError;
 use crate::TypeConfig;
+use crate::utils::cluster_printer::print_role_transition_line;
 
 /// Candidate node's volatile state during leader election.
 ///
@@ -98,11 +102,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             self.node_id(),
             self.current_term(),
         );
-        println!(
-            "[Node {}] Candidate → Leader (term {})",
-            self.node_id(),
-            self.current_term()
-        );
+        print_role_transition_line(Candidate as i32, Leader as i32, self.current_term());
         Ok(RaftRole::Leader(Box::new(self.into())))
     }
 
@@ -117,11 +117,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             self.node_id(),
             self.current_term(),
         );
-        println!(
-            "[Node {}] Candidate → Follower (term {})",
-            self.node_id(),
-            self.current_term()
-        );
+        print_role_transition_line(Candidate as i32, Follower as i32, self.current_term());
         Ok(RaftRole::Follower(Box::new(self.into())))
     }
 
@@ -131,11 +127,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
             self.node_id(),
             self.current_term(),
         );
-        println!(
-            "[Node {}] Candidate → Learner (term {})",
-            self.node_id(),
-            self.current_term()
-        );
+        print_role_transition_line(Candidate as i32, Learner as i32, self.current_term());
         Ok(RaftRole::Learner(Box::new(self.into())))
     }
 
@@ -177,7 +169,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         )?;
         debug!("candidate new term: {}", self.current_term());
 
-        match ctx
+        let r = ctx
             .election_handler()
             .broadcast_vote_requests(
                 self.current_term(),
@@ -186,8 +178,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 ctx.transport(),
                 &ctx.node_config(),
             )
-            .await
-        {
+            .await;
+        match r {
             Ok(_) => {
                 debug!("BecomeLeader");
                 if let Err(e) = internal_event_tx.send(InternalEvent::BecomeLeader) {
@@ -205,7 +197,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 self.send_become_follower_event(internal_event_tx)?;
             }
             Err(e) => {
-                warn!("candidate broadcast_vote_requests with error: {:?}", e);
+                info!("candidate broadcast_vote_requests with error: {:?}", e);
             }
         }
         Ok(())

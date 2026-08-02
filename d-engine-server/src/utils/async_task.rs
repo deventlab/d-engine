@@ -32,12 +32,16 @@ where
                 return Ok(r); // Exit on success
             }
             Ok(Err(error)) => {
-                warn!(?error, "failed with error.");
+                // A single retry attempt failing is expected — routine transient
+                // errors (e.g. peer not up yet during cluster bootstrap) resolve
+                // on a later attempt. Only exhausting all retries (below) is a
+                // signal worth surfacing at warn (#428).
+                debug!(?error, "retry failed");
                 last_error =
                     NetworkError::TaskBackoffFailed(format!("failed with error: {:?}", &error));
             }
             Err(error) => {
-                warn!(?timeout_duration, ?error, "Task timed out");
+                debug!(?timeout_duration, ?error, "retry timed out");
                 last_error = NetworkError::RetryTimeoutError(timeout_duration);
             }
         };

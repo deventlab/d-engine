@@ -149,7 +149,6 @@ fn bench_leader_state_creation(c: &mut Criterion) {
 struct BenchFixture {
     leader_state: LeaderState<MockTypeConfig>,
     raft_context: RaftContext<MockTypeConfig>,
-    #[allow(dead_code)]
     internal_event_tx: mpsc::UnboundedSender<d_engine_core::InternalEvent>,
 }
 

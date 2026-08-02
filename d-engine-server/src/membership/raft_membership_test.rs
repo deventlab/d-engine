@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use d_engine_core::ConnectionType;
 use d_engine_core::ConsensusError;
 use d_engine_core::Error;
@@ -878,6 +880,9 @@ async fn test_get_peers_id_with_condition() {
 
 #[cfg(test)]
 mod check_cluster_is_ready_test {
+    use std::time::Duration;
+    use std::time::Instant;
+
     use d_engine_core::MockStateMachine;
     use d_engine_core::MockStorageEngine;
     use tokio::sync::oneshot;
@@ -1025,6 +1030,92 @@ mod check_cluster_is_ready_test {
             let _ = tx.send(());
         }
     }
+
+    /// #428: `run_as_voter` wraps `check_cluster_is_ready()` in
+    /// `tokio::time::timeout(startup_quorum_timeout, ...)` so a genuinely
+    /// unreachable cluster fails fast at startup instead of waiting out
+    /// `retry.membership`'s full budget (~2h worst case at defaults).
+    ///
+    /// This exercises that exact composition directly against a real
+    /// `RaftMembership` and an unreachable peer, configured so its own retry
+    /// budget (5 retries x ~100ms) would take far longer than the 30ms outer
+    /// timeout — proving the outer timeout, not the internal retry policy,
+    /// bounds the wait.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_bounded_by_external_timeout() {
+        let mut config = RaftNodeConfig::default();
+        config.retry.membership.max_retries = 5;
+        config.retry.membership.timeout_ms = 50;
+        config.retry.membership.base_delay_ms = 50;
+        config.retry.membership.max_delay_ms = 50;
+
+        let (membership, _) =
+            RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+                1,
+                vec![NodeMeta {
+                    id: 2,
+                    address: "127.0.0.1:9999".to_string(), // unreachable
+                    role: Follower as i32,
+                    status: NodeStatus::Active.into(),
+                }],
+                config,
+            );
+
+        let start = Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_millis(30),
+            membership.check_cluster_is_ready(),
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "outer timeout must fire before check_cluster_is_ready's own retry budget exhausts"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "must not wait anywhere near the internal retry budget (~500ms); took {elapsed:?}"
+        );
+    }
+
+    /// #428: `check_cluster_is_ready()` must return at `startup_quorum_timeout`
+    /// (30ms here), not wait out the ~2s retry budget, and must not hang/panic
+    /// while aborting the still-pending per-peer tasks.
+    #[tokio::test]
+    async fn test_check_cluster_is_ready_aborts_pending_tasks_on_internal_timeout() {
+        let mut config = RaftNodeConfig::default();
+        config.raft.membership.startup_quorum_timeout = Duration::from_millis(30);
+        config.retry.membership.max_retries = 20;
+        config.retry.membership.timeout_ms = 100;
+        config.retry.membership.base_delay_ms = 100;
+        config.retry.membership.max_delay_ms = 100;
+
+        let (membership, _) =
+            RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+                1,
+                vec![NodeMeta {
+                    id: 2,
+                    address: "127.0.0.1:9999".to_string(), // unreachable
+                    role: Follower as i32,
+                    status: NodeStatus::Active.into(),
+                }],
+                config,
+            );
+
+        let start = Instant::now();
+        let result = membership.check_cluster_is_ready().await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "must return an error once startup_quorum_timeout elapses"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "must return close to startup_quorum_timeout (30ms), not the ~2s unbounded retry budget; took {elapsed:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1097,6 +1188,7 @@ async fn test_ensure_safe_join() {
 async fn test_health_monitoring_integration() {
     let mut config = RaftNodeConfig::default();
     config.raft.membership.zombie.threshold = 2; // Set low threshold for testing
+    config.raft.membership.zombie.startup_grace = Duration::ZERO; // exercise post-grace behavior
 
     let (membership, mut zombie_rx) = RaftMembership::<MockTypeConfig>::new(1, vec![], config);
 
@@ -1150,6 +1242,7 @@ async fn test_health_monitoring_integration() {
 async fn test_on_peer_stream_failed_evicts_cache_and_records_failure() {
     let mut config = RaftNodeConfig::default();
     config.raft.membership.zombie.threshold = 1;
+    config.raft.membership.zombie.startup_grace = Duration::ZERO; // exercise post-grace behavior
 
     let (membership, mut zombie_rx) = RaftMembership::<MockTypeConfig>::new(1, vec![], config);
 

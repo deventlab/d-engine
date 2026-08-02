@@ -30,7 +30,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use std::time::Instant;
 use std::time::SystemTime;
 
 use bytes::Bytes;
@@ -86,49 +85,11 @@ impl TtlLease {
         }
     }
 
-    /// Cleanup expired keys with time limit
-    ///
-    /// Uses DashMap::iter() which acquires read locks on all shards.
-    /// Read locks allow concurrent writes to proceed (only blocks on same shard).
-    ///
-    /// # Performance
-    ///
-    /// - Iteration: O(N) with shard read locks
-    /// - Removal: O(K) where K = expired keys, lock-free per-key
-    /// - Time limit: Stops after max_duration_ms to prevent long pauses
-    /// - Frequency: Only called every N applies (default: 1/1000)
-    ///
-    /// # Arguments
-    /// * `max_duration_ms` - Maximum duration in milliseconds
-    #[allow(dead_code)]
-    fn cleanup_expired_with_limit(
-        &self,
-        max_duration_ms: u64,
-    ) -> Vec<Bytes> {
-        let start = Instant::now();
-        let now = SystemTime::now();
-
-        // Phase 1: collect expired keys (read-only, with time limit)
-        let to_remove: Vec<Bytes> = self
-            .key_to_expiry
-            .iter()
-            .take_while(|_| start.elapsed().as_millis() <= max_duration_ms as u128)
-            .filter(|entry| *entry.value() <= now)
-            .map(|entry| entry.key().clone())
-            .collect();
-
-        // Phase 2: remove after dropping iter (avoids deadlock)
-        to_remove
-            .into_iter()
-            .filter_map(|key| self.key_to_expiry.remove_if(&key, |_, v| *v <= now).map(|(k, _)| k))
-            .collect()
-    }
-
     /// Get expiration time for a specific key.
     ///
     /// # Performance
     /// O(1) - DashMap lookup, lock-free
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn get_expiration(
         &self,
         key: &[u8],

@@ -6,7 +6,6 @@ use super::types::*;
 
 /// Compile-time exhaustiveness guard: adding a new ErrorCode variant without
 /// updating this match is a compile error, not a runtime surprise.
-#[allow(dead_code)]
 fn _assert_error_code_match_is_exhaustive(code: ErrorCode) {
     match code {
         ErrorCode::Success => {}

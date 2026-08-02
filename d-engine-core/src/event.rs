@@ -50,7 +50,6 @@ pub enum ClientCmd {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum InternalEvent {
     BecomeFollower(Option<u32>), // BecomeFollower(Option<leader_id>)
     BecomeCandidate,

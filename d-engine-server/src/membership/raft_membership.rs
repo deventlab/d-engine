@@ -33,7 +33,6 @@ use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::ClusterMembership;
 use d_engine_proto::server::cluster::NodeMeta;
-use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tokio::task;
@@ -176,6 +175,7 @@ where
         let settings = self.config.network.clone();
         let raft = self.config.raft.clone();
         let retry = self.config.retry.clone();
+        let startup_quorum_timeout = raft.membership.startup_quorum_timeout;
 
         let mut peer_ids = Vec::new();
         for peer in self.voters() {
@@ -212,26 +212,39 @@ where
                     }
                 }
             });
-            tasks.push(task_handle.boxed());
+            tasks.push(task_handle);
         }
 
-        // Wait for all tasks to complete
+        // Wait for all tasks to complete, but never past startup_quorum_timeout.
+        // On timeout, abort every still-outstanding task before returning so no
+        // per-peer retry survives this call giving up.
         let mut success_count = 0;
-        while let Some(result) = tasks.next().await {
-            match result {
-                Ok(Ok(_)) => success_count += 1,
-                Ok(Err(e)) => error!("Task failed with error: {:?}", e),
-                Err(e) => error!("Task failed with error: {:?}", e),
+        tokio::select! {
+            _ = async {
+                while let Some(result) = tasks.next().await {
+                    match result {
+                        Ok(Ok(_)) => success_count += 1,
+                        Ok(Err(e)) => error!("Task failed with error: {:?}", e),
+                        Err(e) => error!("Task failed with error: {:?}", e),
+                    }
+                }
+            } => {}
+            _ = tokio::time::sleep(startup_quorum_timeout) => {
+                warn!(
+                    "check_cluster_is_ready timed out after {:?} with {} peer check(s) still pending — aborting them",
+                    startup_quorum_timeout,
+                    tasks.len()
+                );
+                for task in tasks.iter() {
+                    task.abort();
+                }
+                return Err(MembershipError::ClusterIsNotReady.into());
             }
         }
 
         if peer_ids.len() == success_count {
             if !peer_ids.is_empty() {
                 info!("All {} peer(s) health check passed", peer_ids.len());
-                println!(
-                    "[Cluster] All {} peer(s) health check passed",
-                    peer_ids.len()
-                );
             }
 
             return Ok(());
@@ -547,15 +560,22 @@ where
                 let peer_id = peer.id;
                 let conn_type = conn_type.clone();
                 let fut = async move {
-                    if let Some(channel) = self.get_peer_channel(peer_id, conn_type.clone()).await {
-                        info!("Pre-warmed {:?} connection to node {}", conn_type, peer_id);
-                        Ok::<_, ()>(channel)
-                    } else {
-                        warn!(
-                            "Failed to pre-warm {:?} connection to node {}",
-                            conn_type, peer_id
-                        );
-                        Err(())
+                    let Some(addr) = self.get_address(peer_id) else {
+                        debug!("Pre-warm skipped: no address for node {}", peer_id);
+                        return Err(());
+                    };
+                    match self.get_or_create_channel(peer_id, conn_type.clone(), addr).await {
+                        Ok(channel) => {
+                            info!("Pre-warmed {:?} connection to node {}", conn_type, peer_id);
+                            Ok(channel)
+                        }
+                        Err(e) => {
+                            debug!(
+                                "Failed to pre-warm {:?} connection to node {}: {}",
+                                conn_type, peer_id, e
+                            );
+                            Err(())
+                        }
                     }
                 };
                 tasks.push(fut);
@@ -591,17 +611,10 @@ where
             }
         };
         // Use cached connection if available
-        match self.connection_cache.get_channel(node_id, conn_type, addr).await {
-            Ok(channel) => {
-                // Do NOT call record_success here: tonic Endpoint::connect() is lazy and
-                // returns Ok even for stopped peers. Health state must be driven by actual
-                // RPC results, not by channel acquisition. Use on_peer_stream_failed() when
-                // stream_append_entries (or equivalent) fails.
-                Some(channel)
-            }
+        let gcc = self.get_or_create_channel(node_id, conn_type, addr).await;
+        match gcc {
+            Ok(channel) => Some(channel),
             Err(e) => {
-                // Remove failed connection from cache
-                self.connection_cache.remove_node(node_id);
                 self.health_monitor.record_failure(node_id).await;
                 // Use debug level - connection failures during startup are expected
                 debug!("Connection to node {} failed: {}", node_id, e);
@@ -747,7 +760,9 @@ where
         let zombie_threshold = config.raft.membership.zombie.threshold;
         let connection_cache = ConnectionCache::new(config.network.clone());
         let initial_cluster_size = initial_nodes.len();
-        let (health_monitor, zombie_rx) = RaftHealthMonitor::new(zombie_threshold);
+        let startup_grace = config.raft.membership.zombie.startup_grace;
+        let (health_monitor, zombie_rx) =
+            RaftHealthMonitor::new_with_grace(zombie_threshold, startup_grace);
 
         // Build the initial snapshot from the configured nodes so that the
         // first `borrow()` on any receiver returns a valid state.
@@ -790,6 +805,25 @@ where
     /// via `borrow()` — no need to wait for a change event.
     pub fn subscribe_membership(&self) -> tokio::sync::watch::Receiver<MembershipSnapshot> {
         self.membership_notifier_tx.subscribe()
+    }
+
+    /// Fetches (or creates) the cached channel for `node_id`, evicting the cache
+    /// entry if the attempt fails. No health-monitor side effects — callers that
+    /// need zombie-detection tracking wrap this (see `get_peer_channel`).
+    async fn get_or_create_channel(
+        &self,
+        node_id: u32,
+        conn_type: ConnectionType,
+        addr: String,
+    ) -> Result<Channel> {
+        match self.connection_cache.get_channel(node_id, conn_type, addr).await {
+            Ok(channel) => Ok(channel),
+            Err(e) => {
+                // Remove failed connection from cache
+                self.connection_cache.remove_node(node_id);
+                Err(e)
+            }
+        }
     }
 
     /// Returns true if the zombie signal for `node_id` should still be acted on.

@@ -50,7 +50,6 @@ pub trait PurgeExecutor: Send + Sync + 'static {
     ///
     /// Default implementation checks:
     /// - No pending purge operations
-    #[allow(dead_code)]
     async fn validate_purge(
         &self,
         last_included: LogId,
@@ -64,7 +63,6 @@ pub trait PurgeExecutor: Send + Sync + 'static {
     /// Use for:
     /// - Acquiring resource locks
     /// - Starting transactions
-    #[allow(dead_code)]
     async fn pre_purge(&self) -> Result<()> {
         Ok(())
     }

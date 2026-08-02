@@ -31,7 +31,6 @@ pub(crate) struct HealthChecker {
 }
 
 impl HealthChecker {
-    #[allow(dead_code)]
     async fn connect(
         addr: &str,
         settings: NetworkConfig,
