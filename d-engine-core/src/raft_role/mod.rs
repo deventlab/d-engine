@@ -26,7 +26,6 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 
 use candidate_state::CandidateState;
-use d_engine_proto::client::ClientReadRequest;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -388,52 +387,8 @@ impl<T: TypeConfig> RaftRole<T> {
     pub(crate) fn become_learner(&self) -> Result<RaftRole<T>> {
         self.state().become_learner()
     }
-    #[allow(dead_code)]
-    pub(crate) fn is_follower(&self) -> bool {
-        self.state().is_follower()
-    }
-    #[allow(dead_code)]
-    pub(crate) fn is_candidate(&self) -> bool {
-        self.state().is_candidate()
-    }
-    #[allow(dead_code)]
-    pub(crate) fn is_leader(&self) -> bool {
-        self.state().is_leader()
-    }
-    #[allow(dead_code)]
-    pub(crate) fn is_learner(&self) -> bool {
-        self.state().is_learner()
-    }
-
     pub fn current_term(&self) -> u64 {
         self.state().current_term()
-    }
-
-    #[allow(dead_code)]
-    #[cfg(test)]
-    pub(crate) fn voted_for(&self) -> Result<Option<VotedFor>> {
-        self.state().voted_for()
-    }
-    #[allow(dead_code)]
-    #[cfg(test)]
-    pub(crate) fn commit_index(&self) -> u64 {
-        self.state().commit_index()
-    }
-    #[allow(dead_code)]
-    #[cfg(test)]
-    pub(crate) fn match_index(
-        &self,
-        node_id: u32,
-    ) -> Option<u64> {
-        self.state().match_index(node_id)
-    }
-    #[allow(dead_code)]
-    #[cfg(test)]
-    pub(crate) fn next_index(
-        &self,
-        node_id: u32,
-    ) -> Option<u64> {
-        self.state().next_index(node_id)
     }
 
     pub(crate) fn init_peers_next_index_and_match_index(
@@ -686,52 +641,5 @@ impl<'de> Deserialize<'de> for HardState {
             current_term: hard_state_de.current_term,
             voted_for: hard_state_de.voted_for,
         })
-    }
-}
-
-use d_engine_proto::client::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
-
-use crate::config::ReadConsistencyPolicy as ServerReadConsistencyPolicy;
-
-/// Checks if non-leader node can serve read request locally
-///
-/// Returns Some(policy) if local read is allowed, None if leader access required
-#[allow(dead_code)]
-pub(crate) fn can_serve_read_locally<T>(
-    client_request: &ClientReadRequest,
-    ctx: &crate::RaftContext<T>,
-) -> Option<ServerReadConsistencyPolicy>
-where
-    T: TypeConfig,
-{
-    let effective_policy = if client_request.has_consistency_policy() {
-        // Client explicitly specified policy
-        if ctx.node_config().raft.read_consistency.allow_client_override {
-            match client_request.consistency_policy() {
-                ClientReadConsistencyPolicy::LeaseRead => ServerReadConsistencyPolicy::LeaseRead,
-                ClientReadConsistencyPolicy::LinearizableRead => {
-                    ServerReadConsistencyPolicy::LinearizableRead
-                }
-                ClientReadConsistencyPolicy::EventualConsistency => {
-                    ServerReadConsistencyPolicy::EventualConsistency
-                }
-            }
-        } else {
-            // Client override not allowed - use server default
-            ctx.node_config().raft.read_consistency.default_policy.clone()
-        }
-    } else {
-        // No client policy specified - use server default
-        ctx.node_config().raft.read_consistency.default_policy.clone()
-    };
-
-    // Check if effective policy allows non-leader reads
-    match &effective_policy {
-        ServerReadConsistencyPolicy::LeaseRead | ServerReadConsistencyPolicy::LinearizableRead => {
-            None // Requires leader access
-        }
-        ServerReadConsistencyPolicy::EventualConsistency => {
-            Some(effective_policy) // Can be served by non-leader nodes
-        }
     }
 }

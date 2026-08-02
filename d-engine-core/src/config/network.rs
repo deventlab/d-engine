@@ -12,7 +12,6 @@ use crate::Result;
 /// - Data plane: Log replication (balanced throughput/latency)
 /// - Bulk transfer: Snapshotting (high bandwidth, tolerant to latency)
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct NetworkConfig {
     /// Configuration for control plane connections (leader election/heartbeats)
     #[serde(default = "default_control_params")]

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -6,14 +7,18 @@ use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use tracing::debug;
 use tracing::error;
+use tracing::info;
 use tracing::trace;
-use tracing::warn;
 
 use super::ElectionCore;
 use crate::ElectionError;
+use crate::Error;
 use crate::Membership;
+use crate::NetworkError;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
@@ -79,69 +84,91 @@ where
             last_log_term,
         };
 
-        match transport.send_vote_requests(request, &settings.retry, membership).await {
-            Ok(vote_result) => {
-                let mut succeed = 1;
-                for response in vote_result.responses {
-                    match response {
-                        Ok(vote_response) => {
-                            if vote_response.vote_granted {
-                                debug!("send_vote_requests_to_peers success!");
-                                succeed += 1;
-                            } else {
-                                debug!(
-                                    "if_higher_term_found({}, {}, false)",
-                                    term, vote_response.term,
-                                );
-                                if if_higher_term_found(term, vote_response.term, false) {
-                                    warn!("Higher term found during election phase.");
-                                    return Err(
-                                        ElectionError::HigherTerm(vote_response.term).into()
-                                    );
-                                }
+        // Dispatch one independent task per peer from the core layer
+        let mut tasks = FuturesUnordered::new();
+        let mut peer_ids = HashSet::new();
+        for peer in members {
+            let peer_id = peer.id;
+            if peer_id == self.my_id || peer_ids.contains(&peer_id) {
+                continue; // Skip self and duplicates
+            }
+            peer_ids.insert(peer_id);
 
-                                if is_target_log_more_recent(
-                                    last_log_index,
-                                    last_log_term,
-                                    vote_response.last_log_index,
-                                    vote_response.last_log_term,
-                                ) {
-                                    warn!("More update to date log found in vote response");
+            let transport = transport.clone();
+            let membership = membership.clone();
+            let retry = settings.retry.clone();
+            tasks.push(tokio::spawn(async move {
+                transport.send_vote_request(peer_id, request, &retry, membership).await
+            }));
+        }
 
-                                    return Err(ElectionError::LogConflict {
-                                        index: last_log_index,
-                                        expected_term: last_log_term,
-                                        actual_term: vote_response.last_log_term,
-                                    }
-                                    .into());
-                                }
+        let mut responses = Vec::new();
+        while let Some(result) = tasks.next().await {
+            match result {
+                Ok(r) => responses.push(r),
+                Err(e) => {
+                    error!("Task failed with error: {:?}", &e);
+                    responses.push(Err(Error::from(NetworkError::TaskFailed(e))));
+                }
+            }
+        }
 
-                                warn!("send_vote_requests_to_peers failed!");
+        let mut succeed = 1;
+        for response in responses {
+            match response {
+                Ok(vote_response) => {
+                    if vote_response.vote_granted {
+                        debug!("send_vote_requests_to_peers success!");
+                        succeed += 1;
+                    } else {
+                        debug!(
+                            "if_higher_term_found({}, {}, false)",
+                            term, vote_response.term,
+                        );
+                        if if_higher_term_found(term, vote_response.term, false) {
+                            info!("Higher term found during election phase.");
+                            return Err(ElectionError::HigherTerm(vote_response.term).into());
+                        }
+
+                        if is_target_log_more_recent(
+                            last_log_index,
+                            last_log_term,
+                            vote_response.last_log_index,
+                            vote_response.last_log_term,
+                        ) {
+                            info!("More update to date log found in vote response");
+
+                            return Err(ElectionError::LogConflict {
+                                index: last_log_index,
+                                expected_term: last_log_term,
+                                actual_term: vote_response.last_log_term,
                             }
+                            .into());
                         }
-                        Err(e) => {
-                            error!("send_vote_requests_to_peers error: {:?}", e);
-                        }
+
+                        info!("send_vote_requests_to_peers failed!");
                     }
                 }
-                debug!(
-                    "send_vote_requests to: {:?} with succeed number = {}",
-                    &vote_result.peer_ids, succeed
-                );
-
-                let required = vote_result.peer_ids.len() + 1;
-                if !vote_result.peer_ids.is_empty() && is_majority(succeed, required) {
-                    debug!("send_vote_requests receives majority.");
-                    return Ok(());
-                } else {
-                    debug!("failed to receive majority votes.");
-                    return Err(ElectionError::QuorumFailure { required, succeed }.into());
+                Err(e) => {
+                    // Debug, not error: a single peer RPC failure here is routinely
+                    // caused by the peer not being ready yet (e.g. cluster bootstrap
+                    // race) and resolves itself on the next election round (#428).
+                    info!("send_vote_requests_to_peers error: {:?}", e);
                 }
             }
-            Err(e) => {
-                error!("broadcast_vote_requests encountered an error: {:?}", e);
-                return Err(e);
-            }
+        }
+        debug!(
+            "send_vote_requests to: {:?} with succeed number = {}",
+            &peer_ids, succeed
+        );
+
+        let required = peer_ids.len() + 1;
+        if !peer_ids.is_empty() && is_majority(succeed, required) {
+            debug!("send_vote_requests receives majority.");
+            Ok(())
+        } else {
+            debug!("failed to receive majority votes.");
+            Err(ElectionError::QuorumFailure { required, succeed }.into())
         }
     }
 
@@ -301,21 +328,6 @@ where
             my_id,
             _phantom: PhantomData,
         }
-    }
-
-    /// logOk == \/ m.mlastLogTerm > LastTerm(log[i])
-    ///          \/ /\ m.mlastLogTerm = LastTerm(log[i])
-    ///             /\ m.mlastLogIndex >= Len(log[i])
-    #[allow(dead_code)]
-    fn if_node_log_is_less_than_requester(
-        &self,
-        request_last_log_index: u64,
-        request_last_log_term: u64,
-        last_log_index: u64,
-        last_log_term: u64,
-    ) -> bool {
-        (request_last_log_term > last_log_term)
-            || (request_last_log_term == last_log_term && request_last_log_index >= last_log_index)
     }
 
     fn if_node_could_grant_the_vote_request(

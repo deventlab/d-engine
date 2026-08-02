@@ -3525,10 +3525,12 @@ impl<T: TypeConfig> LeaderState<T> {
             return Ok(());
         }
 
+        // Factual, not prescriptive: this crate doesn't presume an operator is watching
+        // stdout or what the right response is. See #428.
         warn!(
             node_id,
             ?status,
-            "Zombie detected: node is persistently unreachable — manual intervention may be required"
+            "Peer unreachable after repeated connection failures"
         );
 
         Ok(())

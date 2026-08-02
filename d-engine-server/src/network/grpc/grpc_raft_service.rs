@@ -76,7 +76,10 @@ where
         request: tonic::Request<VoteRequest>,
     ) -> std::result::Result<Response<VoteResponse>, Status> {
         if !self.is_rpc_ready() {
-            warn!(
+            // Routine bootstrap-race noise, not a fault: a peer's RPC arriving
+            // before this node's own raft component finishes init resolves
+            // itself within the next election round (#428).
+            debug!(
                 "[rpc|request_vote] My raft setup(Node:{}) is not ready!",
                 self.node_id
             );
@@ -113,7 +116,8 @@ where
         request: Request<AppendEntriesRequest>,
     ) -> std::result::Result<Response<AppendEntriesResponse>, tonic::Status> {
         if !self.is_rpc_ready() {
-            warn!("[rpc|append_entries] Node-{} is not ready!", self.node_id);
+            // Bootstrap-race noise, not a fault (#428).
+            debug!("[rpc|append_entries] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -147,7 +151,8 @@ where
         request: tonic::Request<tonic::Streaming<AppendEntriesRequest>>,
     ) -> std::result::Result<tonic::Response<Self::StreamAppendEntriesStream>, tonic::Status> {
         if !self.is_rpc_ready() {
-            warn!(
+            // Bootstrap-race noise, not a fault (#428).
+            debug!(
                 "[rpc|stream_append_entries] Node-{} is not ready!",
                 self.node_id
             );
@@ -233,7 +238,8 @@ where
         request: tonic::Request<tonic::Streaming<SnapshotAck>>,
     ) -> std::result::Result<tonic::Response<Self::StreamSnapshotStream>, tonic::Status> {
         if !self.is_rpc_ready() {
-            warn!("stream_snapshot: Node-{} is not ready!", self.node_id);
+            // Bootstrap-race noise, not a fault (#428).
+            debug!("stream_snapshot: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -282,7 +288,8 @@ where
         request: tonic::Request<Streaming<SnapshotChunk>>,
     ) -> std::result::Result<tonic::Response<SnapshotResponse>, tonic::Status> {
         if !self.is_rpc_ready() {
-            warn!("install_snapshot: Node-{} is not ready!", self.node_id);
+            // Bootstrap-race noise, not a fault (#428).
+            debug!("install_snapshot: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -328,7 +335,8 @@ where
         request: tonic::Request<ClusterConfChangeRequest>,
     ) -> std::result::Result<Response<ClusterConfUpdateResponse>, Status> {
         if !self.is_rpc_ready() {
-            warn!(
+            // Bootstrap-race noise, not a fault (#428).
+            debug!(
                 "[rpc|update_cluster_conf_from_leader] Node-{} is not ready!",
                 self.node_id
             );
@@ -358,7 +366,8 @@ where
     ) -> std::result::Result<tonic::Response<ClusterMembership>, tonic::Status> {
         debug!("receive get_cluster_metadata");
         if !self.is_rpc_ready() {
-            warn!(
+            // Bootstrap-race noise, not a fault (#428).
+            debug!(
                 "[rpc|get_cluster_metadata] Node-{} is not ready!",
                 self.node_id
             );
@@ -383,7 +392,8 @@ where
     ) -> std::result::Result<tonic::Response<JoinResponse>, tonic::Status> {
         debug!("receive join_cluster");
         if !self.is_rpc_ready() {
-            warn!("[rpc|join_cluster] Node-{} is not ready!", self.node_id);
+            // Bootstrap-race noise, not a fault (#428).
+            debug!("[rpc|join_cluster] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -404,7 +414,8 @@ where
     ) -> std::result::Result<tonic::Response<LeaderDiscoveryResponse>, tonic::Status> {
         debug!("receive discover_leader");
         if !self.is_rpc_ready() {
-            warn!("[rpc|discover_leader] Node-{} is not ready!", self.node_id);
+            // Bootstrap-race noise, not a fault (#428).
+            debug!("[rpc|discover_leader] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -440,7 +451,8 @@ where
         request: tonic::Request<ClientWriteRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, Status> {
         if !self.is_rpc_ready() {
-            warn!("[handle_client_write] Node-{} is not ready!", self.node_id);
+            // Bootstrap-race noise, not a fault (#428).
+            debug!("[handle_client_write] Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -499,7 +511,8 @@ where
         request: tonic::Request<ClientReadRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         if !self.is_rpc_ready() {
-            warn!("handle_client_read: Node-{} is not ready!", self.node_id);
+            // Bootstrap-race noise, not a fault (#428).
+            debug!("handle_client_read: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -573,7 +586,8 @@ where
         request: tonic::Request<ScanRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
         if !self.is_rpc_ready() {
-            warn!("handle_client_scan: Node-{} is not ready!", self.node_id);
+            // Bootstrap-race noise, not a fault (#428).
+            debug!("handle_client_scan: Node-{} is not ready!", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 
@@ -677,7 +691,8 @@ where
         _request: tonic::Request<WatchMembershipRequest>,
     ) -> std::result::Result<tonic::Response<Self::WatchMembershipStream>, tonic::Status> {
         if !self.is_rpc_ready() {
-            warn!("[watch_membership] Node-{} is not ready", self.node_id);
+            // Bootstrap-race noise, not a fault (#428).
+            debug!("[watch_membership] Node-{} is not ready", self.node_id);
             return Err(Status::unavailable("Service is not ready"));
         }
 

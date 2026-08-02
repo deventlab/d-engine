@@ -39,10 +39,7 @@ async fn main() {
     // Application Setup (Your Code)
     // ============================================================
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     let config_path = std::env::var("CONFIG_PATH").ok();
@@ -74,9 +71,9 @@ async fn main() {
     };
 
     println!(
-        "✓ d-engine ready - Leader: {}, Node ID: {}",
+        "✓ Node {} is ready - Leader: {}",
+        engine.node_id(),
         leader_info.leader_id,
-        engine.node_id()
     );
 
     // ============================================================

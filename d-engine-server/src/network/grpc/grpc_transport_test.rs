@@ -9,10 +9,8 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::RetryPolicies;
 use d_engine_core::SystemError;
 use d_engine_core::Transport;
-use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Candidate;
 use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterMembership;
@@ -20,7 +18,6 @@ use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::SnapshotChunk;
 use futures::StreamExt;
 use futures::stream;
@@ -34,6 +31,7 @@ use tracing_test::traced_test;
 use super::*;
 use crate::network::grpc::grpc_transport::GrpcTransport;
 use crate::test_utils::MockNode;
+use crate::test_utils::MockRpcService;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_snapshot_stream;
 
@@ -237,607 +235,19 @@ async fn test_send_cluster_update_case4() {
     }
 }
 
-// Case 1: no followers or candidates found in cluster,
-// Criterias: function should return false
-//
-#[tokio::test]
-#[traced_test]
-async fn test_send_append_requests_case1() {
-    let my_id = 1;
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    let membership = mock_membership(vec![], HashMap::new());
-    match client
-        .send_append_requests(vec![], &RetryPolicies::default(), membership, false)
-        .await
-    {
-        Ok(_) => panic!(),
-        Err(e) => assert!(matches!(
-            e,
-            Error::System(SystemError::Network(NetworkError::EmptyPeerList { .. }))
-        )),
-    }
-}
+// send_append_requests (batch, all-peers-at-once) was removed as dead code (#428):
+// zero production callers — real replication goes through the per-peer
+// ReplicationWorker (leader_state.rs::send_to_worker_or_spawn) calling the
+// singular send_append_request. Its dedicated case1-3.2 tests were removed
+// alongside it.
 
-// Case 2: passed peers only include the node itself
-//
-// ## Criterias:
-// 1. return Ok with empty responses
-#[tokio::test]
-#[traced_test]
-async fn test_send_append_requests_case2() {
-    //step1: setup
-    let leader_id = 1;
-    let leader_current_term = 1;
-    let leader_commit_index = 1;
-    let peer_2_id = 2;
-    let peer_2_term = 1;
-    let peer_2_match_index = 1;
-    let response = AppendEntriesResponse::success(
-        peer_2_id,
-        peer_2_term,
-        Some(LogId {
-            term: peer_2_term,
-            index: peer_2_match_index,
-        }),
-    );
-    let (_tx, rx) = oneshot::channel::<()>();
-    let (channel, _port) = MockNode::simulate_append_entries_mock_server(Ok(response), rx)
-        .await
-        .expect("should succeed");
-
-    let request = AppendEntriesRequest {
-        term: leader_current_term,
-        leader_id,
-        prev_log_index: 1,
-        prev_log_term: 1,
-        entries: vec![],
-        leader_commit_index,
-    };
-    let requests_with_peer_address = vec![(leader_id, request)];
-
-    let mut channels = HashMap::new();
-    channels.insert((leader_id, ConnectionType::Control), channel.clone());
-    let membership = mock_membership(vec![(leader_id, Leader as i32)], channels);
-
-    let node_config = node_config("/tmp/test_send_append_requests_case2");
-
-    let my_id = 1;
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client
-        .send_append_requests(
-            requests_with_peer_address,
-            &node_config.retry,
-            membership,
-            false,
-        )
-        .await
-    {
-        Ok(res) => {
-            assert!(res.responses.is_empty());
-            assert!(res.peer_ids.is_empty())
-        }
-        Err(_) => panic!(),
-    }
-}
-
-// # Case 3.1: receive two peer's response
-//
-// ## Setup:
-// 1. prepare two peers, peer2 success, while peer3 failed
-//
-// ## Criterias:
-// 1. return Ok with two responses
-//
-#[tokio::test]
-#[traced_test]
-async fn test_send_append_requests_case3_1() {
-    //step1: setup
-    let leader_id = 1;
-    let leader_current_term = 1;
-    let leader_commit_index = 1;
-    let peer_2_id = 2;
-    let peer_3_id = 3;
-    let peer_2_term = leader_current_term;
-    let peer_2_match_index = 10;
-    let peer_3_term = leader_current_term;
-    let peer_3_match_index = 1;
-
-    let peer_2_response = AppendEntriesResponse::success(
-        peer_2_id,
-        peer_2_term,
-        Some(LogId {
-            term: peer_2_term,
-            index: peer_2_match_index,
-        }),
-    );
-    let peer_3_response = AppendEntriesResponse::conflict(
-        peer_3_id,
-        peer_3_term,
-        Some(peer_3_term),
-        Some(peer_3_match_index),
-    );
-    let (_tx2, rx2) = oneshot::channel::<()>();
-    let (channel2, _port2) =
-        MockNode::simulate_append_entries_mock_server(Ok(peer_2_response), rx2)
-            .await
-            .expect("should succeed");
-    let (_tx3, rx3) = oneshot::channel::<()>();
-    let (channel3, _port3) =
-        MockNode::simulate_append_entries_mock_server(Ok(peer_3_response), rx3)
-            .await
-            .expect("should succeed");
-
-    let peer_req = AppendEntriesRequest {
-        term: leader_current_term,
-        leader_id,
-        prev_log_index: 1,
-        prev_log_term: 1,
-        entries: vec![],
-        leader_commit_index,
-    };
-    let requests_with_peer_address = vec![(peer_2_id, peer_req.clone()), (peer_3_id, peer_req)];
-
-    let mut channels = HashMap::new();
-    channels.insert((peer_2_id, ConnectionType::Data), channel2.clone());
-    channels.insert((peer_3_id, ConnectionType::Data), channel3.clone());
-    let membership = mock_membership(vec![(leader_id, Leader as i32)], channels);
-
-    let node_config = RaftNodeConfig::new()
-        .expect("Should succeed to init RaftNodeConfig.")
-        .validate()
-        .expect("Validate RaftNodeConfig successfully");
-
-    let my_id = 1;
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client
-        .send_append_requests(
-            requests_with_peer_address,
-            &node_config.retry,
-            membership,
-            true,
-        )
-        .await
-    {
-        Ok(res) => {
-            assert!(res.responses.len() == 2);
-            assert!(res.peer_ids.len() == 2)
-        }
-        Err(_) => panic!(),
-    }
-}
-
-// # Case 3.2: Send two peers, one of peers server status is not ready
-//
-// ## Setup:
-// 1. prepare two peers, peer2 success, while peer3 failed
-//
-// ## Criterias:
-// 1. peer2's match index and next index will be updated
-// 2. peer3's match index and next index will not be updated
-// 3. return Ok(true)
-//
-#[tokio::test]
-#[traced_test]
-async fn test_send_append_requests_case3_2() {
-    //step1: setup
-    let leader_id = 1;
-    let leader_current_term = 1;
-    let leader_commit_index = 1;
-    let peer_2_id = 2;
-    let peer_3_id = 3;
-    let peer_2_term = leader_current_term;
-    let peer_2_match_index = 10;
-
-    let peer_2_response = AppendEntriesResponse::success(
-        peer_2_id,
-        peer_2_term,
-        Some(LogId {
-            term: peer_2_term,
-            index: peer_2_match_index,
-        }),
-    );
-    let peer_3_response = Err(Status::unavailable("Service is not ready"));
-    let (_tx2, rx2) = oneshot::channel::<()>();
-    let (channel2, _port2) =
-        MockNode::simulate_append_entries_mock_server(Ok(peer_2_response), rx2)
-            .await
-            .expect("should succeed");
-    let (_tx3, rx3) = oneshot::channel::<()>();
-    let (channel3, _port3) = MockNode::simulate_append_entries_mock_server(peer_3_response, rx3)
-        .await
-        .expect("should succeed");
-
-    let peer_req = AppendEntriesRequest {
-        term: leader_current_term,
-        leader_id,
-        prev_log_index: 1,
-        prev_log_term: 1,
-        entries: vec![],
-        leader_commit_index,
-    };
-    let requests_with_peer_address = vec![(peer_2_id, peer_req.clone()), (peer_3_id, peer_req)];
-
-    let mut channels = HashMap::new();
-    channels.insert((peer_2_id, ConnectionType::Data), channel2.clone());
-    channels.insert((peer_3_id, ConnectionType::Data), channel3.clone());
-    let membership = mock_membership(vec![(leader_id, Leader as i32)], channels);
-
-    let node_config = RaftNodeConfig::new()
-        .expect("Should succeed to init RaftNodeConfig.")
-        .validate()
-        .expect("Validate RaftNodeConfig successfully");
-
-    let my_id = 1;
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client
-        .send_append_requests(
-            requests_with_peer_address,
-            &node_config.retry,
-            membership,
-            true,
-        )
-        .await
-    {
-        Ok(res) => {
-            assert!(res.responses.len() == 2);
-            assert!(res.peer_ids.len() == 2)
-        }
-        Err(_) => panic!(),
-    }
-}
-
-// # Case 1: no peers passed
-//
-// ## Criterias:
-// 1. return Err(NetworkError::EmptyPeerList)
-//
-#[tokio::test]
-#[traced_test]
-async fn test_send_vote_requests_case1() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new()
-        .expect("Should succeed to init RaftNodeConfig.")
-        .validate()
-        .expect("Validate RaftNodeConfig successfully");
-    let request = VoteRequest {
-        term: 1,
-        candidate_id: my_id,
-        last_log_index: 1,
-        last_log_term: 1,
-    };
-
-    let membership = mock_membership(vec![], HashMap::new());
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client.send_vote_requests(request, &node_config.retry, membership).await {
-        Ok(_) => panic!(),
-        Err(e) => assert!(matches!(
-            e,
-            Error::System(SystemError::Network(NetworkError::EmptyPeerList { .. }))
-        )),
-    }
-}
-
-// # Case 2: passed peers only include the node itself
-//
-// ## Criterias:
-// 1. return Ok with empty responses
-//
-#[tokio::test]
-#[traced_test]
-async fn test_send_vote_requests_case2() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new()
-        .expect("Should succeed to init RaftNodeConfig.")
-        .validate()
-        .expect("Validate RaftNodeConfig successfully");
-
-    //prepare rpc service for getting peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-
-    // This fake reponse doesn't affect the test result
-    let vote_response = VoteResponse {
-        term: 1,
-        vote_granted: true,
-        last_log_index: 0,
-        last_log_term: 0,
-    };
-    let request = VoteRequest {
-        term: 1,
-        candidate_id: my_id,
-        last_log_index: 1,
-        last_log_term: 1,
-    };
-    let (channel, _port) = MockNode::simulate_send_votes_mock_server(vote_response, rx1)
-        .await
-        .expect("should succeed");
-    let mut channels = HashMap::new();
-    channels.insert((my_id, ConnectionType::Control), channel.clone());
-    let membership = mock_membership(vec![(my_id, Follower as i32)], channels);
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client.send_vote_requests(request, &node_config.retry, membership).await {
-        Ok(res) => {
-            assert!(res.responses.is_empty());
-            assert!(res.peer_ids.is_empty())
-        }
-        Err(_) => panic!(),
-    }
-}
-
-// # Case 3: passed peers with duplicates
-//
-// ## Setup
-// 1. prepare [peer1, peer1, peer2] as `peers` parameter
-// 2. both peer1 and peer2 return success
-//
-// ## Criterias:
-// 1. return Ok with two responses
-//
-#[tokio::test]
-#[traced_test]
-async fn test_send_vote_requests_case3() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new()
-        .expect("Should succeed to init RaftNodeConfig.")
-        .validate()
-        .expect("Validate RaftNodeConfig successfully");
-
-    let peer1_id = 2;
-    let peer2_id = 3;
-    //prepare rpc service for getting peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let vote_response = VoteResponse {
-        term: 1,
-        vote_granted: true,
-        last_log_index: 0,
-        last_log_term: 0,
-    };
-    let request = VoteRequest {
-        term: 1,
-        candidate_id: my_id,
-        last_log_index: 1,
-        last_log_term: 1,
-    };
-    let (channel, _port) = MockNode::simulate_send_votes_mock_server(vote_response, rx1)
-        .await
-        .expect("should succeed");
-
-    let mut channels = HashMap::new();
-    channels.insert((peer1_id, ConnectionType::Control), channel.clone());
-    channels.insert((peer2_id, ConnectionType::Control), channel.clone());
-    let membership = mock_membership(
-        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
-        channels,
-    );
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client.send_vote_requests(request, &node_config.retry, membership).await {
-        Ok(res) => {
-            assert!(res.responses.len() == 2);
-            assert!(res.peer_ids.len() == 2)
-        }
-        Err(_) => panic!(),
-    }
-}
-
-// # Case 4.1: two peers failed because they have elected the others
-//
-// ## Setup:
-// 1. Prepare two peers, both peer failed
-// 2. But both peers don't have any local log entry
-//
-// ## Criterias:
-// 1. return Ok with two responses
-//
-#[tokio::test]
-#[traced_test]
-async fn test_send_vote_requests_case4_1() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new()
-        .expect("Should succeed to init RaftNodeConfig.")
-        .validate()
-        .expect("Validate RaftNodeConfig successfully");
-
-    let peer1_id = 2;
-    let peer2_id = 3;
-    //prepare rpc service for getting peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let vote_response = VoteResponse {
-        term: 1,
-        vote_granted: false,
-        last_log_index: 0,
-        last_log_term: 0,
-    };
-    let request = VoteRequest {
-        term: 1,
-        candidate_id: my_id,
-        last_log_index: 1,
-        last_log_term: 1,
-    };
-    let (channel, _port) = MockNode::simulate_send_votes_mock_server(vote_response, rx1)
-        .await
-        .expect("should succeed");
-
-    let mut channels = HashMap::new();
-    channels.insert((peer1_id, ConnectionType::Control), channel.clone());
-    channels.insert((peer2_id, ConnectionType::Control), channel.clone());
-    let membership = mock_membership(
-        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
-        channels,
-    );
-
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client.send_vote_requests(request, &node_config.retry, membership).await {
-        Ok(res) => {
-            assert!(res.responses.len() == 2);
-            assert!(res.peer_ids.len() == 2)
-        }
-        Err(_) => panic!(),
-    }
-}
-
-// # Case 4.2: vote response returns higher last_log_term
-//
-// ## Setup:
-// 1. prepare two peers, both peer failed
-// 2. Peer1 returns higher term of last log index,
-//
-// ## Criterias:
-// 1. Ok(..)
-//
-#[tokio::test]
-#[traced_test]
-async fn test_send_vote_requests_case4_2() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new()
-        .expect("Should succeed to init RaftNodeConfig.")
-        .validate()
-        .expect("Validate RaftNodeConfig successfully");
-
-    let peer1_id = 2;
-    let peer2_id = 3;
-    //prepare rpc service for getting peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let my_last_log_term = 3;
-    let vote_response = VoteResponse {
-        term: 1,
-        vote_granted: false,
-        last_log_index: 1,
-        last_log_term: my_last_log_term + 1,
-    };
-    let request = VoteRequest {
-        term: 1,
-        candidate_id: my_id,
-        last_log_index: 1,
-        last_log_term: my_last_log_term,
-    };
-    let (channel, _port) = MockNode::simulate_send_votes_mock_server(vote_response, rx1)
-        .await
-        .expect("should succeed");
-
-    let mut channels = HashMap::new();
-    channels.insert((peer1_id, ConnectionType::Control), channel.clone());
-    channels.insert((peer2_id, ConnectionType::Control), channel.clone());
-    let membership = mock_membership(
-        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
-        channels,
-    );
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    assert!(client.send_vote_requests(request, &node_config.retry, membership).await.is_ok());
-}
-
-// # Case 4.3: vote response returns higher last_log_index
-//
-// ## Setup:
-// 1. prepare two peers, both peer failed
-// 2. Peer1 returns last log term is the same as candidate one, but last log index is higher than
-//    candidate last log index,
-//
-// ## Criterias:
-// 1. Ok(..)
-//
-#[tokio::test]
-#[traced_test]
-async fn test_send_vote_requests_case4_3() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new()
-        .expect("Should succeed to init RaftNodeConfig.")
-        .validate()
-        .expect("Validate RaftNodeConfig successfully");
-
-    let peer1_id = 2;
-    let peer2_id = 3;
-    //prepare rpc service for getting peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let my_last_log_index = 1;
-    let my_last_log_term = 3;
-    let vote_response = VoteResponse {
-        term: 1,
-        vote_granted: false,
-        last_log_index: my_last_log_index + 1,
-        last_log_term: my_last_log_term,
-    };
-    let request = VoteRequest {
-        term: 1,
-        candidate_id: my_id,
-        last_log_index: my_last_log_index,
-        last_log_term: my_last_log_term,
-    };
-    let (channel, _port) = MockNode::simulate_send_votes_mock_server(vote_response, rx1)
-        .await
-        .expect("should succeed");
-
-    let mut channels = HashMap::new();
-    channels.insert((peer1_id, ConnectionType::Control), channel.clone());
-    channels.insert((peer2_id, ConnectionType::Control), channel.clone());
-    let membership = mock_membership(
-        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
-        channels,
-    );
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    assert!(client.send_vote_requests(request, &node_config.retry, membership).await.is_ok());
-}
-// # Case 5: two peers passed
-//
-// ## Setup:
-// 1. prepare two peers, one success while another failed
-//
-// ## Criterias:
-// 1. return Ok(true)
-//
-#[tokio::test]
-#[traced_test]
-async fn test_send_vote_requests_case5() {
-    let my_id = 1;
-    let node_config = RaftNodeConfig::new()
-        .expect("Should succeed to init RaftNodeConfig.")
-        .validate()
-        .expect("Validate RaftNodeConfig successfully");
-
-    let peer1_id = 2;
-    let peer2_id = 3;
-    //prepare rpc service for getting peer address
-    let (_tx1, rx1) = oneshot::channel::<()>();
-    let (_tx2, rx2) = oneshot::channel::<()>();
-    let peer1_response = VoteResponse {
-        term: 1,
-        vote_granted: false,
-        last_log_index: 0,
-        last_log_term: 0,
-    };
-    let peer2_response = VoteResponse {
-        term: 1,
-        vote_granted: true,
-        last_log_index: 0,
-        last_log_term: 0,
-    };
-    let request = VoteRequest {
-        term: 1,
-        candidate_id: my_id,
-        last_log_index: 1,
-        last_log_term: 1,
-    };
-    let (channel1, _port1) = MockNode::simulate_send_votes_mock_server(peer1_response, rx1)
-        .await
-        .expect("should succeed");
-    let (channel2, _port2) = MockNode::simulate_send_votes_mock_server(peer2_response, rx2)
-        .await
-        .expect("should succeed");
-
-    let mut channels = HashMap::new();
-    channels.insert((peer1_id, ConnectionType::Control), channel1.clone());
-    channels.insert((peer2_id, ConnectionType::Control), channel2.clone());
-    let membership = mock_membership(
-        vec![(peer1_id, Follower as i32), (peer2_id, Candidate as i32)],
-        channels,
-    );
-    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
-    match client.send_vote_requests(request, &node_config.retry, membership).await {
-        Ok(res) => {
-            assert!(res.responses.len() == 2);
-            assert!(res.peer_ids.len() == 2);
-        }
-        Err(_) => panic!(),
-    }
-}
+// send_vote_requests (batch, all-peers-at-once) removed as dead code (#428):
+// core layer (election_handler.rs::broadcast_vote_requests) now dispatches
+// one send_vote_request call per peer directly, matching how replication
+// dispatch already works. Its dedicated case1-5 tests were removed alongside
+// it; the same scenarios (empty peer list, self-skip, dedup, vote
+// granted/denied, higher term/log) are covered by the protocol-correctness
+// tests added for send_vote_request below.
 
 // # Case 1: empty peer list
 //
@@ -923,14 +333,12 @@ async fn test_grpc_transport_drop_aborts_tasks() {
         leader_commit_index: 0,
     };
 
-    let _result = transport
-        .send_append_requests(vec![(peer_id, request)], &retry, membership, false)
-        .await;
+    let _result = transport.send_append_request(peer_id, request, &retry, membership, false).await;
 
     // Verify task was created and is running
     assert!(
         transport.has_active_tasks(),
-        "Background task should be running after send_append_requests"
+        "Background task should be running after send_append_request"
     );
 
     // Drop transport - this should abort the background task immediately
@@ -938,4 +346,249 @@ async fn test_grpc_transport_drop_aborts_tasks() {
     drop(transport);
 
     // Test passes if we reach here without hanging (validates Drop impl works)
+}
+
+// send_vote_request (singular) protocol-correctness tests (#428):
+// broadcast_vote_requests (core layer) relies on send_vote_request to be a
+// transparent per-peer primitive — it must not interpret vote results itself,
+// only forward whatever the peer returned (or an Err) so the core layer's
+// majority/higher-term/log-conflict logic sees the real signal.
+//
+// Note: MockRpcService::expected_vote_response is a single fixed value for
+// the lifetime of the mock server (see mock_rpc.rs), so a "fails once then
+// succeeds on retry" scenario isn't cheaply testable with existing
+// infrastructure; retry-exhausted (always-fails) is covered below instead.
+
+// # Case: vote granted
+//
+// ## Criteria:
+// 1. Ok(VoteResponse) is returned as-is, vote_granted == true
+#[tokio::test]
+#[traced_test]
+async fn test_send_vote_request_returns_granted_response() {
+    let my_id = 1;
+    let peer_id = 2;
+    let node_config = node_config("/tmp/test_send_vote_request_returns_granted_response");
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let response = VoteResponse {
+        term: 1,
+        vote_granted: true,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+    let (channel, _port) = MockNode::simulate_send_votes_mock_server(response, rx)
+        .await
+        .expect("mock server should start");
+
+    let mut channels = HashMap::new();
+    channels.insert((peer_id, ConnectionType::Control), channel);
+    let membership = mock_membership(vec![(peer_id, Follower as i32)], channels);
+
+    let request = VoteRequest {
+        term: 1,
+        candidate_id: my_id,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    let result = client.send_vote_request(peer_id, request, &node_config.retry, membership).await;
+
+    let res = result.expect("should succeed");
+    assert!(res.vote_granted);
+}
+
+// # Case: vote denied but RPC itself succeeds
+//
+// ## Criteria:
+// 1. Must be Ok(VoteResponse), NOT Err — a denial is a valid protocol
+//    response, not a transport failure
+#[tokio::test]
+#[traced_test]
+async fn test_send_vote_request_returns_denied_response_as_ok() {
+    let my_id = 1;
+    let peer_id = 2;
+    let node_config = node_config("/tmp/test_send_vote_request_returns_denied_response_as_ok");
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let response = VoteResponse {
+        term: 1,
+        vote_granted: false,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+    let (channel, _port) = MockNode::simulate_send_votes_mock_server(response, rx)
+        .await
+        .expect("mock server should start");
+
+    let mut channels = HashMap::new();
+    channels.insert((peer_id, ConnectionType::Control), channel);
+    let membership = mock_membership(vec![(peer_id, Follower as i32)], channels);
+
+    let request = VoteRequest {
+        term: 1,
+        candidate_id: my_id,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    let result = client.send_vote_request(peer_id, request, &node_config.retry, membership).await;
+
+    let res = result.expect("denial must be Ok, not Err");
+    assert!(!res.vote_granted);
+}
+
+// # Case: peer response carries a higher term than the candidate's
+//
+// ## Criteria:
+// 1. send_vote_request passes the response through unchanged — it must not
+//    interpret the higher term itself; that's broadcast_vote_requests' job
+#[tokio::test]
+#[traced_test]
+async fn test_send_vote_request_passes_through_higher_term_response() {
+    let my_id = 1;
+    let peer_id = 2;
+    let node_config =
+        node_config("/tmp/test_send_vote_request_passes_through_higher_term_response");
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let response = VoteResponse {
+        term: 99,
+        vote_granted: false,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+    let (channel, _port) = MockNode::simulate_send_votes_mock_server(response, rx)
+        .await
+        .expect("mock server should start");
+
+    let mut channels = HashMap::new();
+    channels.insert((peer_id, ConnectionType::Control), channel);
+    let membership = mock_membership(vec![(peer_id, Follower as i32)], channels);
+
+    let request = VoteRequest {
+        term: 1,
+        candidate_id: my_id,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    let result = client.send_vote_request(peer_id, request, &node_config.retry, membership).await;
+
+    let res = result.expect("should succeed");
+    assert_eq!(res.term, 99);
+    assert!(!res.vote_granted);
+}
+
+// # Case: peer response carries a more up-to-date log than the candidate's
+//
+// ## Criteria:
+// 1. send_vote_request passes the response through unchanged — log-conflict
+//    detection happens in broadcast_vote_requests, not here
+#[tokio::test]
+#[traced_test]
+async fn test_send_vote_request_passes_through_more_recent_log_response() {
+    let my_id = 1;
+    let peer_id = 2;
+    let node_config =
+        node_config("/tmp/test_send_vote_request_passes_through_more_recent_log_response");
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let response = VoteResponse {
+        term: 1,
+        vote_granted: false,
+        last_log_index: 42,
+        last_log_term: 5,
+    };
+    let (channel, _port) = MockNode::simulate_send_votes_mock_server(response, rx)
+        .await
+        .expect("mock server should start");
+
+    let mut channels = HashMap::new();
+    channels.insert((peer_id, ConnectionType::Control), channel);
+    let membership = mock_membership(vec![(peer_id, Follower as i32)], channels);
+
+    let request = VoteRequest {
+        term: 1,
+        candidate_id: my_id,
+        last_log_index: 1,
+        last_log_term: 1,
+    };
+    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    let result = client.send_vote_request(peer_id, request, &node_config.retry, membership).await;
+
+    let res = result.expect("should succeed");
+    assert_eq!(res.last_log_index, 42);
+    assert_eq!(res.last_log_term, 5);
+}
+
+// # Case: peer channel not found in membership
+//
+// ## Criteria:
+// 1. Err(NetworkError::PeerConnectionNotFound(peer_id)) without attempting
+//    any RPC
+#[tokio::test]
+#[traced_test]
+async fn test_send_vote_request_missing_channel_returns_peer_connection_not_found() {
+    let my_id = 1;
+    let peer_id = 2;
+    let node_config = node_config(
+        "/tmp/test_send_vote_request_missing_channel_returns_peer_connection_not_found",
+    );
+
+    // No channel registered for peer_id
+    let membership = mock_membership(vec![(peer_id, Follower as i32)], HashMap::new());
+
+    let request = VoteRequest {
+        term: 1,
+        candidate_id: my_id,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    let result = client.send_vote_request(peer_id, request, &node_config.retry, membership).await;
+
+    let err = result.unwrap_err();
+    assert!(matches!(
+        err,
+        Error::System(SystemError::Network(NetworkError::PeerConnectionNotFound(id))) if id == peer_id
+    ));
+}
+
+// # Case: peer consistently unreachable (retry exhausted)
+//
+// ## Criteria:
+// 1. Err is returned once retries are exhausted (no infinite blocking)
+#[tokio::test]
+#[traced_test]
+async fn test_send_vote_request_retry_exhausted_returns_err() {
+    let my_id = 1;
+    let peer_id = 2;
+    let mut node_config = node_config("/tmp/test_send_vote_request_retry_exhausted_returns_err");
+    node_config.retry.election.max_retries = 1;
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let mock_service = MockRpcService {
+        expected_vote_response: Some(Err(Status::unavailable("peer unreachable"))),
+        ..Default::default()
+    };
+    let (port, _addr) = MockNode::mock_listener(mock_service, rx, true)
+        .await
+        .expect("mock listener should start");
+    let channel = MockNode::mock_channel_with_port(port).await;
+
+    let mut channels = HashMap::new();
+    channels.insert((peer_id, ConnectionType::Control), channel);
+    let membership = mock_membership(vec![(peer_id, Follower as i32)], channels);
+
+    let request = VoteRequest {
+        term: 1,
+        candidate_id: my_id,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    let result = client.send_vote_request(peer_id, request, &node_config.retry, membership).await;
+
+    assert!(result.is_err());
 }

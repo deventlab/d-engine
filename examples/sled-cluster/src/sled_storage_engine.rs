@@ -353,7 +353,6 @@ impl SledStorageEngine {
     }
 
     /// Helper: convert key bytes to index
-    #[allow(dead_code)]
     #[inline]
     pub fn key_to_index(key: &[u8]) -> u64 {
         let mut bytes = [0u8; 8];

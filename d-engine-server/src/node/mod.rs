@@ -235,8 +235,21 @@ where
         info!("Voter node bootstrap initiated");
 
         // Wait for cluster ready
+        let startup_quorum_timeout = self.node_config.raft.membership.startup_quorum_timeout;
         tokio::select! {
-            result = self.membership.check_cluster_is_ready() => result?,
+            result = tokio::time::timeout(
+                startup_quorum_timeout,
+                self.membership.check_cluster_is_ready(),
+            ) => {
+                match result {
+                    Ok(inner) => inner?,
+                    Err(_) => {
+                        return Err(crate::Error::Fatal(format!(
+                            "Cluster not ready after {startup_quorum_timeout:?} — quorum unreachable at startup"
+                        )));
+                    }
+                }
+            }
             _ = shutdown.changed() => {
                 info!("Shutdown during cluster ready check");
                 return Ok(());

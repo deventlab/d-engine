@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::BackpressureConfig;
 use crate::ElectionConfig;
 use crate::RaftConfig;
@@ -375,5 +377,40 @@ fn test_read_consistency_config_lease_duration_overflow_is_rejected() {
     assert!(
         cfg.validate(election_timeout_min).is_err(),
         "u64::MAX lease_duration_ms must be rejected (saturating_add prevents wrap-around)"
+    );
+}
+
+/// #428: startup_quorum_timeout defaults to 30s — independent of, and far
+/// shorter than, retry.membership's ~2 hour worst-case exhaustion budget.
+#[test]
+fn test_startup_quorum_timeout_default_is_30_seconds() {
+    let config = RaftConfig::default();
+    assert_eq!(
+        config.membership.startup_quorum_timeout,
+        Duration::from_secs(30)
+    );
+}
+
+#[test]
+fn test_startup_quorum_timeout_zero_is_invalid() {
+    let mut config = RaftConfig::default();
+    config.membership.startup_quorum_timeout = Duration::ZERO;
+    assert!(
+        config.validate().is_err(),
+        "startup_quorum_timeout = 0 must be rejected"
+    );
+}
+
+#[test]
+fn test_startup_quorum_timeout_is_developer_configurable() {
+    let mut config = RaftConfig::default();
+    config.membership.startup_quorum_timeout = Duration::from_secs(90);
+    assert!(
+        config.validate().is_ok(),
+        "a custom positive startup_quorum_timeout must be accepted"
+    );
+    assert_eq!(
+        config.membership.startup_quorum_timeout,
+        Duration::from_secs(90)
     );
 }

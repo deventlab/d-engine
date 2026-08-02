@@ -29,7 +29,6 @@ use tokio::fs;
 use tokio::fs::File;
 use tokio::fs::remove_dir_all;
 use tokio::fs::remove_file;
-use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::sync::RwLock;
@@ -846,74 +845,6 @@ where
             None,
             Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         )
-    }
-
-    #[allow(dead_code)]
-    async fn create_snapshot_chunk_stream(
-        &self,
-        snapshot_file: PathBuf,
-        metadata: SnapshotMetadata,
-    ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
-        let _timer = ScopedTimer::new("create_snapshot_chunk_stream");
-        let path_metadata =
-            tokio::fs::metadata(&snapshot_file).await.map_err(StorageError::IoError)?;
-
-        if !path_metadata.is_file() {
-            return Err(SnapshotError::OperationFailed(format!(
-                "Invalid snapshot file type: {}",
-                snapshot_file.display()
-            ))
-            .into());
-        }
-
-        let chunk_size = self.snapshot_config.chunk_size;
-        let node_id = self.node_id;
-        let leader_term = metadata.last_included.map(|id| id.term).unwrap_or(0);
-
-        // Open the compressed file.
-        let mut file = File::open(&snapshot_file).await.map_err(StorageError::IoError)?;
-
-        let file_len = path_metadata.len();
-        let total_chunks = (file_len as usize).div_ceil(chunk_size);
-
-        debug!(%total_chunks);
-
-        let stream = try_stream! {
-            let mut seq = 0;
-            let mut buffer = vec![0u8; chunk_size];
-
-            while let Ok(bytes_read) = file.read(&mut buffer).await {
-                if bytes_read == 0 {
-                    break;
-                }
-
-                let chunk_data = Bytes::from(buffer[..bytes_read].to_vec());
-                let checksum = crc32fast::hash(&chunk_data).to_be_bytes();
-                let chunk_checksum = Bytes::copy_from_slice(&checksum);
-
-                // Only first chunk contains metadata
-                let chunk_metadata = if seq == 0 {
-                    Some(metadata.clone())
-                } else {
-                    None
-                };
-
-                debug!(%seq, ?chunk_metadata, "create_snapshot_chunk_stream");
-                yield SnapshotChunk {
-                    leader_term,
-                    leader_id: node_id,
-                    metadata: chunk_metadata,
-                    seq,
-                    total_chunks: total_chunks as u32,
-                    data: chunk_data,
-                    chunk_checksum,
-                };
-
-                seq += 1;
-            }
-        };
-
-        Ok(Box::pin(stream))
     }
 
     /// Helper function to process snapshot stream

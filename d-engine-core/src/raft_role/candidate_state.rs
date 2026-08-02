@@ -177,7 +177,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         )?;
         debug!("candidate new term: {}", self.current_term());
 
-        match ctx
+        let r = ctx
             .election_handler()
             .broadcast_vote_requests(
                 self.current_term(),
@@ -186,8 +186,8 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 ctx.transport(),
                 &ctx.node_config(),
             )
-            .await
-        {
+            .await;
+        match r {
             Ok(_) => {
                 debug!("BecomeLeader");
                 if let Err(e) = internal_event_tx.send(InternalEvent::BecomeLeader) {
@@ -205,7 +205,7 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 self.send_become_follower_event(internal_event_tx)?;
             }
             Err(e) => {
-                warn!("candidate broadcast_vote_requests with error: {:?}", e);
+                info!("candidate broadcast_vote_requests with error: {:?}", e);
             }
         }
         Ok(())

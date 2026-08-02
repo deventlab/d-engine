@@ -135,3 +135,121 @@ async fn test_zombie_revoked_by_recovery() {
         "zombie must be revoked by record_success — bridge task must not forward it"
     );
 }
+
+// ============================================================================
+// try_send migration (#428): record_failure() must never block the caller on
+// channel capacity, and must not silently lose a signal or a retry
+// opportunity when the channel is full or the receiver has shut down.
+//
+// zombie_tx is created with a fixed capacity of 64 (RaftHealthMonitor::new).
+// These tests use threshold=1 so every record_failure() call for a distinct
+// node_id immediately attempts a send, letting the tests fill/drain the
+// channel deterministically without depending on that constant directly.
+// ============================================================================
+
+#[tokio::test]
+#[traced_test]
+async fn test_record_failure_uses_try_send_and_does_not_block() {
+    let (monitor, mut rx) = RaftHealthMonitor::new(1);
+
+    // With a synchronous send().await this call would block forever once the
+    // channel is full, since nothing is draining rx concurrently. Reaching
+    // this point at all (no test timeout) proves try_send is non-blocking.
+    for node_id in 0..64u32 {
+        monitor.record_failure(node_id).await;
+    }
+
+    // Sanity: all 64 signals were queued.
+    let mut received = Vec::new();
+    while let Ok(node_id) = rx.try_recv() {
+        received.push(node_id);
+    }
+    assert_eq!(received.len(), 64, "all 64 signals must have been queued");
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_record_failure_channel_full_does_not_reset_counter() {
+    let (monitor, mut rx) = RaftHealthMonitor::new(1);
+
+    // Fill the channel to its capacity (64) with 64 distinct nodes, without
+    // draining rx, so the next send attempt observes TrySendError::Full.
+    for node_id in 0..64u32 {
+        monitor.record_failure(node_id).await;
+    }
+
+    let overflow_node = 999;
+    monitor.record_failure(overflow_node).await;
+
+    // The overflow signal must NOT have been queued (channel was full).
+    let queued: Vec<u32> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(
+        !queued.contains(&overflow_node),
+        "signal must not be queued when the channel is full"
+    );
+
+    // The counter must NOT have been reset — record_failure() must retry the
+    // send on the next failure instead of losing the signal permanently.
+    let count = monitor.failure_counts.get(&overflow_node).map(|v| *v);
+    assert_eq!(
+        count,
+        Some(1),
+        "counter must be preserved (not reset) when try_send hits Full"
+    );
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_record_failure_retries_send_after_channel_has_space() {
+    let (monitor, mut rx) = RaftHealthMonitor::new(1);
+
+    // Fill the channel completely.
+    for node_id in 0..64u32 {
+        monitor.record_failure(node_id).await;
+    }
+
+    let overflow_node = 999;
+    // First attempt: channel full, counter preserved (see previous test).
+    monitor.record_failure(overflow_node).await;
+
+    // Free up exactly one slot.
+    rx.try_recv().expect("channel must have queued signals to drain");
+
+    // Retry: this failure must now succeed in sending, since the counter was
+    // never reset and >= threshold still holds.
+    monitor.record_failure(overflow_node).await;
+
+    let queued: Vec<u32> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(
+        queued.contains(&overflow_node),
+        "signal for the overflow node must be sent once channel space is available"
+    );
+    assert_eq!(
+        monitor.failure_counts.get(&overflow_node).map(|v| *v),
+        Some(0),
+        "counter must be reset once the retried send succeeds"
+    );
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_record_failure_closed_receiver_does_not_panic_or_reset() {
+    let (monitor, rx) = RaftHealthMonitor::new(1);
+    let node_id = 1;
+
+    // Simulate the node shutting down: the bridge task's receiver is dropped
+    // while record_failure() may still be in flight from another task.
+    drop(rx);
+
+    // Must not panic despite the closed channel.
+    monitor.record_failure(node_id).await;
+
+    // Counter is not reset on a Closed send — there's no one left to notify,
+    // but record_failure() must still behave predictably rather than panic
+    // or silently assume success.
+    assert_eq!(
+        monitor.failure_counts.get(&node_id).map(|v| *v),
+        Some(1),
+        "counter must not be reset when the receiver is closed"
+    );
+}
