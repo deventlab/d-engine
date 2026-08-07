@@ -11,7 +11,7 @@ Minimal example of embedding d-engine in a Rust application.
 
 ## Prerequisites
 
-- Rust 1.88+ ([install](https://rustup.rs/))
+- Rust 1.89+ ([install](https://rustup.rs/))
 - ~500MB disk space
 
 ## Quick Start (5 minutes)

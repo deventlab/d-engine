@@ -26,8 +26,13 @@ pub use mock::*;
 pub use replication_test_helpers::*;
 pub use snapshot::*;
 
-pub fn node_config(db_path: &str) -> crate::RaftNodeConfig {
-    let mut s = crate::RaftNodeConfig::new().expect("RaftNodeConfig should be inited successfully");
-    s.cluster.db_root_dir = std::path::PathBuf::from(db_path);
-    s.validate().expect("RaftNodeConfig should be validated successfully")
+/// `db_path` is unused — kept as a no-op parameter so the many existing call
+/// sites (each passing a unique `/tmp/test_xxx` path, back when this fed
+/// `ClusterConfig.data_dir`) don't all need touching. data_dir isn't a
+/// `d-engine-core` concept anymore (see #9).
+pub fn node_config(_db_path: &str) -> crate::RaftNodeConfig {
+    crate::RaftNodeConfig::new()
+        .expect("RaftNodeConfig should be inited successfully")
+        .validate()
+        .expect("RaftNodeConfig should be validated successfully")
 }

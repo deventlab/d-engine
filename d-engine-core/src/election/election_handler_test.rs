@@ -773,9 +773,8 @@ mod single_node_election_tests {
         membership.expect_is_single_node_cluster().returning(|| false);
 
         // Create minimal node_config with TempDir (no file system pollution)
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let node_config = node_config.validate().expect("Should validate config");
 
         // Act
@@ -859,9 +858,8 @@ mod single_node_election_tests {
             }]
         });
 
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let node_config = node_config.validate().expect("Should validate config");
 
         let e = election_handler
@@ -952,9 +950,8 @@ mod single_node_election_tests {
         });
 
         // Create minimal node_config with TempDir
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let node_config = node_config.validate().expect("Should validate config");
 
         // Execute
@@ -1026,9 +1023,8 @@ mod single_node_election_tests {
             }]
         });
 
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let node_config = node_config.validate().expect("Should validate config");
 
         let e = election_handler
@@ -1105,9 +1101,8 @@ mod single_node_election_tests {
             }]
         });
 
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let node_config = node_config.validate().expect("Should validate config");
 
         let e = election_handler
@@ -1190,9 +1185,8 @@ mod single_node_election_tests {
             }]
         });
 
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let node_config = node_config.validate().expect("Should validate config");
 
         let e = election_handler
@@ -1385,9 +1379,8 @@ mod single_node_election_tests {
     #[tokio::test]
     async fn test_check_vote_request_is_legal_rejects_when_current_term_not_lower() {
         // TODO: Simplify to just `let election_handler = ElectionHandler::<MockTypeConfig>::new(1);`
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let _node_config = node_config.validate().expect("Should validate config");
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
@@ -1455,9 +1448,8 @@ mod single_node_election_tests {
     /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_1_2`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_rejects_when_request_log_not_more_recent() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let _node_config = node_config.validate().expect("Should validate config");
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
@@ -1525,9 +1517,8 @@ mod single_node_election_tests {
     /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_1_3`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_accepts_when_request_log_more_recent() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let _node_config = node_config.validate().expect("Should validate config");
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
@@ -1572,9 +1563,8 @@ mod single_node_election_tests {
     /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_1_4`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_rejects_when_local_log_more_recent() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let _node_config = node_config.validate().expect("Should validate config");
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
@@ -1626,9 +1616,8 @@ mod single_node_election_tests {
     /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_2_1`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_rejects_when_already_voted_for_different_candidate() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let _node_config = node_config.validate().expect("Should validate config");
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
@@ -1679,9 +1668,8 @@ mod single_node_election_tests {
     /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_2_2`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_rejects_when_voted_in_higher_term() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let _node_config = node_config.validate().expect("Should validate config");
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 
@@ -1735,9 +1723,8 @@ mod single_node_election_tests {
     /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_2_3`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_accepts_revote_for_same_candidate_new_term() {
-        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let mut node_config = RaftNodeConfig::new().expect("Should create default config");
-        node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+        let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
         let _node_config = node_config.validate().expect("Should validate config");
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
 

@@ -359,6 +359,14 @@ pub enum SystemError {
     #[error("Node failed to start: {0}")]
     NodeStartFailed(String),
 
+    /// A directory under `data_dir` can't be created or written to (wrong
+    /// permissions, or a regular file where a directory is expected) —
+    /// distinct from [`SystemError::NodeStartFailed`]'s "another process
+    /// already holds this data_dir" so callers can tell a permanent
+    /// misconfiguration apart from a transient lock conflict.
+    #[error("Invalid data directory: {0}")]
+    DataDirInvalid(String),
+
     #[error("General server error: {0}")]
     GeneralServer(String),
 

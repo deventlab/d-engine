@@ -19,6 +19,7 @@ fn create_test_handler_with_applied(
         1,            // node_id
         last_applied, // last_applied
         state_machine,
+        std::path::PathBuf::from("/tmp/test_wait_applied"),
         snap_config,
         MockSnapshotPolicy::new(),
     )

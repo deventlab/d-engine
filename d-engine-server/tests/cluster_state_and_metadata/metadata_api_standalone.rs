@@ -26,7 +26,6 @@ use crate::common::reset;
 use crate::common::start_node;
 
 const TEST_DIR: &str = "cluster_start_stop/metadata_api";
-const DB_ROOT_DIR: &str = "./db/cluster_start_stop/metadata_api";
 const LOG_DIR: &str = "./logs/cluster_start_stop/metadata_api";
 
 /// Test: GetClusterMembership returns current_leader_id after bootstrap
@@ -45,10 +44,23 @@ async fn test_metadata_returns_leader_id_after_bootstrap() -> Result<(), ClientA
 
     // Start 3-node cluster
     info!("Starting 3-node cluster");
+    let temp_dir = tempfile::Builder::new()
+        .prefix("d-engine-metadata-api-")
+        .tempdir()
+        .expect("tempdir");
     for (i, port) in ports.iter().enumerate() {
+        let node_data_dir = temp_dir.path().join(format!("node{}", i + 1));
         let (graceful_tx, node_handle) = start_node(
+            &node_data_dir,
             node_config(
-                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config(
+                    (i + 1) as u64,
+                    *port,
+                    ports,
+                    &node_data_dir.to_string_lossy(),
+                    LOG_DIR,
+                )
+                .await,
             ),
             None,
             None,
@@ -110,10 +122,23 @@ async fn test_concurrent_metadata_requests_consistency() -> Result<(), ClientApi
 
     // Start 3-node cluster
     info!("Starting 3-node cluster for concurrent metadata test");
+    let temp_dir = tempfile::Builder::new()
+        .prefix("d-engine-metadata-api-")
+        .tempdir()
+        .expect("tempdir");
     for (i, port) in ports.iter().enumerate() {
+        let node_data_dir = temp_dir.path().join(format!("node{}", i + 1));
         let (graceful_tx, node_handle) = start_node(
+            &node_data_dir,
             node_config(
-                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config(
+                    (i + 1) as u64,
+                    *port,
+                    ports,
+                    &node_data_dir.to_string_lossy(),
+                    LOG_DIR,
+                )
+                .await,
             ),
             None,
             None,
@@ -200,10 +225,23 @@ async fn test_metadata_updates_after_leader_change() -> Result<(), ClientApiErro
 
     // Start 3-node cluster
     info!("Starting 3-node cluster");
+    let temp_dir = tempfile::Builder::new()
+        .prefix("d-engine-metadata-api-")
+        .tempdir()
+        .expect("tempdir");
     for (i, port) in ports.iter().enumerate() {
+        let node_data_dir = temp_dir.path().join(format!("node{}", i + 1));
         let (graceful_tx, node_handle) = start_node(
+            &node_data_dir,
             node_config(
-                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config(
+                    (i + 1) as u64,
+                    *port,
+                    ports,
+                    &node_data_dir.to_string_lossy(),
+                    LOG_DIR,
+                )
+                .await,
             ),
             None,
             None,

@@ -302,14 +302,18 @@ impl MockBuilder {
         self
     }
 
+    /// `data_dir` is unused — kept as a no-op parameter so the ~45 existing
+    /// call sites (each passing a unique `/tmp/test_xxx` path, back when this
+    /// fed `ClusterConfig.data_dir`) don't all need touching. data_dir isn't
+    /// a `d-engine-core` concept anymore (see #9).
     pub fn with_db_path(
         mut self,
-        db_root_dir: impl AsRef<Path>,
+        _data_dir: impl AsRef<Path>,
     ) -> Self {
-        let mut node_config = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig");
-        node_config.cluster.db_root_dir = db_root_dir.as_ref().to_path_buf();
-        let node_config =
-            node_config.validate().expect("Should succeed to validate RaftNodeConfig");
+        let node_config = RaftNodeConfig::new()
+            .expect("Should succeed to init RaftNodeConfig")
+            .validate()
+            .expect("Should succeed to validate RaftNodeConfig");
         self.node_config = Some(node_config);
         self
     }

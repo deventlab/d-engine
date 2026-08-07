@@ -71,9 +71,8 @@ async fn test_follower_snapshot_generation_during_replication()
     const TOTAL_ENTRIES: u64 = BASELINE_ENTRIES + CONCURRENT_ENTRIES;
 
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
-    let snapshots_dir = temp_dir.path().join("snapshots");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
@@ -97,7 +96,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -106,30 +104,27 @@ general_raft_timeout_duration_in_ms = 10000
 [raft.snapshot]
 max_log_entries_before_snapshot = {}
 retained_log_entries = {}
-snapshots_dir = '{}'
 "#,
             node_id,
             ports[node_id as usize - 1],
             ports[0],
             ports[1],
             ports[2],
-            db_root_dir.join(format!("node{node_id}")).display(),
             log_dir.join(format!("node{node_id}")).display(),
             SNAPSHOT_THRESHOLD,
             RETAINED_LOGS,
-            snapshots_dir.join(format!("node{node_id}")).display(),
         );
 
         let config_path = format!("/tmp/follower_snap_node{node_id}.toml");
         tokio::fs::write(&config_path, &config).await?;
 
-        let db_path = db_root_dir.join(format!("node{node_id}/db"));
+        let db_path = data_dir.join(format!("node{node_id}/db"));
 
         tokio::fs::create_dir_all(&db_path).await?;
-        tokio::fs::create_dir_all(snapshots_dir.join(format!("node{node_id}"))).await?;
 
         let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
         let engine = DefaultEmbeddedEngine::start_custom(
+            &db_path,
             Arc::new(storage),
             Arc::new(sm),
             Some(&config_path),
@@ -179,8 +174,9 @@ snapshots_dir = '{}'
         "Phase 2: Verifying snapshot triggered on Follower Node {} (max wait 15s)...",
         follower_id
     );
+    let follower_snapshots_dir = data_dir.join(format!("node{follower_id}/db/snapshots"));
     assert!(
-        wait_for_snapshot(&snapshots_dir, follower_id as u64, Duration::from_secs(15)).await,
+        wait_for_snapshot(&follower_snapshots_dir, Duration::from_secs(15)).await,
         "Follower Node {follower_id} did not generate snapshot within 15s — \
          check_and_trigger_snapshot() in ApplyCompleted may be broken (fix #270)"
     );

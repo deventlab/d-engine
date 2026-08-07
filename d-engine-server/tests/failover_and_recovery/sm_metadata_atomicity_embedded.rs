@@ -28,7 +28,6 @@ use tracing_test::traced_test;
 
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
-use crate::common::node_config;
 
 /// Recursively copies `src` into `dst`, creating `dst` if needed.
 fn copy_dir_all(
@@ -76,8 +75,8 @@ async fn start_single_node(
     .await;
     tokio::fs::write(config_path, &config_str).await?;
 
-    let config = node_config(&config_str);
-    let db_path = config.cluster.db_root_dir.join("node1").join("db");
+    let node1_data_dir = db_root.join("node1");
+    let db_path = node1_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path).await?;
 
     let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
@@ -85,6 +84,7 @@ async fn start_single_node(
     let sm_arc = Arc::new(sm);
 
     let engine = DefaultEmbeddedEngine::start_custom(
+        &node1_data_dir,
         Arc::clone(&storage_arc),
         Arc::clone(&sm_arc),
         Some(config_path),

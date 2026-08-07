@@ -99,7 +99,7 @@ async fn test_grpc_watch_membership_receives_snapshot_on_learner_join()
         )
         .await;
         let config = node_config(&toml);
-        let (tx, handle) = start_node(config, None, None).await?;
+        let (tx, handle) = start_node(&node_dir, config, None, None).await?;
         graceful_txs.push(tx);
         node_handles.push(handle);
     }
@@ -157,7 +157,7 @@ async fn test_grpc_watch_membership_receives_snapshot_on_learner_join()
         )
         .await;
         let config = node_config(&toml);
-        let (tx, handle) = start_node(config, None, None).await?;
+        let (tx, handle) = start_node(&node_dir, config, None, None).await?;
         graceful_txs.push(tx);
         node_handles.push(handle);
     }

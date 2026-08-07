@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
 
 use config::ConfigError;
 use d_engine_proto::common::NodeRole::Follower;
@@ -7,9 +6,7 @@ use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
 use serde::Deserialize;
 use serde::Serialize;
-use tracing::warn;
 
-use super::validate_directory;
 use crate::Error;
 use crate::Result;
 
@@ -40,22 +37,17 @@ pub struct ClusterConfig {
     ///
     /// Default: `default_initial_cluster()`
     ///
+    /// Accepts either the full form (`{id, address, role, status}`) or the
+    /// common shorthand (`{id, address}` — role/status default to
+    /// Follower/Active). Both forms can be mixed in the same list.
+    ///
     /// # Note
     /// Should contain at least 3 nodes for production deployment
-    #[serde(default = "default_initial_cluster")]
+    #[serde(
+        default = "default_initial_cluster",
+        deserialize_with = "deserialize_initial_cluster"
+    )]
     pub initial_cluster: Vec<NodeMeta>,
-
-    /// Database storage root directory
-    ///
-    /// Default: `default_db_dir()` (/tmp/db)
-    #[serde(default = "default_db_dir")]
-    pub db_root_dir: PathBuf,
-
-    /// Log files output directory
-    ///
-    /// Default: `default_log_dir()` (./logs)
-    #[serde(default = "default_log_dir")]
-    pub log_dir: PathBuf,
 }
 impl Default for ClusterConfig {
     fn default() -> Self {
@@ -63,8 +55,6 @@ impl Default for ClusterConfig {
             node_id: default_node_id(),
             listen_address: default_listen_addr(),
             initial_cluster: default_initial_cluster(),
-            db_root_dir: default_db_dir(),
-            log_dir: default_log_dir(),
         }
     }
 }
@@ -108,24 +98,25 @@ impl ClusterConfig {
             }
         }
 
+        // Check unique listen addresses. Left unchecked, a copy-paste mistake across a
+        // multi-host deployment fails silently: each node binds its own address successfully,
+        // and the cluster just never elects a leader instead of erroring at startup.
+        let mut addresses = std::collections::HashSet::new();
+        for node in &self.initial_cluster {
+            if !addresses.insert(&node.address) {
+                return Err(Error::Config(ConfigError::Message(format!(
+                    "Duplicate listen_address {:?} in initial_cluster",
+                    node.address
+                ))));
+            }
+        }
+
         // Validate network configuration
         if self.listen_address.port() == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "listen_address must specify a non-zero port".into(),
             )));
         }
-
-        // Warn if data path is under /tmp — caller's responsibility to choose a persistent path
-        if self.db_root_dir.starts_with("/tmp") {
-            warn!(
-                "db_root_dir {:?} is a temporary path — data will be lost on reboot. \
-                 Use a persistent path for production.",
-                self.db_root_dir
-            );
-        }
-
-        validate_directory(&self.db_root_dir, "db_root_dir")?;
-        validate_directory(&self.log_dir, "log_dir")?;
 
         Ok(())
     }
@@ -145,9 +136,44 @@ fn default_initial_cluster() -> Vec<NodeMeta> {
 fn default_listen_addr() -> SocketAddr {
     "127.0.0.1:9081".parse().unwrap()
 }
-fn default_db_dir() -> PathBuf {
-    PathBuf::from("/tmp/db")
+
+/// Accepts either the full `NodeMeta` shape (`{id, address, role, status}`)
+/// or the common shorthand (`{id, address}`) — `role`/`status` default to
+/// Follower/Active when omitted. Only this one field's deserialization is
+/// affected; `NodeMeta` itself is untouched (it's a proto wire type reused
+/// elsewhere — e.g. membership changes — where role/status are genuinely
+/// required, not defaultable).
+fn deserialize_initial_cluster<'de, D>(
+    deserializer: D
+) -> std::result::Result<Vec<NodeMeta>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct NodeMetaInput {
+        id: u32,
+        address: String,
+        #[serde(default = "default_role_i32")]
+        role: i32,
+        #[serde(default = "default_status_i32")]
+        status: i32,
+    }
+
+    let inputs = Vec::<NodeMetaInput>::deserialize(deserializer)?;
+    Ok(inputs
+        .into_iter()
+        .map(|n| NodeMeta {
+            id: n.id,
+            address: n.address,
+            role: n.role,
+            status: n.status,
+        })
+        .collect())
 }
-fn default_log_dir() -> PathBuf {
-    PathBuf::from("/tmp/logs")
+
+fn default_role_i32() -> i32 {
+    Follower as i32
+}
+fn default_status_i32() -> i32 {
+    NodeStatus::Active.into()
 }

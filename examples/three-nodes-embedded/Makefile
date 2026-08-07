@@ -60,6 +60,7 @@ start-node1:
 		--port 8081 \
 		--health-port 10001 \
 		--config-path "config/n1.toml" \
+		--data-dir "db/1" \
 		2>&1 | sed 's/^/[Node1] /' & \
 	PID=$$!; \
 	wait $$PID; \
@@ -75,6 +76,7 @@ start-node2:
 		--port 8082 \
 		--health-port 10002 \
 		--config-path "config/n2.toml" \
+		--data-dir "db/2" \
 		2>&1 | sed 's/^/[Node2] /' & \
 	PID=$$!; \
 	wait $$PID; \
@@ -90,6 +92,7 @@ start-node3:
 		--port 8083 \
 		--health-port 10003 \
 		--config-path "config/n3.toml" \
+		--data-dir "db/3" \
 		2>&1 | sed 's/^/[Node3] /' & \
 	PID=$$!; \
 	wait $$PID; \

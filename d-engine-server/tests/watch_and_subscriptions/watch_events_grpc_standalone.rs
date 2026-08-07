@@ -76,7 +76,7 @@ async fn setup_standalone_cluster()
 
         // Start node
         let (graceful_tx, node_handle) =
-            start_node(config, Some(state_machine), Some(storage)).await?;
+            start_node(&node_dir, config, Some(state_machine), Some(storage)).await?;
 
         graceful_txs.push(graceful_tx);
         node_handles.push(node_handle);

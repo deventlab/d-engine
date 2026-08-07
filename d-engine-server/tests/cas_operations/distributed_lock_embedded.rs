@@ -11,7 +11,6 @@ use tracing_test::traced_test;
 
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
-use crate::common::node_config;
 
 /// Test distributed lock using CAS with embedded mode
 ///
@@ -25,7 +24,7 @@ use crate::common::node_config;
 #[traced_test]
 async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
@@ -42,13 +41,12 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
             node_id,
             ports[i],
             ports,
-            db_root_dir.to_str().unwrap(),
+            data_dir.to_str().unwrap(),
             log_dir.to_str().unwrap(),
         )
         .await;
 
-        let config = node_config(&config_str);
-        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let node_db_root = data_dir.join(format!("node{node_id}"));
         let db_path = node_db_root.join("db");
 
         tokio::fs::create_dir_all(&db_path).await?;
@@ -59,6 +57,7 @@ async fn test_distributed_lock_embedded() -> Result<(), Box<dyn std::error::Erro
         tokio::fs::write(&config_path, &config_str).await?;
 
         let engine = DefaultEmbeddedEngine::start_custom(
+            &node_db_root,
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&config_path),

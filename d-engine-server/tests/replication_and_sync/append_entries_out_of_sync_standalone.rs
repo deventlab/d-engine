@@ -37,7 +37,7 @@ use crate::common::start_node;
 use crate::common::test_put_get;
 
 const TEST_CASE_DIR: &str = "append_entries/case1";
-const DB_ROOT_DIR: &str = "./db/append_entries/case1";
+const DATA_DIR: &str = "./db/append_entries/case1";
 const LOG_DIR: &str = "./logs/append_entries/case1";
 
 #[tracing::instrument]
@@ -57,9 +57,9 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
     println!("Prepare state machine and logs");
 
     let raft_logs = [
-        prepare_storage_engine(1, &format!("{DB_ROOT_DIR}/cs/1"), 0),
-        prepare_storage_engine(2, &format!("{DB_ROOT_DIR}/cs/2"), 0),
-        prepare_storage_engine(3, &format!("{DB_ROOT_DIR}/cs/3"), 0),
+        prepare_storage_engine(1, &format!("{DATA_DIR}/cs/1"), 0),
+        prepare_storage_engine(2, &format!("{DATA_DIR}/cs/2"), 0),
+        prepare_storage_engine(3, &format!("{DATA_DIR}/cs/3"), 0),
     ];
 
     manipulate_log(&raft_logs[0], vec![1, 2, 3], 1).await;
@@ -79,9 +79,11 @@ async fn test_out_of_sync_peer_scenario() -> Result<(), ClientApiError> {
 
     println!("{:?}", ports);
     for (i, port) in ports.iter().enumerate() {
+        let node_data_dir = format!("{DATA_DIR}/cs/{}", i + 1);
         let (graceful_tx, node_handle) = start_node(
+            &node_data_dir,
             node_config(
-                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config((i + 1) as u64, *port, ports, &node_data_dir, LOG_DIR).await,
             ),
             None, // Let build_node create state machines for each node
             Some(raft_logs[i].clone()),

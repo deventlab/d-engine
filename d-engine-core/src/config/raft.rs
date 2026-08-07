@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use config::ConfigError;
@@ -8,7 +7,6 @@ use serde::Serialize;
 use tracing::warn;
 
 use super::lease::LeaseConfig;
-use super::validate_directory;
 use crate::Error;
 use crate::Result;
 
@@ -153,8 +151,8 @@ impl Default for RaftConfig {
     }
 }
 impl RaftConfig {
-    /// Validates all Raft subsystem configurations
-    pub fn validate(&self) -> Result<()> {
+    /// Validates all Raft subsystem configurations.
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.learner_catchup_threshold == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "learner_catchup_threshold must be greater than 0".into(),
@@ -539,12 +537,6 @@ pub struct SnapshotConfig {
     #[serde(default = "default_cleanup_retain_count")]
     pub cleanup_retain_count: u64,
 
-    /// Snapshot storage directory
-    ///
-    /// Default: `default_snapshots_dir()` (/tmp/snapshots)
-    #[serde(default = "default_snapshots_dir")]
-    pub snapshots_dir: PathBuf,
-
     #[serde(default = "default_snapshots_dir_prefix")]
     pub snapshots_dir_prefix: String,
 
@@ -606,7 +598,6 @@ impl Default for SnapshotConfig {
             max_log_entries_before_snapshot: default_max_log_entries_before_snapshot(),
             snapshot_cool_down_since_last_check: default_snapshot_cool_down_since_last_check(),
             cleanup_retain_count: default_cleanup_retain_count(),
-            snapshots_dir: default_snapshots_dir(),
             snapshots_dir_prefix: default_snapshots_dir_prefix(),
             chunk_size: default_chunk_size(),
             retained_log_entries: default_retained_log_entries(),
@@ -639,9 +630,6 @@ impl SnapshotConfig {
                 "cleanup_retain_count must be greater than 0".into(),
             )));
         }
-        // Validate storage paths
-        validate_directory(&self.snapshots_dir, "snapshots_dir")?;
-
         // chunk_size should be > 0
         if self.chunk_size == 0 {
             return Err(Error::Config(ConfigError::Message(format!(
@@ -715,10 +703,6 @@ fn default_snapshot_cool_down_since_last_check() -> Duration {
 /// Default number of historical snapshots to retain
 fn default_cleanup_retain_count() -> u64 {
     2
-}
-/// Default snapshots storage path
-fn default_snapshots_dir() -> PathBuf {
-    PathBuf::from("/tmp/snapshots")
 }
 /// Default snapshots directory prefix
 fn default_snapshots_dir_prefix() -> String {

@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::ApplyResult;
@@ -187,16 +186,10 @@ async fn test_server_is_not_ready() {
 #[traced_test]
 async fn test_handle_rpc_services_successfully() {
     tokio::time::pause();
-    let mut settings = RaftNodeConfig::new()
-        .expect("Should succeed to init RaftNodeConfig.")
-        .validate()
-        .expect("Validate RaftNodeConfig successfully");
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let mut settings = settings.validate().expect("Validate RaftNodeConfig successfully");
     settings.raft.general_raft_timeout_duration_in_ms = 200;
     settings.raft.batching.max_batch_size = 1;
-    settings.cluster.db_root_dir = PathBuf::from(
-        "/tmp/
-    test_handle_rpc_services_successfully",
-    );
     let mut membership = MockMembership::<MockTypeConfig>::new();
 
     membership.expect_voters().returning(Vec::new);

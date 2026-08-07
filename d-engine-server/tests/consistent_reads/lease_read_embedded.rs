@@ -28,18 +28,16 @@ async fn create_test_engine_with_lease(test_name: &str) -> (DefaultEmbeddedEngin
         r#"
 [cluster]
 listen_address = "127.0.0.1:{}"
-db_root_dir = "{}"
 single_node = true
 
 [raft.read_consistency]
 state_machine_sync_timeout_ms = 2000
 "#,
-        port,
-        db_path.display()
+        port
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(&db_path, config_path.to_str().unwrap())
         .await
         .expect("Failed to start engine");
 

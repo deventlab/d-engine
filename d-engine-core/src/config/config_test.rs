@@ -1,4 +1,5 @@
 use super::*;
+use config::ConfigError;
 use serial_test::serial;
 use std::io::Write;
 use temp_env::with_vars;
@@ -29,11 +30,17 @@ fn default_config_should_initialize_with_hardcoded_values() {
 #[serial]
 fn new_should_merge_environment_overrides() {
     cleanup_all_raft_env_vars();
-    with_vars(vec![("RAFT__NETWORK__BUFFER_SIZE", Some("1025"))], || {
-        let config = RaftNodeConfig::new().unwrap().validate().unwrap();
+    with_vars(
+        vec![
+            ("RAFT__NETWORK__BUFFER_SIZE", Some("1025")),
+            ("RAFT__CLUSTER__DATA_DIR", Some("test-data")),
+        ],
+        || {
+            let config = RaftNodeConfig::new().unwrap().validate().unwrap();
 
-        assert_eq!(config.network.buffer_size, 1025);
-    });
+            assert_eq!(config.network.buffer_size, 1025);
+        },
+    );
 }
 
 #[test]
@@ -48,9 +55,6 @@ fn with_override_config_should_merge_file_settings() {
     std::fs::write(
         &config_path,
         r#"
-        [cluster]
-        db_root_dir = "/tmp/xx/db" # Override default value
-
         [raft.election]
         election_timeout_min = 1000 # Override default value
         election_timeout_max = 3000 # Add new field
@@ -70,10 +74,6 @@ fn with_override_config_should_merge_file_settings() {
         assert!(result.is_ok());
         let config = result.unwrap();
 
-        assert_eq!(
-            config.cluster.db_root_dir.as_os_str().to_str(),
-            Some("/tmp/xx/db")
-        );
         assert_eq!(config.raft.election.election_timeout_min, 1000);
         assert_eq!(config.raft.election.election_timeout_max, 3000);
     });
@@ -107,6 +107,7 @@ fn environment_variables_should_have_highest_priority() {
         r#"
         [cluster]
         node_id = 100
+        data_dir = "test-data"
         initial_cluster = [
             { id = 100, name = "n1", address = "127.0.0.1:8081", role = 1, status = 1 },
             { id = 200, name = "n2", address = "127.0.0.1:9082", role = 1, status = 1 },
@@ -168,6 +169,8 @@ fn config_should_handle_nested_structures_correctly() {
     std::fs::write(
         &config_path,
         r#"
+        [cluster]
+        data_dir = "test-data"
         [retry.election]
         max_retries = 10
         [retry]
@@ -394,15 +397,13 @@ fn test_override_then_validate_succeeds() {
         r#"
 [cluster]
 node_id = 1
-db_root_dir = "{}/db"
 
 [[cluster.initial_cluster]]
 id = 1
 address = "127.0.0.1:9091"
 role = 3
 status = 3
-"#,
-        temp_dir.path().display()
+"#
     )
     .unwrap();
     drop(file);
@@ -434,15 +435,13 @@ fn test_config_path_env_loads_and_validates() {
         r#"
 [cluster]
 node_id = 99
-db_root_dir = "{}/db"
 
 [[cluster.initial_cluster]]
 id = 99
 address = "127.0.0.1:9091"
 role = 3
 status = 3
-"#,
-        temp_dir.path().display()
+"#
     )
     .unwrap();
     drop(file);
@@ -476,7 +475,6 @@ fn test_config_path_env_with_env_override() {
         r#"
 [cluster]
 node_id = 1
-db_root_dir = "{}/db"
 
 [[cluster.initial_cluster]]
 id = 1
@@ -489,8 +487,7 @@ id = 200
 address = "127.0.0.1:9092"
 role = 3
 status = 3
-"#,
-        temp_dir.path().display()
+"#
     )
     .unwrap();
     drop(file);
@@ -526,15 +523,13 @@ fn test_explicit_override_config_file() {
         r#"
 [cluster]
 node_id = 42
-db_root_dir = "{}/db"
 
 [[cluster.initial_cluster]]
 id = 42
 address = "127.0.0.1:9091"
 role = 3
 status = 3
-"#,
-        temp_dir.path().display()
+"#
     )
     .unwrap();
     drop(file);
@@ -555,13 +550,262 @@ status = 3
 
 #[test]
 fn test_validate_consumes_self_returns_self() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let mut cfg = RaftNodeConfig::new().unwrap();
-    cfg.cluster.db_root_dir = temp_dir.path().to_path_buf();
+    let cfg = RaftNodeConfig::new().unwrap();
 
     // validate() consumes cfg and returns Result<Self>
     let validated = cfg.validate().expect("Should validate");
 
     // Can use validated
     assert!(validated.cluster.node_id > 0);
+}
+
+// ============================================================================
+// initial_cluster: duplicate node_id / listen_address must be rejected
+// ============================================================================
+
+mod initial_cluster_duplicate_tests {
+    use d_engine_proto::common::NodeRole;
+    use d_engine_proto::common::NodeStatus;
+    use d_engine_proto::server::cluster::NodeMeta;
+
+    use super::*;
+
+    fn voter(
+        id: u32,
+        address: &str,
+    ) -> NodeMeta {
+        NodeMeta {
+            id,
+            address: address.to_string(),
+            role: NodeRole::Follower as i32,
+            status: NodeStatus::Active as i32,
+        }
+    }
+
+    fn base_config() -> RaftNodeConfig {
+        RaftNodeConfig::default()
+    }
+
+    /// Two nodes with the same id must be rejected — this check already existed but had no
+    /// dedicated test before this change.
+    #[test]
+    fn test_validate_rejects_duplicate_node_id() {
+        let mut cfg = base_config();
+        cfg.cluster.node_id = 1;
+        cfg.cluster.initial_cluster = vec![voter(1, "127.0.0.1:9081"), voter(1, "127.0.0.1:9082")];
+
+        let result = cfg.validate();
+
+        assert!(result.is_err(), "duplicate node_id must be rejected");
+    }
+
+    /// Two nodes sharing the same listen_address must be rejected. Left unchecked, this fails
+    /// silently in a real multi-host deployment: each node binds its own local address
+    /// successfully, and the cluster just never elects a leader — a much harder failure to
+    /// diagnose than a loud startup error.
+    #[test]
+    fn test_validate_rejects_duplicate_listen_address() {
+        let mut cfg = base_config();
+        cfg.cluster.node_id = 1;
+        cfg.cluster.initial_cluster = vec![
+            voter(1, "127.0.0.1:9081"),
+            voter(2, "127.0.0.1:9081"), // same address as node 1
+        ];
+
+        let result = cfg.validate();
+
+        assert!(result.is_err(), "duplicate listen_address must be rejected");
+    }
+
+    /// Distinct ids and addresses must still validate successfully — the happy path this
+    /// check must not break.
+    #[test]
+    fn test_validate_accepts_unique_node_id_and_listen_address() {
+        let mut cfg = base_config();
+        cfg.cluster.node_id = 1;
+        cfg.cluster.initial_cluster = vec![
+            voter(1, "127.0.0.1:9081"),
+            voter(2, "127.0.0.1:9082"),
+            voter(3, "127.0.0.1:9083"),
+        ];
+
+        let result = cfg.validate();
+
+        assert!(
+            result.is_ok(),
+            "unique id/address must pass validation: {:?}",
+            result.err()
+        );
+    }
+}
+
+// ============================================================================
+// initial_cluster: shorthand ({id, address}) deserialization
+// ============================================================================
+
+mod initial_cluster_shorthand_tests {
+    use d_engine_proto::common::NodeRole::Follower;
+    use d_engine_proto::common::NodeStatus;
+
+    use super::*;
+
+    /// Deserializes `initial_cluster_toml` (a bare TOML array literal, e.g.
+    /// `"[{ id = 1, address = \"a\" }]"`) through the real `config` crate
+    /// pipeline (file source, not a struct literal) — struct literals bypass
+    /// `deserialize_with` entirely, so this is the only way to actually
+    /// exercise the shorthand-parsing code path.
+    fn deserialize_cluster(
+        initial_cluster_toml: &str
+    ) -> std::result::Result<ClusterConfig, ConfigError> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("cluster.toml");
+        std::fs::write(
+            &config_path,
+            format!("initial_cluster = {initial_cluster_toml}\n"),
+        )
+        .unwrap();
+
+        Config::builder()
+            .add_source(File::with_name(config_path.to_str().unwrap()))
+            .build()?
+            .try_deserialize::<ClusterConfig>()
+    }
+
+    #[test]
+    fn test_field_missing_uses_default_single_node_cluster() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("cluster.toml");
+        std::fs::write(&config_path, "node_id = 1\n").unwrap();
+
+        let cfg = Config::builder()
+            .add_source(File::with_name(config_path.to_str().unwrap()))
+            .build()
+            .unwrap()
+            .try_deserialize::<ClusterConfig>()
+            .expect("missing field falls back to default, not an error");
+
+        assert_eq!(cfg.initial_cluster.len(), 1);
+        assert_eq!(cfg.initial_cluster[0].id, 1);
+    }
+
+    #[test]
+    fn test_empty_array_deserializes_to_empty_vec() {
+        let cfg = deserialize_cluster("[]").expect("empty array is not a deserialize error");
+        assert!(cfg.initial_cluster.is_empty());
+    }
+
+    #[test]
+    fn test_single_shorthand_defaults_role_and_status() {
+        let cfg = deserialize_cluster(r#"[{ id = 1, address = "127.0.0.1:9081" }]"#).unwrap();
+
+        assert_eq!(cfg.initial_cluster.len(), 1);
+        assert_eq!(cfg.initial_cluster[0].id, 1);
+        assert_eq!(cfg.initial_cluster[0].address, "127.0.0.1:9081");
+        assert_eq!(cfg.initial_cluster[0].role, Follower as i32);
+        assert_eq!(cfg.initial_cluster[0].status, NodeStatus::Active as i32);
+    }
+
+    #[test]
+    fn test_single_full_form_keeps_explicit_role_and_status() {
+        let cfg = deserialize_cluster(
+            r#"[{ id = 1, address = "127.0.0.1:9081", role = 2, status = 1 }]"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.initial_cluster[0].role, 2);
+        assert_eq!(cfg.initial_cluster[0].status, 1);
+    }
+
+    #[test]
+    fn test_mixed_shorthand_and_full_form_in_same_array() {
+        let cfg = deserialize_cluster(
+            r#"[
+                { id = 1, address = "127.0.0.1:9081" },
+                { id = 2, address = "127.0.0.1:9082", role = 2, status = 1 }
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.initial_cluster.len(), 2);
+        assert_eq!(
+            cfg.initial_cluster[0].role, Follower as i32,
+            "element 1: shorthand defaults"
+        );
+        assert_eq!(cfg.initial_cluster[0].status, NodeStatus::Active as i32);
+        assert_eq!(
+            cfg.initial_cluster[1].role, 2,
+            "element 2: full form keeps explicit value"
+        );
+        assert_eq!(cfg.initial_cluster[1].status, 1);
+    }
+
+    #[test]
+    fn test_missing_id_is_a_deserialize_error() {
+        let result = deserialize_cluster(r#"[{ address = "127.0.0.1:9081" }]"#);
+        assert!(result.is_err(), "id has no default — must be required");
+    }
+
+    #[test]
+    fn test_missing_address_is_a_deserialize_error() {
+        let result = deserialize_cluster(r#"[{ id = 1 }]"#);
+        assert!(result.is_err(), "address has no default — must be required");
+    }
+
+    #[test]
+    fn test_invalid_role_type_is_a_deserialize_error() {
+        let result = deserialize_cluster(
+            r#"[{ id = 1, address = "127.0.0.1:9081", role = "not-a-number" }]"#,
+        );
+        assert!(result.is_err(), "role must be an integer, not a string");
+    }
+
+    #[test]
+    fn test_invalid_status_type_is_a_deserialize_error() {
+        let result = deserialize_cluster(
+            r#"[{ id = 1, address = "127.0.0.1:9081", status = "not-a-number" }]"#,
+        );
+        assert!(result.is_err(), "status must be an integer, not a string");
+    }
+
+    /// `#[serde(default = ...)]` only applies when the key is absent. An
+    /// explicit `null` for a non-`Option` field is still a type error — this
+    /// is a real serde subtlety (flagged during review), worth pinning down
+    /// with a test rather than assuming.
+    #[test]
+    fn test_explicit_null_role_is_a_deserialize_error_not_default() {
+        let result =
+            deserialize_cluster(r#"[{ id = 1, address = "127.0.0.1:9081", role = null }]"#);
+        assert!(
+            result.is_err(),
+            "explicit null must not silently become the default"
+        );
+    }
+
+    #[test]
+    fn test_explicit_null_status_is_a_deserialize_error_not_default() {
+        let result =
+            deserialize_cluster(r#"[{ id = 1, address = "127.0.0.1:9081", status = null }]"#);
+        assert!(
+            result.is_err(),
+            "explicit null must not silently become the default"
+        );
+    }
+
+    #[test]
+    fn test_full_form_missing_only_role_defaults_role_keeps_status() {
+        let cfg =
+            deserialize_cluster(r#"[{ id = 1, address = "127.0.0.1:9081", status = 1 }]"#).unwrap();
+
+        assert_eq!(cfg.initial_cluster[0].role, Follower as i32);
+        assert_eq!(cfg.initial_cluster[0].status, 1);
+    }
+
+    #[test]
+    fn test_full_form_missing_only_status_defaults_status_keeps_role() {
+        let cfg =
+            deserialize_cluster(r#"[{ id = 1, address = "127.0.0.1:9081", role = 2 }]"#).unwrap();
+
+        assert_eq!(cfg.initial_cluster[0].role, 2);
+        assert_eq!(cfg.initial_cluster[0].status, NodeStatus::Active as i32);
+    }
 }

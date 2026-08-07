@@ -54,9 +54,8 @@ async fn test_learner_snapshot_concurrent_replication() -> Result<(), Box<dyn st
     const TOTAL_ENTRIES: u64 = BASELINE_ENTRIES + CONCURRENT_ENTRIES;
 
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
-    let snapshots_dir = temp_dir.path().join("snapshots");
 
     let mut port_guard = get_available_ports(4).await;
     port_guard.release_listeners();
@@ -80,7 +79,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -89,31 +87,28 @@ general_raft_timeout_duration_in_ms = 5000
 [raft.snapshot]
 max_log_entries_before_snapshot = {}
 retained_log_entries = {}
-snapshots_dir = '{}'
 "#,
             node_id,
             ports[node_id - 1],
             ports[0],
             ports[1],
             ports[2],
-            db_root_dir.join(format!("node{node_id}")).display(),
             log_dir.join(format!("node{node_id}")).display(),
             SNAPSHOT_THRESHOLD,
-            RETAINED_LOGS,
-            snapshots_dir.join(format!("node{node_id}")).display()
+            RETAINED_LOGS
         );
 
         let config_path = format!("/tmp/learner_snap_node{node_id}.toml");
         tokio::fs::write(&config_path, &config).await?;
 
-        let db_path = db_root_dir.join(format!("node{node_id}/db"));
+        let db_path = data_dir.join(format!("node{node_id}/db"));
 
         tokio::fs::create_dir_all(&db_path).await?;
-        tokio::fs::create_dir_all(snapshots_dir.join(format!("node{node_id}"))).await?;
 
         let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
 
         let engine = DefaultEmbeddedEngine::start_custom(
+            &db_path,
             Arc::new(storage),
             Arc::new(sm),
             Some(&config_path),
@@ -160,9 +155,9 @@ snapshots_dir = '{}'
         .find(|e| e.is_leader())
         .map(|e| e.node_id())
         .expect("Should have a leader");
+    let leader_snapshots_dir = data_dir.join(format!("node{leader_id}/db/snapshots"));
     assert!(
-        crate::common::wait_for_snapshot(&snapshots_dir, leader_id as u64, Duration::from_secs(10))
-            .await,
+        crate::common::wait_for_snapshot(&leader_snapshots_dir, Duration::from_secs(10)).await,
         "Leader (Node {leader_id}) failed to generate snapshot within 10s"
     );
 
@@ -180,7 +175,6 @@ initial_cluster = [
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 3, status = 3 }},
     {{ id = 4, name = 'n4', address = '127.0.0.1:{}', role = 4, status = 2 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -189,31 +183,28 @@ general_raft_timeout_duration_in_ms = 5000
 [raft.snapshot]
 max_log_entries_before_snapshot = {}
 retained_log_entries = {}
-snapshots_dir = '{}'
 "#,
         ports[3],
         ports[0],
         ports[1],
         ports[2],
         ports[3],
-        db_root_dir.join("node4").display(),
         log_dir.join("node4").display(),
         SNAPSHOT_THRESHOLD,
-        RETAINED_LOGS,
-        snapshots_dir.join("node4").display()
+        RETAINED_LOGS
     );
 
     let learner_config_path = "/tmp/learner_snap_node4.toml".to_string();
     tokio::fs::write(&learner_config_path, &learner_config).await?;
 
-    let learner_db_path = db_root_dir.join("node4/db");
+    let learner_db_path = data_dir.join("node4/db");
 
     tokio::fs::create_dir_all(&learner_db_path).await?;
-    tokio::fs::create_dir_all(snapshots_dir.join("node4")).await?;
 
     let (learner_storage, learner_sm) = RocksDBUnifiedEngine::open(&learner_db_path)?;
 
     let learner_engine = DefaultEmbeddedEngine::start_custom(
+        &learner_db_path,
         Arc::new(learner_storage),
         Arc::new(learner_sm),
         Some(&learner_config_path),
@@ -345,7 +336,7 @@ snapshots_dir = '{}'
     }
 
     info!("Phase 6: Checking snapshot files on Learner...");
-    let learner_snapshot_dir = snapshots_dir.join("node4");
+    let learner_snapshot_dir = data_dir.join("node4/db/snapshots");
     if learner_snapshot_dir.exists()
         && let Ok(entries) = std::fs::read_dir(&learner_snapshot_dir)
     {

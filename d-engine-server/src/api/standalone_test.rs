@@ -35,10 +35,10 @@ mod standalone_server_tests {
         assert!(result.is_ok(), "run() should succeed: {:?}", result.err());
     }
 
-    /// /tmp data_dir emits a warning but is not rejected.
+    /// A /tmp data_dir is a legitimate explicit choice — d-engine does not judge it.
     #[tokio::test]
     #[serial(tmp_db)]
-    async fn test_run_tmp_path_warns_but_succeeds() {
+    async fn test_run_tmp_path_accepted() {
         let tmp_path = std::path::PathBuf::from("/tmp/d-engine-standalone-test");
         let _ = std::fs::remove_dir_all(&tmp_path);
 
@@ -56,17 +56,17 @@ mod standalone_server_tests {
             .expect("server task must not panic");
         assert!(
             result.is_ok(),
-            "/tmp path should succeed with warning: {:?}",
+            "/tmp path must be accepted: {:?}",
             result.err()
         );
 
         let _ = std::fs::remove_dir_all(&tmp_path);
     }
 
-    /// data_dir overrides cluster.db_root_dir set in CONFIG_PATH.
+    /// data_dir overrides cluster.data_dir set in CONFIG_PATH.
     #[tokio::test]
     #[serial]
-    async fn test_run_data_dir_overrides_config_path_db_root_dir() {
+    async fn test_run_data_dir_overrides_config_path_data_dir() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config_data_dir = temp_dir.path().join("from-config");
         let explicit_data_dir = temp_dir.path().join("from-arg");
@@ -75,7 +75,7 @@ mod standalone_server_tests {
         std::fs::write(
             &config_path,
             format!(
-                "[cluster]\ndb_root_dir = \"{}\"\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
+                "[cluster]\ndata_dir = \"{}\"\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
                 config_data_dir.display()
             ),
         )
@@ -130,7 +130,7 @@ mod standalone_server_tests {
             &config_path,
             format!(
                 concat!(
-                    "[cluster]\nnode_id = 1\ndb_root_dir = \"{}\"\n\n",
+                    "[cluster]\nnode_id = 1\ndata_dir = \"{}\"\n\n",
                     "[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n\n",
                     "[raft]\nheartbeat_idle_flush_interval_ms = 500\n",
                     "election_timeout_min_ms = 1500\nelection_timeout_max_ms = 3000\n"
@@ -142,10 +142,9 @@ mod standalone_server_tests {
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let config_path_str = config_path.to_str().unwrap().to_string();
-        let handle =
-            tokio::spawn(
-                async move { StandaloneEngine::run_with(&config_path_str, shutdown_rx).await },
-            );
+        let handle = tokio::spawn(async move {
+            StandaloneEngine::run_with(&data_dir, &config_path_str, shutdown_rx).await
+        });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         shutdown_tx.send(()).ok();
@@ -162,18 +161,21 @@ mod standalone_server_tests {
 
     #[tokio::test]
     async fn test_run_with_nonexistent_config() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
         let (_shutdown_tx, shutdown_rx) = watch::channel(());
-        let result = StandaloneEngine::run_with("/nonexistent/config.toml", shutdown_rx).await;
+        let result =
+            StandaloneEngine::run_with(temp_dir.path(), "/nonexistent/config.toml", shutdown_rx)
+                .await;
         assert!(
             result.is_err(),
             "run_with() should fail with nonexistent config"
         );
     }
 
-    /// run_with() with a /tmp db_root_dir emits a warning but is not rejected.
+    /// run_with() with a /tmp data_dir is accepted — it's a legitimate explicit choice.
     #[tokio::test]
     #[serial(tmp_db)]
-    async fn test_run_with_tmp_db_warns_but_succeeds() {
+    async fn test_run_with_tmp_db_accepted() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config_path = temp_dir.path().join("config.toml");
         let tmp_db = "/tmp/d-engine-standalone-runwith-test";
@@ -181,18 +183,16 @@ mod standalone_server_tests {
 
         std::fs::write(
             &config_path,
-            format!(
-                "[cluster]\nnode_id = 1\ndb_root_dir = \"{tmp_db}\"\n\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n"
-            ),
+            "[cluster]\nnode_id = 1\n\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
         )
         .expect("write config");
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let config_path_str = config_path.to_str().unwrap().to_string();
-        let handle =
-            tokio::spawn(
-                async move { StandaloneEngine::run_with(&config_path_str, shutdown_rx).await },
-            );
+        let tmp_db_string = tmp_db.to_string();
+        let handle = tokio::spawn(async move {
+            StandaloneEngine::run_with(&tmp_db_string, &config_path_str, shutdown_rx).await
+        });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         shutdown_tx.send(()).ok();
@@ -203,7 +203,7 @@ mod standalone_server_tests {
             .expect("server task must not panic");
         assert!(
             result.is_ok(),
-            "/tmp path should succeed with warning: {:?}",
+            "/tmp path must be accepted: {:?}",
             result.err()
         );
 
@@ -218,19 +218,16 @@ mod standalone_server_tests {
 
         std::fs::write(
             &config_path,
-            format!(
-                "[cluster]\nnode_id = 1\ndb_root_dir = \"{}\"\n\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
-                data_dir.display()
-            ),
+            "[cluster]\nnode_id = 1\n\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
         )
         .expect("write config");
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let config_path_str = config_path.to_str().unwrap().to_string();
-        let handle =
-            tokio::spawn(
-                async move { StandaloneEngine::run_with(&config_path_str, shutdown_rx).await },
-            );
+        let data_dir_str = data_dir.to_str().unwrap().to_string();
+        let handle = tokio::spawn(async move {
+            StandaloneEngine::run_with(&data_dir_str, &config_path_str, shutdown_rx).await
+        });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         shutdown_tx.send(()).expect("send shutdown");
@@ -263,11 +260,8 @@ mod start_node_tests {
     use crate::api::StandaloneEngine;
     use crate::storage::TtlLease;
 
-    /// Build a minimal valid `RaftNodeConfig` backed by a temp directory.
-    fn make_config(
-        temp_dir: &tempfile::TempDir,
-        node_id: u32,
-    ) -> d_engine_core::RaftNodeConfig {
+    /// Build a minimal valid `RaftNodeConfig`.
+    fn make_config(node_id: u32) -> d_engine_core::RaftNodeConfig {
         let listen_addr: SocketAddr = "127.0.0.1:19732".parse().unwrap();
         d_engine_core::RaftNodeConfig {
             cluster: ClusterConfig {
@@ -279,8 +273,6 @@ mod start_node_tests {
                     role: NodeRole::Follower as i32,
                     status: NodeStatus::Active.into(),
                 }],
-                db_root_dir: temp_dir.path().join("engine"),
-                log_dir: temp_dir.path().join("logs"),
             },
             ..Default::default()
         }
@@ -313,16 +305,17 @@ mod start_node_tests {
     async fn test_start_node_with_programmatic_config_starts_and_stops() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let (storage, sm) = create_rocksdb_se_and_sm(&temp_dir);
-        let config = make_config(&temp_dir, 1);
+        let config = make_config(1);
         let storage_path = temp_dir.path().join("storage");
         let sm_path = temp_dir.path().join("sm");
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let handle = tokio::spawn(StandaloneEngine::start_node(
-            config,
+            temp_dir.path().join("engine"),
             storage,
             sm,
             shutdown_rx,
+            config,
         ));
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -359,9 +352,16 @@ mod start_node_tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let (storage, sm) = create_rocksdb_se_and_sm(&temp_dir);
         let (_shutdown_tx, shutdown_rx) = watch::channel(());
-        let config = make_config(&temp_dir, 0); // node_id=0 triggers validation error
+        let config = make_config(0); // node_id=0 triggers validation error
 
-        let result = StandaloneEngine::start_node(config, storage, sm, shutdown_rx).await;
+        let result = StandaloneEngine::start_node(
+            temp_dir.path().join("engine"),
+            storage,
+            sm,
+            shutdown_rx,
+            config,
+        )
+        .await;
         assert!(
             result.is_err(),
             "start_node with node_id=0 must return validation error"
@@ -384,14 +384,15 @@ mod start_node_tests {
         sm.set_lease(Arc::new(TtlLease::new(Default::default())));
         let sm = Arc::new(sm);
 
-        let config = make_config(&temp_dir, 1);
+        let config = make_config(1);
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let handle = tokio::spawn(StandaloneEngine::start_node(
-            config,
+            temp_dir.path().join("engine"),
             storage,
             sm,
             shutdown_rx,
+            config,
         ));
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -454,7 +455,7 @@ mod run_custom_tests {
             &config_path,
             format!(
                 concat!(
-                    "[cluster]\nnode_id = {node_id}\ndb_root_dir = \"{data_dir}\"\n\n",
+                    "[cluster]\nnode_id = {node_id}\ndata_dir = \"{data_dir}\"\n\n",
                     "[cluster.rpc]\nlisten_addr = \"127.0.0.1:19733\"\n\n",
                     "[raft]\nheartbeat_idle_flush_interval_ms = 500\n",
                     "election_timeout_min_ms = 1500\nelection_timeout_max_ms = 3000\n"
@@ -501,6 +502,7 @@ mod run_custom_tests {
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let config_path_str = config_path.to_str().unwrap().to_string();
         let handle = tokio::spawn(StandaloneEngine::run_custom(
+            temp_dir.path().to_path_buf(),
             storage,
             sm,
             shutdown_rx,
@@ -518,25 +520,21 @@ mod run_custom_tests {
         unsafe { std::env::remove_var("CONFIG_PATH") };
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
-        // Use a persistent path so default /tmp/db gets a real dir
         let (storage, sm) = create_rocksdb_se_and_sm(&temp_dir);
-        // Override db_root_dir via env so default config points to our temp dir
-        unsafe {
-            std::env::set_var(
-                "RAFT__CLUSTER__DB_ROOT_DIR",
-                temp_dir.path().join("db").to_str().unwrap(),
-            );
-        }
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let handle = tokio::spawn(StandaloneEngine::run_custom::<
             RocksDBStorageEngine,
             RocksDBStateMachine,
-        >(storage, sm, shutdown_rx, None::<&str>));
+        >(
+            temp_dir.path().to_path_buf(),
+            storage,
+            sm,
+            shutdown_rx,
+            None::<&str>,
+        ));
 
         shutdown_and_assert(shutdown_tx, handle, 300, "run_custom without config").await;
-
-        unsafe { std::env::remove_var("RAFT__CLUSTER__DB_ROOT_DIR") };
     }
 
     /// `run_custom` with a nonexistent config file path must return an error.
@@ -548,6 +546,7 @@ mod run_custom_tests {
         let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
         let result = StandaloneEngine::run_custom(
+            temp_dir.path(),
             storage,
             sm,
             shutdown_rx,
@@ -570,8 +569,14 @@ mod run_custom_tests {
         let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
         let config_path_str = config_path.to_str().unwrap().to_string();
-        let result =
-            StandaloneEngine::run_custom(storage, sm, shutdown_rx, Some(config_path_str)).await;
+        let result = StandaloneEngine::run_custom(
+            temp_dir.path(),
+            storage,
+            sm,
+            shutdown_rx,
+            Some(config_path_str),
+        )
+        .await;
         assert!(
             result.is_err(),
             "run_custom with node_id=0 must return validation error"
@@ -592,15 +597,11 @@ mod unified_db_tests {
 
     use crate::api::StandaloneEngine;
 
-    fn make_config(
-        data_dir: &std::path::Path,
-        unified: bool,
-    ) -> String {
+    fn make_config(unified: bool) -> String {
         format!(
             r#"
 [cluster]
 node_id = 1
-db_root_dir = "{}"
 
 [cluster.rpc]
 listen_addr = "127.0.0.1:0"
@@ -612,8 +613,7 @@ election_timeout_max_ms = 3000
 
 [storage]
 unified_db = {unified}
-"#,
-            data_dir.display()
+"#
         )
     }
 
@@ -627,15 +627,16 @@ unified_db = {unified}
     async fn test_run_with_unified_db_starts_and_shuts_down_cleanly() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let config_path = temp_dir.path().join("config.toml");
-        std::fs::write(&config_path, make_config(temp_dir.path(), true)).expect("write config");
+        std::fs::write(&config_path, make_config(true)).expect("write config");
+        let data_dir = temp_dir.path().join("engine");
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
 
         let config_path_str = config_path.to_str().unwrap().to_string();
-        let handle =
-            tokio::spawn(
-                async move { StandaloneEngine::run_with(&config_path_str, shutdown_rx).await },
-            );
+        let data_dir_str = data_dir.to_str().unwrap().to_string();
+        let handle = tokio::spawn(async move {
+            StandaloneEngine::run_with(&data_dir_str, &config_path_str, shutdown_rx).await
+        });
 
         // Give the server enough time to open RocksDB and start the Raft loop.
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -663,15 +664,16 @@ unified_db = {unified}
     async fn test_run_with_separate_db_starts_and_shuts_down_cleanly() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let config_path = temp_dir.path().join("config.toml");
-        std::fs::write(&config_path, make_config(temp_dir.path(), false)).expect("write config");
+        std::fs::write(&config_path, make_config(false)).expect("write config");
+        let data_dir = temp_dir.path().join("engine");
 
         let (shutdown_tx, shutdown_rx) = watch::channel(());
 
         let config_path_str = config_path.to_str().unwrap().to_string();
-        let handle =
-            tokio::spawn(
-                async move { StandaloneEngine::run_with(&config_path_str, shutdown_rx).await },
-            );
+        let data_dir_str = data_dir.to_str().unwrap().to_string();
+        let handle = tokio::spawn(async move {
+            StandaloneEngine::run_with(&data_dir_str, &config_path_str, shutdown_rx).await
+        });
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 

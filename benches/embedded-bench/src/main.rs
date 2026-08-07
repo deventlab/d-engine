@@ -33,6 +33,10 @@ struct Cli {
     #[arg(long, default_value = "./config/n1.toml")]
     config_path: String,
 
+    /// Data directory (RocksDB storage)
+    #[arg(long, default_value = "./data/n1")]
+    data_dir: String,
+
     /// HTTP server port (server mode only)
     #[arg(long, default_value = "9001")]
     port: u16,
@@ -178,10 +182,14 @@ async fn main() {
         .init();
 
     let config_path = std::env::var("CONFIG_PATH").ok();
+    let data_dir = std::env::var("DATA_DIR").ok();
     let mut cli = Cli::parse();
 
     if let Some(path) = config_path {
         cli.config_path = path;
+    }
+    if let Some(dir) = data_dir {
+        cli.data_dir = dir;
     }
 
     // Same port scheme as examples/three-nodes-standalone (8081/8082/8083 per node) —
@@ -476,7 +484,7 @@ async fn run_local_benchmark(cli: Cli) {
     println!("Starting local benchmark mode...");
 
     let engine = Arc::new(
-        DefaultEmbeddedEngine::start_with(&cli.config_path)
+        DefaultEmbeddedEngine::start_with(&cli.data_dir, &cli.config_path)
             .await
             .expect("Failed to start engine"),
     );
@@ -702,7 +710,7 @@ async fn run_http_server(cli: Cli) {
     println!("Health check port: {}", cli.health_port);
 
     let engine = Arc::new(
-        DefaultEmbeddedEngine::start_with(&cli.config_path)
+        DefaultEmbeddedEngine::start_with(&cli.data_dir, &cli.config_path)
             .await
             .expect("Failed to start engine"),
     );

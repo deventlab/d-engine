@@ -702,12 +702,8 @@ fn test_update_voted_for_learner_discovers_leader() {
 // ============================================================================
 
 fn make_test_config() -> Arc<RaftNodeConfig> {
-    Arc::new(
-        RaftNodeConfig::new()
-            .expect("RaftNodeConfig::new")
-            .validate()
-            .expect("RaftNodeConfig::validate"),
-    )
+    let cfg = RaftNodeConfig::new().expect("RaftNodeConfig::new");
+    Arc::new(cfg.validate().expect("RaftNodeConfig::validate"))
 }
 
 fn make_test_context() -> (RaftContext<MockTypeConfig>, watch::Sender<()>) {

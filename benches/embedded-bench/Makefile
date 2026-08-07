@@ -10,6 +10,8 @@ CONFIG_DIR := ./config
 NODE ?= n1
 CONFIG_PATH := $(CONFIG_DIR)/$(NODE).toml
 SINGLE_NODE_CONFIG_PATH := $(CONFIG_DIR)/single_node.toml
+DATA_DIR := ./data/$(NODE)
+SINGLE_NODE_DATA_DIR := ./data/single-node
 
 # Metrics port per node — same scheme as examples/three-nodes-standalone
 # (8081/8082/8083), reused because the two setups never run concurrently.
@@ -119,6 +121,7 @@ test-single-write: build
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(SINGLE_NODE_CONFIG_PATH) \
+	DATA_DIR=$(SINGLE_NODE_DATA_DIR) \
 	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
@@ -139,6 +142,7 @@ test-high-conc-write: build
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	DATA_DIR=$(DATA_DIR) \
 	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
@@ -163,6 +167,7 @@ test-linearizable-read: build
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	DATA_DIR=$(DATA_DIR) \
 	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
@@ -182,6 +187,7 @@ test-lease-read: build
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	DATA_DIR=$(DATA_DIR) \
 	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
@@ -201,6 +207,7 @@ test-eventual-read: build
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	DATA_DIR=$(DATA_DIR) \
 	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
@@ -220,6 +227,7 @@ test-hot-key: build
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	DATA_DIR=$(DATA_DIR) \
 	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \
@@ -241,6 +249,7 @@ all-tests: build
 	@echo "Node: $(NODE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
+	DATA_DIR=$(DATA_DIR) \
 	METRICS_PORT=$(METRICS_PORT) \
 	RUST_LOG=embedded-bench=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BENCH_BIN) \

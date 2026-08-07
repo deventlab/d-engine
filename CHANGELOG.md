@@ -34,6 +34,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **MSRV raised to Rust 1.89**: The `data_dir` startup lock (prevents two node processes from
+  sharing the same directory) uses `std::fs::File::try_lock()`, stable since 1.89.0. CI and
+  `rust-toolchain.toml` were already pinned to 1.89.0 — only the `rust-version` field in
+  `Cargo.toml` needed to catch up. If you're building on 1.88, upgrade your toolchain.
+
 - `[raft.read_actor]` replaces the previous flat `read_actor_channel_capacity` / `read_actor_max_drain` fields in `[raft]`. Update existing config files accordingly.
 
 - **⚠️ `StateMachine::entry_term()` removed from trait** (#418): Term lookup belongs to the log layer, not the state machine. Custom `StateMachine` implementations must delete this method — it is no longer part of the trait. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
@@ -47,6 +52,14 @@ All notable changes to this project will be documented in this file.
 
 - **New `shutdown_timeout_ms` in `[raft.persistence]`** (default `5000`): bounds `close()` wait
   against a stuck fsync task. The task itself continues running in the background.
+
+- **`data_dir` removed from `ClusterConfig`** — it is now a required explicit argument to all engine constructors (`EmbeddedEngine::start(data_dir)`, `StandaloneEngine::run(data_dir, shutdown_rx)`, etc.). Remove `[cluster] data_dir` / `[cluster] db_root_dir` from all config files; the constructor argument always wins and the config field is silently ignored.
+
+- **`cluster.log_dir` removed** — was validated but never consumed.
+
+- **`snapshots_dir` is no longer configurable** — always `data_dir/snapshots`. Fixes cross-node snapshot corruption when running multiple nodes on one machine (was a shared `/tmp/snapshots`).
+
+- **`NodeBuilder` is no longer public** — use `EmbeddedEngine::start_custom`/`StandaloneEngine::run_custom` to plug in a custom storage engine or state machine. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
 
 ---
 

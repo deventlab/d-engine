@@ -226,7 +226,6 @@ pub fn setup_raft_components(
 
     // Each unit test db path will be different
     let mut node_config = RaftNodeConfig::default();
-    node_config.cluster.db_root_dir = PathBuf::from(db_path);
     node_config.cluster.initial_cluster = peers_meta.clone();
 
     let snapshot_policy = LogSizePolicy::new(
@@ -239,6 +238,7 @@ pub fn setup_raft_components(
         id,
         last_applied_pair.index,
         state_machine.clone(),
+        PathBuf::from(db_path).join("snapshots"),
         node_config.raft.snapshot.clone(),
         snapshot_policy,
         None, // No watch for tests

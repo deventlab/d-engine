@@ -92,6 +92,10 @@ where
 
     // current_snapshot_version: AtomicU64,
     snapshot_config: SnapshotConfig,
+    /// Explicit runtime path — always `data_dir/snapshots` (see #10). Not
+    /// part of `snapshot_config`; `snapshots_dir` is a runtime identity, not
+    /// a configurable setting.
+    snapshots_dir: PathBuf,
     snapshot_policy: SNP<T>,
     snapshot_in_progress: AtomicBool,
 
@@ -410,21 +414,42 @@ where
 
         let temp_path = self.path_mgr.temp_work_path(&last_included);
 
+        // A crashed/killed previous attempt at this exact index can leave temp_path behind;
+        // without removing it first, generate_snapshot_data fails with "File exists" forever.
+        if let Err(e) = remove_dir_all(&temp_path).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(SnapshotError::OperationFailed(format!(
+                "Failed to remove stale temp directory: {e}"
+            ))
+            .into());
+        }
+
         // 3: Create snapshot based on the temp path
         debug!(
             ?temp_path,
             ?last_included,
             "create_snapshot 3: Create snapshot based on the temp path"
         );
-        let checksum_bytes = self
+        let checksum_bytes = match self
             .state_machine
             .generate_snapshot_data(temp_path.clone(), last_included)
-            .await?;
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                let _ = remove_dir_all(&temp_path).await;
+                return Err(e);
+            }
+        };
 
         // 4: Compress the snapshot directory into a tar.gz archive
         debug!("create_snapshot 4: Compressing snapshot directory");
         let final_path = self.path_mgr.final_snapshot_path(&last_included);
-        self.compress_directory(&temp_path, &final_path).await?;
+        if let Err(e) = self.compress_directory(&temp_path, &final_path).await {
+            let _ = remove_dir_all(&temp_path).await;
+            return Err(e);
+        }
 
         // 6. Remove the original uncompressed directory
         remove_dir_all(&temp_path).await.map_err(|e| {
@@ -436,7 +461,7 @@ where
         if let Err(e) = self
             .cleanup_snapshot(
                 self.snapshot_config.cleanup_retain_count,
-                &self.snapshot_config.snapshots_dir,
+                &self.snapshots_dir,
                 &self.snapshot_config.snapshots_dir_prefix,
             )
             .await
@@ -792,6 +817,7 @@ where
         node_id: u32,
         last_applied_index: u64,
         state_machine: Arc<SMOF<T>>,
+        snapshots_dir: PathBuf,
         snapshot_config: SnapshotConfig,
         snapshot_policy: SNP<T>,
         #[cfg_attr(not(feature = "watch"), allow(unused_variables))] watch_event_tx: Option<
@@ -811,9 +837,10 @@ where
             state_machine,
             snapshot_policy,
             path_mgr: Arc::new(SnapshotPathManager::new(
-                snapshot_config.snapshots_dir.clone(),
+                snapshots_dir.clone(),
                 snapshot_config.snapshots_dir_prefix.clone(),
             )),
+            snapshots_dir,
             snapshot_config,
 
             snapshot_lock: RwLock::new(()),
@@ -833,6 +860,7 @@ where
         node_id: u32,
         last_applied_index: u64,
         state_machine: Arc<SMOF<T>>,
+        snapshots_dir: PathBuf,
         snapshot_config: SnapshotConfig,
         snapshot_policy: SNP<T>,
     ) -> Self {
@@ -840,6 +868,7 @@ where
             node_id,
             last_applied_index,
             state_machine,
+            snapshots_dir,
             snapshot_config,
             snapshot_policy,
             None,

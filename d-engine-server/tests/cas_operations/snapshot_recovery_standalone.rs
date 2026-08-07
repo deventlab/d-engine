@@ -29,12 +29,15 @@ use tempfile::TempDir;
 #[traced_test]
 async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let db_root_dir = temp_dir.path().join("db").to_string_lossy().to_string();
     let log_dir = temp_dir.path().join("logs").to_string_lossy().to_string();
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
+
+    let node_data_dirs: Vec<_> = (0..ports.len())
+        .map(|i| temp_dir.path().join(format!("node{}", i + 1)))
+        .collect();
 
     let mut ctx = TestContext {
         graceful_txs: Vec::new(),
@@ -44,8 +47,16 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     info!("Starting 3-node cluster for CAS snapshot recovery test");
     for (i, port) in ports.iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
+            &node_data_dirs[i],
             node_config(
-                &create_node_config((i + 1) as u64, *port, ports, &db_root_dir, &log_dir).await,
+                &create_node_config(
+                    (i + 1) as u64,
+                    *port,
+                    ports,
+                    &node_data_dirs[i].to_string_lossy(),
+                    &log_dir,
+                )
+                .await,
             ),
             None,
             None,
@@ -115,7 +126,17 @@ async fn test_snapshot_recovery_standalone() -> Result<(), ClientApiError> {
     // Step 4: Restart node 2
     info!("Step 4: Restarting node 2");
     let (graceful_tx, node_handle) = start_node(
-        node_config(&create_node_config(2, ports[1], ports, &db_root_dir, &log_dir).await),
+        &node_data_dirs[1],
+        node_config(
+            &create_node_config(
+                2,
+                ports[1],
+                ports,
+                &node_data_dirs[1].to_string_lossy(),
+                &log_dir,
+            )
+            .await,
+        ),
         None,
         None,
     )

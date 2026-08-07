@@ -64,9 +64,8 @@ use crate::common::get_available_ports;
 #[traced_test]
 async fn test_leader_snapshot_concurrent_writes() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
-    let snapshots_dir = temp_dir.path().join("snapshots");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
@@ -88,7 +87,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -97,29 +95,26 @@ general_raft_timeout_duration_in_ms = 5000
 [raft.snapshot]
 max_log_entries_before_snapshot = 100
 retained_log_entries = 10
-snapshots_dir = '{}'
 "#,
             node_id,
             ports[node_id as usize - 1],
             ports[0],
             ports[1],
             ports[2],
-            db_root_dir.display(),
-            log_dir.display(),
-            snapshots_dir.join(format!("node{node_id}")).display()
+            log_dir.display()
         );
 
         let config_path = format!("/tmp/snapshot_concurrent_node{node_id}.toml");
         tokio::fs::write(&config_path, &config).await?;
 
-        let db_path = db_root_dir.join(format!("node{node_id}/db"));
+        let db_path = data_dir.join(format!("node{node_id}/db"));
 
         tokio::fs::create_dir_all(&db_path).await?;
-        tokio::fs::create_dir_all(snapshots_dir.join(format!("node{node_id}"))).await?;
 
         let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
 
         let engine = DefaultEmbeddedEngine::start_custom(
+            &db_path,
             Arc::new(storage),
             Arc::new(sm),
             Some(&config_path),
@@ -257,9 +252,10 @@ snapshots_dir = '{}'
     // Wait a bit more to ensure snapshot is fully written
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Check snapshot directory exists and contains files
+    // Check snapshot directory exists and contains files. Snapshots are
+    // always at data_dir/snapshots (not independently configurable).
     let leader_id = engines[leader_idx].node_id();
-    let leader_snapshot_dir = snapshots_dir.join(format!("node{leader_id}"));
+    let leader_snapshot_dir = data_dir.join(format!("node{leader_id}/db")).join("snapshots");
 
     assert!(
         leader_snapshot_dir.exists(),

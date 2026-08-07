@@ -37,15 +37,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ## Step 2: Create Config File (1 minute)
 
-Create `d-engine.toml` with only the settings you need — omitted fields use built-in defaults:
+For a single node, no config file is needed — jump to Step 3.
 
-```toml
-[cluster]
-db_root_dir = "./data/single-node"
-```
-
-For all available options with descriptions and defaults, see
-[`d_engine_core::config`](https://docs.rs/d-engine-core/latest/d_engine_core/config/).
+For multi-node clusters or custom settings, create `d-engine.toml` with only the
+fields you need. All omitted fields use built-in defaults. See
+[`d_engine_core::config`](https://docs.rs/d-engine-core/latest/d_engine_core/config/)
+for the full list.
 
 ## Step 3: Write Your First d-engine App (2 minutes)
 
@@ -60,8 +57,8 @@ use std::time::Duration;
 async fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting d-engine...\n");
 
-    // Start embedded engine with config file
-    let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
+    // Start embedded engine — single node, no config file needed
+    let engine = DefaultEmbeddedEngine::start("./data").await?;
 
     // Wait for leader election (single-node: instant)
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;
@@ -116,17 +113,18 @@ Done!
 ### Behind the Scenes
 
 ```rust,ignore
-DefaultEmbeddedEngine::start_with("d-engine.toml").await?
+DefaultEmbeddedEngine::start("./data").await?
 ```
 
 This one line:
 
-1. Reads config from `d-engine.toml`
-2. Created `./data/single-node/db/` (single RocksDB instance)
-3. Initialized 4 column families: `logs`, `meta`, `state_machine`, `state_machine_meta`
-4. Built Raft node with node_id=1
-5. Spawned `node.run()` in background (Raft protocol)
-6. Returned immediately (non-blocking)
+1. Created `./data/storage/` (`logs`, `meta`) and `./data/state_machine/`
+   (`state_machine`, `state_machine_meta`) — two separate RocksDB instances by
+   default, for workload isolation. (Set `[storage] unified_db = true` for one
+   shared instance at `./data/db/` instead.)
+2. Built Raft node with node_id=1
+3. Spawned `node.run()` in background (Raft protocol)
+4. Returned immediately (non-blocking)
 
 ```rust,ignore
 engine.wait_ready(Duration::from_secs(5)).await?
@@ -185,7 +183,7 @@ See docs for TTL, multi-key operations, and advanced consistency control.
 ### 3. Automatic Lifecycle Management
 
 ```rust,ignore
-let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
+let engine = DefaultEmbeddedEngine::start("./data").await?;
 // ↑ Internally spawns node.run() in background
 
 engine.stop().await?;
@@ -201,21 +199,26 @@ No manual `tokio::spawn()`, no leaked tasks.
 ### DefaultEmbeddedEngine
 
 ```rust,ignore
-// Explicit data directory (highest priority)
+// Explicit data directory (required)
 DefaultEmbeddedEngine::start(data_dir: impl AsRef<Path>) -> Result<Self>
 
-// Use explicit config file
-DefaultEmbeddedEngine::start_with(config_path: impl AsRef<Path>) -> Result<Self>
+// Explicit data directory + config file for non-path settings
+DefaultEmbeddedEngine::start_with(
+    data_dir: impl AsRef<Path>,
+    config_path: impl AsRef<Path>
+) -> Result<Self>
 
 // Start with programmatic config — no config file needed
 EmbeddedEngine::<YourTypeConfig>::start_node(
-    config: RaftNodeConfig,
+    data_dir: impl AsRef<Path>,
     storage: Arc<impl StorageEngine>,
-    state_machine: Arc<impl StateMachine>
+    state_machine: Arc<impl StateMachine>,
+    config: RaftNodeConfig
 ) -> Result<Self>
 
 // Advanced (custom storage + state machine with optional config file)
 EmbeddedEngine::<YourTypeConfig>::start_custom(
+    data_dir: impl AsRef<Path>,
     storage: Arc<impl StorageEngine>,
     state_machine: Arc<impl StateMachine>,
     config_path: Option<&str>
@@ -269,8 +272,8 @@ let engine = DefaultEmbeddedEngine::start("./data").await?;
 ### Pattern 2: Explicit config file
 
 ```rust,ignore
-// Use specific config file
-let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
+// Use specific config file for non-path settings (node_id, cluster topology, etc.)
+let engine = DefaultEmbeddedEngine::start_with("./data", "d-engine.toml").await?;
 ```
 
 ### Pattern 3: Monitor Leader Changes
@@ -324,9 +327,8 @@ match engine.wait_ready(Duration::from_secs(10)).await {
 # Check permissions
 ls -la ./data
 
-# Or update d-engine.toml to use /tmp
-[cluster]
-db_root_dir = "/tmp/d-engine"
+# Or pass a writable path to the constructor
+EmbeddedEngine::start("/tmp/d-engine").await?;
 ```
 
 ### "Address already in use"
@@ -390,7 +392,7 @@ For advanced usage:
 
 ## Key Takeaways
 
-- ✅ **2-line startup**: `start_with()` → `wait_ready()`
+- ✅ **2-line startup**: `start()` → `wait_ready()`
 - ✅ **Zero boilerplate**: No manual spawn, no shutdown channels
 - ✅ **Event-driven**: No polling, <1ms notification latency
 - ✅ **Production-ready**: Auto-creates directories, graceful shutdown

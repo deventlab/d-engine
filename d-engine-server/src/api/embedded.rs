@@ -3,17 +3,6 @@
 //! This module provides [`EmbeddedEngine`], a high-level wrapper around [`Node`]
 //! that simplifies lifecycle management for embedded use cases.
 //!
-//! ## Comparison: Node vs EmbeddedEngine
-//!
-//! ### Using Node (Low-level API)
-//! ```ignore
-//! let node = NodeBuilder::new(config).start().await?;
-//! // Node does not provide client directly - use EmbeddedEngine instead
-//! tokio::spawn(async move { node.run().await });
-//! // Manual lifecycle management required
-//! ```
-//!
-//! ### Using EmbeddedEngine (High-level API)
 //! ```ignore
 //! let engine = EmbeddedEngine::start("./data/my-app").await?;
 //! engine.wait_ready(Duration::from_secs(5)).await?;
@@ -22,10 +11,8 @@
 //! // Lifecycle managed automatically
 //! ```
 //!
-//! ## When to Use
-//!
-//! - **EmbeddedEngine**: Application developers who want simplicity
-//! - **Node**: Framework developers who need fine-grained control
+//! Need a custom storage engine or state machine? Use [`EmbeddedEngine::start_custom`]
+//! instead of `start`/`start_with`.
 //!
 //! # Application Responsibilities in Multi-Node Deployments
 //!
@@ -200,34 +187,24 @@ impl<T: TypeConfig> Clone for EmbeddedEngine<T> {
 impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
     /// Start engine with an explicit data directory.
     ///
-    /// `data_dir` has highest priority and always overrides `cluster.db_root_dir` from
-    /// `CONFIG_PATH` or `RAFT__` environment variables. Other configuration (network,
-    /// Raft timeouts, cluster topology) is still read from those sources if set.
-    ///
     /// The directory is created automatically if it does not exist.
     /// If it already contains data the engine opens it in place (idempotent).
     ///
     /// # Example
     /// ```ignore
-    /// // Minimal — just supply a path
     /// let engine = EmbeddedEngine::start("./data/my-app").await?;
     /// engine.wait_ready(Duration::from_secs(5)).await?;
-    ///
-    /// // Works with any AsRef<Path>
-    /// let engine = EmbeddedEngine::start(std::path::Path::new("/var/lib/my-app")).await?;
     /// ```
     pub async fn start(data_dir: impl AsRef<std::path::Path>) -> Result<Self> {
-        let mut config = d_engine_core::RaftNodeConfig::new()?;
-        config.cluster.db_root_dir = data_dir.as_ref().to_path_buf();
-        let config = config.validate()?;
-
-        let base_dir = config.cluster.db_root_dir.clone();
-        tokio::fs::create_dir_all(&base_dir)
-            .await
-            .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
+        let config = d_engine_core::RaftNodeConfig::new()?.validate()?;
+        let data_dir = crate::node::DataDir::new(data_dir.as_ref())?;
+        // Lock before touching storage — otherwise two racing processes both
+        // get partway into opening the same RocksDB directory before either
+        // one even checks this lock.
+        let data_dir_lock = crate::node::DataDirLock::acquire(data_dir.as_path())?;
 
         let (storage, mut sm) = if config.storage.unified_db {
-            let db_path = base_dir.join("db");
+            let db_path = data_dir.unified_db_path()?;
             info!(
                 "Starting embedded engine with unified RocksDB at {:?}",
                 db_path
@@ -236,10 +213,10 @@ impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
         } else {
             info!(
                 "Starting embedded engine with separate RocksDB instances at {:?}",
-                base_dir
+                data_dir.as_path()
             );
-            let storage = RocksDBStorageEngine::new(base_dir.join("storage"))?;
-            let sm = RocksDBStateMachine::new(base_dir.join("state_machine"))?;
+            let storage = RocksDBStorageEngine::new(data_dir.storage_path()?)?;
+            let sm = RocksDBStateMachine::new(data_dir.state_machine_path()?)?;
             (storage, sm)
         };
 
@@ -248,23 +225,28 @@ impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
         ));
         sm.set_lease(lease);
 
-        Self::start_node(config, Arc::new(storage), Arc::new(sm)).await
+        Self::start_node_with_lock(
+            data_dir.as_path().to_path_buf(),
+            data_dir_lock,
+            Arc::new(storage),
+            Arc::new(sm),
+            config,
+        )
+        .await
     }
 
-    /// Start engine with explicit configuration file.
-    ///
-    /// Reads configuration from specified file path.
-    /// Data directory is determined by config's `cluster.db_root_dir` setting.
-    ///
-    /// # Arguments
-    /// - `config_path`: Path to configuration file (e.g. "d-engine.toml")
+    /// Start engine with an explicit data directory plus a config file for
+    /// everything else (topology, timeouts, network — not data_dir; a
+    /// `[cluster] data_dir` entry in the file, if present, is ignored).
     ///
     /// # Example
     /// ```ignore
-    /// let engine = EmbeddedEngine::start_with("config/node1.toml").await?;
-    /// engine.wait_ready(Duration::from_secs(5)).await?;
+    /// let engine = EmbeddedEngine::start_with("./data/my-app", "config/node1.toml").await?;
     /// ```
-    pub async fn start_with(config_path: impl AsRef<std::path::Path>) -> Result<Self> {
+    pub async fn start_with(
+        data_dir: impl AsRef<std::path::Path>,
+        config_path: impl AsRef<std::path::Path>,
+    ) -> Result<Self> {
         let path_str = config_path
             .as_ref()
             .to_str()
@@ -273,14 +255,11 @@ impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
         let config = d_engine_core::RaftNodeConfig::new()?
             .with_override_config(path_str)?
             .validate()?;
-        let base_dir = std::path::PathBuf::from(&config.cluster.db_root_dir);
-
-        tokio::fs::create_dir_all(&base_dir)
-            .await
-            .map_err(|e| crate::Error::Fatal(format!("Failed to create data directory: {e}")))?;
+        let data_dir = crate::node::DataDir::new(data_dir.as_ref())?;
+        let data_dir_lock = crate::node::DataDirLock::acquire(data_dir.as_path())?;
 
         let (storage, mut sm) = if config.storage.unified_db {
-            let db_path = base_dir.join("db");
+            let db_path = data_dir.unified_db_path()?;
             info!(
                 "Starting embedded engine with unified RocksDB at {:?}",
                 db_path
@@ -289,10 +268,10 @@ impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
         } else {
             info!(
                 "Starting embedded engine with separate RocksDB instances at {:?}",
-                base_dir
+                data_dir.as_path()
             );
-            let storage = RocksDBStorageEngine::new(base_dir.join("storage"))?;
-            let sm = RocksDBStateMachine::new(base_dir.join("state_machine"))?;
+            let storage = RocksDBStorageEngine::new(data_dir.storage_path()?)?;
+            let sm = RocksDBStateMachine::new(data_dir.state_machine_path()?)?;
             (storage, sm)
         };
 
@@ -301,7 +280,18 @@ impl EmbeddedEngine<RaftTypeConfig<RocksDBStorageEngine, RocksDBStateMachine>> {
         ));
         sm.set_lease(lease);
 
-        Self::start_custom(Arc::new(storage), Arc::new(sm), Some(path_str)).await
+        // start_node_with_lock directly, not start_custom — config is
+        // already loaded/validated here, and the lock is already held;
+        // start_custom would re-parse config_path again for no benefit and
+        // can't accept a pre-acquired lock anyway.
+        Self::start_node_with_lock(
+            data_dir.as_path().to_path_buf(),
+            data_dir_lock,
+            Arc::new(storage),
+            Arc::new(sm),
+            config,
+        )
+        .await
     }
 }
 
@@ -312,45 +302,92 @@ where
     SE: StorageEngine + Debug + 'static,
     SM: StateMachine + Debug + 'static,
 {
-    /// Start engine with custom storage and state machine.
+    /// Starts the engine with a custom storage engine and state machine.
     ///
-    /// Advanced API for users providing custom storage implementations.
+    /// `data_dir` is required and explicit — `config_path` is only for
+    /// non-path settings (node_id, cluster topology, timeouts, etc.); any
+    /// `data_dir` entry in the config file is ignored.
+    ///
+    /// d-engine's data_dir lock only protects d-engine's own files.
+    /// `storage_engine`/`state_machine` are constructed by the caller;
+    /// their concurrency safety is the caller's responsibility.
     ///
     /// # Arguments
-    /// - `config_path`: Optional path to configuration file
-    /// - `storage_engine`: Custom storage engine implementation
-    /// - `state_machine`: Custom state machine implementation
+    /// - `data_dir`: root directory for this node's persistent state
+    /// - `storage_engine`: custom storage engine implementation
+    /// - `state_machine`: custom state machine implementation
+    /// - `config_path`: optional config file for non-path settings
     ///
     /// # Example
     /// ```ignore
     /// let storage = Arc::new(MyCustomStorage::new()?);
     /// let sm = Arc::new(MyCustomStateMachine::new()?);
-    /// let engine = EmbeddedEngine::start_custom(storage, sm, None).await?;
+    /// let engine = EmbeddedEngine::start_custom("./data/my-node", storage, sm, None).await?;
     /// ```
     pub async fn start_custom(
+        data_dir: impl AsRef<std::path::Path>,
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
         config_path: Option<&str>,
     ) -> Result<Self> {
         let node_config = if let Some(path) = config_path {
-            d_engine_core::RaftNodeConfig::default()
-                .with_override_config(path)?
-                .validate()?
+            d_engine_core::RaftNodeConfig::default().with_override_config(path)?
         } else {
-            d_engine_core::RaftNodeConfig::new()?.validate()?
+            d_engine_core::RaftNodeConfig::new()?
         };
+        let node_config = node_config.validate()?;
 
-        Self::start_node(node_config, storage_engine, state_machine).await
+        Self::start_node(data_dir, storage_engine, state_machine, node_config).await
     }
 
     /// Start engine with custom storage, state machine, and programmatic config.
     ///
     /// For library wrappers that build their own config layer and
     /// translate to `RaftNodeConfig` in Rust — no config file required.
+    /// Same lock scope as [`start_custom`](Self::start_custom) — see its doc.
     pub async fn start_node(
-        node_config: d_engine_core::RaftNodeConfig,
+        data_dir: impl AsRef<std::path::Path>,
         storage_engine: Arc<SE>,
         state_machine: Arc<SM>,
+        node_config: d_engine_core::RaftNodeConfig,
+    ) -> Result<Self> {
+        Self::start_node_inner(
+            data_dir.as_ref().to_path_buf(),
+            None,
+            storage_engine,
+            state_machine,
+            node_config,
+        )
+        .await
+    }
+
+    /// Same as `start_node`, but for callers (`start`/`start_with`) that
+    /// already opened storage and therefore must have acquired the lock
+    /// *before* that — see `NodeBuilder::data_dir_lock`'s doc comment.
+    #[allow(dead_code)]
+    async fn start_node_with_lock(
+        data_dir: std::path::PathBuf,
+        data_dir_lock: crate::node::DataDirLock,
+        storage_engine: Arc<SE>,
+        state_machine: Arc<SM>,
+        node_config: d_engine_core::RaftNodeConfig,
+    ) -> Result<Self> {
+        Self::start_node_inner(
+            data_dir,
+            Some(data_dir_lock),
+            storage_engine,
+            state_machine,
+            node_config,
+        )
+        .await
+    }
+
+    async fn start_node_inner(
+        data_dir: std::path::PathBuf,
+        data_dir_lock: Option<crate::node::DataDirLock>,
+        storage_engine: Arc<SE>,
+        state_machine: Arc<SM>,
+        node_config: d_engine_core::RaftNodeConfig,
     ) -> Result<Self> {
         info!("Starting embedded d-engine");
         d_engine_core::init_clock();
@@ -361,14 +398,20 @@ where
         // for the direct-SM fast path. LOCK release is decoupled from Arc<SM> counting
         // (via close_db()), so holding multiple Arc<SM> clones is safe.
         let sm_for_client = Arc::clone(&state_machine);
-
         let sm_for_engine = Arc::clone(&state_machine);
 
-        let node = NodeBuilder::init(node_config.validate()?, shutdown_rx)
+        let mut builder = NodeBuilder::init(data_dir, node_config.validate()?, shutdown_rx)
             .storage_engine(storage_engine)
-            .state_machine(state_machine)
-            .start()
-            .await?;
+            .state_machine(state_machine);
+        if let Some(lock) = data_dir_lock {
+            builder = builder.data_dir_lock(lock);
+        } else {
+            tracing::warn!(
+                "storage_engine/state_machine were built before d-engine's data_dir \
+                 lock — their concurrency safety is the caller's responsibility"
+            );
+        }
+        let node = builder.start().await?;
 
         let leader_elected_rx = node.leader_change_notifier();
         let membership_rx = node.membership_change_notifier();
@@ -461,7 +504,7 @@ impl<T: TypeConfig> EmbeddedEngine<T> {
     /// let leader = engine.wait_ready(Duration::from_secs(3)).await?;
     ///
     /// // Multi-node production
-    /// let engine = EmbeddedEngine::start_with("cluster.toml").await?;
+    /// let engine = EmbeddedEngine::start_with("./data/node1", "cluster.toml").await?;
     /// let leader = engine.wait_ready(Duration::from_secs(10)).await?;
     /// println!("Leader elected: {} (term {})", leader.leader_id, leader.term);
     /// ```

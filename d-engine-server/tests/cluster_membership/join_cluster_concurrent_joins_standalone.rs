@@ -75,10 +75,8 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     // Use a temp directory for full test isolation — auto-cleaned on drop
     let tmp_dir = tempfile::tempdir().expect("failed to create tmpdir");
     let db_dir = tmp_dir.path().join("db");
-    let snapshot_dir = tmp_dir.path().join("snapshots");
     let log_dir = tmp_dir.path().join("logs");
     let db_dir = db_dir.to_str().unwrap();
-    let snapshot_dir = snapshot_dir.to_str().unwrap();
     let log_dir = log_dir.to_str().unwrap();
 
     // MODIFICATION: Use dynamic port allocation instead of hardcoded ports
@@ -149,8 +147,6 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
         // Configure snapshot settings
         node_config.raft.snapshot.max_log_entries_before_snapshot = 10;
         node_config.raft.snapshot.cleanup_retain_count = 2;
-        node_config.raft.snapshot.snapshots_dir =
-            PathBuf::from(format!("{snapshot_dir}/{node_id}"));
         node_config.raft.snapshot.chunk_size = 100;
 
         // Calculate snapshot metadata
@@ -163,6 +159,7 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
             prepare_state_machine(node_id as u32, &format!("{db_dir}/cs/{node_id}")).await,
         );
         let (graceful_tx, node_handle) = start_node(
+            format!("{db_dir}/cs/{node_id}"),
             node_config,
             Some(state_machine),
             Some(storage_engines[i].clone()),
@@ -187,7 +184,7 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
 
     // Wait for node 3 snapshot to be generated — poll up to 15s
     {
-        let snapshot_path = format!("{snapshot_dir}/3");
+        let snapshot_path = format!("{db_dir}/cs/3/snapshots");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
             if check_path_contents(&snapshot_path).unwrap_or(false) {
@@ -224,12 +221,12 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     let mut node_config = node_config(&config);
     node_config.raft.snapshot.max_log_entries_before_snapshot = 10;
     node_config.raft.snapshot.cleanup_retain_count = 2;
-    node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", snapshot_dir, 4));
     node_config.raft.snapshot.chunk_size = 100;
 
     // Create fresh Arc for node 4 state machine to ensure single ownership
     let state_machine_4 = Arc::new(prepare_state_machine(4, &format!("{db_dir}/cs/4")).await);
     let (graceful_tx4, node_n4) = start_node(
+        format!("{db_dir}/cs/4"),
         node_config,
         Some(state_machine_4),
         Some(storage_engines[3].clone()),
@@ -267,12 +264,12 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     let mut node_config = common::node_config(&config);
     node_config.raft.snapshot.max_log_entries_before_snapshot = 10;
     node_config.raft.snapshot.cleanup_retain_count = 2;
-    node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", snapshot_dir, 5));
     node_config.raft.snapshot.chunk_size = 100;
 
     // Create fresh Arc for node 5 state machine to ensure single ownership
     let state_machine_5 = Arc::new(prepare_state_machine(5, &format!("{db_dir}/cs/5")).await);
     let (graceful_tx5, node_n5) = start_node(
+        format!("{db_dir}/cs/5"),
         node_config,
         Some(state_machine_5),
         Some(storage_engines[4].clone()),
@@ -287,7 +284,7 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     sleep(Duration::from_secs(5)).await;
 
     // Validate that the first new node has received the snapshot
-    let snapshot_path = format!("{snapshot_dir}/4");
+    let snapshot_path = format!("{db_dir}/cs/4/snapshots");
     assert!(check_path_contents(&snapshot_path).unwrap_or(false));
 
     // Verify that the first new node has all the data by re-opening state machine
@@ -300,7 +297,7 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     }
 
     // Validate that the second new node has received the snapshot
-    let snapshot_path = format!("{snapshot_dir}/5");
+    let snapshot_path = format!("{db_dir}/cs/5/snapshots");
     assert!(check_path_contents(&snapshot_path).unwrap_or(false));
 
     // Verify that the second new node has all the data by re-opening state machine
@@ -362,8 +359,8 @@ async fn create_node_config(
     node_id: u64,
     port: u16,
     cluster_nodes: &[(u16, u8, u8)], // (port, role, status)
-    db_root_dir: &str,
-    log_dir: &str,
+    _data_dir: &str,
+    _log_dir: &str,
 ) -> String {
     println!("Creating configuration for node {node_id} on port {port}");
 
@@ -385,8 +382,6 @@ async fn create_node_config(
         initial_cluster = [
             {initial_cluster_entries}
         ]
-        db_root_dir = '{db_root_dir}'
-        log_dir = '{log_dir}'
         "#
     )
 }

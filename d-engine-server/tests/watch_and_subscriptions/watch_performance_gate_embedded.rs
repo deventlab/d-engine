@@ -49,6 +49,7 @@ watcher_buffer_size = 100
         RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
 
     let engine = DefaultEmbeddedEngine::start_custom(
+        temp_dir.path(),
         Arc::new(storage),
         Arc::new(state_machine),
         Some(config_path.to_str().unwrap()),

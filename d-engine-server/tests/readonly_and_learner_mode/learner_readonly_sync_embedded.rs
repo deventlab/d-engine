@@ -12,11 +12,10 @@ use tracing::info;
 use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
-use crate::common::node_config;
 use crate::common::reset;
 
 const TEST_DIR: &str = "embedded/readonly";
-const DB_ROOT_DIR: &str = "./db/embedded/readonly";
+const DATA_DIR: &str = "./db/embedded/readonly";
 const LOG_DIR: &str = "./logs/embedded/readonly";
 
 /// Test: Embedded Mode - ReadOnly Learner Node
@@ -79,26 +78,25 @@ initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},  # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }}   # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 5000
 "#,
-        ports[0], ports[0], ports[1], DB_ROOT_DIR, LOG_DIR
+        ports[0], ports[0], ports[1], LOG_DIR
     );
 
     let node1_config_path = "/tmp/analytics_embedded_node1.toml";
     tokio::fs::write(node1_config_path, &node1_config).await?;
 
-    let config1 = node_config(&node1_config);
-    let db_path1 = config1.cluster.db_root_dir.join("node1/db");
+    let db_path1 = std::path::PathBuf::from(DATA_DIR).join("node1/db");
 
     tokio::fs::create_dir_all(&db_path1).await?;
 
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
 
     let engine1 = DefaultEmbeddedEngine::start_custom(
+        &db_path1,
         Arc::new(storage1),
         Arc::new(sm1),
         Some(node1_config_path),
@@ -115,26 +113,25 @@ initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},  # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }}   # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 5000
 "#,
-        ports[1], ports[0], ports[1], DB_ROOT_DIR, LOG_DIR
+        ports[1], ports[0], ports[1], LOG_DIR
     );
 
     let node2_config_path = "/tmp/analytics_embedded_node2.toml";
     tokio::fs::write(node2_config_path, &node2_config).await?;
 
-    let config2 = node_config(&node2_config);
-    let db_path2 = config2.cluster.db_root_dir.join("node2/db");
+    let db_path2 = std::path::PathBuf::from(DATA_DIR).join("node2/db");
 
     tokio::fs::create_dir_all(&db_path2).await?;
 
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
 
     let engine2 = DefaultEmbeddedEngine::start_custom(
+        &db_path2,
         Arc::new(storage2),
         Arc::new(sm2),
         Some(node2_config_path),
@@ -182,26 +179,25 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},  # NODE_ROLE_FOLLOWER, NODE_STATUS_ACTIVE
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 4, status = 2 }}   # NODE_ROLE_LEARNER, NODE_STATUS_READ_ONLY
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 5000
 "#,
-        ports[2], ports[0], ports[1], ports[2], DB_ROOT_DIR, LOG_DIR
+        ports[2], ports[0], ports[1], ports[2], LOG_DIR
     );
 
     let node3_config_path = "/tmp/analytics_embedded_node3.toml";
     tokio::fs::write(node3_config_path, &node3_config).await?;
 
-    let config3 = node_config(&node3_config);
-    let db_path3 = config3.cluster.db_root_dir.join("node3/db");
+    let db_path3 = std::path::PathBuf::from(DATA_DIR).join("node3/db");
 
     tokio::fs::create_dir_all(&db_path3).await?;
 
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
 
     let engine3 = DefaultEmbeddedEngine::start_custom(
+        &db_path3,
         Arc::new(storage3),
         Arc::new(sm3),
         Some(node3_config_path),

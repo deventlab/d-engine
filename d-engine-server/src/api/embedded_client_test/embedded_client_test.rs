@@ -122,7 +122,7 @@ mod integration_tests {
             r#"
 [cluster]
 listen_address = "127.0.0.1:{}"
-db_root_dir = "{}"
+data_dir = "{}"
 single_node = true
 
 [raft]
@@ -142,7 +142,7 @@ max_batch_size = 1
         );
         std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-        let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
+        let engine = DefaultEmbeddedEngine::start_with(&db_path, config_path.to_str().unwrap())
             .await
             .expect("Failed to start engine");
 

@@ -24,21 +24,19 @@ async fn test_start_with_no_config_path_env() {
         r#"
 [cluster]
 node_id = 1
-db_root_dir = "{}"
 
 [[cluster.initial_cluster]]
 id = 1
 address = "127.0.0.1:0"
 role = 3
 status = 3
-"#,
-        db_path.display()
+"#
     )
     .unwrap();
     drop(file);
 
     // Core test: start_with should work without CONFIG_PATH env var
-    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(&db_path, config_path.to_str().unwrap())
         .await
         .expect("Should start without CONFIG_PATH env");
 

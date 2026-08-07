@@ -4,7 +4,6 @@ use crate::test_utils::create_config_entries;
 use crate::test_utils::create_mixed_entries;
 use crate::test_utils::generate_delete_commands;
 use crate::test_utils::generate_insert_commands;
-use crate::test_utils::node_config;
 use crate::test_utils::snapshot_config;
 
 #[test]
@@ -112,21 +111,19 @@ fn test_generate_delete_commands_large_range() {
 #[test]
 fn test_snapshot_config_defaults() {
     let dir = PathBuf::from("/tmp/snapshots");
-    let config = snapshot_config(dir.clone());
+    let config = snapshot_config(dir);
 
     assert_eq!(config.max_log_entries_before_snapshot, 1);
     assert_eq!(config.cleanup_retain_count, 2);
     assert_eq!(config.chunk_size, 1024);
     assert!(config.enable);
-    assert_eq!(config.snapshots_dir, dir);
 }
 
 #[test]
 fn test_snapshot_config_paths() {
     let dir = PathBuf::from("/var/raft/snapshots");
-    let config = snapshot_config(dir.clone());
+    let config = snapshot_config(dir);
 
-    assert_eq!(config.snapshots_dir, dir);
     assert_eq!(config.snapshots_dir_prefix, "snapshot-");
 }
 
@@ -165,45 +162,6 @@ fn test_snapshot_config_yield_settings() {
 
     assert_eq!(config.sender_yield_every_n_chunks, 1);
     assert_eq!(config.receiver_yield_every_n_chunks, 1);
-}
-
-#[test]
-fn test_node_config_initialization() {
-    let config = node_config("/tmp/raft");
-
-    assert_eq!(
-        config.cluster.db_root_dir,
-        std::path::PathBuf::from("/tmp/raft")
-    );
-}
-
-#[test]
-fn test_node_config_different_paths() {
-    let path1 = "/data/raft1";
-    let path2 = "/data/raft2";
-
-    let config1 = node_config(path1);
-    let config2 = node_config(path2);
-
-    assert_eq!(config1.cluster.db_root_dir, std::path::PathBuf::from(path1));
-    assert_eq!(config2.cluster.db_root_dir, std::path::PathBuf::from(path2));
-    assert_ne!(config1.cluster.db_root_dir, config2.cluster.db_root_dir);
-}
-
-#[test]
-fn test_node_config_absolute_path() {
-    let path = "/absolute/path/to/db";
-    let config = node_config(path);
-
-    assert!(config.cluster.db_root_dir.is_absolute());
-}
-
-#[test]
-fn test_node_config_relative_path() {
-    let path = "./relative/db";
-    let config = node_config(path);
-
-    assert_eq!(config.cluster.db_root_dir, std::path::PathBuf::from(path));
 }
 
 #[test]
