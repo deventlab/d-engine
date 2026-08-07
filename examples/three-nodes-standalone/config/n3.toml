@@ -6,8 +6,6 @@ initial_cluster = [
     { id = 2, address = "0.0.0.0:9082", role = 1, status = 3 },
     { id = 3, address = "0.0.0.0:9083", role = 1, status = 3 },
 ]
-db_root_dir = "./db/3"
-log_dir = "./logs"
 
 
 [raft]
@@ -49,10 +47,9 @@ flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 max_buffered_entries = 10000
 
 [raft.snapshot]
-enable = false
+enable = true
 max_log_entries_before_snapshot = 10000
 snapshot_cool_down_since_last_check = { secs = 60 }
-snapshots_dir = "./snapshots/"
 retained_log_entries = 3
 
 # == TTL Lease Configuration ==

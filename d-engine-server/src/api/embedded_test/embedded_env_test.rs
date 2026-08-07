@@ -56,10 +56,10 @@ mod start_data_dir_tests {
         }
     }
 
-    /// data_dir overrides cluster.db_root_dir set in CONFIG_PATH.
+    /// data_dir overrides cluster.data_dir set in CONFIG_PATH.
     #[tokio::test]
     #[serial]
-    async fn test_start_data_dir_overrides_config_path_db_root_dir() {
+    async fn test_start_data_dir_overrides_config_path_data_dir() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config_data_dir = temp_dir.path().join("from-config");
         let explicit_data_dir = temp_dir.path().join("from-arg");
@@ -69,7 +69,7 @@ mod start_data_dir_tests {
         std::fs::write(
             &config_path,
             format!(
-                "[cluster]\ndb_root_dir = \"{}\"\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
+                "[cluster]\ndata_dir = \"{}\"\n[cluster.rpc]\nlisten_addr = \"127.0.0.1:0\"\n",
                 config_data_dir.display()
             ),
         )
@@ -90,10 +90,10 @@ mod start_data_dir_tests {
         }
     }
 
-    /// /tmp paths emit a warning but are not rejected.
+    /// /tmp paths are accepted — a legitimate explicit choice d-engine does not second-guess.
     #[tokio::test]
     #[serial(tmp_db)]
-    async fn test_start_tmp_path_warns_but_succeeds() {
+    async fn test_start_tmp_path_accepted() {
         let tmp_path = std::path::PathBuf::from("/tmp/d-engine-env-test");
         let _ = std::fs::remove_dir_all(&tmp_path);
 
@@ -101,7 +101,7 @@ mod start_data_dir_tests {
 
         assert!(
             result.is_ok(),
-            "/tmp path should succeed with warn, not error: {:?}",
+            "/tmp path must be accepted: {:?}",
             result.err()
         );
 

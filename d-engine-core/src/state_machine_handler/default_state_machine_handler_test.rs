@@ -79,6 +79,7 @@ fn test_update_pending_case1() {
         1,
         0,
         Arc::new(state_machine_mock),
+        PathBuf::from("/tmp/test_update_pending_case1"),
         snapshot_config(PathBuf::from("/tmp/test_update_pending_case1")),
         MockSnapshotPolicy::new(),
     );
@@ -97,6 +98,7 @@ fn test_update_pending_case2() {
         1,
         0,
         Arc::new(state_machine_mock),
+        PathBuf::from("/tmp/test_update_pending_case2"),
         snapshot_config(PathBuf::from("/tmp/test_update_pending_case2")),
         MockSnapshotPolicy::new(),
     );
@@ -117,6 +119,7 @@ async fn test_update_pending_case3() {
             1,
             0,
             Arc::new(state_machine_mock),
+            PathBuf::from("/tmp/test_update_pending_case3"),
             snapshot_config(PathBuf::from("/tmp/test_update_pending_case3")),
             MockSnapshotPolicy::new(),
         ),
@@ -142,6 +145,7 @@ fn test_pending_range_case1() {
         1,
         10,
         Arc::new(state_machine_mock),
+        PathBuf::from("/tmp/test_pending_range_case1"),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case1")),
         MockSnapshotPolicy::new(),
     );
@@ -157,6 +161,7 @@ fn test_pending_range_case2() {
         1,
         10,
         Arc::new(state_machine_mock),
+        PathBuf::from("/tmp/test_pending_range_case2"),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case2")),
         MockSnapshotPolicy::new(),
     );
@@ -174,6 +179,7 @@ fn test_pending_range_case3() {
         1,
         10,
         Arc::new(state_machine_mock),
+        PathBuf::from("/tmp/test_pending_range_case3"),
         snapshot_config(PathBuf::from("/tmp/test_pending_range_case3")),
         MockSnapshotPolicy::new(),
     );
@@ -215,6 +221,7 @@ mod apply_chunk_test {
             1,
             last_applied_index.unwrap_or(0),
             Arc::new(state_machine),
+            PathBuf::from(path),
             snapshot_config(PathBuf::from(path)),
             MockSnapshotPolicy::new(),
         )
@@ -330,6 +337,7 @@ mod apply_chunk_test {
             1,
             0,
             Arc::new(sm),
+            PathBuf::from("/tmp/test_batch_failure_atomic"),
             snapshot_config(PathBuf::from("/tmp/test_batch_failure_atomic")),
             MockSnapshotPolicy::new(),
             Some(watch_tx),
@@ -434,6 +442,7 @@ mod decode_boundary_tests {
             1,
             0,
             Arc::new(sm),
+            std::path::PathBuf::from("/tmp/test_decode_insert_boundary"),
             snapshot_config(std::path::PathBuf::from("/tmp/test_decode_insert_boundary")),
             MockSnapshotPolicy::new(),
         );
@@ -455,6 +464,7 @@ mod decode_boundary_tests {
             1,
             0,
             Arc::new(sm),
+            std::path::PathBuf::from("/tmp/test_decode_noop_boundary"),
             snapshot_config(std::path::PathBuf::from("/tmp/test_decode_noop_boundary")),
             MockSnapshotPolicy::new(),
         );
@@ -477,6 +487,7 @@ mod decode_boundary_tests {
             1,
             0,
             Arc::new(sm),
+            std::path::PathBuf::from("/tmp/test_decode_config_boundary"),
             snapshot_config(std::path::PathBuf::from("/tmp/test_decode_config_boundary")),
             MockSnapshotPolicy::new(),
         );
@@ -504,6 +515,7 @@ mod decode_boundary_tests {
             1,
             0,
             Arc::new(sm),
+            std::path::PathBuf::from("/tmp/test_decode_mixed_boundary"),
             snapshot_config(std::path::PathBuf::from("/tmp/test_decode_mixed_boundary")),
             MockSnapshotPolicy::new(),
         );
@@ -542,6 +554,7 @@ mod decode_boundary_tests {
             1,
             0,
             Arc::new(sm),
+            std::path::PathBuf::from("/tmp/test_handler_decodes_batch_before_sm_receives_it"),
             snapshot_config(std::path::PathBuf::from(
                 "/tmp/test_handler_decodes_batch_before_sm_receives_it",
             )),
@@ -637,6 +650,7 @@ fn create_test_handler(
         1,
         0,
         Arc::new(state_machine),
+        temp_dir.to_path_buf(),
         config,
         MockSnapshotPolicy::new(),
     )
@@ -658,6 +672,7 @@ async fn test_apply_snapshot_stream_from_leader_case2() {
         1,
         10,
         Arc::new(state_machine_mock),
+        temp_path.to_path_buf(),
         snapshot_config(temp_path.to_path_buf()),
         MockSnapshotPolicy::new(),
     );
@@ -883,6 +898,7 @@ async fn test_apply_snapshot_stream_from_leader_case7() {
         1,
         10,
         Arc::new(state_machine_mock),
+        temp_path.to_path_buf(),
         snapshot_config(temp_path.to_path_buf()),
         MockSnapshotPolicy::new(),
     );
@@ -983,6 +999,7 @@ mod create_snapshot_tests {
             1,
             0,
             Arc::new(sm),
+            temp_path.to_path_buf(),
             config.clone(),
             MockSnapshotPolicy::new(),
         );
@@ -1057,6 +1074,7 @@ mod create_snapshot_tests {
                 1,
                 0,
                 Arc::new(sm),
+                temp_path.to_path_buf(),
                 config.clone(),
                 snapshot_policy,
             ),
@@ -1130,6 +1148,7 @@ mod create_snapshot_tests {
             1,
             3, // Current version
             Arc::new(sm),
+            snapshot_dir.clone(),
             config.clone(),
             MockSnapshotPolicy::new(),
         );
@@ -1172,6 +1191,7 @@ mod create_snapshot_tests {
             1,
             0,
             Arc::new(sm),
+            temp_path.to_path_buf(),
             config.clone(),
             MockSnapshotPolicy::new(),
         );
@@ -1197,12 +1217,13 @@ mod create_snapshot_tests {
             Ok(Bytes::from(vec![0; 32]))
         });
 
-        let config = snapshot_config(temp_path);
+        let config = snapshot_config(temp_path.clone());
         let handler = Arc::new(
             DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
                 1,
                 0,
                 Arc::new(sm),
+                temp_path.clone(),
                 config,
                 MockSnapshotPolicy::new(),
             ),
@@ -1230,12 +1251,13 @@ mod create_snapshot_tests {
         sm.expect_generate_snapshot_data()
             .returning(|_, _| Err(SnapshotError::OperationFailed("test error".into()).into()));
 
-        let config = snapshot_config(temp_path);
+        let config = snapshot_config(temp_path.clone());
         let handler = Arc::new(
             DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
                 1,
                 0,
                 Arc::new(sm),
+                temp_path.clone(),
                 config,
                 MockSnapshotPolicy::new(),
             ),
@@ -1293,7 +1315,7 @@ mod create_snapshot_tests {
                 Ok(Bytes::from(vec![0; 32]))
             });
 
-        let mut config = snapshot_config(temp_path);
+        let mut config = snapshot_config(temp_path.clone());
         config.retained_log_entries = 10;
 
         let handler = Arc::new(
@@ -1301,6 +1323,7 @@ mod create_snapshot_tests {
                 1,
                 0,
                 Arc::new(sm),
+                temp_path.clone(),
                 config,
                 MockSnapshotPolicy::new(),
             ),
@@ -1375,6 +1398,7 @@ mod create_snapshot_tests {
             1,
             0,
             Arc::new(sm),
+            temp_path.to_path_buf(),
             config,
             MockSnapshotPolicy::new(),
         );
@@ -1429,6 +1453,7 @@ mod create_snapshot_tests {
             1,
             0,
             Arc::new(sm),
+            temp_path.to_path_buf(),
             config,
             MockSnapshotPolicy::new(),
         );
@@ -1437,6 +1462,72 @@ mod create_snapshot_tests {
         assert!(result.is_ok());
         let (metadata, _) = result.unwrap();
         assert_eq!(metadata.last_included, Some(LogId { term: 0, index: 0 }));
+    }
+
+    /// A crash mid-checkpoint must not leave the temp dir behind after create_snapshot() returns Err.
+    #[tokio::test]
+    async fn test_create_snapshot_removes_temp_dir_on_generate_failure() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let snapshot_dir = temp_dir.path().join("snapshots");
+        let mut sm = MockStateMachine::new();
+
+        sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
+        sm.expect_generate_snapshot_data().returning(|path, _| {
+            // Simulate a partial write before the failure (e.g. checkpoint killed mid-copy).
+            fs::create_dir_all(&path).unwrap();
+            Err(SnapshotError::OperationFailed("simulated crash".into()).into())
+        });
+
+        let config = snapshot_config(snapshot_dir.clone());
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_dir.clone(),
+            config,
+            MockSnapshotPolicy::new(),
+        );
+
+        assert!(handler.create_snapshot().await.is_err());
+        assert!(
+            !snapshot_dir.join("temp-5-1").exists(),
+            "orphaned temp dir was not cleaned up"
+        );
+    }
+
+    /// A stale temp dir left by a previous crash must not block the next snapshot at the same index.
+    #[tokio::test]
+    async fn test_create_snapshot_succeeds_despite_stale_temp_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let snapshot_dir = temp_dir.path().join("snapshots");
+        let stale_temp_path = snapshot_dir.join("temp-5-1");
+        fs::create_dir_all(stale_temp_path.join("sm.tmp")).unwrap();
+
+        let mut sm = MockStateMachine::new();
+        sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
+        sm.expect_generate_snapshot_data().returning(|path, _| {
+            // Real engines (e.g. RocksDB checkpoint) fail with "File exists" if `path`
+            // is already present — mirror that here instead of using the idempotent
+            // `create_dir_all`, otherwise this test can't distinguish "cleaned up" from
+            // "never checked".
+            if path.exists() {
+                return Err(SnapshotError::OperationFailed("mkdir: File exists".into()).into());
+            }
+            fs::create_dir_all(&path).unwrap();
+            Ok(Bytes::from(vec![0; 32]))
+        });
+
+        let config = snapshot_config(snapshot_dir.clone());
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+            1,
+            0,
+            Arc::new(sm),
+            snapshot_dir.clone(),
+            config,
+            MockSnapshotPolicy::new(),
+        );
+
+        assert!(handler.create_snapshot().await.is_ok());
     }
 }
 
@@ -1503,6 +1594,7 @@ async fn test_cleanup_snapshot_case1() {
         1,
         0,
         Arc::new(sm),
+        temp_dir.path().to_path_buf(),
         config.clone(),
         MockSnapshotPolicy::new(),
     );
@@ -1542,6 +1634,7 @@ async fn test_cleanup_snapshot_case2() {
         1,
         0,
         Arc::new(sm),
+        temp_dir.path().to_path_buf(),
         config.clone(),
         MockSnapshotPolicy::new(),
     );
@@ -1579,6 +1672,7 @@ async fn test_cleanup_snapshot_case3() {
         1,
         0,
         Arc::new(sm),
+        temp_dir.path().to_path_buf(),
         config.clone(),
         MockSnapshotPolicy::new(),
     );
@@ -1948,6 +2042,7 @@ async fn test_snapshot_compression() {
         1,
         0,
         Arc::new(sm),
+        temp_path.to_path_buf(),
         config,
         MockSnapshotPolicy::new(),
     );
@@ -1992,6 +2087,7 @@ async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
         1,
         10,
         Arc::new(state_machine_mock),
+        temp_path.to_path_buf(),
         snapshot_config(temp_path.to_path_buf()),
         MockSnapshotPolicy::new(),
     );
@@ -2606,6 +2702,7 @@ mod prev_kv_apply_tests {
             1,
             0,
             Arc::new(sm),
+            std::path::PathBuf::from("/tmp/test_skip_get_when_no_prev_kv"),
             snapshot_config(std::path::PathBuf::from(
                 "/tmp/test_skip_get_when_no_prev_kv",
             )),
@@ -2642,6 +2739,7 @@ mod prev_kv_apply_tests {
             1,
             0,
             Arc::new(sm),
+            std::path::PathBuf::from("/tmp/test_reads_prev_value_when_nonzero"),
             snapshot_config(std::path::PathBuf::from(
                 "/tmp/test_reads_prev_value_when_nonzero",
             )),
@@ -2688,6 +2786,7 @@ mod prev_kv_apply_tests {
             1,
             0,
             Arc::new(sm),
+            std::path::PathBuf::from("/tmp/test_stops_reading_after_count_zero"),
             snapshot_config(std::path::PathBuf::from(
                 "/tmp/test_stops_reading_after_count_zero",
             )),
@@ -2734,6 +2833,7 @@ mod wait_applied_tests {
             1,
             10, // last_applied = 10
             Arc::new(MockStateMachine::new()),
+            PathBuf::from("/tmp/test_wait_applied_fast_path"),
             snapshot_config(PathBuf::from("/tmp/test_wait_applied_fast_path")),
             MockSnapshotPolicy::new(),
         );
@@ -2777,6 +2877,7 @@ mod wait_applied_tests {
                 1,
                 0,
                 Arc::new(MockStateMachine::new()),
+                PathBuf::from("/tmp/test_wait_applied_blocking"),
                 snapshot_config(PathBuf::from("/tmp/test_wait_applied_blocking")),
                 MockSnapshotPolicy::new(),
             ),
@@ -2832,6 +2933,7 @@ mod wait_applied_tests {
                 1,
                 0,
                 Arc::new(MockStateMachine::new()),
+                PathBuf::from("/tmp/test_wait_applied_multiple_waiters"),
                 snapshot_config(PathBuf::from("/tmp/test_wait_applied_multiple_waiters")),
                 MockSnapshotPolicy::new(),
             ),

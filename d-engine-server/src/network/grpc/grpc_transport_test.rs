@@ -35,10 +35,12 @@ use crate::test_utils::MockRpcService;
 use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_snapshot_stream;
 
-fn node_config(db_path: &str) -> RaftNodeConfig {
-    let mut s = RaftNodeConfig::new().expect("RaftNodeConfig should be inited successfully");
-    s.cluster.db_root_dir = std::path::PathBuf::from(db_path);
-    s.validate().expect("RaftNodeConfig should be validated successfully")
+/// `db_path` is unused — data_dir isn't a `d-engine-core` concept anymore (see #9).
+fn node_config(_db_path: &str) -> RaftNodeConfig {
+    RaftNodeConfig::new()
+        .expect("RaftNodeConfig should be inited successfully")
+        .validate()
+        .expect("RaftNodeConfig should be validated successfully")
 }
 
 fn mock_membership(

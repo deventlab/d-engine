@@ -27,6 +27,10 @@ async fn main() {
         .map(|path| format!("{path}.toml"))
         .unwrap_or_else(|_| "d-engine.toml".to_string());
 
+    let data_dir = env::var("DB_PATH")
+        .map_err(|_| "DB_PATH environment variable not set")
+        .expect("Set data dir successfully.");
+
     let metrics_port: u16 = env::var("METRICS_PORT")
         .map(|v| v.parse::<u16>().expect("METRICS_PORT must be a valid port"))
         .unwrap_or(9000); // default 9000 if not set
@@ -54,7 +58,8 @@ async fn main() {
     let (graceful_tx, graceful_rx) = watch::channel(());
 
     // Start the server (wait for its initialization to complete)
-    let server_handler = tokio::spawn(start_dengine_server(config_path, graceful_rx.clone()));
+    let server_handler =
+        tokio::spawn(start_dengine_server(data_dir, config_path, graceful_rx.clone()));
 
     // Wait for the server to initialize (adjust the waiting time according to the actual logic)
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -86,6 +91,7 @@ async fn main() {
 }
 
 async fn start_dengine_server(
+    data_dir: String,
     config_path: String,
     graceful_rx: watch::Receiver<()>,
 ) {
@@ -94,9 +100,9 @@ async fn start_dengine_server(
     println!("║  Config: {config_path:<28} ║");
     println!("╚════════════════════════════════════════╝");
 
-    // StandaloneEngine with explicit config path
+    // StandaloneEngine with explicit data_dir and config path
     // Blocks until shutdown signal received
-    if let Err(e) = StandaloneEngine::run_with(&config_path, graceful_rx).await {
+    if let Err(e) = StandaloneEngine::run_with(&data_dir, &config_path, graceful_rx).await {
         error!("Server stopped with error: {:?}", e);
     } else {
         info!("Server stopped gracefully");

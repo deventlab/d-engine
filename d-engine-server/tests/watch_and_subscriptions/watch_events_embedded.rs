@@ -38,6 +38,7 @@ watcher_buffer_size = 10
     let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
     let engine = DefaultEmbeddedEngine::start_custom(
+        &db_path,
         Arc::new(storage),
         Arc::new(state_machine),
         Some(config_path.to_str().unwrap()),
@@ -120,6 +121,7 @@ listen_address = "127.0.0.1:{port}"
     let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
     let engine = DefaultEmbeddedEngine::start_custom(
+        &db_path,
         Arc::new(storage),
         Arc::new(state_machine),
         Some(config_path.to_str().unwrap()),
@@ -362,6 +364,7 @@ watcher_buffer_size = 10
     let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
 
     let engine = DefaultEmbeddedEngine::start_custom(
+        &db_path,
         Arc::new(storage),
         Arc::new(state_machine),
         Some(config_path.to_str().unwrap()),

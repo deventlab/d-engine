@@ -106,7 +106,8 @@ mod read_actor_test;
 
 /// Node lifecycle management
 ///
-/// Contains [`Node`] and [`NodeBuilder`] for server setup.
+/// Contains [`Node`], the Raft consensus participant. Built internally by
+/// [`EmbeddedEngine`](crate::EmbeddedEngine)/[`StandaloneEngine`](crate::StandaloneEngine).
 pub mod node;
 
 /// Public API layer for different deployment modes
@@ -177,7 +178,6 @@ pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
 /// Implement this trait to create your own storage engine.
 pub use d_engine_core::{StateMachine, StorageEngine};
 pub use node::Node;
-pub use node::NodeBuilder;
 // Re-export storage implementations
 pub use storage::{FileStateMachine, FileStorageEngine};
 // Re-export core types needed by applications

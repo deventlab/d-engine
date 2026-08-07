@@ -1,6 +1,4 @@
 # Production environment coverage configuration
-[cluster]
-data_dir = "/mnt/ssd/raft-data"
 
 [network]
 tcp_keepalive_secs = 7200 # Extend the production environment Keepalive

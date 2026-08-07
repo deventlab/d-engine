@@ -15,6 +15,9 @@ mod drain_batching;
 mod embedded_client;
 #[cfg(feature = "rocksdb")]
 mod failover_and_recovery;
+#[cfg(feature = "rocksdb")]
+mod reliability;
+
 mod leader_election;
 mod replication_and_sync;
 

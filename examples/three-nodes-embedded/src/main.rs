@@ -31,6 +31,8 @@ struct Cli {
     health_port: u16,
     #[clap(long)]
     config_path: String,
+    #[clap(long)]
+    data_dir: String,
 }
 
 #[tokio::main]
@@ -57,7 +59,7 @@ async fn main() {
     // d-engine Integration (Start & Wait for Leader Election)
     // ============================================================
     let engine = Arc::new(
-        DefaultEmbeddedEngine::start_with(&cli.config_path)
+        DefaultEmbeddedEngine::start_with(&cli.data_dir, &cli.config_path)
             .await
             .expect("Failed to start engine"),
     );

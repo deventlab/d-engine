@@ -12,8 +12,6 @@ listen_address = "127.0.0.1:9081"
 initial_cluster = [
     { id = 1, address = "127.0.0.1:9081", role = 1, status = 3 }
 ]
-db_root_dir = "./data/single-node"
-log_dir = "./logs"
 
 [raft.snapshot]
 enable = false

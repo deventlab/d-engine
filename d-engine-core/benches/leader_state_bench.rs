@@ -120,7 +120,6 @@ use d_engine_core::{
 };
 use d_engine_proto::common::{LogId, NodeStatus};
 use d_engine_proto::server::cluster::{ClusterMembership, NodeMeta};
-use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -132,9 +131,7 @@ use tokio::time::Instant;
 /// Target: < 500 ns
 /// Failure: > 1000 ns
 fn bench_leader_state_creation(c: &mut Criterion) {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let mut node_config = RaftNodeConfig::default();
-    node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+    let node_config = RaftNodeConfig::default();
     let config = Arc::new(node_config);
 
     c.bench_function("LeaderState::new", |b| {
@@ -153,10 +150,8 @@ struct BenchFixture {
 }
 
 impl BenchFixture {
-    async fn new(test_name: &str) -> Self {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    async fn new(_test_name: &str) -> Self {
         let mut node_config = RaftNodeConfig::default();
-        node_config.cluster.db_root_dir = temp_dir.path().join(test_name);
         node_config.raft.membership.verify_leadership_persistent_timeout =
             Duration::from_millis(100);
 

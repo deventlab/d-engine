@@ -69,12 +69,15 @@ pub fn generate_delete_commands(range: RangeInclusive<u64>) -> Bytes {
     buffer.freeze()
 }
 
-pub fn snapshot_config(snapshots_dir: PathBuf) -> SnapshotConfig {
+/// `snapshots_dir` is unused — kept as a no-op parameter so existing call
+/// sites (many passing a unique `/tmp`-style path, back when this fed
+/// `SnapshotConfig.snapshots_dir`) don't all need touching. snapshots_dir
+/// isn't a `d-engine-core` concept anymore (see #10).
+pub fn snapshot_config(_snapshots_dir: PathBuf) -> SnapshotConfig {
     SnapshotConfig {
         max_log_entries_before_snapshot: 1,
         snapshot_cool_down_since_last_check: Duration::from_secs(0),
         cleanup_retain_count: 2,
-        snapshots_dir,
         chunk_size: 1024,
         retained_log_entries: 1,
         sender_yield_every_n_chunks: 1,

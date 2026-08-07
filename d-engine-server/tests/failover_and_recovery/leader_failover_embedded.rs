@@ -11,7 +11,6 @@ use tracing_test::traced_test;
 
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
-use crate::common::node_config;
 use crate::common::wait_for_new_leader;
 
 /// Test 3-node cluster leader failover with DefaultEmbeddedEngine API
@@ -25,7 +24,7 @@ use crate::common::wait_for_new_leader;
 #[traced_test]
 async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
@@ -43,14 +42,13 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
             node_id,
             ports[i],
             ports,
-            db_root_dir.to_str().unwrap(),
+            data_dir.to_str().unwrap(),
             log_dir.to_str().unwrap(),
         )
         .await;
-        let config = node_config(&config_str);
 
         // Each node needs its own storage directory to avoid RocksDB lock conflicts
-        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let node_db_root = data_dir.join(format!("node{node_id}"));
         let db_path = node_db_root.join("db");
 
         tokio::fs::create_dir_all(&db_path).await?;
@@ -63,6 +61,7 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
         configs.push((config_str, config_path));
 
         let engine = DefaultEmbeddedEngine::start_custom(
+            &node_db_root,
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&configs[i].1),
@@ -233,9 +232,8 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
             log_dir.to_str().unwrap(),
         )
         .await;
-        let config = node_config(&config_str);
 
-        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let node_db_root = db_root.join(format!("node{node_id}"));
         let db_path = node_db_root.join("db");
 
         tokio::fs::create_dir_all(&db_path).await?;
@@ -248,6 +246,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
         configs.push((config_str, config_path));
 
         let engine = DefaultEmbeddedEngine::start_custom(
+            &node_db_root,
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&configs[i].1),
@@ -302,8 +301,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Restart the killed follower
-    let config = node_config(&killed_config.0);
-    let node_db_root = config.cluster.db_root_dir.join(format!("node{follower_id}"));
+    let node_db_root = db_root.join(format!("node{follower_id}"));
     let db_path = node_db_root.join("db");
 
     // Retry opening DB to tolerate async cleanup delays under parallel test load.
@@ -329,6 +327,7 @@ async fn test_embedded_node_rejoin() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let restarted_engine = DefaultEmbeddedEngine::start_custom(
+        &node_db_root,
         Arc::new(storage),
         Arc::new(state_machine),
         Some(&killed_config.1),
@@ -391,9 +390,8 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
             log_dir.to_str().unwrap(),
         )
         .await;
-        let config = node_config(&config_str);
 
-        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let node_db_root = db_root.join(format!("node{node_id}"));
         let db_path = node_db_root.join("db");
 
         tokio::fs::create_dir_all(&db_path).await?;
@@ -404,6 +402,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
         tokio::fs::write(&config_path, &config_str).await?;
 
         let engine = DefaultEmbeddedEngine::start_custom(
+            &node_db_root,
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&config_path),

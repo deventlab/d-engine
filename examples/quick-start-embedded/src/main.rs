@@ -20,9 +20,9 @@ async fn main() -> std::result::Result<(), Box<dyn StdError>> {
 
     println!("🚀 Starting d-engine...");
 
-    // Start embedded engine with explicit config
-    // Config file specifies data directory and other settings
-    let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
+    // Start embedded engine: data_dir is an explicit runtime argument (never
+    // config-file-sourced), config file covers everything else.
+    let engine = DefaultEmbeddedEngine::start_with("./data/single-node", "d-engine.toml").await?;
 
     // Wait for leader election (single-node: instant)
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;

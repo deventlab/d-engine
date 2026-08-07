@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting embedded d-engine for service discovery...\n");
 
-    let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
+    let engine = DefaultEmbeddedEngine::start_with("./data", "d-engine.toml").await?;
 
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;
     println!(

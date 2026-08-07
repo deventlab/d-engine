@@ -63,9 +63,8 @@ use tokio::sync::{mpsc, watch};
 #[tokio::test]
 async fn test_can_vote_myself_returns_true_for_new_candidate() {
     // Create minimal node_config with TempDir
-    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let mut node_config = crate::RaftNodeConfig::new().expect("Should create default config");
-    node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+    let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let node_config = crate::RaftNodeConfig::new().expect("Should create default config");
     let node_config = node_config.validate().expect("Should validate config");
 
     // Create new CandidateState (has not voted yet)
@@ -98,9 +97,8 @@ async fn test_can_vote_myself_returns_true_for_new_candidate() {
 #[tokio::test]
 async fn test_can_vote_myself_returns_false_after_voting() {
     // Create minimal node_config with TempDir
-    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let mut node_config = crate::RaftNodeConfig::new().expect("Should create default config");
-    node_config.cluster.db_root_dir = temp_dir.path().to_path_buf();
+    let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let node_config = crate::RaftNodeConfig::new().expect("Should create default config");
     let node_config = node_config.validate().expect("Should validate config");
 
     // Create new CandidateState

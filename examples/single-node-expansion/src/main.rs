@@ -1,4 +1,4 @@
-use d_engine::NodeBuilder;
+use d_engine::StandaloneEngine;
 // use d_engine::FileStateMachine;
 // use d_engine::FileStorageEngine;
 use d_engine::RocksDBUnifiedEngine;
@@ -100,16 +100,16 @@ async fn start_dengine_server(
     // Option 2: ROCKSDB (unified engine — single DB instance, 4 column families)
     let (storage_engine, state_machine) = RocksDBUnifiedEngine::open(db_path.join("db")).unwrap();
 
-    // Start Node
-    let node = NodeBuilder::new(None, graceful_rx.clone())
-        .storage_engine(Arc::new(storage_engine))
-        .state_machine(Arc::new(state_machine))
-        .start()
-        .await
-        .expect("start node failed.");
-
-    // Start Node
-    if let Err(e) = node.run().await {
+    // Start Node — blocks until shutdown.
+    if let Err(e) = StandaloneEngine::run_custom(
+        &db_path,
+        Arc::new(storage_engine),
+        Arc::new(state_machine),
+        graceful_rx,
+        None::<&str>,
+    )
+    .await
+    {
         error!("node stops: {:?}", e);
     } else {
         info!("node stops.");

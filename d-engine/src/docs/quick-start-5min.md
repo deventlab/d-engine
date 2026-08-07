@@ -37,15 +37,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ## Step 2: Create Config File (1 minute)
 
-Create `d-engine.toml` with only the settings you need — omitted fields use built-in defaults:
+For a single node, no config file is needed — jump to Step 3.
 
-```toml
-[cluster]
-db_root_dir = "./data/single-node"
-```
-
-For all available options with descriptions and defaults, see
-[`d_engine_core::config`](https://docs.rs/d-engine-core/latest/d_engine_core/config/).
+For multi-node clusters or custom settings, create `d-engine.toml` with only the
+fields you need. All omitted fields use built-in defaults. See
+[`d_engine_core::config`](https://docs.rs/d-engine-core/latest/d_engine_core/config/)
+for the full list.
 
 ## Step 3: Write Your First d-engine App (2 minutes)
 
@@ -201,21 +198,26 @@ No manual `tokio::spawn()`, no leaked tasks.
 ### DefaultEmbeddedEngine
 
 ```rust,ignore
-// Explicit data directory (highest priority)
+// Explicit data directory (required)
 DefaultEmbeddedEngine::start(data_dir: impl AsRef<Path>) -> Result<Self>
 
-// Use explicit config file
-DefaultEmbeddedEngine::start_with(config_path: impl AsRef<Path>) -> Result<Self>
+// Explicit data directory + config file for non-path settings
+DefaultEmbeddedEngine::start_with(
+    data_dir: impl AsRef<Path>,
+    config_path: impl AsRef<Path>
+) -> Result<Self>
 
 // Start with programmatic config — no config file needed
 EmbeddedEngine::<YourTypeConfig>::start_node(
-    config: RaftNodeConfig,
+    data_dir: impl AsRef<Path>,
     storage: Arc<impl StorageEngine>,
-    state_machine: Arc<impl StateMachine>
+    state_machine: Arc<impl StateMachine>,
+    config: RaftNodeConfig
 ) -> Result<Self>
 
 // Advanced (custom storage + state machine with optional config file)
 EmbeddedEngine::<YourTypeConfig>::start_custom(
+    data_dir: impl AsRef<Path>,
     storage: Arc<impl StorageEngine>,
     state_machine: Arc<impl StateMachine>,
     config_path: Option<&str>
@@ -324,9 +326,8 @@ match engine.wait_ready(Duration::from_secs(10)).await {
 # Check permissions
 ls -la ./data
 
-# Or update d-engine.toml to use /tmp
-[cluster]
-db_root_dir = "/tmp/d-engine"
+# Or pass a writable path to the constructor
+EmbeddedEngine::start("/tmp/d-engine").await?;
 ```
 
 ### "Address already in use"

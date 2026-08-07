@@ -28,8 +28,7 @@ use d_engine_server::HardState;
 use d_engine_server::LeaderInfo;
 use d_engine_server::LogStore;
 use d_engine_server::MetaStore;
-use d_engine_server::Node;
-use d_engine_server::NodeBuilder;
+use d_engine_server::StandaloneEngine;
 use d_engine_server::StorageEngine;
 use d_engine_server::node::RaftTypeConfig;
 use prost::Message;
@@ -100,8 +99,8 @@ pub async fn create_node_config(
     node_id: u64,
     port: u16,
     cluster_ports: &[u16],
-    db_root_dir: &str,
-    log_dir: &str,
+    _data_dir: &str,
+    _log_dir: &str,
 ) -> String {
     let initial_cluster_entries = cluster_ports
         .iter()
@@ -123,8 +122,6 @@ pub async fn create_node_config(
         initial_cluster = [
             {initial_cluster_entries}
         ]
-        db_root_dir = '{db_root_dir}'
-        log_dir = '{log_dir}'
 
         [raft.persistence]
         strategy = "MemFirst"
@@ -150,8 +147,8 @@ pub async fn create_node_config_with_role(
     port: u16,
     cluster_ports: &[u16],
     node_role: i32, // 1 = VOTER, 4 = LEARNER
-    db_root_dir: &str,
-    log_dir: &str,
+    _data_dir: &str,
+    _log_dir: &str,
 ) -> String {
     let initial_cluster_entries = cluster_ports
         .iter()
@@ -175,8 +172,6 @@ pub async fn create_node_config_with_role(
         initial_cluster = [
             {initial_cluster_entries}
         ]
-        db_root_dir = '{db_root_dir}'
-        log_dir = '{log_dir}'
 
         [raft.persistence]
         strategy = "MemFirst"
@@ -220,11 +215,6 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             max_log_entries_before_snapshot: 1,
             cleanup_retain_count: 2,
             retained_log_entries: 1,
-            snapshots_dir: config
-                .cluster
-                .db_root_dir
-                .join("snapshots")
-                .join(config.cluster.node_id.to_string()),
             ..Default::default()
         },
         persistence: PersistenceConfig {
@@ -249,7 +239,8 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
     let append_policy = BackoffPolicy {
         max_retries: 2,
         timeout_ms: 200,
-        ..Default::default()
+        base_delay_ms: 10,
+        max_delay_ms: 100,
     };
 
     // Election retry policy - increased for test stability during concurrent node startup
@@ -274,7 +265,11 @@ pub async fn start_cluster(
     // Start all nodes
     let mut controllers = vec![];
     for config in nodes_config {
-        let (tx, handle) = start_node(config, None, None).await?;
+        let node_data_dir = tempfile::Builder::new()
+            .prefix("d-engine-start-cluster-")
+            .tempdir()
+            .expect("tempdir");
+        let (tx, handle) = start_node(node_data_dir.keep(), config, None, None).await?;
         controllers.push((tx, handle));
     }
 
@@ -288,7 +283,12 @@ pub async fn start_cluster(
 
     Ok(())
 }
+/// Starts a node the same way an external client would — through the public
+/// `StandaloneEngine::start_node` API, not the crate-internal `NodeBuilder`.
+/// These integration tests simulate external client behavior; they never
+/// touch the raw `Node` type.
 pub async fn start_node(
+    data_dir: impl AsRef<Path>,
     config: RaftNodeConfig,
     state_machine: Option<Arc<SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
     storage_engine: Option<Arc<SOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
@@ -300,86 +300,39 @@ pub async fn start_node(
     ClientApiError,
 > {
     let (graceful_tx, graceful_rx) = watch::channel(());
-
-    let node = build_node(config, graceful_rx, state_machine, storage_engine).await?;
-
-    let node_clone = node.clone();
-    let node_id = node.node_id();
-    let handle = tokio::spawn(async move { run_node(node_id, node_clone).await });
-
-    Ok((graceful_tx, handle))
-}
-
-async fn build_node(
-    config: RaftNodeConfig,
-    graceful_rx: watch::Receiver<()>,
-    state_machine: Option<Arc<SMOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
-    storage_engine: Option<Arc<SOF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>>,
-) -> std::result::Result<
-    Arc<Node<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
-    ClientApiError,
-> {
-    // Prepare raft log entries
-    let mut builder = NodeBuilder::new(None, graceful_rx).node_config(config.clone());
+    let data_dir = data_dir.as_ref().to_path_buf();
 
     // Use provided storage engine or create a new one with temp directory
-    let storage_engine = if let Some(s) = storage_engine {
-        s
-    } else {
-        let storage_path = config
-            .cluster
-            .db_root_dir
-            .clone()
-            .join(config.cluster.node_id.to_string())
-            .join("storage_engine");
-        Arc::new(
-            FileStorageEngine::new(storage_path).expect("Failed to create file storage engine"),
-        )
+    let storage_engine = match storage_engine {
+        Some(s) => s,
+        None => {
+            let storage_path = data_dir.join("storage_engine");
+            Arc::new(
+                FileStorageEngine::new(storage_path).expect("Failed to create file storage engine"),
+            )
+        }
     };
-
-    builder = builder.storage_engine(storage_engine);
 
     // Use provided state machine or create a new one with temp directory
-    let state_machine = if let Some(sm) = state_machine {
-        sm
-    } else {
-        let state_machine_path = config
-            .cluster
-            .db_root_dir
-            .join(config.cluster.node_id.to_string())
-            .join("state_machine");
-        Arc::new(
-            FileStateMachine::new(state_machine_path)
-                .await
-                .expect("Failed to create file state machine"),
-        )
+    let state_machine = match state_machine {
+        Some(sm) => sm,
+        None => {
+            let state_machine_path = data_dir.join("state_machine");
+            Arc::new(
+                FileStateMachine::new(state_machine_path)
+                    .await
+                    .expect("Failed to create file state machine"),
+            )
+        }
     };
 
-    builder = builder.state_machine(state_machine);
+    let handle = tokio::spawn(async move {
+        StandaloneEngine::start_node(data_dir, storage_engine, state_machine, graceful_rx, config)
+            .await
+            .map_err(|e| std::io::Error::other(format!("node exited with error: {e}")).into())
+    });
 
-    // Build and start the node
-    let node = builder.start().await.map_err(|e| {
-        eprintln!("Failed to start node: {e:?}");
-        std::io::Error::other(format!("Failed to start node: {e}"))
-    })?;
-
-    // Return both the node and the temp directory to keep it alive
-    Ok(node)
-}
-
-async fn run_node(
-    node_id: u32,
-    node: Arc<Node<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
-) -> std::result::Result<(), ClientApiError> {
-    println!("Run node: {node_id}",);
-    // Run the node until shutdown
-    if let Err(e) = node.run().await {
-        error!("Node error: {:?}", e);
-    }
-
-    debug!("Exiting program: {node_id}");
-    drop(node);
-    Ok(())
+    Ok((graceful_tx, handle))
 }
 
 pub fn get_root_path() -> PathBuf {
@@ -552,7 +505,6 @@ pub fn create_rejoin_node_config(
     node_id: u32,
     port: u16,
     peers: &[(u32, u16)],
-    db_root_dir: &str,
 ) -> String {
     let cluster_entries = peers
         .iter()
@@ -571,7 +523,6 @@ listen_address = '127.0.0.1:{port}'
 initial_cluster = [
     {cluster_entries}
 ]
-db_root_dir = '{db_root_dir}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 5000
@@ -715,20 +666,22 @@ impl std::ops::Deref for PortGuard {
     }
 }
 
-/// Poll snapshot directory until a .tar.gz file appears or timeout expires.
+/// Poll `dir` until a .tar.gz file appears in it or timeout expires.
 /// Replaces blind sleep() calls when waiting for snapshot generation.
+///
+/// Takes the exact snapshot directory — snapshots are always at
+/// `data_dir/snapshots` (see #10), nested inside each node's own data_dir,
+/// not siblings under one shared configurable snapshots_dir.
 pub async fn wait_for_snapshot(
-    snapshots_dir: &Path,
-    node_id: u64,
+    dir: &Path,
     timeout: Duration,
 ) -> bool {
     let deadline = tokio::time::Instant::now() + timeout;
-    let dir = snapshots_dir.join(format!("node{node_id}"));
     loop {
         if tokio::time::Instant::now() > deadline {
             return false;
         }
-        let has_snapshot = std::fs::read_dir(&dir)
+        let has_snapshot = std::fs::read_dir(dir)
             .ok()
             .map(|entries| {
                 entries

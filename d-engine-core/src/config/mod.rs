@@ -212,7 +212,7 @@ impl RaftNodeConfig {
 }
 
 /// Ensures directory path is valid and writable
-pub(super) fn validate_directory(
+pub fn validate_directory(
     path: &Path,
     name: &str,
 ) -> Result<()> {

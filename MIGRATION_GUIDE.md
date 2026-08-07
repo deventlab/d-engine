@@ -600,4 +600,48 @@ No migration action required unless you want to tune read concurrency.
 
 ---
 
-**Last Updated:** May 2026
+## For v0.2.4 Users: `data_dir` moved out of config in v0.2.5
+
+`data_dir` (formerly `db_root_dir`) is no longer a config file field. Pass it as an explicit argument to the engine constructor instead:
+
+```rust,ignore
+// Before (v0.2.4)
+let engine = EmbeddedEngine::start_with("config.toml").await?;
+// config.toml had [cluster] data_dir = "./db"
+
+// After (v0.2.5)
+let engine = EmbeddedEngine::start_with("./db", "config.toml").await?;
+```
+
+All engine constructors (`start`, `start_with`, `start_custom`, `start_node`, `run`, `run_with`, `run_custom`) now require `data_dir` as the first argument. Remove `[cluster] data_dir` / `[cluster] db_root_dir` from all config files — the entry is silently ignored if left in place, but it's misleading.
+
+**`[cluster] log_dir`** is removed (it was validated but never consumed).
+
+**`snapshots_dir`** is no longer configurable — always `data_dir/snapshots`.
+
+---
+
+## For v0.2.4 Users: `NodeBuilder` is no longer public in v0.2.5
+
+Only affects code that plugged in a custom storage engine or state machine directly via `NodeBuilder`. If you used `EmbeddedEngine` or `StandaloneEngine`, no change needed.
+
+```rust,ignore
+// Before (v0.2.4)
+let node = NodeBuilder::new(data_dir, None, shutdown_rx)
+    .storage_engine(storage_engine)
+    .state_machine(state_machine)
+    .start()
+    .await?;
+node.run().await?;
+
+// After (v0.2.5)
+EmbeddedEngine::start_custom(data_dir, storage_engine, state_machine, None).await?;
+// or, for a standalone gRPC server:
+StandaloneEngine::run_custom(data_dir, storage_engine, state_machine, shutdown_rx, None).await?;
+```
+
+`start_custom`/`run_custom` cover the same ground — explicit `data_dir`, custom `StorageEngine`/`StateMachine`, optional config file.
+
+---
+
+**Last Updated:** August 2026

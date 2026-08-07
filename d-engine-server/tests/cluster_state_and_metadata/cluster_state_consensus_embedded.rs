@@ -6,7 +6,6 @@
 //! - Cluster view consistency
 
 use crate::common::get_available_ports;
-use crate::common::node_config;
 use d_engine_server::DefaultEmbeddedEngine;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +30,7 @@ use d_engine_server::RocksDBUnifiedEngine;
 #[traced_test]
 async fn test_multi_node_single_leader() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
@@ -48,7 +47,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -57,7 +55,6 @@ general_raft_timeout_duration_in_ms = 3000
         ports[0],
         ports[1],
         ports[2],
-        db_root_dir.display(),
         log_dir.display()
     );
 
@@ -101,33 +98,33 @@ listen_address = '127.0.0.1:{}'
     tokio::fs::write(node3_config_path, &node3_config).await?;
 
     // Start engines
-    let config1 = node_config(&node1_config);
-    let db_path1 = config1.cluster.db_root_dir.join("node1/db");
+    let db_path1 = data_dir.join("node1/db");
     tokio::fs::create_dir_all(&db_path1).await?;
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
     let engine1 = DefaultEmbeddedEngine::start_custom(
+        &db_path1,
         Arc::new(storage1),
         Arc::new(sm1),
         Some(node1_config_path),
     )
     .await?;
 
-    let config2 = node_config(&node2_config);
-    let db_path2 = config2.cluster.db_root_dir.join("node2/db");
+    let db_path2 = data_dir.join("node2/db");
     tokio::fs::create_dir_all(&db_path2).await?;
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
     let engine2 = DefaultEmbeddedEngine::start_custom(
+        &db_path2,
         Arc::new(storage2),
         Arc::new(sm2),
         Some(node2_config_path),
     )
     .await?;
 
-    let config3 = node_config(&node3_config);
-    let db_path3 = config3.cluster.db_root_dir.join("node3/db");
+    let db_path3 = data_dir.join("node3/db");
     tokio::fs::create_dir_all(&db_path3).await?;
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
     let engine3 = DefaultEmbeddedEngine::start_custom(
+        &db_path3,
         Arc::new(storage3),
         Arc::new(sm3),
         Some(node3_config_path),
@@ -196,7 +193,7 @@ listen_address = '127.0.0.1:{}'
 #[traced_test]
 async fn test_leader_info_consistency_across_cluster() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
@@ -213,7 +210,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -222,7 +218,6 @@ general_raft_timeout_duration_in_ms = 3000
         ports[0],
         ports[1],
         ports[2],
-        db_root_dir.display(),
         log_dir.display()
     );
 
@@ -248,33 +243,33 @@ general_raft_timeout_duration_in_ms = 3000
     tokio::fs::write(node3_config_path, &node3_config).await?;
 
     // Start all nodes
-    let config1 = node_config(&node1_config);
-    let db_path1 = config1.cluster.db_root_dir.join("node1/db");
+    let db_path1 = data_dir.join("node1/db");
     tokio::fs::create_dir_all(&db_path1).await?;
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
     let engine1 = DefaultEmbeddedEngine::start_custom(
+        &db_path1,
         Arc::new(storage1),
         Arc::new(sm1),
         Some(node1_config_path),
     )
     .await?;
 
-    let config2 = node_config(&node2_config);
-    let db_path2 = config2.cluster.db_root_dir.join("node2/db");
+    let db_path2 = data_dir.join("node2/db");
     tokio::fs::create_dir_all(&db_path2).await?;
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
     let engine2 = DefaultEmbeddedEngine::start_custom(
+        &db_path2,
         Arc::new(storage2),
         Arc::new(sm2),
         Some(node2_config_path),
     )
     .await?;
 
-    let config3 = node_config(&node3_config);
-    let db_path3 = config3.cluster.db_root_dir.join("node3/db");
+    let db_path3 = data_dir.join("node3/db");
     tokio::fs::create_dir_all(&db_path3).await?;
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
     let engine3 = DefaultEmbeddedEngine::start_custom(
+        &db_path3,
         Arc::new(storage3),
         Arc::new(sm3),
         Some(node3_config_path),
@@ -375,7 +370,7 @@ general_raft_timeout_duration_in_ms = 3000
 #[traced_test]
 async fn test_leader_failover_state_change() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
@@ -392,7 +387,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -401,7 +395,6 @@ general_raft_timeout_duration_in_ms = 3000
         ports[0],
         ports[1],
         ports[2],
-        db_root_dir.display(),
         log_dir.display()
     );
 
@@ -427,33 +420,33 @@ general_raft_timeout_duration_in_ms = 3000
     tokio::fs::write(node3_config_path, &node3_config).await?;
 
     // Start all nodes
-    let config1 = node_config(&node1_config);
-    let db_path1 = config1.cluster.db_root_dir.join("node1/db");
+    let db_path1 = data_dir.join("node1/db");
     tokio::fs::create_dir_all(&db_path1).await?;
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
     let engine1 = DefaultEmbeddedEngine::start_custom(
+        &db_path1,
         Arc::new(storage1),
         Arc::new(sm1),
         Some(node1_config_path),
     )
     .await?;
 
-    let config2 = node_config(&node2_config);
-    let db_path2 = config2.cluster.db_root_dir.join("node2/db");
+    let db_path2 = data_dir.join("node2/db");
     tokio::fs::create_dir_all(&db_path2).await?;
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
     let engine2 = DefaultEmbeddedEngine::start_custom(
+        &db_path2,
         Arc::new(storage2),
         Arc::new(sm2),
         Some(node2_config_path),
     )
     .await?;
 
-    let config3 = node_config(&node3_config);
-    let db_path3 = config3.cluster.db_root_dir.join("node3/db");
+    let db_path3 = data_dir.join("node3/db");
     tokio::fs::create_dir_all(&db_path3).await?;
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
     let engine3 = DefaultEmbeddedEngine::start_custom(
+        &db_path3,
         Arc::new(storage3),
         Arc::new(sm3),
         Some(node3_config_path),

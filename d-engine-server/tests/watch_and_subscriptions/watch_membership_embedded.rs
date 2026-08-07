@@ -90,7 +90,7 @@ fn node_toml(
     all_ports: &[u16],
     roles: &[i32],
     statuses: &[i32],
-    db_root: &str,
+    _db_root: &str,
     log_dir: &str,
 ) -> String {
     let members = all_ports
@@ -115,7 +115,6 @@ listen_address = '127.0.0.1:{port}'
 initial_cluster = [
     {members}
 ]
-db_root_dir = '{db_root}'
 log_dir = '{log_dir}'
 
 [raft]
@@ -190,10 +189,13 @@ async fn start_engine(
     let db_path = db_root.join(format!("node{node_id}/db"));
     tokio::fs::create_dir_all(&db_path).await?;
     let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
-    Ok(
-        DefaultEmbeddedEngine::start_custom(Arc::new(storage), Arc::new(sm), Some(config_path))
-            .await?,
+    Ok(DefaultEmbeddedEngine::start_custom(
+        &db_path,
+        Arc::new(storage),
+        Arc::new(sm),
+        Some(config_path),
     )
+    .await?)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

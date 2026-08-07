@@ -173,19 +173,23 @@ async fn test_performance() -> Result<(), Error> {
 
 ```
 
-## 5. Register with NodeBuilder
+## 5. Use It
 
 ```rust,ignore
-use d_engine::NodeBuilder;
+use d_engine::{EmbeddedEngine, FileStateMachine};
 
 let storage_engine = Arc::new(CustomStorageEngine::new().await?);
+let state_machine = Arc::new(FileStateMachine::new("./data/state_machine").await?);
 
-NodeBuilder::new(config, shutdown_rx)
-    .storage_engine(storage_engine)  // Required component
-    .start()
-    .await?;
-
+let engine = EmbeddedEngine::start_custom(
+    "./data",       // data_dir
+    storage_engine,
+    state_machine,
+    None,           // optional config file
+).await?;
 ```
+
+Running a standalone gRPC server instead of embedding? Use `StandaloneEngine::run_custom` — same arguments, plus a shutdown signal.
 
 ## 6. Production Examples
 

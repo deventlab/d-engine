@@ -61,7 +61,6 @@ tonic-health = { workspace = true }
 parking_lot = "0.12.3"
 crossbeam = "0.8"
 crossbeam-skiplist = "0.1"
-
 metrics = { version = "0.24", features = [] }
 
 

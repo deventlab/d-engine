@@ -8,7 +8,6 @@ use tracing_test::traced_test;
 
 use crate::common::create_rejoin_node_config;
 use crate::common::get_available_ports;
-use crate::common::node_config;
 use crate::common::retry_until;
 
 /// Test scaling from single-node to 3-node cluster
@@ -21,7 +20,7 @@ use crate::common::retry_until;
 #[traced_test]
 async fn test_scale_single_to_cluster() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
@@ -40,7 +39,6 @@ listen_address = '127.0.0.1:{}'
 initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -48,21 +46,20 @@ general_raft_timeout_duration_in_ms = 5000
 "#,
         ports[0],
         ports[0],
-        db_root_dir.display(),
         log_dir.display()
     );
 
     let node1_config_path = "/tmp/scale_test_node1.toml";
     tokio::fs::write(node1_config_path, &node1_config).await?;
 
-    let config = node_config(&node1_config);
-    let db_path = config.cluster.db_root_dir.join("node1/db");
+    let db_path = data_dir.join("node1/db");
 
     tokio::fs::create_dir_all(&db_path).await?;
 
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path)?;
 
     let engine1 = DefaultEmbeddedEngine::start_custom(
+        &db_path,
         Arc::new(storage1),
         Arc::new(sm1),
         Some(node1_config_path),
@@ -97,7 +94,6 @@ initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }},
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 4, status = 1 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -106,21 +102,20 @@ general_raft_timeout_duration_in_ms = 5000
         ports[1],
         ports[0],
         ports[1],
-        db_root_dir.display(),
         log_dir.display()
     );
 
     let node2_config_path = "/tmp/scale_test_node2.toml";
     tokio::fs::write(node2_config_path, &node2_config).await?;
 
-    let config2 = node_config(&node2_config);
-    let db_path2 = config2.cluster.db_root_dir.join("node2/db");
+    let db_path2 = data_dir.join("node2/db");
 
     tokio::fs::create_dir_all(&db_path2).await?;
 
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
 
     let engine2 = DefaultEmbeddedEngine::start_custom(
+        &db_path2,
         Arc::new(storage2),
         Arc::new(sm2),
         Some(node2_config_path),
@@ -142,7 +137,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 4, status = 1 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -152,21 +146,20 @@ general_raft_timeout_duration_in_ms = 5000
         ports[0],
         ports[1],
         ports[2],
-        db_root_dir.display(),
         log_dir.display()
     );
 
     let node3_config_path = "/tmp/scale_test_node3.toml";
     tokio::fs::write(node3_config_path, &node3_config).await?;
 
-    let config3 = node_config(&node3_config);
-    let db_path3 = config3.cluster.db_root_dir.join("node3/db");
+    let db_path3 = data_dir.join("node3/db");
 
     tokio::fs::create_dir_all(&db_path3).await?;
 
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
 
     let engine3 = DefaultEmbeddedEngine::start_custom(
+        &db_path3,
         Arc::new(storage3),
         Arc::new(sm3),
         Some(node3_config_path),
@@ -285,13 +278,13 @@ async fn test_leader_failover_after_dynamic_scaling() -> Result<(), Box<dyn std:
     // reset(&format!("{TEST_DIR}_failover")).await?;
 
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
-    let db_root = format!("{}_failover", db_root_dir.display());
+    let db_root = format!("{}_failover", data_dir.display());
     let log_dir = format!("{}_failover", log_dir.display());
 
     // ============================================================================
@@ -307,7 +300,6 @@ listen_address = '127.0.0.1:{}'
 initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
@@ -316,14 +308,13 @@ general_raft_timeout_duration_in_ms = 100
 election_timeout_min = 300
 election_timeout_max = 600
 "#,
-        ports[0], ports[0], db_root, log_dir
+        ports[0], ports[0], log_dir
     );
 
     let node1_config_path = "/tmp/failover_test_node1.toml";
     tokio::fs::write(node1_config_path, &node1_config).await?;
 
-    let config1 = node_config(&node1_config);
-    let node1_db_root = config1.cluster.db_root_dir.join("node1");
+    let node1_db_root = std::path::PathBuf::from(&db_root).join("node1");
     let db_path1 = node1_db_root.join("db");
 
     tokio::fs::create_dir_all(&db_path1).await?;
@@ -331,6 +322,7 @@ election_timeout_max = 600
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
 
     let engine1 = DefaultEmbeddedEngine::start_custom(
+        &db_path1,
         Arc::new(storage1),
         Arc::new(sm1),
         Some(node1_config_path),
@@ -370,7 +362,6 @@ initial_cluster = [
     {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }},
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 4, status = 1 }}
 ]
-db_root_dir = '{db_root}'
 log_dir = '{log_dir}'
 
 [raft]
@@ -385,8 +376,7 @@ election_timeout_max = 6000
     let node2_config_path = "/tmp/failover_test_node2.toml";
     tokio::fs::write(node2_config_path, &node2_config).await?;
 
-    let config2 = node_config(&node2_config);
-    let node2_db_root = config2.cluster.db_root_dir.join("node2");
+    let node2_db_root = std::path::PathBuf::from(&db_root).join("node2");
     let db_path2 = node2_db_root.join("db");
 
     tokio::fs::create_dir_all(&db_path2).await?;
@@ -394,6 +384,7 @@ election_timeout_max = 6000
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
 
     let engine2 = DefaultEmbeddedEngine::start_custom(
+        &db_path2,
         Arc::new(storage2),
         Arc::new(sm2),
         Some(node2_config_path),
@@ -401,7 +392,10 @@ election_timeout_max = 6000
     .await?;
     info!("Node 2 started as Learner");
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // No wait here: promotion is batched to keep the voter count odd
+    // (calculate_safe_batch_size), so a lone learner is never promoted alone
+    // — node 2 only gets promoted once node 3 also joins (see the combined
+    // wait_for_voters(&[2, 3], ..) below). Start node 3 right away.
 
     // Start Node 3 as Learner
     let node3_config = format!(
@@ -414,7 +408,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 4, status = 1 }}
 ]
-db_root_dir = '{db_root}'
 log_dir = '{log_dir}'
 
 [raft]
@@ -429,8 +422,7 @@ election_timeout_max = 6000
     let node3_config_path = "/tmp/failover_test_node3.toml";
     tokio::fs::write(node3_config_path, &node3_config).await?;
 
-    let config3 = node_config(&node3_config);
-    let node3_db_root = config3.cluster.db_root_dir.join("node3");
+    let node3_db_root = std::path::PathBuf::from(&db_root).join("node3");
     let db_path3 = node3_db_root.join("db");
 
     tokio::fs::create_dir_all(&db_path3).await?;
@@ -438,6 +430,7 @@ election_timeout_max = 6000
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
 
     let engine3 = DefaultEmbeddedEngine::start_custom(
+        &db_path3,
         Arc::new(storage3),
         Arc::new(sm3),
         Some(node3_config_path),
@@ -445,8 +438,8 @@ election_timeout_max = 6000
     .await?;
     info!("Node 3 started as Learner");
 
-    // Wait for Learner promotion and cluster stabilization
-    tokio::time::sleep(Duration::from_secs(15)).await;
+    // Wait for both Learners to sync and be promoted to Voter.
+    wait_for_voters(&engine1, &[2, 3], Duration::from_secs(20)).await;
 
     // Verify Node 1 still leader
     let leader_before_failover = engine1.wait_ready(Duration::from_secs(2)).await?;
@@ -457,11 +450,19 @@ election_timeout_max = 6000
 
     // Write data in 3-node cluster
     engine1.client().put(b"phase2-key".to_vec(), b"phase2-value".to_vec()).await?;
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Verify replication to all nodes
+    // Verify replication to all nodes — retry_until instead of a flat sleep:
+    // get_eventual gives no visibility-latency guarantee, so a fixed sleep is
+    // either wasted time (usual case) or a flaky gap (under load).
     for (i, engine) in [&engine1, &engine2, &engine3].iter().enumerate() {
-        let val = engine.client().get_eventual(b"phase2-key".to_vec()).await?;
+        let client = engine.client();
+        let val = retry_until(
+            20,
+            Duration::from_millis(200),
+            || client.get_eventual(b"phase2-key".to_vec()),
+            |r| matches!(r, Ok(Some(_))),
+        )
+        .await?;
         assert_eq!(
             val.as_deref(),
             Some(b"phase2-value".as_ref()),
@@ -484,24 +485,18 @@ election_timeout_max = 6000
     engine1.stop().await?;
     info!("Node 1 stopped - cluster should detect leader failure and start election");
 
-    // Check state immediately after Node 1 stops
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    println!("\n========== 2s AFTER NODE 1 STOPPED ==========");
-    println!("Node 2 and Node 3 should detect leader failure");
-    println!("If they are Voters with election timers, they should start election soon");
-    println!("==============================================\n");
-
-    // Wait for election timeout + re-election
-    // With election_timeout_min=3000ms, election should complete within ~5-8 seconds
-    tokio::time::sleep(Duration::from_secs(6)).await;
-
     // ============================================================================
     // Phase 4: Verify New Leader Election
     // ============================================================================
     info!("Phase 4: Verifying new leader election");
 
-    // Check new leader from Node 2's perspective
-    let new_leader = engine2.wait_ready(Duration::from_secs(5)).await?;
+    // Check new leader from Node 2's perspective. `wait_ready` returns
+    // whatever leader is *currently cached* — including the stale pre-crash
+    // value (node 1) if no new election has completed yet — so it's the
+    // wrong primitive here. `wait_for_new_leader` waits for the cached
+    // leader_id to actually change away from the crashed node.
+    let new_leader =
+        wait_for_new_leader(&engine2, initial_leader.leader_id, Duration::from_secs(20)).await;
     info!(
         "New leader elected: Node {} (term {})",
         new_leader.leader_id, new_leader.term
@@ -538,14 +533,20 @@ election_timeout_max = 6000
         .client()
         .put(b"phase3-key".to_vec(), b"phase3-value".to_vec())
         .await?;
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Verify all historical data preserved on remaining nodes
     for (i, engine) in [&engine2, &engine3].iter().enumerate() {
         let node_id = if i == 0 { 2 } else { 3 };
+        let client = engine.client();
 
         // Phase 1 data (before expansion)
-        let val1 = engine.client().get_eventual(b"phase1-key".to_vec()).await?;
+        let val1 = retry_until(
+            20,
+            Duration::from_millis(200),
+            || client.get_eventual(b"phase1-key".to_vec()),
+            |r| matches!(r, Ok(Some(_))),
+        )
+        .await?;
         assert_eq!(
             val1.as_deref(),
             Some(b"phase1-value".as_ref()),
@@ -553,7 +554,13 @@ election_timeout_max = 6000
         );
 
         // Phase 2 data (during 3-node operation)
-        let val2 = engine.client().get_eventual(b"phase2-key".to_vec()).await?;
+        let val2 = retry_until(
+            20,
+            Duration::from_millis(200),
+            || client.get_eventual(b"phase2-key".to_vec()),
+            |r| matches!(r, Ok(Some(_))),
+        )
+        .await?;
         assert_eq!(
             val2.as_deref(),
             Some(b"phase2-value".as_ref()),
@@ -561,7 +568,13 @@ election_timeout_max = 6000
         );
 
         // Phase 3 data (after failover)
-        let val3 = engine.client().get_eventual(b"phase3-key".to_vec()).await?;
+        let val3 = retry_until(
+            20,
+            Duration::from_millis(200),
+            || client.get_eventual(b"phase3-key".to_vec()),
+            |r| matches!(r, Ok(Some(_))),
+        )
+        .await?;
         assert_eq!(
             val3.as_deref(),
             Some(b"phase3-value".as_ref()),
@@ -578,7 +591,7 @@ election_timeout_max = 6000
 
     // Restart Node 1 (it was crashed at end of Phase 4)
     // Node 1 will rejoin as a follower since it already had membership
-    // Must use db_root (with _failover suffix), NOT db_root_dir — all nodes use db_root
+    // Must use db_root (with _failover suffix), NOT data_dir — all nodes use db_root
     let node1_db_root = std::path::PathBuf::from(&db_root).join("node1");
     let node1_db_path = node1_db_root.join("db");
 
@@ -586,17 +599,14 @@ election_timeout_max = 6000
     let (node1_storage, node1_state_machine) = RocksDBUnifiedEngine::open(&node1_db_path)?;
 
     // Node 1 config: rejoining as existing follower
-    let node1_config_str = create_rejoin_node_config(
-        1,
-        ports[0],
-        &[(1, ports[0]), (2, ports[1]), (3, ports[2])],
-        &db_root,
-    );
+    let node1_config_str =
+        create_rejoin_node_config(1, ports[0], &[(1, ports[0]), (2, ports[1]), (3, ports[2])]);
 
     let node1_config_path = "/tmp/d-engine-test-node1-phase6.toml".to_string();
     tokio::fs::write(&node1_config_path, &node1_config_str).await?;
 
     let engine1 = DefaultEmbeddedEngine::start_custom(
+        &node1_db_path,
         Arc::new(node1_storage),
         Arc::new(node1_state_machine),
         Some(&node1_config_path),
@@ -604,7 +614,6 @@ election_timeout_max = 6000
     .await?;
 
     info!("Node 1 restarted, waiting for leader recognition");
-    tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Verify Node 1 rejoined the cluster (should be a follower)
     let node1_leader = engine1.wait_ready(Duration::from_secs(5)).await?;
@@ -673,8 +682,6 @@ election_timeout_max = 6000
         .put(b"phase6-key".to_vec(), b"phase6-value".to_vec())
         .await?;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     // Verify all three nodes have the new data
     for (engine, node_id) in [
         (&engine1, 1),
@@ -685,7 +692,14 @@ election_timeout_max = 6000
             continue; // Skip if it's engine2 and we're checking engine3
         }
 
-        let val = engine.client().get_eventual(b"phase6-key".to_vec()).await?;
+        let client = engine.client();
+        let val = retry_until(
+            20,
+            Duration::from_millis(200),
+            || client.get_eventual(b"phase6-key".to_vec()),
+            |r| matches!(r, Ok(Some(_))),
+        )
+        .await?;
         assert_eq!(
             val.as_deref(),
             Some(b"phase6-value".as_ref()),
@@ -704,4 +718,54 @@ election_timeout_max = 6000
 
     info!("Test completed successfully - dynamic scaling with leader failover validated");
     Ok(())
+}
+
+/// Waits until every node_id in `voters` appears in the cluster's committed
+/// Voter set, via `watch_membership()` — event-driven, fires as soon as the
+/// promoting ConfChange commits, instead of sleeping for a worst-case bound.
+async fn wait_for_voters(
+    engine: &DefaultEmbeddedEngine,
+    voters: &[u32],
+    timeout: Duration,
+) {
+    let mut membership_rx = engine.watch_membership();
+    tokio::time::timeout(timeout, async {
+        loop {
+            let ready = {
+                let snapshot = membership_rx.borrow();
+                voters.iter().all(|id| snapshot.members.contains(id))
+            };
+            if ready {
+                return;
+            }
+            membership_rx.changed().await.ok();
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("nodes {voters:?} were not promoted to Voter within {timeout:?}"));
+}
+
+/// Waits until the cached leader differs from `old_leader_id`, via
+/// `leader_change_notifier()` — event-driven. `wait_ready()` is the wrong
+/// primitive for detecting a *new* election: it returns whatever leader is
+/// currently cached, including a stale pre-failure value if no new election
+/// has completed yet.
+async fn wait_for_new_leader(
+    engine: &DefaultEmbeddedEngine,
+    old_leader_id: u32,
+    timeout: Duration,
+) -> d_engine_server::LeaderInfo {
+    let mut rx = engine.leader_change_notifier();
+    tokio::time::timeout(timeout, async {
+        loop {
+            if let Some(info) = *rx.borrow()
+                && info.leader_id != old_leader_id
+            {
+                return info;
+            }
+            rx.changed().await.ok();
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no leader other than {old_leader_id} elected within {timeout:?}"))
 }

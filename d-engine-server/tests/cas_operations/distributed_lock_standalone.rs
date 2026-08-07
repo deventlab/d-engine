@@ -19,7 +19,6 @@ use crate::common::reset;
 use crate::common::start_node;
 
 const TEST_DIR: &str = "cas_operations/distributed_lock";
-const DB_ROOT_DIR: &str = "./db/cas_operations/distributed_lock";
 const LOG_DIR: &str = "./logs/cas_operations/distributed_lock";
 
 /// Test distributed lock using CAS with standalone mode (gRPC)
@@ -44,11 +43,25 @@ async fn test_distributed_lock_standalone() -> Result<(), ClientApiError> {
         node_handles: Vec::new(),
     };
 
+    let temp_dir = tempfile::Builder::new()
+        .prefix("d-engine-distributed-lock-standalone-")
+        .tempdir()
+        .expect("tempdir");
+
     info!("Starting 3-node cluster for CAS lock test");
     for (i, port) in ports.iter().enumerate() {
+        let node_data_dir = temp_dir.path().join(format!("node{}", i + 1));
         let (graceful_tx, node_handle) = start_node(
+            &node_data_dir,
             node_config(
-                &create_node_config((i + 1) as u64, *port, ports, DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config(
+                    (i + 1) as u64,
+                    *port,
+                    ports,
+                    &node_data_dir.to_string_lossy(),
+                    LOG_DIR,
+                )
+                .await,
             ),
             None,
             None,

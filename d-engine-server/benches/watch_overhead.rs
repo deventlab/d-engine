@@ -83,7 +83,7 @@ async fn create_embedded_engine()
         r#"
 [cluster]
 listen_address = "127.0.0.1:{port}"
-db_root_dir = "{}"
+data_dir = "{}"
 single_node = true
 
 [raft.watch]
@@ -103,6 +103,7 @@ watcher_buffer_size = 100
     let state_machine = Arc::new(state_machine);
 
     let engine = DefaultEmbeddedEngine::start_custom(
+        &db_path,
         storage,
         state_machine,
         Some(config_path.to_str().unwrap()),

@@ -9,16 +9,12 @@
 //! - Maintains node readiness state for cluster coordination
 //! - Executes the main event processing loop inside Raft
 //!
-//! ## Example Usage
-//! ```ignore
-//! let node = NodeBuilder::new(node_config).start().await?;
-//! tokio::spawn(async move {
-//!     node.run().await.expect("Raft node execution failed");
-//! });
-//! ```
+//! Built internally by the crate — application code never constructs a
+//! [`Node`] directly. Use [`crate::EmbeddedEngine`] or
+//! [`crate::StandaloneEngine`] instead.
 
 mod builder;
-pub use builder::*;
+pub(crate) use builder::*;
 
 mod leader_notifier;
 pub(crate) use leader_notifier::*;
@@ -29,11 +25,12 @@ use tracing::info;
 #[doc(hidden)]
 pub use type_config::*;
 
-/// Test Modules
-#[cfg(test)]
-mod builder_test;
-#[cfg(test)]
-mod node_test;
+mod data_dir;
+pub(crate) use data_dir::DataDir;
+
+mod dir_lock;
+pub(crate) use dir_lock::DataDirLock;
+
 #[cfg(test)]
 mod test_helpers;
 
@@ -61,14 +58,9 @@ use tokio::sync::watch;
 /// Represents a single node participating in a Raft cluster.
 /// Coordinates protocol execution, storage, and networking.
 ///
-/// Created via [`NodeBuilder`].
-///
-/// # Running the Node
-///
-/// ```rust,ignore
-/// let node = builder.start()?;
-/// node.run().await?;  // Blocks until shutdown
-/// ```
+/// Built internally — never constructed directly. Use
+/// [`EmbeddedEngine`](crate::EmbeddedEngine) or
+/// [`StandaloneEngine`](crate::StandaloneEngine) to start a node.
 pub struct Node<T>
 where
     T: TypeConfig,
@@ -129,6 +121,15 @@ where
 
     /// Read lease — same Arc as the one inside SharedState, exposed for EmbeddedClient.
     pub(crate) read_lease: Arc<ReadLease>,
+
+    /// Explicit runtime identity — the data_dir this process owns. Same value
+    /// used to acquire `_data_dir_lock`. No consumers yet; kept for future
+    /// runtime introspection (e.g. exposing the active data_dir to callers).
+    pub(crate) _data_dir: DataDir,
+
+    /// Exclusive lock on this node's data_dir, held for the process lifetime.
+    /// Released automatically when the last `Arc<Node<T>>` is dropped.
+    pub(crate) _data_dir_lock: DataDirLock,
 
     /// Fast-path read routing. Always set; `read_tx = None` means no ReadActor.
     pub(crate) read_handle: crate::api::StandaloneReadHandle,
@@ -375,3 +376,7 @@ where
         self.raft_core.lock().await.current_term()
     }
 }
+
+#[cfg(test)]
+#[path = "node_test.rs"]
+mod node_test;

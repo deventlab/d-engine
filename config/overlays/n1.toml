@@ -6,8 +6,6 @@ initial_cluster = [
     { id = 2, address = "127.0.0.1:9082", role = 1, status = 3 },
     { id = 3, address = "127.0.0.1:9083", role = 1, status = 3 },
 ]
-db_root_dir = "./db/1"
-log_dir = "./logs"
 
 [monitoring]
 prometheus_port = 8081

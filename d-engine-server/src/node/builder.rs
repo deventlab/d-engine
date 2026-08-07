@@ -29,7 +29,6 @@
 //!   config.
 
 use crate::read_actor::run_read_actor;
-use d_engine_core::ClusterConfig;
 use d_engine_core::CommitHandler;
 use d_engine_core::CommitHandlerDependencies;
 use d_engine_core::DefaultCommitHandler;
@@ -40,7 +39,6 @@ use d_engine_core::InternalEvent;
 use d_engine_core::LogSizePolicy;
 use d_engine_core::NewCommitData;
 use d_engine_core::Raft;
-use d_engine_core::RaftConfig;
 use d_engine_core::RaftCoreHandlers;
 use d_engine_core::RaftLog;
 use d_engine_core::RaftNodeConfig;
@@ -95,7 +93,7 @@ use crate::storage::BufferedRaftLog;
 ///     .state_machine(Arc::new(FileStateMachine::new(...).await?))
 ///     .start().await?;
 /// ```
-pub struct NodeBuilder<SE, SM>
+pub(crate) struct NodeBuilder<SE, SM>
 where
     SE: StorageEngine + Debug,
     SM: StateMachine + Debug,
@@ -110,6 +108,11 @@ where
     pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig<SE, SM>>>>,
     pub(super) snapshot_policy: Option<SNP<RaftTypeConfig<SE, SM>>>,
     pub(super) shutdown_signal: watch::Receiver<()>,
+
+    pub(super) data_dir: std::path::PathBuf,
+    /// Pre-acquired lock, for callers that must open storage before
+    /// NodeBuilder ever runs — see `data_dir_lock()`'s doc comment.
+    pub(super) data_dir_lock: Option<super::DataDirLock>,
 
     pub(super) node: Option<Arc<Node<RaftTypeConfig<SE, SM>>>>,
 }
@@ -128,7 +131,11 @@ where
     /// # Panics
     /// Will panic if configuration loading fails (consider returning Result
     /// instead)
+    ///
+    /// Test-only: production code always goes through `init()`.
+    #[cfg(test)]
     pub fn new(
+        data_dir: impl Into<std::path::PathBuf>,
         cluster_path: Option<&str>,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
@@ -147,27 +154,7 @@ where
                 .expect("Validate node_config successfully")
         };
 
-        Self::init(node_config, shutdown_signal)
-    }
-
-    /// Constructs NodeBuilder from in-memory cluster configuration
-    ///
-    /// # Arguments
-    /// * `cluster_config` - Pre-built cluster configuration
-    /// * `shutdown_signal` - Graceful shutdown notification channel
-    ///
-    /// # Usage
-    /// ```ignore
-    /// let builder = NodeBuilder::from_cluster_config(my_config, shutdown_rx);
-    /// ```
-    pub fn from_cluster_config(
-        cluster_config: ClusterConfig,
-        shutdown_signal: watch::Receiver<()>,
-    ) -> Self {
-        let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully");
-        node_config.cluster = cluster_config;
-        let node_config = node_config.validate().expect("Validate node_config successfully");
-        Self::init(node_config, shutdown_signal)
+        Self::init(data_dir, node_config, shutdown_signal)
     }
 
     /// Constructs NodeBuilder from a fully-built [`RaftNodeConfig`].
@@ -187,15 +174,20 @@ where
     /// let config: RaftNodeConfig = /* build and validate your config */;
     /// let builder = NodeBuilder::from_node_config(config, shutdown_rx);
     /// ```
+    ///
+    /// Test-only: production code always goes through `init()`.
+    #[cfg(test)]
     pub fn from_node_config(
+        data_dir: impl Into<std::path::PathBuf>,
         node_config: RaftNodeConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
-        Self::init(node_config, shutdown_signal)
+        Self::init(data_dir, node_config, shutdown_signal)
     }
 
     /// Core initialization logic shared by all construction paths
     pub(crate) fn init(
+        data_dir: impl Into<std::path::PathBuf>,
         node_config: RaftNodeConfig,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
@@ -209,6 +201,8 @@ where
             shutdown_signal,
             state_machine_handler: None,
             snapshot_policy: None,
+            data_dir: data_dir.into(),
+            data_dir_lock: None,
             node: None,
         }
     }
@@ -231,7 +225,10 @@ where
         self
     }
 
-    /// Replaces the entire node configuration
+    /// Replaces the entire node configuration.
+    ///
+    /// Test-only: production code always goes through `init()`.
+    #[cfg(test)]
     pub fn node_config(
         mut self,
         node_config: RaftNodeConfig,
@@ -241,12 +238,25 @@ where
         self
     }
 
-    /// Replaces the raft  configuration
-    pub fn raft_config(
+    /// Supplies a pre-acquired data_dir lock. For callers that must open
+    /// storage (e.g. RocksDB) *before* NodeBuilder ever runs — the lock has
+    /// to be acquired before that happens, not after, or two racing
+    /// processes both get partway into opening the same storage directory
+    /// before either one even checks this lock.
+    ///
+    /// If unset, `build()` acquires its own lock — this stays the default
+    /// so NodeBuilder remains the guaranteed choke point for every path
+    /// that doesn't pre-open storage itself (`start_custom`, `run_custom`,
+    /// direct `NodeBuilder` use).
+    ///
+    /// Crate-private: `DataDirLock` itself isn't exposed outside
+    /// `d-engine-server` — external callers (including `NodeBuilder`'s own
+    /// public API surface, e.g. d-lmdb) never need this.
+    pub(crate) fn data_dir_lock(
         mut self,
-        config: RaftConfig,
+        lock: super::DataDirLock,
     ) -> Self {
-        self.node_config.raft = config;
+        self.data_dir_lock = Some(lock);
         self
     }
 
@@ -263,6 +273,27 @@ where
     pub async fn build(mut self) -> Result<Self> {
         let node_id = self.node_id;
         let node_config = self.node_config.clone();
+
+        let data_dir = super::DataDir::new(self.data_dir.clone())?;
+
+        // Use a pre-acquired lock if the caller already opened storage before
+        // reaching us (see `data_dir_lock()`'s doc comment); otherwise this is
+        // the first and only chance to fail immediately if another process
+        // already holds this data_dir, before any storage/state-machine
+        // initialization runs.
+        let data_dir_lock = match self.data_dir_lock.take() {
+            Some(lock) => {
+                debug_assert!(
+                    lock.matches(data_dir.as_path()),
+                    "pre-acquired data_dir_lock does not match this builder's data_dir"
+                );
+                lock
+            }
+            None => super::DataDirLock::acquire(data_dir.as_path())?,
+        };
+
+        // snapshots_dir is not configurable — always data_dir/snapshots (see #10).
+        let snapshots_dir = data_dir.snapshots_dir()?;
 
         // Init CommitHandler
         let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
@@ -391,6 +422,7 @@ where
                 node_id,
                 last_applied_index,
                 state_machine.clone(),
+                snapshots_dir,
                 node_config.raft.snapshot.clone(),
                 snapshot_policy,
                 #[cfg(feature = "watch")]
@@ -603,6 +635,8 @@ where
             _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),
             read_lease,
+            _data_dir: data_dir,
+            _data_dir_lock: data_dir_lock,
         };
 
         self.node = Some(Arc::new(node));
@@ -714,26 +748,6 @@ where
         })
     }
 
-    /// Sets a custom state machine handler implementation.
-    ///
-    /// Allows providing a custom implementation that processes committed log entries
-    /// and applies them to the state machine. If not set, a default implementation
-    /// is used during `build()`.
-    ///
-    /// # Arguments
-    /// * `handler` - custom handler implementing the `StateMachineHandler` trait
-    ///
-    /// # Notes
-    /// - The handler must be thread-safe (shared across threads via `Arc`)
-    /// - The handler must correctly handle snapshot creation and restoration
-    pub fn with_custom_state_machine_handler(
-        mut self,
-        handler: Arc<SMHOF<RaftTypeConfig<SE, SM>>>,
-    ) -> Self {
-        self.state_machine_handler = Some(handler);
-        self
-    }
-
     /// Starts the gRPC server for cluster communication.
     ///
     /// # Panics
@@ -797,12 +811,13 @@ where
         db_path: &str,
         shutdown_signal: watch::Receiver<()>,
     ) -> Self {
-        use std::path::PathBuf;
-
-        let mut node_config = RaftNodeConfig::new().expect("Load node_config successfully");
-        node_config.cluster.db_root_dir = PathBuf::from(db_path);
+        let node_config = RaftNodeConfig::new().expect("Load node_config successfully");
         let node_config = node_config.validate().expect("Validate node_config successfully");
 
-        Self::init(node_config, shutdown_signal)
+        Self::init(db_path, node_config, shutdown_signal)
     }
 }
+
+#[cfg(test)]
+#[path = "builder_test.rs"]
+mod builder_test;

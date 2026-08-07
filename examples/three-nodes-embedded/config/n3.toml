@@ -6,7 +6,6 @@ initial_cluster = [
     { id = 2, address = "0.0.0.0:9082", role = 1, status = 3 },
     { id = 3, address = "0.0.0.0:9083", role = 1, status = 3 },
 ]
-db_root_dir = "./db/3"
 
 [raft.snapshot]
-enable = false
+enable = true

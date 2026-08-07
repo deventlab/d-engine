@@ -3,7 +3,6 @@
 //! This test verifies that a new node can successfully join an existing Raft cluster,
 //! synchronize its state via snapshot, and become a fully functional member.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,8 +29,7 @@ use crate::common::start_node;
 
 // Constants for test configuration
 const JOIN_CLUSTER_CASE1_DIR: &str = "join_cluster/case1";
-const SNAPSHOT_DIR: &str = "./snapshots/join_cluster/case1";
-const JOIN_CLUSTER_CASE1_DB_ROOT_DIR: &str = "./db/join_cluster/case1";
+const JOIN_CLUSTER_CASE1_DATA_DIR: &str = "./db/join_cluster/case1";
 const JOIN_CLUSTER_CASE1_LOG_DIR: &str = "./logs/join_cluster/case1";
 
 #[tokio::test]
@@ -50,17 +48,17 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     let last_log_id: u64 = 10;
 
     let storage_engine_1 =
-        prepare_storage_engine(1, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/1"), 0);
+        prepare_storage_engine(1, &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/1"), 0);
     manipulate_log(&storage_engine_1, vec![1, 2, 3], 1).await;
     init_hard_state(&storage_engine_1, 1, None);
 
     let storage_engine_2 =
-        prepare_storage_engine(2, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/2"), 0);
+        prepare_storage_engine(2, &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/2"), 0);
     manipulate_log(&storage_engine_2, vec![1, 2, 3, 4], 1).await;
     init_hard_state(&storage_engine_2, 1, None);
 
     let storage_engine_3 =
-        prepare_storage_engine(3, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/3"), 0);
+        prepare_storage_engine(3, &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/3"), 0);
     manipulate_log(&storage_engine_3, (1..=3).collect(), 1).await;
     init_hard_state(&storage_engine_3, 2, None);
     manipulate_log(&storage_engine_3, (4..=last_log_id).collect(), 2).await;
@@ -88,7 +86,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
             node_id,
             port,
             &initial_cluster_nodes,
-            &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/{node_id}"),
+            &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/{node_id}"),
             JOIN_CLUSTER_CASE1_LOG_DIR,
         )
         .await;
@@ -98,8 +96,6 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
         // Configure snapshot settings
         node_config.raft.snapshot.max_log_entries_before_snapshot = 10;
         node_config.raft.snapshot.cleanup_retain_count = 2;
-        node_config.raft.snapshot.snapshots_dir =
-            PathBuf::from(format!("{SNAPSHOT_DIR}/{node_id}"));
         node_config.raft.snapshot.chunk_size = 100;
 
         // Calculate snapshot metadata
@@ -110,7 +106,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
         let state_machine = Arc::new(
             prepare_state_machine(
                 node_id as u32,
-                &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/{node_id}"),
+                &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/{node_id}"),
             )
             .await,
         );
@@ -122,8 +118,13 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
         };
 
         // Start the node with its specific state machine and storage engine
-        let (graceful_tx, node_handle) =
-            start_node(node_config, Some(state_machine), Some(storage_engine)).await?;
+        let (graceful_tx, node_handle) = start_node(
+            format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/{node_id}"),
+            node_config,
+            Some(state_machine),
+            Some(storage_engine),
+        )
+        .await?;
 
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);
@@ -145,7 +146,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     sleep(Duration::from_secs(3)).await;
 
     // Verify snapshot file exists on the leader (node 3)
-    let snapshot_path = format!("{SNAPSHOT_DIR}/3");
+    let snapshot_path = format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/3/snapshots");
     assert!(check_path_contents(&snapshot_path).unwrap_or(false));
 
     // Create cluster definition including the new node
@@ -163,7 +164,7 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
         4,
         new_node_port,
         &full_cluster_nodes,
-        &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/4"),
+        &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/4"),
         JOIN_CLUSTER_CASE1_LOG_DIR,
     )
     .await;
@@ -171,16 +172,16 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     let mut node_config = node_config(&config);
     node_config.raft.snapshot.max_log_entries_before_snapshot = 10;
     node_config.raft.snapshot.cleanup_retain_count = 2;
-    node_config.raft.snapshot.snapshots_dir = PathBuf::from(format!("{}/{}", SNAPSHOT_DIR, 4));
     node_config.raft.snapshot.chunk_size = 100;
 
     // Create state machine and storage engine for node 4 (Arc refcount = 1)
     let node4_state_machine =
-        Arc::new(prepare_state_machine(4, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/4")).await);
+        Arc::new(prepare_state_machine(4, &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/4")).await);
     let node4_storage_engine =
-        prepare_storage_engine(4, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/4"), 0);
+        prepare_storage_engine(4, &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/4"), 0);
 
     let (graceful_tx4, node_n4) = start_node(
+        format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/4"),
         node_config,
         Some(node4_state_machine),
         Some(node4_storage_engine),
@@ -194,12 +195,12 @@ async fn test_join_cluster_scenario1() -> Result<(), ClientApiError> {
     sleep(Duration::from_secs(3)).await;
 
     // Validate that the new node has received the snapshot
-    let snapshot_path = format!("{SNAPSHOT_DIR}/4");
+    let snapshot_path = format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/4/snapshots");
     assert!(check_path_contents(&snapshot_path).unwrap_or(false));
 
     // Verify that the new node has all the data by opening its state machine
     let verification_sm =
-        prepare_state_machine(4, &format!("{JOIN_CLUSTER_CASE1_DB_ROOT_DIR}/cs/4")).await;
+        prepare_state_machine(4, &format!("{JOIN_CLUSTER_CASE1_DATA_DIR}/cs/4")).await;
     for i in 1..=10 {
         let value = verification_sm.get(&safe_kv(i)).unwrap();
         assert_eq!(value, Some(Bytes::from(safe_kv(i).to_vec())));
@@ -216,8 +217,8 @@ async fn create_node_config(
     node_id: u64,
     port: u16,
     cluster_nodes: &[(u16, u8, u8)], // (port, role, status)
-    db_root_dir: &str,
-    log_dir: &str,
+    _data_dir: &str,
+    _log_dir: &str,
 ) -> String {
     debug!(
         "Creating configuration for node {} on port {}",
@@ -242,8 +243,6 @@ async fn create_node_config(
         initial_cluster = [
             {initial_cluster_entries}
         ]
-        db_root_dir = '{db_root_dir}'
-        log_dir = '{log_dir}'
         "#
     )
 }

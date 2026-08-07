@@ -1,4 +1,4 @@
-use d_engine::NodeBuilder;
+use d_engine::StandaloneEngine;
 use sled_demo::{SledStateMachine, SledStorageEngine};
 use std::env;
 use std::error::Error;
@@ -70,16 +70,16 @@ async fn start_dengine_server(
     let state_machine =
         Arc::new(SledStateMachine::new(db_path.join("state_machine"), node_id).unwrap());
 
-    // Start Node
-    let node = NodeBuilder::new(None, graceful_rx.clone())
-        .storage_engine(storage_engine)
-        .state_machine(state_machine)
-        .start()
-        .await
-        .expect("start node failed.");
-
-    // Start Node
-    if let Err(e) = node.run().await {
+    // Start Node — blocks until shutdown.
+    if let Err(e) = StandaloneEngine::run_custom(
+        &db_path,
+        storage_engine,
+        state_machine,
+        graceful_rx,
+        None::<&str>,
+    )
+    .await
+    {
         error!("node stops: {:?}", e);
     } else {
         info!("node stops.");

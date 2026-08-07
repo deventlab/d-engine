@@ -53,8 +53,7 @@ async fn test_snapshot_transfer_resumes_after_leader_change()
     const BASELINE_ENTRIES: u64 = 80;
 
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
-    let snapshots_dir = temp_dir.path().join("snapshots");
+    let data_dir = temp_dir.path().join("db");
 
     let mut port_guard = get_available_ports(4).await;
     port_guard.release_listeners();
@@ -73,7 +72,6 @@ initial_cluster = [
     {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
 ]
-db_root_dir = '{}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 5000
@@ -85,25 +83,22 @@ election_timeout_max = 3000
 [raft.snapshot]
 max_log_entries_before_snapshot = {SNAPSHOT_THRESHOLD}
 retained_log_entries = {RETAINED_LOGS}
-snapshots_dir = '{}'
 "#,
             ports[node_id as usize - 1],
             ports[0],
             ports[1],
             ports[2],
-            db_root_dir.join(format!("node{node_id}")).display(),
-            snapshots_dir.join(format!("node{node_id}")).display(),
         );
 
         let config_path = temp_dir.path().join(format!("node{node_id}.toml"));
         tokio::fs::write(&config_path, &config).await?;
 
-        let db_path = db_root_dir.join(format!("node{node_id}/db"));
+        let db_path = data_dir.join(format!("node{node_id}/db"));
         tokio::fs::create_dir_all(&db_path).await?;
-        tokio::fs::create_dir_all(snapshots_dir.join(format!("node{node_id}"))).await?;
 
         let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
         let engine = DefaultEmbeddedEngine::start_custom(
+            &db_path,
             Arc::new(storage),
             Arc::new(sm),
             Some(config_path.to_str().unwrap()),
@@ -130,13 +125,9 @@ snapshots_dir = '{}'
             .await?;
     }
 
+    let old_leader_snapshots_dir = data_dir.join(format!("node{old_leader_id}/db/snapshots"));
     assert!(
-        wait_for_snapshot(
-            &snapshots_dir,
-            old_leader_id as u64,
-            Duration::from_secs(15)
-        )
-        .await,
+        wait_for_snapshot(&old_leader_snapshots_dir, Duration::from_secs(15)).await,
         "Leader snapshot must exist before learner starts"
     );
     info!("Leader (Node {old_leader_id}) snapshot ready, log purge in effect");
@@ -153,7 +144,6 @@ initial_cluster = [
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 4, name = 'n4', address = '127.0.0.1:{}', role = 4, status = 2 }}
 ]
-db_root_dir = '{}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 5000
@@ -165,26 +155,19 @@ election_timeout_max = 3000
 [raft.snapshot]
 max_log_entries_before_snapshot = {SNAPSHOT_THRESHOLD}
 retained_log_entries = {RETAINED_LOGS}
-snapshots_dir = '{}'
 "#,
-        ports[3],
-        ports[0],
-        ports[1],
-        ports[2],
-        ports[3],
-        db_root_dir.join("node4").display(),
-        snapshots_dir.join("node4").display(),
+        ports[3], ports[0], ports[1], ports[2], ports[3],
     );
 
     let learner_config_path = temp_dir.path().join("node4.toml");
     tokio::fs::write(&learner_config_path, &learner_config).await?;
 
-    let learner_db_path = db_root_dir.join("node4/db");
+    let learner_db_path = data_dir.join("node4/db");
     tokio::fs::create_dir_all(&learner_db_path).await?;
-    tokio::fs::create_dir_all(snapshots_dir.join("node4")).await?;
 
     let (learner_storage, learner_sm) = RocksDBUnifiedEngine::open(&learner_db_path)?;
     let learner_engine = DefaultEmbeddedEngine::start_custom(
+        &learner_db_path,
         Arc::new(learner_storage),
         Arc::new(learner_sm),
         Some(learner_config_path.to_str().unwrap()),

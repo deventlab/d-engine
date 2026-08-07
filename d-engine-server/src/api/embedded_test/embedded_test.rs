@@ -38,10 +38,10 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_wait_ready_single_node_success() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
         // Start embedded engine (single node)
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -65,9 +65,9 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_wait_ready_timeout() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -85,9 +85,9 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_leader_change_notifier_basic() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -119,9 +119,9 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_ready_and_wait_ready_sequence() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -148,9 +148,9 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_client_available_after_wait_ready() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -174,9 +174,9 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_multiple_leader_change_notifier_subscribers() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -211,9 +211,9 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_engine_stop_cleans_up() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -224,9 +224,9 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_wait_ready_race_condition_already_elected() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -258,10 +258,10 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_wait_ready_multiple_calls_concurrent() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
         let engine = Arc::new(
-            TestEngine::start_custom(storage, sm, None)
+            TestEngine::start_custom(temp_dir.path(), storage, sm, None)
                 .await
                 .expect("Failed to start engine"),
         );
@@ -305,9 +305,9 @@ mod embedded_engine_tests {
 
     #[tokio::test]
     async fn test_wait_ready_check_current_value_first() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -349,8 +349,7 @@ mod embedded_engine_tests {
 
         #[tokio::test]
         #[serial(tmp_db)]
-        async fn test_start_with_tmp_path_warns_but_succeeds() {
-            // /tmp paths warn but are not rejected — caller's choice
+        async fn test_start_with_tmp_path_accepted() {
             let tmp_path = std::path::PathBuf::from("/tmp/d-engine-test-start");
             let _ = std::fs::remove_dir_all(&tmp_path);
 
@@ -358,14 +357,13 @@ mod embedded_engine_tests {
 
             assert!(
                 result.is_ok(),
-                "start() should succeed with /tmp path (warn only). Error: {:?}",
-                result.as_ref().err()
+                "start() must accept a /tmp path: {:?}",
+                result.err()
             );
 
             if let Ok(engine) = result {
                 engine.stop().await.ok();
             }
-
             let _ = std::fs::remove_dir_all(&tmp_path);
         }
 
@@ -402,12 +400,12 @@ mod embedded_engine_tests {
             let config_path = _temp_dir.path().join("test_config.toml");
             let data_dir = _temp_dir.path().join("data");
 
-            // Create valid config with custom db_root_dir
+            // Create valid config with custom data_dir
             let config_content = format!(
                 r#"
 [cluster]
 node_id = 1
-db_root_dir = "{}"
+data_dir = "{}"
 
 [cluster.rpc]
 listen_addr = "127.0.0.1:0"
@@ -422,7 +420,7 @@ election_timeout_max_ms = 3000
             std::fs::write(&config_path, config_content).expect("Failed to write config");
 
             // Should succeed with valid config
-            let result = EmbeddedEngine::start_with(config_path.to_str().unwrap()).await;
+            let result = EmbeddedEngine::start_with(&data_dir, config_path.to_str().unwrap()).await;
             assert!(
                 result.is_ok(),
                 "start_with() should succeed with valid config"
@@ -436,7 +434,9 @@ election_timeout_max_ms = 3000
 
         #[tokio::test]
         async fn test_start_with_nonexistent_config() {
-            let result = EmbeddedEngine::start_with("/nonexistent/config.toml").await;
+            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let result =
+                EmbeddedEngine::start_with(_temp_dir.path(), "/nonexistent/config.toml").await;
 
             assert!(
                 result.is_err(),
@@ -444,78 +444,41 @@ election_timeout_max_ms = 3000
             );
         }
 
+        /// /tmp is accepted — a legitimate explicit choice, not something d-engine judges.
         #[tokio::test]
-        #[cfg(debug_assertions)]
         #[serial(tmp_db)]
-        async fn test_start_with_tmp_db_allows_in_debug() {
+        async fn test_start_with_tmp_db_accepted() {
             let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
             let config_path = _temp_dir.path().join("test_config.toml");
-
-            // Clean up /tmp/db before test
             let _ = std::fs::remove_dir_all("/tmp/db");
 
-            // Create config with /tmp/db
             let config_content = r#"
 [cluster]
 node_id = 1
-db_root_dir = "/tmp/db"
 
 [cluster.rpc]
 listen_addr = "127.0.0.1:0"
 "#;
             std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-            // In debug mode, should succeed with warning
-            let result = EmbeddedEngine::start_with(config_path.to_str().unwrap()).await;
+            let result = EmbeddedEngine::start_with("/tmp/db", config_path.to_str().unwrap()).await;
             assert!(
                 result.is_ok(),
-                "start_with() should allow /tmp/db in debug mode"
+                "start_with() must accept /tmp/db: {:?}",
+                result.err()
             );
 
             if let Ok(engine) = result {
                 engine.stop().await.ok();
             }
-
-            // Clean up after test
             let _ = std::fs::remove_dir_all("/tmp/db");
         }
 
         #[tokio::test]
-        #[cfg(not(debug_assertions))]
-        #[serial]
-        async fn test_start_with_tmp_db_rejects_in_release() {
-            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let config_path = _temp_dir.path().join("test_config.toml");
-
-            // Create config with /tmp/db
-            let config_content = r#"
-[cluster]
-node_id = 1
-db_root_dir = "/tmp/db"
-
-[cluster.rpc]
-listen_addr = "127.0.0.1:0"
-"#;
-            std::fs::write(&config_path, config_content).expect("Failed to write config");
-
-            // In release mode, should reject
-            let result = EmbeddedEngine::start_with(config_path.to_str().unwrap()).await;
-            assert!(
-                result.is_err(),
-                "start_with() should reject /tmp/db in release mode"
-            );
-
-            if let Err(e) = result {
-                let err_msg = format!("{:?}", e);
-                assert!(err_msg.contains("/tmp/db") || err_msg.contains("db_root_dir"));
-            }
-        }
-
-        #[tokio::test]
         async fn test_drop_without_stop_warning() {
-            let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+            let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-            let engine = TestEngine::start_custom(storage, sm, None)
+            let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
@@ -532,8 +495,8 @@ listen_addr = "127.0.0.1:0"
         #[tokio::test]
         #[serial(tmp_db)]
         async fn test_stop_releases_sm_lock_immediately() {
-            let data_dir = std::path::PathBuf::from("/tmp/d-engine-lock-release-test");
-            let _ = std::fs::remove_dir_all(&data_dir);
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let data_dir = temp_dir.path().join("d-engine-lock-release-test");
 
             let engine =
                 EmbeddedEngine::start(&data_dir).await.expect("First start should succeed");
@@ -567,10 +530,7 @@ listen_addr = "127.0.0.1:0"
 
         /// Build a minimal valid `RaftNodeConfig` backed by a temp directory.
         /// Uses a fixed high port; tests are serialized to avoid conflicts.
-        fn make_config(
-            temp_dir: &tempfile::TempDir,
-            node_id: u32,
-        ) -> d_engine_core::RaftNodeConfig {
+        fn make_config(node_id: u32) -> d_engine_core::RaftNodeConfig {
             let listen_addr: SocketAddr = "127.0.0.1:19731".parse().unwrap();
             d_engine_core::RaftNodeConfig {
                 cluster: ClusterConfig {
@@ -582,8 +542,6 @@ listen_addr = "127.0.0.1:0"
                         role: NodeRole::Follower as i32,
                         status: NodeStatus::Active.into(),
                     }],
-                    db_root_dir: temp_dir.path().join("engine"),
-                    log_dir: temp_dir.path().join("logs"),
                 },
                 ..Default::default()
             }
@@ -595,11 +553,12 @@ listen_addr = "127.0.0.1:0"
         #[serial(start_node)]
         async fn test_start_node_with_programmatic_config_starts_and_stops() {
             let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
-            let config = make_config(&temp_dir, 1);
+            let config = make_config(1);
 
-            let engine = TestEngine::start_node(config, storage, sm)
-                .await
-                .expect("start_node should succeed with valid programmatic config");
+            let engine =
+                TestEngine::start_node(temp_dir.path().join("engine"), storage, sm, config)
+                    .await
+                    .expect("start_node should succeed with valid programmatic config");
 
             engine
                 .wait_ready(Duration::from_secs(5))
@@ -615,9 +574,10 @@ listen_addr = "127.0.0.1:0"
         #[serial(start_node)]
         async fn test_start_node_unvalidated_config_returns_error() {
             let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
-            let config = make_config(&temp_dir, 0);
+            let config = make_config(0);
 
-            let result = TestEngine::start_node(config, storage, sm).await;
+            let result =
+                TestEngine::start_node(temp_dir.path().join("engine"), storage, sm, config).await;
             assert!(
                 result.is_err(),
                 "start_node with node_id=0 should return validation error"
@@ -631,11 +591,12 @@ listen_addr = "127.0.0.1:0"
         async fn test_start_node_uses_passed_se_and_sm_instances() {
             let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
             let sm_for_direct_read = Arc::clone(&sm);
-            let config = make_config(&temp_dir, 1);
+            let config = make_config(1);
 
-            let engine = TestEngine::start_node(config, storage, sm)
-                .await
-                .expect("start_node should succeed");
+            let engine =
+                TestEngine::start_node(temp_dir.path().join("engine"), storage, sm, config)
+                    .await
+                    .expect("start_node should succeed");
             engine
                 .wait_ready(Duration::from_secs(5))
                 .await
@@ -665,11 +626,12 @@ listen_addr = "127.0.0.1:0"
         #[serial(start_node)]
         async fn test_batch_empty_ops_returns_invalid_argument() {
             let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
-            let config = make_config(&temp_dir, 1);
+            let config = make_config(1);
 
-            let engine = TestEngine::start_node(config, storage, sm)
-                .await
-                .expect("start_node should succeed");
+            let engine =
+                TestEngine::start_node(temp_dir.path().join("engine"), storage, sm, config)
+                    .await
+                    .expect("start_node should succeed");
             engine
                 .wait_ready(Duration::from_secs(5))
                 .await
@@ -696,9 +658,9 @@ listen_addr = "127.0.0.1:0"
         #[tokio::test]
         #[serial]
         async fn test_watch_registers_successfully() {
-            let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+            let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-            let engine = TestEngine::start_custom(storage, sm, None)
+            let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
@@ -756,6 +718,10 @@ listen_addr = "127.0.0.1:0"
         /// - Watch receives no events
         #[tokio::test]
         async fn test_watch_with_tempdir_dropped() {
+            // Separate from the storage/sm tempdir below — this one must stay alive for the
+            // whole test, unlike that one which is dropped on purpose.
+            let data_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
             let (storage, sm) = {
                 let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
                 let storage_path = temp_dir.path().join("storage");
@@ -775,7 +741,7 @@ listen_addr = "127.0.0.1:0"
                 // temp_dir dropped here — underlying paths are now invalid
             };
 
-            let engine = TestEngine::start_custom(storage, sm, None)
+            let engine = TestEngine::start_custom(data_dir.path(), storage, sm, None)
                 .await
                 .expect("Failed to start engine");
 
@@ -816,9 +782,9 @@ listen_addr = "127.0.0.1:0"
         async fn test_watch_with_tempdir_alive() {
             println!("\n=== Testing Watch with TempDir ALIVE ===");
 
-            let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-            let storage_path = _temp_dir.path().join("storage");
-            let sm_path = _temp_dir.path().join("sm");
+            let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+            let storage_path = temp_dir.path().join("storage");
+            let sm_path = temp_dir.path().join("sm");
 
             std::fs::create_dir_all(&storage_path).unwrap();
             std::fs::create_dir_all(&sm_path).unwrap();
@@ -833,16 +799,21 @@ listen_addr = "127.0.0.1:0"
 
             // Default general_raft_timeout_duration_in_ms is 50ms — too tight for CI.
             // Override to 5000ms so put() doesn't time out on slow machines.
-            let config_path = _temp_dir.path().join("test.toml");
+            let config_path = temp_dir.path().join("test.toml");
             std::fs::write(
                 &config_path,
                 "[raft]\ngeneral_raft_timeout_duration_in_ms = 5000\n",
             )
             .unwrap();
 
-            let engine = TestEngine::start_custom(storage, sm, Some(config_path.to_str().unwrap()))
-                .await
-                .expect("Failed to start engine");
+            let engine = TestEngine::start_custom(
+                temp_dir.path(),
+                storage,
+                sm,
+                Some(config_path.to_str().unwrap()),
+            )
+            .await
+            .expect("Failed to start engine");
 
             engine
                 .wait_ready(Duration::from_secs(5))
@@ -911,9 +882,9 @@ listen_addr = "127.0.0.1:0"
     /// Business scenario: Most basic embedded deployment (1 node)
     #[tokio::test]
     async fn test_is_leader_single_node() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -951,9 +922,9 @@ listen_addr = "127.0.0.1:0"
     /// Business scenario: Application calls APIs during startup before cluster is ready
     #[tokio::test]
     async fn test_leader_info_before_election() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -1001,10 +972,10 @@ listen_addr = "127.0.0.1:0"
     /// (e.g., HAProxy checking /primary endpoint from multiple load balancers)
     #[tokio::test]
     async fn test_is_leader_concurrent_access() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
         let engine = Arc::new(
-            TestEngine::start_custom(storage, sm, None)
+            TestEngine::start_custom(temp_dir.path(), storage, sm, None)
                 .await
                 .expect("Failed to start engine"),
         );
@@ -1085,9 +1056,9 @@ listen_addr = "127.0.0.1:0"
     /// Business scenario: Monitoring dashboard polling cluster state every second
     #[tokio::test]
     async fn test_leader_info_consistency() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -1126,10 +1097,10 @@ listen_addr = "127.0.0.1:0"
     /// If this test hangs and times out, the regression is present.
     #[tokio::test]
     async fn test_linearizable_read_single_voter_returns_committed_value() {
-        let (storage, sm, _temp_dir) = create_test_storage_and_sm().await;
+        let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
 
         // Start embedded engine (single node)
-        let engine = TestEngine::start_custom(storage, sm, None)
+        let engine = TestEngine::start_custom(temp_dir.path(), storage, sm, None)
             .await
             .expect("Failed to start engine");
 
@@ -1171,7 +1142,7 @@ mod unified_db_tests {
             r#"
 [cluster]
 node_id = 1
-db_root_dir = "{}"
+data_dir = "{}"
 
 [cluster.rpc]
 listen_addr = "127.0.0.1:0"
@@ -1199,7 +1170,7 @@ unified_db = {unified}
         let config_path = temp_dir.path().join("config.toml");
         std::fs::write(&config_path, make_config(temp_dir.path(), true)).expect("write config");
 
-        let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+        let engine = EmbeddedEngine::start_with(temp_dir.path(), config_path.to_str().unwrap())
             .await
             .expect("start_with(unified_db=true) must succeed");
 
@@ -1228,7 +1199,7 @@ unified_db = {unified}
 
         // --- Phase 1: write a key ---
         {
-            let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+            let engine = EmbeddedEngine::start_with(temp_dir.path(), config_path.to_str().unwrap())
                 .await
                 .expect("first start must succeed");
             engine.wait_ready(Duration::from_secs(5)).await.expect("leader election");
@@ -1244,7 +1215,7 @@ unified_db = {unified}
 
         // --- Phase 2: reopen and verify ---
         {
-            let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+            let engine = EmbeddedEngine::start_with(temp_dir.path(), config_path.to_str().unwrap())
                 .await
                 .expect("second start must succeed — DB lock must have been released");
             engine
@@ -1277,7 +1248,7 @@ unified_db = {unified}
 
         // --- Phase 1: write ---
         {
-            let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+            let engine = EmbeddedEngine::start_with(temp_dir.path(), config_path.to_str().unwrap())
                 .await
                 .expect("first start must succeed");
             engine.wait_ready(Duration::from_secs(5)).await.expect("leader election");
@@ -1289,7 +1260,7 @@ unified_db = {unified}
 
         // --- Phase 2: verify ---
         {
-            let engine = EmbeddedEngine::start_with(config_path.to_str().unwrap())
+            let engine = EmbeddedEngine::start_with(temp_dir.path(), config_path.to_str().unwrap())
                 .await
                 .expect("second start must succeed");
             engine

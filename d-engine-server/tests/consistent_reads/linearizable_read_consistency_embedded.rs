@@ -5,7 +5,7 @@
 //!
 //! Uses embedded mode with DefaultEmbeddedEngine for production-ready testing.
 
-use crate::common::{create_node_config, get_available_ports, node_config};
+use crate::common::{create_node_config, get_available_ports};
 use d_engine_server::DefaultEmbeddedEngine;
 use d_engine_server::RocksDBUnifiedEngine;
 use std::sync::Arc;
@@ -27,18 +27,16 @@ async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir)
         r#"
 [cluster]
 listen_address = "127.0.0.1:{}"
-db_root_dir = "{}"
 single_node = true
 
 [raft.read_consistency]
 state_machine_sync_timeout_ms = 2000
 "#,
-        port,
-        db_path.display()
+        port
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(&db_path, config_path.to_str().unwrap())
         .await
         .expect("Failed to start engine");
 
@@ -296,7 +294,7 @@ async fn test_linearizable_read_sequential_writes() {
 async fn test_read_index_fixed_with_concurrent_writes_multi_node()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
-    let db_root_dir = temp_dir.path().join("db");
+    let data_dir = temp_dir.path().join("db");
     let log_dir = temp_dir.path().join("logs");
 
     let mut port_guard = get_available_ports(3).await;
@@ -311,16 +309,15 @@ async fn test_read_index_fixed_with_concurrent_writes_multi_node()
             node_id,
             ports[i],
             ports,
-            db_root_dir.to_str().unwrap(),
+            data_dir.to_str().unwrap(),
             log_dir.to_str().unwrap(),
         )
         .await;
         let config_str = format!(
             "{base_config_str}\n[raft.read_consistency]\nstate_machine_sync_timeout_ms = 5000\n",
         );
-        let config = node_config(&config_str);
 
-        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let node_db_root = data_dir.join(format!("node{node_id}"));
         let db_path = node_db_root.join("db");
 
         tokio::fs::create_dir_all(&db_path).await?;
@@ -331,6 +328,7 @@ async fn test_read_index_fixed_with_concurrent_writes_multi_node()
         tokio::fs::write(&config_path, &config_str).await?;
 
         let engine = DefaultEmbeddedEngine::start_custom(
+            &db_path,
             Arc::new(storage),
             Arc::new(state_machine),
             Some(&config_path),

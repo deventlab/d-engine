@@ -9,7 +9,6 @@ use tracing_test::traced_test;
 use crate::common::create_node_config;
 use crate::common::create_rejoin_node_config;
 use crate::common::get_available_ports;
-use crate::common::node_config;
 use crate::common::wait_for_new_leader;
 
 /// Recursively copies `src` into `dst`, creating `dst` if needed.
@@ -82,9 +81,8 @@ async fn test_follower_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn st
             log_dir.to_str().unwrap(),
         )
         .await;
-        let config = node_config(&config_str);
 
-        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let node_db_root = db_root.join(format!("node{node_id}"));
         let db_path = node_db_root.join("db");
         tokio::fs::create_dir_all(&db_path).await?;
 
@@ -98,6 +96,7 @@ async fn test_follower_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn st
         let sm_for_crash = Arc::new(state_machine);
 
         let engine = DefaultEmbeddedEngine::start_custom(
+            db_paths.last().unwrap(),
             Arc::new(storage),
             Arc::clone(&sm_for_crash),
             Some(&configs[i].1),
@@ -205,15 +204,12 @@ async fn test_follower_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn st
     // otherwise it times out and disrupts the cluster before the leader's first
     // heartbeat can reach it (see create_rejoin_node_config's doc comment).
     let peers: Vec<(u32, u16)> = (0..3).map(|i| ((i + 1) as u32, ports[i])).collect();
-    let rejoin_config_str = create_rejoin_node_config(
-        follower_id as u32,
-        ports[follower_idx],
-        &peers,
-        db_root.to_str().unwrap(),
-    );
+    let rejoin_config_str =
+        create_rejoin_node_config(follower_id as u32, ports[follower_idx], &peers);
     tokio::fs::write(&crashed_config.1, &rejoin_config_str).await?;
 
     let restarted = DefaultEmbeddedEngine::start_custom(
+        &crash_snapshot_path,
         Arc::new(storage),
         Arc::new(state_machine),
         Some(&crashed_config.1),
@@ -296,9 +292,8 @@ async fn test_leader_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn std:
             log_dir.to_str().unwrap(),
         )
         .await;
-        let config = node_config(&config_str);
 
-        let node_db_root = config.cluster.db_root_dir.join(format!("node{node_id}"));
+        let node_db_root = db_root.join(format!("node{node_id}"));
         let db_path = node_db_root.join("db");
         tokio::fs::create_dir_all(&db_path).await?;
 
@@ -312,6 +307,7 @@ async fn test_leader_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn std:
         let sm_for_crash = Arc::new(state_machine);
 
         let engine = DefaultEmbeddedEngine::start_custom(
+            db_paths.last().unwrap(),
             Arc::new(storage),
             Arc::clone(&sm_for_crash),
             Some(&configs[i].1),
@@ -432,6 +428,7 @@ async fn test_leader_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn std:
     let (storage, state_machine) = RocksDBUnifiedEngine::open(&crashed_leader_snapshot_path)?;
 
     let rejoined = DefaultEmbeddedEngine::start_custom(
+        &crashed_leader_snapshot_path,
         Arc::new(storage),
         Arc::new(state_machine),
         Some(&crashed_leader_config.1),

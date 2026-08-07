@@ -174,7 +174,6 @@ snapshot_cool_down_since_last_check = { secs = 60 }
 cleanup_retain_count = 2
 
 # Snapshot storage directory.
-snapshots_dir = "./snapshots/"
 
 # Prefix for snapshot directory names.
 snapshots_dir_prefix = "snapshot"

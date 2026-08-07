@@ -67,14 +67,21 @@ use crate::common::test_put_get;
 #[traced_test]
 async fn test_readonly_mode_learner_standalone() -> Result<(), ClientApiError> {
     const TEST_DIR: &str = "cluster_start_stop/analytics_rpc";
-    const DB_ROOT_DIR: &str = "./db/cluster_start_stop/analytics_rpc";
     const LOG_DIR: &str = "./logs/cluster_start_stop/analytics_rpc";
 
     reset(TEST_DIR).await?;
 
+    let temp_dir = tempfile::Builder::new()
+        .prefix("d-engine-learner-readonly-sync-standalone-")
+        .tempdir()
+        .expect("tempdir");
+
     let mut port_guard = get_available_ports(4).await;
     port_guard.release_listeners();
     let ports = port_guard.as_slice();
+    let node_data_dirs: Vec<_> = (0..ports.len())
+        .map(|i| temp_dir.path().join(format!("node{}", i + 1)))
+        .collect();
 
     // Phase 1: Start initial 3-node primary cluster (nodes 1, 2, 3 = Voter+Active)
     println!("\n╔════════════════════════════════════════════════════════════╗");
@@ -89,8 +96,16 @@ async fn test_readonly_mode_learner_standalone() -> Result<(), ClientApiError> {
 
     for (i, port) in ports[..3].iter().enumerate() {
         let (graceful_tx, node_handle) = start_node(
+            &node_data_dirs[i],
             node_config(
-                &create_node_config((i + 1) as u64, *port, &ports[..3], DB_ROOT_DIR, LOG_DIR).await,
+                &create_node_config(
+                    (i + 1) as u64,
+                    *port,
+                    &ports[..3],
+                    &node_data_dirs[i].to_string_lossy(),
+                    LOG_DIR,
+                )
+                .await,
             ),
             None,
             None,
@@ -130,16 +145,16 @@ initial_cluster = [
     {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }},
     {{ id = 4, name = 'n4', address = '127.0.0.1:{}', role = 4, status = 2 }}
 ]
-db_root_dir = '{}'
 log_dir = '{}'
 
 [raft]
 general_raft_timeout_duration_in_ms = 5000
 "#,
-        ports[3], ports[0], ports[1], ports[2], ports[3], DB_ROOT_DIR, LOG_DIR
+        ports[3], ports[0], ports[1], ports[2], ports[3], LOG_DIR
     );
 
-    let (graceful_tx4, node_n4) = start_node(node_config(&node4_config), None, None).await?;
+    let (graceful_tx4, node_n4) =
+        start_node(&node_data_dirs[3], node_config(&node4_config), None, None).await?;
     ctx.graceful_txs.push(graceful_tx4);
     ctx.node_handles.push(node_n4);
 

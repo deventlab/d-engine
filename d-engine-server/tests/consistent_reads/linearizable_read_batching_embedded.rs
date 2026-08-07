@@ -32,7 +32,6 @@ async fn create_engine_with_batching(
         r#"
 [cluster]
 listen_address = "127.0.0.1:{}"
-db_root_dir = "{}"
 single_node = true
 
 [raft.read_consistency]
@@ -41,13 +40,11 @@ state_machine_sync_timeout_ms = 5000
 [raft.read_consistency.read_batching]
 size_threshold = {}
 "#,
-        port,
-        db_path.display(),
-        size_threshold,
+        port, size_threshold,
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(&db_path, config_path.to_str().unwrap())
         .await
         .expect("Failed to start engine");
 

@@ -31,19 +31,17 @@ async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir)
         r#"
 [cluster]
 listen_address = "127.0.0.1:{}"
-db_root_dir = "{}"
 single_node = true
 
 [raft.batching]
 max_batch_size = 100
 
 "#,
-        port,
-        db_path.display()
+        port
     );
     std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-    let engine = DefaultEmbeddedEngine::start_with(config_path.to_str().unwrap())
+    let engine = DefaultEmbeddedEngine::start_with(&db_path, config_path.to_str().unwrap())
         .await
         .expect("Failed to start engine");
 

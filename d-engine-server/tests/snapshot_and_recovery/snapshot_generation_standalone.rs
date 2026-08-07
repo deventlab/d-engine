@@ -17,7 +17,6 @@
 //! - last_commit_index is 10
 //! - Node 1 and 2's log-3's term is 2
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,9 +44,8 @@ use crate::common::start_node;
 use crate::common::test_put_get;
 
 // Constants for test configuration
-const SNAPSHOT_DIR: &str = "./snapshots/snapshot/case1";
 const SNAPSHOT_CASE1_DIR: &str = "snapshot/case1";
-const SNAPSHOT_CASE1_DB_ROOT_DIR: &str = "./db/snapshot/case1";
+const SNAPSHOT_CASE1_DATA_DIR: &str = "./db/snapshot/case1";
 const SNAPSHOT_CASE1_LOG_DIR: &str = "./logs/snapshot/case1";
 
 /// The current test relies on the following snapshot configuration:
@@ -64,14 +62,14 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     let ports = port_guard.as_slice();
 
     // Prepare state machine directories (do not pre-allocate Arc to avoid ownership issues)
-    prepare_state_machine(1, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/1")).await;
-    prepare_state_machine(2, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/2")).await;
-    prepare_state_machine(3, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/3")).await;
+    prepare_state_machine(1, &format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/1")).await;
+    prepare_state_machine(2, &format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/2")).await;
+    prepare_state_machine(3, &format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/3")).await;
 
     // Prepare raft logs
-    let r1 = prepare_storage_engine(1, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/1"), 0);
-    let r2 = prepare_storage_engine(2, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/2"), 0);
-    let r3 = prepare_storage_engine(3, &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/3"), 0);
+    let r1 = prepare_storage_engine(1, &format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/1"), 0);
+    let r2 = prepare_storage_engine(2, &format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/2"), 0);
+    let r3 = prepare_storage_engine(3, &format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/3"), 0);
 
     let last_log_id: u64 = 10;
     manipulate_log(&r1, vec![1, 2, 3], 1).await;
@@ -90,11 +88,12 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     for (i, port) in ports.iter().enumerate() {
         let node_id = (i + 1) as u64;
+        let node_data_dir = format!("{}/cs/{}", SNAPSHOT_CASE1_DATA_DIR, i + 1);
         let config = create_node_config(
             node_id,
             *port,
             ports,
-            &format!("{}/cs/{}", SNAPSHOT_CASE1_DB_ROOT_DIR, i + 1),
+            &node_data_dir,
             SNAPSHOT_CASE1_LOG_DIR,
         )
         .await;
@@ -103,7 +102,7 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
         let state_machine = Arc::new(
             prepare_state_machine(
                 node_id as u32,
-                &format!("{SNAPSHOT_CASE1_DB_ROOT_DIR}/cs/{node_id}"),
+                &format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/{node_id}"),
             )
             .await,
         );
@@ -115,13 +114,10 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
             _ => None,
         };
 
-        let mut node_config = node_config(&config);
-
-        node_config.raft.snapshot.snapshots_dir =
-            PathBuf::from(format!("{SNAPSHOT_DIR}/{node_id}"));
+        let node_config = node_config(&config);
 
         let (graceful_tx, node_handle) =
-            start_node(node_config, Some(state_machine), raft_log).await?;
+            start_node(&node_data_dir, node_config, Some(state_machine), raft_log).await?;
 
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);
@@ -139,8 +135,8 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
     sleep(Duration::from_secs(3)).await;
 
     // Verify snapshot file exists on leader (node 3)
-    let snapshot_path = "./snapshots/snapshot/case1/3";
-    assert!(check_path_contents(snapshot_path).unwrap_or(false));
+    let snapshot_path = format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/3/snapshots");
+    assert!(check_path_contents(&snapshot_path).unwrap_or(false));
 
     // Verify state machine data via client API (snapshot has been applied to leader)
     let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;

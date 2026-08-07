@@ -19,7 +19,7 @@ use tracing_test::traced_test;
 
 use crate::FileStateMachine;
 use crate::FileStorageEngine;
-use crate::NodeBuilder;
+use crate::node::NodeBuilder;
 use crate::node::RaftTypeConfig;
 use crate::storage::BufferedRaftLog;
 use crate::test_utils::insert_raft_log;
@@ -145,39 +145,9 @@ fn create_temp_config(content: &str) -> (PathBuf, String) {
 }
 
 #[test]
-#[serial]
-fn test_config_override_success() {
-    // Prepare test configuration
-    let (_dir, config_path) = create_temp_config(
-        r#"
-    [cluster]
-    db_root_dir = "./custom_db"
-    "#,
-    );
-
-    // Use temporary environment variables
-    temp_env::with_var("CONFIG_PATH", Some(config_path.clone()), || {
-        let base_config = RaftNodeConfig::new().unwrap().validate().unwrap();
-        let updated_config = base_config.with_override_config(&config_path).unwrap();
-
-        // Verify path coverage
-        assert_eq!(
-            updated_config.cluster.db_root_dir,
-            PathBuf::from("./custom_db"),
-            "DB root dir not overridden"
-        );
-
-        // Verify that other fields remain default
-        assert_eq!(
-            updated_config.cluster.node_id, 1,
-            "Node ID should remain default"
-        );
-    });
-}
-
-#[test]
 fn test_config_override_invalid_path() {
-    let base_config = RaftNodeConfig::new().unwrap().validate().unwrap();
+    let base_config = RaftNodeConfig::new().unwrap();
+    let base_config = base_config.validate().unwrap();
     let result = base_config.with_override_config("non_existent.toml");
 
     assert!(
@@ -193,12 +163,13 @@ fn test_config_override_invalid_format() {
         r#"
     invalid_toml_format
     cluster: {
-    db_root_dir: "./custom_db"
+    data_dir: "./custom_db"
     }
     "#,
     );
 
-    let base_config = RaftNodeConfig::new().unwrap().validate().unwrap();
+    let base_config = RaftNodeConfig::new().unwrap();
+    let base_config = base_config.validate().unwrap();
     let result = base_config.with_override_config(&config_path);
 
     assert!(
@@ -210,23 +181,20 @@ fn test_config_override_invalid_format() {
 #[test]
 #[serial]
 fn test_config_override_priority() {
+    // default listen_address = 127.0.0.1:9081 < file override (:9082) < env override (:9083).
+    // Uses listen_address rather than node_id: overriding node_id alone would fail the
+    // separate self-in-cluster validate() check against the default initial_cluster (id=1).
     let (_dir, config_path) = create_temp_config(
         r#"
     [cluster]
-    db_root_dir = "./file_db"
+    listen_address = "127.0.0.1:9082"
     "#,
     );
-
-    let temp_env_dir = tempdir().unwrap();
-    let env_db_path = temp_env_dir.path().join("env_db");
 
     temp_env::with_vars(
         vec![
             ("CONFIG_PATH", Some(config_path.as_str())),
-            (
-                "RAFT__CLUSTER__DB_ROOT_DIR",
-                Some(env_db_path.to_str().unwrap()),
-            ),
+            ("RAFT__CLUSTER__LISTEN_ADDRESS", Some("127.0.0.1:9083")),
         ],
         || {
             let config = RaftNodeConfig::new().unwrap().validate().unwrap();
@@ -234,7 +202,8 @@ fn test_config_override_priority() {
             // Verify that environment variables have higher priority than configuration
             // files
             assert_eq!(
-                config.cluster.db_root_dir, env_db_path,
+                config.cluster.listen_address,
+                "127.0.0.1:9083".parse::<std::net::SocketAddr>().unwrap(),
                 "Environment variable should override file config"
             );
         },
@@ -251,7 +220,8 @@ fn test_partial_override() {
     "#,
     );
 
-    let base_config = RaftNodeConfig::new().unwrap().validate().unwrap();
+    let base_config = RaftNodeConfig::new().unwrap();
+    let base_config = base_config.validate().unwrap();
     let updated_config = base_config.with_override_config(&config_path).unwrap();
 
     // Validate covered fields
@@ -262,7 +232,7 @@ fn test_partial_override() {
 
     // Verify unmodified fields
     assert_eq!(
-        updated_config.cluster.db_root_dir, base_config.cluster.db_root_dir,
+        updated_config.cluster.node_id, base_config.cluster.node_id,
         "Cluster config should remain unchanged"
     );
 }
@@ -270,11 +240,15 @@ fn test_partial_override() {
 #[test]
 fn test_from_node_config_preserves_caller_config() {
     let (_, shutdown_rx) = watch::channel(());
-    let mut config = RaftNodeConfig::new().unwrap().validate().unwrap();
+    let config = RaftNodeConfig::new().unwrap();
+    let mut config = config.validate().unwrap();
     config.cluster.node_id = 99;
 
-    let builder =
-        NodeBuilder::<MockStorageEngine, MockStateMachine>::from_node_config(config, shutdown_rx);
+    let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::from_node_config(
+        "test-data",
+        config,
+        shutdown_rx,
+    );
 
     // Verify caller's config is used directly — no detour through RaftNodeConfig::new() defaults
     assert_eq!(
@@ -284,13 +258,16 @@ fn test_from_node_config_preserves_caller_config() {
 }
 
 #[test]
+#[serial]
 fn test_node_config_setter_syncs_node_id() {
     let (_, shutdown_rx) = watch::channel(());
-    let mut config = RaftNodeConfig::new().unwrap().validate().unwrap();
+    let config = RaftNodeConfig::new().unwrap();
+    let mut config = config.validate().unwrap();
     config.cluster.node_id = 7;
 
-    let builder = NodeBuilder::<MockStorageEngine, MockStateMachine>::new(None, shutdown_rx)
-        .node_config(config);
+    let builder =
+        NodeBuilder::<MockStorageEngine, MockStateMachine>::new("test-data", None, shutdown_rx)
+            .node_config(config);
 
     // node_config on the builder must reflect the new config after setter
     assert_eq!(

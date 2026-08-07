@@ -53,7 +53,7 @@ listen_address = "0.0.0.0:9081"
 initial_cluster = [
     { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 }
 ]
-db_root_dir = "./db"
+
 ```
 
 **Config field reference**:
@@ -92,7 +92,7 @@ initial_cluster = [
     { id = 1, address = "0.0.0.0:9081", role = 2, status = 2 },  # Existing leader
     { id = 2, address = "0.0.0.0:9082", role = 3, status = 0 },  # Self: Learner
 ]
-db_root_dir = "./db"
+
 ```
 
 **Key fields**:
@@ -144,7 +144,7 @@ initial_cluster = [
     { id = 2, address = "0.0.0.0:9082", role = 1, status = 2 },  # Follower (promoted), ACTIVE
     { id = 3, address = "0.0.0.0:9083", role = 3, status = 0 },  # Self: Learner, PROMOTABLE
 ]
-db_root_dir = "./db"
+
 ```
 
 **Key**: Node 2 listed as `role = 1, status = 2` assumes it's already promoted to Follower and ACTIVE.
@@ -237,7 +237,7 @@ initial_cluster = [
     { id = 1, address = "192.168.1.10:9081", role = 2, status = 2 },
     { id = 2, address = "192.168.1.11:9082", role = 3, status = 0 },
 ]
-db_root_dir = "./db"
+
 ```
 
 **Network requirements**:
