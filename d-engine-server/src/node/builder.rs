@@ -125,6 +125,7 @@ where
     /// Creates a new NodeBuilder with cluster configuration loaded from file
     ///
     /// # Arguments
+    /// * `data_dir` - Node data directory
     /// * `cluster_path` - Optional path to node-specific cluster configuration
     /// * `shutdown_signal` - Watch channel for graceful shutdown signaling
     ///
@@ -166,13 +167,14 @@ where
     /// file or environment variables are present.
     ///
     /// # Arguments
+    /// * `data_dir` - Node data directory
     /// * `node_config` - Fully assembled and validated node configuration
     /// * `shutdown_signal` - Watch channel for graceful shutdown signaling
     ///
     /// # Usage
     /// ```ignore
     /// let config: RaftNodeConfig = /* build and validate your config */;
-    /// let builder = NodeBuilder::from_node_config(config, shutdown_rx);
+    /// let builder = NodeBuilder::from_node_config("./data/my-node", config, shutdown_rx);
     /// ```
     ///
     /// Test-only: production code always goes through `init()`.
@@ -806,8 +808,7 @@ where
 
     /// Test constructor with custom database path
     ///
-    /// # Safety
-    /// Bypasses normal configuration validation - use for testing only
+    /// Test-only helper using the default validated node configuration.
     #[cfg(test)]
     pub(crate) fn new_from_db_path(
         db_path: &str,
