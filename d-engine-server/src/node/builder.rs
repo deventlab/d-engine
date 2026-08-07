@@ -283,10 +283,12 @@ where
         // initialization runs.
         let data_dir_lock = match self.data_dir_lock.take() {
             Some(lock) => {
-                debug_assert!(
-                    lock.matches(data_dir.as_path()),
-                    "pre-acquired data_dir_lock does not match this builder's data_dir"
-                );
+                if !lock.matches(data_dir.as_path()) {
+                    return Err(SystemError::NodeStartFailed(
+                        "pre-acquired data_dir_lock does not match builder data_dir".to_string(),
+                    )
+                    .into());
+                }
                 lock
             }
             None => super::DataDirLock::acquire(data_dir.as_path())?,

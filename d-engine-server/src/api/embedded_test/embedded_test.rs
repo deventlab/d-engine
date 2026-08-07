@@ -350,10 +350,11 @@ mod embedded_engine_tests {
         #[tokio::test]
         #[serial(tmp_db)]
         async fn test_start_with_tmp_path_accepted() {
-            let tmp_path = std::path::PathBuf::from("/tmp/d-engine-test-start");
-            let _ = std::fs::remove_dir_all(&tmp_path);
+            let tmp_dir = tempfile::Builder::new()
+                .tempdir_in("/tmp")
+                .expect("Failed to create temp dir in /tmp");
 
-            let result = EmbeddedEngine::start(&tmp_path).await;
+            let result = EmbeddedEngine::start(tmp_dir.path()).await;
 
             assert!(
                 result.is_ok(),
@@ -364,7 +365,6 @@ mod embedded_engine_tests {
             if let Ok(engine) = result {
                 engine.stop().await.ok();
             }
-            let _ = std::fs::remove_dir_all(&tmp_path);
         }
 
         #[tokio::test]
@@ -450,7 +450,9 @@ election_timeout_max_ms = 3000
         async fn test_start_with_tmp_db_accepted() {
             let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
             let config_path = _temp_dir.path().join("test_config.toml");
-            let _ = std::fs::remove_dir_all("/tmp/db");
+            let tmp_db_dir = tempfile::Builder::new()
+                .tempdir_in("/tmp")
+                .expect("Failed to create temp dir in /tmp");
 
             let config_content = r#"
 [cluster]
@@ -461,17 +463,17 @@ listen_addr = "127.0.0.1:0"
 "#;
             std::fs::write(&config_path, config_content).expect("Failed to write config");
 
-            let result = EmbeddedEngine::start_with("/tmp/db", config_path.to_str().unwrap()).await;
+            let result =
+                EmbeddedEngine::start_with(tmp_db_dir.path(), config_path.to_str().unwrap()).await;
             assert!(
                 result.is_ok(),
-                "start_with() must accept /tmp/db: {:?}",
+                "start_with() must accept a /tmp path: {:?}",
                 result.err()
             );
 
             if let Ok(engine) = result {
                 engine.stop().await.ok();
             }
-            let _ = std::fs::remove_dir_all("/tmp/db");
         }
 
         #[tokio::test]

@@ -186,11 +186,12 @@ async fn start_engine(
     config_path: &str,
 ) -> Result<DefaultEmbeddedEngine, Box<dyn std::error::Error>> {
     tokio::fs::write(config_path, toml).await?;
-    let db_path = db_root.join(format!("node{node_id}/db"));
+    let node_data_dir = db_root.join(format!("node{node_id}"));
+    let db_path = node_data_dir.join("db");
     tokio::fs::create_dir_all(&db_path).await?;
     let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
     Ok(DefaultEmbeddedEngine::start_custom(
-        &db_path,
+        &node_data_dir,
         Arc::new(storage),
         Arc::new(sm),
         Some(config_path),

@@ -308,10 +308,9 @@ where
     /// non-path settings (node_id, cluster topology, timeouts, etc.); any
     /// `data_dir` entry in the config file is ignored.
     ///
-    /// The data_dir lock is acquired inside this call, before the node
-    /// starts — but `storage_engine`/`state_machine` are already
-    /// constructed by the caller by the time they're passed in. Callers
-    /// must not open or use `data_dir` themselves before calling this.
+    /// d-engine's data_dir lock only protects d-engine's own files.
+    /// `storage_engine`/`state_machine` are constructed by the caller;
+    /// their concurrency safety is the caller's responsibility.
     ///
     /// # Arguments
     /// - `data_dir`: root directory for this node's persistent state
@@ -345,6 +344,7 @@ where
     ///
     /// For library wrappers that build their own config layer and
     /// translate to `RaftNodeConfig` in Rust — no config file required.
+    /// Same lock scope as [`start_custom`](Self::start_custom) — see its doc.
     pub async fn start_node(
         data_dir: impl AsRef<std::path::Path>,
         storage_engine: Arc<SE>,
@@ -405,6 +405,11 @@ where
             .state_machine(state_machine);
         if let Some(lock) = data_dir_lock {
             builder = builder.data_dir_lock(lock);
+        } else {
+            tracing::warn!(
+                "storage_engine/state_machine were built before d-engine's data_dir \
+                 lock — their concurrency safety is the caller's responsibility"
+            );
         }
         let node = builder.start().await?;
 

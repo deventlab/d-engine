@@ -4,7 +4,7 @@
 
 Production-ready setup with automatic failover and data replication.
 
-````bash
+```bash
 # Build (ensure cargo is installed)
 make build
 
@@ -16,6 +16,7 @@ make start-node1  # Launch node 1
 make start-node2  # Launch node 2
 make start-node3  # Launch node 3
 make clean        # Clean all build artifacts and logs
+```
 
 ### Manual Startup (Advanced)
 
@@ -25,16 +26,18 @@ For manual control, run these in separate terminal sessions:
 
 ```bash
 CONFIG_PATH=config/n1 \
+DB_PATH="./db/1" \
 LOG_DIR="./logs/1" \
 RUST_LOG=demo=debug,d_engine=debug \
 RUST_BACKTRACE=1 \
 target/release/demo
-````
+```
 
 **Node 2:**
 
 ```bash
 CONFIG_PATH=config/n2 \
+DB_PATH="./db/2" \
 LOG_DIR="./logs/2" \
 RUST_LOG=demo=debug,d_engine=debug \
 target/release/demo
@@ -44,6 +47,7 @@ target/release/demo
 
 ```bash
 CONFIG_PATH=config/n3 \
+DB_PATH="./db/3" \
 LOG_DIR="./logs/3" \
 RUST_LOG=demo=debug,d_engine=debug \
 target/release/demo

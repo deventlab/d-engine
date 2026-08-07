@@ -94,10 +94,11 @@ mod start_data_dir_tests {
     #[tokio::test]
     #[serial(tmp_db)]
     async fn test_start_tmp_path_accepted() {
-        let tmp_path = std::path::PathBuf::from("/tmp/d-engine-env-test");
-        let _ = std::fs::remove_dir_all(&tmp_path);
+        let tmp_dir = tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .expect("Failed to create temp dir in /tmp");
 
-        let result = EmbeddedEngine::start(&tmp_path).await;
+        let result = EmbeddedEngine::start(tmp_dir.path()).await;
 
         assert!(
             result.is_ok(),
@@ -108,6 +109,5 @@ mod start_data_dir_tests {
         if let Ok(engine) = result {
             engine.stop().await.ok();
         }
-        let _ = std::fs::remove_dir_all(&tmp_path);
     }
 }

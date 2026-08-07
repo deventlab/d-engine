@@ -10,9 +10,10 @@ max-threads = 2
 
 [profile.default]
 
-# Force serial execution for tests that use /tmp/db
+# Force serial execution for tests that use /tmp/db, or that mutate the
+# process-global RAFT__CLUSTER__* env vars (data_dir_lock/single_node_bootstrap)
 [[profile.default.overrides]]
-filter = "test(tmp_db) | test(config_path_env)"
+filter = "test(tmp_db) | test(config_path_env) | test(data_dir_lock) | test(single_node_bootstrap)"
 threads-required = 'num-cpus'
 
 # Serialize wall-clock perf assertions — CPU contention causes false failures, not the
@@ -42,7 +43,7 @@ test-group = "multi-node-cluster-local"
 [profile.ci]
 
 [[profile.ci.overrides]]
-filter = "test(tmp_db) | test(config_path_env)"
+filter = "test(tmp_db) | test(config_path_env) | test(data_dir_lock) | test(single_node_bootstrap)"
 threads-required = 'num-cpus'
 
 [[profile.ci.overrides]]

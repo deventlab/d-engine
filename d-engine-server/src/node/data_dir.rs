@@ -2,6 +2,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use d_engine_core::Result;
+use d_engine_core::SystemError;
 
 /// Explicit runtime identity of a node: the physical directory this process
 /// owns. `new()` rejects an empty path and creates the
@@ -19,7 +20,7 @@ pub(crate) struct DataDir {
 impl DataDir {
     pub(crate) fn new(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        d_engine_core::validate_directory(&path, "data_dir")?;
+        validate_directory(&path, "data_dir")?;
         Ok(Self {
             path,
             #[cfg(test)]
@@ -37,7 +38,7 @@ impl DataDir {
     /// same place, because the two are one concept, not two.
     pub(crate) fn snapshots_dir(&self) -> Result<PathBuf> {
         let dir = self.path.join("snapshots");
-        d_engine_core::validate_directory(&dir, "snapshots_dir")?;
+        validate_directory(&dir, "snapshots_dir")?;
         Ok(dir)
     }
 
@@ -49,7 +50,7 @@ impl DataDir {
     #[allow(dead_code)]
     pub(crate) fn unified_db_path(&self) -> Result<PathBuf> {
         let dir = self.path.join("db");
-        d_engine_core::validate_directory(&dir, "db")?;
+        validate_directory(&dir, "db")?;
         Ok(dir)
     }
 
@@ -58,7 +59,7 @@ impl DataDir {
     #[allow(dead_code)]
     pub(crate) fn storage_path(&self) -> Result<PathBuf> {
         let dir = self.path.join("storage");
-        d_engine_core::validate_directory(&dir, "storage")?;
+        validate_directory(&dir, "storage")?;
         Ok(dir)
     }
 
@@ -67,7 +68,7 @@ impl DataDir {
     #[allow(dead_code)]
     pub(crate) fn state_machine_path(&self) -> Result<PathBuf> {
         let dir = self.path.join("state_machine");
-        d_engine_core::validate_directory(&dir, "state_machine")?;
+        validate_directory(&dir, "state_machine")?;
         Ok(dir)
     }
 
@@ -84,4 +85,41 @@ impl DataDir {
             _tempdir: Some(tempdir),
         }
     }
+}
+
+/// Ensures directory path is valid and writable.
+fn validate_directory(
+    path: &Path,
+    name: &str,
+) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        return Err(SystemError::DataDirInvalid(format!("{name} path cannot be empty")).into());
+    }
+
+    if !path.exists() {
+        std::fs::create_dir_all(path).map_err(|e| {
+            SystemError::DataDirInvalid(format!(
+                "Failed to create {} directory at {}: {}",
+                name,
+                path.display(),
+                e
+            ))
+        })?;
+    }
+
+    // Unique, collision-free write-permission probe: never overwrites an
+    // existing file, and is removed automatically on drop.
+    tempfile::Builder::new()
+        .prefix(".d-engine-write-test-")
+        .tempfile_in(path)
+        .map_err(|e| {
+            SystemError::DataDirInvalid(format!(
+                "No write permission in {} directory {}: {}",
+                name,
+                path.display(),
+                e
+            ))
+        })?;
+
+    Ok(())
 }

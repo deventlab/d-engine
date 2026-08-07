@@ -58,19 +58,6 @@ impl DataDirLock {
     ) -> bool {
         self.path == dir
     }
-
-    /// Test-only: locks a fresh, uniquely-generated temp directory instead of
-    /// whatever `data_dir` the mock config carries — avoids cross-test lock
-    /// collisions when many MockNodeBuilders share a default data_dir path.
-    /// The backing `TempDir` is owned by the returned lock and cleaned up
-    /// automatically when it drops.
-    #[cfg(test)]
-    pub(crate) fn for_test() -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut lock = Self::acquire(dir.path()).expect("acquire test lock");
-        lock._tempdir = Some(dir);
-        lock
-    }
 }
 
 #[cfg(test)]

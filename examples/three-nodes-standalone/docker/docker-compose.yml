@@ -22,7 +22,7 @@ services:
       - ${SSH_KEYS_PATH:-./jepsen/sshkeys}:/root/.ssh
       - ${CONFIG_PATH:-../config}:/app/config
       - ${LOGS_PATH:-./output/logs}:/app/logs
-      - ${DB_PATH:-./output/db}:/app/db
+      - ${DB_PATH:-./output/db}/1:/app/db
       # - ${SNAPSHOTS_PATH:-./output/snapshots}:/app/snapshots
 
   node2:
@@ -42,6 +42,11 @@ services:
     ports:
       - "2022:22"
       - "9082:9082"
+    volumes:
+      - ${SSH_KEYS_PATH:-./jepsen/sshkeys}:/root/.ssh
+      - ${CONFIG_PATH:-../config}:/app/config
+      - ${LOGS_PATH:-./output/logs}:/app/logs
+      - ${DB_PATH:-./output/db}/2:/app/db
 
   node3:
     <<: *node-base
@@ -60,6 +65,11 @@ services:
     ports:
       - "2023:22"
       - "9083:9083"
+    volumes:
+      - ${SSH_KEYS_PATH:-./jepsen/sshkeys}:/root/.ssh
+      - ${CONFIG_PATH:-../config}:/app/config
+      - ${LOGS_PATH:-./output/logs}:/app/logs
+      - ${DB_PATH:-./output/db}/3:/app/db
 
   jepsen:
     image: jepsen:2.0

@@ -1,4 +1,5 @@
 use super::*;
+use config::ConfigError;
 use serial_test::serial;
 use std::io::Write;
 use temp_env::with_vars;

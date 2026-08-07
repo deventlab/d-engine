@@ -319,6 +319,9 @@ impl MockBuilder {
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
         let (_membership_tx, membership_rx) = watch::channel(MembershipSnapshot::default());
+        let data_dir = crate::node::DataDir::for_test();
+        let data_dir_lock =
+            DataDirLock::acquire(data_dir.as_path()).expect("acquire test data_dir lock");
 
         Node::<MockTypeConfig> {
             node_id: raft.node_id,
@@ -342,8 +345,8 @@ impl MockBuilder {
             _lease_cleanup_handle: None,
             shutdown_signal,
             read_lease,
-            _data_dir: crate::node::DataDir::for_test(),
-            _data_dir_lock: DataDirLock::for_test(),
+            _data_dir: data_dir,
+            _data_dir_lock: data_dir_lock,
         }
     }
 
@@ -374,6 +377,9 @@ impl MockBuilder {
         let (rpc_ready_tx, _rpc_ready_rx) = watch::channel(false);
         let leader_notifier = LeaderNotifier::new();
         let (_membership_tx, membership_rx) = watch::channel(MembershipSnapshot::default());
+        let data_dir = crate::node::DataDir::for_test();
+        let data_dir_lock =
+            DataDirLock::acquire(data_dir.as_path()).expect("acquire test data_dir lock");
 
         let node = Arc::new(Node::<MockTypeConfig> {
             node_id: raft.node_id,
@@ -397,8 +403,8 @@ impl MockBuilder {
             _lease_cleanup_handle: None,
             shutdown_signal: shutdown.clone(),
             read_lease,
-            _data_dir: crate::node::DataDir::for_test(),
-            _data_dir_lock: DataDirLock::for_test(),
+            _data_dir: data_dir,
+            _data_dir_lock: data_dir_lock,
         });
         let node_clone = node.clone();
         let listen_address = node_config_arc.cluster.listen_address;
@@ -512,14 +518,9 @@ impl MockBuilder {
     /// `data_dir` is unused — data_dir isn't a `d-engine-core` concept
     /// anymore (see #9); kept as a no-op parameter for the one call site.
     pub fn with_db_path(
-        mut self,
+        self,
         _data_dir: impl AsRef<Path>,
     ) -> Self {
-        let node_config = RaftNodeConfig::new()
-            .expect("Should succeed to init RaftNodeConfig")
-            .validate()
-            .expect("Should succeed to validate RaftNodeConfig");
-        self.node_config = Some(node_config);
         self
     }
 

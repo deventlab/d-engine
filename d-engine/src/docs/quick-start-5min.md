@@ -57,8 +57,8 @@ use std::time::Duration;
 async fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting d-engine...\n");
 
-    // Start embedded engine with config file
-    let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
+    // Start embedded engine — single node, no config file needed
+    let engine = DefaultEmbeddedEngine::start("./data").await?;
 
     // Wait for leader election (single-node: instant)
     let leader = engine.wait_ready(Duration::from_secs(5)).await?;
@@ -113,17 +113,18 @@ Done!
 ### Behind the Scenes
 
 ```rust,ignore
-DefaultEmbeddedEngine::start_with("d-engine.toml").await?
+DefaultEmbeddedEngine::start("./data").await?
 ```
 
 This one line:
 
-1. Reads config from `d-engine.toml`
-2. Created `./data/single-node/db/` (single RocksDB instance)
-3. Initialized 4 column families: `logs`, `meta`, `state_machine`, `state_machine_meta`
-4. Built Raft node with node_id=1
-5. Spawned `node.run()` in background (Raft protocol)
-6. Returned immediately (non-blocking)
+1. Created `./data/storage/` (`logs`, `meta`) and `./data/state_machine/`
+   (`state_machine`, `state_machine_meta`) — two separate RocksDB instances by
+   default, for workload isolation. (Set `[storage] unified_db = true` for one
+   shared instance at `./data/db/` instead.)
+2. Built Raft node with node_id=1
+3. Spawned `node.run()` in background (Raft protocol)
+4. Returned immediately (non-blocking)
 
 ```rust,ignore
 engine.wait_ready(Duration::from_secs(5)).await?
@@ -182,7 +183,7 @@ See docs for TTL, multi-key operations, and advanced consistency control.
 ### 3. Automatic Lifecycle Management
 
 ```rust,ignore
-let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
+let engine = DefaultEmbeddedEngine::start("./data").await?;
 // ↑ Internally spawns node.run() in background
 
 engine.stop().await?;
@@ -271,8 +272,8 @@ let engine = DefaultEmbeddedEngine::start("./data").await?;
 ### Pattern 2: Explicit config file
 
 ```rust,ignore
-// Use specific config file
-let engine = DefaultEmbeddedEngine::start_with("d-engine.toml").await?;
+// Use specific config file for non-path settings (node_id, cluster topology, etc.)
+let engine = DefaultEmbeddedEngine::start_with("./data", "d-engine.toml").await?;
 ```
 
 ### Pattern 3: Monitor Leader Changes
@@ -391,7 +392,7 @@ For advanced usage:
 
 ## Key Takeaways
 
-- ✅ **2-line startup**: `start_with()` → `wait_ready()`
+- ✅ **2-line startup**: `start()` → `wait_ready()`
 - ✅ **Zero boilerplate**: No manual spawn, no shutdown channels
 - ✅ **Event-driven**: No polling, <1ms notification latency
 - ✅ **Production-ready**: Auto-creates directories, graceful shutdown

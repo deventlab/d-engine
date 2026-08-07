@@ -52,14 +52,15 @@ general_raft_timeout_duration_in_ms = 5000
     let node1_config_path = "/tmp/scale_test_node1.toml";
     tokio::fs::write(node1_config_path, &node1_config).await?;
 
-    let db_path = data_dir.join("node1/db");
+    let node1_data_dir = data_dir.join("node1");
+    let db_path = node1_data_dir.join("db");
 
     tokio::fs::create_dir_all(&db_path).await?;
 
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path)?;
 
     let engine1 = DefaultEmbeddedEngine::start_custom(
-        &db_path,
+        &node1_data_dir,
         Arc::new(storage1),
         Arc::new(sm1),
         Some(node1_config_path),
@@ -108,14 +109,15 @@ general_raft_timeout_duration_in_ms = 5000
     let node2_config_path = "/tmp/scale_test_node2.toml";
     tokio::fs::write(node2_config_path, &node2_config).await?;
 
-    let db_path2 = data_dir.join("node2/db");
+    let node2_data_dir = data_dir.join("node2");
+    let db_path2 = node2_data_dir.join("db");
 
     tokio::fs::create_dir_all(&db_path2).await?;
 
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
 
     let engine2 = DefaultEmbeddedEngine::start_custom(
-        &db_path2,
+        &node2_data_dir,
         Arc::new(storage2),
         Arc::new(sm2),
         Some(node2_config_path),
@@ -152,14 +154,15 @@ general_raft_timeout_duration_in_ms = 5000
     let node3_config_path = "/tmp/scale_test_node3.toml";
     tokio::fs::write(node3_config_path, &node3_config).await?;
 
-    let db_path3 = data_dir.join("node3/db");
+    let node3_data_dir = data_dir.join("node3");
+    let db_path3 = node3_data_dir.join("db");
 
     tokio::fs::create_dir_all(&db_path3).await?;
 
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
 
     let engine3 = DefaultEmbeddedEngine::start_custom(
-        &db_path3,
+        &node3_data_dir,
         Arc::new(storage3),
         Arc::new(sm3),
         Some(node3_config_path),
@@ -322,7 +325,7 @@ election_timeout_max = 600
     let (storage1, sm1) = RocksDBUnifiedEngine::open(&db_path1)?;
 
     let engine1 = DefaultEmbeddedEngine::start_custom(
-        &db_path1,
+        &node1_db_root,
         Arc::new(storage1),
         Arc::new(sm1),
         Some(node1_config_path),
@@ -384,7 +387,7 @@ election_timeout_max = 6000
     let (storage2, sm2) = RocksDBUnifiedEngine::open(&db_path2)?;
 
     let engine2 = DefaultEmbeddedEngine::start_custom(
-        &db_path2,
+        &node2_db_root,
         Arc::new(storage2),
         Arc::new(sm2),
         Some(node2_config_path),
@@ -430,7 +433,7 @@ election_timeout_max = 6000
     let (storage3, sm3) = RocksDBUnifiedEngine::open(&db_path3)?;
 
     let engine3 = DefaultEmbeddedEngine::start_custom(
-        &db_path3,
+        &node3_db_root,
         Arc::new(storage3),
         Arc::new(sm3),
         Some(node3_config_path),
@@ -606,7 +609,7 @@ election_timeout_max = 6000
     tokio::fs::write(&node1_config_path, &node1_config_str).await?;
 
     let engine1 = DefaultEmbeddedEngine::start_custom(
-        &node1_db_path,
+        &node1_db_root,
         Arc::new(node1_storage),
         Arc::new(node1_state_machine),
         Some(&node1_config_path),

@@ -269,14 +269,16 @@ pub async fn start_cluster(
             .prefix("d-engine-start-cluster-")
             .tempdir()
             .expect("tempdir");
-        let (tx, handle) = start_node(node_data_dir.keep(), config, None, None).await?;
-        controllers.push((tx, handle));
+        let (tx, handle) = start_node(node_data_dir.path(), config, None, None).await?;
+        // Keep the TempDir guard alive alongside its node until shutdown — it
+        // cleans up automatically on drop instead of leaking into /tmp.
+        controllers.push((tx, handle, node_data_dir));
     }
 
     // Perform test operations...
 
     // Shut down all nodes
-    for (tx, handle) in controllers {
+    for (tx, handle, _node_data_dir) in controllers {
         tx.send(()).expect("Should succeed to send shutdown");
         handle.await??;
     }
@@ -307,9 +309,9 @@ pub async fn start_node(
         Some(s) => s,
         None => {
             let storage_path = data_dir.join("storage_engine");
-            Arc::new(
-                FileStorageEngine::new(storage_path).expect("Failed to create file storage engine"),
-            )
+            Arc::new(FileStorageEngine::new(storage_path).map_err(|e| {
+                std::io::Error::other(format!("failed to create file storage engine: {e}"))
+            })?)
         }
     };
 
@@ -319,18 +321,34 @@ pub async fn start_node(
         None => {
             let state_machine_path = data_dir.join("state_machine");
             Arc::new(
-                FileStateMachine::new(state_machine_path)
-                    .await
-                    .expect("Failed to create file state machine"),
+                FileStateMachine::new(state_machine_path).await.map_err(|e| {
+                    std::io::Error::other(format!("failed to create file state machine: {e}"))
+                })?,
             )
         }
     };
 
-    let handle = tokio::spawn(async move {
+    let mut handle = tokio::spawn(async move {
         StandaloneEngine::start_node(data_dir, storage_engine, state_machine, graceful_rx, config)
             .await
             .map_err(|e| std::io::Error::other(format!("node exited with error: {e}")).into())
     });
+
+    // `start_node` blocks until shutdown once it actually starts, so a real
+    // startup failure (e.g. the data_dir lock rejecting a concurrent start)
+    // surfaces here within milliseconds. Give it a short window: if it exits
+    // that fast, something is already wrong — report it now instead of
+    // letting the caller find out much later at shutdown.
+    tokio::select! {
+        joined = &mut handle => {
+            let result = joined.map_err(|e| std::io::Error::other(format!("node task panicked: {e}")))?;
+            return match result {
+                Ok(()) => Err(std::io::Error::other("node exited before it started running").into()),
+                Err(e) => Err(e),
+            };
+        }
+        _ = time::sleep(Duration::from_millis(300)) => {}
+    }
 
     Ok((graceful_tx, handle))
 }
