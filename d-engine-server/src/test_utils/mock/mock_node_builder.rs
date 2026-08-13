@@ -340,6 +340,7 @@ impl MockBuilder {
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
             sm_worker_handle: std::sync::Mutex::new(None),
+            rpc_server_handle: std::sync::Mutex::new(None),
             read_actor_handle: std::sync::Mutex::new(None),
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,
@@ -398,6 +399,7 @@ impl MockBuilder {
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
             sm_worker_handle: std::sync::Mutex::new(None),
+            rpc_server_handle: std::sync::Mutex::new(None),
             read_actor_handle: std::sync::Mutex::new(None),
             _commit_handler_handle: None,
             _lease_cleanup_handle: None,

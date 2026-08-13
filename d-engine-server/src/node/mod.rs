@@ -38,6 +38,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use d_engine_core::InboundEvent;
 use d_engine_core::Membership;
@@ -109,6 +110,10 @@ where
     /// ReadActor task handle. Aborted in run() after sm_worker exits so that the
     /// `Arc<SM>` (and the RocksDB LOCK) is released before run() returns.
     pub(crate) read_actor_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+
+    /// gRPC server task handle. tonic's graceful shutdown waits indefinitely for
+    /// long-lived streams (the Raft replication bidi stream never ends on its own)
+    pub(crate) rpc_server_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 
     /// Commit handler task handle (background log application)
     pub(crate) _commit_handler_handle: Option<tokio::task::JoinHandle<()>>,
@@ -183,6 +188,17 @@ where
         // Start Raft main loop.
         // Note: IO thread is closed inside Raft::run() on shutdown before returning.
         self.start_raft_loop().await?;
+
+        // Give tonic's graceful shutdown a bounded chance (fast path when no stream is
+        // active), then force-abort — it would otherwise wait indefinitely for the
+        // long-lived replication bidi stream to end on its own, which never happens (#438).
+        let rpc_handle = self.rpc_server_handle.lock().unwrap().take();
+        if let Some(rpc_handle) = rpc_handle {
+            let abort_handle = rpc_handle.abort_handle();
+            if tokio::time::timeout(Duration::from_millis(200), rpc_handle).await.is_err() {
+                abort_handle.abort();
+            }
+        }
 
         // Shutdown in reverse startup order: join sm-worker thread first so its
         // Arc<DB> clone is dropped before we return, releasing the RocksDB LOCK.

@@ -635,6 +635,7 @@ where
             _watch_dispatcher_handle: watch_system.map(|(_, _, handle, _)| handle),
             sm_worker_handle: std::sync::Mutex::new(Some(sm_worker_handle)),
             read_actor_handle: std::sync::Mutex::new(Some(read_actor_handle)),
+            rpc_server_handle: std::sync::Mutex::new(None),
             _commit_handler_handle: Some(commit_handler_handle),
             _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),
@@ -763,7 +764,7 @@ where
             let shutdown = self.shutdown_signal.clone();
             let listen_address = self.node_config.cluster.listen_address;
             let node_config = self.node_config.clone();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 if let Err(e) =
                     grpc::start_rpc_server(node_clone, listen_address, node_config, shutdown).await
                 {
@@ -771,6 +772,7 @@ where
                     error!("RPC server stops. {:?}", e);
                 }
             });
+            *node.rpc_server_handle.lock().unwrap() = Some(handle);
             self
         } else {
             panic!("failed to start RPC server");
