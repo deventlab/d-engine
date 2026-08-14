@@ -104,11 +104,12 @@ where
 
     /// State machine worker thread handle (dedicated OS thread, not a tokio task).
     /// Wrapped in Mutex so run(&self) can take it for joining after Raft loop exits,
-    /// ensuring `Arc<DB>` is released before run() returns.
+    /// ensuring `Arc<SM>` is released before run() returns.
     pub(crate) sm_worker_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 
     /// ReadActor task handle. Aborted in run() after sm_worker exits so that the
-    /// `Arc<SM>` (and the RocksDB LOCK) is released before run() returns.
+    /// `Arc<SM>` (and any exclusive resources the storage backend holds) is
+    /// released before run() returns.
     pub(crate) read_actor_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 
     /// gRPC server task handle. tonic's graceful shutdown waits indefinitely for
@@ -189,19 +190,22 @@ where
         // Note: IO thread is closed inside Raft::run() on shutdown before returning.
         self.start_raft_loop().await?;
 
-        // Give tonic's graceful shutdown a bounded chance (fast path when no stream is
-        // active), then force-abort — it would otherwise wait indefinitely for the
-        // long-lived replication bidi stream to end on its own, which never happens (#438).
+        // Bounded wait for graceful shutdown, then force-abort — the replication
+        // bidi stream never ends on its own (#438).
         let rpc_handle = self.rpc_server_handle.lock().unwrap().take();
-        if let Some(rpc_handle) = rpc_handle {
-            let abort_handle = rpc_handle.abort_handle();
-            if tokio::time::timeout(Duration::from_millis(200), rpc_handle).await.is_err() {
-                abort_handle.abort();
+        if let Some(mut rpc_handle) = rpc_handle {
+            let finished_in_time =
+                tokio::time::timeout(Duration::from_millis(200), &mut rpc_handle).await.is_ok();
+
+            if !finished_in_time {
+                rpc_handle.abort();
+                let _ = rpc_handle.await;
             }
         }
 
         // Shutdown in reverse startup order: join sm-worker thread first so its
-        // Arc<DB> clone is dropped before we return, releasing the RocksDB LOCK.
+        // Arc<SM> clone is dropped before we return, letting the storage backend
+        // release any exclusive resources it holds.
         let handle = self.sm_worker_handle.lock().unwrap().take();
         if let Some(handle) = handle {
             tokio::task::spawn_blocking(move || {
@@ -211,8 +215,9 @@ where
             .ok();
         }
 
-        // Abort ReadActor after sm_worker exits so Arc<SM> ref-count goes to zero
-        // and RocksDB LOCK is released before run() returns.
+        // Abort ReadActor after sm_worker exits so Arc<SM> ref-count reaches zero,
+        // letting the storage backend release any exclusive resources (e.g. an
+        // on-disk lock file) before run() returns.
         let ra_handle = self.read_actor_handle.lock().unwrap().take();
         if let Some(ra_handle) = ra_handle {
             ra_handle.abort();
