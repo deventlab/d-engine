@@ -4,7 +4,6 @@ use std::time::Duration;
 use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
 use tracing::info;
-use tracing_test::traced_test;
 
 use crate::common::create_node_config;
 use crate::common::create_rejoin_node_config;
@@ -53,7 +52,6 @@ fn copy_dir_all(
 /// and cannot resurrect the MemTable data we just excluded from the snapshot.
 /// Restart opens the snapshot copy rather than the original path.
 #[tokio::test]
-#[traced_test]
 async fn test_follower_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let db_root = temp_dir.path().join("db");
@@ -266,7 +264,6 @@ async fn test_follower_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn st
 /// With `disableWAL=true`, entries applied by the leader's SM before the crash
 /// may not have reached SST. Raft log WAL guarantees they can be replayed on restart.
 #[tokio::test]
-#[traced_test]
 async fn test_leader_sm_recovers_after_abrupt_crash() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let db_root = temp_dir.path().join("db");
