@@ -447,3 +447,156 @@ async fn test_replication_worker_exits_when_handle_dropped() {
         count_at_drop, count_after_wait
     );
 }
+
+/// A bidi stream recv error must surface as `PeerStreamError` so the Raft loop
+/// resets `next_index` and re-sends unACKed entries.
+///
+/// # Why it matters
+/// A broken ACK stream means in-flight AppendEntries were never acknowledged;
+/// without `PeerStreamError` the leader would wrongly advance its commit index.
+///
+/// # Covered branch
+/// `Some(Err(status))` in the recv task (post-#438 refactor), which now `break`s
+/// and relies on the main loop's `recv_handle` arm for shared disconnect handling.
+#[tokio::test]
+#[traced_test]
+async fn test_replication_worker_recv_stream_error_emits_peer_stream_error() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context(
+        "/tmp/test_replication_worker_recv_stream_error_emits_peer_stream_error",
+        graceful_rx,
+        None,
+    );
+
+    ctx.membership = Arc::new(two_peer_membership());
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_request())],
+                snapshot_targets: vec![],
+            })
+        });
+
+    // The worker reconnects after a broken stream. The first stream yields an
+    // immediate recv error to exercise the recv path; later reconnects park on a
+    // pending ACK stream so the worker stops reconnecting and the test stays quiet.
+    let open_count = Arc::new(AtomicUsize::new(0));
+    let open_count_clone = Arc::clone(&open_count);
+    let mut transport = MockTransport::<MockTypeConfig>::new();
+    transport.expect_open_replication_stream().times(..).returning(move |_, _, _| {
+        let attempt = open_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+        // Keep a live sender receiver so the sender path stays healthy; this test
+        // targets the recv path only and must not hit the sender-closed branch.
+        let (sender, mut send_receiver) = tokio::sync::mpsc::channel::<AppendEntriesRequest>(128);
+        tokio::spawn(async move { while send_receiver.recv().await.is_some() {} });
+        let receiver = if attempt == 1 {
+            futures::stream::iter(vec![Err::<AppendEntriesResponse, tonic::Status>(
+                tonic::Status::unavailable("recv stream broken"),
+            )])
+            .boxed()
+        } else {
+            futures::stream::pending::<Result<AppendEntriesResponse, tonic::Status>>().boxed()
+        };
+        Ok(crate::ReplicationStream { sender, receiver })
+    });
+    ctx.transport = Arc::new(transport);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), internal_event_rx.recv())
+        .await
+        .expect("timed out waiting for PeerStreamError")
+        .expect("event channel closed before PeerStreamError");
+    assert!(
+        matches!(event, InternalEvent::PeerStreamError { peer_id: 2 }),
+        "expected PeerStreamError for peer 2, got {event:?}"
+    );
+}
+
+/// A bidi stream send failure must surface as `PeerStreamError` so the Raft loop
+/// resets `next_index` and re-sends unACKed entries.
+///
+/// # Why it matters
+/// A closed sender means the AppendEntries batch never reached the follower;
+/// without `PeerStreamError` the leader would wrongly advance its commit index.
+///
+/// # Covered branch
+/// `stream_sender.send(request).await.is_err()`. The ACK stream is kept pending so
+/// the biased `select!` cannot resolve the `recv_handle` arm before the Append task.
+#[tokio::test]
+#[traced_test]
+async fn test_replication_worker_sender_closed_emits_peer_stream_error() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context(
+        "/tmp/test_replication_worker_sender_closed_emits_peer_stream_error",
+        graceful_rx,
+        None,
+    );
+
+    ctx.membership = Arc::new(two_peer_membership());
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_request())],
+                snapshot_targets: vec![],
+            })
+        });
+
+    // The first stream's sender receiver is dropped so `send()` fails immediately;
+    // later reconnects park on a pending ACK stream so the worker stops reconnecting.
+    let open_count = Arc::new(AtomicUsize::new(0));
+    let open_count_clone = Arc::clone(&open_count);
+    let mut transport = MockTransport::<MockTypeConfig>::new();
+    transport.expect_open_replication_stream().times(..).returning(move |_, _, _| {
+        let attempt = open_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+        let (sender, send_receiver) = tokio::sync::mpsc::channel::<AppendEntriesRequest>(128);
+        if attempt == 1 {
+            drop(send_receiver);
+        }
+        // Keep the ACK stream pending so the biased select! reaches the Append arm
+        // (attempt 1) and the worker parks (later attempts).
+        let receiver =
+            futures::stream::pending::<Result<AppendEntriesResponse, tonic::Status>>().boxed();
+        Ok(crate::ReplicationStream { sender, receiver })
+    });
+    ctx.transport = Arc::new(transport);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), internal_event_rx.recv())
+        .await
+        .expect("timed out waiting for PeerStreamError")
+        .expect("event channel closed before PeerStreamError");
+    assert!(
+        matches!(event, InternalEvent::PeerStreamError { peer_id: 2 }),
+        "expected PeerStreamError for peer 2, got {event:?}"
+    );
+}

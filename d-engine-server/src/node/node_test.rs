@@ -34,6 +34,37 @@ async fn test_readiness_state_transition() {
     assert!(node.is_rpc_ready());
 }
 
+/// build_node_with_rpc_server() must produce a Node whose gRPC server is
+/// actually reachable — that's the entire point of this builder variant vs
+/// plain build_node(), which leaves rpc_server_handle unset.
+#[tokio::test]
+async fn test_build_node_with_rpc_server_starts_reachable_server() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listen_address = listener.local_addr().unwrap();
+    drop(listener); // free the port for start_rpc_server to bind
+
+    let mut node_config =
+        RaftNodeConfig::new().expect("default config").validate().expect("valid config");
+    node_config.cluster.listen_address = listen_address;
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    let _node = MockBuilder::new(shutdown_rx)
+        .with_node_config(node_config)
+        .build_node_with_rpc_server();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if tokio::net::TcpStream::connect(listen_address).await.is_ok() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "RPC server never became reachable at {listen_address}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test]
 #[traced_test]
 async fn test_run_sequence_with_mock_peers() {

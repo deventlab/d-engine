@@ -68,6 +68,7 @@ use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::append_entries_response;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use futures::StreamExt;
 use rand::distr::SampleString;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -2029,86 +2030,96 @@ impl<T: TypeConfig> LeaderState<T> {
             let stream_sender = stream.sender;
             let mut stream_receiver = stream.receiver;
 
-            // Shared flag: both recv task and main loop can detect stream breakage
+            // Flag set by the main loop below when the stream becomes unusable — either
+            // because recv_handle terminated (EOF or error) or because a send failed.
             let stream_broken = Arc::new(AtomicBool::new(false));
-            let recv_broken = stream_broken.clone();
-
             // Spawn recv task to monitor ACKs and detect stream disconnection
             let recv_internal_event_tx = internal_event_tx.clone();
-            let recv_handle = tokio::spawn(async move {
-                use futures::StreamExt;
-                while let Some(result) = stream_receiver.next().await {
-                    match result {
-                        Ok(response) => {
+
+            let mut recv_handle = tokio::spawn(async move {
+                loop {
+                    match stream_receiver.next().await {
+                        Some(Ok(response)) => {
                             let _ = recv_internal_event_tx.send(InternalEvent::AppendResult {
                                 follower_id: peer_id,
                                 result: Ok(response),
                             });
                         }
-                        Err(status) => {
+                        Some(Err(status)) => {
                             warn!(peer_id, "Bidi stream recv error: {:?}", status);
-                            recv_broken.store(true, Ordering::Release);
-                            let _ = recv_internal_event_tx
-                                .send(InternalEvent::PeerStreamError { peer_id });
+                            break;
+                        }
+                        None => {
+                            debug!(peer_id, "Bidi stream ended (EOF)");
                             break;
                         }
                     }
                 }
-                debug!(peer_id, "Recv task exiting (stream closed)");
             });
 
             // Main worker loop: process replication tasks
-            while let Some(task) = task_rx.recv().await {
-                // Check stream health before processing task
-                if stream_broken.load(Ordering::Acquire) {
-                    debug!(peer_id, "Stream broken detected, reconnecting...");
-                    break;
-                }
-
-                match task {
-                    ReplicationTask::Append(request) => {
-                        if snapshot_in_progress.load(Ordering::Acquire) {
-                            debug!(
-                                peer_id,
-                                "Skipping AppendEntries while snapshot is in progress"
-                            );
-                            continue;
-                        }
-                        // Push batch directly into the persistent bidi stream (non-blocking)
-                        if stream_sender.send(request).await.is_err() {
-                            warn!(peer_id, "Bidi stream sender closed, reconnecting");
-                            stream_broken.store(true, Ordering::Release);
-                            let _ =
-                                internal_event_tx.send(InternalEvent::PeerStreamError { peer_id });
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut recv_handle => {
+                        debug!(peer_id, "Replication stream receiver exited, reconnecting");
+                        stream_broken.store(true, Ordering::Release);
+                        let _ = internal_event_tx.send(InternalEvent::PeerStreamError { peer_id });
+                        break;
+                    }
+                    task = task_rx.recv() => {
+                        let Some(task) = task else { break };
+                        if stream_broken.load(Ordering::Acquire) {
+                            debug!(peer_id, "Stream broken detected, reconnecting...");
                             break;
                         }
-                    }
-                    ReplicationTask::Snapshot(metadata) => {
-                        if snapshot_in_progress.load(Ordering::Acquire) {
-                            debug!(
-                                peer_id,
-                                "Skipping duplicate Snapshot task (already in progress)"
-                            );
-                            continue;
-                        }
-                        snapshot_in_progress.store(true, Ordering::Release);
-                        // Spawn snapshot transfer; bidi stream stays open
-                        let flag = snapshot_in_progress.clone();
-                        let t = transport.clone();
-                        let smh = state_machine_handler.clone();
-                        let m = membership.clone();
-                        let c = snapshot_config.clone();
-                        let tx = internal_event_tx.clone();
-                        tokio::spawn(async move {
-                            let result = t.send_snapshot(peer_id, metadata, smh, m, c).await;
-                            let success = result.is_ok();
-                            if !success {
-                                warn!(peer_id, "Snapshot push failed: {:?}", result);
+
+                        match task {
+                            ReplicationTask::Append(request) => {
+                                if snapshot_in_progress.load(Ordering::Acquire) {
+                                    debug!(
+                                        peer_id,
+                                        "Skipping AppendEntries while snapshot is in progress"
+                                    );
+                                    continue;
+                                }
+                                // Push batch directly into the persistent bidi stream (non-blocking)
+                                if stream_sender.send(request).await.is_err() {
+                                    warn!(peer_id, "Bidi stream sender closed, reconnecting");
+                                    stream_broken.store(true, Ordering::Release);
+                                    let _ =
+                                        internal_event_tx.send(InternalEvent::PeerStreamError { peer_id });
+                                    break;
+                                }
                             }
-                            flag.store(false, Ordering::Release);
-                            let _ =
-                                tx.send(InternalEvent::SnapshotPushCompleted { peer_id, success });
-                        });
+                            ReplicationTask::Snapshot(metadata) => {
+                                if snapshot_in_progress.load(Ordering::Acquire) {
+                                    debug!(
+                                        peer_id,
+                                        "Skipping duplicate Snapshot task (already in progress)"
+                                    );
+                                    continue;
+                                }
+                                snapshot_in_progress.store(true, Ordering::Release);
+                                // Spawn snapshot transfer; bidi stream stays open
+                                let flag = snapshot_in_progress.clone();
+                                let t = transport.clone();
+                                let smh = state_machine_handler.clone();
+                                let m = membership.clone();
+                                let c = snapshot_config.clone();
+                                let tx = internal_event_tx.clone();
+                                tokio::spawn(async move {
+                                    let result = t.send_snapshot(peer_id, metadata, smh, m, c).await;
+                                    let success = result.is_ok();
+                                    if !success {
+                                        warn!(peer_id, "Snapshot push failed: {:?}", result);
+                                    }
+                                    flag.store(false, Ordering::Release);
+                                    let _ =
+                                        tx.send(InternalEvent::SnapshotPushCompleted { peer_id, success });
+                                });
+                            }
+                        }
                     }
                 }
             }

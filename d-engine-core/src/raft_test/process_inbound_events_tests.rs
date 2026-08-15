@@ -283,3 +283,41 @@ async fn test_process_internal_events_propagates_fatal_error() {
     let err = raft.process_internal_events().await.unwrap_err();
     assert!(err.is_fatal());
 }
+
+// -----------------------------------------------------------------------
+// handle_shutdown (#438)
+// -----------------------------------------------------------------------
+
+/// Events still queued when shutdown fires are dropped, not answered — their
+/// resp_tx senders are never called. Drives the real `handle_shutdown` path,
+/// not a re-implementation of it.
+#[tokio::test]
+async fn test_handle_shutdown_drops_pending_events_without_responding() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+
+    let (tx1, rx1) = MaybeCloneOneshot::new();
+    let (tx2, rx2) = MaybeCloneOneshot::new();
+    let mut queue = VecDeque::new();
+    queue.push_back(InboundEvent::AppendEntries(
+        make_request(5, 9, 5, 1),
+        vec![tx1],
+    ));
+    queue.push_back(InboundEvent::AppendEntries(
+        make_request(5, 14, 5, 1),
+        vec![tx2],
+    ));
+    raft.buffered_inbound_event = queue;
+
+    raft.handle_shutdown().await.unwrap();
+    drop(raft); // matches production: Raft is dropped shortly after run() returns
+
+    assert!(
+        rx1.await.is_err(),
+        "pending event must be dropped, not answered"
+    );
+    assert!(
+        rx2.await.is_err(),
+        "pending event must be dropped, not answered"
+    );
+}
