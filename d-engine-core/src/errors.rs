@@ -9,7 +9,8 @@ use std::time::Duration;
 use config::ConfigError;
 use tokio::task::JoinError;
 
-#[doc(hidden)]
+/// Unified result type used throughout `StateMachine`/`StorageEngine`/`LogStore`/`MetaStore`
+/// trait signatures — equivalent to `std::result::Result<T, Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +42,9 @@ impl Error {
             self,
             Error::Fatal(_)
                 | Error::System(SystemError::Storage(StorageError::DataCorruption { .. }))
+                | Error::Consensus(ConsensusError::Snapshot(
+                    SnapshotError::BoundaryConflict { .. }
+                ))
         )
     }
 }
@@ -471,6 +475,20 @@ pub enum ReplicationError {
     /// Node not in leader state for replication requests
     #[error("Replication requires leader role (known leader: {leader_id:?})")]
     NotLeader { leader_id: Option<u32> },
+
+    /// `entry_term` lookup for `prev_log_index` failed even though the index is
+    /// within the leader's own retained range [first_index, last_index] — an
+    /// unexplained storage-layer gap, not a normal Raft condition.
+    #[error(
+        "entry_term({prev_index}) missing for peer {peer_id} despite being within \
+             retained range [{first_index}, {last_index}]"
+    )]
+    InconsistentPrevLogTerm {
+        peer_id: u32,
+        prev_index: u64,
+        first_index: u64,
+        last_index: u64,
+    },
 }
 
 /// Errors that can occur during ReadIndex batching for linearizable reads
@@ -560,9 +578,10 @@ pub enum MembershipError {
     ClusterMetadataNotInitialized,
 }
 
-#[doc(hidden)]
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
+    /// Snapshot stream receiver couldn't keep up — an incoming chunk was dropped
+    /// rather than buffered without bound.
     #[error("Snapshot receiver lagging, dropping chunk")]
     Backpressure,
 
@@ -570,6 +589,7 @@ pub enum SnapshotError {
     #[error("Install snapshot RPC request been rejected, last_chunk={last_chunk}")]
     Rejected { last_chunk: u32 },
 
+    /// The remote peer rejected the install-snapshot RPC (no `last_chunk` context available).
     #[error("Install snapshot RPC request been rejected")]
     RemoteRejection,
 
@@ -585,9 +605,28 @@ pub enum SnapshotError {
     #[error("Snapshot operation failed: {0}")]
     OperationFailed(String),
 
-    /// Snapshot is outdated and cannot be used
+    /// Snapshot is outdated and cannot be used.
+    ///
+    /// Legacy variant: the built-in `RocksDBStateMachine`/`FileStateMachine` no longer return
+    /// this for a stale/duplicate incoming snapshot — that's a no-op reported via
+    /// `SnapshotApplyResult::IgnoredStale`/`IgnoredDuplicate`, not an error (#436). Kept
+    /// available for custom `StateMachine` implementations that prefer to treat it as a
+    /// hard failure instead.
     #[error("Snapshot is outdated")]
     Outdated,
+
+    /// Snapshot boundary conflict: incoming `last_included` shares an index with local
+    /// progress but a different term. Not a stale/duplicate no-op — the two sides disagree
+    /// about what wrote this index, which means corruption, a node in the wrong cluster, or
+    /// bad metadata. Fatal: requires operator intervention, never auto-retried.
+    #[error(
+        "Snapshot boundary conflict at index {index}: local term={local_term}, incoming term={incoming_term}"
+    )]
+    BoundaryConflict {
+        index: u64,
+        local_term: u64,
+        incoming_term: u64,
+    },
 
     /// Snapshot file checksum mismatch
     #[error("Snapshot file checksum mismatch")]
@@ -605,29 +644,66 @@ pub enum SnapshotError {
     #[error("Stream receiver disconnected")]
     ReceiverDisconnected,
 
+    /// The first chunk of a snapshot stream failed validation (e.g. missing metadata,
+    /// wrong sequence number) — the whole stream is rejected, not just this chunk.
     #[error("Invalid first snapshot stream chunk")]
     InvalidFirstChunk,
 
+    /// A snapshot stream completed with zero chunks — never a valid transfer.
     #[error("Empty snapshot stream chunk")]
     EmptySnapshot,
 
+    /// The snapshot stream ended before all expected chunks arrived.
     #[error("Incomplete snapshot error")]
     IncompleteSnapshot,
 
+    /// A requested chunk sequence number is beyond the total chunk count.
     #[error("Requested chunk {0} out of range (max: {1})")]
     ChunkOutOfRange(u32, u32),
 
+    /// Chunks arrived with a sequence number lower than one already processed.
     #[error("Chunk in stream is out of order")]
     OutOfOrderChunk,
 
+    /// A snapshot chunk carried no metadata where metadata was required
+    /// (e.g. the first chunk of a stream).
     #[error("No metadata in chunk")]
     MissingMetadata,
 
+    /// A requested chunk sequence number was never cached — the sender can no longer
+    /// re-serve it (e.g. it was evicted or the stream was reset).
     #[error("Chunk not cached: {0}")]
     ChunkNotCached(u32),
 
+    /// The background task responsible for pushing snapshot chunks to a peer exited
+    /// unexpectedly — the transfer cannot continue.
     #[error("Background stream push task died")]
     BackgroundTaskDied,
+
+    /// Incoming chunk's leader_term is older than our own current_term —
+    /// this leader is stale, reject without resetting the election timer. (#436)
+    #[error("Stale leader term: current={current_term}, incoming={incoming_term}")]
+    StaleLeaderTerm {
+        current_term: u64,
+        incoming_term: u64,
+    },
+
+    /// StateMachineWorker's command channel is closed or its response was dropped
+    /// (worker task exited/panicked). Distinct from a normal install failure — this
+    /// means the local execution engine itself is gone, not just this one snapshot.
+    #[error("StateMachineWorker unavailable")]
+    WorkerUnavailable,
+
+    /// Local snapshot capture (#436) couldn't acquire the capture/install coordination
+    /// lock — an InstallSnapshot was in progress. Not an error worth retrying immediately:
+    /// capture is periodic maintenance, the next trigger tries again.
+    #[error("Local snapshot capture skipped: install snapshot in progress")]
+    CaptureSkipped,
+
+    /// Local snapshot capture (#436) finished, but a newer snapshot was installed while
+    /// it was running — the captured data is stale and must not be published.
+    #[error("Local snapshot capture superseded by a newer installed snapshot")]
+    CaptureSuperseded,
 }
 
 // ============== Conversion Implementations ============== //

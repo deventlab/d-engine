@@ -3,19 +3,25 @@
 //! Covers:
 //! - schedule_and_execute_purge: two-phase log purge orchestration (Phase 1 = schedule, Phase 2 = execute)
 
-use tokio::sync::{mpsc, watch};
-
-use d_engine_proto::common::LogId;
-
-use d_engine_proto::server::election::VotedFor;
-
+use crate::CapturedLocalSnapshot;
+use crate::ConsensusError;
 use crate::Error;
 use crate::InternalEvent;
 use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
+use crate::MockStateMachineHandler;
+use crate::SnapshotError;
+use crate::StateMachineCommand;
+use crate::StateMachineCommandSender;
 use crate::raft_role::candidate_state::CandidateState;
+use crate::raft_role::follower_state::FollowerState;
 use crate::test_utils::mock::{MockBuilder, MockTypeConfig, mock_raft_log};
 use crate::test_utils::node_config;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use std::time::Duration;
+use tokio::sync::{mpsc, watch};
 
 use super::role_state::RaftRoleState;
 use super::role_state::schedule_and_execute_purge;
@@ -37,7 +43,13 @@ async fn test_schedule_and_execute_purge_happy_path() {
         .times(1)
         .returning(|_| Some(1));
 
-    let ctx = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let _temp_dir = tempfile::tempdir().unwrap();
+    let mut nc = node_config(_temp_dir.path().to_str().unwrap());
+    nc.raft.snapshot.retained_log_entries = 1;
+    let ctx = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .build_context();
 
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let last_included = LogId { index: 50, term: 1 };
@@ -129,7 +141,13 @@ async fn test_schedule_and_execute_purge_rejects_when_purge_upto_exceeds_commit_
         .times(1)
         .returning(|_| Some(1));
 
-    let ctx = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let _temp_dir = tempfile::tempdir().unwrap();
+    let mut nc = node_config(_temp_dir.path().to_str().unwrap());
+    nc.raft.snapshot.retained_log_entries = 1;
+    let ctx = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .build_context();
 
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let last_included = LogId {
@@ -172,7 +190,13 @@ async fn test_schedule_and_execute_purge_monotonicity_rejects_backward_purge() {
         .times(1)
         .returning(|_| Some(1));
 
-    let ctx = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let _temp_dir = tempfile::tempdir().unwrap();
+    let mut nc = node_config(_temp_dir.path().to_str().unwrap());
+    nc.raft.snapshot.retained_log_entries = 1;
+    let ctx = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .build_context();
 
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let last_included = LogId { index: 50, term: 1 };
@@ -213,7 +237,13 @@ async fn test_schedule_and_execute_purge_fault_recovery_retries_existing_schedul
         .times(1)
         .returning(|_| None);
 
-    let ctx = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let _temp_dir = tempfile::tempdir().unwrap();
+    let mut nc = node_config(_temp_dir.path().to_str().unwrap());
+    nc.raft.snapshot.retained_log_entries = 1;
+    let ctx = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .build_context();
 
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let last_included = LogId { index: 50, term: 1 };
@@ -261,7 +291,13 @@ async fn test_schedule_and_execute_purge_does_not_regress_scheduled_purge_upto()
         .times(1)
         .returning(|_| Some(1));
 
-    let ctx = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let _temp_dir = tempfile::tempdir().unwrap();
+    let mut nc = node_config(_temp_dir.path().to_str().unwrap());
+    nc.raft.snapshot.retained_log_entries = 1;
+    let ctx = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .build_context();
 
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let last_included = LogId { index: 50, term: 1 };
@@ -318,7 +354,10 @@ async fn test_schedule_and_execute_purge_execute_failure_suppresses_completion_e
 
     let mut builder = MockBuilder::new(graceful_rx);
     builder.purge_executor = Some(purge_executor);
-    let ctx = builder.with_raft_log(raft_log).build_context();
+    let _temp_dir = tempfile::tempdir().unwrap();
+    let mut nc = node_config(_temp_dir.path().to_str().unwrap());
+    nc.raft.snapshot.retained_log_entries = 1;
+    let ctx = builder.with_raft_log(raft_log).with_node_config(nc).build_context();
 
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let last_included = LogId { index: 50, term: 1 };
@@ -538,4 +577,190 @@ async fn test_commit_vote_reset_clears_and_persists() {
         None,
         "voted_for must be cleared by commit_vote_reset"
     );
+}
+
+// ============================================================================
+// handle_create_snapshot Tests (#436)
+// ============================================================================
+
+/// Spawns a fake Worker that answers exactly one `CaptureLocalSnapshot` command with
+/// `result`, then exits. Stands in for the real `StateMachineWorker`, which isn't
+/// running in these role-layer unit tests.
+fn fake_command_sink_capture_local_snapshot(
+    result: crate::Result<CapturedLocalSnapshot>
+) -> StateMachineCommandSender {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        if let Some(StateMachineCommand::CaptureLocalSnapshot { response }) = rx.recv().await {
+            let _ = response.send(result);
+        }
+    });
+    StateMachineCommandSender::new(tx)
+}
+
+/// Candidate has no snapshot_in_progress flag (default trait impl returns None),
+/// so handle_create_snapshot must short-circuit with RoleViolation and never
+/// call create_snapshot.
+#[tokio::test]
+async fn test_handle_create_snapshot_candidate_role_violation() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_try_begin_local_snapshot_capture().never();
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine_handler(sm_handler)
+        .build_context();
+
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let result = state.handle_create_snapshot(&context, &internal_event_tx).await;
+
+    match result {
+        Err(Error::Consensus(ConsensusError::RoleViolation { current_role, .. })) => {
+            assert_eq!(current_role, "Candidate");
+        }
+        other => panic!("expected RoleViolation, got: {other:?}"),
+    }
+}
+
+/// If a snapshot build is already in progress (flag=true), a second call must
+/// be a no-op: return Ok(()) immediately, never call create_snapshot again,
+/// and leave the flag untouched.
+#[tokio::test]
+async fn test_handle_create_snapshot_dedup_skips_when_already_in_progress() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_try_begin_local_snapshot_capture().never();
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine_handler(sm_handler)
+        .build_context();
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.snapshot_in_progress.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+
+    let result = state.handle_create_snapshot(&context, &internal_event_tx).await;
+
+    assert!(
+        result.is_ok(),
+        "dedup path must return Ok(()), not an error"
+    );
+    assert!(
+        internal_event_rx.try_recv().is_err(),
+        "no SnapshotCreated event must be sent when the call was deduped"
+    );
+    assert!(
+        state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst),
+        "flag must remain true — dedup must not reset it"
+    );
+}
+
+/// Normal path: flag starts false, handle_create_snapshot flips it to true and
+/// returns immediately (does not wait for the spawned build), and the spawned
+/// task eventually reports success via InternalEvent::SnapshotCreated carrying
+/// the exact metadata/path create_snapshot produced.
+#[tokio::test]
+async fn test_handle_create_snapshot_success_sets_flag_and_emits_event() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let expected_metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 10, term: 2 }),
+        checksum: bytes::Bytes::from_static(b"abc"),
+    };
+    let expected_path = std::path::PathBuf::from("/tmp/snap-10");
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler
+        .expect_try_begin_local_snapshot_capture()
+        .times(1)
+        .returning(|| Ok(()));
+    sm_handler.expect_end_local_snapshot_capture().times(1).returning(|| {});
+    {
+        let expected_metadata = expected_metadata.clone();
+        let expected_path = expected_path.clone();
+        sm_handler
+            .expect_build_local_snapshot()
+            .times(1)
+            .returning(move |_captured| Ok((expected_metadata.clone(), expected_path.clone())));
+    }
+
+    let captured = CapturedLocalSnapshot {
+        metadata: SnapshotMetadata::default(),
+        temp_dir: std::path::PathBuf::from("/tmp/captured-10"),
+    };
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine_handler(sm_handler)
+        .with_state_machine_commands(fake_command_sink_capture_local_snapshot(Ok(captured)))
+        .build_context();
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    assert!(!state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst));
+
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+
+    let result = state.handle_create_snapshot(&context, &internal_event_tx).await;
+    assert!(result.is_ok());
+    assert!(
+        state.snapshot_in_progress.load(std::sync::atomic::Ordering::SeqCst),
+        "flag must be set to true before the background build starts"
+    );
+
+    let event = tokio::time::timeout(Duration::from_secs(2), internal_event_rx.recv())
+        .await
+        .expect("SnapshotCreated must arrive within 2s")
+        .expect("channel must not close before the event is sent");
+
+    match event {
+        InternalEvent::SnapshotCreated(Ok((metadata, path))) => {
+            assert_eq!(metadata, expected_metadata);
+            assert_eq!(path, expected_path);
+        }
+        other => panic!("expected SnapshotCreated(Ok(..)), got: {other:?}"),
+    }
+}
+
+/// Failure path: create_snapshot returns Err — the error must be propagated
+/// via InternalEvent::SnapshotCreated(Err(..)), not swallowed or panicked on.
+#[tokio::test]
+async fn test_handle_create_snapshot_failure_emits_error_event() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler
+        .expect_try_begin_local_snapshot_capture()
+        .times(1)
+        .returning(|| Ok(()));
+    sm_handler.expect_end_local_snapshot_capture().times(1).returning(|| {});
+    sm_handler.expect_build_local_snapshot().never();
+
+    let context = MockBuilder::new(graceful_rx)
+        .with_state_machine_handler(sm_handler)
+        .with_state_machine_commands(fake_command_sink_capture_local_snapshot(Err(
+            SnapshotError::OperationFailed("disk full".to_string()).into(),
+        )))
+        .build_context();
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+
+    let result = state.handle_create_snapshot(&context, &internal_event_tx).await;
+    assert!(result.is_ok(), "spawn dispatch itself must still succeed");
+
+    let event = tokio::time::timeout(Duration::from_secs(2), internal_event_rx.recv())
+        .await
+        .expect("SnapshotCreated must arrive within 2s")
+        .expect("channel must not close before the event is sent");
+
+    match event {
+        InternalEvent::SnapshotCreated(Err(_)) => {}
+        other => panic!("expected SnapshotCreated(Err(..)), got: {other:?}"),
+    }
 }

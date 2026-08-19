@@ -16,6 +16,7 @@ use crate::Membership;
 use crate::NewCommitData;
 use crate::RaftLog;
 use crate::Result;
+use crate::StateMachineCommandSender;
 use crate::StateMachineHandler;
 use crate::TypeConfig;
 use crate::alias::MOF;
@@ -29,7 +30,7 @@ pub struct CommitHandlerDependencies<T: TypeConfig> {
     pub raft_log: Arc<ROF<T>>,
     pub membership: Arc<MOF<T>>,
     pub internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
-    pub sm_apply_tx: mpsc::UnboundedSender<Vec<Entry>>,
+    pub sm_apply_tx: StateMachineCommandSender,
     pub shutdown_signal: watch::Receiver<()>,
     pub max_batch_size: usize,
 }
@@ -48,7 +49,7 @@ where
     membership: Arc<MOF<T>>,
 
     internal_event_tx: mpsc::UnboundedSender<InternalEvent>, // Cloned from Raft
-    sm_apply_tx: mpsc::UnboundedSender<Vec<Entry>>,          // Send entries to SM Worker
+    sm_apply_tx: StateMachineCommandSender,                  // Send entries to SM Worker
 
     // Shutdown signal
     shutdown_signal: watch::Receiver<()>,
@@ -291,9 +292,9 @@ where
             );
 
             // Send entries to SM Worker without waiting for apply
-            self.sm_apply_tx.send(entries).map_err(|e| {
+            self.sm_apply_tx.apply_entries(entries).map_err(|e| {
                 error!("[Node-{}] SM Worker channel closed: {:?}", self.my_id, e);
-                crate::Error::Fatal(format!("SM Worker channel closed: {e:?}"))
+                e
             })?;
         }
         Ok(())

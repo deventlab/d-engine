@@ -21,6 +21,7 @@ pub struct RaftCoreHandlers<T: TypeConfig> {
     pub election_handler: EOF<T>,
     pub replication_handler: REPOF<T>,
     pub state_machine_handler: Arc<SMHOF<T>>,
+    pub state_machine_commands: crate::StateMachineCommandSender,
 
     // Raft Log Purge Executor
     pub purge_executor: Arc<PE<T>>,
@@ -73,6 +74,10 @@ where
 
     pub fn state_machine_handler(&self) -> &Arc<SMHOF<T>> {
         &self.handlers.state_machine_handler
+    }
+
+    pub fn state_machine_commands(&self) -> &crate::StateMachineCommandSender {
+        &self.handlers.state_machine_commands
     }
 
     pub fn node_config(&self) -> Arc<RaftNodeConfig> {

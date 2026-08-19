@@ -27,6 +27,7 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::RaftRole;
 use d_engine_core::RaftStorageHandles;
 use d_engine_core::SignalParams;
+use d_engine_core::SnapshotApplyResult;
 use d_engine_core::StateMachine;
 use d_engine_core::follower_state::FollowerState;
 use d_engine_core::mock_membership as mock_membership_fn;
@@ -170,6 +171,7 @@ impl MockBuilder {
             election_handler,
             replication_handler,
             state_machine_handler,
+            state_machine_commands,
             membership,
             purge_executor,
             node_config,
@@ -181,6 +183,7 @@ impl MockBuilder {
             self.replication_handler.unwrap_or_else(mock_replication_handler),
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
+            default_state_machine_commands(),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config.unwrap_or_else(|| {
@@ -199,6 +202,7 @@ impl MockBuilder {
             election_handler,
             replication_handler,
             state_machine_handler,
+            state_machine_commands,
             purge_executor: Arc::new(purge_executor),
         };
         mock_raft_context_internal(1, storage, transport, membership, handlers, node_config)
@@ -220,6 +224,7 @@ impl MockBuilder {
             election_handler,
             replication_handler,
             state_machine_handler,
+            state_machine_commands,
             membership,
             purge_executor,
             node_config,
@@ -236,6 +241,7 @@ impl MockBuilder {
             self.replication_handler.unwrap_or_else(mock_replication_handler),
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
+            default_state_machine_commands(),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership_fn())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config.unwrap_or_else(|| {
@@ -289,6 +295,7 @@ impl MockBuilder {
                 election_handler,
                 replication_handler,
                 state_machine_handler,
+                state_machine_commands,
                 purge_executor: Arc::new(purge_executor),
             },
             membership,
@@ -593,7 +600,11 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
     mock.expect_snapshot_metadata().returning(|| None);
     mock.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
-    mock.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
+    mock.expect_apply_snapshot_from_file().returning(|_, _| {
+        Ok(SnapshotApplyResult::Applied {
+            last_included: LogId::default(),
+        })
+    });
     mock.expect_generate_snapshot_data()
         .returning(|_, _| Ok(Bytes::copy_from_slice(&[0u8; 32])));
 
@@ -610,6 +621,16 @@ pub(crate) fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeCo
     state_machine_handler.expect_read_from_state_machine().returning(|_| None);
     state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
+}
+
+/// Default `StateMachineCommandSender` for tests that don't care about it. No production
+/// call site sends through this yet (#436), so the receiver is simply
+/// dropped rather than drained by a spawned task — spawning unconditionally here broke
+/// every non-`#[tokio::test]` caller of `MockBuilder::build_context()`/`build_raft()`
+/// with "there is no reactor running" (`tokio::spawn` requires an active runtime).
+pub(crate) fn default_state_machine_commands() -> d_engine_core::StateMachineCommandSender {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    d_engine_core::StateMachineCommandSender::new(tx)
 }
 
 /// Create a mock purge executor

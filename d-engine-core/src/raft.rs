@@ -1,6 +1,6 @@
 // Re-export LeaderInfo from proto (application layer use)
-pub use d_engine_proto::common::LeaderInfo;
-use d_engine_proto::server::election::VotedFor;
+use std::collections::VecDeque;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::sleep_until;
@@ -27,8 +27,8 @@ use crate::Result;
 use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::TROF;
-use std::collections::VecDeque;
-use std::sync::Arc;
+pub use d_engine_proto::common::LeaderInfo;
+use d_engine_proto::server::election::VotedFor;
 
 pub struct Raft<T>
 where
@@ -224,33 +224,6 @@ where
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        // Add snapshot handler before main loop
-        if self.ctx.node_config.is_learner() {
-            info!(
-                "Node({}) is learner and needs to fetch initial snapshot.",
-                self.node_id
-            );
-            if let Err(e) = self.role.fetch_initial_snapshot(&self.ctx).await {
-                warn!(
-                    "Initial snapshot failed: {:?}.
-            ================================================
-            Leader has not generate snapshot yet. New node
-            will sync with Leader via append entries requests.
-            ================================================
-            ",
-                    e
-                );
-                println!(
-                    "
-            ================================================
-            Leader has not generate snapshot yet. New node
-            will sync with Leader via append entries requests
-            ================================================
-                    "
-                );
-            }
-        }
-
         info!("Node is running");
 
         if self.role.is_timer_expired() {

@@ -1,5 +1,6 @@
 use std::cmp;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -24,8 +25,10 @@ use tracing::warn;
 use super::AppendResponseWithUpdates;
 use super::PrepareResult;
 use super::ReplicationCore;
+use crate::BuildAppendOutcome;
 use crate::IdAllocationError;
 use crate::LeaderStateSnapshot;
+use crate::PeerEntriesResult;
 use crate::PeerUpdate;
 use crate::RaftLog;
 use crate::ReplicationError;
@@ -91,32 +94,82 @@ where
             peer_next_indices: leader_state_snapshot.next_index,
         };
 
-        let mut entries_per_peer = self.prepare_peer_entries(
+        let peer_entries_result = self.retrieve_to_be_synced_logs_for_peers(
             &new_entries,
-            &replication_data,
+            replication_data.leader_last_index_before,
             ctx.node_config.raft.replication.append_entries_max_entries_per_replication,
+            &replication_data.peer_next_indices,
             raft_log,
+            min_log_index,
         );
 
         let mut append_requests = Vec::with_capacity(replication_targets.len());
         let mut snapshot_targets = Vec::new();
+        let mut entries_per_peer: HashMap<u32, Vec<Entry>> =
+            HashMap::with_capacity(replication_targets.len());
+        let mut skip_peers: HashSet<u32> = HashSet::new();
+
+        for (peer_id, result) in peer_entries_result {
+            match result {
+                PeerEntriesResult::Ready(entries) => {
+                    entries_per_peer.insert(peer_id, entries);
+                }
+                PeerEntriesResult::NeedSnapshot => {
+                    snapshot_targets.push(peer_id);
+                }
+                PeerEntriesResult::CorruptGap {
+                    start,
+                    end,
+                    first_seen,
+                    last_seen,
+                    count,
+                } => {
+                    // #436/#439: isolate to this one peer, don't fall back to snapshot —
+                    // that would hide a storage-layer bug. Structured event reporting upgrades this from a bare log later.
+                    error!(
+                        peer_id,
+                        start,
+                        end,
+                        ?first_seen,
+                        ?last_seen,
+                        count,
+                        "CorruptGap: legacy entries range read inconsistent — skipping this peer this round"
+                    );
+                    skip_peers.insert(peer_id);
+                }
+            }
+        }
 
         for peer in replication_targets {
-            let peer_next_id =
-                replication_data.peer_next_indices.get(&peer.id).copied().unwrap_or(1);
-
-            // Peer is behind the purge boundary: must receive snapshot, not AppendEntries.
-            if min_log_index > 1 && peer_next_id < min_log_index {
-                snapshot_targets.push(peer.id);
+            if skip_peers.contains(&peer.id) {
                 continue;
             }
-
-            append_requests.push(self.build_append_request(
+            match self.build_append_request(
                 raft_log,
                 peer.id,
                 &mut entries_per_peer,
                 &replication_data,
-            ));
+            ) {
+                Ok((
+                    id,
+                    BuildAppendOutcome::Append {
+                        request,
+                        effective_next_index,
+                    },
+                )) => {
+                    append_requests.push((id, request, effective_next_index));
+                }
+                Ok((_, BuildAppendOutcome::NeedSnapshot)) => {
+                    snapshot_targets.push(peer.id);
+                }
+                Err(e) => {
+                    // #436: isolate to this one peer, don't abort the whole batch.
+                    // Structured event reporting (upgrade from bare log) is a separate,
+                    // later change — this matches the existing pattern in
+                    // retrieve_to_be_synced_logs_for_peers below.
+                    error!("build_append_request failed for peer {}: {:?}", peer.id, e);
+                }
+            }
         }
 
         Ok(PrepareResult {
@@ -200,15 +253,17 @@ where
         max_legacy_entries_per_peer: u64,
         peer_next_indices: &HashMap<u32, u64>,
         raft_log: &Arc<ROF<T>>,
-    ) -> HashMap<u32, Vec<Entry>> {
+        first_index: u64,
+    ) -> HashMap<u32, PeerEntriesResult> {
         let _timer = ScopedTimer::new("retrieve_to_be_synced_logs_for_peers");
 
         let peer_count = peer_next_indices.len().saturating_sub(1); // exclude self
-        let mut peer_entries: HashMap<u32, Vec<Entry>> = HashMap::with_capacity(peer_count);
+        let mut peer_entries: HashMap<u32, PeerEntriesResult> = HashMap::with_capacity(peer_count);
         trace!(
             "retrieve_to_be_synced_logs_for_peers::leader_last_index: {}",
             leader_last_index_before_inserting_new_entries
         );
+
         for (&id, &peer_next_id) in peer_next_indices {
             if id == self.my_id {
                 continue;
@@ -218,24 +273,50 @@ where
 
             let mut entries = Vec::new();
             if leader_last_index_before_inserting_new_entries >= peer_next_id {
-                let until_index = if (leader_last_index_before_inserting_new_entries - peer_next_id)
-                    >= max_legacy_entries_per_peer
-                {
-                    peer_next_id + max_legacy_entries_per_peer - 1
-                } else {
-                    leader_last_index_before_inserting_new_entries
-                };
+                // Purge boundary check BEFORE fetching. This is the only legitimate
+                // reason legacy entries can be missing — anything past this point
+                // that still comes back short/gapped is corruption, not purge.
+                if peer_next_id < first_index {
+                    peer_entries.insert(id, PeerEntriesResult::NeedSnapshot);
+                    continue;
+                }
 
-                let legacy_entries = match raft_log.get_entries_range(peer_next_id..=until_index) {
-                    Ok(entries) => entries,
-                    Err(e) => {
-                        error!("Failed to get legacy entries for peer {}: {:?}", id, e);
-                        Vec::new()
+                if max_legacy_entries_per_peer > 0 {
+                    let until_index = if (leader_last_index_before_inserting_new_entries
+                        - peer_next_id)
+                        >= max_legacy_entries_per_peer
+                    {
+                        peer_next_id + max_legacy_entries_per_peer - 1
+                    } else {
+                        leader_last_index_before_inserting_new_entries
+                    };
+
+                    let legacy_entries =
+                        match raft_log.get_entries_range(peer_next_id..=until_index) {
+                            Ok(entries) => entries,
+                            Err(e) => {
+                                error!("Failed to get legacy entries for peer {}: {:?}", id, e);
+                                Vec::new()
+                            }
+                        };
+
+                    if !entries_are_contiguous_in_range(&legacy_entries, peer_next_id, until_index)
+                    {
+                        peer_entries.insert(
+                            id,
+                            PeerEntriesResult::CorruptGap {
+                                start: peer_next_id,
+                                end: until_index,
+                                first_seen: legacy_entries.first().map(|e| e.index),
+                                last_seen: legacy_entries.last().map(|e| e.index),
+                                count: legacy_entries.len(),
+                            },
+                        );
+                        continue;
                     }
-                };
 
-                if !legacy_entries.is_empty() {
                     trace!("legacy_entries: {:?}", &legacy_entries);
+
                     entries.extend(legacy_entries);
                 }
             }
@@ -244,7 +325,7 @@ where
                 entries.extend_from_slice(new_entries);
             }
             if !entries.is_empty() {
-                peer_entries.insert(id, entries);
+                peer_entries.insert(id, PeerEntriesResult::Ready(entries));
             }
         }
 
@@ -466,39 +547,44 @@ where
         Ok(entries)
     }
 
-    /// Prepare the items that need to be synchronized for each node
-    pub fn prepare_peer_entries(
-        &self,
-        new_entries: &[Entry],
-        data: &ReplicationData,
-        max_legacy_entries: u64,
-        raft_log: &Arc<ROF<T>>,
-    ) -> HashMap<u32, Vec<Entry>> {
-        self.retrieve_to_be_synced_logs_for_peers(
-            new_entries,
-            data.leader_last_index_before,
-            max_legacy_entries,
-            &data.peer_next_indices,
-            raft_log,
-        )
-    }
-
-    /// Build an append request for a single node
-    pub fn build_append_request(
+    /// Build an append request for a single node, classifying why `prev_log_index`'s
+    /// term lookup might fail instead of silently defaulting to term=0.
+    pub(crate) fn build_append_request(
         &self,
         raft_log: &Arc<ROF<T>>,
         peer_id: u32,
         entries_per_peer: &mut HashMap<u32, Vec<Entry>>,
         data: &ReplicationData,
-    ) -> (u32, AppendEntriesRequest) {
+    ) -> Result<(u32, BuildAppendOutcome)> {
         let _timer = ScopedTimer::new("build_append_request");
-        // Calculate prev_log metadata
-        let (prev_log_index, prev_log_term) =
-            data.peer_next_indices.get(&peer_id).map_or((0, 0), |next_id| {
-                let prev_index = next_id.saturating_sub(1);
-                let term = raft_log.entry_term(prev_index).unwrap_or(0);
-                (prev_index, term)
-            });
+
+        let recorded_next_index = data.peer_next_indices.get(&peer_id).copied().unwrap_or(1);
+        let first_index = raft_log.first_entry_id();
+        let last_index = raft_log.last_entry_id();
+
+        // Ledger overshot the leader's own log (stale speculative advance from before
+        // a disconnect): clamp to the real tip. Nothing was purged, no snapshot needed —
+        // effective_next_index carries the correction straight back to the ledger,
+        // no need to wait on a follower reject round-trip.
+        let next_index = recorded_next_index.min(last_index + 1);
+        let prev_index = next_index.saturating_sub(1);
+
+        let prev_log_term = match raft_log.entry_term(prev_index) {
+            Some(term) => term,
+            None if prev_index == 0 => 0,
+            None if prev_index < first_index => {
+                return Ok((peer_id, BuildAppendOutcome::NeedSnapshot));
+            }
+            None => {
+                return Err(ReplicationError::InconsistentPrevLogTerm {
+                    peer_id,
+                    prev_index,
+                    first_index,
+                    last_index,
+                }
+                .into());
+            }
+        };
 
         // Move entries out of the map — avoids Vec clone
         let entries = entries_per_peer.remove(&peer_id).unwrap_or_default();
@@ -510,17 +596,20 @@ where
             entries.len()
         );
 
-        (
+        Ok((
             peer_id,
-            AppendEntriesRequest {
-                term: data.current_term,
-                leader_id: self.my_id,
-                prev_log_index,
-                prev_log_term,
-                entries,
-                leader_commit_index: data.commit_index,
+            BuildAppendOutcome::Append {
+                request: AppendEntriesRequest {
+                    term: data.current_term,
+                    leader_id: self.my_id,
+                    prev_log_index: prev_index,
+                    prev_log_term,
+                    entries,
+                    leader_commit_index: data.commit_index,
+                },
+                effective_next_index: next_index,
             },
-        )
+        ))
     }
 }
 
@@ -534,6 +623,25 @@ where
     ) -> std::fmt::Result {
         f.debug_struct("ReplicationHandler").field("my_id", &self.my_id).finish()
     }
+}
+
+/// True only if `entries` exactly covers `[expected_start, expected_end]` with
+/// no gaps: length matches the requested range, and every entry's index equals
+/// `expected_start + offset`. A short read, an empty result, or a hole anywhere
+/// in the middle all return false.
+fn entries_are_contiguous_in_range(
+    entries: &[Entry],
+    expected_start: u64,
+    expected_end: u64,
+) -> bool {
+    let Some(expected_len) =
+        expected_end.checked_sub(expected_start).and_then(|n| n.checked_add(1))
+    else {
+        return false;
+    };
+
+    entries.len() as u64 == expected_len
+        && entries.iter().enumerate().all(|(i, e)| e.index == expected_start + i as u64)
 }
 
 /// Converts a vector of client WriteCommands into a vector of EntryPayloads.

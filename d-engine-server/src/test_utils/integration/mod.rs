@@ -241,8 +241,6 @@ pub fn setup_raft_components(
         PathBuf::from(db_path).join("snapshots"),
         node_config.raft.snapshot.clone(),
         snapshot_policy,
-        None, // No watch for tests
-        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     );
 
     let node_config_clone = node_config.clone();

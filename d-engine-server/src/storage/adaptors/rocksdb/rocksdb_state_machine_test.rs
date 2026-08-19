@@ -4,7 +4,9 @@ use crate::{Error, StateMachine};
 use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
-use d_engine_core::{ApplyEntry, Command};
+use d_engine_core::{ApplyEntry, Command, SnapshotApplyResult};
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -876,5 +878,266 @@ async fn test_snapshot_join_error_reports_cancellation() {
     assert!(
         storage_err.to_string().contains("cancelled"),
         "expected 'cancelled' in error, got: {storage_err}"
+    );
+}
+
+// ── stale snapshot install (#436) ─────────────────────────────────────
+
+/// A stale snapshot (`last_included` behind current `last_applied`) must not be
+/// installed — doing so rolls back already-applied data.
+///
+/// Currently RED: `apply_snapshot_from_file` doesn't check `last_included` against
+/// `last_applied` before installing. #436.
+#[tokio::test]
+async fn test_apply_snapshot_from_file_rejects_stale_snapshot() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let db_path = temp_dir.path().join("test_stale_snapshot");
+    let (_storage, state_machine) =
+        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
+    state_machine.start().await.expect("Failed to start");
+
+    // 1. Apply entries 1..=20 — the state a snapshot generated "now" would capture.
+    let early_entries: Vec<ApplyEntry> = (1..=20)
+        .map(|i| insert_at(format!("key_{i}").as_bytes(), b"early", i))
+        .collect();
+    state_machine.apply_chunk(&early_entries).await.expect("apply early entries");
+
+    // 2. Generate a real snapshot reflecting state as of index 20 — genuinely complete
+    // and correct for its own last_included, just old by the time it gets applied later.
+    let stale_snapshot_dir = temp_dir.path().join("stale_snapshot");
+    let stale_last_included = LogId { term: 1, index: 20 };
+    state_machine
+        .generate_snapshot_data(stale_snapshot_dir.clone(), stale_last_included)
+        .await
+        .expect("generate stale snapshot");
+
+    // 3. Keep advancing past what the snapshot captured — the follower catching up via
+    // normal AppendEntries while the stale snapshot is still "in flight".
+    let later_entries: Vec<ApplyEntry> = (21..=33)
+        .map(|i| insert_at(format!("key_{i}").as_bytes(), b"later", i))
+        .collect();
+    state_machine.apply_chunk(&later_entries).await.expect("apply later entries");
+
+    assert_eq!(
+        state_machine.last_applied().index,
+        33,
+        "sanity: advanced past the stale snapshot's index"
+    );
+    let value_before = state_machine.get(b"key_23").expect("read before install");
+    assert_eq!(
+        value_before,
+        Some(Bytes::from_static(b"later")),
+        "sanity: key_23 present before stale install"
+    );
+
+    // 4. The stale snapshot (last_included=20) arrives late and gets installed — exactly
+    // what happened in the flaky integration test.
+    let stale_metadata = SnapshotMetadata {
+        last_included: Some(stale_last_included),
+        checksum: Bytes::from_static(&[0; 32]),
+    };
+    let result = state_machine
+        .apply_snapshot_from_file(&stale_metadata, stale_snapshot_dir)
+        .await
+        .expect("apply_snapshot_from_file should not error even when rejecting a stale snapshot");
+    assert!(
+        matches!(result, SnapshotApplyResult::IgnoredStale { current } if current.index == 33),
+        "expected IgnoredStale{{current.index: 33}}, got: {result:?}"
+    );
+
+    // 5. A stale snapshot must be a no-op: state must not roll back, key_23 must survive.
+    assert_eq!(
+        state_machine.last_applied().index,
+        33,
+        "installing a snapshot older than current progress must not roll back last_applied"
+    );
+    let value_after = state_machine.get(b"key_23").expect("read after install");
+    assert_eq!(
+        value_after,
+        Some(Bytes::from_static(b"later")),
+        "key_23 (applied after the stale snapshot was generated) must survive installing that stale snapshot"
+    );
+}
+
+/// A duplicate snapshot (`last_included` == current `last_applied`, same term) is an
+/// idempotent no-op — not an error, and must not re-run the destructive install.
+///
+/// #436.
+#[tokio::test]
+async fn test_apply_snapshot_from_file_ignores_duplicate_snapshot() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let db_path = temp_dir.path().join("test_duplicate_snapshot");
+    let (_storage, state_machine) =
+        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
+    state_machine.start().await.expect("Failed to start");
+
+    let entries: Vec<ApplyEntry> =
+        (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
+    state_machine.apply_chunk(&entries).await.expect("apply entries");
+
+    let last_included = LogId { term: 1, index: 5 };
+    let snapshot_dir = temp_dir.path().join("snapshot");
+    state_machine
+        .generate_snapshot_data(snapshot_dir.clone(), last_included)
+        .await
+        .expect("generate snapshot");
+
+    // Same (index, term) as current progress — installing it again must be a no-op,
+    // not an error, and must not touch the data.
+    let metadata = SnapshotMetadata {
+        last_included: Some(last_included),
+        checksum: Bytes::from_static(&[0; 32]),
+    };
+    let result = state_machine
+        .apply_snapshot_from_file(&metadata, snapshot_dir)
+        .await
+        .expect("duplicate snapshot must not error");
+    assert!(
+        matches!(result, SnapshotApplyResult::IgnoredDuplicate { current } if current.index == 5 && current.term == 1),
+        "expected IgnoredDuplicate{{current: (5,1)}}, got: {result:?}"
+    );
+    assert_eq!(
+        state_machine.last_applied(),
+        last_included,
+        "duplicate install must not change last_applied"
+    );
+}
+
+/// Same index, DIFFERENT term than current `last_applied` — this can't happen under a
+/// correctly-functioning Raft cluster (Log Matching Property), so it must be treated as
+/// a hard inconsistency: reject with an error, don't silently ignore or auto-install.
+///
+/// #436.
+#[tokio::test]
+async fn test_apply_snapshot_from_file_rejects_boundary_conflict() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let db_path = temp_dir.path().join("test_boundary_conflict");
+    let (_storage, state_machine) =
+        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
+    state_machine.start().await.expect("Failed to start");
+
+    let entries: Vec<ApplyEntry> =
+        (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
+    state_machine.apply_chunk(&entries).await.expect("apply entries");
+    assert_eq!(state_machine.last_applied(), LogId { term: 1, index: 5 });
+
+    let snapshot_dir = temp_dir.path().join("snapshot");
+    // Same index (5) as current progress, but a different term (2) — a boundary conflict,
+    // not a duplicate.
+    state_machine
+        .generate_snapshot_data(snapshot_dir.clone(), LogId { term: 2, index: 5 })
+        .await
+        .expect("generate snapshot");
+    let conflicting_metadata = SnapshotMetadata {
+        last_included: Some(LogId { term: 2, index: 5 }),
+        checksum: Bytes::from_static(&[0; 32]),
+    };
+
+    let result = state_machine
+        .apply_snapshot_from_file(&conflicting_metadata, snapshot_dir)
+        .await;
+    assert!(
+        result.is_err(),
+        "same index, different term must be rejected as a boundary conflict, not silently accepted"
+    );
+    assert_eq!(
+        state_machine.last_applied(),
+        LogId { term: 1, index: 5 },
+        "a rejected boundary conflict must not change last_applied"
+    );
+}
+
+/// A genuinely newer snapshot (`last_included.index` > current `last_applied`) must
+/// actually run the destructive install and report `Applied`.
+///
+/// #436 — dedicated RocksDB-level check that the `Applied` variant
+/// carries the right `last_included`, complementing the generic conformance suite
+/// (`state_machine_test.rs`) which already exercises this path end-to-end.
+#[tokio::test]
+async fn test_apply_snapshot_from_file_reports_applied_for_newer_snapshot() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let db_path = temp_dir.path().join("test_applied_snapshot");
+    let (_storage, state_machine) =
+        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
+    state_machine.start().await.expect("Failed to start");
+
+    let entries: Vec<ApplyEntry> =
+        (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
+    state_machine.apply_chunk(&entries).await.expect("apply entries");
+
+    let last_included = LogId { term: 1, index: 5 };
+    let snapshot_dir = temp_dir.path().join("snapshot");
+    state_machine
+        .generate_snapshot_data(snapshot_dir.clone(), last_included)
+        .await
+        .expect("generate snapshot");
+
+    // Fall behind, then receive the (now newer-than-current) snapshot.
+    state_machine.reset().await.expect("reset");
+    assert_eq!(state_machine.last_applied(), LogId::default());
+
+    let metadata = SnapshotMetadata {
+        last_included: Some(last_included),
+        checksum: Bytes::from_static(&[0; 32]),
+    };
+    let result = state_machine
+        .apply_snapshot_from_file(&metadata, snapshot_dir)
+        .await
+        .expect("newer snapshot must install successfully");
+    assert!(
+        matches!(result, SnapshotApplyResult::Applied { last_included: li } if li == last_included),
+        "expected Applied{{last_included: {last_included:?}}}, got: {result:?}"
+    );
+    assert_eq!(state_machine.last_applied(), last_included);
+}
+
+/// #436-adjacent: `last_included: None` (e.g. a malformed/corrupted message off the
+/// wire) must be rejected outright, not silently fall through to an unconditional
+/// install. Before the fix, `None` skipped the entire classification `if let` block
+/// and installed anyway — this pinned down the found bug; now pins down the fix.
+#[tokio::test]
+async fn test_apply_snapshot_from_file_rejects_missing_last_included() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let db_path = temp_dir.path().join("test_none_last_included");
+    let (_storage, state_machine) =
+        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
+    state_machine.start().await.expect("Failed to start");
+
+    // Snapshot captured early, containing only key_1..key_5.
+    let early_entries: Vec<ApplyEntry> =
+        (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
+    state_machine.apply_chunk(&early_entries).await.expect("apply early entries");
+    let snapshot_dir = temp_dir.path().join("snapshot");
+    state_machine
+        .generate_snapshot_data(snapshot_dir.clone(), LogId { term: 1, index: 5 })
+        .await
+        .expect("generate snapshot");
+
+    // Node keeps going past the snapshot boundary: key_6..key_8, last_applied=8.
+    let later_entries: Vec<ApplyEntry> =
+        (6..=8).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
+    state_machine.apply_chunk(&later_entries).await.expect("apply later entries");
+    assert_eq!(state_machine.last_applied(), LogId { term: 1, index: 8 });
+
+    let metadata = SnapshotMetadata {
+        last_included: None,
+        checksum: Bytes::from_static(&[0; 32]),
+    };
+    let result = state_machine.apply_snapshot_from_file(&metadata, snapshot_dir).await;
+
+    assert!(
+        result.is_err(),
+        "a snapshot with no boundary must be rejected, not installed — got: {result:?}"
+    );
+
+    // Nothing must have changed: no destructive install happened.
+    assert!(
+        state_machine.get(b"key_6").unwrap().is_some(),
+        "key_6 (applied after the snapshot boundary) must survive a rejected install"
+    );
+    assert_eq!(
+        state_machine.last_applied(),
+        LogId { term: 1, index: 8 },
+        "last_applied must be unchanged after a rejected install"
     );
 }

@@ -25,11 +25,28 @@ use crate::ReplicationCore;
 use crate::ReplicationHandler;
 use crate::StateSnapshot;
 use crate::test_utils::mock_raft_context;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::NodeRole;
 use d_engine_proto::common::NodeRole::Leader;
 use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
 use tokio::sync::watch;
+
+/// Both tests below mock a log window covering indices 11..=15 (`first_entry_id`=11,
+/// `last_entry_id`=15). `retrieve_to_be_synced_logs_for_peers` now enforces that any
+/// range it asks for inside `[first_index, last_index]` comes back fully populated —
+/// an empty/partial result there is treated as `CorruptGap`, not "nothing to send".
+/// So the mock must actually hand back an entry per requested index, not `vec![]`.
+fn entries_in_range(range: std::ops::RangeInclusive<u64>) -> Vec<Entry> {
+    range
+        .map(|index| Entry {
+            index,
+            term: 2,
+            payload: Some(EntryPayload::noop()),
+        })
+        .collect()
+}
 
 fn voter(id: u32) -> NodeMeta {
     NodeMeta {
@@ -115,7 +132,7 @@ async fn test_prepare_batch_requests_routes_lagging_peer_to_snapshot() {
         "peer 2 (next_index=4 < first_entry_id=11) must be routed to snapshot"
     );
     assert!(
-        !result.append_requests.iter().any(|(id, _)| *id == 2),
+        !result.append_requests.iter().any(|(id, _, _)| *id == 2),
         "peer 2 must NOT receive an AppendEntries when behind purge boundary"
     );
 }
@@ -141,7 +158,9 @@ async fn test_prepare_batch_requests_caught_up_peer_gets_append_entries() {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 15);
     raft_log.expect_first_entry_id().returning(|| 11);
-    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+    raft_log
+        .expect_get_entries_range()
+        .returning(|range| Ok(entries_in_range(range)));
     raft_log.expect_entry_term().returning(|idx| match idx {
         10 => Some(2),
         11..=15 => Some(2),
@@ -181,7 +200,7 @@ async fn test_prepare_batch_requests_caught_up_peer_gets_append_entries() {
         "caught-up peer 2 must NOT be routed to snapshot"
     );
     assert!(
-        result.append_requests.iter().any(|(id, _)| *id == 2),
+        result.append_requests.iter().any(|(id, _, _)| *id == 2),
         "caught-up peer 2 must receive a normal AppendEntries"
     );
 }
@@ -207,7 +226,9 @@ async fn test_prepare_batch_requests_splits_snapshot_and_append_peers() {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 15);
     raft_log.expect_first_entry_id().returning(|| 11);
-    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+    raft_log
+        .expect_get_entries_range()
+        .returning(|range| Ok(entries_in_range(range)));
     raft_log.expect_entry_term().returning(|idx| match idx {
         10 => Some(2),
         11..=15 => Some(2),
@@ -249,7 +270,7 @@ async fn test_prepare_batch_requests_splits_snapshot_and_append_peers() {
         "peer 2 (behind boundary) must be in snapshot_targets"
     );
     assert!(
-        !result.append_requests.iter().any(|(id, _)| *id == 2),
+        !result.append_requests.iter().any(|(id, _, _)| *id == 2),
         "peer 2 must NOT be in append_requests"
     );
     assert!(
@@ -257,7 +278,7 @@ async fn test_prepare_batch_requests_splits_snapshot_and_append_peers() {
         "peer 3 (caught up) must NOT be in snapshot_targets"
     );
     assert!(
-        result.append_requests.iter().any(|(id, _)| *id == 3),
+        result.append_requests.iter().any(|(id, _, _)| *id == 3),
         "peer 3 must be in append_requests"
     );
 }

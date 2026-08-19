@@ -29,6 +29,7 @@ use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftStorageHandles;
 use crate::SignalParams;
+use crate::SnapshotApplyResult;
 use crate::StateMachine;
 use crate::follower_state::FollowerState;
 
@@ -43,6 +44,7 @@ pub struct MockBuilder {
     pub election_handler: Option<MockElectionCore<MockTypeConfig>>,
     pub replication_handler: Option<MockReplicationCore<MockTypeConfig>>,
     pub state_machine_handler: Option<Arc<MockStateMachineHandler<MockTypeConfig>>>,
+    pub state_machine_commands: Option<crate::StateMachineCommandSender>,
     pub node_config: Option<RaftNodeConfig>,
     pub turn_on_election: Option<bool>,
     shutdown_signal: watch::Receiver<()>,
@@ -67,6 +69,7 @@ impl MockBuilder {
             election_handler: None,
             replication_handler: None,
             state_machine_handler: None,
+            state_machine_commands: None,
             node_config: None,
             turn_on_election: None,
             shutdown_signal,
@@ -86,6 +89,7 @@ impl MockBuilder {
             election_handler,
             replication_handler,
             state_machine_handler,
+            state_machine_commands,
             membership,
             purge_executor,
             node_config,
@@ -97,6 +101,7 @@ impl MockBuilder {
             self.replication_handler.unwrap_or_else(mock_replication_handler),
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
+            self.state_machine_commands.unwrap_or_else(default_state_machine_commands),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config.unwrap_or_else(|| {
@@ -115,6 +120,7 @@ impl MockBuilder {
             election_handler,
             replication_handler,
             state_machine_handler,
+            state_machine_commands,
             purge_executor: Arc::new(purge_executor),
         };
         mock_raft_context_internal(1, storage, transport, membership, handlers, node_config)
@@ -132,6 +138,7 @@ impl MockBuilder {
             election_handler,
             replication_handler,
             state_machine_handler,
+            state_machine_commands,
             membership,
             purge_executor,
             node_config,
@@ -148,6 +155,7 @@ impl MockBuilder {
             self.replication_handler.unwrap_or_else(mock_replication_handler),
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
+            self.state_machine_commands.unwrap_or_else(default_state_machine_commands),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config.unwrap_or_else(|| {
@@ -201,6 +209,7 @@ impl MockBuilder {
                 election_handler,
                 replication_handler,
                 state_machine_handler,
+                state_machine_commands,
                 purge_executor: Arc::new(purge_executor),
             },
             membership,
@@ -283,6 +292,18 @@ impl MockBuilder {
         state_machine_handler: MockStateMachineHandler<MockTypeConfig>,
     ) -> Self {
         self.state_machine_handler = Some(Arc::new(state_machine_handler));
+        self
+    }
+
+    /// Inject a sender wired to a receiver the test controls, so it can inspect which
+    /// `StateMachineCommand`s the role layer actually sent. Tests that don't care about
+    /// this get a working default (see `default_state_machine_commands`) instead of a
+    /// sender whose receiver is already dropped.
+    pub fn with_state_machine_commands(
+        mut self,
+        state_machine_commands: crate::StateMachineCommandSender,
+    ) -> Self {
+        self.state_machine_commands = Some(state_machine_commands);
         self
     }
 
@@ -376,7 +397,11 @@ pub fn mock_state_machine() -> MockStateMachine {
     mock.expect_snapshot_metadata().returning(|| None);
     mock.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
-    mock.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
+    mock.expect_apply_snapshot_from_file().returning(|_, _| {
+        Ok(SnapshotApplyResult::Applied {
+            last_included: LogId::default(),
+        })
+    });
     mock.expect_generate_snapshot_data()
         .returning(|_, _| Ok(Bytes::copy_from_slice(&[0u8; 32])));
 
@@ -392,7 +417,26 @@ pub fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
     state_machine_handler.expect_read_from_state_machine().returning(|_| None);
     state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler.expect_get_latest_snapshot_metadata().returning(|| None);
+    // handle_create_snapshot (#436 Task #21) always acquires/releases this guard
+    // before it can even reach the Worker round-trip, regardless of whether the
+    // test cares about snapshot creation — give every default-builder test a
+    // working default so unrelated dispatch tests don't panic on an unset mock.
     state_machine_handler
+        .expect_try_begin_local_snapshot_capture()
+        .returning(|| Ok(()));
+    state_machine_handler.expect_end_local_snapshot_capture().returning(|| {});
+    state_machine_handler
+}
+
+/// Default `StateMachineCommandSender` for tests that don't care about it. No production
+/// call site sends through this yet (#436), so the receiver is simply
+/// dropped rather than drained by a spawned task — spawning unconditionally here broke
+/// every non-`#[tokio::test]` caller of `MockBuilder::build_context()`/`build_raft()`
+/// with "there is no reactor running" (`tokio::spawn` requires an active runtime). Tests
+/// that DO care use `.with_state_machine_commands(...)` with their own receiver instead.
+pub fn default_state_machine_commands() -> crate::StateMachineCommandSender {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    crate::StateMachineCommandSender::new(tx)
 }
 
 pub fn mock_purge_exewcutor() -> MockPurgeExecutor {

@@ -145,6 +145,8 @@ async fn test_build_append_request_for_different_peers() {
     raft_log_mut
         .expect_entry_term()
         .returning(|index| if index == 2 { Some(1) } else { Some(0) });
+    raft_log_mut.expect_first_entry_id().returning(|| 1);
+    raft_log_mut.expect_last_entry_id().returning(|| 3);
 
     // Arrange: Replication data
     let data = ReplicationData {
@@ -158,8 +160,16 @@ async fn test_build_append_request_for_different_peers() {
     };
 
     // Act: Build request for peer2
-    let (_id, peer2_request) =
-        handler.build_append_request(&context.raft_log, peer2_id, &mut entries_per_peer, &data);
+    let (_id, peer2_outcome) = handler
+        .build_append_request(&context.raft_log, peer2_id, &mut entries_per_peer, &data)
+        .expect("build_append_request should succeed for peer2");
+    let crate::BuildAppendOutcome::Append {
+        request: peer2_request,
+        ..
+    } = peer2_outcome
+    else {
+        panic!("expected BuildAppendOutcome::Append for peer2");
+    };
 
     // Assert: Peer2 request should have 1 entry
     assert_eq!(
@@ -177,8 +187,16 @@ async fn test_build_append_request_for_different_peers() {
     );
 
     // Act: Build request for peer3
-    let (_id, peer3_request) =
-        handler.build_append_request(&context.raft_log, peer3_id, &mut entries_per_peer, &data);
+    let (_id, peer3_outcome) = handler
+        .build_append_request(&context.raft_log, peer3_id, &mut entries_per_peer, &data)
+        .expect("build_append_request should succeed for peer3");
+    let crate::BuildAppendOutcome::Append {
+        request: peer3_request,
+        ..
+    } = peer3_outcome
+    else {
+        panic!("expected BuildAppendOutcome::Append for peer3");
+    };
 
     // Assert: Peer3 request should have 3 entries
     assert_eq!(
@@ -761,4 +779,48 @@ fn test_command_conversion_with_multiple_commands() {
 fn test_command_conversion_with_empty_input() {
     let payloads = client_command_to_entry_payloads(vec![]);
     assert!(payloads.is_empty());
+}
+
+/// An in-range `prev_log_index` whose `entry_term` is missing is a storage-layer
+/// inconsistency, not a purge — `build_append_request` must reject it loudly
+/// instead of guessing `prev_log_term = 0`.
+///
+/// # Scenario
+/// - Leader: first_entry_id = 11, last_entry_id = 15
+/// - Peer 2 next_index = 12 → prev_log_index = 11
+/// - `entry_term(11)` returns None even though 11 is within [11, 15]
+/// - Expected: `Err(ReplicationError::InconsistentPrevLogTerm)`
+#[tokio::test]
+async fn test_build_append_request_rejects_inconsistent_prev_log_term() {
+    let mut context = setup_mock_replication_test_context(1);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let peer_id = 2;
+
+    let raft_log_mut = Arc::get_mut(&mut context.raft_log).unwrap();
+    raft_log_mut.expect_first_entry_id().returning(|| 11);
+    raft_log_mut.expect_last_entry_id().returning(|| 15);
+    raft_log_mut.expect_entry_term().returning(|_| None);
+
+    let data = ReplicationData {
+        leader_last_index_before: 15,
+        current_term: 1,
+        commit_index: 15,
+        peer_next_indices: HashMap::from([(peer_id, 12_u64)]),
+    };
+    let mut entries_per_peer: HashMap<u32, Vec<Entry>> = HashMap::new();
+
+    let result =
+        handler.build_append_request(&context.raft_log, peer_id, &mut entries_per_peer, &data);
+
+    assert!(matches!(
+        result,
+        Err(Error::Consensus(ConsensusError::Replication(
+            ReplicationError::InconsistentPrevLogTerm {
+                prev_index: 11,
+                first_index: 11,
+                last_index: 15,
+                ..
+            }
+        )))
+    ));
 }

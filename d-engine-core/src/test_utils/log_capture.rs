@@ -17,6 +17,7 @@ use tracing::Event;
 use tracing::Subscriber;
 use tracing::field::Field;
 use tracing::field::Visit;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -65,6 +66,19 @@ pub fn capture_logs_globally() -> Arc<Mutex<Vec<String>>> {
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::set_global_default(subscriber)
         .expect("capture_logs_globally() must only be called once per test process");
+    buf
+}
+
+/// Like `capture_logs_globally`, but scoped to `filter` (an `EnvFilter` directive
+/// string) instead of capturing every event unconditionally. Use this when the
+/// unfiltered version would also pull in noisy third-party crates (e.g. `h2`
+/// trace-level frame logging from a real gRPC transport under test).
+pub fn capture_logs_globally_filtered(filter: &str) -> Arc<Mutex<Vec<String>>> {
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let layer = CapturingLayer { buf: buf.clone() };
+    let subscriber = tracing_subscriber::registry().with(EnvFilter::new(filter)).with(layer);
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("capture_logs_globally_filtered() must only be called once per test process");
     buf
 }
 

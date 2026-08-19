@@ -92,10 +92,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
         &mut self.shared_state
     }
 
-    fn is_candidate(&self) -> bool {
-        true
-    }
-
     fn become_leader(&self) -> Result<RaftRole<T>> {
         info!(
             "Node {} term {} transitioning to Leader",
@@ -337,9 +333,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     &append_entries_request
                 );
 
-                // Important to reset timer immediatelly
-                self.reset_timer();
-
                 let my_term = self.current_term();
 
                 // Raft §5.2: term check takes priority over log matching.
@@ -347,6 +340,10 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                 // leader exists — step down immediately and let the Follower handle
                 // log conflict responses. Content (log) checks come after identity (term).
                 if append_entries_request.term >= my_term {
+                    // Legitimate leader confirmed — reset only here. The stale-leader
+                    // branch below must not extend this campaign's timer (#436).
+                    self.reset_timer();
+
                     // Keep syncing leader_id (hot-path: ~5ns atomic store)
                     self.shared_state().set_current_leader(append_entries_request.leader_id);
 
@@ -434,19 +431,6 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                         NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
 
-                return Ok(());
-            }
-
-            InboundEvent::StreamSnapshot(_ack_rx, _chunk_tx, startup_tx) => {
-                debug!("Candidate::InboundEvent::StreamSnapshot");
-                warn!("Candidate should not receive StreamSnapshot event.");
-                if let Err(e) = startup_tx.send(Err(Status::failed_precondition("Not the leader")))
-                {
-                    error!(
-                        ?e,
-                        "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
-                    );
-                }
                 return Ok(());
             }
 

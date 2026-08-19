@@ -500,6 +500,19 @@ fn test_is_fatal_data_corruption() {
 }
 
 #[test]
+fn test_is_fatal_snapshot_boundary_conflict() {
+    // Same index, different term: the two sides disagree about what wrote this
+    // index — corruption / wrong cluster, not a transient install failure.
+    let err: Error = SnapshotError::BoundaryConflict {
+        index: 5,
+        local_term: 1,
+        incoming_term: 2,
+    }
+    .into();
+    assert!(err.is_fatal());
+}
+
+#[test]
 fn test_is_not_fatal_snapshot_operation_failed() {
     let err: Error = SnapshotError::OperationFailed("stream closed".to_string()).into();
     assert!(!err.is_fatal());

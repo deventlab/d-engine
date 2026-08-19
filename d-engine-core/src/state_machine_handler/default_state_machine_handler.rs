@@ -1,13 +1,15 @@
 #[cfg(feature = "watch")]
 use crate::BatchOp;
 
+use crate::CapturedLocalSnapshot;
+use crate::PreparedSnapshot;
 use crate::client::KvEntry;
+use crate::state_machine_handler::applied_state::AppliedState;
 use async_compression::tokio::bufread::GzipDecoder;
 use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use bytes::Bytes;
-use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
@@ -24,14 +26,12 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tempfile::tempdir;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::fs::remove_dir_all;
 use tokio::fs::remove_file;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio::time::timeout;
@@ -47,6 +47,7 @@ use super::SnapshotPolicy;
 use super::StateMachineHandler;
 #[cfg(feature = "watch")]
 use crate::ApplyEntry;
+#[cfg(feature = "watch")]
 use crate::ApplyResult;
 #[cfg(feature = "watch")]
 use crate::Command;
@@ -54,15 +55,12 @@ use crate::NewCommitData;
 use crate::Result;
 use crate::SnapshotConfig;
 use crate::SnapshotError;
-use crate::SnapshotGuard;
 use crate::SnapshotPathManager;
 use crate::StateMachine;
 use crate::StorageError;
 use crate::TypeConfig;
 use crate::alias::SMOF;
 use crate::alias::SNP;
-use crate::convert::classify_error;
-use crate::decode_entries;
 use crate::file_io::validate_checksum;
 use crate::file_io::validate_compressed_format;
 use crate::scoped_timer::ScopedTimer;
@@ -84,11 +82,12 @@ where
     T: TypeConfig,
 {
     node_id: u32,
-    // last_applied, as an application progress indicator, may fall under the responsibility of the
-    // Handler, as it manages the application process.
-    last_applied: AtomicU64,   // The last applied log index
+
     pending_commit: AtomicU64, // The highest pending commit index
     state_machine: Arc<SMOF<T>>,
+
+    applied: Arc<AppliedState>,
+    applied_notify_rx: tokio::sync::watch::Receiver<u64>,
 
     // current_snapshot_version: AtomicU64,
     snapshot_config: SnapshotConfig,
@@ -100,24 +99,6 @@ where
     snapshot_in_progress: AtomicBool,
 
     path_mgr: Arc<SnapshotPathManager>,
-
-    /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
-    snapshot_lock: RwLock<()>,
-
-    /// Watch channel to notify when last_applied advances
-    /// Used for linearizable reads to wait until state machine catches up with commit_index
-    applied_notify_tx: tokio::sync::watch::Sender<u64>,
-    applied_notify_rx: tokio::sync::watch::Receiver<u64>,
-
-    /// Broadcast channel for watch event notifications (fire-and-forget)
-    /// StateMachine sends events here without blocking on watchers
-    #[cfg(feature = "watch")]
-    watch_event_tx: Option<tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>>,
-
-    /// Number of active watchers that opted in to prev_kv.
-    /// When > 0, apply_chunk reads old values before applying each write.
-    #[cfg(feature = "watch")]
-    prev_kv_watcher_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone)]
@@ -133,12 +114,12 @@ where
     T: TypeConfig,
 {
     fn last_applied(&self) -> u64 {
-        self.last_applied.load(Ordering::Acquire)
+        self.applied.load()
     }
 
     /// Get the interval to be processed
     fn pending_range(&self) -> Option<RangeInclusive<u64>> {
-        let last_applied = self.last_applied.load(Ordering::Acquire);
+        let last_applied = self.applied.load();
         let pending_commit = self.pending_commit.load(Ordering::Acquire);
 
         if pending_commit > last_applied {
@@ -205,121 +186,6 @@ where
         })?
     }
 
-    async fn apply_chunk(
-        &self,
-        chunk: Vec<Entry>,
-    ) -> Result<Vec<ApplyResult>> {
-        let _timer = ScopedTimer::new("apply_chunk");
-
-        // Use a timer to measure latency and count chunks
-        let start = Instant::now();
-        let chunk_size = chunk.len();
-
-        metrics::counter!(
-            "core.state_machine.apply_chunk.count",
-            &[("node_id", self.node_id.to_string())]
-        )
-        .increment(1);
-
-        // Capture last_index before decode: Config entries are dropped by decode_entries,
-        // but last_applied must still advance to the original commit index.
-        let last_index = chunk.last().map(|entry| entry.index);
-        trace!(
-            "[node-{}] apply_chunk::entry={:?} last_index: {:?}",
-            self.node_id, &chunk, last_index
-        );
-
-        let sm = self.state_machine.clone();
-
-        // Decode proto bytes → ApplyEntry exactly once here.
-        // State machine receives clean Rust types; never touches proto or wire format.
-        let apply_entries = decode_entries(chunk)?;
-
-        // Read prev values before applying if any watcher requested prev_kv.
-        // Must happen BEFORE apply_chunk so old values are still in the state machine.
-        #[cfg(feature = "watch")]
-        let prev_values: Option<Vec<Option<bytes::Bytes>>> = if self.watch_event_tx.is_some()
-            && self.prev_kv_watcher_count.load(std::sync::atomic::Ordering::Relaxed) > 0
-        {
-            Some(Self::read_prev_values(&*sm, &apply_entries))
-        } else {
-            None
-        };
-
-        // Apply the chunk and track errors
-        let apply_t0 = std::time::Instant::now();
-        let apply_result = sm.apply_chunk(&apply_entries).await;
-        let apply_elapsed = apply_t0.elapsed();
-        metrics::counter!(
-            "core.state_machine.apply.busy_nanos_total",
-            &[("node_id", self.node_id.to_string())]
-        )
-        .increment(apply_elapsed.as_nanos() as u64);
-
-        // Fire-and-forget watch events on success (non-blocking)
-        #[cfg(feature = "watch")]
-        if let Ok(ref results) = apply_result
-            && let Some(ref tx) = self.watch_event_tx
-        {
-            self.broadcast_watch_events(&apply_entries, results, tx, prev_values.as_deref());
-        }
-
-        // Record latency and chunk size histogram *after* the operation
-        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-        metrics::histogram!(
-            "core.state_machine.apply_chunk.duration_ms",
-            &[("node_id", self.node_id.to_string())]
-        )
-        .record(duration_ms);
-
-        metrics::histogram!(
-            "core.state_machine.apply_chunk.batch_size",
-            &[("node_id", self.node_id.to_string())]
-        )
-        .record(chunk_size as f64);
-
-        // Track result
-        match &apply_result {
-            Ok(_) => {
-                // Efficiently obtain the maximum index: directly get the index of the last entry
-                if let Some(idx) = last_index {
-                    self.last_applied.store(idx, Ordering::Release);
-
-                    metrics::gauge!(
-                        "core.raft.apply_index",
-                        &[("node_id", self.node_id.to_string())]
-                    )
-                    .set(idx as f64);
-
-                    // Notify waiters that last_applied has advanced
-                    if let Err(e) = self.applied_notify_tx.send(idx) {
-                        debug_assert!(false, "apply notify send failed: {e:?}");
-                    }
-                }
-
-                metrics::counter!(
-                    "core.state_machine.apply_chunk.success",
-                    &[("node_id", self.node_id.to_string())]
-                )
-                .increment(1);
-            }
-            Err(e) => {
-                let error_type = classify_error(e);
-                metrics::counter!(
-                    "core.state_machine.apply_chunk.error",
-                    &[
-                        ("node_id", self.node_id.to_string()),
-                        ("error_type", error_type)
-                    ]
-                )
-                .increment(1);
-            }
-        }
-
-        // Propagate results to caller
-        apply_result
-    }
-
     fn read_from_state_machine(
         &self,
         keys: Vec<Bytes>,
@@ -338,37 +204,114 @@ where
         }
     }
 
-    async fn apply_snapshot_stream_from_leader(
+    async fn prepare_snapshot_stream(
         &self,
-        current_term: u64,
-        stream_chunk_receiver: mpsc::Receiver<SnapshotChunk>,
-        ack_tx: mpsc::Sender<SnapshotAck>, // ACK sender
+        first_chunk: SnapshotChunk,
+        mut remaining_chunks: mpsc::Receiver<SnapshotChunk>,
+        ack_tx: mpsc::Sender<SnapshotAck>,
         config: &SnapshotConfig,
-    ) -> Result<()> {
-        let _timer = ScopedTimer::new("receive_snapshot_stream_from_leader");
+    ) -> Result<PreparedSnapshot> {
+        let mut assembler = SnapshotAssembler::new(self.path_mgr.clone()).await?;
+        let chunk_timeout = Duration::from_secs(config.receive_chunk_timeout_in_sec);
+        let mut last_received = Instant::now();
 
-        info!(?ack_tx, %current_term, "receive_snapshot_stream_from_leader");
-        let (final_metadata, snapshot_path) = self
-            .process_snapshot_stream(stream_chunk_receiver, ack_tx.clone(), config)
-            .await?;
+        // The caller already checked first_chunk.leader_term against its own current_term
+        // (#436). (term, leader_id) here is purely an *internal* consistency
+        // anchor — every later chunk must match, or the leader changed mid-transfer.
+        let (term, leader_id) = (first_chunk.leader_term, first_chunk.leader_id);
+        let captured_metadata = first_chunk.metadata.clone().ok_or_else(|| {
+            SnapshotError::OperationFailed("Missing metadata in snapshot stream".to_string())
+        })?;
+        let total_chunks = first_chunk.total_chunks;
 
-        debug!(
-            ?final_metadata,
-            ?snapshot_path,
-            "before apply_snapshot_from_file"
-        );
+        let mut count = 0u32;
+        Self::validate_and_write_chunk(&mut assembler, first_chunk, &ack_tx).await?;
+        count += 1;
 
-        // Decompress before passing to state machine
-        let temp_dir = tempdir()?;
+        loop {
+            let chunk = match timeout(chunk_timeout, remaining_chunks.recv()).await {
+                Ok(Some(chunk)) => {
+                    debug!("receive new chunk.");
+                    last_received = Instant::now();
+                    chunk
+                }
+                Ok(None) => {
+                    debug!("no more chunks available...");
+                    break;
+                }
+                Err(_) => {
+                    ack_tx
+                        .send(SnapshotAck {
+                            seq: 0,
+                            status: ChunkStatus::Failed.into(),
+                            next_requested: 0,
+                        })
+                        .await
+                        .map_err(|e| {
+                            SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
+                        })?;
+                    let elapsed = last_received.elapsed();
+                    return Err(SnapshotError::OperationFailed(format!(
+                        "No chunk received for {} seconds",
+                        elapsed.as_secs()
+                    ))
+                    .into());
+                }
+            };
+
+            if chunk.leader_term != term || chunk.leader_id != leader_id {
+                ack_tx
+                    .send(SnapshotAck {
+                        seq: chunk.seq,
+                        status: ChunkStatus::OutOfOrder.into(),
+                        next_requested: 0,
+                    })
+                    .await
+                    .map_err(|e| {
+                        SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
+                    })?;
+                return Err(SnapshotError::OperationFailed(
+                    "Leader changed during transfer".to_string(),
+                )
+                .into());
+            }
+
+            Self::validate_and_write_chunk(&mut assembler, chunk, &ack_tx).await?;
+
+            count += 1;
+            if count % config.receiver_yield_every_n_chunks as u32 == 0 {
+                debug!(%count, %config.receiver_yield_every_n_chunks, "yield_now");
+                tokio::task::yield_now().await;
+            }
+        }
+
+        debug!(%total_chunks, "expected total chunks");
+        if assembler.received_chunks() != total_chunks {
+            ack_tx
+                .send(SnapshotAck {
+                    seq: assembler.received_chunks(),
+                    status: ChunkStatus::Failed.into(),
+                    next_requested: 0,
+                })
+                .await
+                .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
+            return Err(SnapshotError::OperationFailed(format!(
+                "Received chunks({}) != total({})",
+                assembler.received_chunks(),
+                total_chunks
+            ))
+            .into());
+        }
+
+        let snapshot_path = assembler.finalize(&captured_metadata).await?;
+
+        let temp_dir = tempfile::tempdir()?;
         self.decompress_to_directory(&snapshot_path, temp_dir.path()).await?;
 
-        // Now call state machine with decompressed directory
-        self.state_machine
-            .apply_snapshot_from_file(&final_metadata, temp_dir.path().to_path_buf())
-            .await?;
-
-        info!("Snapshot stream successfully received and applied");
-        Ok(())
+        Ok(PreparedSnapshot {
+            metadata: captured_metadata,
+            temp_dir,
+        })
     }
 
     #[inline]
@@ -398,66 +341,44 @@ where
         })
     }
 
-    async fn create_snapshot(&self) -> Result<(SnapshotMetadata, PathBuf)> {
-        println!("[SNAPHSOT] Generating snapshot now ...");
+    fn try_begin_local_snapshot_capture(&self) -> Result<()> {
+        self.snapshot_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .map_err(|_| {
+                SnapshotError::OperationFailed("Snapshot already in progress".to_string())
+            })?;
+        Ok(())
+    }
 
-        // 0. Create a guard (automatically manage state)
-        let _guard1 = SnapshotGuard::new(&self.snapshot_in_progress)?;
+    fn end_local_snapshot_capture(&self) {
+        self.snapshot_in_progress.store(false, Ordering::SeqCst);
+    }
 
-        // 1: Get write lock
-        debug!("create_snapshot 1: Get write lock");
-        let _guard2 = self.snapshot_lock.write().await;
+    async fn build_local_snapshot(
+        &self,
+        captured: CapturedLocalSnapshot,
+    ) -> Result<(SnapshotMetadata, PathBuf)> {
+        let CapturedLocalSnapshot { metadata, temp_dir } = captured;
+        let last_included = metadata.last_included.ok_or_else(|| {
+            SnapshotError::OperationFailed("captured snapshot has no last_included".to_string())
+        })?;
 
-        // 2: Prepare temp snapshot file and final snapshot file
-        debug!("create_snapshot 2: Prepare temp snapshot file and final snapshot file");
-        let last_included = self.state_machine.last_applied();
-
-        let temp_path = self.path_mgr.temp_work_path(&last_included);
-
-        // A crashed/killed previous attempt at this exact index can leave temp_path behind;
-        // without removing it first, generate_snapshot_data fails with "File exists" forever.
-        if let Err(e) = remove_dir_all(&temp_path).await
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(SnapshotError::OperationFailed(format!(
-                "Failed to remove stale temp directory: {e}"
-            ))
-            .into());
-        }
-
-        // 3: Create snapshot based on the temp path
         debug!(
-            ?temp_path,
+            ?temp_dir,
             ?last_included,
-            "create_snapshot 3: Create snapshot based on the temp path"
+            "build_local_snapshot: compressing"
         );
-        let checksum_bytes = match self
-            .state_machine
-            .generate_snapshot_data(temp_path.clone(), last_included)
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                let _ = remove_dir_all(&temp_path).await;
-                return Err(e);
-            }
-        };
-
-        // 4: Compress the snapshot directory into a tar.gz archive
-        debug!("create_snapshot 4: Compressing snapshot directory");
         let final_path = self.path_mgr.final_snapshot_path(&last_included);
-        if let Err(e) = self.compress_directory(&temp_path, &final_path).await {
-            let _ = remove_dir_all(&temp_path).await;
+        if let Err(e) = self.compress_directory(&temp_dir, &final_path).await {
+            let _ = remove_dir_all(&temp_dir).await;
             return Err(e);
         }
 
-        // 6. Remove the original uncompressed directory
-        remove_dir_all(&temp_path).await.map_err(|e| {
+        remove_dir_all(&temp_dir).await.map_err(|e| {
             SnapshotError::OperationFailed(format!("Failed to remove temp directory: {e}"))
         })?;
 
-        // 7: cleanup old versions
-        debug!(%self.snapshot_config.cleanup_retain_count, "create_snapshot 5: cleanup old versions");
+        debug!(%self.snapshot_config.cleanup_retain_count, "build_local_snapshot: cleanup old versions");
         if let Err(e) = self
             .cleanup_snapshot(
                 self.snapshot_config.cleanup_retain_count,
@@ -469,15 +390,8 @@ where
             error!(%e, "clean up old snapshot file failed");
         }
 
-        println!("[SNAPHSOT] New snapshot created: {:?}", &final_path);
-
-        Ok((
-            SnapshotMetadata {
-                last_included: Some(last_included),
-                checksum: checksum_bytes,
-            },
-            final_path,
-        ))
+        info!(?final_path, "New local snapshot built");
+        Ok((metadata, final_path))
     }
 
     async fn cleanup_snapshot(
@@ -565,6 +479,7 @@ where
     async fn load_snapshot_data(
         &self,
         metadata: SnapshotMetadata,
+        leader_term: u64,
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>> {
         let _timer = ScopedTimer::new("load_snapshot_data");
         let transfer_meta = self.prepare_transfer_meta(metadata).await?;
@@ -582,7 +497,6 @@ where
         let mmap_arc = Arc::new(mmap);
 
         let node_id = self.node_id;
-        let leader_term = transfer_meta.metadata.last_included.map(|id| id.term).unwrap_or(0);
         let chunk_size = transfer_meta.chunk_size;
         let total_chunks = transfer_meta.total_chunks;
         let metadata = transfer_meta.metadata;
@@ -616,195 +530,138 @@ where
 
         Ok(Box::pin(stream))
     }
-
-    #[allow(unused)]
-    async fn load_snapshot_chunk(
-        &self,
-        metadata: &SnapshotMetadata,
-        seq: u32,
-    ) -> Result<SnapshotChunk> {
-        let _timer = ScopedTimer::new("load_snapshot_chunk");
-        let transfer_meta = self.prepare_transfer_meta(metadata.clone()).await?;
-        // Validate chunk index
-        if seq >= transfer_meta.total_chunks {
-            return Err(SnapshotError::ChunkOutOfRange(seq, transfer_meta.total_chunks).into());
-        }
-
-        // Calculate chunk boundaries
-        let start = (seq as usize) * transfer_meta.chunk_size;
-        let end = std::cmp::min(
-            start + transfer_meta.chunk_size,
-            transfer_meta.file_size as usize,
-        );
-
-        if start >= transfer_meta.file_size as usize {
-            return Err(
-                SnapshotError::OperationFailed("Chunk start beyond file size".into()).into(),
-            );
-        }
-
-        // ZERO-COPY: Use memory mapping instead of buffer reading
-        let chunk_data = self.load_chunk_via_mmap(&transfer_meta.file_path, start, end)?;
-
-        // Efficient checksum calculation on mapped memory
-        let checksum_bytes = crc32fast::hash(&chunk_data).to_be_bytes();
-        let chunk_checksum = Bytes::copy_from_slice(&checksum_bytes);
-
-        Ok(SnapshotChunk {
-            leader_term: transfer_meta.metadata.last_included.map(|id| id.term).unwrap_or(0),
-            leader_id: self.node_id,
-            metadata: if seq == 0 {
-                Some(transfer_meta.metadata)
-            } else {
-                None
-            },
-            seq,
-            total_chunks: transfer_meta.total_chunks,
-            data: chunk_data,
-            chunk_checksum,
-        })
-    }
 }
 
-impl<T> DefaultStateMachineHandler<T>
-where
-    T: TypeConfig,
-{
-    /// Read the current value for every write operation in `chunk`, before applying.
-    ///
-    /// Returns one `Option<Bytes>` per entry in the same order:
-    /// - `Some(value)` for Insert / Delete / CAS entries (empty Bytes if key didn't exist)
-    /// - `None` for Noop entries (no prev_value needed)
-    ///
-    /// Uses a per-batch overlay so two writes to the same key within one chunk produce
-    /// correct prev_values: the second write sees the first write's value, not the
-    /// pre-batch SM state.
-    #[cfg(feature = "watch")]
-    fn read_prev_values(
-        sm: &dyn crate::StateMachine,
-        chunk: &[ApplyEntry],
-    ) -> Vec<Option<bytes::Bytes>> {
-        use std::collections::HashMap;
+/// Read the current value for every write operation in `chunk`, before applying.
+///
+/// Returns one `Option<Bytes>` per entry in the same order:
+/// - `Some(value)` for Insert / Delete / CAS entries (empty Bytes if key didn't exist)
+/// - `None` for Noop entries (no prev_value needed)
+///
+/// Uses a per-batch overlay so two writes to the same key within one chunk produce
+/// correct prev_values: the second write sees the first write's value, not the
+/// pre-batch SM state.
+#[cfg(feature = "watch")]
+pub(crate) fn read_prev_values(
+    sm: &dyn crate::StateMachine,
+    chunk: &[ApplyEntry],
+) -> Vec<Option<bytes::Bytes>> {
+    use std::collections::HashMap;
 
-        let mut overlay: HashMap<bytes::Bytes, Option<bytes::Bytes>> = HashMap::new();
-        let mut result = Vec::with_capacity(chunk.len());
+    let mut overlay: HashMap<bytes::Bytes, Option<bytes::Bytes>> = HashMap::new();
+    let mut result = Vec::with_capacity(chunk.len());
 
-        for entry in chunk {
-            let prev = match &entry.command {
-                Command::Insert { key, value, .. } => {
-                    let prev =
-                        overlay.get(key).cloned().unwrap_or_else(|| sm.get(key).ok().flatten());
-                    overlay.insert(key.clone(), Some(value.clone()));
-                    Some(prev.unwrap_or_default())
-                }
-                Command::Delete { key } => {
-                    let prev =
-                        overlay.get(key).cloned().unwrap_or_else(|| sm.get(key).ok().flatten());
-                    overlay.insert(key.clone(), None);
-                    Some(prev.unwrap_or_default())
-                }
-                Command::CompareAndSwap { key, .. } => {
-                    let prev =
-                        overlay.get(key).cloned().unwrap_or_else(|| sm.get(key).ok().flatten());
-                    // CAS outcome is unknown before apply; skip overlay update.
-                    // Same-key CAS pairs in one batch are rare and semantically ambiguous.
-                    Some(prev.unwrap_or_default())
-                }
-                Command::Noop => None,
-                Command::Batch { ops: _ } => None,
-            };
-            result.push(prev);
-        }
-        result
-    }
-
-    /// Broadcast watch events for applied chunk entries (fire-and-forget).
-    ///
-    /// Receives already-decoded `&[ApplyEntry]` — no proto decode happens here.
-    /// Non-blocking: if channel is full, oldest events are dropped (lagging receivers).
-    ///
-    /// `results` must have the same length as `chunk` (enforced by StateMachineHandler contract).
-    /// CAS entries where `results[i].succeeded == false` are skipped — no mutation occurred.
-    /// `prev_values`: optional slice of pre-apply values (None = no prev_kv watcher active).
-    #[cfg(feature = "watch")]
-    #[inline]
-    pub(super) fn broadcast_watch_events(
-        &self,
-        chunk: &[ApplyEntry],
-        results: &[ApplyResult],
-        tx: &tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
-        prev_values: Option<&[Option<bytes::Bytes>]>,
-    ) {
-        use d_engine_proto::client::WatchEventType;
-        use d_engine_proto::client::WatchResponse;
-
-        for (i, entry) in chunk.iter().enumerate() {
-            let prev_value =
-                prev_values.and_then(|pv| pv.get(i)).and_then(|v| v.clone()).unwrap_or_default();
-
-            let events: Vec<WatchResponse> = match &entry.command {
-                Command::Insert { key, value, .. } => vec![WatchResponse {
-                    key: key.clone(),
-                    value: value.clone(),
-                    prev_value,
-                    event_type: WatchEventType::Put as i32,
-                    error: 0,
-                    revision: entry.index,
-                }],
-                Command::Delete { key } => vec![WatchResponse {
-                    key: key.clone(),
-                    value: bytes::Bytes::new(),
-                    prev_value,
-                    event_type: WatchEventType::Delete as i32,
-                    error: 0,
-                    revision: entry.index,
-                }],
-                Command::CompareAndSwap { key, value, .. } => {
-                    // Only broadcast if CAS actually mutated the value.
-                    // A failed CAS leaves the key unchanged — no watch event.
-                    if results.get(i).is_some_and(|r| r.succeeded) {
-                        vec![WatchResponse {
-                            key: key.clone(),
-                            value: value.clone(),
-                            prev_value,
-                            event_type: WatchEventType::Put as i32,
-                            error: 0,
-                            revision: entry.index,
-                        }]
-                    } else {
-                        vec![]
-                    }
-                }
-                Command::Noop => vec![],
-                // Batch: one event per op. prev_value is not supported per-op yet
-                // (read_prev_values returns one value per ApplyEntry, not per BatchOp).
-                Command::Batch { ops } => ops
-                    .iter()
-                    .map(|op| match op {
-                        BatchOp::Insert { key, value } => WatchResponse {
-                            key: key.clone(),
-                            value: value.clone(),
-                            prev_value: bytes::Bytes::new(),
-                            event_type: WatchEventType::Put as i32,
-                            error: 0,
-                            revision: entry.index,
-                        },
-                        BatchOp::Delete { key } => WatchResponse {
-                            key: key.clone(),
-                            value: bytes::Bytes::new(),
-                            prev_value: bytes::Bytes::new(),
-                            event_type: WatchEventType::Delete as i32,
-                            error: 0,
-                            revision: entry.index,
-                        },
-                    })
-                    .collect(),
-            };
-
-            for ev in events {
-                // Fire-and-forget: ignore send errors (no receivers or lagging)
-                let _ = tx.send(ev);
+    for entry in chunk {
+        let prev = match &entry.command {
+            Command::Insert { key, value, .. } => {
+                let prev = overlay.get(key).cloned().unwrap_or_else(|| sm.get(key).ok().flatten());
+                overlay.insert(key.clone(), Some(value.clone()));
+                Some(prev.unwrap_or_default())
             }
+            Command::Delete { key } => {
+                let prev = overlay.get(key).cloned().unwrap_or_else(|| sm.get(key).ok().flatten());
+                overlay.insert(key.clone(), None);
+                Some(prev.unwrap_or_default())
+            }
+            Command::CompareAndSwap { key, .. } => {
+                let prev = overlay.get(key).cloned().unwrap_or_else(|| sm.get(key).ok().flatten());
+                // CAS outcome is unknown before apply; skip overlay update.
+                // Same-key CAS pairs in one batch are rare and semantically ambiguous.
+                Some(prev.unwrap_or_default())
+            }
+            Command::Noop => None,
+            Command::Batch { ops: _ } => None,
+        };
+        result.push(prev);
+    }
+    result
+}
+
+/// Broadcast watch events for applied chunk entries (fire-and-forget).
+///
+/// Receives already-decoded `&[ApplyEntry]` — no proto decode happens here.
+/// Non-blocking: if channel is full, oldest events are dropped (lagging receivers).
+///
+/// `results` must have the same length as `chunk` (enforced by StateMachineHandler contract).
+/// CAS entries where `results[i].succeeded == false` are skipped — no mutation occurred.
+/// `prev_values`: optional slice of pre-apply values (None = no prev_kv watcher active).
+#[cfg(feature = "watch")]
+#[inline]
+pub(crate) fn broadcast_watch_events(
+    chunk: &[ApplyEntry],
+    results: &[ApplyResult],
+    tx: &tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
+    prev_values: Option<&[Option<bytes::Bytes>]>,
+) {
+    use d_engine_proto::client::WatchEventType;
+    use d_engine_proto::client::WatchResponse;
+
+    for (i, entry) in chunk.iter().enumerate() {
+        let prev_value =
+            prev_values.and_then(|pv| pv.get(i)).and_then(|v| v.clone()).unwrap_or_default();
+
+        let events: Vec<WatchResponse> = match &entry.command {
+            Command::Insert { key, value, .. } => vec![WatchResponse {
+                key: key.clone(),
+                value: value.clone(),
+                prev_value,
+                event_type: WatchEventType::Put as i32,
+                error: 0,
+                revision: entry.index,
+            }],
+            Command::Delete { key } => vec![WatchResponse {
+                key: key.clone(),
+                value: bytes::Bytes::new(),
+                prev_value,
+                event_type: WatchEventType::Delete as i32,
+                error: 0,
+                revision: entry.index,
+            }],
+            Command::CompareAndSwap { key, value, .. } => {
+                // Only broadcast if CAS actually mutated the value.
+                // A failed CAS leaves the key unchanged — no watch event.
+                if results.get(i).is_some_and(|r| r.succeeded) {
+                    vec![WatchResponse {
+                        key: key.clone(),
+                        value: value.clone(),
+                        prev_value,
+                        event_type: WatchEventType::Put as i32,
+                        error: 0,
+                        revision: entry.index,
+                    }]
+                } else {
+                    vec![]
+                }
+            }
+            Command::Noop => vec![],
+            // Batch: one event per op. prev_value is not supported per-op yet
+            // (read_prev_values returns one value per ApplyEntry, not per BatchOp).
+            Command::Batch { ops } => ops
+                .iter()
+                .map(|op| match op {
+                    BatchOp::Insert { key, value } => WatchResponse {
+                        key: key.clone(),
+                        value: value.clone(),
+                        prev_value: bytes::Bytes::new(),
+                        event_type: WatchEventType::Put as i32,
+                        error: 0,
+                        revision: entry.index,
+                    },
+                    BatchOp::Delete { key } => WatchResponse {
+                        key: key.clone(),
+                        value: bytes::Bytes::new(),
+                        prev_value: bytes::Bytes::new(),
+                        event_type: WatchEventType::Delete as i32,
+                        error: 0,
+                        revision: entry.index,
+                    },
+                })
+                .collect(),
+        };
+
+        for ev in events {
+            // Fire-and-forget: ignore send errors (no receivers or lagging)
+            let _ = tx.send(ev);
         }
     }
 }
@@ -820,19 +677,13 @@ where
         snapshots_dir: PathBuf,
         snapshot_config: SnapshotConfig,
         snapshot_policy: SNP<T>,
-        #[cfg_attr(not(feature = "watch"), allow(unused_variables))] watch_event_tx: Option<
-            tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
-        >,
-        #[cfg_attr(not(feature = "watch"), allow(unused_variables))] prev_kv_watcher_count: Arc<
-            std::sync::atomic::AtomicUsize,
-        >,
     ) -> Self {
-        let (applied_notify_tx, applied_notify_rx) =
-            tokio::sync::watch::channel(last_applied_index);
+        let (applied, applied_notify_rx) = AppliedState::new(last_applied_index);
 
         Self {
             node_id,
-            last_applied: AtomicU64::new(last_applied_index),
+            applied,
+            applied_notify_rx,
             pending_commit: AtomicU64::new(0),
             state_machine,
             snapshot_policy,
@@ -843,200 +694,8 @@ where
             snapshots_dir,
             snapshot_config,
 
-            snapshot_lock: RwLock::new(()),
             snapshot_in_progress: AtomicBool::new(false),
-            applied_notify_tx,
-            applied_notify_rx,
-            #[cfg(feature = "watch")]
-            watch_event_tx,
-            #[cfg(feature = "watch")]
-            prev_kv_watcher_count,
         }
-    }
-
-    /// Convenience constructor for tests without watch
-    #[cfg(test)]
-    pub(crate) fn new_without_watch(
-        node_id: u32,
-        last_applied_index: u64,
-        state_machine: Arc<SMOF<T>>,
-        snapshots_dir: PathBuf,
-        snapshot_config: SnapshotConfig,
-        snapshot_policy: SNP<T>,
-    ) -> Self {
-        Self::new(
-            node_id,
-            last_applied_index,
-            state_machine,
-            snapshots_dir,
-            snapshot_config,
-            snapshot_policy,
-            None,
-            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        )
-    }
-
-    /// Helper function to process snapshot stream
-    async fn process_snapshot_stream(
-        &self,
-        mut stream_chunk_receiver: mpsc::Receiver<SnapshotChunk>,
-        ack_tx: mpsc::Sender<SnapshotAck>,
-        config: &SnapshotConfig,
-    ) -> Result<(SnapshotMetadata, PathBuf)> {
-        let mut assembler = SnapshotAssembler::new(self.path_mgr.clone()).await?;
-        let chunk_timeout = Duration::from_secs(config.receive_chunk_timeout_in_sec);
-        let mut last_received = Instant::now();
-        let mut term_check = None;
-        let mut captured_metadata: Option<SnapshotMetadata> = None;
-        let mut total_chunks = None;
-        let mut count = 0;
-
-        loop {
-            let chunk = match timeout(chunk_timeout, stream_chunk_receiver.recv()).await {
-                Ok(Some(chunk)) => {
-                    debug!("receive new chunk.");
-                    last_received = Instant::now();
-                    chunk
-                }
-                Ok(None) => {
-                    debug!("no more chunks available...");
-
-                    break;
-                }
-                Err(_) => {
-                    // Send timeout ACK
-                    ack_tx
-                        .send(SnapshotAck {
-                            seq: 0, // Best effort
-                            status: ChunkStatus::Failed.into(),
-                            next_requested: 0,
-                        })
-                        .await
-                        .map_err(|e| {
-                            SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
-                        })?;
-                    let elapsed = last_received.elapsed();
-                    return Err(SnapshotError::OperationFailed(format!(
-                        "No chunk received for {} seconds",
-                        elapsed.as_secs()
-                    ))
-                    .into());
-                }
-            };
-
-            // Verify leader legitimacy
-            if let Some((term, leader_id)) = &term_check {
-                if chunk.leader_term != *term || chunk.leader_id != *leader_id {
-                    // Send leader changed ACK
-                    ack_tx
-                        .send(SnapshotAck {
-                            seq: chunk.seq,
-                            status: ChunkStatus::OutOfOrder.into(),
-                            next_requested: 0,
-                        })
-                        .await
-                        .map_err(|e| {
-                            SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
-                        })?;
-                    return Err(SnapshotError::OperationFailed(
-                        "Leader changed during transfer".to_string(),
-                    )
-                    .into());
-                }
-            } else {
-                term_check = Some((chunk.leader_term, chunk.leader_id));
-                captured_metadata = chunk.metadata.clone();
-                total_chunks = Some(chunk.total_chunks);
-                debug!(?term_check, ?captured_metadata, ?total_chunks);
-
-                // Validate captured metadata
-                if captured_metadata.is_none() {
-                    ack_tx
-                        .send(SnapshotAck {
-                            seq: chunk.seq,
-                            status: ChunkStatus::Failed.into(),
-                            next_requested: 0,
-                        })
-                        .await
-                        .map_err(|e| {
-                            SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
-                        })?;
-                    return Err(SnapshotError::OperationFailed(
-                        "Missing metadata in snapshot stream".to_string(),
-                    )
-                    .into());
-                }
-            }
-
-            // Checksum validation
-            if !validate_checksum(&chunk.data, &chunk.chunk_checksum) {
-                // Send checksum failure ACK
-                ack_tx
-                    .send(SnapshotAck {
-                        seq: chunk.seq,
-                        status: ChunkStatus::ChecksumMismatch.into(),
-                        next_requested: chunk.seq, // Request same chunk again
-                    })
-                    .await
-                    .map_err(|e| {
-                        SnapshotError::OperationFailed(format!("Failed to send ACK: {e}"))
-                    })?;
-                return Err(SnapshotError::OperationFailed(
-                    "Checksum validation failed".to_string(),
-                )
-                .into());
-            }
-
-            // Write to temporary file
-            assembler.write_chunk(chunk.seq, chunk.data).await?;
-
-            // Send ACK
-            let ack = SnapshotAck {
-                seq: chunk.seq,
-                status: ChunkStatus::Accepted.into(),
-                next_requested: chunk.seq + 1,
-            };
-            ack_tx
-                .send(ack)
-                .await
-                .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
-
-            count += 1;
-            if count % config.receiver_yield_every_n_chunks == 0 {
-                debug!(%count, %config.receiver_yield_every_n_chunks, "yield_now");
-
-                tokio::task::yield_now().await;
-            }
-        }
-
-        let total = total_chunks.unwrap_or(0);
-        debug!(%total, "expected total chunks");
-        if assembler.received_chunks() != total {
-            ack_tx
-                .send(SnapshotAck {
-                    seq: assembler.received_chunks(),
-                    status: ChunkStatus::Failed.into(),
-                    next_requested: 0,
-                })
-                .await
-                .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
-
-            return Err(SnapshotError::OperationFailed(format!(
-                "Received chunks({}) != total({})",
-                assembler.received_chunks(),
-                total
-            ))
-            .into());
-        }
-
-        debug!(?captured_metadata);
-
-        let final_metadata = captured_metadata.ok_or_else(|| {
-            SnapshotError::OperationFailed("Missing metadata in snapshot stream".to_string())
-        })?;
-
-        let snapshot_path = assembler.finalize(&final_metadata).await?;
-        Ok((final_metadata, snapshot_path))
     }
 
     /// Create transfer metadata with precomputed values
@@ -1126,46 +785,40 @@ where
         Ok(())
     }
 
-    /// Zero-copy chunk loading using memory mapping
-    ///
-    /// # Safety
-    /// - Memory mapping is unsafe but properly bounded and validated
-    /// - File size is checked before mapping
-    /// - Proper error handling for IO operations
-    pub(super) fn load_chunk_via_mmap(
-        &self,
-        file_path: &Path,
-        start: usize,
-        end: usize,
-    ) -> Result<Bytes> {
-        // Open file with proper error handling
-        let file = std::fs::File::open(file_path).map_err(StorageError::IoError)?;
-
-        // Get file metadata to validate bounds
-        let file_meta = file.metadata().map_err(StorageError::IoError)?;
-        let file_size = file_meta.len() as usize;
-
-        // Validate bounds before memory mapping
-        if end > file_size {
-            return Err(SnapshotError::OperationFailed(format!(
-                "Chunk end {end} exceeds file size {file_size}"
-            ))
-            .into());
+    /// Shared by `prepare_snapshot_stream`'s first-chunk handling and its remaining-chunk
+    /// loop: validate checksum, write to the assembler, ACK. Kept as one function so the
+    /// two call sites can't silently drift apart.
+    async fn validate_and_write_chunk(
+        assembler: &mut SnapshotAssembler,
+        chunk: SnapshotChunk,
+        ack_tx: &mpsc::Sender<SnapshotAck>,
+    ) -> Result<()> {
+        if !validate_checksum(&chunk.data, &chunk.chunk_checksum) {
+            ack_tx
+                .send(SnapshotAck {
+                    seq: chunk.seq,
+                    status: ChunkStatus::ChecksumMismatch.into(),
+                    next_requested: chunk.seq,
+                })
+                .await
+                .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
+            return Err(
+                SnapshotError::OperationFailed("Checksum validation failed".to_string()).into(),
+            );
         }
 
-        // SAFETY: Bounds are validated above, and file is opened properly
-        let mmap =
-            unsafe { memmap2::MmapOptions::new().map(&file).map_err(StorageError::IoError)? };
+        assembler.write_chunk(chunk.seq, chunk.data).await?;
 
-        // True zero-copy: Create Bytes that references the memory map directly
-        // This requires keeping the mmap alive via Arc
-        let mmap_arc = Arc::new(mmap);
+        ack_tx
+            .send(SnapshotAck {
+                seq: chunk.seq,
+                status: ChunkStatus::Accepted.into(),
+                next_requested: chunk.seq + 1,
+            })
+            .await
+            .map_err(|e| SnapshotError::OperationFailed(format!("Failed to send ACK: {e}")))?;
 
-        // Use a custom approach to create Bytes that holds the Arc<Mmap>
-        // This avoids the copy while maintaining safety
-        let chunk_data = zero_copy_bytes_from_mmap(mmap_arc, start, end);
-
-        Ok(chunk_data)
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1184,8 +837,7 @@ where
         &self,
         target_index: u64,
     ) {
-        self.last_applied.store(target_index, Ordering::Release);
-        let _ = self.applied_notify_tx.send(target_index);
+        self.applied.advance(target_index);
     }
 }
 
@@ -1226,4 +878,48 @@ fn parse_snapshot_dirname(
         (Ok(i), Ok(t)) => Some((i, t)),
         _ => None,
     }
+}
+
+/// Constructs a paired reader/writer sharing one `AppliedState` and one `state_machine`
+/// handle. This is the only place `DefaultStateMachineWriter` should be built alongside
+/// its reader — `StateMachineWorker` must be the sole holder of the writer half.
+pub fn new_reader_writer_pair<T: TypeConfig>(
+    node_id: u32,
+    last_applied_index: u64,
+    state_machine: Arc<SMOF<T>>,
+    snapshots_dir: PathBuf,
+    snapshot_config: SnapshotConfig,
+    snapshot_policy: SNP<T>,
+    watch_event_tx: Option<tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>>,
+    prev_kv_watcher_count: Arc<std::sync::atomic::AtomicUsize>,
+) -> (
+    DefaultStateMachineHandler<T>,
+    super::DefaultStateMachineWriter<T>,
+) {
+    let (applied, applied_notify_rx) = AppliedState::new(last_applied_index);
+    let path_mgr = Arc::new(SnapshotPathManager::new(
+        snapshots_dir.clone(),
+        snapshot_config.snapshots_dir_prefix.clone(),
+    ));
+    let reader = DefaultStateMachineHandler {
+        node_id,
+        pending_commit: AtomicU64::new(0),
+        state_machine: state_machine.clone(),
+        applied: applied.clone(),
+        applied_notify_rx,
+        snapshot_policy,
+        path_mgr: path_mgr.clone(),
+        snapshots_dir,
+        snapshot_config,
+        snapshot_in_progress: AtomicBool::new(false),
+    };
+    let writer = super::DefaultStateMachineWriter::new(
+        node_id,
+        state_machine,
+        applied,
+        path_mgr,
+        watch_event_tx,
+        prev_kv_watcher_count,
+    );
+    (reader, writer)
 }

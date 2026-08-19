@@ -155,11 +155,30 @@ pub use d_engine_core::RaftNodeConfig;
 pub use d_engine_core::BatchOp;
 
 // Internal types required by storage implementations — not part of user API
-#[doc(hidden)]
+
+/// Persisted Raft hard state (current term + voted-for). Required by
+/// [`MetaStore::save_hard_state`]/[`MetaStore::load_hard_state`] — implement these if
+/// you're building a custom storage engine.
 pub use d_engine_core::HardState;
+
+// Purely internal — only reachable via `?`/`From` conversions inside `Error`.
+// No public trait method requires implementors to construct this directly.
 #[doc(hidden)]
 pub use d_engine_core::ProstError;
-#[doc(hidden)]
+
+/// Outcome of installing a snapshot via [`StateMachine::apply_snapshot_from_file`].
+///
+/// Distinguishes "the install actually ran" (`Applied`) from two no-op cases that are not
+/// errors: the incoming snapshot is behind what's already applied (`IgnoredStale`), or is an
+/// idempotent retry of the currently-applied boundary (`IgnoredDuplicate`). A genuine problem
+/// (checksum mismatch, corrupted data, conflicting boundary) should be returned as `Err`, not
+/// encoded as a variant here.
+pub use d_engine_core::SnapshotApplyResult;
+
+/// Snapshot-specific error type. Construct these in
+/// [`StateMachine::apply_snapshot_from_file`] (e.g. `SnapshotError::ChecksumMismatch`) to
+/// report a genuine install failure — the no-op cases are already covered by
+/// [`SnapshotApplyResult`], not this type.
 pub use d_engine_core::SnapshotError;
 // -------------------- Client API --------------------
 pub use api::EmbeddedClient;

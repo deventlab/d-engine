@@ -61,11 +61,48 @@ pub struct AppendResponseWithUpdates {
 /// Result of `prepare_batch_requests`: peers routed to AppendEntries vs snapshot transfer.
 #[derive(Debug, Default)]
 pub struct PrepareResult {
-    /// Per-peer AppendEntries requests for peers whose log is in range.
-    pub append_requests: Vec<(u32, AppendEntriesRequest)>,
+    /// Per-peer AppendEntries requests, paired with the next_index that was
+    /// actually used to build them — caller must write this back to the ledger.
+    pub append_requests: Vec<(u32, AppendEntriesRequest, u64)>,
     /// Peer IDs whose `next_index` is below the leader's purge boundary;
     /// the leader must send a snapshot instead of AppendEntries.
     pub snapshot_targets: Vec<u32>,
+}
+
+/// Outcome of classifying a peer's `prev_log_index` lookup in `build_append_request`.
+pub(crate) enum BuildAppendOutcome {
+    /// Normal send. `effective_next_index` is what was actually used — caller
+    /// writes this back to the real ledger (`LeaderState.next_index`)
+    /// unconditionally, whether or not it differs from what was recorded.
+    Append {
+        request: AppendEntriesRequest,
+        effective_next_index: u64,
+    },
+    /// `prev_index` is below the leader's earliest retained entry — genuinely
+    /// purged. Caller routes this peer to snapshot_targets instead.
+    NeedSnapshot,
+}
+
+/// Result of fetching a peer's pending log entries in `retrieve_to_be_synced_logs_for_peers`.
+#[derive(Debug, PartialEq)]
+pub enum PeerEntriesResult {
+    /// Entries fetched (may be empty — nothing new to send this round).
+    Ready(Vec<Entry>),
+    /// `peer_next_id` is below the leader's retained-log boundary — genuinely
+    /// purged. Caller routes this peer to snapshot_targets.
+    NeedSnapshot,
+    /// `peer_next_id` is within the retained range, but what came back is short
+    /// or has a hole in the middle. Not a legitimate purge — a storage-layer
+    /// inconsistency (see #439). Caller must NOT silently fall back to
+    /// snapshot (that would hide the underlying bug); isolate this one peer
+    /// this round and report it.
+    CorruptGap {
+        start: u64,
+        end: u64,
+        first_seen: Option<u64>,
+        last_seen: Option<u64>,
+        count: usize,
+    },
 }
 
 /// Core replication protocol operations
@@ -79,7 +116,7 @@ where
     ///
     /// Performs two operations that MUST remain in the Raft loop (serial, single-threaded):
     ///   1. Write new log entries to the local raft log (`generate_new_entries`)
-    ///   2. Build per-peer request payloads (`prepare_peer_entries` + `build_append_request`)
+    ///   2. Build per-peer request payloads (`retrieve_to_be_synced_logs_for_peers` + `build_append_request`)
     ///      Peers whose `next_index < first_entry_id` (below purge boundary) are routed to
     ///      `PrepareResult.snapshot_targets` instead of `append_requests`.
     ///
@@ -133,11 +170,17 @@ where
         leader_commit_index: u64,
     ) -> Option<u64>;
 
-    /// Gathers legacy logs for lagging peers
+    /// Gathers legacy logs for lagging peers, classifying each peer's outcome.
     ///
-    /// Performs log segmentation based on:
-    /// - Peer's next_index
-    /// - Max allowed historical entries
+    /// For each peer behind the leader's latest index:
+    /// - `next_index < first_index` (purged prefix) → `NeedSnapshot`
+    /// - Fetched range is short or has a gap despite being in-range → `CorruptGap`
+    ///   (storage-layer inconsistency, not a purge — caller must not silently
+    ///   fall back to snapshot)
+    /// - Otherwise → `Ready(entries)`, contiguous from `next_index` onward
+    ///
+    /// `first_index` is the leader's retained-log boundary (`raft_log.first_entry_id()`),
+    /// passed in so the purge check happens before the range fetch, not after.
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
         new_entries: &[Entry],
@@ -145,7 +188,8 @@ where
         max_legacy_entries_per_peer: u64,
         peer_next_indices: &HashMap<u32, u64>,
         raft_log: &Arc<ROF<T>>,
-    ) -> HashMap<u32, Vec<Entry>>;
+        first_index: u64,
+    ) -> HashMap<u32, PeerEntriesResult>;
 
     /// Handles an incoming AppendEntries RPC request (called by ALL ROLES)
     ///

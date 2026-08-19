@@ -1,13 +1,14 @@
 use super::DefaultStateMachineHandler;
+use super::DefaultStateMachineWriter;
 use super::StateMachineHandler;
-use crate::ConsensusError;
+use super::StateMachineWriterOps;
+use super::broadcast_watch_events;
+use super::new_reader_writer_pair;
 use crate::Error;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockTypeConfig;
 use crate::SnapshotError;
-use crate::StorageError;
-use crate::test_utils::create_test_chunk;
 use crate::test_utils::create_test_compressed_snapshot;
 use crate::test_utils::snapshot_config;
 use bytes::Bytes;
@@ -75,7 +76,7 @@ fn batch_entry(
 fn test_update_pending_case1() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
         0,
         Arc::new(state_machine_mock),
@@ -94,7 +95,7 @@ fn test_update_pending_case1() {
 fn test_update_pending_case2() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
         0,
         Arc::new(state_machine_mock),
@@ -114,16 +115,14 @@ fn test_update_pending_case2() {
 async fn test_update_pending_case3() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let handler = Arc::new(
-        DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-            1,
-            0,
-            Arc::new(state_machine_mock),
-            PathBuf::from("/tmp/test_update_pending_case3"),
-            snapshot_config(PathBuf::from("/tmp/test_update_pending_case3")),
-            MockSnapshotPolicy::new(),
-        ),
-    );
+    let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
+        1,
+        0,
+        Arc::new(state_machine_mock),
+        PathBuf::from("/tmp/test_update_pending_case3"),
+        snapshot_config(PathBuf::from("/tmp/test_update_pending_case3")),
+        MockSnapshotPolicy::new(),
+    ));
 
     let mut tasks = vec![];
     for i in 1..=10 {
@@ -141,7 +140,7 @@ async fn test_update_pending_case3() {
 fn test_pending_range_case1() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
         10,
         Arc::new(state_machine_mock),
@@ -157,7 +156,7 @@ fn test_pending_range_case1() {
 fn test_pending_range_case2() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
         10,
         Arc::new(state_machine_mock),
@@ -175,7 +174,7 @@ fn test_pending_range_case2() {
 fn test_pending_range_case3() {
     // Init Handler
     let state_machine_mock = MockStateMachine::new();
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
         10,
         Arc::new(state_machine_mock),
@@ -208,7 +207,10 @@ mod apply_chunk_test {
         path: &str,
         apply_chunk_error: bool,
         last_applied_index: Option<u64>,
-    ) -> DefaultStateMachineHandler<MockTypeConfig> {
+    ) -> (
+        DefaultStateMachineHandler<MockTypeConfig>,
+        DefaultStateMachineWriter<MockTypeConfig>,
+    ) {
         let mut state_machine = MockStateMachine::new();
         if apply_chunk_error {
             state_machine
@@ -217,19 +219,21 @@ mod apply_chunk_test {
         } else {
             state_machine.expect_apply_chunk().returning(|_| Ok(vec![]));
         }
-        DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        new_reader_writer_pair::<MockTypeConfig>(
             1,
             last_applied_index.unwrap_or(0),
             Arc::new(state_machine),
             PathBuf::from(path),
             snapshot_config(PathBuf::from(path)),
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         )
     }
 
     #[tokio::test]
     async fn test_apply_chunk_updates_last_applied_case1() {
-        let handler = create_test_handler(
+        let (handler, writer) = create_test_handler(
             "/tmp/test_apply_chunk_updates_last_applied_case1",
             false,
             None,
@@ -238,7 +242,7 @@ mod apply_chunk_test {
         assert_eq!(handler.last_applied(), 0);
 
         let chunk = vec![noop_entry(90), noop_entry(100)];
-        let result = handler.apply_chunk(chunk).await;
+        let result = writer.apply_chunk(chunk).await;
 
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 100);
@@ -246,7 +250,7 @@ mod apply_chunk_test {
 
     #[tokio::test]
     async fn test_apply_chunk_updates_last_applied_case2() {
-        let handler = create_test_handler(
+        let (handler, writer) = create_test_handler(
             "/tmp/test_apply_chunk_updates_last_applied_case2",
             false,
             None,
@@ -255,7 +259,7 @@ mod apply_chunk_test {
         assert_eq!(handler.last_applied(), 0);
 
         let chunk = vec![noop_entry(50), noop_entry(70)];
-        let result = handler.apply_chunk(chunk).await;
+        let result = writer.apply_chunk(chunk).await;
 
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 70);
@@ -263,16 +267,16 @@ mod apply_chunk_test {
 
     #[tokio::test]
     async fn test_apply_chunk_handles_empty_chunk() {
-        let handler =
+        let (handler, writer) =
             create_test_handler("/tmp/test_apply_chunk_handles_empty_chunk", false, Some(2));
 
         let chunk = vec![noop_entry(1), noop_entry(2)];
-        let result = handler.apply_chunk(chunk).await;
+        let result = writer.apply_chunk(chunk).await;
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 2);
 
         // Empty chunk: last_applied must not regress
-        let result = handler.apply_chunk(vec![]).await;
+        let result = writer.apply_chunk(vec![]).await;
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 2);
     }
@@ -284,7 +288,7 @@ mod apply_chunk_test {
     /// it was committed into the SM, silently losing the write.
     #[tokio::test]
     async fn test_apply_chunk_with_state_machine_io_error() {
-        let handler = create_test_handler(
+        let (handler, writer) = create_test_handler(
             "/tmp/test_apply_chunk_with_state_machine_io_error",
             true,
             None,
@@ -292,7 +296,7 @@ mod apply_chunk_test {
 
         assert_eq!(handler.last_applied(), 0);
 
-        let result = handler.apply_chunk(vec![noop_entry(50)]).await;
+        let result = writer.apply_chunk(vec![noop_entry(50)]).await;
         assert!(result.is_err());
         assert_eq!(handler.last_applied(), 0);
     }
@@ -333,7 +337,7 @@ mod apply_chunk_test {
         sm.expect_apply_chunk()
             .returning(|_| Err(Error::Fatal("batch failed".to_string())));
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
@@ -344,7 +348,7 @@ mod apply_chunk_test {
             Arc::new(AtomicUsize::new(0)),
         );
 
-        let result = handler.apply_chunk(vec![batch_entry]).await;
+        let result = writer.apply_chunk(vec![batch_entry]).await;
 
         assert!(result.is_err());
         assert_eq!(
@@ -356,6 +360,127 @@ mod apply_chunk_test {
             watch_rx.try_recv().is_err(),
             "failed batch must not emit watch events"
         );
+    }
+
+    /// #436 (StateMachineWriter split) baseline: pins down that a *successful*
+    /// apply_chunk broadcasts a watch event through the real integration path — not just
+    /// via a direct `broadcast_watch_events()` call (see `broadcast_watch_events_tests`
+    /// below, which tests that method in isolation) and not just the failure/no-event case
+    /// above. `watch_event_tx`/`prev_kv_watcher_count` are moving to `DefaultStateMachineWriter`
+    /// in that split — this must keep passing unchanged afterward.
+    #[cfg(feature = "watch")]
+    #[tokio::test]
+    async fn test_apply_chunk_broadcasts_watch_event_on_success() {
+        let cmd = WriteCommand {
+            operation: Some(Operation::Batch(Batch {
+                ops: vec![ProtoBatchOp {
+                    op: Some(batch_op::Op::Insert(Insert {
+                        key: Bytes::from_static(b"k1"),
+                        value: Bytes::from_static(b"v1"),
+                        ttl_secs: 0,
+                    })),
+                }],
+            })),
+        };
+        let mut buf = Vec::new();
+        cmd.encode(&mut buf).unwrap();
+        let entry = Entry {
+            index: 7,
+            term: 1,
+            payload: Some(EntryPayload {
+                payload: Some(Payload::Command(Bytes::from(buf))),
+            }),
+        };
+
+        let (watch_tx, mut watch_rx) = tokio::sync::broadcast::channel(16);
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk().returning(|entries| {
+            Ok(entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect())
+        });
+
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
+            1,
+            0,
+            Arc::new(sm),
+            PathBuf::from("/tmp/test_apply_chunk_broadcasts_watch_event_on_success"),
+            snapshot_config(PathBuf::from(
+                "/tmp/test_apply_chunk_broadcasts_watch_event_on_success",
+            )),
+            MockSnapshotPolicy::new(),
+            Some(watch_tx),
+            Arc::new(AtomicUsize::new(0)),
+        );
+
+        let result = writer.apply_chunk(vec![entry]).await;
+
+        assert!(result.is_ok());
+        assert_eq!(handler.last_applied(), 7);
+        let event = watch_rx.try_recv().expect("successful apply must emit a watch event");
+        let _ = event; // exact WatchResponse shape already covered by broadcast_watch_events_tests
+    }
+}
+
+/// #436 (StateMachineWriter split) baseline: pins down that `wait_applied()` is
+/// actually woken by the *real* `apply_chunk()` path — every existing test in
+/// `wait_applied_test.rs` only exercises `wait_applied()`'s own logic via the test-only
+/// `test_simulate_apply()` bypass, never via a real apply. This must keep passing once
+/// `last_applied`/the notify channel move into a shared `AppliedState` held by both
+/// `DefaultStateMachineHandler` (reader) and `DefaultStateMachineWriter`.
+#[cfg(test)]
+mod apply_chunk_wakes_wait_applied_test {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use d_engine_proto::common::{Entry, EntryPayload};
+
+    use super::StateMachineHandler;
+    use super::StateMachineWriterOps;
+    use crate::MockSnapshotPolicy;
+    use crate::MockStateMachine;
+    use crate::MockTypeConfig;
+    use crate::test_utils::snapshot_config;
+
+    fn noop_entry(index: u64) -> Entry {
+        Entry {
+            index,
+            term: 1,
+            payload: Some(EntryPayload::noop()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_apply_chunk_wakes_real_wait_applied_waiter() {
+        let mut sm = MockStateMachine::new();
+        sm.expect_apply_chunk().returning(|_| Ok(vec![]));
+
+        let (handler, writer) = super::new_reader_writer_pair::<MockTypeConfig>(
+            1,
+            0,
+            Arc::new(sm),
+            std::path::PathBuf::from("/tmp/test_apply_chunk_wakes_real_wait_applied_waiter"),
+            snapshot_config(std::path::PathBuf::from(
+                "/tmp/test_apply_chunk_wakes_real_wait_applied_waiter",
+            )),
+            MockSnapshotPolicy::new(),
+            None,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        );
+        let handler = Arc::new(handler);
+        let applier = Arc::new(writer);
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            applier.apply_chunk(vec![noop_entry(10)]).await.unwrap();
+        });
+
+        // Waiter is registered BEFORE the real apply_chunk runs — must be woken by the
+        // real notify_tx.send() inside apply_chunk, not a test-only bypass.
+        let result = handler.wait_applied(10, Duration::from_millis(200)).await;
+        assert!(
+            result.is_ok(),
+            "real apply_chunk must wake a concurrent wait_applied waiter"
+        );
+        assert_eq!(handler.last_applied(), 10);
     }
 }
 
@@ -438,16 +563,18 @@ mod decode_boundary_tests {
             })
             .returning(|chunk| Ok(vec![ApplyResult::success(chunk[0].index)]));
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
             std::path::PathBuf::from("/tmp/test_decode_insert_boundary"),
             snapshot_config(std::path::PathBuf::from("/tmp/test_decode_insert_boundary")),
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         );
 
-        let result = handler.apply_chunk(vec![insert_entry(5, b"mykey", b"myval")]).await;
+        let result = writer.apply_chunk(vec![insert_entry(5, b"mykey", b"myval")]).await;
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 5);
     }
@@ -460,16 +587,18 @@ mod decode_boundary_tests {
             .withf(|entries| entries.len() == 1 && matches!(entries[0].command, Command::Noop))
             .returning(|chunk| Ok(vec![ApplyResult::success(chunk[0].index)]));
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
             std::path::PathBuf::from("/tmp/test_decode_noop_boundary"),
             snapshot_config(std::path::PathBuf::from("/tmp/test_decode_noop_boundary")),
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         );
 
-        let result = handler.apply_chunk(vec![noop_entry(3)]).await;
+        let result = writer.apply_chunk(vec![noop_entry(3)]).await;
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 3);
     }
@@ -483,16 +612,18 @@ mod decode_boundary_tests {
             .withf(|entries| entries.len() == 1 && matches!(entries[0].command, Command::Noop))
             .returning(|chunk| Ok(chunk.iter().map(|e| ApplyResult::success(e.index)).collect()));
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
             std::path::PathBuf::from("/tmp/test_decode_config_boundary"),
             snapshot_config(std::path::PathBuf::from("/tmp/test_decode_config_boundary")),
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         );
 
-        let result = handler.apply_chunk(vec![config_entry(7)]).await;
+        let result = writer.apply_chunk(vec![config_entry(7)]).await;
         assert!(result.is_ok());
         // last_applied must reach 7 — Config was at commit index 7.
         assert_eq!(handler.last_applied(), 7);
@@ -511,13 +642,15 @@ mod decode_boundary_tests {
             })
             .returning(|chunk| Ok(chunk.iter().map(|e| ApplyResult::success(e.index)).collect()));
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
             std::path::PathBuf::from("/tmp/test_decode_mixed_boundary"),
             snapshot_config(std::path::PathBuf::from("/tmp/test_decode_mixed_boundary")),
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         );
 
         // indices: 10=noop, 11=config(→noop), 12=insert — all 3 forwarded to SM
@@ -526,7 +659,7 @@ mod decode_boundary_tests {
             config_entry(11),
             insert_entry(12, b"k", b"v"),
         ];
-        let result = handler.apply_chunk(chunk).await;
+        let result = writer.apply_chunk(chunk).await;
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 12);
     }
@@ -550,7 +683,7 @@ mod decode_boundary_tests {
             })
             .returning(|chunk| Ok(vec![ApplyResult::success(chunk[0].index)]));
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
@@ -559,9 +692,11 @@ mod decode_boundary_tests {
                 "/tmp/test_handler_decodes_batch_before_sm_receives_it",
             )),
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         );
 
-        let result = handler.apply_chunk(vec![batch_entry(5, b"mykey", b"myval")]).await;
+        let result = writer.apply_chunk(vec![batch_entry(5, b"mykey", b"myval")]).await;
         assert!(result.is_ok());
         assert_eq!(handler.last_applied(), 5);
     }
@@ -646,7 +781,7 @@ fn create_test_handler(
     let mut config = snapshot_config(temp_dir.to_path_buf());
     config.chunk_size = chunk_size.unwrap_or(1024); // Default chunk size
 
-    DefaultStateMachineHandler::new_without_watch(
+    DefaultStateMachineHandler::new(
         1,
         0,
         Arc::new(state_machine),
@@ -656,315 +791,94 @@ fn create_test_handler(
     )
 }
 
-/// # Case 2: Successfully applies valid chunks
+/// #436-adjacent: `prepare_snapshot_stream` is the path `follower_state.rs` uses
+/// when the leader pushes a snapshot to a follower that's fallen behind. This
+/// proves the received snapshot ends up as a real file in `snapshots_dir` at the
+/// path `SnapshotPathManager::final_snapshot_path` would compute for it — not just
+/// applied to the live state machine and forgotten.
+///
+/// Why this matters: if this node later needs to forward the same boundary to a
+/// third, further-behind node (`prepare_transfer_meta`), it looks up the file at
+/// exactly this path — nothing else in this flow would have put it there if
+/// `finalize()`'s rename here didn't happen or got the path wrong.
 #[tokio::test]
 #[traced_test]
-async fn test_apply_snapshot_stream_from_leader_case2() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case2");
-    let mut state_machine_mock = MockStateMachine::new();
-    state_machine_mock
-        .expect_apply_snapshot_from_file()
-        .times(1)
-        .returning(|_, _| Ok(()));
+async fn test_prepare_snapshot_stream_persists_file_in_snapshots_dir() {
+    let temp_dir = tempdir().unwrap();
+    let temp_path = temp_dir.path().join("test_prepare_snapshot_stream_persists_file");
+    create_dir_all(&temp_path).await.unwrap();
 
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-        1,
-        10,
-        Arc::new(state_machine_mock),
-        temp_path.to_path_buf(),
-        snapshot_config(temp_path.to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
-    // 3. Fake install snapshot request stream
-    let total_chunks = 1;
-    // Create compressed chunk data
-    let metadata = SnapshotMetadata {
-        last_included: Some(LogId { index: 2, term: 1 }),
-        checksum: Bytes::from(vec![2; 32]),
-    };
+    let handler = create_test_handler(&temp_path, None);
 
-    // Create test data
-    tokio::fs::create_dir_all(&temp_path).await.unwrap();
-    let data_file = temp_path.join("test.txt");
-    tokio::fs::write(&data_file, "test content").await.unwrap();
+    let (compressed_data, metadata) = create_test_compressed_snapshot().await;
+    let last_included = metadata.last_included.expect("test fixture always sets this");
 
-    // Compress to tar.gz
-    let compressed_path = temp_path.join("snapshot.tar.gz");
-    let file = File::create(&compressed_path).await.unwrap();
-    let gzip_encoder = async_compression::tokio::write::GzipEncoder::new(file);
-    let mut tar_builder = tokio_tar::Builder::new(gzip_encoder);
-    let file_name_in_tar = "test.txt";
-    tar_builder.append_path_with_name(&data_file, file_name_in_tar).await.unwrap();
-    tar_builder.finish().await.unwrap();
-    let mut gzip_encoder = tar_builder.into_inner().await.unwrap();
-    gzip_encoder.shutdown().await.unwrap();
-
-    // Read compressed data
-    let compressed_data = tokio::fs::read(&compressed_path).await.unwrap();
-    let chunk = SnapshotChunk {
-        leader_term: 1,
-        leader_id: 1,
+    // Single-chunk transfer: `first_chunk` is passed directly (below), so the
+    // channel of *remaining* chunks stays empty — just close it right away.
+    let first_chunk = SnapshotChunk {
+        leader_term: TEST_TERM,
+        leader_id: TEST_LEADER_ID,
         metadata: Some(metadata.clone()),
         seq: 0,
-        total_chunks,
+        total_chunks: 1,
         data: Bytes::from(compressed_data.clone()),
         chunk_checksum: Bytes::from(crc32fast::hash(&compressed_data).to_be_bytes().to_vec()),
     };
 
     let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
+    let (_tx, rx) = mpsc::channel(32);
+    drop(_tx);
 
-    let (tx, rx) = mpsc::channel(32);
-    tx.send(chunk).await.unwrap();
-    drop(tx);
+    let config = snapshot_config(temp_path.to_path_buf());
+    let prepared = handler
+        .prepare_snapshot_stream(first_chunk, rx, ack_tx, &config)
+        .await
+        .expect("prepare_snapshot_stream should succeed with a single valid chunk");
 
-    // Spawn the handler in a separate task to prevent deadlock
-    let handler_task = tokio::spawn({
-        let config = snapshot_config(temp_path.to_path_buf());
-        async move { handler.apply_snapshot_stream_from_leader(1, rx, ack_tx, &config).await }
-    });
-
-    // Verify intermediate response
     let ack = ack_rx.recv().await.unwrap();
     assert_eq!(ack.status, ChunkStatus::Accepted as i32);
+    assert_eq!(prepared.metadata.last_included, Some(last_included));
 
-    // Ensure handler completes successfully
-    assert!(handler_task.await.unwrap().is_ok());
+    let expected_final_path = temp_path.join(format!(
+        "snapshot-{}-{}.tar.gz",
+        last_included.index, last_included.term
+    ));
+    assert!(
+        expected_final_path.exists(),
+        "expected the received snapshot to be persisted at {:?} so a later \
+         prepare_transfer_meta() call (forwarding to a 3rd, further-behind node) \
+         can find it — it wasn't there",
+        expected_final_path
+    );
 }
+
 const TEST_TERM: u64 = 1;
 const TEST_LEADER_ID: u32 = 1;
 
-/// # Case 3: Rejects chunk with invalid checksum
-#[tokio::test]
-#[traced_test]
-async fn test_apply_snapshot_stream_from_leader_case3() {
-    let temp_dir = tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case3");
-    create_dir_all(&temp_path).await.unwrap();
-
-    let handler = create_test_handler(&temp_path, None);
-
-    // Create chunk with invalid checksum
-    let mut bad_chunk = create_test_chunk(0, b"bad data", TEST_TERM, TEST_LEADER_ID, 1);
-    bad_chunk.chunk_checksum = Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]); // Corrupt checksum
-
-    // Create ACK channel
-    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let (tx, rx) = mpsc::channel(32);
-    tx.send(bad_chunk).await.unwrap();
-    drop(tx);
-
-    let handler_task = tokio::spawn({
-        let config = snapshot_config(temp_path.to_path_buf());
-        async move { handler.apply_snapshot_stream_from_leader(TEST_TERM, rx, ack_tx, &config).await }
-    });
-
-    let ack = ack_rx.recv().await.unwrap();
-    assert_eq!(ack.status, ChunkStatus::ChecksumMismatch as i32);
-
-    assert!(matches!(
-        handler_task.await,
-        Ok(Err(Error::Consensus(ConsensusError::Snapshot(SnapshotError::OperationFailed(msg)))))
-            if msg == "Checksum validation failed"));
-}
-
-/// # Case 4: Aborts when leader changes during stream
-#[tokio::test]
-#[traced_test]
-async fn test_apply_snapshot_stream_from_leader_case4() {
-    let temp_dir = tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case4");
-    create_dir_all(&temp_path).await.unwrap();
-
-    let handler = create_test_handler(&temp_path, None);
-
-    // First chunk with term 1, second with term 2
-    let chunks = vec![
-        create_test_chunk(0, b"chunk0", TEST_TERM, TEST_LEADER_ID, 2),
-        create_test_chunk(1, b"chunk1", TEST_TERM + 1, TEST_LEADER_ID, 2),
-    ];
-
-    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let (tx, rx) = mpsc::channel(32);
-    for chunk in chunks {
-        tx.send(chunk).await.unwrap();
-    }
-    drop(tx);
-
-    let handler_task = tokio::spawn({
-        let config = snapshot_config(temp_path.to_path_buf());
-        async move { handler.apply_snapshot_stream_from_leader(TEST_TERM, rx, ack_tx, &config).await }
-    });
-
-    let ack = ack_rx.recv().await.unwrap();
-    assert_eq!(ack.status, ChunkStatus::Accepted as i32);
-    let ack = ack_rx.recv().await.unwrap();
-    assert_eq!(ack.status, ChunkStatus::OutOfOrder as i32);
-
-    // Verify handler completes successfully
-    assert!(matches!(
-        handler_task.await,
-        Ok(Err(Error::Consensus(ConsensusError::Snapshot(SnapshotError::OperationFailed(msg)))))
-            if msg == "Leader changed during transfer"));
-}
-
-/// # Case 5: Handles stream errors gracefully
-#[tokio::test]
-#[traced_test]
-async fn test_apply_snapshot_stream_from_leader_case5() {
-    let temp_dir = tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case5");
-    create_dir_all(&temp_path).await.unwrap();
-
-    let handler = create_test_handler(&temp_path, None);
-
-    // Create stream that returns error after first chunk
-    // But we specify the total chunks is 2
-    let chunks = vec![create_test_chunk(
-        0,
-        b"chunk0",
-        TEST_TERM,
-        TEST_LEADER_ID,
-        2,
-    )];
-
-    let (tx, rx) = mpsc::channel(32);
-    for chunk in chunks {
-        tx.send(chunk).await.unwrap();
-    }
-    drop(tx);
-    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-
-    let handler_task = tokio::spawn({
-        let config = snapshot_config(temp_path.to_path_buf());
-        async move { handler.apply_snapshot_stream_from_leader(TEST_TERM, rx, ack_tx, &config).await }
-    });
-
-    let ack = ack_rx.recv().await.unwrap();
-    assert_eq!(ack.status, ChunkStatus::Accepted as i32);
-    let ack = ack_rx.recv().await.unwrap();
-    assert_eq!(ack.status, ChunkStatus::Failed as i32);
-
-    // Verify handler completes successfully
-    assert!(handler_task.await.unwrap().is_err());
-}
-
-/// # Case 6: Rejects chunks with missing metadata
-#[tokio::test]
-#[traced_test]
-async fn test_apply_snapshot_stream_from_leader_case6() {
-    let temp_dir = tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case6");
-    create_dir_all(&temp_path).await.unwrap();
-
-    let handler = create_test_handler(&temp_path, None);
-
-    // First chunk missing metadata
-    let mut invalid_chunk = create_test_chunk(0, b"data", TEST_TERM, TEST_LEADER_ID, 1);
-    invalid_chunk.metadata = None;
-
-    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let (tx, rx) = mpsc::channel(32);
-    tx.send(invalid_chunk).await.unwrap();
-    drop(tx);
-
-    let handler_task = tokio::spawn({
-        let config = snapshot_config(temp_path.to_path_buf());
-        async move { handler.apply_snapshot_stream_from_leader(TEST_TERM, rx, ack_tx, &config).await }
-    });
-
-    let ack = ack_rx.recv().await.unwrap();
-    assert_eq!(ack.status, ChunkStatus::Failed as i32);
-
-    // Verify handler completes successfully
-    assert!(handler_task.await.unwrap().is_err());
-}
-
-/// # Case 7: Handles successful snapshot stream with multiple chunks
-#[tokio::test]
-#[traced_test]
-async fn test_apply_snapshot_stream_from_leader_case7() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_apply_snapshot_stream_from_leader_case7");
-    create_dir_all(&temp_path).await.unwrap();
-
-    let mut state_machine_mock = MockStateMachine::new();
-    state_machine_mock
-        .expect_apply_snapshot_from_file()
-        .times(1)
-        .returning(|_, _| Ok(()));
-
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-        1,
-        10,
-        Arc::new(state_machine_mock),
-        temp_path.to_path_buf(),
-        snapshot_config(temp_path.to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
-
-    // Create a proper compressed snapshot for testing
-    let (compressed_data, metadata) = create_test_compressed_snapshot().await;
-
-    // Create multiple chunks for the snapshot stream
-    // Split compressed data into chunks
-    let total_chunks = 3;
-    let chunk_size = compressed_data.len().div_ceil(total_chunks); // Ceiling division
-
-    let mut chunks: Vec<SnapshotChunk> = vec![];
-
-    for seq in 0..total_chunks {
-        let start = seq * chunk_size;
-        let end = std::cmp::min(compressed_data.len(), (seq + 1) * chunk_size);
-        let chunk_data = compressed_data[start..end].to_vec();
-
-        let chunk = SnapshotChunk {
-            leader_term: 1,
-            leader_id: 1,
-            metadata: if seq == 0 {
-                Some(metadata.clone())
-            } else {
-                None
-            },
-            seq: seq as u32,
-            total_chunks: total_chunks as u32,
-            data: Bytes::from(chunk_data.clone()),
-            chunk_checksum: Bytes::from(crc32fast::hash(&chunk_data).to_be_bytes().to_vec()),
-        };
-        chunks.push(chunk);
-    }
-
-    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let (tx, rx) = mpsc::channel(32);
-    for chunk in chunks {
-        tx.send(chunk).await.unwrap();
-    }
-    drop(tx);
-
-    // Spawn the handler in a separate task
-    let handler_task = tokio::spawn({
-        let config = snapshot_config(temp_path.to_path_buf());
-        async move { handler.apply_snapshot_stream_from_leader(1, rx, ack_tx, &config).await }
-    });
-
-    // Verify intermediate ACKs
-    for seq in 0..total_chunks {
-        let ack = ack_rx.recv().await.unwrap();
-        assert_eq!(ack.seq, seq as u32);
-        assert_eq!(ack.status, ChunkStatus::Accepted as i32);
-        assert_eq!(ack.next_requested, seq as u32 + 1);
-    }
-
-    // Ensure handler completes successfully
-    let handler_result = handler_task.await;
-    println!("handler_task.await: {handler_result:?}");
-    assert!(handler_result.unwrap().is_ok());
-}
 mod create_snapshot_tests {
     use d_engine_proto::common::NodeRole::Leader;
 
     use super::*;
     use crate::NewCommitData;
+
+    /// Mirrors the pre-#436 single-call `create_snapshot()`: capture (via the writer,
+    /// what `StateMachineWorker` does in production) then build (via the handler),
+    /// guarded by the same try_begin/end pair `handle_create_snapshot` uses in
+    /// `role_state.rs`. Kept as a test-only helper so the ~15 cases below don't each
+    /// have to spell out the two-step flow.
+    async fn create_snapshot(
+        handler: &DefaultStateMachineHandler<MockTypeConfig>,
+        writer: &DefaultStateMachineWriter<MockTypeConfig>,
+    ) -> crate::Result<(SnapshotMetadata, PathBuf)> {
+        handler.try_begin_local_snapshot_capture()?;
+        let result = match writer.capture_local_snapshot().await {
+            Ok(captured) => handler.build_local_snapshot(captured).await,
+            Err(e) => Err(e),
+        };
+        handler.end_local_snapshot_capture();
+        result
+    }
+
     /// # Case 1: Basic creation flow
     #[tokio::test]
     async fn test_create_snapshot_case1() {
@@ -995,17 +909,19 @@ mod create_snapshot_tests {
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
             temp_path.to_path_buf(),
             config.clone(),
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
 
         // Execute snapshot creation
-        let result = handler.create_snapshot().await;
+        let result = create_snapshot(&handler, &writer).await;
 
         debug!(?result);
 
@@ -1069,26 +985,28 @@ mod create_snapshot_tests {
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
 
-        let handler = Arc::new(
-            DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-                1,
-                0,
-                Arc::new(sm),
-                temp_path.to_path_buf(),
-                config.clone(),
-                snapshot_policy,
-            ),
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
+            1,
+            0,
+            Arc::new(sm),
+            temp_path.to_path_buf(),
+            config.clone(),
+            snapshot_policy,
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
+        let handler = Arc::new(handler);
+        let writer = Arc::new(writer);
         tx.send(()).unwrap(); // Unblock the first task
 
         // Spawn concurrent snapshot creations
-        let h1 = handler.clone();
-        let t1 = tokio::spawn(async move { h1.create_snapshot().await });
+        let (h1, w1) = (handler.clone(), writer.clone());
+        let t1 = tokio::spawn(async move { create_snapshot(&h1, &w1).await });
 
-        let h2 = handler.clone();
+        let (h2, w2) = (handler.clone(), writer.clone());
         let t2 = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            h2.create_snapshot().await
+            create_snapshot(&h2, &w2).await
         });
 
         // Wait for both tasks with timeout
@@ -1144,20 +1062,22 @@ mod create_snapshot_tests {
         let mut config = snapshot_config(snapshot_dir.clone());
         config.retained_log_entries = 0;
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             3, // Current version
             Arc::new(sm),
             snapshot_dir.clone(),
             config.clone(),
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
 
         // Create new snapshot (version 4)
-        handler.create_snapshot().await.unwrap();
-        handler.create_snapshot().await.unwrap();
-        handler.create_snapshot().await.unwrap();
-        handler.create_snapshot().await.unwrap();
+        create_snapshot(&handler, &writer).await.unwrap();
+        create_snapshot(&handler, &writer).await.unwrap();
+        create_snapshot(&handler, &writer).await.unwrap();
+        create_snapshot(&handler, &writer).await.unwrap();
 
         // Verify cleanup results
         let remaining: HashSet<u64> =
@@ -1187,17 +1107,19 @@ mod create_snapshot_tests {
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
             temp_path.to_path_buf(),
             config.clone(),
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
 
         // Attempt snapshot creation
-        let result = handler.create_snapshot().await;
+        let result = create_snapshot(&handler, &writer).await;
         assert!(result.is_err());
 
         // Verify no files created
@@ -1218,22 +1140,23 @@ mod create_snapshot_tests {
         });
 
         let config = snapshot_config(temp_path.clone());
-        let handler = Arc::new(
-            DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-                1,
-                0,
-                Arc::new(sm),
-                temp_path.clone(),
-                config,
-                MockSnapshotPolicy::new(),
-            ),
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
+            1,
+            0,
+            Arc::new(sm),
+            temp_path.clone(),
+            config,
+            MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
+        let handler = Arc::new(handler);
 
         // Verify initial state
         assert!(!handler.snapshot_in_progress());
 
         let handler_clone = handler.clone();
-        let result = handler_clone.create_snapshot().await;
+        let result = create_snapshot(&handler_clone, &writer).await;
         assert!(result.is_ok());
 
         // Critical assertion: Flag must be reset after success
@@ -1252,22 +1175,23 @@ mod create_snapshot_tests {
             .returning(|_, _| Err(SnapshotError::OperationFailed("test error".into()).into()));
 
         let config = snapshot_config(temp_path.clone());
-        let handler = Arc::new(
-            DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-                1,
-                0,
-                Arc::new(sm),
-                temp_path.clone(),
-                config,
-                MockSnapshotPolicy::new(),
-            ),
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
+            1,
+            0,
+            Arc::new(sm),
+            temp_path.clone(),
+            config,
+            MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
+        let handler = Arc::new(handler);
 
         // Verify initial state
         assert!(!handler.snapshot_in_progress());
 
         let handler_clone = handler.clone();
-        let result = handler_clone.create_snapshot().await;
+        let result = create_snapshot(&handler_clone, &writer).await;
         assert!(result.is_err());
 
         // Critical assertion: Flag must be reset even after failure
@@ -1318,22 +1242,23 @@ mod create_snapshot_tests {
         let mut config = snapshot_config(temp_path.clone());
         config.retained_log_entries = 10;
 
-        let handler = Arc::new(
-            DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-                1,
-                0,
-                Arc::new(sm),
-                temp_path.clone(),
-                config,
-                MockSnapshotPolicy::new(),
-            ),
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
+            1,
+            0,
+            Arc::new(sm),
+            temp_path.clone(),
+            config,
+            MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
+        let handler = Arc::new(handler);
 
         // Verify initial state
         assert!(!handler.snapshot_in_progress());
 
         let handler_clone = handler.clone();
-        let result = handler_clone.create_snapshot().await;
+        let result = create_snapshot(&handler_clone, &writer).await;
         assert!(result.is_ok());
         let (metadata, _) = result.unwrap();
         assert_eq!(
@@ -1394,16 +1319,18 @@ mod create_snapshot_tests {
         // while stamping term 2 — that LogId never existed
         config.retained_log_entries = 60;
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
             temp_path.to_path_buf(),
             config,
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
 
-        let result = handler.create_snapshot().await;
+        let result = create_snapshot(&handler, &writer).await;
         assert!(result.is_ok());
         let (metadata, _) = result.unwrap();
         assert_eq!(
@@ -1449,16 +1376,18 @@ mod create_snapshot_tests {
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 10;
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
             temp_path.to_path_buf(),
             config,
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
 
-        let result = handler.create_snapshot().await;
+        let result = create_snapshot(&handler, &writer).await;
         assert!(result.is_ok());
         let (metadata, _) = result.unwrap();
         assert_eq!(metadata.last_included, Some(LogId { term: 0, index: 0 }));
@@ -1479,16 +1408,18 @@ mod create_snapshot_tests {
         });
 
         let config = snapshot_config(snapshot_dir.clone());
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
             snapshot_dir.clone(),
             config,
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
 
-        assert!(handler.create_snapshot().await.is_err());
+        assert!(create_snapshot(&handler, &writer).await.is_err());
         assert!(
             !snapshot_dir.join("temp-5-1").exists(),
             "orphaned temp dir was not cleaned up"
@@ -1518,16 +1449,18 @@ mod create_snapshot_tests {
         });
 
         let config = snapshot_config(snapshot_dir.clone());
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
             snapshot_dir.clone(),
             config,
             MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
         );
 
-        assert!(handler.create_snapshot().await.is_ok());
+        assert!(create_snapshot(&handler, &writer).await.is_ok());
     }
 }
 
@@ -1590,7 +1523,7 @@ async fn test_cleanup_snapshot_case1() {
     let config = snapshot_config(temp_dir.path().to_path_buf());
     create_test_files(&temp_dir, &[1, 2, 3], &config.snapshots_dir_prefix).await;
 
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
         0,
         Arc::new(sm),
@@ -1630,7 +1563,7 @@ async fn test_cleanup_snapshot_case2() {
     let config = snapshot_config(temp_dir.path().to_path_buf());
     create_test_files(&temp_dir, &[3, 4], &config.snapshots_dir_prefix).await;
 
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
         0,
         Arc::new(sm),
@@ -1668,7 +1601,7 @@ async fn test_cleanup_snapshot_case3() {
     )
     .await;
 
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
         1,
         0,
         Arc::new(sm),
@@ -1726,83 +1659,6 @@ async fn get_dir_names(path: &Path) -> Vec<String> {
     names
 }
 
-// fn mock_node_with_rpc_service(
-//     db_path: &str,
-//     listen_address: SocketAddr,
-//     is_leader: bool,
-//     shutdown_signal: watch::Receiver<()>,
-//     peers_meta_option: Option<Vec<NodeMeta>>,
-// ) -> Arc<Node<MockTypeConfig>> {
-//     let mut node_config = node_config(db_path);
-//     if let Some(peers_meta) = peers_meta_option {
-//         node_config.cluster.initial_cluster = peers_meta;
-//     }
-
-//     // Update listen address with passed one
-//     node_config.cluster.listen_address = listen_address;
-//     if !is_leader {
-//         // Make sure no election happens
-//         node_config.raft.election.election_timeout_min = 500000;
-//         node_config.raft.election.election_timeout_max = 1000000
-//     }
-
-//     // Initializing Shutdown Signal
-//     let replication_handler = MockReplicationCore::new();
-//     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
-//     election_handler
-//         .expect_check_vote_request_is_legal()
-//         .returning(|_, _, _, _, _| true);
-//     if is_leader {
-//         election_handler
-//             .expect_broadcast_vote_requests()
-//             .returning(|_, _, _, _, _| Ok(()));
-//         election_handler
-//             .expect_handle_vote_request()
-//             .times(1)
-//             .returning(move |_, _, _, _| {
-//                 Ok(StateUpdate {
-//                     new_voted_for: Some(VotedFor {
-//                         voted_for_id: 1,
-//                         voted_for_term: 1,
-//                     }),
-//                     term_update: Some(2),
-//                 })
-//             });
-//     } else {
-//         // Make sure node is Follower
-//         election_handler.expect_broadcast_vote_requests().returning(|_, _, _, _, _| {
-//             Err(Error::Consensus(ConsensusError::Election(
-//                 ElectionError::HigherTerm(100),
-//             )))
-//         });
-//     }
-//     // let state_machine_handler = Arc::new(state_machine_handler);
-//     let mut mock_state_machine_handler = MockStateMachineHandler::new();
-//     mock_state_machine_handler.expect_apply_snapshot_stream_from_leader().returning(
-//         move |_current_term, _stream_request, ack_tx, _| {
-//             let ack_tx = ack_tx.clone();
-//             tokio::spawn(async move {
-//                 // Send final ack
-//                 let final_ack = SnapshotAck {
-//                     status: ChunkStatus::Accepted as i32,
-//                     seq: u32::MAX,
-//                     next_requested: 0,
-//                 };
-//                 ack_tx.send(final_ack).await.ok();
-//             });
-//             Ok(())
-//         },
-//     );
-
-//     MockBuilder::new(shutdown_signal)
-//         .with_node_config(node_config)
-//         .with_replication_handler(replication_handler)
-//         .with_election_handler(election_handler)
-//         .with_state_machine_handler(mock_state_machine_handler)
-//         .turn_on_election(is_leader)
-//         .build_node_with_rpc_server()
-// }
-
 // Update test_load_snapshot_data_case1_single_file_single_chunk
 #[tokio::test]
 #[traced_test]
@@ -1823,9 +1679,14 @@ async fn test_load_snapshot_data_case1_single_file_single_chunk() {
         checksum: Bytes::from(vec![1; 32]),
     };
 
+    // #436: leader_term is a separate parameter, distinct from metadata's own
+    // last_included.term (7) — proves the sender's current term is what ends up
+    // on the wire, not the snapshotted data's (possibly stale) boundary term.
+    let sender_current_term = 7;
+
     // Get snapshot stream
     let mut stream = handler
-        .load_snapshot_data(metadata.clone())
+        .load_snapshot_data(metadata.clone(), sender_current_term)
         .await
         .expect("Should create stream");
 
@@ -1838,7 +1699,10 @@ async fn test_load_snapshot_data_case1_single_file_single_chunk() {
     // Verify chunks
     assert_eq!(chunks.len(), 1, "Should have one chunk");
     let chunk = &chunks[0];
-    assert_eq!(chunk.leader_term, 1);
+    assert_eq!(
+        chunk.leader_term, sender_current_term,
+        "leader_term must come from the sender's current term, not metadata.last_included.term (1)"
+    );
     assert_eq!(chunk.leader_id, 1);
     assert_eq!(chunk.seq, 0);
     assert_eq!(chunk.total_chunks, 1);
@@ -1872,7 +1736,7 @@ async fn test_load_snapshot_data_case2_single_file_multi_chunk() {
     };
 
     // Get and collect chunks
-    let mut stream = handler.load_snapshot_data(metadata.clone()).await.unwrap();
+    let mut stream = handler.load_snapshot_data(metadata.clone(), 1).await.unwrap();
     let mut chunks = Vec::new();
     while let Some(chunk) = stream.next().await {
         chunks.push(chunk.unwrap());
@@ -1925,7 +1789,7 @@ async fn test_load_snapshot_data_case4_empty_snapshot() {
         checksum: Bytes::new(),
     };
 
-    assert!(handler.load_snapshot_data(metadata).await.is_err());
+    assert!(handler.load_snapshot_data(metadata, 1).await.is_err());
 }
 
 // Update test_load_snapshot_data_case5_checksum
@@ -1947,7 +1811,7 @@ async fn test_load_snapshot_data_case5_checksum() {
         checksum: Bytes::from(vec![5; 32]),
     };
 
-    let mut stream = handler.load_snapshot_data(metadata).await.unwrap();
+    let mut stream = handler.load_snapshot_data(metadata, 1).await.unwrap();
     let chunk = stream.next().await.unwrap().unwrap();
 
     let expected_checksum = crc32fast::hash(content).to_be_bytes().to_vec();
@@ -1972,7 +1836,7 @@ async fn test_load_snapshot_data_case6_read_error() {
         checksum: Bytes::from(vec![6; 32]),
     };
 
-    let result = handler.load_snapshot_data(metadata).await;
+    let result = handler.load_snapshot_data(metadata, 1).await;
     assert!(result.is_err());
 }
 
@@ -1998,7 +1862,7 @@ async fn test_load_snapshot_data_case7_metadata_in_first_chunk_only() {
     };
 
     // Get and collect chunks
-    let mut stream = handler.load_snapshot_data(metadata.clone()).await.unwrap();
+    let mut stream = handler.load_snapshot_data(metadata.clone(), 1).await.unwrap();
     let mut chunks = Vec::new();
     while let Some(chunk) = stream.next().await {
         chunks.push(chunk.unwrap());
@@ -2038,17 +1902,22 @@ async fn test_snapshot_compression() {
     let mut config = snapshot_config(temp_path.to_path_buf());
     config.retained_log_entries = 0;
 
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+    let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
         1,
         0,
         Arc::new(sm),
         temp_path.to_path_buf(),
         config,
         MockSnapshotPolicy::new(),
+        None,
+        Arc::new(AtomicUsize::new(0)),
     );
 
     // Create snapshot
-    let (_, snapshot_path) = handler.create_snapshot().await.unwrap();
+    handler.try_begin_local_snapshot_capture().unwrap();
+    let captured = writer.capture_local_snapshot().await.unwrap();
+    let (_, snapshot_path) = handler.build_local_snapshot(captured).await.unwrap();
+    handler.end_local_snapshot_capture();
 
     // Verify compressed file exists
     assert!(snapshot_path.is_file());
@@ -2063,148 +1932,6 @@ async fn test_snapshot_compression() {
         compressed_size,
         uncompressed_size / 2
     );
-}
-
-/// Test that the state machine receives the decompressed directory, not the compressed file.
-#[tokio::test]
-#[traced_test]
-async fn test_apply_snapshot_stream_from_leader_decompresses_before_apply() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let temp_path = temp_dir.path().join("test_decompress_before_apply");
-    let mut state_machine_mock = MockStateMachine::new();
-
-    // Expect apply_snapshot_from_file to be called with a directory path (decompressed)
-    state_machine_mock
-        .expect_apply_snapshot_from_file()
-        .times(1)
-        .withf(|metadata, path| {
-            // Check that the path is a directory (decompressed) and not a file
-            path.is_dir() && metadata.last_included == Some(LogId { index: 5, term: 1 })
-        })
-        .returning(|_, _| Ok(()));
-
-    let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-        1,
-        10,
-        Arc::new(state_machine_mock),
-        temp_path.to_path_buf(),
-        snapshot_config(temp_path.to_path_buf()),
-        MockSnapshotPolicy::new(),
-    );
-
-    // Create a compressed snapshot for testing
-    let (compressed_data, metadata) = create_test_compressed_snapshot().await;
-    let chunk_checksum = crc32fast::hash(&compressed_data).to_be_bytes().to_vec();
-    // Create a single chunk for the snapshot stream
-    let chunk = SnapshotChunk {
-        leader_term: 1,
-        leader_id: 1,
-        metadata: Some(metadata),
-        seq: 0,
-        total_chunks: 1,
-        data: Bytes::from(compressed_data),
-        chunk_checksum: Bytes::from(chunk_checksum),
-    };
-
-    let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(1);
-    let (tx, rx) = mpsc::channel(32);
-    tx.send(chunk).await.unwrap();
-    drop(tx);
-    let handler_task = tokio::spawn({
-        let config = snapshot_config(temp_path.to_path_buf());
-        async move { handler.apply_snapshot_stream_from_leader(1, rx, ack_tx, &config).await }
-    });
-
-    // Verify ACK
-    let ack = ack_rx.recv().await.unwrap();
-    assert_eq!(ack.status, ChunkStatus::Accepted as i32);
-
-    // Ensure handler completes successfully
-    assert!(handler_task.await.unwrap().is_ok());
-}
-
-#[cfg(test)]
-mod mmap_tests {
-    use std::io::Write;
-
-    use tempfile::NamedTempFile;
-
-    use super::*;
-    use crate::SystemError;
-
-    /// Test that load_chunk_via_mmap works correctly with std::fs::File
-    /// after the migration from tokio::fs::File
-    #[test]
-    fn test_load_chunk_via_mmap_with_std_file() {
-        // Create a temporary file with test data
-        let mut temp_file = NamedTempFile::new().unwrap();
-        let test_data = b"Hello, this is test data for memory mapping!";
-        temp_file.write_all(test_data).unwrap();
-        temp_file.flush().unwrap();
-
-        let file_path = temp_file.path();
-        let handler = create_test_handler(Path::new("/tmp/test_mmap_std_file"), Some(0));
-
-        // Test loading a chunk via mmap
-        let result = handler.load_chunk_via_mmap(file_path, 0, test_data.len());
-
-        // Verify the operation succeeds and returns correct data
-        assert!(result.is_ok());
-        let chunk_data = result.unwrap();
-        assert_eq!(chunk_data.as_ref(), test_data);
-    }
-
-    /// Test error handling when file doesn't exist
-    #[test]
-    fn test_load_chunk_via_mmap_file_not_found() {
-        let handler = create_test_handler(Path::new("/tmp/test_mmap_file_not_found"), Some(0));
-        let non_existent_path = Path::new("/non/existent/file.bin");
-
-        let result = handler.load_chunk_via_mmap(non_existent_path, 0, 100);
-
-        assert!(result.is_err());
-        // Verify it's an IO error as expected
-        match result.unwrap_err() {
-            Error::System(SystemError::Storage(StorageError::IoError(_))) => {} // Expected
-            other => panic!("Expected IoError, got {other:?}"),
-        }
-    }
-
-    /// Test bounds validation with file that's too small
-    #[test]
-    fn test_load_chunk_via_mmap_bounds_validation() {
-        // Create a small file
-        let mut temp_file = NamedTempFile::new().unwrap();
-        let small_data = b"small";
-        temp_file.write_all(small_data).unwrap();
-        temp_file.flush().unwrap();
-
-        let file_path = temp_file.path();
-        let handler = create_test_handler(Path::new("/tmp/test_mmap_bounds"), Some(0));
-
-        // Try to access beyond file bounds
-        let result = handler.load_chunk_via_mmap(file_path, 0, 1000); // File is only 5 bytes
-
-        assert!(result.is_err());
-        // Should fail with bounds validation error
-    }
-
-    /// Test that the function is truly synchronous (no async needed)
-    #[test]
-    fn test_load_chunk_via_mmap_is_synchronous() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        let test_data = b"Sync test data";
-        temp_file.write_all(test_data).unwrap();
-        temp_file.flush().unwrap();
-
-        let handler = create_test_handler(Path::new("/tmp/test_mmap_sync"), Some(0));
-
-        // This should complete immediately without any async/await
-        // If it were still async, this wouldn't compile in a sync test
-        let result = handler.load_chunk_via_mmap(temp_file.path(), 0, test_data.len());
-
-        assert!(result.is_ok());
-    }
 }
 
 #[cfg(feature = "watch")]
@@ -2245,7 +1972,6 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_insert_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
         let entry = apply_entry(
             1,
@@ -2256,7 +1982,7 @@ mod broadcast_watch_events_tests {
             },
         );
 
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
+        broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from_static(b"key1"));
@@ -2267,7 +1993,6 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_delete_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
         let entry = apply_entry(
             1,
@@ -2276,7 +2001,7 @@ mod broadcast_watch_events_tests {
             },
         );
 
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
+        broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from_static(b"key1"));
@@ -2288,7 +2013,6 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_cas_success() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
         let entry = apply_entry(
             1,
@@ -2299,7 +2023,7 @@ mod broadcast_watch_events_tests {
             },
         );
 
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
+        broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from_static(b"lock"));
@@ -2311,7 +2035,6 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_cas_failure_no_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
         let entry = apply_entry(
             1,
@@ -2322,7 +2045,7 @@ mod broadcast_watch_events_tests {
             },
         );
 
-        handler.broadcast_watch_events(&[entry], &[failed(1)], &tx, None);
+        broadcast_watch_events(&[entry], &[failed(1)], &tx, None);
 
         assert!(
             rx.try_recv().is_err(),
@@ -2334,7 +2057,6 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_mixed_cas_success_and_failure() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
         let entries = vec![
             apply_entry(
@@ -2364,7 +2086,7 @@ mod broadcast_watch_events_tests {
         ];
         let results = vec![succeeded(1), failed(2), succeeded(3)];
 
-        handler.broadcast_watch_events(&entries, &results, &tx, None);
+        broadcast_watch_events(&entries, &results, &tx, None);
 
         // k1 succeeded → Put event
         let event1 = rx.recv().await.unwrap();
@@ -2385,7 +2107,6 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_mixed_ops_with_failed_cas() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
         let entries = vec![
             apply_entry(
@@ -2413,7 +2134,7 @@ mod broadcast_watch_events_tests {
         ];
         let results = vec![succeeded(1), failed(2), succeeded(3)];
 
-        handler.broadcast_watch_events(&entries, &results, &tx, None);
+        broadcast_watch_events(&entries, &results, &tx, None);
 
         let event1 = rx.recv().await.unwrap();
         assert_eq!(event1.key, Bytes::from_static(b"k1"));
@@ -2430,7 +2151,6 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_cas_results_index_alignment() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch"), Some(0));
 
         let entries = vec![
             apply_entry(
@@ -2452,7 +2172,7 @@ mod broadcast_watch_events_tests {
         ];
         let results = vec![failed(10), succeeded(11)];
 
-        handler.broadcast_watch_events(&entries, &results, &tx, None);
+        broadcast_watch_events(&entries, &results, &tx, None);
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.key, Bytes::from_static(b"key-b"));
@@ -2466,10 +2186,9 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_noop_produces_no_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch_noop"), Some(0));
 
         let entry = apply_entry(1, Command::Noop);
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
+        broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         assert!(rx.try_recv().is_err(), "Noop must not emit a watch event");
     }
@@ -2493,7 +2212,6 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_batch_insert_ops_each_produce_put_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch_batch_insert"), Some(0));
 
         let entry = apply_entry(
             1,
@@ -2511,7 +2229,7 @@ mod broadcast_watch_events_tests {
             },
         );
 
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
+        broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event1 = rx.recv().await.unwrap();
         assert_eq!(event1.key, Bytes::from_static(b"k1"));
@@ -2544,7 +2262,6 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_batch_delete_ops_each_produce_delete_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch_batch_delete"), Some(0));
 
         let entry = apply_entry(
             1,
@@ -2560,7 +2277,7 @@ mod broadcast_watch_events_tests {
             },
         );
 
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
+        broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event1 = rx.recv().await.unwrap();
         assert_eq!(event1.key, Bytes::from_static(b"k1"));
@@ -2593,7 +2310,6 @@ mod broadcast_watch_events_tests {
     #[tokio::test]
     async fn test_broadcast_batch_mixed_ops_events_preserve_order() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
-        let handler = create_test_handler(Path::new("/tmp/test_watch_batch_mixed"), Some(0));
 
         let entry = apply_entry(
             1,
@@ -2614,7 +2330,7 @@ mod broadcast_watch_events_tests {
             },
         );
 
-        handler.broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
+        broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
         let event1 = rx.recv().await.unwrap();
         assert_eq!(event1.key, Bytes::from_static(b"k1"));
@@ -2698,7 +2414,7 @@ mod prev_kv_apply_tests {
         let (tx, _rx) = tokio::sync::broadcast::channel(10);
         let prev_kv_count = Arc::new(AtomicUsize::new(0)); // no prev_kv watchers
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        let (_handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
@@ -2712,7 +2428,7 @@ mod prev_kv_apply_tests {
         );
 
         let entry = insert_entry(1, b"k", b"v");
-        handler.apply_chunk(vec![entry]).await.unwrap();
+        writer.apply_chunk(vec![entry]).await.unwrap();
         // If get() were called, mockall would have panicked above.
     }
 
@@ -2735,7 +2451,7 @@ mod prev_kv_apply_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
         let prev_kv_count = Arc::new(AtomicUsize::new(1)); // one prev_kv watcher active
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        let (_handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
@@ -2749,7 +2465,7 @@ mod prev_kv_apply_tests {
         );
 
         let entry = insert_entry(1, b"k", b"new_val");
-        handler.apply_chunk(vec![entry]).await.unwrap();
+        writer.apply_chunk(vec![entry]).await.unwrap();
 
         let event = rx.recv().await.expect("expected broadcast event");
         assert_eq!(
@@ -2782,7 +2498,7 @@ mod prev_kv_apply_tests {
         let (tx, _rx) = tokio::sync::broadcast::channel(10);
         let prev_kv_count = Arc::new(AtomicUsize::new(1)); // one prev_kv watcher active
 
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
+        let (_handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
             1,
             0,
             Arc::new(sm),
@@ -2797,14 +2513,14 @@ mod prev_kv_apply_tests {
 
         // First apply: count=1 → get() is called
         let entry1 = insert_entry(1, b"k", b"v1");
-        handler.apply_chunk(vec![entry1]).await.unwrap();
+        writer.apply_chunk(vec![entry1]).await.unwrap();
 
         // Simulate last prev_kv watcher unregistering
         prev_kv_count.store(0, Ordering::SeqCst);
 
         // Second apply: count=0 → get() must NOT be called
         let entry2 = insert_entry(2, b"k", b"v2");
-        handler.apply_chunk(vec![entry2]).await.unwrap();
+        writer.apply_chunk(vec![entry2]).await.unwrap();
         // mockall verifies on drop: exactly 1 get() call was made
     }
 }
@@ -2829,7 +2545,7 @@ mod wait_applied_tests {
     /// - returns Ok(()) immediately (< 10ms, no suspension)
     #[tokio::test]
     async fn test_wait_applied_returns_immediately_when_already_applied() {
-        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
+        let handler = DefaultStateMachineHandler::<MockTypeConfig>::new(
             1,
             10, // last_applied = 10
             Arc::new(MockStateMachine::new()),
@@ -2872,16 +2588,14 @@ mod wait_applied_tests {
     async fn test_wait_applied_blocks_until_target_index_reached() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let handler = Arc::new(
-            DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-                1,
-                0,
-                Arc::new(MockStateMachine::new()),
-                PathBuf::from("/tmp/test_wait_applied_blocking"),
-                snapshot_config(PathBuf::from("/tmp/test_wait_applied_blocking")),
-                MockSnapshotPolicy::new(),
-            ),
-        );
+        let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            Arc::new(MockStateMachine::new()),
+            PathBuf::from("/tmp/test_wait_applied_blocking"),
+            snapshot_config(PathBuf::from("/tmp/test_wait_applied_blocking")),
+            MockSnapshotPolicy::new(),
+        ));
 
         let completed = Arc::new(AtomicBool::new(false));
         let completed_clone = completed.clone();
@@ -2928,16 +2642,14 @@ mod wait_applied_tests {
     async fn test_wait_applied_multiple_waiters_all_wake_correctly() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let handler = Arc::new(
-            DefaultStateMachineHandler::<MockTypeConfig>::new_without_watch(
-                1,
-                0,
-                Arc::new(MockStateMachine::new()),
-                PathBuf::from("/tmp/test_wait_applied_multiple_waiters"),
-                snapshot_config(PathBuf::from("/tmp/test_wait_applied_multiple_waiters")),
-                MockSnapshotPolicy::new(),
-            ),
-        );
+        let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
+            1,
+            0,
+            Arc::new(MockStateMachine::new()),
+            PathBuf::from("/tmp/test_wait_applied_multiple_waiters"),
+            snapshot_config(PathBuf::from("/tmp/test_wait_applied_multiple_waiters")),
+            MockSnapshotPolicy::new(),
+        ));
 
         let (c3, c5, c7) = (
             Arc::new(AtomicBool::new(false)),

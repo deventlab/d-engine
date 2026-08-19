@@ -63,12 +63,32 @@ If this timeout fires, the receiver aborts the current transfer and the leader r
 `cleanup_retain_count` (default: 2) controls how many past snapshot files are kept on
 disk after a new one is created. Keep at least 2 for rollback and debugging headroom.
 
+### New node catch-up time
+
+A new node (learner) catches up by installing a full snapshot from the leader, then
+replicating the entries appended since that snapshot. Catch-up time is bounded by:
+
+```text
+snapshot transfer time + (entries since last snapshot) × per-entry cost
+```
+
+`max_log_entries_before_snapshot` bounds the second term (how many entries a new node
+must replicate after the snapshot). `retained_log_entries` bounds how far behind a
+follower can fall and still catch up via AppendEntries instead of a full snapshot.
+
+A new node must replicate at least as fast as the cluster's write rate. Snapshotting
+bounds the backlog, not the rate: if the node's network/disk cannot sustain the write
+throughput, it will never catch up. Provision adequate resources, or add the node
+during a low-write window. Do not disable snapshotting (`raft.snapshot.enable = false`)
+or set `max_log_entries_before_snapshot` unreasonably large, or the backlog grows
+without bound.
+
 ## Configuration Reference
 
 | Field                             | Default     | Description                           |
 | --------------------------------- | ----------- | ------------------------------------- |
-| `max_log_entries_before_snapshot` | 1000        | Log entries before snapshot triggers  |
-| `retained_log_entries`            | 1           | Log entries to retain after snapshot  |
+| `max_log_entries_before_snapshot` | 10000       | Log entries before snapshot triggers  |
+| `retained_log_entries`            | 100         | Log entries to retain after snapshot  |
 | `chunk_size`                      | 1024 (1 KB) | Size of each transfer chunk in bytes  |
 | `receive_chunk_timeout_in_sec`    | 30          | Per-chunk receive timeout on follower |
 | `transfer_timeout_in_sec`         | 600         | Overall transfer timeout              |

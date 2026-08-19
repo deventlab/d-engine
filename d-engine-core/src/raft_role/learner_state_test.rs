@@ -5,9 +5,13 @@ use crate::InternalEvent;
 use crate::MaybeCloneOneshot;
 use crate::MockBuilder;
 use crate::MockMembership;
+use crate::MockPurgeExecutor;
 use crate::MockStateMachineHandler;
 use crate::NewCommitData;
 use crate::RaftOneshot;
+use crate::SnapshotApplyResult;
+use crate::StateMachineCommand;
+use crate::StateMachineCommandSender;
 use crate::client::ClientReadRequest;
 use crate::client::ClientResponse;
 use crate::client::ClientResponsePayload;
@@ -1247,13 +1251,13 @@ mod snapshot_tests {
         let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
         let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
-        state.scheduled_purge_upto = Some(LogId { term: 1, index: 1 });
+        state.pending_purge_upto = Some(LogId { term: 1, index: 1 });
         assert!(
             state.handle_log_purge_completed(LogId { term: 1, index: 1 }).is_ok(),
             "Stale LogPurgeCompleted should be silently ignored"
         );
         assert!(
-            state.scheduled_purge_upto.is_none(),
+            state.pending_purge_upto.is_none(),
             "handle_log_purge_completed must clear scheduled_purge_upto"
         );
         assert!(
@@ -1316,7 +1320,7 @@ mod snapshot_tests {
     async fn test_learner_resets_snapshot_flag_on_success() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
 
-        // Default retained_log_entries = 1, last_included.index = 50 → purge_upto_index = 49
+        // retained_log_entries = 1, last_included.index = 50 → purge_upto_index = 49
         let mut raft_log = mock_raft_log();
         raft_log
             .expect_entry_term()
@@ -1324,7 +1328,8 @@ mod snapshot_tests {
             .times(1)
             .returning(|_| Some(1));
         let _temp_dir = tempfile::tempdir().unwrap();
-        let nc = node_config(_temp_dir.path().to_str().unwrap());
+        let mut nc = node_config(_temp_dir.path().to_str().unwrap());
+        nc.raft.snapshot.retained_log_entries = 1;
         let context = MockBuilder::new(graceful_rx)
             .with_raft_log(raft_log)
             .with_node_config(nc)
@@ -1778,26 +1783,99 @@ async fn test_learner_acks_immediately_after_memory_write() {
     assert!(response.unwrap().is_success());
 }
 
+/// Spawns a fake Worker that answers exactly one `InstallSnapshot` command with `result`,
+/// then exits. Returns a `StateMachineCommandSender` wired to it — stands in for the real
+/// `StateMachineWorker`, which isn't running in these role-layer unit tests.
+fn fake_command_sink_install_snapshot(
+    result: crate::Result<SnapshotApplyResult>
+) -> StateMachineCommandSender {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        if let Some(StateMachineCommand::InstallSnapshot { response, .. }) = rx.recv().await {
+            let _ = response.send(result);
+        }
+    });
+    StateMachineCommandSender::new(tx)
+}
+
 // ============================================================================
 // InstallSnapshotChunk Tests
 // ============================================================================
 
+/// #436-adjacent: same protection as `FollowerState` (see
+/// `test_follower_rejects_install_snapshot_from_stale_leader_term`) — a learner
+/// must also reject InstallSnapshotChunk from a stale-term leader before it ever
+/// reaches `prepare_snapshot_stream`.
+#[tokio::test]
+async fn test_learner_rejects_install_snapshot_from_stale_leader_term() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().never();
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let higher_term = 5;
+    state.update_current_term(higher_term);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: higher_term - 1, // stale
+        leader_id: 2,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s")
+        .expect("recv must not fail")
+        .expect("response must be Ok");
+
+    assert!(
+        !response.success,
+        "must reject a snapshot pushed by a stale-term leader"
+    );
+    assert_eq!(
+        response.term, higher_term,
+        "rejection response must carry the learner's own (higher) term"
+    );
+    assert_eq!(
+        state.current_term(),
+        higher_term,
+        "rejecting a stale leader must not change the learner's own term"
+    );
+}
+
 /// Learner reports success only after all chunks are applied.
 ///
 /// The ACK handler must drain the full ACK channel (not stop at the first ACK)
-/// and wait for `apply_snapshot_stream_from_leader` to complete before replying.
+/// and wait for `prepare_snapshot_stream` to complete before replying.
 /// This test uses 3 ACKs to confirm the last one is used for the final response.
 #[tokio::test]
 async fn test_learner_install_snapshot_reports_success_after_all_chunks_applied() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
-    // Mock: apply_snapshot_stream_from_leader sends 3 ACKs (simulating 3 chunks),
-    // all Accepted, then returns Ok(()).
+    // Mock: prepare_snapshot_stream sends 3 ACKs (simulating 3 chunks), all Accepted,
+    // then returns a prepared snapshot ready for the Worker.
     let mut sm_handler = MockStateMachineHandler::new();
-    sm_handler.expect_apply_snapshot_stream_from_leader().once().returning(
-        |_term, _stream, ack_tx, _config| {
-            // Send 3 ACKs simulating 3 chunks, all accepted, then return Ok.
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
             drop(tokio::spawn(async move {
                 for i in 0u32..3 {
                     let _ = ack_tx
@@ -1809,11 +1887,17 @@ async fn test_learner_install_snapshot_reports_success_after_all_chunks_applied(
                         .await;
                 }
             }));
-            Ok(())
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
         },
     );
-    sm_handler.expect_get_latest_snapshot_metadata().returning(|| None);
     context.handlers.state_machine_handler = Arc::new(sm_handler);
+    context.handlers.state_machine_commands =
+        fake_command_sink_install_snapshot(Ok(SnapshotApplyResult::Applied {
+            last_included: LogId { index: 1, term: 2 },
+        }));
 
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     state.update_current_term(2);
@@ -1822,7 +1906,13 @@ async fn test_learner_install_snapshot_reports_success_after_all_chunks_applied(
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let (tx, rx) = mpsc::channel(32);
-    tx.send(SnapshotChunk::default()).await.unwrap();
+    tx.send(SnapshotChunk {
+        leader_term: 2,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
     drop(tx);
     state
         .handle_inbound_event(
@@ -1846,32 +1936,96 @@ async fn test_learner_install_snapshot_reports_success_after_all_chunks_applied(
     );
 }
 
+/// C0 baseline (#436): same purge coverage gap as the follower side —
+/// none of the existing learner install-snapshot tests exercise the purge branch,
+/// since they all mock get_latest_snapshot_metadata() to return None.
+#[tokio::test]
+async fn test_learner_install_snapshot_purges_to_snapshot_boundary_on_success() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    let expected_boundary = LogId { index: 42, term: 3 };
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+    context.handlers.state_machine_commands =
+        fake_command_sink_install_snapshot(Ok(SnapshotApplyResult::Applied {
+            last_included: expected_boundary,
+        }));
+
+    // Boundary must come from the Worker's own Applied result, not from re-querying
+    // get_latest_snapshot_metadata() after the fact (the race #436 fixes).
+    let mut purge_executor = MockPurgeExecutor::new();
+    purge_executor
+        .expect_execute_purge()
+        .withf(move |boundary| *boundary == expected_boundary)
+        .times(1)
+        .returning(|_| Ok(()));
+    context.handlers.purge_executor = Arc::new(purge_executor);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(2);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 2,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s");
+    // mock drop verifies execute_purge was called exactly once with expected_boundary
+}
+
 /// Learner must NOT report success when a mid-stream chunk fails.
 ///
-/// ## Bug (pre-fix)
-/// The ACK handler only waits for the **first** ACK via `ack_rx.recv()`.
-/// When chunk 1 is accepted, the handler immediately sends `success: true` —
-/// even though chunk 2 (and the overall apply) will fail.
+/// # Note on this rewrite
+/// Pre-#436, `apply_snapshot_stream_from_leader` combined receiving the stream (per-chunk
+/// ACKs) and applying it into a single method, and the bug this pinned down was about
+/// draining *all* ACKs rather than replying on the first one. That draining is now entirely
+/// internal to `prepare_snapshot_stream` (the receive/decompress phase) — the role layer
+/// only sees its final `Result`, not individual chunk ACKs. A mid-stream chunk failure now
+/// surfaces as `prepare_snapshot_stream` returning `Err`, before the Worker is ever involved.
 ///
-/// ## Fix
-/// Drain **all** ACKs with `while let Some(ack) = ack_rx.recv().await` and use
-/// the last one, mirroring FollowerState. The channel only closes after
-/// `apply_snapshot_stream_from_leader` returns (success or error), ensuring
-/// the final ACK reflects the true outcome.
+/// # Then
+/// - Response MUST be success: false
+/// - The Worker (`state_machine_commands`) must NOT be invoked — no fake sink is wired up,
+///   so a call there would panic on the closed channel / never resolve.
 #[tokio::test]
 async fn test_learner_install_snapshot_does_not_report_success_on_mid_chunk_failure() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
-    // Mock: chunk 1 sends an Accepted ACK, then apply fails mid-stream.
-    // Pre-fix: ACK handler sees the first Accepted ACK and replies success:true before apply ends.
-    // Post-fix: ACK handler drains until channel closes (after apply returns Err), uses last ACK.
     let mut sm_handler = MockStateMachineHandler::new();
-    sm_handler.expect_apply_snapshot_stream_from_leader().once().returning(
-        |_term, _stream, ack_tx, _config| {
-            // Mirrors real apply_snapshot_stream_from_leader contract:
-            // chunk 1 accepted, chunk 2 fails → send Failed ACK before returning Err.
-            // The ACK handler must use the LAST ACK (Failed), not the first (Accepted).
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
             let _ = ack_tx.try_send(SnapshotAck {
                 seq: 0,
                 status: ChunkStatus::Accepted as i32,
@@ -1882,11 +2036,9 @@ async fn test_learner_install_snapshot_does_not_report_success_on_mid_chunk_fail
                 status: ChunkStatus::Failed as i32,
                 next_requested: 1,
             });
-            // ack_tx dropped here → channel closes → ACK handler while loop exits
             Err(crate::Error::Fatal("simulated mid-chunk failure".into()))
         },
     );
-    sm_handler.expect_get_latest_snapshot_metadata().returning(|| None);
     context.handlers.state_machine_handler = Arc::new(sm_handler);
 
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -1896,9 +2048,15 @@ async fn test_learner_install_snapshot_does_not_report_success_on_mid_chunk_fail
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let (tx, rx) = mpsc::channel(32);
-    tx.send(SnapshotChunk::default()).await.unwrap();
+    tx.send(SnapshotChunk {
+        leader_term: 2,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
     drop(tx);
-    // handle_inbound_event returns Err (apply failed) — that is expected
+    // handle_inbound_event returns Err (prepare failed) — that is expected
     let _ = state
         .handle_inbound_event(
             InboundEvent::InstallSnapshotChunk(rx, resp_tx),
@@ -1930,7 +2088,7 @@ async fn test_learner_install_snapshot_does_not_report_success_on_mid_chunk_fail
 /// match_index and stop retrying, leaving the learner permanently behind.
 ///
 /// # Given
-/// - apply_snapshot_stream_from_leader: sends Accepted ACKs (transfer succeeded),
+/// - prepare_snapshot_stream: sends Accepted ACKs (transfer succeeded),
 ///   then returns Err (apply_snapshot_from_file failed)
 ///
 /// # When
@@ -1944,21 +2102,25 @@ async fn test_learner_install_snapshot_reports_failure_when_apply_fails_after_tr
     let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
     let mut sm_handler = MockStateMachineHandler::new();
-    sm_handler.expect_apply_snapshot_stream_from_leader().once().returning(
-        |_term, _stream, ack_tx, _config| {
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
             // Transfer phase succeeds: all chunks accepted
             let _ = ack_tx.try_send(SnapshotAck {
                 seq: 0,
                 status: ChunkStatus::Accepted as i32,
                 next_requested: 1,
             });
-            // Apply phase fails (apply_snapshot_from_file returned Err)
-            Err(crate::Error::Fatal(
-                "apply_snapshot_from_file failed".into(),
-            ))
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
         },
     );
     context.handlers.state_machine_handler = Arc::new(sm_handler);
+    // Apply phase fails inside the Worker (apply_snapshot_from_file returned Err)
+    context.handlers.state_machine_commands = fake_command_sink_install_snapshot(Err(
+        crate::Error::Fatal("apply_snapshot_from_file failed".into()),
+    ));
 
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
     state.update_current_term(2);
@@ -1967,7 +2129,13 @@ async fn test_learner_install_snapshot_reports_failure_when_apply_fails_after_tr
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let (tx, rx) = mpsc::channel(32);
-    tx.send(SnapshotChunk::default()).await.unwrap();
+    tx.send(SnapshotChunk {
+        leader_term: 2,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
     drop(tx);
     // Learner propagates apply errors — ignore the return value here
     let _ = state
@@ -1991,54 +2159,6 @@ async fn test_learner_install_snapshot_reports_failure_when_apply_fails_after_tr
 }
 
 // ============================================================================
-// StreamSnapshot Rejection Tests
-// ============================================================================
-
-/// Test: Learner rejects StreamSnapshot — Learner is the requester, not the server.
-///
-/// Scenario:
-/// - Learner receives StreamSnapshot (invalid: Learner pulls from Leader, not the reverse)
-///
-/// Expected:
-/// - startup_tx receives Err(FailedPrecondition)
-/// - handle_inbound_event returns Ok() (not a fatal error)
-#[tokio::test]
-async fn test_learner_rejects_stream_snapshot() {
-    let (_graceful_tx, graceful_rx) = tokio::sync::watch::channel(());
-    let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
-
-    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
-
-    let (_ack_tx, ack_rx) =
-        tokio::sync::mpsc::channel::<d_engine_proto::server::storage::SnapshotAck>(4);
-    let (chunk_tx, _chunk_rx) = tokio::sync::mpsc::channel::<
-        std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>,
-    >(4);
-    let (startup_tx, startup_rx) =
-        tokio::sync::oneshot::channel::<std::result::Result<(), tonic::Status>>();
-
-    let (internal_event_tx, _) = tokio::sync::mpsc::unbounded_channel();
-
-    let result = state
-        .handle_inbound_event(
-            InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
-            &context,
-            internal_event_tx,
-        )
-        .await;
-
-    assert!(result.is_ok(), "StreamSnapshot rejection must not be fatal");
-
-    let startup_result = startup_rx.await.expect("startup_tx must be sent");
-    assert!(startup_result.is_err());
-    assert_eq!(
-        startup_result.unwrap_err().code(),
-        tonic::Code::FailedPrecondition,
-        "Learner must reply FailedPrecondition for StreamSnapshot"
-    );
-}
-
-// ============================================================================
 // Role Transition Tests — scheduled_purge_upto / last_purged_index
 // ============================================================================
 
@@ -2051,7 +2171,7 @@ fn test_learner_from_follower_preserves_both_purge_fields() {
     let cfg = Arc::new(node_config("/tmp/test_learner_from_follower_purge"));
     let mut follower = FollowerState::<MockTypeConfig>::new(1, cfg, None, None);
     follower.last_purged_index = Some(LogId { term: 1, index: 12 });
-    follower.scheduled_purge_upto = Some(LogId { term: 1, index: 10 });
+    follower.pending_purge_upto = Some(LogId { term: 1, index: 10 });
 
     let learner = LearnerState::from(&follower);
 
@@ -2060,7 +2180,7 @@ fn test_learner_from_follower_preserves_both_purge_fields() {
         Some(LogId { term: 1, index: 12 })
     );
     assert_eq!(
-        learner.scheduled_purge_upto,
+        learner.pending_purge_upto,
         Some(LogId { term: 1, index: 10 })
     );
 }
@@ -2081,5 +2201,5 @@ fn test_learner_from_candidate_preserves_last_purged_index_resets_scheduled() {
         learner.last_purged_index,
         Some(LogId { term: 3, index: 15 })
     );
-    assert_eq!(learner.scheduled_purge_upto, None);
+    assert_eq!(learner.pending_purge_upto, None);
 }

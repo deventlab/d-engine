@@ -4,10 +4,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_core::capture_logs_globally_filtered;
+use d_engine_core::logs_contain_globally;
 use d_engine_server::DefaultEmbeddedEngine;
 use d_engine_server::RocksDBUnifiedEngine;
 use tracing::info;
-use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
 
@@ -23,9 +24,11 @@ use crate::common::get_available_ports;
 /// Poll window is generous (a few seconds) purely as a CI/OS-jitter tolerance — a
 /// correct fix should make this near-instant, not "eventually within the window."
 #[tokio::test]
-#[traced_test]
 async fn test_leader_detects_follower_stop_within_bounded_window()
 -> Result<(), Box<dyn std::error::Error>> {
+    let logs = capture_logs_globally_filtered(
+        "info,d_engine_core=debug,d_engine_server=debug,h2=off,tonic=warn,hyper=warn",
+    );
     let temp_dir = tempfile::tempdir()?;
     let data_dir = temp_dir.path().join("db");
 
@@ -88,7 +91,7 @@ general_raft_timeout_duration_in_ms = 5000
     info!("Stopping follower node {follower_node_id}");
 
     // Force definite replication activity (not just relying on heartbeats) so we
-    // can conclusively tell whether logs_contain sees worker-task logs at all.
+    // can conclusively tell whether logs_contain_globally sees worker-task logs at all.
     leader_client.put(b"diag_key".to_vec(), b"diag_value".to_vec()).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -103,10 +106,10 @@ general_raft_timeout_duration_in_ms = 5000
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     let mut detected = false;
     while tokio::time::Instant::now() < deadline {
-        if logs_contain("Bidi stream recv error")
-            || logs_contain("Bidi stream sender closed")
-            || logs_contain("Bidi stream ended (EOF)")
-            || logs_contain("Replication stream receiver exited")
+        if logs_contain_globally(&logs, "Bidi stream recv error")
+            || logs_contain_globally(&logs, "Bidi stream sender closed")
+            || logs_contain_globally(&logs, "Bidi stream ended (EOF)")
+            || logs_contain_globally(&logs, "Replication stream receiver exited")
         {
             detected = true;
             break;

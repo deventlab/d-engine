@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -55,6 +56,8 @@ impl StateMachineTestSuite {
         Self::test_get_multi_service_registry_coherence(builder.build().await?).await?;
         Self::test_get_multi_election_state_coherence(builder.build().await?).await?;
         Self::test_get_multi_quota_management_coherence(builder.build().await?).await?;
+
+        Self::test_generate_snapshot_data_is_atomic_under_concurrent_apply(&builder).await?;
 
         builder.cleanup().await?;
         Ok(())
@@ -320,6 +323,17 @@ impl StateMachineTestSuite {
 
         // Assume there were some entries. After applying snapshot, all the old ones should be
         // cleared.
+        //
+        // Deliberately stop this replay BEFORE last_included.index (3): the snapshot's
+        // authoritative stale/duplicate check (#436) compares only the single
+        // (index, term) boundary, not per-entry content, so as long as
+        // current.index < incoming.index the install proceeds and does a full replace
+        // regardless of what garbage sat below the boundary. Replaying all the way to
+        // index 3 would make current == incoming's boundary, which the classification
+        // (correctly) treats as an idempotent duplicate and skips — reaching that state
+        // with *different* content at the same (index, term) can't happen in a real Raft
+        // cluster (Log Matching Property), so doing it here would only be testing an
+        // impossible scenario, not a real one.
         let entries = vec![
             create_insert_entry(
                 1,
@@ -330,11 +344,6 @@ impl StateMachineTestSuite {
                 2,
                 Bytes::from(b"old_key2".to_vec()),
                 Bytes::from(b"vold_alue2".to_vec()),
-            ),
-            create_insert_entry(
-                3,
-                Bytes::from(b"old_key3".to_vec()),
-                Bytes::from(b"old_value3".to_vec()),
             ),
         ];
         state_machine.apply_chunk(&entries).await?;
@@ -1263,6 +1272,128 @@ impl StateMachineTestSuite {
         );
         Ok(())
     }
+
+    /// `generate_snapshot_data` must present a single, atomically-pinned view of the state
+    /// machine (#436): if `apply_chunk` runs concurrently with an in-flight
+    /// `generate_snapshot_data` call, the exported snapshot must reflect either the state
+    /// strictly before or strictly after that `apply_chunk` — never a mix of both. See the
+    /// `generate_snapshot_data` doc comment on the `StateMachine` trait for the contract
+    /// this enforces on implementors.
+    ///
+    /// Races `generate_snapshot_data` against a two-key `apply_chunk` (mirroring the
+    /// service-registry addr/version coherence scenario used by `get_multi` above) many
+    /// times, since a single interleaving is timing-dependent and may not hit an unsafe
+    /// window even on a broken implementation.
+    pub async fn test_generate_snapshot_data_is_atomic_under_concurrent_apply<
+        B: StateMachineBuilder,
+    >(
+        builder: &B
+    ) -> Result<(), Error> {
+        struct Round {
+            _temp_dir: TempDir, // kept alive so snapshot_dir survives to the verification pass
+            snapshot_dir: PathBuf,
+            last_included: LogId,
+            checksum: Bytes,
+            before: (Bytes, Bytes),
+            after: (Bytes, Bytes),
+        }
+
+        let live = builder.build().await?;
+
+        let addr_key = Bytes::from_static(b"/service/payment/addr");
+        let version_key = Bytes::from_static(b"/service/payment/version");
+
+        let mut prev_addr = Bytes::from_static(b"10.0.0.1:8080");
+        let mut prev_version = Bytes::from_static(b"v1");
+        live.apply_chunk(&[
+            create_insert_entry(1, addr_key.clone(), prev_addr.clone()),
+            create_insert_entry(2, version_key.clone(), prev_version.clone()),
+        ])
+        .await?;
+
+        // Racing phase: keep every round's exported directory around (don't verify yet) —
+        // `StateMachineBuilder` implementations (e.g. RocksDB) only support one live handle
+        // per path, so verifying via reset+reload here would clobber `live` mid-race.
+        let mut rounds = Vec::with_capacity(200);
+        let mut next_index = 3u64;
+        for round_num in 0u32..200 {
+            let last_included = LogId {
+                index: next_index - 1,
+                term: 1,
+            };
+            let temp_dir = TempDir::new()?;
+            let snapshot_dir = temp_dir.path().join("snapshot");
+
+            let new_addr = Bytes::from(format!("10.0.0.{}:8080", round_num + 2));
+            let new_version = Bytes::from(format!("v{}", round_num + 2));
+
+            let export_fut = {
+                let live = live.clone();
+                let dir = snapshot_dir.clone();
+                async move { live.generate_snapshot_data(dir, last_included).await }
+            };
+            let apply_fut = {
+                let live = live.clone();
+                let (addr_key, version_key) = (addr_key.clone(), version_key.clone());
+                let (new_addr, new_version) = (new_addr.clone(), new_version.clone());
+                let idx = next_index;
+                async move {
+                    live.apply_chunk(&[
+                        create_insert_entry(idx, addr_key, new_addr),
+                        create_insert_entry(idx + 1, version_key, new_version),
+                    ])
+                    .await
+                }
+            };
+
+            let (export_result, apply_result) = tokio::join!(export_fut, apply_fut);
+            let checksum = export_result?;
+            apply_result?;
+            next_index += 2;
+
+            rounds.push(Round {
+                _temp_dir: temp_dir,
+                snapshot_dir,
+                last_included,
+                checksum: Bytes::from(checksum.to_vec()),
+                before: (prev_addr.clone(), prev_version.clone()),
+                after: (new_addr.clone(), new_version.clone()),
+            });
+
+            prev_addr = new_addr;
+            prev_version = new_version;
+        }
+
+        // Verification phase: now that racing is done, reuse `live` sequentially
+        // (reset + reload) to inspect what each round's export actually captured.
+        for r in &rounds {
+            live.reset().await?;
+            let metadata = SnapshotMetadata {
+                last_included: Some(r.last_included),
+                checksum: r.checksum.clone(),
+            };
+            live.apply_snapshot_from_file(&metadata, r.snapshot_dir.clone()).await?;
+
+            let got_addr = live.get(&addr_key)?;
+            let got_version = live.get(&version_key)?;
+
+            let matches_before =
+                got_addr.as_ref() == Some(&r.before.0) && got_version.as_ref() == Some(&r.before.1);
+            let matches_after =
+                got_addr.as_ref() == Some(&r.after.0) && got_version.as_ref() == Some(&r.after.1);
+
+            assert!(
+                matches_before || matches_after,
+                "torn snapshot at last_included={:?}: addr={got_addr:?} version={got_version:?}, \
+                 expected either before={:?} or after={:?}",
+                r.last_included,
+                r.before,
+                r.after
+            );
+        }
+
+        Ok(())
+    }
 }
 
 /// Helper function to create an Insert ApplyEntry
@@ -1342,7 +1473,7 @@ mod default_scan_prefix_tests {
     use d_engine_proto::server::storage::SnapshotMetadata;
 
     use crate::storage::state_machine::{ApplyResult, StateMachine};
-    use crate::{ApplyEntry, Error};
+    use crate::{ApplyEntry, Error, SnapshotApplyResult};
 
     struct MinimalSm {
         running: AtomicBool,
@@ -1419,10 +1550,12 @@ mod default_scan_prefix_tests {
 
         async fn apply_snapshot_from_file(
             &self,
-            _metadata: &SnapshotMetadata,
+            metadata: &SnapshotMetadata,
             _snapshot_path: std::path::PathBuf,
-        ) -> Result<(), Error> {
-            Ok(())
+        ) -> Result<SnapshotApplyResult, Error> {
+            Ok(SnapshotApplyResult::Applied {
+                last_included: metadata.last_included.unwrap_or_default(),
+            })
         }
 
         async fn generate_snapshot_data(

@@ -14,7 +14,6 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::SnapshotResponse;
@@ -176,13 +175,6 @@ pub enum InboundEvent {
         MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
     ),
 
-    // Request snapshot stream from Leader
-    StreamSnapshot(
-        tokio::sync::mpsc::Receiver<SnapshotAck>,
-        tokio::sync::mpsc::Sender<std::sync::Arc<SnapshotChunk>>,
-        tokio::sync::oneshot::Sender<std::result::Result<(), Status>>, // startup confirmation
-    ),
-
     JoinCluster(
         JoinRequest,
         MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
@@ -219,8 +211,6 @@ pub enum TestEvent {
 
     InstallSnapshotChunk,
 
-    StreamSnapshot,
-
     JoinCluster(JoinRequest),
 
     DiscoverLeader(LeaderDiscoveryRequest),
@@ -253,7 +243,6 @@ pub(crate) fn inbound_event_to_test_event(event: &InboundEvent) -> TestEvent {
         InboundEvent::ClusterConfUpdate(req, _) => TestEvent::ClusterConfUpdate(req.clone()),
         InboundEvent::AppendEntries(req, _) => TestEvent::AppendEntries(req.clone()),
         InboundEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
-        InboundEvent::StreamSnapshot(_, _, _) => TestEvent::StreamSnapshot,
         InboundEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
         InboundEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
         InboundEvent::FatalError { source, error } => TestEvent::FatalError {

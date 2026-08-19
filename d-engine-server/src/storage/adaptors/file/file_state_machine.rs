@@ -93,14 +93,14 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use d_engine_core::ApplyEntry;
-use d_engine_core::ApplyResult;
 use d_engine_core::Command;
 use d_engine_core::Error;
 use d_engine_core::Lease;
 use d_engine_core::ScanResult;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
+use d_engine_core::{ApplyEntry, SnapshotApplyResult};
+use d_engine_core::{ApplyResult, SnapshotError};
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
@@ -1348,7 +1348,35 @@ impl StateMachine for FileStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         snapshot_dir: std::path::PathBuf,
-    ) -> Result<(), Error> {
+    ) -> Result<SnapshotApplyResult, Error> {
+        // (#436) — every StateMachine backend must honor this contract, not just RocksDB.
+        // A missing boundary can't be classified — reject rather than fall through
+        // to an unconditional install.
+        let incoming = metadata.last_included.ok_or_else(|| {
+            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
+        })?;
+
+        let current = self.last_applied();
+        match incoming.index.cmp(&current.index) {
+            std::cmp::Ordering::Less => {
+                info!(?incoming, ?current, "Ignoring stale snapshot");
+                return Ok(SnapshotApplyResult::IgnoredStale { current });
+            }
+            std::cmp::Ordering::Equal if incoming.term == current.term => {
+                info!(?incoming, ?current, "Ignoring duplicate snapshot");
+                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
+            }
+            std::cmp::Ordering::Equal => {
+                return Err(SnapshotError::BoundaryConflict {
+                    index: current.index,
+                    local_term: current.term,
+                    incoming_term: incoming.term,
+                }
+                .into());
+            }
+            std::cmp::Ordering::Greater => {}
+        }
+
         info!("Applying snapshot from file: {:?}", snapshot_dir);
 
         // Read from the snapshot.bin file inside the directory
@@ -1471,9 +1499,7 @@ impl StateMachine for FileStateMachine {
         // Update metadata
         *self.last_snapshot_metadata.write() = Some(metadata.clone());
 
-        if let Some(last_included) = &metadata.last_included {
-            self.update_last_applied(*last_included);
-        }
+        self.update_last_applied(incoming);
 
         // Persist to disk
         self.persist_data_async().await?;
@@ -1481,7 +1507,10 @@ impl StateMachine for FileStateMachine {
         self.clear_wal_async().await?;
 
         info!("Snapshot applied successfully");
-        Ok(())
+
+        Ok(SnapshotApplyResult::Applied {
+            last_included: incoming,
+        })
     }
 
     async fn generate_snapshot_data(

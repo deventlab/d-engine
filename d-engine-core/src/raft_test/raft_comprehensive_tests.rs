@@ -2185,45 +2185,6 @@ async fn test_joining_node_flag() {
     assert!(is_follower(_raft.role.as_i32()));
 }
 
-/// Test: fetch_initial_snapshot() called before main loop
-///
-/// Verifies snapshot fetch happens in Raft::run() before event loop.
-/// See H1.2 in test scenarios.
-#[tokio::test]
-async fn test_snapshot_fetch_before_main_loop() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let _raft = MockBuilder::new(graceful_rx).build_raft();
-
-    // Snapshot fetch is called in initialization phase before main loop
-}
-
-/// Test: Snapshot fetch success - node ready for replication
-///
-/// Verifies successful snapshot initializes log state.
-/// See H1.3 in test scenarios.
-#[tokio::test]
-async fn test_snapshot_fetch_success() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let _raft = MockBuilder::new(graceful_rx).build_raft();
-
-    // Snapshot fetch success initializes node for replication
-    assert!(is_follower(_raft.role.as_i32()));
-}
-
-/// Test: Snapshot fetch failure - fallback to append_entries
-///
-/// Verifies graceful fallback when snapshot unavailable.
-/// Node syncs via incremental log entries.
-/// See H1.4 in test scenarios.
-#[tokio::test]
-async fn test_snapshot_fetch_failure_fallback() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let _raft = MockBuilder::new(graceful_rx).build_raft();
-
-    // On snapshot fetch failure, fallback to incremental append_entries
-    assert!(is_follower(_raft.role.as_i32()));
-}
-
 /// Test: New node starts as Follower
 ///
 /// Verifies joining node is non-voting initially.

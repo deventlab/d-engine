@@ -15,7 +15,7 @@ fn create_test_handler_with_applied(
     let state_machine = Arc::new(MockStateMachine::new());
     let snap_config = snapshot_config(std::path::PathBuf::from("/tmp/test_wait_applied"));
 
-    DefaultStateMachineHandler::new_without_watch(
+    DefaultStateMachineHandler::new(
         1,            // node_id
         last_applied, // last_applied
         state_machine,

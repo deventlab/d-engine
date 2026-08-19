@@ -15,6 +15,8 @@ use crate::RaftContext;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
+use crate::SnapshotApplyResult;
+use crate::SnapshotError;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::Transport;
@@ -23,7 +25,10 @@ use crate::alias::MOF;
 use crate::cluster_printer::print_learner_join_success;
 use crate::cluster_printer::print_learner_promoted_to_voter;
 use crate::cluster_printer::print_role_transition_line;
+use crate::role_state::TermDecision;
+use crate::role_state::check_incoming_term;
 use crate::role_state::schedule_and_execute_purge;
+use crate::role_state::schedule_installed_snapshot_purge;
 use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
@@ -77,7 +82,7 @@ pub struct LearnerState<T: TypeConfig> {
     ///
     /// The actual log purge is performed by a background task, which may be delayed
     /// due to resource constraints or retry mechanisms.
-    pub scheduled_purge_upto: Option<LogId>,
+    pub pending_purge_upto: Option<LogId>,
 
     /// === Persistent State (MUST be on disk) ===
     /// The last log position that has been **physically removed** from stable storage.
@@ -124,14 +129,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
 
     fn shared_state_mut(&mut self) -> &mut SharedState {
         &mut self.shared_state
-    }
-
-    // fn role(&self) -> i32 {
-    //     RaftRole::Learner(self.clone()).as_i32()
-    // }
-
-    fn is_learner(&self) -> bool {
-        true
     }
 
     fn become_leader(&self) -> Result<RaftRole<T>> {
@@ -292,58 +289,114 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                 .await?;
             }
 
-            InboundEvent::InstallSnapshotChunk(stream, sender) => {
-                // ack_tx is passed to process_snapshot_stream for per-chunk validation.
-                // In push mode the receiver is never read, so we drain it in a background
-                // task to prevent backpressure: process_snapshot_stream awaits each send,
-                // and a full bounded channel would block mid-transfer on chunk 33+ (#308).
+            InboundEvent::InstallSnapshotChunk(mut stream, sender) => {
+                // Task #15: validate leader identity/term on the first chunk, before reading the
+                // rest of the stream — don't burn bandwidth on a stale/illegitimate leader.
+                let first_chunk = match stream.recv().await {
+                    Some(chunk) => chunk,
+                    None => {
+                        error!("InstallSnapshotChunk stream closed before any chunk arrived");
+                        return Err(SnapshotError::TransferFailed.into());
+                    }
+                };
+
+                let term_update = match check_incoming_term(my_term, first_chunk.leader_term) {
+                    TermDecision::RejectStale => {
+                        warn!(
+                            my_term,
+                            leader_term = first_chunk.leader_term,
+                            leader_id = first_chunk.leader_id,
+                            "Rejecting InstallSnapshotChunk from stale leader"
+                        );
+                        let _ = sender.send(Ok(SnapshotResponse {
+                            term: my_term,
+                            success: false,
+                            next_chunk: 0,
+                        }));
+                        return Ok(());
+                    }
+                    TermDecision::Accept => None,
+                    TermDecision::AcceptAndUpdateTerm(new_term) => Some(new_term),
+                };
+
+                // Legitimate leader (term >= ours) confirmed — reset now, matching AppendEntries.
+                self.reset_timer();
+
+                self.commit_hard_state(
+                    ctx,
+                    term_update,
+                    Some(VotedFor {
+                        voted_for_id: first_chunk.leader_id,
+                        voted_for_term: first_chunk.leader_term,
+                        committed: true,
+                    }),
+                )?;
+                self.shared_state().set_current_leader(first_chunk.leader_id);
+                let my_term = first_chunk.leader_term.max(my_term);
+
+                // ack_tx drained in background — push mode never reads it, avoids backpressure (#308).
                 let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
                 tokio::spawn(async move { while ack_rx.recv().await.is_some() {} });
 
-                let snap_result = ctx
-                    .handlers
-                    .state_machine_handler
-                    .apply_snapshot_stream_from_leader(
-                        my_term,
+                let prepared = match ctx
+                    .state_machine_handler()
+                    .prepare_snapshot_stream(
+                        first_chunk,
                         stream,
                         ack_tx,
                         &ctx.node_config.raft.snapshot,
                     )
-                    .await;
+                    .await
+                {
+                    Ok(prepared) => prepared,
+                    Err(e) => {
+                        error!(
+                            ?e,
+                            "Learner failed to receive/prepare snapshot stream from leader"
+                        );
+                        let _ = sender.send(Ok(SnapshotResponse {
+                            term: my_term,
+                            success: false,
+                            next_chunk: 0,
+                        }));
+                        return Err(e);
+                    }
+                };
 
-                // Raft §7: respond success only after snapshot is fully applied.
-                // Using last-chunk ACK status (as before) would report success even when
-                // apply_snapshot_from_file fails, causing the leader to advance match_index
-                // prematurely and stop retrying — leaving the learner permanently behind (#308).
+                // Sole write path: hand the received snapshot to the Worker, await the result.
+                let install_result = ctx.state_machine_commands().install_snapshot(prepared).await;
+
+                // Raft §7: reply success only once the Worker has confirmed install (or a safe no-op).
                 let _ = sender.send(Ok(SnapshotResponse {
                     term: my_term,
-                    success: snap_result.is_ok(),
+                    success: install_result.is_ok(),
                     next_chunk: 0,
                 }));
 
-                match snap_result {
+                match install_result {
                     Err(e) => {
                         error!(?e, "Learner handle InboundEvent::InstallSnapshotChunk");
                         return Err(e);
                     }
-                    Ok(()) => {
-                        // Advance raft log purge boundary to snapshot's last_included so that
-                        // last_log_id() returns the correct position after snapshot install.
-                        if let Some(metadata) =
-                            ctx.state_machine_handler().get_latest_snapshot_metadata()
-                            && let Some(last_included) = metadata.last_included
+                    Ok(result) => {
+                        info!("Snapshot stream successfully received and applied");
+
+                        let boundary = match result {
+                            SnapshotApplyResult::Applied { last_included } => last_included,
+                            SnapshotApplyResult::IgnoredStale { current } => current,
+                            SnapshotApplyResult::IgnoredDuplicate { current } => current,
+                        };
+                        // Purge intent submitted after replying — must not delay or ride on the
+                        // leader response.
+                        if let Err(e) = schedule_installed_snapshot_purge(
+                            boundary,
+                            ctx,
+                            &mut self.pending_purge_upto,
+                            &internal_event_tx,
+                        )
+                        .await
                         {
-                            if let Err(e) = ctx.raft_log().purge_logs_up_to(last_included).await {
-                                error!(
-                                    ?e,
-                                    "Failed to set raft log boundary after snapshot install"
-                                );
-                            } else {
-                                info!(
-                                    ?last_included,
-                                    "Learner raft log boundary set after InstallSnapshotChunk"
-                                );
-                            }
+                            error!(?e, "Failed to schedule purge after installed snapshot");
                         }
                     }
                 }
@@ -381,19 +434,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         NetworkError::SingalSendFailed(format!("{:?}", e))
                     })?;
 
-                return Ok(());
-            }
-
-            InboundEvent::StreamSnapshot(_ack_rx, _chunk_tx, startup_tx) => {
-                debug!("Learner::InboundEvent::StreamSnapshot");
-                warn!("Learner should not receive StreamSnapshot event.");
-                if let Err(e) = startup_tx.send(Err(Status::failed_precondition("Not the leader")))
-                {
-                    error!(
-                        ?e,
-                        "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
-                    );
-                }
                 return Ok(());
             }
 
@@ -466,56 +506,6 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         Ok(())
     }
 
-    // Update the fetch_initial_snapshot method
-    async fn fetch_initial_snapshot(
-        &self,
-        ctx: &RaftContext<T>,
-    ) -> Result<()> {
-        let leader_id = self.shared_state().current_leader().ok_or(MembershipError::NoLeader)?;
-
-        // Create ACK channel (learner sends ACKs to leader)
-        let (ack_tx, ack_rx) = mpsc::channel(32);
-
-        // Get snapshot stream from leader (with ACK feedback)
-        let snapshot_chunk_receiver = ctx
-            .transport()
-            .request_snapshot_from_leader(
-                leader_id,
-                ack_rx,
-                &ctx.node_config.retry.install_snapshot,
-                ctx.membership().clone(),
-            )
-            .await?;
-
-        debug!("Install snapshot and handle ACK feedback");
-        // Install snapshot and handle ACK feedback
-        ctx.handlers
-            .state_machine_handler
-            .apply_snapshot_stream_from_leader(
-                self.current_term(),
-                snapshot_chunk_receiver,
-                ack_tx,
-                &ctx.node_config.raft.snapshot,
-            )
-            .await?;
-
-        // After snapshot install the raft log is empty. Advance the purge boundary
-        // to last_included so last_log_id() returns the correct position and the
-        // leader starts sending entries from last_included.index + 1 instead of 1.
-        if let Some(metadata) = ctx.state_machine_handler().get_latest_snapshot_metadata()
-            && let Some(last_included) = metadata.last_included
-        {
-            ctx.raft_log().purge_logs_up_to(last_included).await?;
-            info!(
-                ?last_included,
-                "Learner raft log boundary set after snapshot install"
-            );
-        }
-
-        info!("Successfully fetched and installed initial snapshot");
-        Ok(())
-    }
-
     async fn handle_apply_completed(
         &mut self,
         last_index: u64,
@@ -553,7 +543,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
                         ctx,
                         self.commit_index(),
                         self.last_purged_index,
-                        &mut self.scheduled_purge_upto,
+                        &mut self.pending_purge_upto,
                         internal_event_tx,
                     )
                     .await?;
@@ -618,7 +608,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             self.last_purged_index = Some(purged_id);
 
             // purge completed, clear to prevent re-execution
-            self.scheduled_purge_upto = None;
+            self.pending_purge_upto = None;
         }
         Ok(())
     }
@@ -655,7 +645,7 @@ impl<T: TypeConfig> LearnerState<T> {
             snapshot_in_progress: AtomicBool::new(false),
             node_config,
             _marker: PhantomData,
-            scheduled_purge_upto: None,
+            pending_purge_upto: None,
         }
     }
 
@@ -763,7 +753,7 @@ impl<T: TypeConfig> From<&FollowerState<T>> for LearnerState<T> {
             node_config: follower_state.node_config.clone(),
             snapshot_in_progress: AtomicBool::new(false),
             last_purged_index: follower_state.last_purged_index,
-            scheduled_purge_upto: follower_state.scheduled_purge_upto,
+            pending_purge_upto: follower_state.pending_purge_upto,
             _marker: PhantomData,
         }
     }
@@ -775,7 +765,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LearnerState<T> {
             node_config: candidate_state.node_config.clone(),
             snapshot_in_progress: AtomicBool::new(false),
             last_purged_index: candidate_state.last_purged_index,
-            scheduled_purge_upto: None,
+            pending_purge_upto: None,
             _marker: PhantomData,
         }
     }

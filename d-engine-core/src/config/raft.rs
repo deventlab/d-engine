@@ -546,7 +546,17 @@ pub struct SnapshotConfig {
     #[serde(default = "default_chunk_size")]
     pub chunk_size: usize,
 
-    /// Number of log entries to retain (0 = disable retention)
+    /// Number of log entries kept *behind* the snapshot boundary after compaction.
+    ///
+    /// This is the AppendEntries catch-up window: a follower whose `match_index`
+    /// is within `retained_log_entries` of `last_included` can be caught up via
+    /// cheap AppendEntries; any further behind requires a full InstallSnapshot
+    /// (expensive, transfers the entire state). Larger values trade log disk space
+    /// for fewer snapshot transfers to lagging peers.
+    ///
+    /// Must be >= 1 (0 is rejected by `validate`). Should be kept smaller than
+    /// `max_log_entries_before_snapshot`, otherwise compaction never actually
+    /// purges anything on the first snapshot.
     #[serde(default = "default_retained_log_entries")]
     pub retained_log_entries: u64,
 
@@ -689,15 +699,14 @@ fn default_snapshot_enabled() -> bool {
 
 /// Default threshold for triggering snapshot creation
 fn default_max_log_entries_before_snapshot() -> u64 {
-    1000
+    10000
 }
 
 /// Default cooldown duration between snapshot checks.
 ///
 /// Prevents constant evaluation of snapshot conditions in tight loops.
-/// Reduced from 3600s to 60s to allow timely log compaction under typical workloads.
 fn default_snapshot_cool_down_since_last_check() -> Duration {
-    Duration::from_secs(60)
+    Duration::from_secs(3)
 }
 
 /// Default number of historical snapshots to retain
@@ -731,7 +740,7 @@ fn default_rpc_enable_compression() -> bool {
 }
 
 fn default_retained_log_entries() -> u64 {
-    1
+    100
 }
 
 fn default_sender_yield_every_n_chunks() -> usize {

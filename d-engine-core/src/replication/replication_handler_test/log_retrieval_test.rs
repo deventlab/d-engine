@@ -52,9 +52,11 @@ async fn test_retrieve_only_new_entries_when_peer_caught_up() {
     let leader_last_index_before_inserting_new_entries = 10;
     let max_entries = 100;
 
-    // Arrange: Peer is caught up (next_index = end of old logs)
+    // Arrange: Peer is caught up (next_index strictly past the leader's last old
+    // entry, so the legacy-fetch branch is skipped entirely — not just equal to
+    // it, which would still mean "I need index 10 itself").
     let peer_next_indices =
-        HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries)]);
+        HashMap::from([(peer3_id, leader_last_index_before_inserting_new_entries + 1)]);
 
     // Arrange: Create handler
     let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
@@ -66,11 +68,13 @@ async fn test_retrieve_only_new_entries_when_peer_caught_up() {
         max_entries,
         &peer_next_indices,
         &context.raft_log,
+        1,
     );
 
     // Assert: Only new entries returned (peer already has old logs)
-    assert!(
-        result.get(&peer3_id).is_some_and(|entries| *entries == new_entries),
+    assert_eq!(
+        result.get(&peer3_id),
+        Some(&crate::PeerEntriesResult::Ready(new_entries.clone())),
         "peer at end of old log should receive only new entries"
     );
 }
@@ -120,13 +124,15 @@ async fn test_retrieve_old_and_new_entries_when_peer_behind() {
         max_entries,
         &peer_next_indices,
         &context.raft_log,
+        1,
     );
 
     // Assert: Both old and new entries returned
     let mut expected_entries = old_entries.clone();
     expected_entries.extend(new_entries.clone());
-    assert!(
-        result.get(&peer3_id).is_some_and(|entries| *entries == expected_entries),
+    assert_eq!(
+        result.get(&peer3_id),
+        Some(&crate::PeerEntriesResult::Ready(expected_entries)),
         "peer behind should receive both old logs and new entries"
     );
 }
@@ -170,11 +176,13 @@ async fn test_retrieve_only_old_entries_when_no_new_entries() {
         max_entries,
         &peer_next_indices,
         &context.raft_log,
+        1,
     );
 
     // Assert: Only old entry returned (no new entries)
-    assert!(
-        result.get(&peer3_id).is_some_and(|entries| *entries == old_entries),
+    assert_eq!(
+        result.get(&peer3_id),
+        Some(&crate::PeerEntriesResult::Ready(old_entries.clone())),
         "peer should receive only old logs when no new entries exist"
     );
 }
@@ -221,13 +229,15 @@ async fn test_retrieve_limited_old_entries_with_max_limit() {
         max_legacy_entries_per_peer,
         &peer_next_indices,
         &context.raft_log,
+        1,
     );
 
     // Assert: Only first 2 old entries + new entry (limited by max)
     let mut expected = vec![old_entries[0].clone(), old_entries[1].clone()];
     expected.extend(new_entries.clone());
-    assert!(
-        result.get(&peer3_id).is_some_and(|entries| *entries == expected),
+    assert_eq!(
+        result.get(&peer3_id),
+        Some(&crate::PeerEntriesResult::Ready(expected)),
         "peer should receive limited old logs (max=2) plus new entries"
     );
 }
@@ -274,11 +284,13 @@ async fn test_retrieve_only_new_entries_when_max_limit_zero() {
         max_legacy_entries_per_peer,
         &peer_next_indices,
         &context.raft_log,
+        1,
     );
 
     // Assert: Only new entry (no old logs due to max=0)
-    assert!(
-        result.get(&peer3_id).is_some_and(|entries| *entries == new_entries),
+    assert_eq!(
+        result.get(&peer3_id),
+        Some(&crate::PeerEntriesResult::Ready(new_entries.clone())),
         "peer should receive only new entries when max_legacy=0"
     );
 }
@@ -310,9 +322,11 @@ async fn test_leader_id_excluded_from_replication_targets() {
     let max_entries = 100;
 
     // Arrange: Peer map includes BOTH leader and peer3
+    // peer3's next_index is strictly past the leader's last old entry, so the
+    // legacy-fetch branch is skipped entirely (see test_retrieve_only_new_entries_when_peer_caught_up).
     let peer_next_indices = HashMap::from([
-        (my_id, 1_u64),                                             // Leader itself
-        (peer3_id, leader_last_index_before_inserting_new_entries), // Peer3
+        (my_id, 1_u64),                                                 // Leader itself
+        (peer3_id, leader_last_index_before_inserting_new_entries + 1), // Peer3
     ]);
 
     // Arrange: Create handler
@@ -325,11 +339,13 @@ async fn test_leader_id_excluded_from_replication_targets() {
         max_entries,
         &peer_next_indices,
         &context.raft_log,
+        1,
     );
 
     // Assert: Peer3 receives entries
-    assert!(
-        result.get(&peer3_id).is_some_and(|entries| *entries == new_entries),
+    assert_eq!(
+        result.get(&peer3_id),
+        Some(&crate::PeerEntriesResult::Ready(new_entries.clone())),
         "peer3 should receive new entries"
     );
 
@@ -337,5 +353,123 @@ async fn test_leader_id_excluded_from_replication_targets() {
     assert!(
         !result.contains_key(&my_id),
         "leader should not replicate to itself"
+    );
+}
+
+/// A legacy range read that returns fewer entries than requested must be
+/// classified as `CorruptGap` — never silently treated as "nothing to send".
+///
+/// # Scenario
+/// - Leader retained window: first_index = 11, last = 15
+/// - Peer 2 next_index = 11 (at the purge boundary, so not `NeedSnapshot`)
+/// - `get_entries_range(11..=15)` returns only indices 11, 12
+/// - Expected: `PeerEntriesResult::CorruptGap` (start=11, end=15, count=2)
+#[tokio::test]
+async fn test_retrieve_corrupt_gap_when_range_read_short() {
+    let mut context = setup_mock_replication_test_context(1);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let peer_id = 2;
+
+    let raft_log_mut = Arc::get_mut(&mut context.raft_log).unwrap();
+    raft_log_mut.expect_get_entries_range().returning(|_| {
+        Ok(vec![
+            Entry {
+                index: 11,
+                term: 1,
+                payload: Some(EntryPayload::noop()),
+            },
+            Entry {
+                index: 12,
+                term: 1,
+                payload: Some(EntryPayload::noop()),
+            },
+        ])
+    });
+
+    let peer_next_indices = HashMap::from([(peer_id, 11_u64)]);
+
+    let result = handler.retrieve_to_be_synced_logs_for_peers(
+        &[],
+        15,  // leader_last_index_before_inserting_new_entries
+        100, // max_legacy_entries_per_peer
+        &peer_next_indices,
+        &context.raft_log,
+        11, // first_index
+    );
+
+    assert_eq!(
+        result.get(&peer_id),
+        Some(&crate::PeerEntriesResult::CorruptGap {
+            start: 11,
+            end: 15,
+            first_seen: Some(11),
+            last_seen: Some(12),
+            count: 2,
+        }),
+        "short range read must be classified as CorruptGap"
+    );
+}
+
+/// A legacy range read with a hole in the middle must also be classified as
+/// `CorruptGap` — a gap is a storage inconsistency, not a clean purge.
+///
+/// # Scenario
+/// - Leader retained window: first_index = 11, last = 15
+/// - Peer 2 next_index = 11
+/// - `get_entries_range(11..=15)` returns 11, 12, 14, 15 (index 13 missing)
+/// - Expected: `PeerEntriesResult::CorruptGap` (count=4, hole at 13)
+#[tokio::test]
+async fn test_retrieve_corrupt_gap_when_range_read_gapped() {
+    let mut context = setup_mock_replication_test_context(1);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let peer_id = 2;
+
+    let raft_log_mut = Arc::get_mut(&mut context.raft_log).unwrap();
+    raft_log_mut.expect_get_entries_range().returning(|_| {
+        Ok(vec![
+            Entry {
+                index: 11,
+                term: 1,
+                payload: Some(EntryPayload::noop()),
+            },
+            Entry {
+                index: 12,
+                term: 1,
+                payload: Some(EntryPayload::noop()),
+            },
+            Entry {
+                index: 14,
+                term: 1,
+                payload: Some(EntryPayload::noop()),
+            },
+            Entry {
+                index: 15,
+                term: 1,
+                payload: Some(EntryPayload::noop()),
+            },
+        ])
+    });
+
+    let peer_next_indices = HashMap::from([(peer_id, 11_u64)]);
+
+    let result = handler.retrieve_to_be_synced_logs_for_peers(
+        &[],
+        15,
+        100,
+        &peer_next_indices,
+        &context.raft_log,
+        11,
+    );
+
+    assert_eq!(
+        result.get(&peer_id),
+        Some(&crate::PeerEntriesResult::CorruptGap {
+            start: 11,
+            end: 15,
+            first_seen: Some(11),
+            last_seen: Some(15),
+            count: 4,
+        }),
+        "gapped range read must be classified as CorruptGap"
     );
 }

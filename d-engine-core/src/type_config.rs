@@ -9,6 +9,7 @@ use crate::ReplicationCore;
 use crate::SnapshotPolicy;
 use crate::StateMachine;
 use crate::StateMachineHandler;
+use crate::StateMachineWriterOps;
 use crate::StorageEngine;
 use crate::Transport;
 
@@ -35,6 +36,8 @@ pub trait TypeConfig: Sync + Send + Sized + Debug + 'static {
 
     type SMH: StateMachineHandler<Self> + Debug;
 
+    type SMW: StateMachineWriterOps<Self> + Debug;
+
     type SNP: SnapshotPolicy + Debug;
 
     type PE: PurgeExecutor + Send + Sync + 'static;
@@ -60,6 +63,8 @@ pub mod alias {
     pub type COF<T> = <T as TypeConfig>::C;
 
     pub type SMHOF<T> = <T as TypeConfig>::SMH;
+
+    pub type SMWOF<T> = <T as TypeConfig>::SMW;
 
     pub type SNP<T> = <T as TypeConfig>::SNP;
 

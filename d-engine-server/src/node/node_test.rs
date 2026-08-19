@@ -192,9 +192,6 @@ async fn run_success_with_joining() {
             leader_id: 3,
         })
     });
-    transport
-        .expect_request_snapshot_from_leader()
-        .returning(|_, _, _, _| Err(Error::Fatal("()".to_string())));
     let (raft_log, replication_handler) = prepare_succeed_majority_confirmation();
 
     // Build node using MockBuilder
@@ -609,9 +606,6 @@ mod bootstrap_strategy_tests {
                 leader_id: 200,
             })
         });
-        transport
-            .expect_request_snapshot_from_leader()
-            .returning(|_, _, _, _| Err(d_engine_core::Error::Fatal("no snapshot".to_string())));
 
         let config = {
             let cfg = RaftNodeConfig::new().expect("Default config");
@@ -855,9 +849,6 @@ mod bootstrap_strategy_tests {
                 leader_id: 200,
             })
         });
-        transport
-            .expect_request_snapshot_from_leader()
-            .returning(|_, _, _, _| Err(d_engine_core::Error::Fatal("no snapshot".to_string())));
 
         let config = {
             let cfg = RaftNodeConfig::new().expect("Default config");

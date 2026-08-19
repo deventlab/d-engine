@@ -50,6 +50,7 @@ use super::InternalEvent;
 use super::RaftContext;
 use crate::Result;
 use crate::TypeConfig;
+use crate::role_state::PeerReplicationState;
 
 /// The role state focuses solely on its own logic
 /// and does not directly manipulate the underlying storage or network.
@@ -282,11 +283,6 @@ impl SharedState {
         self.hard_state.current_term = term;
     }
 
-    #[cfg(test)]
-    fn increase_current_term(&mut self) {
-        self.hard_state.current_term += 1;
-    }
-
     /// Update voted_for and return true if this represents a new leader commitment
     ///
     /// Returns true when:
@@ -354,13 +350,6 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state().join_cluster(ctx).await
     }
 
-    pub(crate) async fn fetch_initial_snapshot(
-        &self,
-        ctx: &RaftContext<T>,
-    ) -> Result<()> {
-        self.state().fetch_initial_snapshot(ctx).await
-    }
-
     pub(crate) fn next_deadline(&self) -> Instant {
         self.state().next_deadline()
     }
@@ -407,6 +396,11 @@ impl<T: TypeConfig> RaftRole<T> {
     ) {
         let match_idx = self.state().match_index(peer_id).unwrap_or(0);
         let _ = self.state_mut().update_next_index(peer_id, match_idx + 1);
+
+        // #436: stream is down, we don't know what (if anything) the peer received —
+        // stop trusting speculative advance (etcd: BecomeProbe on MsgUnreachable).
+        self.state_mut()
+            .set_peer_replication_state(peer_id, PeerReplicationState::Probe);
     }
 
     pub(crate) async fn handle_zombie_detected(

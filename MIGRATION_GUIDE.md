@@ -521,6 +521,81 @@ Compilation will fail with "method not found in trait" if you forget to remove i
 
 ---
 
+## For v0.2.4 Users: `StateMachine::apply_snapshot_from_file` Return Type Changed in v0.2.5 (#436)
+
+### What Changed
+
+`apply_snapshot_from_file` now returns `Result<SnapshotApplyResult>` instead of `Result<()>`, so
+the caller knows whether the install actually ran or was a no-op instead of every outcome looking
+identical.
+
+```rust
+pub enum SnapshotApplyResult {
+    Applied { last_included: LogId },    // install actually ran
+    IgnoredStale { current: LogId },     // incoming.index < current — no-op, not an error
+    IgnoredDuplicate { current: LogId }, // incoming == current, same term — no-op, not an error
+}
+```
+
+### Impact
+
+⚠️ **Breaking for custom `StateMachine` implementations.**
+
+```rust
+// Old (v0.2.4)
+async fn apply_snapshot_from_file(
+    &self,
+    metadata: &SnapshotMetadata,
+    path: PathBuf,
+) -> Result<()> {
+    // ... install logic ...
+    Ok(())
+}
+
+// New (v0.2.5)
+async fn apply_snapshot_from_file(
+    &self,
+    metadata: &SnapshotMetadata,
+    path: PathBuf,
+) -> Result<SnapshotApplyResult> {
+    // ... same install logic ...
+    Ok(SnapshotApplyResult::Applied { last_included: new_last_included })
+}
+```
+
+Return `IgnoredStale`/`IgnoredDuplicate` instead of `Err(...)` for a snapshot that's older than or
+equal to what's already applied — that's Raft's own idempotency check on the install call, not a
+failure. Reserve `Err` for a genuine failure (checksum mismatch, I/O error, corrupted data).
+
+Built-in implementations (`FileStateMachine`, `RocksDBStateMachine`) are already updated.
+Compilation fails with "incompatible type for trait" until a custom implementation is updated.
+
+---
+
+## For v0.2.4 Users: Learner Initial-Snapshot PULL Path Removed in v0.2.5 (#436)
+
+### What Changed
+
+The learner's eager startup snapshot pull is removed. A new learner no longer calls
+`Transport::request_snapshot_from_leader` to fetch a snapshot on startup; it relies on the leader's
+PUSH replication loop instead (AppendEntries, or InstallSnapshot when its log falls behind the
+purge boundary).
+
+### Impact
+
+⚠️ **Breaking for custom `Transport` and `StateMachineHandler` implementations.**
+
+Two trait methods are removed:
+
+- `Transport::request_snapshot_from_leader(...)` — delete this method from any custom `Transport`.
+- `StateMachineHandler::apply_snapshot_stream_from_leader(...)` — delete this method from any custom
+  `StateMachineHandler`.
+
+Compilation fails with "method ... is not a member of trait" until the custom implementation is
+updated. The built-in implementations are already updated.
+
+---
+
 ## For v0.2.4 Users: `start_custom_with_config` → `start_node()` (#415)
 
 ### What Changed

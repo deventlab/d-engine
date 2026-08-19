@@ -8,8 +8,8 @@ use bincode::config;
 use bytes::Bytes;
 use d_engine::BatchOp;
 use d_engine::{
-    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotError, StateMachine,
-    StorageError, common::LogId, server_storage::SnapshotMetadata,
+    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotApplyResult, SnapshotError,
+    StateMachine, StorageError, common::LogId, server_storage::SnapshotMetadata,
 };
 use parking_lot::Mutex;
 use sled::Batch;
@@ -20,7 +20,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-use tokio::sync::RwLock;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -55,9 +54,6 @@ pub struct SledStateMachine {
     last_included_index: AtomicU64, // load from STATE_SNAPSHOT_METADATA_TREE
     last_included_term: AtomicU64,
     last_snapshot_checksum: Mutex<Option<[u8; 32]>>, //SHA-256
-
-    /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
-    snapshot_lock: RwLock<()>,
 }
 
 impl std::fmt::Debug for SledStateMachine {
@@ -345,8 +341,10 @@ impl StateMachine for SledStateMachine {
         new_snapshot_dir: PathBuf,
         last_included: LogId,
     ) -> Result<Bytes> {
-        // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
-        let _guard = self.snapshot_lock.write().await;
+        // No internal locking needed: `StateMachineWorker` is the sole caller of
+        // generate_snapshot_data/apply_snapshot_from_file/apply_chunk, and it processes
+        // them one at a time from a single queue (#436) — concurrent snapshot
+        // generation from this trait's methods cannot happen.
 
         // 2. Create a new state machine database instance
         let new_db = init_sled_state_machine_db(&new_snapshot_dir)
@@ -411,84 +409,88 @@ impl StateMachine for SledStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         decompressed_snapshot_path: PathBuf,
-    ) -> Result<()> {
-        if let Some(new_last_included) = metadata.last_included {
-            debug!(
-                ?new_last_included,
-                "1. Acquire write lock to prevent concurrent snapshot generation/application"
-            );
-            // 1. Acquire write lock to prevent concurrent snapshot generation/application This
-            //    ensures atomic snapshot application per Raft requirements
-            let _guard = self.snapshot_lock.write().await;
+    ) -> Result<SnapshotApplyResult> {
+        // No internal locking needed — see generate_snapshot_data. `StateMachineWorker`
+        // processes ApplyEntries/InstallSnapshot/CaptureLocalSnapshot one at a time from a
+        // single queue (#436), so this call never races a concurrent snapshot generation
+        // or another install.
 
-            debug!("2. Validate snapshot version - only apply if newer than current state");
-            // 2. Validate snapshot version - only apply if newer than current state
-            if let Some(current_metadata) = self.snapshot_metadata()
-                && let Some(current_last_included) = current_metadata.last_included
-            {
-                // Only allow application when the new snapshot index is larger
-                if new_last_included.index <= current_last_included.index {
-                    return Err(SnapshotError::Outdated.into());
+        // Stale/duplicate/boundary classification — every StateMachine implementation must
+        // honor this contract, not just the built-in RocksDB/File adaptors (#436). A snapshot
+        // that doesn't advance our state is a no-op, not an error; only a genuine boundary
+        // conflict (same index, different term) is.
+        let new_last_included = metadata.last_included.unwrap_or_default();
+        let current = self.last_applied();
+        match new_last_included.index.cmp(&current.index) {
+            std::cmp::Ordering::Less => {
+                info!(?new_last_included, ?current, "Ignoring stale snapshot");
+                return Ok(SnapshotApplyResult::IgnoredStale { current });
+            }
+            std::cmp::Ordering::Equal if new_last_included.term == current.term => {
+                info!(?new_last_included, ?current, "Ignoring duplicate snapshot");
+                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
+            }
+            std::cmp::Ordering::Equal => {
+                return Err(SnapshotError::BoundaryConflict {
+                    index: current.index,
+                    local_term: current.term,
+                    incoming_term: new_last_included.term,
                 }
+                .into());
             }
-
-            debug!("4. Create temp directory for decompression");
-            debug!(
-                ?decompressed_snapshot_path,
-                "6. CRITICAL SECURITY STEP: Validate checksum"
-            );
-            // 6. CRITICAL SECURITY STEP: Validate checksum Prevents tampered or corrupted snapshots
-            //    from being applied
-            let computed_checksum =
-                compute_checksum_from_folder_path(&decompressed_snapshot_path).await?;
-
-            if metadata.checksum.as_ref() != computed_checksum.as_ref() {
-                error!(
-                    "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
-                    computed_checksum, metadata.checksum
-                );
-
-                metrics::counter!(
-                    "snapshot.checksum_failures",
-                    &[
-                        ("node_id", self.node_id.to_string()),
-                        ("snapshot_index", new_last_included.index.to_string()),
-                    ]
-                )
-                .increment(1);
-
-                return Err(SnapshotError::ChecksumMismatch.into());
+            std::cmp::Ordering::Greater => {
+                // Eligible to install, fall through.
             }
-            debug!(
-                ?decompressed_snapshot_path,
-                "7. Initialize new state machine database"
-            );
-            // 7. Initialize new state machine database Maintains ACID properties during state
-            //    transition
-            let db = init_sled_state_machine_db(&decompressed_snapshot_path)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-
-            debug!("8. Atomically replace current database");
-            // 8. Atomically replace current database Critical for maintaining consistency per Raft
-            //    spec
-            self.db.store(Arc::new(db));
-
-            debug!(
-                ?new_last_included,
-                ?metadata,
-                "9. Update Raft metadata and indexes"
-            );
-            // 9. Update Raft metadata and indexes Follows snapshot application procedure from
-            self.update_last_applied(new_last_included);
-            self.update_last_snapshot_metadata(metadata)?;
-        } else {
-            error!(
-                ?metadata,
-                "apply_snapshot_from_file should not be triggered if metadata is none"
-            );
         }
 
-        Ok(())
+        debug!(
+            ?decompressed_snapshot_path,
+            "Validating checksum before install"
+        );
+        // CRITICAL SECURITY STEP: prevents tampered or corrupted snapshots from being applied.
+        let computed_checksum =
+            compute_checksum_from_folder_path(&decompressed_snapshot_path).await?;
+
+        if metadata.checksum.as_ref() != computed_checksum.as_ref() {
+            error!(
+                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
+                computed_checksum, metadata.checksum
+            );
+
+            metrics::counter!(
+                "snapshot.checksum_failures",
+                &[
+                    ("node_id", self.node_id.to_string()),
+                    ("snapshot_index", new_last_included.index.to_string()),
+                ]
+            )
+            .increment(1);
+
+            return Err(SnapshotError::ChecksumMismatch.into());
+        }
+
+        debug!(
+            ?decompressed_snapshot_path,
+            "Initializing new state machine database"
+        );
+        let db = init_sled_state_machine_db(&decompressed_snapshot_path)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
+
+        debug!("Atomically replacing current database");
+        // Critical for maintaining consistency per Raft spec.
+        self.db.store(Arc::new(db));
+
+        debug!(
+            ?new_last_included,
+            ?metadata,
+            "Updating Raft metadata and indexes"
+        );
+        self.update_last_applied(new_last_included);
+        self.update_last_snapshot_metadata(metadata)?;
+
+        Ok(SnapshotApplyResult::Applied {
+            last_included: new_last_included,
+        })
     }
 
     fn len(&self) -> usize {
@@ -566,8 +568,6 @@ impl SledStateMachine {
             last_included_index: AtomicU64::new(0),
             last_included_term: AtomicU64::new(0),
             last_snapshot_checksum: Mutex::new(None),
-
-            snapshot_lock: RwLock::new(()),
         };
 
         // Important to sync the last applied index into memory

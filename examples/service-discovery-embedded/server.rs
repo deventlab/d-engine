@@ -69,7 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 WatchEventType::Canceled => {
-                    println!("[exact-watch] CANCELED — buffer overflow on {key}; re-register watch");
+                    println!(
+                        "[exact-watch] CANCELED — buffer overflow on {key}; re-register watch"
+                    );
                     break;
                 }
                 WatchEventType::Progress => {}
@@ -131,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 WatchEventType::Canceled => {
                     // Buffer overflow: registry may be stale.
-                    // Production code: re-watch then scan_prefix (see ADR-003 reconnect pattern).
+                    // Production code: re-watch then scan_prefix.
                     println!(
                         "[prefix-watch] CANCELED — buffer overflow on {key_str}; registry may be stale"
                     );
@@ -149,22 +151,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Simulate three nodes coming online
     println!("\n--- Three nodes registering ---");
-    client
-        .put(b"/services/payment/node1", b"10.0.0.1:8080")
-        .await?;
-    client
-        .put(b"/services/payment/node2", b"10.0.0.2:8080")
-        .await?;
-    client
-        .put(b"/services/payment/node3", b"10.0.0.3:8080")
-        .await?;
+    client.put(b"/services/payment/node1", b"10.0.0.1:8080").await?;
+    client.put(b"/services/payment/node2", b"10.0.0.2:8080").await?;
+    client.put(b"/services/payment/node3", b"10.0.0.3:8080").await?;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Simulate node2 updating its endpoint (rolling restart)
     println!("\n--- node2 rolling restart: endpoint changes ---");
-    client
-        .put(b"/services/payment/node2", b"10.0.0.2:9090")
-        .await?;
+    client.put(b"/services/payment/node2", b"10.0.0.2:9090").await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Simulate node1 crashing (TTL expiry or explicit deregister)
