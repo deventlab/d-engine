@@ -10,6 +10,9 @@ mod background_snapshot_transfer;
 
 #[cfg(test)]
 mod background_snapshot_transfer_test;
+
+#[cfg(any(test, feature = "__test_support"))]
+mod snapshot_transfer_gate;
 use async_trait::async_trait;
 pub use background_snapshot_transfer::*;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
@@ -22,6 +25,12 @@ use d_engine_proto::server::storage::SnapshotMetadata;
 use futures::stream::BoxStream;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
+#[cfg(any(test, feature = "__test_support"))]
+pub use snapshot_transfer_gate::SnapshotTransferGate;
+#[cfg(any(test, feature = "__test_support"))]
+pub use snapshot_transfer_gate::SnapshotTransferGateGuard;
+#[cfg(any(test, feature = "__test_support"))]
+pub use snapshot_transfer_gate::install_snapshot_transfer_gate;
 use tokio::sync::mpsc;
 use tracing::info;
 

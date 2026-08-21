@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::time::Instant;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codec::CompressionEncoding;
@@ -54,10 +53,16 @@ where
             .send_compressed(CompressionEncoding::Gzip)
             .accept_compressed(CompressionEncoding::Gzip);
 
-        Self::push_transfer_loop(node_id, client, first_chunk, data_stream, config).await?;
+        let result =
+            Self::push_transfer_loop(node_id, client, first_chunk, data_stream, config).await;
 
-        debug!(%node_id, "Push snapshot transfer completed");
-        Ok(())
+        #[cfg(any(test, feature = "__test_support"))]
+        if let Some(gate) = super::snapshot_transfer_gate::lookup_gate(node_id) {
+            gate.mark_completed();
+        }
+
+        debug!(%node_id, ?result, "Push snapshot transfer finished");
+        result
     }
 
     // Dedicated push logic
@@ -68,6 +73,14 @@ where
         mut data_stream: Pin<Box<dyn Stream<Item = Result<SnapshotChunk>> + Send>>,
         config: Arc<SnapshotConfig>,
     ) -> Result<()> {
+        // Test-only: freeze here, right before the first chunk is sent, if a
+        // test has installed a transfer gate for this peer.
+        #[cfg(any(test, feature = "__test_support"))]
+        if let Some(gate) = super::snapshot_transfer_gate::lookup_gate(node_id) {
+            gate.mark_started();
+            gate.wait_release().await;
+        }
+
         // 1. Create a transmission channel
         let (mut request_tx, request_rx) =
             mpsc::channel::<Arc<SnapshotChunk>>(config.push_queue_size);
@@ -164,7 +177,7 @@ where
         config: &SnapshotConfig,
     ) -> Result<()> {
         let mut attempt = 0;
-        // let mut backoff = Duration::from_millis(config.snapshot_push_backoff_in_ms);
+        let backoff = Duration::from_millis(config.snapshot_push_backoff_in_ms);
         let max_retry = config.snapshot_push_max_retry;
 
         loop {
@@ -179,40 +192,16 @@ where
                     if attempt >= max_retry {
                         return Err(SnapshotError::Backpressure.into());
                     }
-                    let start = Instant::now();
-                    // Apply rate limiting before retry
-                    Self::apply_rate_limit(&chunk, config.max_bandwidth_mbps).await;
-                    let duration = start.elapsed();
+                    sleep(backoff).await;
 
                     attempt += 1;
-                    trace!(?attempt, ?duration, "apply_rate_limit=");
+                    trace!(?attempt, "retry after backoff");
                 }
                 Err(e) => {
                     trace!(?e, "unknown error");
                     return Err(SnapshotError::ReceiverDisconnected.into());
                 }
             }
-        }
-    }
-
-    // Apply rate limiting for chunk transmission
-    async fn apply_rate_limit(
-        chunk: &SnapshotChunk,
-        max_bandwidth_mbps: u32,
-    ) {
-        if max_bandwidth_mbps > 0 {
-            let chunk_size_bits = chunk.data.len() as f64 * 8.0;
-            let bandwidth_bps = max_bandwidth_mbps as f64 * 1_000_000.0;
-            let min_duration_secs = chunk_size_bits / bandwidth_bps;
-
-            let min_duration = Duration::from_secs_f64(min_duration_secs);
-            debug!(
-                chunk_size_bytes = chunk.data.len(),
-                max_bandwidth_mbps,
-                min_duration_secs,
-                min_duration = ?min_duration
-            );
-            sleep(min_duration).await;
         }
     }
 }

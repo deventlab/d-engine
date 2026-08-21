@@ -83,6 +83,10 @@ during a low-write window. Do not disable snapshotting (`raft.snapshot.enable = 
 or set `max_log_entries_before_snapshot` unreasonably large, or the backlog grows
 without bound.
 
+Snapshot transfer has no active bandwidth throttle — it relies on `push_queue_size`
+(bounded channel) for backpressure, the same approach etcd takes. There is no
+guarantee it won't compete with client traffic for network bandwidth.
+
 ## Configuration Reference
 
 | Field                             | Default     | Description                           |
@@ -92,7 +96,6 @@ without bound.
 | `chunk_size`                      | 1024 (1 KB) | Size of each transfer chunk in bytes  |
 | `receive_chunk_timeout_in_sec`    | 30          | Per-chunk receive timeout on follower |
 | `transfer_timeout_in_sec`         | 600         | Overall transfer timeout              |
-| `max_bandwidth_mbps`              | 1           | Transfer bandwidth cap (Mbps)         |
 | `cleanup_retain_count`            | 2           | Number of past snapshot files to keep |
 
 ## Further Reading

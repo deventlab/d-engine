@@ -46,6 +46,10 @@ pub(crate) enum PeerReplicationState {
     Probe,
     /// Confirmed caught up by a real ACK: safe to speculatively advance next_index.
     Replicate,
+    /// A full snapshot push to this peer is in flight. Leader must not generate or
+    /// dispatch any AppendEntries for this peer until SnapshotPushCompleted resolves
+    /// it back to Probe — regardless of success or failure.
+    Snapshot,
 }
 
 #[async_trait]

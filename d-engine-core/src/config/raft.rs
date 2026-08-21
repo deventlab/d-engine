@@ -568,9 +568,6 @@ pub struct SnapshotConfig {
     #[serde(default = "default_receiver_yield_every_n_chunks")]
     pub receiver_yield_every_n_chunks: usize,
 
-    #[serde(default = "default_max_bandwidth_mbps")]
-    pub max_bandwidth_mbps: u32,
-
     #[serde(default = "default_push_queue_size")]
     pub push_queue_size: usize,
 
@@ -613,7 +610,6 @@ impl Default for SnapshotConfig {
             retained_log_entries: default_retained_log_entries(),
             sender_yield_every_n_chunks: default_sender_yield_every_n_chunks(),
             receiver_yield_every_n_chunks: default_receiver_yield_every_n_chunks(),
-            max_bandwidth_mbps: default_max_bandwidth_mbps(),
             push_queue_size: default_push_queue_size(),
             cache_size: default_cache_size(),
             max_retries: default_max_retries(),
@@ -748,10 +744,6 @@ fn default_sender_yield_every_n_chunks() -> usize {
 }
 
 fn default_receiver_yield_every_n_chunks() -> usize {
-    1
-}
-
-fn default_max_bandwidth_mbps() -> u32 {
     1
 }
 

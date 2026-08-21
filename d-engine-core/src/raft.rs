@@ -662,17 +662,36 @@ where
                     error!(%node_id, ?e, "handle_zombie_detected failed");
                 }
             }
-            InternalEvent::SnapshotPushCompleted { peer_id, success } => {
-                debug!(%peer_id, %success, "SnapshotPushCompleted");
+            InternalEvent::SnapshotPushCompleted {
+                peer_id,
+                success,
+                last_included_index,
+            } => {
+                debug!(%peer_id, %success, ?last_included_index, "SnapshotPushCompleted");
                 if success {
-                    // Reset next_index to last_entry_id + 1 so the peer is no longer below
-                    // the purge boundary and resumes AppendEntries on the next heartbeat.
-                    // Using last_entry_id follows Raft convention (nextIndex = leader last + 1);
-                    // if the peer is behind, the conflict response will walk it back correctly.
-                    let last_entry_id = self.ctx.raft_log().last_entry_id();
-                    let _ = self
-                        .role
-                        .init_peers_next_index_and_match_index(last_entry_id, vec![peer_id]);
+                    // Reset next_index to the snapshot's own boundary + 1, so the peer resumes
+                    // AppendEntries on the next heartbeat. Deliberately NOT the leader's current
+                    // log tip (self.ctx.raft_log().last_entry_id()): the leader's log may have
+                    // advanced further while the transfer was in flight (new writes during a
+                    // slow transfer to a lagging peer are normal, expected), and the peer only
+                    // actually received data up to last_included_index. Using the leader's tip
+                    // here would make the leader believe the peer already has entries it never
+                    // received, silently skipping them forever.
+                    match last_included_index {
+                        Some(last_included_index) => {
+                            let _ = self.role.init_peers_next_index_and_match_index(
+                                last_included_index,
+                                vec![peer_id],
+                            );
+                        }
+                        None => {
+                            error!(
+                                %peer_id,
+                                "SnapshotPushCompleted succeeded but last_included_index was \
+                                 missing; leaving next_index unchanged rather than guessing"
+                            );
+                        }
+                    }
                 }
                 // Update per-peer backoff state; emit error alert + metrics when consecutive
                 // failures reach the configured threshold (leader protection highest priority).

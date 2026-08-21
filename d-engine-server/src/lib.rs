@@ -267,6 +267,23 @@ pub use d_engine_core::state_machine_test;
 #[cfg(feature = "__test_support")]
 pub use d_engine_core::storage_engine_test;
 
+/// Deterministically freezes an outbound snapshot push transfer to a given
+/// peer right before its first chunk is sent, for tests that need to observe
+/// a "transfer started but not completed" window without racing wall-clock
+/// timing.
+///
+/// Enable the `__test_support` feature in your `[dev-dependencies]` to access this:
+/// ```toml
+/// [dev-dependencies]
+/// d-engine = { version = "...", features = ["server", "__test_support"] }
+/// ```
+#[cfg(feature = "__test_support")]
+pub use d_engine_core::SnapshotTransferGate;
+#[cfg(feature = "__test_support")]
+pub use d_engine_core::SnapshotTransferGateGuard;
+#[cfg(feature = "__test_support")]
+pub use d_engine_core::install_snapshot_transfer_gate;
+
 /// Test utilities for d-engine-server
 ///
 /// This module is only available when running tests.

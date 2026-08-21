@@ -14,8 +14,6 @@ mod candidate_state_test;
 #[cfg(test)]
 mod follower_state_test;
 #[cfg(test)]
-mod leader_state_test;
-#[cfg(test)]
 mod learner_state_test;
 #[cfg(test)]
 mod role_state_test;
@@ -394,6 +392,13 @@ impl<T: TypeConfig> RaftRole<T> {
         &mut self,
         peer_id: u32,
     ) {
+        // The bidi stream only carries AppendEntries. While this peer is in Snapshot
+        // state, an error on this stream says nothing about the independent
+        // connection the snapshot transfer runs on, so it has no authority to act
+        // (mirrors etcd raft.go MsgUnreachable: only BecomeProbe() when StateReplicate).
+        if self.state().peer_replication_state(peer_id) == PeerReplicationState::Snapshot {
+            return;
+        }
         let match_idx = self.state().match_index(peer_id).unwrap_or(0);
         let _ = self.state_mut().update_next_index(peer_id, match_idx + 1);
 

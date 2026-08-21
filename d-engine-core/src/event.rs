@@ -85,6 +85,13 @@ pub enum InternalEvent {
     SnapshotPushCompleted {
         peer_id: u32,
         success: bool,
+        /// The snapshot's own last-included index (its fixed boundary at creation
+        /// time), used to seed the peer's next_index. Deliberately NOT the leader's
+        /// current log tip: the leader's log may have advanced further while the
+        /// transfer was in flight, and the peer only actually received data up to
+        /// this boundary. `None` if the metadata was unexpectedly missing it (should
+        /// not happen — a snapshot always has a boundary).
+        last_included_index: Option<u64>,
     },
 
     /// Noop entry committed — leader has confirmed quorum leadership.

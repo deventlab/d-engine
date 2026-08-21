@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use bytes::Bytes;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
@@ -7,7 +5,6 @@ use futures::StreamExt;
 use futures::stream;
 use futures::stream::BoxStream;
 use tokio::sync::oneshot;
-use tokio::time::Instant;
 use tonic::Status;
 use tracing::debug;
 
@@ -47,7 +44,6 @@ fn create_snapshot_stream(
 
 fn default_snapshot_config() -> SnapshotConfig {
     SnapshotConfig {
-        max_bandwidth_mbps: 1,
         sender_yield_every_n_chunks: 2,
         transfer_timeout_in_sec: 1,
         push_timeout_in_ms: 100,
@@ -144,50 +140,6 @@ mod run_push_transfer_test {
         .await;
 
         assert!(result.is_err());
-    }
-
-    // Test: Transfer respects bandwidth limit
-    #[tokio::test]
-    async fn test_push_transfer_respects_bandwidth_limit() {
-        let mut config = default_snapshot_config();
-        config.max_bandwidth_mbps = 1; // 1 MBps
-        config.push_queue_size = 1;
-        config.push_timeout_in_ms = 2500;
-
-        let stream = create_snapshot_stream(3, 5 * 1024); // 2 chunks of 5KB each (1.25MB total)
-
-        // Start mock server
-        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let (channel, _port) = MockNode::simulate_snapshot_mock_server(
-            Ok(SnapshotResponse {
-                term: 1,
-                success: true, // always succeed
-                next_chunk: 2,
-            }),
-            shutdown_rx,
-        )
-        .await
-        .unwrap();
-
-        let start = Instant::now();
-        let result = BackgroundSnapshotTransfer::<MockTypeConfig>::run_push_transfer(
-            1,
-            Box::pin(stream),
-            channel,
-            config,
-        )
-        .await;
-
-        debug!(?result);
-        assert!(result.is_ok());
-        let duration = start.elapsed();
-        debug!(?duration);
-
-        // Calculate expected minimum time:
-        // Total data = 2 chunks * 5KB = 10KB = 80,000 bits
-        // Bandwidth = 1 Mbps = 1,000,000 bps
-        // Minimum time = 80,000 / 1,000,000 = 0.08 seconds
-        assert!(duration >= Duration::from_micros(80));
     }
 
     // Test: First chunk validation fails when metadata is missing
