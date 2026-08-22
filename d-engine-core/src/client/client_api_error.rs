@@ -54,49 +54,6 @@ pub enum ClientApiError {
     },
 }
 
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub enum NetworkErrorType {
-//     Timeout,
-//     ConnectionLost,
-//     InvalidAddress,
-//     TlsFailure,
-//     ProtocolViolation,
-//     JoinError,
-// }
-
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub enum ProtocolErrorType {
-//     InvalidResponseFormat,
-//     VersionMismatch,
-//     ChecksumFailure,
-//     SerializationError,
-// }
-
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub enum StorageErrorType {
-//     DiskFull,
-//     CorruptionDetected,
-//     IoFailure,
-//     PermissionDenied,
-//     KeyNotExist,
-// }
-
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub enum BusinessErrorType {
-//     NotLeader,
-//     StaleRead,
-//     InvalidRequest,
-//     RateLimited,
-//     ClusterUnavailable,
-//     ProposeFailed,
-//     RetryRequired,
-//     StaleTerm,
-// }
-
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub enum GeneralErrorType {
-//     General,
-// }
 pub use crate::client::types::LeaderHint;
 impl From<tonic::transport::Error> for ClientApiError {
     /// Converts a tonic transport error into a ClientApiError
@@ -188,6 +145,12 @@ impl From<Status> for ClientApiError {
                 code: ErrorCode::NotLeader,
                 message,
                 required_action: Some("Refresh cluster state".into()),
+            },
+
+            Code::ResourceExhausted => Self::Business {
+                code: ErrorCode::RateLimited,
+                message,
+                required_action: Some("Retry with backoff".into()),
             },
 
             _ => Self::Business {

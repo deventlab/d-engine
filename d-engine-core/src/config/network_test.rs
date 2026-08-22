@@ -16,6 +16,7 @@ fn valid_base_params() -> ConnectionParams {
         max_concurrent_streams: 100,
         tcp_keepalive_in_secs: 300,
         max_frame_size: 16777215,
+        max_pending_accept_reset_streams: 1000,
     }
 }
 

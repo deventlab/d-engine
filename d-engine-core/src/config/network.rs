@@ -80,6 +80,11 @@ pub struct ConnectionParams {
     /// Enable HTTP2 adaptive window sizing
     #[serde(default = "default_adaptive_window")]
     pub adaptive_window: bool,
+
+    /// Max pending-accept streams remotely reset before h2 closes the connection
+    /// (mitigates HTTP/2 Rapid Reset false-positives under legitimate burst load)
+    #[serde(default = "default_max_pending_accept_reset_streams")]
+    pub max_pending_accept_reset_streams: usize,
 }
 
 impl Default for NetworkConfig {
@@ -183,6 +188,7 @@ fn default_control_params() -> ConnectionParams {
         connection_window_size: 1_048_576, // 1MB connection window
         stream_window_size: 262_144,       // 256KB stream window
         adaptive_window: false,            // Predictable behavior
+        max_pending_accept_reset_streams: default_max_pending_accept_reset_streams(),
     }
 }
 
@@ -199,6 +205,7 @@ fn default_data_params() -> ConnectionParams {
         connection_window_size: 6_291_456, // 6MB connection window
         stream_window_size: 1_048_576,     // 1MB stream window
         adaptive_window: true,             // Optimize for varying loads
+        max_pending_accept_reset_streams: default_max_pending_accept_reset_streams(),
     }
 }
 
@@ -215,6 +222,7 @@ fn default_bulk_params() -> ConnectionParams {
         connection_window_size: 67_108_864, // 64MB connection window
         stream_window_size: 16_777_216, // 16MB stream window
         adaptive_window: false,         // Stable throughput
+        max_pending_accept_reset_streams: default_max_pending_accept_reset_streams(),
     }
 }
 
@@ -257,4 +265,7 @@ fn default_buffer_size() -> usize {
 }
 fn default_adaptive_window() -> bool {
     false
+}
+fn default_max_pending_accept_reset_streams() -> usize {
+    1000
 }

@@ -85,6 +85,9 @@ where
         .timeout(Duration::from_millis(control_config.request_timeout_in_ms))
         .concurrency_limit_per_connection(control_config.concurrency_limit)
         .max_concurrent_streams(control_config.max_concurrent_streams)
+        .http2_max_pending_accept_reset_streams(Some(
+            control_config.max_pending_accept_reset_streams,
+        ))
         .tcp_keepalive(Some(Duration::from_secs(
             control_config.tcp_keepalive_in_secs,
         )))
