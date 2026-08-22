@@ -4,20 +4,16 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use tracing::trace;
 use tracing::warn;
 
 use super::SnapshotContext;
 use super::SnapshotPolicy;
-use crate::time::timestamp_millis;
 
 #[derive(Debug)]
 pub struct LogSizePolicy {
     threshold: AtomicU64,    // e.g. 5000 log entries
-    last_checked: AtomicU64, // Stored as milliseconds
-    cooldown_ms: u64,
     is_checking: AtomicBool, // CAS lock for concurrent checks
 }
 
@@ -28,15 +24,6 @@ impl SnapshotPolicy for LogSizePolicy {
         ctx: &SnapshotContext,
     ) -> bool {
         if ctx.current_term < ctx.last_included.term {
-            return false;
-        }
-
-        // Cooldown check — Relaxed is sufficient since the CAS on
-        // is_checking provides actual mutual exclusion.
-        let now = timestamp_millis();
-        let last = self.last_checked.load(Ordering::Relaxed);
-
-        if now.saturating_sub(last) < self.cooldown_ms {
             return false;
         }
 
@@ -61,10 +48,6 @@ impl SnapshotPolicy for LogSizePolicy {
         }
 
         let should_trigger = lag >= threshold;
-        if should_trigger {
-            self.last_checked.store(now, Ordering::Relaxed);
-        }
-
         self.is_checking.store(false, Ordering::Release);
 
         should_trigger
@@ -76,14 +59,9 @@ impl SnapshotPolicy for LogSizePolicy {
 }
 
 impl LogSizePolicy {
-    pub fn new(
-        threshold: u64,
-        cooldown: Duration,
-    ) -> Self {
+    pub fn new(threshold: u64) -> Self {
         LogSizePolicy {
             threshold: AtomicU64::new(threshold),
-            last_checked: AtomicU64::new(0),
-            cooldown_ms: cooldown.as_millis() as u64,
             is_checking: AtomicBool::new(false),
         }
     }

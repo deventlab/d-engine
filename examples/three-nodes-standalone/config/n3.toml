@@ -48,9 +48,9 @@ max_buffered_entries = 10000
 
 [raft.snapshot]
 enable = true
-max_log_entries_before_snapshot = 10000
-snapshot_cool_down_since_last_check = { secs = 60 }
-retained_log_entries = 3
+max_log_entries_before_snapshot = 5000
+retained_log_entries = 100
+cleanup_retain_count = 100
 
 # == TTL Lease Configuration ==
 [raft.state_machine.lease]

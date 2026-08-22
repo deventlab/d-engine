@@ -329,7 +329,6 @@ general_raft_timeout_duration_in_ms = 5000
 [raft.snapshot]
 max_log_entries_before_snapshot = {SNAPSHOT_THRESHOLD}
 retained_log_entries = {RETAINED_LOGS}
-snapshot_cool_down_since_last_check = {{ secs = 0 }}
 "#,
             ports[node_id as usize - 1],
             ports[0],
@@ -528,7 +527,6 @@ general_raft_timeout_duration_in_ms = 5000
 [raft.snapshot]
 max_log_entries_before_snapshot = {SNAPSHOT_THRESHOLD}
 retained_log_entries = {RETAINED_LOGS}
-snapshot_cool_down_since_last_check = {{ secs = 0 }}
 "#,
         ports[0], ports[0]
     );
@@ -578,7 +576,6 @@ general_raft_timeout_duration_in_ms = 5000
 [raft.snapshot]
 max_log_entries_before_snapshot = {SNAPSHOT_THRESHOLD}
 retained_log_entries = {RETAINED_LOGS}
-snapshot_cool_down_since_last_check = {{ secs = 0 }}
 "#,
         ports[1], ports[0], ports[1]
     );

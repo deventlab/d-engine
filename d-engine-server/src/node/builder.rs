@@ -369,7 +369,6 @@ where
 
         let snapshot_policy = self.snapshot_policy.take().unwrap_or(LogSizePolicy::new(
             node_config.raft.snapshot.max_log_entries_before_snapshot,
-            node_config.raft.snapshot.snapshot_cool_down_since_last_check,
         ));
 
         let shutdown_signal = self.shutdown_signal.clone();

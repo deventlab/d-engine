@@ -23,10 +23,9 @@ impl CompositePolicy {
     pub(crate) fn new(
         time_interval: Duration,
         log_size_threshold: u64,
-        log_size_cooldown: Duration,
     ) -> Self {
         // Create log size policy with default cooldown (1 second)
-        let size_policy = LogSizePolicy::new(log_size_threshold, log_size_cooldown);
+        let size_policy = LogSizePolicy::new(log_size_threshold);
 
         Self {
             // Convert Duration to seconds for TimeBasedPolicy

@@ -23,7 +23,6 @@ flush_policy = { Batch = { idle_flush_interval_ms = 100 } }
 [raft.snapshot]
 enable = false
 max_log_entries_before_snapshot = 10000
-snapshot_cool_down_since_last_check = { secs = 60 }
 retained_log_entries = 3
 
 # == Network Control Plane (voting, heartbeat, etc.) ==

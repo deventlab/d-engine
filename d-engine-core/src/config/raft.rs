@@ -527,11 +527,6 @@ pub struct SnapshotConfig {
     #[serde(default = "default_max_log_entries_before_snapshot")]
     pub max_log_entries_before_snapshot: u64,
 
-    /// Minimum duration to wait between consecutive snapshot checks.
-    /// Acts as a cooldown period to avoid overly frequent snapshot evaluations.
-    #[serde(default = "default_snapshot_cool_down_since_last_check")]
-    pub snapshot_cool_down_since_last_check: Duration,
-
     /// Number of historical snapshot versions to retain during cleanup
     /// Ensures we maintain a safety buffer of previous states for recovery
     #[serde(default = "default_cleanup_retain_count")]
@@ -603,7 +598,6 @@ impl Default for SnapshotConfig {
     fn default() -> Self {
         Self {
             max_log_entries_before_snapshot: default_max_log_entries_before_snapshot(),
-            snapshot_cool_down_since_last_check: default_snapshot_cool_down_since_last_check(),
             cleanup_retain_count: default_cleanup_retain_count(),
             snapshots_dir_prefix: default_snapshots_dir_prefix(),
             chunk_size: default_chunk_size(),
@@ -696,13 +690,6 @@ fn default_snapshot_enabled() -> bool {
 /// Default threshold for triggering snapshot creation
 fn default_max_log_entries_before_snapshot() -> u64 {
     10000
-}
-
-/// Default cooldown duration between snapshot checks.
-///
-/// Prevents constant evaluation of snapshot conditions in tight loops.
-fn default_snapshot_cool_down_since_last_check() -> Duration {
-    Duration::from_secs(3)
 }
 
 /// Default number of historical snapshots to retain

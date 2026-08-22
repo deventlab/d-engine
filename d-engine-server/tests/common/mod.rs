@@ -575,6 +575,17 @@ pub async fn wait_for_stable_leader(client: &Client) -> Result<(), ClientApiErro
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
+            // Cascading elections: the leader `refresh()` just discovered may have
+            // already stepped down by the time this read reaches it. Transient and
+            // expected — retry (the next loop iteration's `refresh()` will pick up
+            // the new leader, including via this error's `leader_hint`).
+            Err(ClientApiError::Network {
+                code: ErrorCode::NotLeader,
+                ..
+            }) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
             Err(e) => return Err(e),
         }
     }

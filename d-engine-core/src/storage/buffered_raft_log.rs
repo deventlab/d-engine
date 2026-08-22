@@ -63,6 +63,7 @@ use async_trait::async_trait;
 use crossbeam_skiplist::SkipMap;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -250,7 +251,7 @@ where
 
     // --- In-memory state ---
     // Pending entries
-    pub(crate) entries: SkipMap<u64, Entry>,
+    pub(crate) entries: RwLock<SkipMap<u64, Entry>>,
     // Tracks the highest index that has been persisted to disk
     pub(crate) durable_index: AtomicU64,
     // The next index to be allocated
@@ -306,7 +307,7 @@ where
         &self,
         index: u64,
     ) -> Result<Option<Entry>> {
-        Ok(self.entries.get(&index).map(|e| e.value().clone()))
+        Ok(self.entries.read().get(&index).map(|e| e.value().clone()))
     }
 
     fn first_entry_id(&self) -> u64 {
@@ -355,7 +356,7 @@ where
     }
 
     fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.read().is_empty()
     }
 
     fn entry_term(
@@ -380,7 +381,7 @@ where
             return Some(term);
         }
         // Fallback: SkipMap — guards against rare transient inconsistency.
-        self.entries.get(&entry_id).map(|e| e.value().term)
+        self.entries.read().get(&entry_id).map(|e| e.value().term)
     }
 
     fn first_index_for_term(
@@ -426,7 +427,10 @@ where
         // OPTIMIZED: SkipMap range scan O(k + log n); pre-allocate to avoid realloc
         let capacity = (range.end().saturating_sub(*range.start()) + 1) as usize;
         let mut result = Vec::with_capacity(capacity);
-        result.extend(self.entries.range(range).map(|e| e.value().clone()));
+
+        let entries = self.entries.read();
+
+        result.extend(entries.range(range).map(|e| e.value().clone()));
         Ok(result)
     }
 
@@ -638,13 +642,6 @@ where
         // Remove range in O(k log n)
         self.remove_range(0..=cutoff_index.index);
 
-        // Update boundaries
-        let new_min = self.entries.front().map(|e| *e.key()).unwrap_or(0);
-        self.min_index.store(new_min, Ordering::Release);
-
-        let new_max = self.entries.back().map(|e| *e.key()).unwrap_or(0);
-        self.max_index.store(new_max, Ordering::Release);
-
         // Update durable index if needed
         let current_durable = self.durable_index.load(Ordering::Acquire);
 
@@ -831,7 +828,7 @@ where
                 meta_store,
                 idle_flush_interval_ms,
                 shutdown_timeout_ms,
-                entries,
+                entries: RwLock::new(entries),
                 min_index: AtomicU64::new(min_index),
                 max_index: AtomicU64::new(max_index),
                 last_purged_index: AtomicU64::new(last_purged_index_val),
@@ -1144,7 +1141,7 @@ where
         // still in flight will observe a mismatch and discard its stale result.
         self.fsync_coordinator.fence_reset();
 
-        self.entries.clear();
+        self.entries.write().clear();
         self.durable_index.store(0, Ordering::Release);
         self.next_id.store(1, Ordering::Release);
 
@@ -1173,9 +1170,13 @@ where
         &self,
         entries: &[Entry],
     ) {
-        for entry in entries {
-            self.entries.insert(entry.index, entry.clone());
+        {
+            let log = self.entries.write();
+            for entry in entries {
+                log.insert(entry.index, entry.clone());
+            }
         }
+
         self.update_term_indexes(entries);
         self.term_segments.on_append(entries);
 
@@ -1275,13 +1276,15 @@ where
     ) {
         let (start, end) = range.into_inner();
 
+        let entries = self.entries.write();
+
         // MODIFIED: Track affected terms and their min/max indexes in the removal range
         let mut affected_terms: HashMap<u64, (Option<u64>, Option<u64>)> = HashMap::new();
 
         // Remove entries in range and track affected terms
         let mut current = start;
         while current <= end {
-            if let Some(entry) = self.entries.range(current..=end).next() {
+            if let Some(entry) = entries.range(current..=end).next() {
                 let key = *entry.key();
                 let term = entry.value().term;
 
@@ -1294,7 +1297,7 @@ where
                     *max_idx = Some(key);
                 }
 
-                self.entries.remove(&key);
+                entries.remove(&key);
                 current = key + 1;
             } else {
                 break;
@@ -1309,7 +1312,7 @@ where
                 if removed_min.is_some() && current_first >= removed_min.unwrap() {
                     // Find new first index for this term
                     let new_first =
-                        self.entries.iter().find(|e| e.value().term == term).map(|e| *e.key());
+                        entries.iter().find(|e| e.value().term == term).map(|e| *e.key());
 
                     if let Some(idx) = new_first {
                         term_first.value().store(idx, Ordering::Release);
@@ -1324,12 +1327,8 @@ where
                 let current_last = term_last.value().load(Ordering::Acquire);
                 if removed_max.is_some() && current_last <= removed_max.unwrap() {
                     // Find new last index for this term
-                    let new_last = self
-                        .entries
-                        .iter()
-                        .rev()
-                        .find(|e| e.value().term == term)
-                        .map(|e| *e.key());
+                    let new_last =
+                        entries.iter().rev().find(|e| e.value().term == term).map(|e| *e.key());
 
                     if let Some(idx) = new_last {
                         term_last.value().store(idx, Ordering::Release);
@@ -1341,11 +1340,13 @@ where
         }
 
         // Always update boundaries after removal
-        let new_min = self.entries.front().map(|e| *e.key()).unwrap_or(0);
-        let new_max = self.entries.back().map(|e| *e.key()).unwrap_or(0);
+        let new_min = entries.front().map(|e| *e.key()).unwrap_or(0);
+        let new_max = entries.back().map(|e| *e.key()).unwrap_or(0);
 
         self.min_index.store(new_min, Ordering::Release);
         self.max_index.store(new_max, Ordering::Release);
+
+        // `entries` guard drops here (end of scope) — write lock released.
     }
 
     // Update the term index (completely lock-free)
@@ -1380,7 +1381,7 @@ where
     /// This method is only available in test builds.
     #[cfg(any(test, feature = "__test_support"))]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.read().len()
     }
 
     /// Returns reference to next_id atomic for test verification (test-only).
@@ -1398,7 +1399,7 @@ where
     /// have a public `is_empty` method.
     #[cfg(any(test, feature = "__test_support"))]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.read().is_empty()
     }
 }
 

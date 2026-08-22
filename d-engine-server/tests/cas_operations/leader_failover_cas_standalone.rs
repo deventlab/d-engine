@@ -193,6 +193,20 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
+            Err(ClientApiError::Network {
+                code: ErrorCode::NotLeader,
+                ..
+            }) => {
+                // The node `refresh()` just picked as leader had already stepped down
+                // by the time this read reached it (same cascading-election window as
+                // above, one term later). Transient — retry; the next refresh() will
+                // pick up the new leader.
+                info!(
+                    "Node {} is no longer leader (stepped down before serving read), retrying",
+                    new_leader_id
+                );
+                continue;
+            }
             Err(e) => {
                 return Err(e);
             }
@@ -212,10 +226,30 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     }
 
     // Phase 4: Client B retries CAS and succeeds (gRPC retry + leader rediscovery)
+    //
+    // Same cascading-election exposure as Phase 2+3/5: the leader confirmed stable a
+    // moment ago in Phase 2+3 can still step down before this CAS lands.
     info!("Phase 4: Client B retries CAS on new leader");
     let expected_value = lock_value.as_ref().map(|v| v.as_ref());
 
-    let acquired_b = client.compare_and_swap(lock_key, expected_value, b"client_b").await?;
+    let acquired_b = loop {
+        match client.compare_and_swap(lock_key, expected_value, b"client_b").await {
+            Ok(acquired) => break acquired,
+            Err(ClientApiError::Business {
+                code: ErrorCode::StaleOperation,
+                ..
+            }) => continue,
+            Err(ClientApiError::Network {
+                code: ErrorCode::ConnectionTimeout | ErrorCode::NotLeader,
+                ..
+            }) => {
+                client.refresh(None).await?;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    };
 
     assert!(
         acquired_b,
@@ -244,6 +278,10 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
+            Err(ClientApiError::Network {
+                code: ErrorCode::NotLeader,
+                ..
+            }) => continue,
             Err(e) => return Err(e),
         }
     };

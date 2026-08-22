@@ -1,6 +1,5 @@
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use bytes::Bytes;
 use bytes::BytesMut;
@@ -76,7 +75,6 @@ pub fn generate_delete_commands(range: RangeInclusive<u64>) -> Bytes {
 pub fn snapshot_config(_snapshots_dir: PathBuf) -> SnapshotConfig {
     SnapshotConfig {
         max_log_entries_before_snapshot: 1,
-        snapshot_cool_down_since_last_check: Duration::from_secs(0),
         cleanup_retain_count: 2,
         chunk_size: 1024,
         retained_log_entries: 1,

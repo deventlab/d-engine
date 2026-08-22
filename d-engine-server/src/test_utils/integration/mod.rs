@@ -228,10 +228,8 @@ pub fn setup_raft_components(
     let mut node_config = RaftNodeConfig::default();
     node_config.cluster.initial_cluster = peers_meta.clone();
 
-    let snapshot_policy = LogSizePolicy::new(
-        node_config.raft.snapshot.max_log_entries_before_snapshot,
-        node_config.raft.snapshot.snapshot_cool_down_since_last_check,
-    );
+    let snapshot_policy =
+        LogSizePolicy::new(node_config.raft.snapshot.max_log_entries_before_snapshot);
 
     let state_machine = Arc::new(mock_state_machine);
     let state_machine_handler = DefaultStateMachineHandler::new(

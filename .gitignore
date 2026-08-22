@@ -28,7 +28,8 @@ config/local.toml
 .vscode/settings.json
 
 snapshots
-.cargo
+.cargo/*
+!.cargo/audit.toml
 
 # Docker Related
 docker/.env

@@ -166,9 +166,6 @@ enable = true
 # Number of log entries before triggering snapshot creation.
 max_log_entries_before_snapshot = 1000
 
-# Minimum cooldown between consecutive snapshot checks (v0.2.4: reduced from 3600s to 60s).
-# Prevents excessive snapshot evaluation in tight loops.
-snapshot_cool_down_since_last_check = { secs = 60 }
 
 # Number of historical snapshot versions to retain for recovery safety.
 cleanup_retain_count = 2

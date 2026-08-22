@@ -1,0 +1,7 @@
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0258", # h2 0.4.16 fixes this but adds an unconfigurable small-DATA-frame budget that
+                         # disconnects legitimate small-payload traffic (hyperium/h2#944). Low severity;
+                         # pinned <0.4.16 until upstream ships a connection-window-derived budget. Same
+                         # reasoning as deny.toml.
+]
