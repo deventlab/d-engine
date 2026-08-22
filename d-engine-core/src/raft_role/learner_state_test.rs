@@ -2004,6 +2004,87 @@ async fn test_learner_install_snapshot_purges_to_snapshot_boundary_on_success() 
     // mock drop verifies execute_purge was called exactly once with expected_boundary
 }
 
+/// Regression test (PR #442 review): same commit_index gap as the follower side
+/// (see `test_follower_install_snapshot_advances_commit_index_to_boundary`). On a
+/// successful InstallSnapshotChunk, the Worker advances `last_applied` to
+/// `last_included.index` and this handler schedules a log purge up to that same
+/// boundary — but neither step advances `commit_index`. A learner that receives a
+/// pushed snapshot before its `commit_index` has caught up via AppendEntries is left
+/// with `last_applied` / `last_purged_index` > `commit_index`, breaking the invariant
+/// that nothing is ever applied or purged ahead of what `commit_index` confirms as
+/// committed.
+///
+/// # Given
+/// - Learner's commit_index starts at 10 (stale, below the snapshot boundary)
+/// - Worker reports SnapshotApplyResult::Applied with last_included.index = 42
+///
+/// # When
+/// - Leader pushes a snapshot (InstallSnapshotChunk event)
+///
+/// # Then
+/// - commit_index must advance to at least 42 (the snapshot boundary), not stay at 10
+#[tokio::test]
+async fn test_learner_install_snapshot_advances_commit_index_to_boundary() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    let snapshot_boundary = LogId { index: 42, term: 3 };
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+    context.handlers.state_machine_commands =
+        fake_command_sink_install_snapshot(Ok(SnapshotApplyResult::Applied {
+            last_included: snapshot_boundary,
+        }));
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(2);
+    state.update_commit_index(10).unwrap();
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 2,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s");
+
+    assert_eq!(
+        state.commit_index(),
+        snapshot_boundary.index,
+        "commit_index must advance to the installed snapshot boundary — otherwise \
+         last_applied/last_purged_index run ahead of commit_index"
+    );
+}
+
 /// Learner must NOT report success when a mid-stream chunk fails.
 ///
 /// # Note on this rewrite
@@ -2155,6 +2236,195 @@ async fn test_learner_install_snapshot_reports_failure_when_apply_fails_after_tr
     assert!(
         !response.success,
         "Learner must NOT report success when apply failed after transfer (got success:true — #308 bug)"
+    );
+}
+
+/// Regression test (PR #442 review, point A): learner_state.rs's InstallSnapshotChunk arm
+/// was copied from follower_state.rs but dropped a safeguard — when the snapshot stream
+/// closes before any chunk arrives (a transient transport hiccup), the follower replies
+/// with an explicit `SnapshotResponse{success: false}` before returning `Ok(())`; the
+/// learner instead drops `sender` unused and returns `Err(SnapshotError::TransferFailed)`.
+/// The leader then has to infer failure from a dropped RPC channel instead of the typed
+/// response every other failure path in this handler sends, and — since this Err is
+/// currently non-fatal — the node also logs it one level too alarmingly (`error!` instead
+/// of `warn!`) for something that's meant to be routine and recoverable.
+///
+/// # Given
+/// - Leader opens an InstallSnapshotChunk stream but it closes before any chunk arrives
+///
+/// # Then
+/// - handle_inbound_event must return Ok(()) (this is a transient hiccup, not fatal)
+/// - the leader must receive an explicit SnapshotResponse{success: false}
+#[tokio::test]
+async fn test_learner_install_snapshot_replies_before_returning_when_stream_closes_before_first_chunk()
+ {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    // Must never be reached — the handler must bail out before touching the Worker.
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().never();
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel::<SnapshotChunk>(32);
+    drop(tx); // stream closes before any chunk arrives
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "an empty/closed snapshot stream is a transient transport hiccup, not fatal — \
+         must not propagate an error"
+    );
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s")
+        .expect("recv must not fail")
+        .expect("response must be Ok(SnapshotResponse)");
+    assert!(
+        !response.success,
+        "must report failure via the typed SnapshotResponse so the leader retries \
+         through the normal path, instead of inferring it from a dropped RPC channel"
+    );
+}
+
+/// Regression test (PR #442 review, point B): learner_state.rs's InstallSnapshotChunk arm
+/// unconditionally returns `Err(e)` on any Worker install failure, unlike follower which
+/// checks `e.is_fatal()` first and only propagates genuinely fatal errors (absorbing
+/// everything else with a `warn!` and continuing). This test uses a non-fatal error
+/// (`SnapshotError::OperationFailed`, not one of the `is_fatal()`-listed variants) — the
+/// existing `..._reports_failure_when_apply_fails_after_transfer` test above only exercises
+/// `Error::Fatal`, which propagates under either implementation and so never caught this gap.
+///
+/// # Then
+/// - handle_inbound_event must return Ok(()) — a non-fatal apply error must be absorbed
+#[tokio::test]
+async fn test_learner_install_snapshot_non_fatal_apply_error_does_not_propagate() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+    context.handlers.state_machine_commands = fake_command_sink_install_snapshot(Err(
+        crate::SnapshotError::OperationFailed("apply_snapshot_from_file failed".into()).into(),
+    ));
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(2);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 2,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "a non-fatal apply error must be absorbed (warn + continue), not propagated"
+    );
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv()).await;
+}
+
+/// Regression test (PR #442 review, point C — found during review, not in the original
+/// CodeRabbit list): learner_state.rs's `prepare_snapshot_stream` error branch already
+/// sends the `SnapshotResponse{success: false}` reply correctly, but still unconditionally
+/// `return Err(e)`. Follower's equivalent branch always returns `Ok(())` instead (every
+/// `prepare_snapshot_stream` failure is treated as a recoverable transport-phase issue,
+/// not gated on `is_fatal()` at all).
+///
+/// # Then
+/// - handle_inbound_event must return Ok(()) — a non-fatal transfer-phase failure must not
+///   propagate an error
+#[tokio::test]
+async fn test_learner_install_snapshot_stream_prepare_failure_does_not_propagate() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, _ack_tx, _config| {
+            Err(crate::SnapshotError::OperationFailed("decompress failed".into()).into())
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.update_current_term(2);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 2,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "a non-fatal prepare_snapshot_stream failure must not propagate an error"
+    );
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s")
+        .expect("recv must not fail")
+        .expect("response must be Ok(SnapshotResponse)");
+    assert!(
+        !response.success,
+        "must report failure via the typed SnapshotResponse"
     );
 }
 

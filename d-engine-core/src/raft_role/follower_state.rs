@@ -6,10 +6,7 @@ use d_engine_proto::common::NodeRole::Learner;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
 use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
 use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotMetadata;
-use d_engine_proto::server::storage::SnapshotResponse;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -44,14 +41,9 @@ use crate::RaftContext;
 use crate::RaftLog;
 use crate::RaftNodeConfig;
 use crate::Result;
-use crate::SnapshotApplyResult;
-use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
-use crate::role_state::TermDecision;
-use crate::role_state::check_incoming_term;
 use crate::role_state::schedule_and_execute_purge;
-use crate::role_state::schedule_installed_snapshot_purge;
 use crate::utils::cluster::error;
 use crate::utils::cluster_printer::print_role_transition_line;
 
@@ -324,124 +316,15 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                 .await?;
             }
 
-            InboundEvent::InstallSnapshotChunk(mut stream, sender) => {
-                // Task #15: validate leader identity/term on the first chunk, before reading the
-                // rest of the stream — don't burn bandwidth on a stale/illegitimate leader.
-                let first_chunk = match stream.recv().await {
-                    Some(chunk) => chunk,
-                    None => {
-                        warn!("InstallSnapshotChunk stream closed before any chunk arrived");
-                        let _ = sender.send(Ok(SnapshotResponse {
-                            term: my_term,
-                            success: false,
-                            next_chunk: 0,
-                        }));
-                        return Ok(());
-                    }
-                };
-
-                let term_update = match check_incoming_term(my_term, first_chunk.leader_term) {
-                    TermDecision::RejectStale => {
-                        warn!(
-                            my_term,
-                            leader_term = first_chunk.leader_term,
-                            leader_id = first_chunk.leader_id,
-                            "Rejecting InstallSnapshotChunk from stale leader"
-                        );
-                        let _ = sender.send(Ok(SnapshotResponse {
-                            term: my_term,
-                            success: false,
-                            next_chunk: 0,
-                        }));
-                        return Ok(());
-                    }
-                    TermDecision::Accept => None,
-                    TermDecision::AcceptAndUpdateTerm(new_term) => Some(new_term),
-                };
-
-                // Legitimate leader (term >= ours) confirmed — reset now, matching AppendEntries.
-                self.reset_timer();
-
-                self.commit_hard_state(
+            InboundEvent::InstallSnapshotChunk(stream, sender) => {
+                self.handle_install_snapshot_chunk_workflow(
+                    stream,
+                    sender,
                     ctx,
-                    term_update,
-                    Some(VotedFor {
-                        voted_for_id: first_chunk.leader_id,
-                        voted_for_term: first_chunk.leader_term,
-                        committed: true,
-                    }),
-                )?;
-                self.shared_state().set_current_leader(first_chunk.leader_id);
-                let my_term = first_chunk.leader_term.max(my_term);
-
-                // ack_tx drained in background — push mode never reads it, avoids backpressure (#308).
-                let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
-                tokio::spawn(async move { while ack_rx.recv().await.is_some() {} });
-
-                let prepared = match ctx
-                    .state_machine_handler()
-                    .prepare_snapshot_stream(
-                        first_chunk,
-                        stream,
-                        ack_tx,
-                        &ctx.node_config.raft.snapshot,
-                    )
-                    .await
-                {
-                    Ok(prepared) => prepared,
-                    Err(e) => {
-                        warn!(
-                            ?e,
-                            "Failed to receive/prepare snapshot stream from leader, follower continues"
-                        );
-                        let _ = sender.send(Ok(SnapshotResponse {
-                            term: my_term,
-                            success: false,
-                            next_chunk: 0,
-                        }));
-                        return Ok(());
-                    }
-                };
-
-                // Sole write path: hand the received snapshot to the Worker, await the result.
-                let install_result = ctx.state_machine_commands().install_snapshot(prepared).await;
-
-                // Raft §7: reply success only once the Worker has confirmed install (or a safe no-op).
-                let _ = sender.send(Ok(SnapshotResponse {
-                    term: my_term,
-                    success: install_result.is_ok(),
-                    next_chunk: 0,
-                }));
-
-                match install_result {
-                    Err(e) => {
-                        if e.is_fatal() {
-                            return Err(e);
-                        }
-                        warn!(?e, "Snapshot install failed, follower continues");
-                    }
-                    Ok(result) => {
-                        info!("Snapshot stream successfully received and applied");
-
-                        let boundary = match result {
-                            SnapshotApplyResult::Applied { last_included } => last_included,
-                            SnapshotApplyResult::IgnoredStale { current } => current,
-                            SnapshotApplyResult::IgnoredDuplicate { current } => current,
-                        };
-                        // Purge intent submitted after replying — must not delay or ride on the
-                        // leader response.
-                        if let Err(e) = schedule_installed_snapshot_purge(
-                            boundary,
-                            ctx,
-                            &mut self.pending_purge_upto,
-                            &internal_event_tx,
-                        )
-                        .await
-                        {
-                            error!(?e, "Failed to schedule purge after installed snapshot");
-                        }
-                    }
-                }
+                    internal_event_tx,
+                    &state_snapshot,
+                )
+                .await?;
             }
 
             InboundEvent::JoinCluster(_join_request, sender) => {
@@ -575,6 +458,10 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
         Ok(())
+    }
+
+    fn pending_purge_upto_mut(&mut self) -> Option<&mut Option<LogId>> {
+        Some(&mut self.pending_purge_upto)
     }
 }
 

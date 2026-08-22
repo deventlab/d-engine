@@ -15,6 +15,7 @@ use crate::RaftContext;
 use crate::RaftLog;
 use crate::ReplicationCore;
 use crate::Result;
+use crate::SnapshotApplyResult;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
@@ -30,7 +31,10 @@ use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_proto::server::storage::SnapshotResponse;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -592,6 +596,173 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
             }
         }
         return Ok(());
+    }
+
+    /// Returns the purge watermark for roles that track it after an installed snapshot
+    /// (Follower, Learner). Returns `None` for roles that don't call
+    /// `handle_install_snapshot_chunk_workflow` (Candidate, Leader).
+    fn pending_purge_upto_mut(&mut self) -> Option<&mut Option<LogId>> {
+        None
+    }
+
+    /// Shared handling for a leader-pushed `InstallSnapshotChunk` stream. Only Follower
+    /// and Learner call this — Candidate and Leader reject the event outright before
+    /// ever reaching here. Mirrors `handle_append_entries_request_workflow`'s shape:
+    /// validate leader term on the first chunk, hand the stream to the Worker, reply,
+    /// then (on success) advance commit_index and schedule a purge.
+    async fn handle_install_snapshot_chunk_workflow(
+        &mut self,
+        mut stream: mpsc::Receiver<SnapshotChunk>,
+        sender: MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
+        ctx: &RaftContext<Self::T>,
+        internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
+        state_snapshot: &StateSnapshot,
+    ) -> Result<()> {
+        let my_term = self.current_term();
+
+        // Validate leader identity/term on the first chunk, before reading the
+        // rest of the stream — don't burn bandwidth on a stale/illegitimate leader.
+        let first_chunk = match stream.recv().await {
+            Some(chunk) => chunk,
+            None => {
+                warn!("InstallSnapshotChunk stream closed before any chunk arrived");
+                let _ = sender.send(Ok(SnapshotResponse {
+                    term: my_term,
+                    success: false,
+                    next_chunk: 0,
+                }));
+                return Ok(());
+            }
+        };
+
+        let term_update = match check_incoming_term(my_term, first_chunk.leader_term) {
+            TermDecision::RejectStale => {
+                warn!(
+                    my_term,
+                    leader_term = first_chunk.leader_term,
+                    leader_id = first_chunk.leader_id,
+                    "Rejecting InstallSnapshotChunk from stale leader"
+                );
+                let _ = sender.send(Ok(SnapshotResponse {
+                    term: my_term,
+                    success: false,
+                    next_chunk: 0,
+                }));
+                return Ok(());
+            }
+            TermDecision::Accept => None,
+            TermDecision::AcceptAndUpdateTerm(new_term) => Some(new_term),
+        };
+
+        // Legitimate leader (term >= ours) confirmed — reset now, matching AppendEntries.
+        self.reset_timer();
+
+        self.commit_hard_state(
+            ctx,
+            term_update,
+            Some(VotedFor {
+                voted_for_id: first_chunk.leader_id,
+                voted_for_term: first_chunk.leader_term,
+                committed: true,
+            }),
+        )?;
+        self.shared_state().set_current_leader(first_chunk.leader_id);
+        let my_term = first_chunk.leader_term.max(my_term);
+
+        // ack_tx drained in background — push mode never reads it, avoids backpressure (#308).
+        let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
+        tokio::spawn(async move {
+            let mut drained = 0u32;
+            while ack_rx.recv().await.is_some() {
+                drained += 1;
+            }
+            debug!(drained, "Snapshot ack channel drained and closed");
+        });
+
+        let prepared = match ctx
+            .state_machine_handler()
+            .prepare_snapshot_stream(first_chunk, stream, ack_tx, &ctx.node_config.raft.snapshot)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                warn!(
+                    ?e,
+                    "Failed to receive/prepare snapshot stream from leader, node continues"
+                );
+                let _ = sender.send(Ok(SnapshotResponse {
+                    term: my_term,
+                    success: false,
+                    next_chunk: 0,
+                }));
+                return Ok(());
+            }
+        };
+
+        // Sole write path: hand the received snapshot to the Worker, await the result.
+        let install_result = ctx.state_machine_commands().install_snapshot(prepared).await;
+
+        // Raft §7: reply success only once the Worker has confirmed install (or a safe no-op).
+        let _ = sender.send(Ok(SnapshotResponse {
+            term: my_term,
+            success: install_result.is_ok(),
+            next_chunk: 0,
+        }));
+
+        match install_result {
+            Err(e) => {
+                if e.is_fatal() {
+                    return Err(e);
+                }
+                warn!(?e, "Snapshot install failed, node continues");
+            }
+            Ok(result) => {
+                info!("Snapshot stream successfully received and applied");
+
+                let boundary = match result {
+                    SnapshotApplyResult::Applied { last_included } => {
+                        if last_included.index > self.commit_index()
+                            && let Err(e) = self.update_commit_index_with_signal(
+                                state_snapshot.role,
+                                my_term,
+                                last_included.index,
+                                &internal_event_tx,
+                            )
+                        {
+                            error!(?e, "Failed to advance commit_index after snapshot install");
+                        }
+                        last_included
+                    }
+                    SnapshotApplyResult::IgnoredStale { current } => current,
+                    SnapshotApplyResult::IgnoredDuplicate { current } => current,
+                };
+
+                let Some(pending_purge_upto) = self.pending_purge_upto_mut() else {
+                    return Err(ConsensusError::RoleViolation {
+                        current_role: "unknown",
+                        required_role: "Follower or Learner",
+                        context: "Role without purge tracking attempted to install a snapshot."
+                            .to_string(),
+                    }
+                    .into());
+                };
+
+                // Purge intent submitted after replying — must not delay or ride on the
+                // leader response.
+                if let Err(e) = schedule_installed_snapshot_purge(
+                    boundary,
+                    ctx,
+                    pending_purge_upto,
+                    &internal_event_tx,
+                )
+                .await
+                {
+                    error!(?e, "Failed to schedule purge after installed snapshot");
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn drain_read_buffer(&mut self) -> Result<()> {
