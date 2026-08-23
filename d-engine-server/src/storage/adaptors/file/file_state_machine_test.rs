@@ -786,3 +786,72 @@ async fn test_file_apply_snapshot_from_file_rejects_missing_last_included() {
         "last_applied must be unchanged after a rejected install"
     );
 }
+
+/// A snapshot advances `last_applied` past the follower's pre-snapshot WAL entries.
+/// If a crash leaves those stale entries in the WAL, replay must skip them
+/// (`index <= last_applied`) instead of clobbering the newer snapshot content (#442).
+#[tokio::test]
+async fn test_replay_wal_skips_stale_entries_below_last_applied() {
+    let dir = TempDir::new().expect("Failed to create temp dir");
+
+    // Follower applies key_1..key_5 = "old" at indexes 1..=5.
+    let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create follower");
+    sm.start().await.expect("start follower");
+    let stale: Vec<ApplyEntry> =
+        (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"old", i)).collect();
+    sm.apply_chunk(&stale).await.expect("apply pre-snapshot entries");
+
+    // Snapshot at index 10 overwrites the same keys with newer values.
+    let gen_sm = FileStateMachine::new(dir.path().join("gen")).await.expect("create generator");
+    gen_sm.start().await.expect("start generator");
+    let newer: Vec<ApplyEntry> =
+        (1..=10).map(|i| insert_at(format!("key_{i}").as_bytes(), b"new", i)).collect();
+    gen_sm.apply_chunk(&newer).await.expect("apply generator entries");
+    let snapshot_dir = dir.path().join("snapshot");
+    gen_sm
+        .generate_snapshot_data(snapshot_dir.clone(), LogId { term: 1, index: 10 })
+        .await
+        .expect("generate snapshot");
+
+    // Install the snapshot into the follower (jumps from 5 to 10).
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { term: 1, index: 10 }),
+        checksum: Bytes::from_static(&[0; 32]),
+    };
+    let result = sm
+        .apply_snapshot_from_file(&metadata, snapshot_dir)
+        .await
+        .expect("install snapshot");
+    assert!(
+        matches!(result, SnapshotApplyResult::Applied { last_included } if last_included.index == 10),
+        "expected Applied{{index:10}}, got: {result:?}"
+    );
+
+    // Simulate the crash window: stale pre-snapshot WAL entries survive while
+    // last_applied is already 10 — the state the old persist order could leave.
+    let stale_outcomes = vec![false; stale.len()];
+    sm.append_to_wal(&stale, &stale_outcomes).await.expect("append stale WAL");
+
+    // "Crash": drop and reload from disk.
+    drop(sm);
+
+    let recovered = FileStateMachine::new(dir.path().join("sm")).await.expect("reload after crash");
+    recovered.start().await.expect("start recovered");
+
+    // The snapshot's newer values must survive; stale WAL must NOT clobber them.
+    assert_eq!(
+        recovered.get(b"key_1").expect("read key_1"),
+        Some(Bytes::from_static(b"new")),
+        "key_1 must keep the snapshot value, not be clobbered by the stale WAL"
+    );
+    assert_eq!(
+        recovered.get(b"key_5").expect("read key_5"),
+        Some(Bytes::from_static(b"new")),
+        "key_5 must keep the snapshot value, not be clobbered by the stale WAL"
+    );
+    assert_eq!(
+        recovered.last_applied(),
+        LogId { term: 1, index: 10 },
+        "last_applied must remain at the snapshot boundary after recovery"
+    );
+}

@@ -532,9 +532,11 @@ impl FileStateMachine {
         let mut operations = Vec::new();
         let mut replayed_count = 0;
 
+        let last_applied = self.last_applied_index.load(Ordering::SeqCst);
+
         while pos + 17 < buffer.len() {
             // Read entry index (8 bytes)
-            let _index = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
+            let index = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
             pos += 8;
 
             // Read entry term (8 bytes)
@@ -625,6 +627,14 @@ impl FileStateMachine {
             let secs = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
             pos += 8;
             let expire_at_secs = if secs > 0 { Some(secs) } else { None };
+
+            if index <= last_applied {
+                debug!(
+                    "Skipped stale WAL entry at index {} (last_applied={})",
+                    index, last_applied
+                );
+                continue;
+            }
 
             operations.push((op_code, key, value, term, expire_at_secs));
             replayed_count += 1;
@@ -1503,8 +1513,8 @@ impl StateMachine for FileStateMachine {
 
         // Persist to disk
         self.persist_data_async().await?;
-        self.persist_metadata_async().await?;
         self.clear_wal_async().await?;
+        self.persist_metadata_async().await?;
 
         info!("Snapshot applied successfully");
 
