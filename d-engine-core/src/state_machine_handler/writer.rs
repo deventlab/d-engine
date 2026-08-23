@@ -8,6 +8,7 @@ use tracing::trace;
 use super::StateMachineWriterOps;
 use crate::ApplyResult;
 use crate::CapturedLocalSnapshot;
+use crate::OwnedSnapshotDir;
 use crate::Result;
 use crate::SnapshotApplyResult;
 use crate::SnapshotError;
@@ -220,7 +221,7 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
                 last_included: Some(last_included),
                 checksum,
             },
-            temp_dir: temp_path,
+            temp_dir: OwnedSnapshotDir::from_existing(temp_path)?,
         })
     }
 }

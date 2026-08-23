@@ -1934,6 +1934,100 @@ async fn test_snapshot_compression() {
     );
 }
 
+/// PR #442 review: `compress_directory` creates the destination `.tar.gz` file
+/// (`File::create(dest_path)`) *before* writing any archive content into it. If
+/// archiving fails partway (disk full, a source file vanishes, a permission
+/// error — anything mid-write), `build_local_snapshot`'s error path used to
+/// clean up only `temp_dir`, leaving a truncated `.tar.gz` behind at the exact
+/// path a *real* completed snapshot would use. That file passes every
+/// filename-based check downstream (`cleanup_snapshot` only looks at the
+/// `.gz` extension + naming convention, never at content), so it could be
+/// mistaken for a valid snapshot later.
+///
+/// This test forces `compress_directory` to fail mid-archive by making one
+/// file inside the captured snapshot directory unreadable (`chmod 000`), so
+/// `tokio_tar`'s `append_dir_all` errors out after `File::create(final_path)`
+/// has already run — reproducing the exact "file exists but is a partial
+/// write" window the bug leaves open.
+///
+/// # Scenario
+/// - `temp_dir` (captured snapshot) contains one normal file and one file
+///   with all read permissions stripped
+/// - `build_local_snapshot` is called on this capture
+///
+/// # Then
+/// - `build_local_snapshot` returns `Err`
+/// - the partial `.tar.gz` at the standard `final_path` must NOT be left on
+///   disk (this is the assertion that fails before the fix)
+/// - `temp_dir` must still be cleaned up too (pre-existing behavior, must
+///   not regress alongside the new cleanup)
+#[tokio::test]
+#[cfg(unix)]
+async fn test_build_local_snapshot_removes_partial_archive_on_compression_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let snapshot_dir = temp_dir.path().join("test_build_local_snapshot_compress_failure");
+    let mut sm = MockStateMachine::new();
+
+    sm.expect_last_applied().returning(|| LogId { index: 10, term: 2 });
+    sm.expect_generate_snapshot_data().returning(|path, _| {
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("readable.txt"), "fine").unwrap();
+
+        // Unreadable file: tar_builder.append_dir_all must fail trying to
+        // read its content, after compress_directory has already created
+        // final_path via File::create.
+        let unreadable = path.join("unreadable.bin");
+        fs::write(&unreadable, vec![0u8; 16]).unwrap();
+        fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        Ok(Bytes::from(vec![0; 32]))
+    });
+
+    let config = snapshot_config(snapshot_dir.clone());
+    let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
+        1,
+        0,
+        Arc::new(sm),
+        snapshot_dir.clone(),
+        config,
+        MockSnapshotPolicy::new(),
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    );
+
+    handler.try_begin_local_snapshot_capture().unwrap();
+    let captured = writer.capture_local_snapshot().await.unwrap();
+    let captured_temp_dir = captured.temp_dir.path().to_path_buf();
+
+    let result = handler.build_local_snapshot(captured).await;
+    handler.end_local_snapshot_capture();
+
+    assert!(
+        result.is_err(),
+        "build_local_snapshot must surface the compression failure"
+    );
+
+    let final_path = snapshot_dir.join("snapshot-10-2.tar.gz");
+    assert!(
+        !final_path.exists(),
+        "a partial/truncated archive must not be left at the standard snapshot \
+         path — later filename-based scans (cleanup_snapshot, snapshot transfer) \
+         can't tell it apart from a real completed snapshot"
+    );
+    assert!(
+        !captured_temp_dir.exists(),
+        "the uncompressed staging temp dir must still be cleaned up on failure"
+    );
+
+    // Restore permissions so tempfile's Drop can actually remove the directory.
+    let unreadable = captured_temp_dir.join("unreadable.bin");
+    if unreadable.exists() {
+        let _ = fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644));
+    }
+}
+
 #[cfg(feature = "watch")]
 mod broadcast_watch_events_tests {
     use bytes::Bytes;

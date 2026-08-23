@@ -282,3 +282,156 @@ async fn test_prepare_batch_requests_splits_snapshot_and_append_peers() {
         "peer 3 must be in append_requests"
     );
 }
+
+/// A brand new peer joining a leader whose log has NEVER been purged (the
+/// ordinary cluster-bootstrap case: `next_index == 1` and `first_entry_id ==
+/// 1` are both the normal starting values, not evidence of anything missing)
+/// must get a normal AppendEntries — routing it to a snapshot instead would
+/// mean every fresh node join / fresh cluster start pays for a full snapshot
+/// transfer it doesn't need.
+///
+/// # Scenario
+/// - Leader: first_entry_id = 1 (nothing ever purged), last_entry_id = 5
+/// - Peer 2: next_index = 1 (never replicated to before) -> prev_log_index = 0
+/// - Expected: peer 2 in append_requests (prev_log_term = 0), NOT in
+///   snapshot_targets
+///
+/// # Regression this guards (PR #442 review)
+/// The purge-boundary fix in `build_append_request` must distinguish
+/// "`prev_index == 0` because nothing was ever purged" from "`prev_index ==
+/// 0` because the peer needs entries from the very start, which were
+/// purged". A fix that reorders the match arms instead of guarding the
+/// `prev_index == 0` arm with `first_index <= 1` collapses both cases into
+/// NeedSnapshot — this test fails under that version.
+#[tokio::test]
+async fn test_prepare_batch_requests_routes_fresh_peer_to_append_when_log_never_purged() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context(
+        "/tmp/test_prepare_batch_requests_routes_fresh_peer_to_append_when_log_never_purged",
+        graceful_rx,
+        None,
+    );
+
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 5);
+    raft_log.expect_first_entry_id().returning(|| 1); // <── key: nothing ever purged
+    raft_log
+        .expect_get_entries_range()
+        .returning(|range| Ok(entries_in_range(range)));
+    raft_log.expect_entry_term().returning(|idx| match idx {
+        1..=5 => Some(1),
+        _ => None, // index 0: the virtual pre-log position, never a real entry
+    });
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    // Peer 2: next_index = 1 -> prev_log_index = 0, but the log was never purged.
+    let next_index = HashMap::from([(2u32, 1u64)]);
+
+    let result = handler
+        .prepare_batch_requests(
+            vec![],
+            StateSnapshot {
+                current_term: 1,
+                voted_for: None,
+                commit_index: 5,
+                role: Leader.into(),
+            },
+            LeaderStateSnapshot {
+                next_index,
+                match_index: HashMap::new(),
+                noop_log_id: None,
+            },
+            &ClusterMetadata {
+                single_voter: false,
+                replication_targets: vec![voter(2)],
+                total_voters: 2,
+            },
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        result.append_requests.iter().any(|(id, _, _)| *id == 2),
+        "a fresh peer on a never-purged log must receive a normal AppendEntries"
+    );
+    assert!(
+        !result.snapshot_targets.contains(&2),
+        "a fresh peer on a never-purged log must NOT be routed to snapshot"
+    );
+}
+
+/// A peer this leader has never replicated to (`next_index == 1`), on a log
+/// whose prefix HAS been purged, must be routed to snapshot exactly once —
+/// not duplicated between the two internal classification passes
+/// (`retrieve_to_be_synced_logs_for_peers` and `build_append_request`), and
+/// never also handed an AppendEntries in the same round.
+///
+/// # Scenario
+/// - Leader: first_entry_id = 11 (indices 1-10 purged), last_entry_id = 15
+/// - Peer 2: next_index = 1 -> prev_log_index = 0, and everything from index
+///   1 no longer exists on this leader
+/// - Expected: peer 2 appears in snapshot_targets exactly once, and does
+///   NOT appear in append_requests
+#[tokio::test]
+async fn test_prepare_batch_requests_routes_never_replicated_peer_to_snapshot_exactly_once() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context(
+        "/tmp/test_prepare_batch_requests_routes_never_replicated_peer_to_snapshot_exactly_once",
+        graceful_rx,
+        None,
+    );
+
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 15);
+    raft_log.expect_first_entry_id().returning(|| 11); // <── key: prefix purged
+    raft_log.expect_get_entries_range().returning(|_| Ok(vec![]));
+    raft_log.expect_entry_term().returning(|idx| match idx {
+        10 => Some(2),
+        11..=15 => Some(2),
+        _ => None, // 0-9 are purged (or the virtual pre-log position)
+    });
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    // Peer 2: next_index = 1 -> prev_log_index = 0, never replicated to.
+    let next_index = HashMap::from([(2u32, 1u64)]);
+
+    let result = handler
+        .prepare_batch_requests(
+            vec![],
+            StateSnapshot {
+                current_term: 2,
+                voted_for: None,
+                commit_index: 15,
+                role: Leader.into(),
+            },
+            LeaderStateSnapshot {
+                next_index,
+                match_index: HashMap::new(),
+                noop_log_id: None,
+            },
+            &ClusterMetadata {
+                single_voter: false,
+                replication_targets: vec![voter(2)],
+                total_voters: 2,
+            },
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let snapshot_target_count = result.snapshot_targets.iter().filter(|&&id| id == 2).count();
+    assert_eq!(
+        snapshot_target_count, 1,
+        "peer 2 must be routed to snapshot exactly once, not duplicated across the two \
+         classification passes"
+    );
+    assert!(
+        !result.append_requests.iter().any(|(id, _, _)| *id == 2),
+        "peer 2 must NOT also receive an AppendEntries in the same round"
+    );
+}

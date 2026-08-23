@@ -10,6 +10,7 @@ use crate::InternalEvent;
 use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
 use crate::MockStateMachineHandler;
+use crate::OwnedSnapshotDir;
 use crate::SnapshotError;
 use crate::StateMachineCommand;
 use crate::StateMachineCommandSender;
@@ -690,9 +691,13 @@ async fn test_handle_create_snapshot_success_sets_flag_and_emits_event() {
             .returning(move |_captured| Ok((expected_metadata.clone(), expected_path.clone())));
     }
 
+    // `build_local_snapshot` is mocked below and never actually reads this directory,
+    // but `OwnedSnapshotDir::from_existing` still requires a real path on disk (it
+    // adopts, never creates).
+    let captured_dir = tempfile::tempdir().unwrap().keep();
     let captured = CapturedLocalSnapshot {
         metadata: SnapshotMetadata::default(),
-        temp_dir: std::path::PathBuf::from("/tmp/captured-10"),
+        temp_dir: OwnedSnapshotDir::from_existing(captured_dir).unwrap(),
     };
     let context = MockBuilder::new(graceful_rx)
         .with_state_machine_handler(sm_handler)

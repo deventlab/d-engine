@@ -369,14 +369,12 @@ where
             "build_local_snapshot: compressing"
         );
         let final_path = self.path_mgr.final_snapshot_path(&last_included);
-        if let Err(e) = self.compress_directory(&temp_dir, &final_path).await {
-            let _ = remove_dir_all(&temp_dir).await;
+        if let Err(e) = self.compress_directory(temp_dir.path(), &final_path).await {
+            let _ = temp_dir.remove().await;
+            let _ = remove_file(&final_path).await;
             return Err(e);
         }
-
-        remove_dir_all(&temp_dir).await.map_err(|e| {
-            SnapshotError::OperationFailed(format!("Failed to remove temp directory: {e}"))
-        })?;
+        temp_dir.remove().await?;
 
         debug!(%self.snapshot_config.cleanup_retain_count, "build_local_snapshot: cleanup old versions");
         if let Err(e) = self

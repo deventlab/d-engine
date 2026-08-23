@@ -47,6 +47,8 @@ pub use worker::*;
 pub use writer::*;
 
 #[cfg(test)]
+mod command_test;
+#[cfg(test)]
 mod default_state_machine_handler_test;
 #[cfg(test)]
 mod snapshot_assembler_test;

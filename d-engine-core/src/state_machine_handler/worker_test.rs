@@ -16,9 +16,42 @@ use tokio::sync::{mpsc, watch};
 use super::StateMachineWorker;
 use crate::{
     ApplyResult, CapturedLocalSnapshot, ConsensusError, Error, InternalEvent,
-    MockStateMachineWriterOps, MockTypeConfig, PreparedSnapshot, SnapshotApplyResult,
-    SnapshotError, StateMachineCommand,
+    MockStateMachineWriterOps, MockTypeConfig, OwnedSnapshotDir, PreparedSnapshot,
+    SnapshotApplyResult, SnapshotError, StateMachineCommand,
 };
+
+/// A real, throwaway directory adopted by a fresh `OwnedSnapshotDir` — stands in for
+/// the export `capture_local_snapshot` would have produced. `OwnedSnapshotDir::from_existing`
+/// requires the path to actually exist on disk (it adopts, never creates), so these
+/// tests can't get away with a bare fake path like the pre-#442 `PathBuf::from("/tmp/...")`
+/// literals did.
+fn captured_temp_dir_for_test() -> OwnedSnapshotDir {
+    let dir = tempfile::tempdir().unwrap().keep();
+    OwnedSnapshotDir::from_existing(dir).unwrap()
+}
+
+/// Same as `captured_temp_dir_for_test`, but also hands back the raw path — for tests
+/// that need to assert on the directory's existence *after* the guard has been moved
+/// into a `CapturedLocalSnapshot` and dropped somewhere inside the Worker.
+fn captured_temp_dir_for_test_with_path() -> (std::path::PathBuf, OwnedSnapshotDir) {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let guard = OwnedSnapshotDir::from_existing(dir.clone()).unwrap();
+    (dir, guard)
+}
+
+/// `OwnedSnapshotDir`'s `Drop` fallback cleans up on a detached OS thread, not
+/// synchronously — so a directory that's about to disappear via `Drop` isn't
+/// guaranteed gone the instant the value is dropped. Poll instead of asserting once,
+/// to avoid a flaky test racing that background thread.
+async fn wait_until_removed(path: &std::path::Path) {
+    for _ in 0..100 {
+        if !path.exists() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("{path:?} was not removed within 1s (Drop cleanup fallback never ran?)");
+}
 
 /// Helper: build an InstallSnapshot command backed by a real (empty) temp dir.
 /// Returns the command plus the response receiver to await on.
@@ -774,7 +807,7 @@ async fn test_capture_local_snapshot_does_not_block_subsequent_apply_entries() {
         let _ = rx.recv();
         Ok(CapturedLocalSnapshot {
             metadata: SnapshotMetadata::default(),
-            temp_dir: std::path::PathBuf::from("/tmp/gated-capture-test"),
+            temp_dir: captured_temp_dir_for_test(),
         })
     });
     mock_smw
@@ -866,7 +899,7 @@ async fn test_capture_skipped_when_lock_already_held() {
         let _ = rx.recv();
         Ok(CapturedLocalSnapshot {
             metadata: SnapshotMetadata::default(),
-            temp_dir: std::path::PathBuf::from("/tmp/lock-held-test"),
+            temp_dir: captured_temp_dir_for_test(),
         })
     });
 
@@ -929,7 +962,7 @@ async fn test_install_waits_for_capture_to_release_lock() {
         let _ = rx.recv();
         Ok(CapturedLocalSnapshot {
             metadata: SnapshotMetadata::default(),
-            temp_dir: std::path::PathBuf::from("/tmp/install-waits-test"),
+            temp_dir: captured_temp_dir_for_test(),
         })
     });
     mock_smw.expect_install_prepared_snapshot().times(1).returning(|_, _| {
@@ -1016,6 +1049,12 @@ async fn test_capture_superseded_by_install_even_when_capture_is_more_advanced()
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let release_rx = std::sync::Mutex::new(Some(release_rx));
 
+    // PR #442 review: this capture's export directory must eventually be cleaned up
+    // even though it's rejected (superseded) and never reaches `build_local_snapshot` —
+    // captured below so the test can assert on it after the fact.
+    let (superseded_dir_path, superseded_dir_guard) = captured_temp_dir_for_test_with_path();
+    let superseded_dir_guard = std::sync::Mutex::new(Some(superseded_dir_guard));
+
     let mut mock_smw = MockStateMachineWriterOps::new();
     // Capture's own boundary (index=100) is ahead of what the leader is pushing
     // (index=90) — proves rejection is about "install happened", not "who's newer".
@@ -1030,7 +1069,7 @@ async fn test_capture_superseded_by_install_even_when_capture_is_more_advanced()
                 }),
                 ..Default::default()
             },
-            temp_dir: std::path::PathBuf::from("/tmp/superseded-test"),
+            temp_dir: superseded_dir_guard.lock().unwrap().take().expect("called once"),
         })
     });
     mock_smw.expect_install_prepared_snapshot().times(1).returning(|_, _| {
@@ -1106,6 +1145,60 @@ async fn test_capture_superseded_by_install_even_when_capture_is_more_advanced()
              capture's own boundary index=100 > install's index=90), got: {other:?}"
         ),
     }
+
+    // PR #442 review regression: the superseded capture's export directory must
+    // still be cleaned up — before the `OwnedSnapshotDir` fix, this directory was
+    // silently leaked (nobody in the `CaptureSuperseded` branch called remove_dir_all).
+    wait_until_removed(&superseded_dir_path).await;
+}
+
+/// PR #442 review regression: the other leak path CodeRabbit flagged alongside
+/// `CaptureSuperseded` — `LocalSnapshotReady`'s `let _ = response.send(result);`
+/// silently drops `result` (which can carry a freshly-captured
+/// `CapturedLocalSnapshot`) when the receiving end has already been dropped
+/// (e.g. the caller's task was aborted by a role transition or shutdown before
+/// the capture finished). Before the `OwnedSnapshotDir` fix, that dropped
+/// `result` leaked its export directory just like the superseded case.
+///
+/// Drives `LocalSnapshotReady` directly (rather than going through the full
+/// `CaptureLocalSnapshot` round trip) so the test can deterministically drop
+/// the response receiver *before* the Worker ever processes the command —
+/// no race to win, `send()` is guaranteed to find a dead receiver.
+#[tokio::test]
+async fn test_local_snapshot_ready_cleans_up_capture_when_response_receiver_dropped() {
+    let mock_smw = MockStateMachineWriterOps::new();
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (dir_path, dir_guard) = captured_temp_dir_for_test_with_path();
+    let (response, response_rx) = oneshot::channel();
+    drop(response_rx); // the caller already gave up before the result could arrive
+
+    sm_apply_tx
+        .send(StateMachineCommand::LocalSnapshotReady {
+            captured: Ok(CapturedLocalSnapshot {
+                metadata: SnapshotMetadata::default(),
+                temp_dir: dir_guard,
+            }),
+            epoch_before: 0,
+            response,
+        })
+        .unwrap();
+
+    wait_until_removed(&dir_path).await;
 }
 
 /// #436: shutdown must wait for an in-flight CaptureLocalSnapshot task instead of
@@ -1137,7 +1230,7 @@ async fn test_shutdown_waits_for_in_flight_capture_before_returning() {
         let _ = rx.recv();
         Ok(CapturedLocalSnapshot {
             metadata: SnapshotMetadata::default(),
-            temp_dir: std::path::PathBuf::from("/tmp/shutdown-waits-test"),
+            temp_dir: captured_temp_dir_for_test(),
         })
     });
 

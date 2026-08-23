@@ -2,6 +2,7 @@
 //! all state-machine mutations.
 //! one serial writer.
 
+use std::path::Path;
 use std::path::PathBuf;
 
 use crate::Result;
@@ -12,6 +13,7 @@ use d_engine_proto::server::storage::SnapshotMetadata;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tracing::warn;
 
 /// A snapshot stream already fully received and decompressed to a local temp
 /// directory. Owns the directory's lifetime: dropping it (e.g. once the
@@ -22,16 +24,90 @@ pub struct PreparedSnapshot {
     pub temp_dir: TempDir,
 }
 
+/// Owns a directory on disk produced by a locally-captured snapshot export
+/// (`generate_snapshot_data`). Adopts an already-existing directory — it never
+/// creates one itself — and guarantees removal no matter which path drops the
+/// value: normal consumption via `remove().await`, a superseded capture, a
+/// dead response channel, or any future discard path nobody remembered to
+/// clean up explicitly.
+#[derive(Debug)]
+pub struct OwnedSnapshotDir {
+    path: PathBuf,
+}
+
+impl OwnedSnapshotDir {
+    /// Adopts an already-existing directory. Fails if `path` doesn't exist or
+    /// isn't a directory — this type never creates directories itself.
+    pub(crate) fn from_existing(path: PathBuf) -> Result<Self> {
+        let meta = std::fs::metadata(&path).map_err(|e| {
+            SnapshotError::OperationFailed(format!(
+                "captured snapshot dir {path:?} does not exist: {e}"
+            ))
+        })?;
+        if !meta.is_dir() {
+            return Err(SnapshotError::OperationFailed(format!(
+                "captured snapshot path {path:?} is not a directory"
+            ))
+            .into());
+        }
+        Ok(Self { path })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Explicit async cleanup for the expected path — callers that know
+    /// they're done should call this instead of relying on `Drop`'s
+    /// best-effort fallback. Uses `spawn_blocking` since removing a full
+    /// state-machine export can be a non-trivial recursive delete.
+    pub(crate) async fn remove(self) -> Result<()> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || std::fs::remove_dir_all(path))
+            .await
+            .map_err(|e| SnapshotError::OperationFailed(format!("cleanup task panicked: {e}")))?
+            .map_err(|e| {
+                SnapshotError::OperationFailed(format!("failed to remove snapshot dir: {e}")).into()
+            })
+    }
+}
+
+impl Drop for OwnedSnapshotDir {
+    /// Best-effort fallback for paths that discard the value without calling
+    /// `remove()` explicitly (superseded capture, dead response channel, a
+    /// cancelled future, ...) — NOT the primary cleanup mechanism. Spawns a
+    /// detached OS thread so it never blocks the tokio runtime and still works
+    /// outside a tokio context (shutdown, test teardown). Also runs (harmlessly)
+    /// after an explicit `remove()` already succeeded — `NotFound` is expected
+    /// and silent; only genuine failures are logged. Never panics.
+    fn drop(&mut self) {
+        let path = self.path.clone();
+        if let Err(e) =
+            std::thread::Builder::new()
+                .name("d-engine-snapshot-cleanup".into())
+                .spawn(move || {
+                    if let Err(e) = std::fs::remove_dir_all(&path)
+                        && e.kind() != std::io::ErrorKind::NotFound
+                    {
+                        warn!(?path, %e, "failed to remove abandoned snapshot directory");
+                    }
+                })
+        {
+            warn!(%e, "failed to spawn snapshot dir cleanup thread — directory may leak");
+        }
+    }
+}
+
 /// A locally-captured snapshot: `generate_snapshot_data` has already run and already
 /// committed `SnapshotMetadata` as the state machine's current snapshot (each
 /// `StateMachine` adapter does this internally as part of that call) — nothing here
-/// still touches the live state machine. `temp_dir` is a path under `snapshots_dir`,
-/// not an OS tempdir, so cleanup is the caller's job (mirrors the pre-#436
-/// `create_snapshot` behavior).
+/// still touches the live state machine. `temp_dir` owns the exported directory's
+/// lifetime (see `OwnedSnapshotDir`): dropping `CapturedLocalSnapshot` on any path —
+/// not just the expected `build_local_snapshot` consumption — cleans it up.
 #[derive(Debug)]
 pub struct CapturedLocalSnapshot {
     pub metadata: SnapshotMetadata,
-    pub temp_dir: PathBuf,
+    pub temp_dir: OwnedSnapshotDir,
 }
 
 /// The only channel through which anything may mutate the state machine.

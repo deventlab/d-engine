@@ -116,6 +116,7 @@ where
                 }
                 PeerEntriesResult::NeedSnapshot => {
                     snapshot_targets.push(peer_id);
+                    skip_peers.insert(peer_id);
                 }
                 PeerEntriesResult::CorruptGap {
                     start,
@@ -571,7 +572,7 @@ where
 
         let prev_log_term = match raft_log.entry_term(prev_index) {
             Some(term) => term,
-            None if prev_index == 0 => 0,
+            None if prev_index == 0 && first_index <= 1 => 0,
             None if prev_index < first_index => {
                 return Ok((peer_id, BuildAppendOutcome::NeedSnapshot));
             }

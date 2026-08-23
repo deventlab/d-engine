@@ -824,3 +824,141 @@ async fn test_build_append_request_rejects_inconsistent_prev_log_term() {
         )))
     ));
 }
+
+// ============================================================================
+// prev_index == 0 boundary tests (PR #442 review)
+//
+// `build_append_request` derives `prev_index = next_index - 1`, so any peer
+// this leader has never replicated to (next_index == 1) hits prev_index == 0.
+// `entry_term(0)` is always `None` (index 0 is the Raft "before the log"
+// sentinel, never a real entry), so this always falls into the `None if ...`
+// guard chain below. Two cases must be told apart:
+//   - first_index == 1 (log never purged): prev_index == 0 is the ordinary
+//     "peer starting from scratch" case -> normal Append with prev_log_term=0.
+//   - first_index > 1 (leader purged its prefix): prev_index == 0 means the
+//     peer needs everything from the very start, which no longer exists on
+//     this leader -> NeedSnapshot.
+// A naive "just swap the match arms" fix breaks the first case (every fresh
+// peer / cluster bootstrap would wrongly get routed to snapshot instead of
+// a normal AppendEntries) — these three tests pin down all three branches
+// of the guard chain so that regression can't land silently again.
+// ============================================================================
+
+/// A peer this leader has never replicated to, on a log that has never been
+/// purged, must receive a normal AppendEntries with `prev_log_term = 0` —
+/// NOT be routed to a snapshot. This is the ordinary "brand new peer /
+/// fresh cluster bootstrap" case and must keep working.
+///
+/// # Scenario
+/// - Leader: first_entry_id = 1 (nothing ever purged), last_entry_id = 5
+/// - Peer 2: next_index = 1 -> prev_log_index = 0
+/// - `entry_term(0)` returns `None` (index 0 is never a real entry)
+/// - Expected: `BuildAppendOutcome::Append` with `prev_log_term == 0`
+#[tokio::test]
+async fn test_build_append_request_appends_with_zero_term_when_log_never_purged() {
+    let mut context = setup_mock_replication_test_context(1);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let peer_id = 2;
+
+    let raft_log_mut = Arc::get_mut(&mut context.raft_log).unwrap();
+    raft_log_mut.expect_first_entry_id().returning(|| 1);
+    raft_log_mut.expect_last_entry_id().returning(|| 5);
+    raft_log_mut.expect_entry_term().returning(|_| None);
+
+    let data = ReplicationData {
+        leader_last_index_before: 5,
+        current_term: 1,
+        commit_index: 5,
+        peer_next_indices: HashMap::from([(peer_id, 1_u64)]),
+    };
+    let mut entries_per_peer: HashMap<u32, Vec<Entry>> = HashMap::new();
+
+    let (_id, outcome) = handler
+        .build_append_request(&context.raft_log, peer_id, &mut entries_per_peer, &data)
+        .expect("a fresh peer on a never-purged log must not error");
+
+    let crate::BuildAppendOutcome::Append { request, .. } = outcome else {
+        panic!("expected Append for a fresh peer on a never-purged log, got NeedSnapshot");
+    };
+    assert_eq!(request.prev_log_index, 0);
+    assert_eq!(
+        request.prev_log_term, 0,
+        "prev_log_term must be 0 for the virtual pre-log position, not treated as corruption"
+    );
+}
+
+/// A peer this leader has never replicated to, on a log whose prefix has
+/// been purged, must be routed to a snapshot — the entries it needs
+/// (starting at index 1) no longer exist on this leader.
+///
+/// # Scenario
+/// - Leader: first_entry_id = 11 (indices 1-10 purged), last_entry_id = 15
+/// - Peer 2: next_index = 1 -> prev_log_index = 0
+/// - Expected: `BuildAppendOutcome::NeedSnapshot`
+#[tokio::test]
+async fn test_build_append_request_returns_need_snapshot_when_never_replicated_and_log_purged() {
+    let mut context = setup_mock_replication_test_context(1);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let peer_id = 2;
+
+    let raft_log_mut = Arc::get_mut(&mut context.raft_log).unwrap();
+    raft_log_mut.expect_first_entry_id().returning(|| 11);
+    raft_log_mut.expect_last_entry_id().returning(|| 15);
+    raft_log_mut.expect_entry_term().returning(|_| None);
+
+    let data = ReplicationData {
+        leader_last_index_before: 15,
+        current_term: 1,
+        commit_index: 15,
+        peer_next_indices: HashMap::from([(peer_id, 1_u64)]),
+    };
+    let mut entries_per_peer: HashMap<u32, Vec<Entry>> = HashMap::new();
+
+    let (_id, outcome) = handler
+        .build_append_request(&context.raft_log, peer_id, &mut entries_per_peer, &data)
+        .expect("build_append_request itself must not error — NeedSnapshot is a normal outcome");
+
+    assert!(
+        matches!(outcome, crate::BuildAppendOutcome::NeedSnapshot),
+        "a never-replicated peer on a purged log must be routed to snapshot, not Append"
+    );
+}
+
+/// A peer that's fallen behind the purge boundary (but has received some
+/// entries before, unlike the `prev_index == 0` cases above) must also be
+/// routed to a snapshot. This is the general `prev_index > 0` case CodeRabbit
+/// flagged as untested — every existing test before this one only exercises
+/// `prev_index` values that are either in-range or exactly 0.
+///
+/// # Scenario
+/// - Leader: first_entry_id = 11 (indices 1-10 purged), last_entry_id = 15
+/// - Peer 2: next_index = 4 -> prev_log_index = 3, which is purged
+/// - Expected: `BuildAppendOutcome::NeedSnapshot`
+#[tokio::test]
+async fn test_build_append_request_returns_need_snapshot_when_prev_index_below_purge_boundary() {
+    let mut context = setup_mock_replication_test_context(1);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+    let peer_id = 2;
+
+    let raft_log_mut = Arc::get_mut(&mut context.raft_log).unwrap();
+    raft_log_mut.expect_first_entry_id().returning(|| 11);
+    raft_log_mut.expect_last_entry_id().returning(|| 15);
+    raft_log_mut.expect_entry_term().returning(|_| None);
+
+    let data = ReplicationData {
+        leader_last_index_before: 15,
+        current_term: 1,
+        commit_index: 15,
+        peer_next_indices: HashMap::from([(peer_id, 4_u64)]),
+    };
+    let mut entries_per_peer: HashMap<u32, Vec<Entry>> = HashMap::new();
+
+    let (_id, outcome) = handler
+        .build_append_request(&context.raft_log, peer_id, &mut entries_per_peer, &data)
+        .expect("build_append_request itself must not error — NeedSnapshot is a normal outcome");
+
+    assert!(
+        matches!(outcome, crate::BuildAppendOutcome::NeedSnapshot),
+        "a peer behind the purge boundary (prev_index=3 < first_index=11) must be routed to snapshot"
+    );
+}

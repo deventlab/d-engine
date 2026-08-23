@@ -6,7 +6,7 @@ The Watch feature provides real-time notifications when keys change in d-engine,
 
 ### Enable Watch
 
-Edit `config/base/raft.toml`:
+Add to your node's TOML config file:
 
 ```toml
 [raft.watch]
