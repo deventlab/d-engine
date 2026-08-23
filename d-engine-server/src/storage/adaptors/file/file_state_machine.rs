@@ -81,6 +81,21 @@
 //! - **Background Cleanup**: Periodic async worker scans and deletes expired keys
 //! - **Zero Overhead**: When TTL feature is disabled, no lease components are initialized
 
+use crate::storage::TtlLease;
+use async_trait::async_trait;
+use bytes::Bytes;
+use d_engine_core::Command;
+use d_engine_core::Error;
+use d_engine_core::Lease;
+use d_engine_core::ScanResult;
+use d_engine_core::StateMachine;
+use d_engine_core::StorageError;
+use d_engine_core::file_io::compute_checksum_from_folder_path;
+use d_engine_core::{ApplyEntry, SnapshotApplyResult};
+use d_engine_core::{ApplyResult, SnapshotError};
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
@@ -90,20 +105,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
-
-use async_trait::async_trait;
-use bytes::Bytes;
-use d_engine_core::Command;
-use d_engine_core::Error;
-use d_engine_core::Lease;
-use d_engine_core::ScanResult;
-use d_engine_core::StateMachine;
-use d_engine_core::StorageError;
-use d_engine_core::{ApplyEntry, SnapshotApplyResult};
-use d_engine_core::{ApplyResult, SnapshotError};
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use parking_lot::RwLock;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::fs::OpenOptions;
@@ -114,8 +115,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
-
-use crate::storage::TtlLease;
 
 type FileStateMachineDataType = RwLock<HashMap<Bytes, (Bytes, u64)>>;
 
@@ -1387,6 +1386,16 @@ impl StateMachine for FileStateMachine {
             std::cmp::Ordering::Greater => {}
         }
 
+        // Verify the snapshot's end-to-end checksum before installing (#436).
+        let computed_checksum = compute_checksum_from_folder_path(&snapshot_dir).await?;
+        if metadata.checksum.as_ref() != computed_checksum.as_ref() {
+            error!(
+                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
+                computed_checksum, metadata.checksum
+            );
+            return Err(SnapshotError::ChecksumMismatch.into());
+        }
+
         info!("Applying snapshot from file: {:?}", snapshot_dir);
 
         // Read from the snapshot.bin file inside the directory
@@ -1526,10 +1535,8 @@ impl StateMachine for FileStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        last_included: LogId,
+        _last_included: LogId,
     ) -> Result<Bytes, Error> {
-        info!("Generating snapshot data up to {:?}", last_included);
-
         // Create snapshot directory
         fs::create_dir_all(&new_snapshot_dir).await?;
 
@@ -1569,18 +1576,10 @@ impl StateMachine for FileStateMachine {
 
         file.flush().await?;
 
-        // Update metadata
-        let metadata = SnapshotMetadata {
-            last_included: Some(last_included),
-            checksum: Bytes::from(vec![0; 32]), // Simple checksum for demo
-        };
-
-        self.update_last_snapshot_metadata(&metadata)?;
-
         info!("Snapshot generated at {:?}", snapshot_path);
 
-        // Return dummy checksum
-        Ok(Bytes::from_static(&[0u8; 32]))
+        let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
+        Ok(Bytes::copy_from_slice(&checksum))
     }
 
     fn save_hard_state(&self) -> Result<(), Error> {

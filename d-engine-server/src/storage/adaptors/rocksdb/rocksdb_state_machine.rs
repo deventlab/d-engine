@@ -1,10 +1,6 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::SystemTime;
-
+use crate::storage::TtlLease;
 use arc_swap::ArcSwapOption;
+use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
@@ -16,12 +12,10 @@ use d_engine_core::SnapshotApplyResult;
 use d_engine_core::SnapshotError;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
+use d_engine_core::file_io::compute_checksum_from_folder_path;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
-use std::path::Path;
-
-use async_trait::async_trait;
 use rocksdb::Cache;
 use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::DB;
@@ -37,13 +31,17 @@ use rocksdb::WriteBatchWithIndex;
 use rocksdb::WriteOptions;
 use serde::Deserialize;
 use serde::Serialize;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::SystemTime;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
 use tracing::warn;
-
-use crate::storage::TtlLease;
 
 use super::STATE_MACHINE_CF;
 use super::STATE_MACHINE_META_CF;
@@ -954,6 +952,16 @@ impl StateMachine for RocksDBStateMachine {
             }
         }
 
+        // Verify the snapshot's end-to-end checksum before installing (#436).
+        let computed_checksum = compute_checksum_from_folder_path(&snapshot_dir).await?;
+        if metadata.checksum.as_ref() != computed_checksum.as_ref() {
+            error!(
+                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
+                computed_checksum, metadata.checksum
+            );
+            return Err(SnapshotError::ChecksumMismatch.into());
+        }
+
         info!("Applying snapshot from: {:?}", snapshot_dir);
 
         // Stop serving — prevents SM reads/writes during restore
@@ -980,7 +988,7 @@ impl StateMachine for RocksDBStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        last_included: LogId,
+        _last_included: LogId,
     ) -> Result<Bytes, Error> {
         // Export only SM CFs: compact SST-only export, no Raft log data.
         // export_column_family() creates only the final subdirectory (e.g. "sm"), so the parent
@@ -1037,13 +1045,7 @@ impl StateMachine for RocksDBStateMachine {
             tokio::fs::write(&ttl_path, ttl_snapshot).await?;
         }
 
-        // Update metadata
-        let checksum = [0; 32];
-        let snapshot_metadata = SnapshotMetadata {
-            last_included: Some(last_included),
-            checksum: Bytes::copy_from_slice(&checksum),
-        };
-        self.persist_last_snapshot_metadata(&snapshot_metadata)?;
+        let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
 
         info!("Snapshot generated at {:?}", new_snapshot_dir);
         Ok(Bytes::copy_from_slice(&checksum))

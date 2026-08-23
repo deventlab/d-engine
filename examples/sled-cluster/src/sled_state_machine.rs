@@ -339,7 +339,7 @@ impl StateMachine for SledStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: PathBuf,
-        last_included: LogId,
+        _last_included: LogId,
     ) -> Result<Bytes> {
         // No internal locking needed: `StateMachineWorker` is the sole caller of
         // generate_snapshot_data/apply_snapshot_from_file/apply_chunk, and it processes
@@ -352,7 +352,6 @@ impl StateMachine for SledStateMachine {
 
         let exist_db_tree = self.current_tree();
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
-        let new_snapshot_metadatat_tree = new_tree(&new_db, STATE_SNAPSHOT_METADATA_TREE)?;
 
         let mut batch = sled::Batch::default();
         let mut counter = 0;
@@ -383,24 +382,6 @@ impl StateMachine for SledStateMachine {
 
         // Calculate the checksum after generating snapshot data
         let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
-
-        println!("checksum = {checksum:?}",);
-        // Make sure last included is updated to the new ones
-
-        let last_snapshot_metadata = SnapshotMetadata {
-            last_included: Some(last_included),
-            checksum: Bytes::copy_from_slice(&checksum),
-        };
-
-        self.update_last_snapshot_metadata(&last_snapshot_metadata)?;
-
-        // Make sure last included is persisted into local database
-        self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
-        // Make sure last included is persisted into the new database
-        self.persist_last_snapshot_metadata_with_tree(
-            new_snapshot_metadatat_tree,
-            &last_snapshot_metadata,
-        )?;
 
         Ok(Bytes::copy_from_slice(&checksum))
     }

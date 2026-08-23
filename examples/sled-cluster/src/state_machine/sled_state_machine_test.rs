@@ -4,16 +4,15 @@
 //! SledStateMachine to that suite and adds sled-specific scenarios not covered
 //! by the standard suite.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use bytes::Bytes;
-use d_engine::{ApplyEntry, Command, Error, StateMachine};
 use d_engine::common::LogId;
 use d_engine::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
+use d_engine::{ApplyEntry, Command, Error, StateMachine};
+use std::sync::Arc;
 use tempfile::TempDir;
 
-use crate::{SledStateMachine, init_sled_state_machine_db, STATE_SNAPSHOT_METADATA_TREE};
+use crate::SledStateMachine;
 
 // ── Builder ───────────────────────────────────────────────────────────────────
 
@@ -28,7 +27,9 @@ struct SledBuilder {
 
 impl SledBuilder {
     fn new() -> Self {
-        Self { temp_dir: TempDir::new().expect("create TempDir") }
+        Self {
+            temp_dir: TempDir::new().expect("create TempDir"),
+        }
     }
 }
 
@@ -102,33 +103,6 @@ async fn test_snapshot_captures_all_current_data() {
             "key {key} missing from snapshot"
         );
     }
-
-    // Snapshot metadata must reflect the requested last_included index.
-    let meta = sm.snapshot_metadata().unwrap();
-    assert_eq!(meta.last_included.unwrap().index, 5);
-}
-
-/// Snapshot DB must contain the snapshot metadata tree with the correct index,
-/// so a joining follower can verify the snapshot before applying it.
-#[tokio::test]
-async fn test_snapshot_db_contains_metadata_tree() {
-    let temp = TempDir::new().unwrap();
-    let sm = SledStateMachine::new(temp.path(), 1).unwrap();
-
-    let snap_dir = temp.path().join("meta_snapshot");
-    sm.generate_snapshot_data(snap_dir.clone(), LogId { index: 42, term: 5 })
-        .await
-        .unwrap();
-
-    let snap_db = init_sled_state_machine_db(&snap_dir).unwrap();
-    let metadata_tree = snap_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
-
-    let stored = SledStateMachine::load_snapshot_metadata(&metadata_tree)
-        .unwrap()
-        .expect("snapshot metadata must be present in snapshot DB");
-    let li = stored.last_included.unwrap();
-    assert_eq!(li.index, 42);
-    assert_eq!(li.term, 5);
 }
 
 /// Snapshot must only include data that was in the SM at generation time.
@@ -139,17 +113,15 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
     let sm = SledStateMachine::new(temp.path(), 1).unwrap();
 
     // Write two keys before snapshot
-    let pre_entries = vec![
-        ApplyEntry {
-            index: 1,
-            term: 1,
-            command: Command::Insert {
-                key: Bytes::from_static(b"before"),
-                value: Bytes::from_static(b"v1"),
-                ttl_secs: None,
-            },
+    let pre_entries = vec![ApplyEntry {
+        index: 1,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::from_static(b"before"),
+            value: Bytes::from_static(b"v1"),
+            ttl_secs: None,
         },
-    ];
+    }];
     sm.apply_chunk(&pre_entries).await.unwrap();
 
     let snap_dir = temp.path().join("partial_snapshot");

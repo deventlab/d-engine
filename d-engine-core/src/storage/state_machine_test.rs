@@ -40,6 +40,7 @@ impl StateMachineTestSuite {
         Self::test_batch_operations(builder.build().await?).await?;
         Self::test_last_applied_detection(builder.build().await?).await?;
         Self::test_snapshot_operations(builder.build().await?).await?;
+        Self::test_snapshot_checksum_validation(builder.build().await?).await?;
         Self::test_persistence(builder.build().await?).await?;
 
         Self::test_drop_flushes_data(&builder).await?;
@@ -302,10 +303,9 @@ impl StateMachineTestSuite {
             .generate_snapshot_data(snapshot_dir.clone(), last_included)
             .await?;
 
-        // Verify snapshot metadata was updated
-        let metadata = state_machine.snapshot_metadata();
-        assert!(metadata.is_some());
-        assert_eq!(metadata.unwrap().last_included, Some(last_included));
+        // (#436) generate_snapshot_data no longer publishes snapshot metadata — that
+        // moved to build_local_snapshot (the handler), after the archive is durable.
+        // So snapshot_metadata() is expected to remain unchanged here.
 
         // Apply snapshot (simulate receiving from leader)
         // let snapshot_path = snapshot_dir.join("snapshot.bin");
@@ -366,6 +366,76 @@ impl StateMachineTestSuite {
         assert_eq!(state_machine.get(b"old_key2")?, None);
         assert_eq!(state_machine.get(b"old_key3")?, None);
         assert_eq!(state_machine.last_applied(), last_included);
+
+        Ok(())
+    }
+
+    /// Snapshot checksum must be both computed and enforced.
+    ///
+    /// `generate_snapshot_data` must return a real checksum of the exported data (never an
+    /// all-zero placeholder), and `apply_snapshot_from_file` must reject a snapshot whose
+    /// checksum does not match — so a corrupted or tampered snapshot is never installed
+    /// silently. The per-chunk crc32 only proves "bytes received == bytes sent"; this
+    /// end-to-end checksum proves "bytes received == bytes the leader recorded".
+    ///
+    /// # Scenario
+    /// - Apply entries, then generate a snapshot at the applied boundary.
+    /// - Expected: the returned checksum has at least one non-zero byte (a real checksum).
+    /// - Reset, then install the same snapshot with a WRONG checksum.
+    /// - Expected: the install is rejected.
+    pub async fn test_snapshot_checksum_validation(
+        state_machine: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        let entries = vec![
+            create_insert_entry(
+                1,
+                Bytes::from(b"key1".to_vec()),
+                Bytes::from(b"value1".to_vec()),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from(b"key2".to_vec()),
+                Bytes::from(b"value2".to_vec()),
+            ),
+            create_insert_entry(
+                3,
+                Bytes::from(b"key3".to_vec()),
+                Bytes::from(b"value3".to_vec()),
+            ),
+        ];
+        state_machine.apply_chunk(&entries).await?;
+
+        let temp_dir = TempDir::new()?;
+        let snapshot_dir = temp_dir.path().join("snapshot");
+        let last_included = LogId { index: 3, term: 1 };
+
+        let checksum = state_machine
+            .generate_snapshot_data(snapshot_dir.clone(), last_included)
+            .await?;
+
+        // A real checksum is never all-zero; a placeholder (e.g. [0; 32]) signals the
+        // adapter is not computing a checksum at all.
+        assert!(
+            checksum.iter().any(|&b| b != 0),
+            "generate_snapshot_data returned an all-zero checksum — the adapter must compute \
+             a real checksum of the snapshot content, not a placeholder"
+        );
+
+        // Reset so the snapshot is strictly newer than current state, then install it with a
+        // deliberately wrong checksum. The install must be rejected, not silently accepted.
+        state_machine.reset().await?;
+
+        let wrong_metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: Bytes::from(vec![0; 32]),
+        };
+        let result = state_machine.apply_snapshot_from_file(&wrong_metadata, snapshot_dir).await;
+
+        assert!(
+            result.is_err(),
+            "apply_snapshot_from_file accepted a snapshot with a mismatched checksum — the \
+             adapter must reject it"
+        );
 
         Ok(())
     }

@@ -241,8 +241,11 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Generates a snapshot of the state machine's current key-value entries
     /// up to the specified `last_included_index`.
     ///
-    /// Exports the current state (as of `last_included`) to `new_snapshot_dir`, and updates
-    /// this state machine's own snapshot metadata (in memory and durably) to `last_included`.
+    /// Exports the current state (as of `last_included`) to `new_snapshot_dir` and
+    /// returns its checksum. Does NOT publish snapshot metadata — the caller publishes
+    /// it (via `persist_last_snapshot_metadata`) only after the final archive is
+    /// durably built, so a crash mid-snapshot never leaves metadata pointing at a
+    /// missing archive.
     ///
     /// # Concurrency contract (#436)
     /// May run concurrently with `apply_chunk` (never with `apply_snapshot_from_file` — the two

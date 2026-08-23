@@ -374,7 +374,13 @@ where
             let _ = remove_file(&final_path).await;
             return Err(e);
         }
+
         temp_dir.remove().await?;
+
+        // Publish metadata only after the archive is durably built (#436). A crash before
+        // this point leaves the old metadata on disk, so the leader re-sends the snapshot
+        // instead of advertising one whose archive is missing.
+        self.state_machine.persist_last_snapshot_metadata(&metadata)?;
 
         debug!(%self.snapshot_config.cleanup_retain_count, "build_local_snapshot: cleanup old versions");
         if let Err(e) = self

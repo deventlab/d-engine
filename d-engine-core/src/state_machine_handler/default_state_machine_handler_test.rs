@@ -905,6 +905,7 @@ mod create_snapshot_tests {
                 path.ends_with("temp-5-1") && last_included.index == 5 && last_included.term == 1
             })
             .returning(|_, _| Ok(Bytes::from(vec![0; 32])));
+        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -940,6 +941,64 @@ mod create_snapshot_tests {
         );
 
         assert_eq!(metadata.last_included, Some(LogId { term: 1, index: 5 }));
+    }
+
+    /// Snapshot metadata must be published only AFTER the archive is durably built.
+    ///
+    /// Capture (`generate_snapshot_data`) must only export state and return a checksum
+    /// — it must NOT publish metadata. Publishing belongs in `build_local_snapshot`,
+    /// once the `.tar.gz` exists. If capture published it first, a crash in the gap
+    /// between capture and build would leave durable metadata pointing at a missing
+    /// archive that `send_join_success` would advertise and `load_snapshot_data` would
+    /// then fail to open (#436).
+    ///
+    /// # Scenario
+    /// - `generate_snapshot_data` exports state and returns a checksum (no publish).
+    /// - `build_local_snapshot` produces the archive, then publishes metadata.
+    /// - Expected: `persist_last_snapshot_metadata` is called exactly once, and only
+    ///   after `generate_snapshot_data` (i.e. after the archive is built).
+    #[tokio::test]
+    async fn test_create_snapshot_publishes_metadata_only_after_archive_built() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir.path().join("test_create_snapshot_publish_after_archive");
+        let mut sm = MockStateMachine::new();
+
+        let mut seq = Sequence::new();
+        sm.expect_last_applied()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| LogId { index: 5, term: 1 });
+        sm.expect_generate_snapshot_data()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|path, _| {
+                fs::create_dir_all(path.clone()).unwrap();
+                fs::create_dir(path.join("state_machine")).unwrap();
+                Ok(Bytes::from(vec![0; 32]))
+            });
+        // The publish must come after generate_snapshot_data (capture), i.e. during
+        // build_local_snapshot once the archive exists — never during capture.
+        sm.expect_persist_last_snapshot_metadata()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_| Ok(()));
+
+        let mut config = snapshot_config(temp_path.to_path_buf());
+        config.retained_log_entries = 0;
+
+        let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
+            1,
+            0,
+            Arc::new(sm),
+            temp_path.to_path_buf(),
+            config.clone(),
+            MockSnapshotPolicy::new(),
+            None,
+            Arc::new(AtomicUsize::new(0)),
+        );
+
+        let result = create_snapshot(&handler, &writer).await;
+        assert!(result.is_ok(), "snapshot creation must succeed: {result:?}");
     }
 
     /// # Case 2: Test concurrent protection
@@ -978,6 +1037,7 @@ mod create_snapshot_tests {
                 Err(SnapshotError::OperationFailed("Concurrency failure".into()).into())
             }
         });
+        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut snapshot_policy = MockSnapshotPolicy::new();
         snapshot_policy.expect_should_trigger().returning(|_| true);
@@ -1057,6 +1117,7 @@ mod create_snapshot_tests {
 
             Ok(Bytes::copy_from_slice(&[0; 32]))
         });
+        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
         let snapshot_dir = temp_path.to_path_buf();
 
         let mut config = snapshot_config(snapshot_dir.clone());
@@ -1138,6 +1199,7 @@ mod create_snapshot_tests {
             fs::create_dir_all(path).unwrap();
             Ok(Bytes::from(vec![0; 32]))
         });
+        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let config = snapshot_config(temp_path.clone());
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
@@ -1238,6 +1300,7 @@ mod create_snapshot_tests {
                 fs::create_dir_all(path).unwrap();
                 Ok(Bytes::from(vec![0; 32]))
             });
+        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.clone());
         config.retained_log_entries = 10;
@@ -1313,6 +1376,7 @@ mod create_snapshot_tests {
                 last_included.index == 100 && last_included.term == 2
             })
             .returning(|_, _| Ok(Bytes::from(vec![0; 32])));
+        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         // retained=60: old code would subtract and land in term 1 territory (index 40)
@@ -1372,6 +1436,7 @@ mod create_snapshot_tests {
                 fs::create_dir_all(path).unwrap();
                 Ok(Bytes::from(vec![0; 32]))
             });
+        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 10;
@@ -1447,6 +1512,7 @@ mod create_snapshot_tests {
             fs::create_dir_all(&path).unwrap();
             Ok(Bytes::from(vec![0; 32]))
         });
+        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let config = snapshot_config(snapshot_dir.clone());
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
@@ -1898,6 +1964,7 @@ async fn test_snapshot_compression() {
 
         Ok(Bytes::from(vec![0; 32]))
     });
+    sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
     let mut config = snapshot_config(temp_path.to_path_buf());
     config.retained_log_entries = 0;
