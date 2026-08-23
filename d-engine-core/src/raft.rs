@@ -27,6 +27,7 @@ use crate::Result;
 use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::TROF;
+use crate::role_state::PeerReplicationState;
 pub use d_engine_proto::common::LeaderInfo;
 use d_engine_proto::server::election::VotedFor;
 
@@ -665,9 +666,34 @@ where
             InternalEvent::SnapshotPushCompleted {
                 peer_id,
                 success,
+                term,
                 last_included_index,
             } => {
                 debug!(%peer_id, %success, ?last_included_index, "SnapshotPushCompleted");
+                // Staleness guard: the snapshot transfer runs in a detached task that can
+                // outlive a leadership change. Only a completion dispatched under the current
+                // term may touch peer progress — a straggler from an earlier term would
+                // otherwise overwrite next_index and silently skip required log entries.
+                if term != self.current_term() {
+                    debug!(
+                        %peer_id,
+                        event_term = term,
+                        current_term = self.current_term(),
+                        "dropping stale SnapshotPushCompleted from a previous term"
+                    );
+                    return Ok(());
+                }
+
+                // Peer-state guard: seeding is only valid for the peer's CURRENT
+                // in-flight snapshot attempt. A straggler completion that arrives after
+                // the peer has moved on must not touch next_index.
+                if self.role.state().peer_replication_state(peer_id)
+                    != PeerReplicationState::Snapshot
+                {
+                    debug!(%peer_id, "dropping SnapshotPushCompleted: peer not in Snapshot state");
+                    return Ok(());
+                }
+
                 if success {
                     // Reset next_index to the snapshot's own boundary + 1, so the peer resumes
                     // AppendEntries on the next heartbeat. Deliberately NOT the leader's current

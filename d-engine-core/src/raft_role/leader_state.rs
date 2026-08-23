@@ -2087,6 +2087,7 @@ impl<T: TypeConfig> LeaderState<T> {
                                     let _ = tx.send(InternalEvent::SnapshotPushCompleted {
                                         peer_id,
                                         success,
+                                        term: leader_term,
                                         last_included_index,
                                     });
                                 });

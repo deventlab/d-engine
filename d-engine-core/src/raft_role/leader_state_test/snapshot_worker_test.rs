@@ -236,6 +236,7 @@ async fn test_worker_handles_snapshot_task_and_emits_completed_event() {
             InternalEvent::SnapshotPushCompleted {
                 peer_id: 2,
                 success: true,
+                term: _,
                 last_included_index: Some(10)
             }
         ),

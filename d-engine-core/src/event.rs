@@ -85,6 +85,11 @@ pub enum InternalEvent {
     SnapshotPushCompleted {
         peer_id: u32,
         success: bool,
+        /// The leader term this transfer was dispatched under. The detached snapshot
+        /// task can outlive a leadership change, so the handler drops completions
+        /// whose term no longer matches the current one — a stale completion would
+        /// otherwise overwrite the peer's current progress and skip log entries.
+        term: u64,
         /// The snapshot's own last-included index (its fixed boundary at creation
         /// time), used to seed the peer's next_index. Deliberately NOT the leader's
         /// current log tip: the leader's log may have advanced further while the

@@ -363,7 +363,10 @@ fn test_server_transport_params_validate_success() {
     let params = valid_server_params();
 
     let result = params.validate();
-    assert!(result.is_ok(), "Valid server transport params should succeed");
+    assert!(
+        result.is_ok(),
+        "Valid server transport params should succeed"
+    );
 }
 
 #[test]
@@ -371,7 +374,10 @@ fn test_server_transport_params_validate_default_is_valid() {
     let params = ServerTransportParams::default();
 
     let result = params.validate();
-    assert!(result.is_ok(), "Default server transport params should validate successfully");
+    assert!(
+        result.is_ok(),
+        "Default server transport params should validate successfully"
+    );
 }
 
 #[test]
@@ -393,7 +399,10 @@ fn test_server_transport_params_validate_zero_max_concurrent_streams() {
     params.max_concurrent_streams = 0;
 
     let result = params.validate();
-    assert!(result.is_err(), "Should fail with zero max_concurrent_streams");
+    assert!(
+        result.is_err(),
+        "Should fail with zero max_concurrent_streams"
+    );
 
     let error = result.unwrap_err();
     assert!(matches!(error, Error::Config(_)));
@@ -407,7 +416,10 @@ fn test_server_transport_params_validate_keepalive_timeout_too_large() {
     params.http2_keepalive_timeout_in_secs = 30; // Equal to interval (invalid)
 
     let result = params.validate();
-    assert!(result.is_err(), "Should fail when keepalive timeout >= interval");
+    assert!(
+        result.is_err(),
+        "Should fail when keepalive timeout >= interval"
+    );
 
     let error = result.unwrap_err();
     assert!(matches!(error, Error::Config(_)));
@@ -450,7 +462,10 @@ fn test_server_transport_params_validate_zero_max_decoding_message_size() {
     params.max_decoding_message_size = 0;
 
     let result = params.validate();
-    assert!(result.is_err(), "Should fail with zero max_decoding_message_size");
+    assert!(
+        result.is_err(),
+        "Should fail with zero max_decoding_message_size"
+    );
 
     let error = result.unwrap_err();
     assert!(matches!(error, Error::Config(_)));
