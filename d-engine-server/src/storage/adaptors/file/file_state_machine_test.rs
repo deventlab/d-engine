@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use d_engine_core::file_io::compute_checksum_from_folder_path;
 use d_engine_core::{ApplyEntry, Command, SnapshotApplyResult, StateMachine};
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -729,9 +730,12 @@ async fn test_file_apply_snapshot_from_file_reports_applied_for_newer_snapshot()
     sm.reset().await.expect("reset");
     assert_eq!(sm.last_applied(), LogId::default());
 
+    let checksum = compute_checksum_from_folder_path(&snapshot_dir)
+        .await
+        .expect("compute checksum");
     let metadata = SnapshotMetadata {
         last_included: Some(last_included),
-        checksum: Bytes::from_static(&[0; 32]),
+        checksum: Bytes::copy_from_slice(&checksum),
     };
     let result = sm
         .apply_snapshot_from_file(&metadata, snapshot_dir)
@@ -814,9 +818,12 @@ async fn test_replay_wal_skips_stale_entries_below_last_applied() {
         .expect("generate snapshot");
 
     // Install the snapshot into the follower (jumps from 5 to 10).
+    let checksum = compute_checksum_from_folder_path(&snapshot_dir)
+        .await
+        .expect("compute checksum");
     let metadata = SnapshotMetadata {
         last_included: Some(LogId { term: 1, index: 10 }),
-        checksum: Bytes::from_static(&[0; 32]),
+        checksum: Bytes::copy_from_slice(&checksum),
     };
     let result = sm
         .apply_snapshot_from_file(&metadata, snapshot_dir)

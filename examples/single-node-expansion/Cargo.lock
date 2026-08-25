@@ -603,7 +603,6 @@ dependencies = [
  "d-engine-proto",
  "dashmap",
  "futures",
- "h2",
  "http-body",
  "http-body-util",
  "metrics",

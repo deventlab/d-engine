@@ -1,4 +1,4 @@
-use d_engine_proto::common::Entry;
+use d_engine_proto::common::{Entry, LogId};
 
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::{BufferedRaftLogTestContext, simulate_insert_command};
@@ -227,4 +227,130 @@ async fn test_remove_range_clears_term_indexes_for_removed_entries() {
     assert_eq!(ctx.raft_log.last_index_for_term(1), Some(3));
     assert_eq!(ctx.raft_log.first_index_for_term(3), Some(7));
     assert_eq!(ctx.raft_log.last_index_for_term(3), Some(9));
+}
+
+/// #442: `purge_logs_up_to()` must remove entries and publish the purge boundary
+/// (`last_purged_index`/`last_purged_term`) as a single atomic unit via
+/// `purge_prefix()`, not as two separate steps (SkipMap removal, then later,
+/// unlocked, the boundary stores). The old two-step version left a window where
+/// a concurrent `entry_term(cutoff)` call could observe entries already removed
+/// but the boundary not yet recorded, wrongly returning `None`.
+///
+/// # Why this matters
+/// `entry_term()` falls back to `last_purged_index`/`last_purged_term` whenever
+/// the queried index has already fallen below `min_index` (i.e. it was purged).
+/// A `prev_log_index` lookup for the just-purged boundary must never observe a
+/// state where the entry is gone but its term isn't recorded yet — that would
+/// make `filter_out_conflicts_and_append()` wrongly reject an AppendEntries that
+/// should have succeeded (needless conflict/backtrack on every purge).
+///
+/// # Expected
+/// The moment `purge_prefix(cutoff)` returns, both effects must already be
+/// visible together: entries at/below the cutoff are gone, and
+/// `entry_term(cutoff.index)` resolves to `cutoff.term` — never a transient
+/// `None` in between.
+#[tokio::test]
+async fn test_purge_prefix_removes_entries_and_records_boundary_together() {
+    let ctx = BufferedRaftLogTestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
+        "test_purge_prefix_boundary_atomicity",
+    );
+    ctx.raft_log.reset().await.expect("reset successfully!");
+
+    // Arrange: entries 1..=100, all term 1.
+    simulate_insert_command(&ctx.raft_log, (1..=100).collect(), 1).await;
+
+    // Act: purge up to index 50 (term 1) as one call.
+    ctx.raft_log.purge_prefix(LogId { index: 50, term: 1 });
+
+    // Assert: removal and boundary publish are both visible, together.
+    assert!(
+        ctx.raft_log.entry(50).unwrap().is_none(),
+        "index 50 must be removed"
+    );
+    assert!(
+        ctx.raft_log.entry(51).unwrap().is_some(),
+        "index 51 must survive the purge"
+    );
+    assert_eq!(
+        ctx.raft_log.entry_term(50),
+        Some(1),
+        "entry_term(50) must resolve to the purged boundary's term the instant \
+         purge_prefix() returns; returning None here means an in-flight \
+         AppendEntries with prev_log_index=50 would be wrongly rejected as a \
+         log conflict"
+    );
+}
+
+/// #442: `purge_prefix()` must correctly maintain `term_first_index`/`term_last_index`
+/// (via the shared `remove_range_locked` helper) when the purge cutoff spans more
+/// than one term, not just the single-term case above.
+///
+/// # Scenario
+/// term1=[1-30], term2=[31-60], term3=[61-90]. Purge up to index 45 (term 2) —
+/// removes all of term1 and part of term2.
+///
+/// # Expected
+/// - term1's index is fully gone: `first/last_index_for_term(1) == None`.
+/// - term2's surviving range starts at 46: `first_index_for_term(2) == Some(46)`.
+/// - The purge boundary itself resolves to term 2 (the cutoff's own term), and
+///   the surviving term3 range is untouched.
+#[tokio::test]
+async fn test_purge_prefix_multi_term_cutoff_updates_term_indexes_and_boundary() {
+    let ctx = BufferedRaftLogTestContext::new(
+        PersistenceStrategy::MemFirst,
+        FlushPolicy::Batch {
+            idle_flush_interval_ms: 1,
+        },
+        "test_purge_prefix_multi_term_cutoff",
+    );
+    ctx.raft_log.reset().await.expect("reset successfully!");
+
+    // Arrange: term1=[1-30], term2=[31-60], term3=[61-90].
+    for i in 1u64..=30 {
+        ctx.raft_log.append_entries(vec![entry(i, 1)]).await.unwrap();
+    }
+    for i in 31u64..=60 {
+        ctx.raft_log.append_entries(vec![entry(i, 2)]).await.unwrap();
+    }
+    for i in 61u64..=90 {
+        ctx.raft_log.append_entries(vec![entry(i, 3)]).await.unwrap();
+    }
+
+    // Act: purge up to index 45 (term 2) — all of term1, half of term2.
+    ctx.raft_log.purge_prefix(LogId { index: 45, term: 2 });
+
+    // Assert: term1 fully purged out of the term index.
+    assert_eq!(
+        ctx.raft_log.first_index_for_term(1),
+        None,
+        "term1 no longer has any surviving entries"
+    );
+    assert_eq!(ctx.raft_log.last_index_for_term(1), None);
+
+    // Assert: term2's surviving range starts right after the cutoff.
+    assert_eq!(
+        ctx.raft_log.first_index_for_term(2),
+        Some(46),
+        "term2's first surviving index must move to 46 after purging through 45"
+    );
+    assert_eq!(ctx.raft_log.last_index_for_term(2), Some(60));
+
+    // Assert: term3 untouched.
+    assert_eq!(ctx.raft_log.first_index_for_term(3), Some(61));
+    assert_eq!(ctx.raft_log.last_index_for_term(3), Some(90));
+
+    // Assert: the purge boundary itself resolves correctly.
+    assert!(
+        ctx.raft_log.entry(45).unwrap().is_none(),
+        "index 45 must be removed"
+    );
+    assert_eq!(
+        ctx.raft_log.entry_term(45),
+        Some(2),
+        "entry_term(45) must resolve to the cutoff's own term (2), not None or term1"
+    );
 }

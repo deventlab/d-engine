@@ -250,29 +250,43 @@ where
     shutdown_timeout_ms: u64,
 
     // --- In-memory state ---
-    // Pending entries
+    // The Raft log itself: every entry this node currently holds in memory.
+    // This is the single source of truth — every other field below is either
+    // a boundary marker or a lookup accelerator derived from what's here.
     pub(crate) entries: RwLock<SkipMap<u64, Entry>>,
-    // Tracks the highest index that has been persisted to disk
+    // How far the log has actually been made crash-safe (fsynced to disk).
+    // Raft must not tell a client or a peer a write is safe ahead of this point,
+    // regardless of what's already visible in `entries`.
     pub(crate) durable_index: AtomicU64,
     // The next index to be allocated
     pub(crate) next_id: AtomicU64,
 
     // --- In-memory index ---
+    // O(1) answer to "is this index currently held in memory" — lets callers
+    // (e.g. entry_term()) reject an out-of-range index without touching `entries`.
     min_index: AtomicU64, // Smallest log index (0 if empty)
     max_index: AtomicU64, // Largest log index (0 if empty)
 
-    // Purge boundary: last log entry that was purged (index=0 means never purged).
-    // entry_term() checks these when a SkipMap lookup misses, so that
-    // prev_log_term for the snapshot boundary index is always correct.
-    // Write ordering: term stored (Release) before index (Release);
-    // reader loads index (Acquire) then term (Acquire) — ensures consistency.
+    // The term of the last entry ever purged (compacted away after a snapshot).
+    // Raft's AppendEntries consistency check needs the term at prev_log_index
+    // even when that entry no longer physically exists in `entries` — without
+    // this, a follower can't tell "purged, but we agree" apart from "conflict".
+    //
+    // Must be published in the same critical section as the entries removal
+    // and the min_index/max_index advance it corresponds to — a reader must
+    // never be able to observe the entry gone but this boundary not yet set.
     last_purged_index: AtomicU64,
     last_purged_term: AtomicU64,
 
+    // Where each term starts/ends. Lets a leader/follower jump straight to a
+    // term boundary during post-election conflict backtracking, instead of
+    // walking the log entry by entry to find where history diverged.
     term_first_index: SkipMap<u64, AtomicU64>,
     term_last_index: SkipMap<u64, AtomicU64>,
 
-    /// Compact term boundary index — avoids SkipMap lookups in entry_term().
+    // Same question as term_first/last_index ("what term is at index i"), but
+    // optimized for the by-far most common case: a query near the current tail
+    // of the log, asked on essentially every AppendEntries in normal replication.
     term_segments: TermSegments,
 
     // --- Flush coordination ---
@@ -639,23 +653,14 @@ where
         let _timer = ScopedTimer::new("purge_logs_up_to");
         debug!(?cutoff_index, "purge_logs_up_to");
 
-        // Remove range in O(k log n)
-        self.remove_range(0..=cutoff_index.index);
+        // Remove range + publish last_purged_* atomically in the same lock (#442).
+        self.purge_prefix(cutoff_index);
 
-        // Update durable index if needed
-        let current_durable = self.durable_index.load(Ordering::Acquire);
-
-        // TODO: to be double thinking
-        if cutoff_index.index >= current_durable {
-            self.durable_index.store(cutoff_index.index, Ordering::Release);
-        }
-
-        // Record purge boundary so entry_term() can return the correct term for
-        // prev_log_index == cutoff_index.index after the entry has been removed.
-        // Write term before index (Release) so readers that load index first then
-        // term (Acquire) always observe a consistent pair.
-        self.last_purged_term.store(cutoff_index.term, Ordering::Release);
-        self.last_purged_index.store(cutoff_index.index, Ordering::Release);
+        // Purged entries are backed by the snapshot; treat cutoff as durable.
+        // fetch_max is monotonic — avoids racing fsync_coordinator's concurrent
+        // advance on the raft-io thread — and this fires LogFlushed consistently
+        // with every other durable_index advancement in this file.
+        self.advance_durable_and_notify(cutoff_index.index);
 
         // Route purge through the IO thread so it never blocks the inbound event loop.
         // Also writes the purge boundary to META_CF in the RocksDB implementation.
@@ -1274,11 +1279,26 @@ where
         &self,
         range: RangeInclusive<u64>,
     ) {
+        let entries = self.entries.write();
+        let (new_min, new_max) = self.remove_range_locked(&entries, range);
+        self.min_index.store(new_min, Ordering::Release);
+        self.max_index.store(new_max, Ordering::Release);
+        // `entries` guard drops here (end of scope) — write lock released.
+    }
+
+    /// Shared deletion logic for `remove_range`/`purge_prefix`. Caller already
+    /// holds the write lock; this only touches entries + term_first/last_index
+    /// and returns the new (min, max) without storing them, so a caller that
+    /// needs to publish additional state under the same lock (purge_prefix's
+    /// last_purged_*) can do so before the lock is released.
+    fn remove_range_locked(
+        &self,
+        entries: &SkipMap<u64, Entry>,
+        range: RangeInclusive<u64>,
+    ) -> (u64, u64) {
         let (start, end) = range.into_inner();
 
-        let entries = self.entries.write();
-
-        // MODIFIED: Track affected terms and their min/max indexes in the removal range
+        // Track affected terms and their min/max indexes in the removal range
         let mut affected_terms: HashMap<u64, (Option<u64>, Option<u64>)> = HashMap::new();
 
         // Remove entries in range and track affected terms
@@ -1288,7 +1308,6 @@ where
                 let key = *entry.key();
                 let term = entry.value().term;
 
-                // Track min/max indexes for each affected term
                 let (min_idx, max_idx) = affected_terms.entry(term).or_insert((None, None));
                 if min_idx.is_none() || key < min_idx.unwrap() {
                     *min_idx = Some(key);
@@ -1304,7 +1323,7 @@ where
             }
         }
 
-        // MODIFIED: Update only affected term indexes
+        // Update only affected term indexes
         for (term, (removed_min, removed_max)) in affected_terms {
             // Update first index if the removed entry was the first for this term
             if let Some(term_first) = self.term_first_index.get(&term) {
@@ -1339,14 +1358,33 @@ where
             }
         }
 
-        // Always update boundaries after removal
         let new_min = entries.front().map(|e| *e.key()).unwrap_or(0);
         let new_max = entries.back().map(|e| *e.key()).unwrap_or(0);
+        (new_min, new_max)
+    }
+
+    /// Purge entries at/below `cutoff.index`, publishing `last_purged_index`/
+    /// `last_purged_term` in the SAME critical section as the entries removal
+    /// and the min_index/max_index advance. Only place that should ever write
+    /// `last_purged_*` — a reader must never observe the entries gone but the
+    /// boundary not yet recorded (#442).
+    pub fn purge_prefix(
+        &self,
+        cutoff: LogId,
+    ) {
+        let entries = self.entries.write();
+        let (new_min, new_max) = self.remove_range_locked(&entries, 0..=cutoff.index);
 
         self.min_index.store(new_min, Ordering::Release);
         self.max_index.store(new_max, Ordering::Release);
 
-        // `entries` guard drops here (end of scope) — write lock released.
+        // Write term before index (Release) so readers that load index first
+        // then term (Acquire) always observe a consistent pair.
+        self.last_purged_term.store(cutoff.term, Ordering::Release);
+        self.last_purged_index.store(cutoff.index, Ordering::Release);
+
+        // `entries` guard drops here — everything above is now visible together
+        // to any reader acquiring the read lock or loading these atomics after.
     }
 
     // Update the term index (completely lock-free)

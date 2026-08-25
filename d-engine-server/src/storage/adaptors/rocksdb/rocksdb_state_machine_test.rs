@@ -3,6 +3,7 @@ use super::RocksDBUnifiedEngine;
 use crate::{Error, StateMachine};
 use async_trait::async_trait;
 use bytes::Bytes;
+use d_engine_core::file_io::compute_checksum_from_folder_path;
 use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
 use d_engine_core::{ApplyEntry, Command, SnapshotApplyResult};
 use d_engine_proto::common::LogId;
@@ -1076,9 +1077,12 @@ async fn test_apply_snapshot_from_file_reports_applied_for_newer_snapshot() {
     state_machine.reset().await.expect("reset");
     assert_eq!(state_machine.last_applied(), LogId::default());
 
+    let checksum = compute_checksum_from_folder_path(&snapshot_dir)
+        .await
+        .expect("compute checksum");
     let metadata = SnapshotMetadata {
         last_included: Some(last_included),
-        checksum: Bytes::from_static(&[0; 32]),
+        checksum: Bytes::copy_from_slice(&checksum),
     };
     let result = state_machine
         .apply_snapshot_from_file(&metadata, snapshot_dir)
