@@ -1,6 +1,7 @@
 use crate::ApplyEntry;
 use crate::Command;
 use crate::Error;
+use crate::SnapshotApplyResult;
 use crate::storage::StateMachine;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -41,10 +42,12 @@ impl StateMachineTestSuite {
         Self::test_last_applied_detection(builder.build().await?).await?;
         Self::test_snapshot_operations(builder.build().await?).await?;
         Self::test_snapshot_checksum_validation(builder.build().await?).await?;
+        Self::test_snapshot_apply_rejects_missing_boundary(builder.build().await?).await?;
         Self::test_persistence(builder.build().await?).await?;
 
         Self::test_drop_flushes_data(&builder).await?;
         Self::test_drop_persists_last_applied(&builder).await?;
+        Self::test_last_applied_survives_reopen_after_snapshot_install(&builder).await?;
         Self::test_data_survives_reopen(&builder).await?;
         Self::test_batch_survives_reopen(&builder).await?;
         Self::test_ungraceful_shutdown_recovery(&builder).await?;
@@ -440,6 +443,32 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
+    /// `apply_snapshot_from_file` must reject `last_included: None` outright — a missing
+    /// boundary can't be classified stale/duplicate/conflict/eligible, so silently
+    /// defaulting it (`unwrap_or_default()`) turns malformed metadata into a fake no-op.
+    pub async fn test_snapshot_apply_rejects_missing_boundary(
+        state_machine: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        let metadata = SnapshotMetadata {
+            last_included: None,
+            checksum: Bytes::from(vec![0; 32]),
+        };
+        let temp_dir = TempDir::new()?;
+
+        let result = state_machine
+            .apply_snapshot_from_file(&metadata, temp_dir.path().to_path_buf())
+            .await;
+
+        assert!(
+            result.is_err(),
+            "apply_snapshot_from_file accepted SnapshotMetadata{{last_included: None}} — a \
+             missing boundary can't be classified as stale/duplicate/conflict/eligible, it \
+             must be rejected, not silently substituted with a default LogId"
+        );
+
+        Ok(())
+    }
+
     /// Test data persistence
     pub async fn test_persistence(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
         // Add test data
@@ -708,6 +737,93 @@ impl StateMachineTestSuite {
             sm2.get(b"drop_meta_key3")?,
             Some(Bytes::from(b"drop_meta_value3".to_vec())),
             "Data should also be persisted by Drop"
+        );
+
+        Ok(())
+    }
+
+    /// `last_applied` must survive a crash/restart right after a snapshot install, with
+    /// no further `apply_chunk` — every other crash/reopen scenario in this suite drives
+    /// its data through `apply_chunk` first, so an adapter that only updates
+    /// `last_applied` in memory on install (never persists it) slipped through.
+    pub async fn test_last_applied_survives_reopen_after_snapshot_install<
+        B: StateMachineBuilder,
+    >(
+        builder: &B
+    ) -> Result<(), Error> {
+        let last_included = LogId { index: 3, term: 1 };
+
+        {
+            let sm = builder.build().await?;
+            sm.start().await?;
+
+            let entries = vec![
+                create_insert_entry(
+                    1,
+                    Bytes::from(b"snap_survive_key1".to_vec()),
+                    Bytes::from(b"v1".to_vec()),
+                ),
+                create_insert_entry(
+                    2,
+                    Bytes::from(b"snap_survive_key2".to_vec()),
+                    Bytes::from(b"v2".to_vec()),
+                ),
+                create_insert_entry(
+                    3,
+                    Bytes::from(b"snap_survive_key3".to_vec()),
+                    Bytes::from(b"v3".to_vec()),
+                ),
+            ];
+            sm.apply_chunk(&entries).await?;
+
+            let temp_dir = TempDir::new()?;
+            let snapshot_dir = temp_dir.path().join("snapshot");
+            let checksum = sm.generate_snapshot_data(snapshot_dir.clone(), last_included).await?;
+
+            // Fresh node receiving this snapshot for the first time (current == default),
+            // so the install is strictly "Greater" — eligible, not a stale/duplicate no-op.
+            sm.reset().await?;
+            assert_eq!(sm.last_applied(), LogId::default());
+
+            let metadata = SnapshotMetadata {
+                last_included: Some(last_included),
+                checksum: Bytes::from(checksum.to_vec()),
+            };
+            let result = sm.apply_snapshot_from_file(&metadata, snapshot_dir).await?;
+            assert!(
+                matches!(result, SnapshotApplyResult::Applied { .. }),
+                "expected Applied, got: {result:?}"
+            );
+            assert_eq!(
+                sm.last_applied(),
+                last_included,
+                "last_applied must reflect the install immediately, in memory"
+            );
+
+            // NO apply_chunk, NO stop(), NO flush() below — only Drop (or whatever the
+            // install itself already persisted) may carry last_applied across restart.
+        } // <- Drop runs here
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let sm2 = builder.build().await?;
+        sm2.start().await?;
+
+        assert_eq!(
+            sm2.last_applied(),
+            last_included,
+            "BUG: last_applied not persisted after a snapshot install! If an adapter's \
+             apply_snapshot_from_file updates last_applied only in memory (e.g. via \
+             update_last_applied) without also durably persisting it (e.g. via \
+             persist_last_applied) before returning, this is exactly where it shows up: \
+             the process restarts with no record the install ever happened, and Raft \
+             replays the entire log on top of already-installed snapshot content."
+        );
+
+        assert_eq!(
+            sm2.get(b"snap_survive_key1")?,
+            Some(Bytes::from(b"v1".to_vec())),
+            "snapshot content must also survive the restart"
         );
 
         Ok(())

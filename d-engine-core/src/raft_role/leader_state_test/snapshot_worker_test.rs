@@ -601,11 +601,12 @@ async fn test_stale_snapshot_completion_is_ignored_once_state_has_moved_on() {
 
     state.handle_snapshot_push_completed(2, true, &ctx.node_config.retry.install_snapshot, 1);
 
-    assert_ne!(
+    assert_eq!(
         state.peer_replication_state.get(&2),
-        Some(&PeerReplicationState::Probe),
+        None,
         "a completion event for a peer that was never in Snapshot state must not \
-         fabricate a Probe entry — it has nothing to conclude and must be a no-op"
+         fabricate ANY entry (Probe, Snapshot, or Replicate) — it has nothing to \
+         conclude and must be a strict no-op, leaving the entry absent"
     );
 }
 

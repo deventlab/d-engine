@@ -559,19 +559,43 @@ election_timeout_max = 6000
 /// a successful linearizable read proves the leader is actively serving end-to-end.
 ///
 /// Equivalent to the Phase 2+3 retry loop in `leader_failover_cas_standalone`.
+///
+/// Bounded to 30s: if elections never stabilize (a real regression, not just a slow
+/// CI box), this returns the last transient error instead of hanging the test forever
+/// with no diagnostic — an unbounded loop here turns "election liveness broke" into a
+/// bare test-runner timeout with no indication of what was actually still failing.
 pub async fn wait_for_stable_leader(client: &Client) -> Result<(), ClientApiError> {
+    const DEADLINE: Duration = Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + DEADLINE;
+    let mut last_err: Option<ClientApiError> = None;
+
     loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(last_err.expect(
+                "deadline reached without ever observing a transient error — unreachable, \
+                 the loop only re-checks the deadline after recording one",
+            ));
+        }
+
         client.refresh(None).await.ok();
         match client.get(b"__stability_probe__").await {
             Ok(_) => return Ok(()),
-            Err(ClientApiError::Business {
-                code: ErrorCode::StaleOperation,
-                ..
-            }) => continue,
-            Err(ClientApiError::Network {
-                code: ErrorCode::ConnectionTimeout,
-                ..
-            }) => {
+            Err(
+                e @ ClientApiError::Business {
+                    code: ErrorCode::StaleOperation,
+                    ..
+                },
+            ) => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(
+                e @ ClientApiError::Network {
+                    code: ErrorCode::ConnectionTimeout,
+                    ..
+                },
+            ) => {
+                last_err = Some(e);
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -579,10 +603,13 @@ pub async fn wait_for_stable_leader(client: &Client) -> Result<(), ClientApiErro
             // already stepped down by the time this read reaches it. Transient and
             // expected — retry (the next loop iteration's `refresh()` will pick up
             // the new leader, including via this error's `leader_hint`).
-            Err(ClientApiError::Network {
-                code: ErrorCode::NotLeader,
-                ..
-            }) => {
+            Err(
+                e @ ClientApiError::Network {
+                    code: ErrorCode::NotLeader,
+                    ..
+                },
+            ) => {
+                last_err = Some(e);
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }

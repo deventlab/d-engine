@@ -11,12 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::capture_logs_globally_filtered;
-use d_engine_core::logs_contain_globally;
+use d_engine_core::logs_contain_globally_since;
 use d_engine_server::DefaultEmbeddedEngine;
 use d_engine_server::RocksDBUnifiedEngine;
 use serial_test::serial;
 use tracing::info;
-use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
 use crate::common::wait_for_snapshot;
@@ -54,8 +53,14 @@ use crate::common::wait_for_snapshot;
 /// Snapshot-only entries (purged from log) are readable on C — snapshot was correctly installed
 /// All 140 entries present on C with correct values
 /// No double-apply: each key holds exactly the value written once
+// PR #442 review: was `#[traced_test]`. This test never asserts on captured log
+// content (every `info!` below is local visibility only, correctness is checked via
+// `get_eventual`/`assert_eq!`), so it doesn't need cross-thread log capture at all —
+// and keeping it would have collided with this file's other two tests, which install
+// a process-wide subscriber via `capture_logs_globally_filtered` (only one global
+// tracing subscriber can exist per process; under `cargo test`, which runs every test
+// in a file in one process, whichever install happened second would panic).
 #[tokio::test]
-#[traced_test]
 #[serial]
 async fn test_follower_catchup_within_retained_buffer_and_data_consistency()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -413,6 +418,12 @@ retained_log_entries = {RETAINED_LOGS}
     );
 
     // Phase 4: restart follower with its persisted DB (still only has entries 0..INITIAL_ENTRIES).
+    //
+    // Record the buffer offset right before restart: the log buffer is process-global
+    // (see log_capture.rs) and shared with every other test in this same binary, so a
+    // match from Phase 1-3 (this test) or an earlier test entirely must not count. Only
+    // entries appended from this point on are evidence about *this* restarted follower.
+    let since = logs.lock().unwrap().len();
     info!("Restarting follower node {follower_node_id} from persisted DB");
     let (storage, sm) = RocksDBUnifiedEngine::open(&follower_db_path)?;
     let restarted = DefaultEmbeddedEngine::start_custom(
@@ -468,13 +479,20 @@ retained_log_entries = {RETAINED_LOGS}
     // the follower's own tracing output for proof that it actually went through the snapshot
     // receive path, not just that the end state happens to look right.
     assert!(
-        logs_contain_globally(&logs, "Snapshot stream successfully received and applied"),
+        logs_contain_globally_since(
+            &logs,
+            since,
+            "Snapshot stream successfully received and applied"
+        ),
         "follower's lag ({OFFLINE_ENTRIES}) exceeded the retained-log window ({RETAINED_LOGS}) \
         after the leader purged past its frozen index — it MUST have caught up via \
         InstallSnapshot, not AppendEntries. If this fails, the data-correctness assertions in \
         phase 6 may still have passed by accident (see ticket #436): the follower can end up \
         with correct data through a wrong mechanism, which does not protect against a follower \
-        that falls behind a gap AppendEntries genuinely cannot supply."
+        that falls behind a gap AppendEntries genuinely cannot supply. Scoped to entries logged \
+        after Phase 4's restart (see `since` above) so a match from the still-alive node during \
+        Phase 3, or from an earlier test sharing this process-global buffer, can't pass this \
+        assertion by accident."
     );
 
     for engine in engines.into_iter().flatten() {
@@ -500,6 +518,11 @@ async fn test_learner_join_after_compaction_requires_install_snapshot()
     let logs = capture_logs_globally_filtered(
         "info,d_engine_core=debug,d_engine_server=debug,h2=off,tonic=warn,hyper=warn",
     );
+    // The log buffer is process-global and shared with every other test in this binary
+    // (including test_follower_catchup_beyond_retained_buffer_requires_install_snapshot
+    // above, which emits this exact same message) — only entries from this point on are
+    // evidence about this test's own learner.
+    let since = logs.lock().unwrap().len();
     const SNAPSHOT_THRESHOLD: u64 = 20;
     const RETAINED_LOGS: u64 = 5;
     const INITIAL_ENTRIES: u64 = 50;
@@ -607,9 +630,15 @@ retained_log_entries = {RETAINED_LOGS}
     // The learner's empty log is far behind the purge boundary, so AppendEntries
     // cannot supply the gap — it MUST have caught up via InstallSnapshot.
     assert!(
-        logs_contain_globally(&logs, "Snapshot stream successfully received and applied"),
+        logs_contain_globally_since(
+            &logs,
+            since,
+            "Snapshot stream successfully received and applied"
+        ),
         "learner with empty log joining a compacted leader MUST catch up via \
-        InstallSnapshot, not AppendEntries"
+        InstallSnapshot, not AppendEntries. Scoped to entries logged after this test \
+        started (see `since` above) so a leftover match from an earlier test sharing \
+        this process-global buffer can't pass this assertion by accident."
     );
 
     let _ = learner.stop().await;

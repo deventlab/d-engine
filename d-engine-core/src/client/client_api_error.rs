@@ -1,8 +1,7 @@
-use std::error::Error;
-
 use crate::client::types::ErrorCode;
 use serde::Deserialize;
 use serde::Serialize;
+use std::error::Error;
 use tokio::task::JoinError;
 use tonic::Code;
 use tonic::Status;

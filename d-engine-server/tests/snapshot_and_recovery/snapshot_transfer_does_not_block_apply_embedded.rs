@@ -11,6 +11,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_core::capture_logs_globally_filtered;
+use d_engine_core::logs_contain_globally_since;
 use d_engine_server::DefaultEmbeddedEngine;
 use d_engine_server::RocksDBStateMachine;
 use d_engine_server::RocksDBUnifiedEngine;
@@ -18,7 +20,6 @@ use d_engine_server::StateMachine;
 use d_engine_server::install_snapshot_transfer_gate;
 use serial_test::serial;
 use tracing::info;
-use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
 use crate::common::wait_for_snapshot;
@@ -81,9 +82,19 @@ fn deterministic_value(
 ///    transfer gate confirms the snapshot transfer has still not completed**.
 /// 7. Release the gate, assert the Learner eventually catches up, then stop all engines.
 #[tokio::test]
-#[traced_test]
 #[serial]
 async fn test_snapshot_transfer_does_not_block_apply() -> Result<(), Box<dyn std::error::Error>> {
+    // PR #442 review: a snapshot *file* existing on disk doesn't prove the Leader has
+    // purged the log entries it covers — snapshot generation and log purge are separate
+    // steps (see `schedule_and_execute_purge`). If purge lags behind the file appearing,
+    // node 4 could still receive normal AppendEntries instead of a snapshot, silently
+    // testing nothing about the InstallSnapshot path this test exists to guard. Capturing
+    // the leader's own purge log lets the test wait for the real boundary instead of
+    // guessing from file existence.
+    let logs = capture_logs_globally_filtered(
+        "info,d_engine_core=debug,d_engine_server=debug,h2=off,tonic=warn,hyper=warn",
+    );
+
     const SNAPSHOT_THRESHOLD: u64 = 64;
     const RETAINED_LOGS: u64 = 8;
     const BASELINE_ENTRIES: u64 = 80;
@@ -175,6 +186,38 @@ push_queue_size = 1
     assert!(
         wait_for_snapshot(&leader_snapshots_dir, Duration::from_secs(15)).await,
         "Leader snapshot must exist before the learner starts"
+    );
+
+    // Recorded here (not at test start): only a purge logged from this point on can be
+    // the Leader's own, chained off the snapshot `wait_for_snapshot` just confirmed. A
+    // purge from another node's independent local capture (#436 lets every node capture
+    // on its own schedule) landing earlier in the buffer must not satisfy the wait below —
+    // it says nothing about whether the Leader's retained log has actually moved.
+    let since = logs.lock().unwrap().len();
+
+    // The retained-log purge boundary — the actual signal this test needs, not just "a
+    // snapshot file exists" (see comment above `logs` for why those differ). Emitted by
+    // `schedule_and_execute_purge` as `info!("purge_upto_index={purge_upto_index}")`
+    // whenever ANY node completes a local snapshot capture, unconditionally — including
+    // the `purge_upto_index=0` case where nothing is actually purged (retained_log_entries
+    // >= last_included.index). A bare substring match on "purge_upto_index=" would wrongly
+    // accept that no-op case. It can't happen here, though: with
+    // SNAPSHOT_THRESHOLD=64 > RETAINED_LOGS=8, the earliest possible snapshot on this
+    // cluster already has last_included.index >= 64, so purge_upto_index is always > 0
+    // by the time this log line can appear at all.
+    let mut purged = false;
+    for _ in 0..30 {
+        if logs_contain_globally_since(&logs, since, "purge_upto_index=") {
+            purged = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        purged,
+        "Leader never logged a completed log purge — node 4 joining now would prove \
+         nothing about the InstallSnapshot path (it could legitimately catch up via \
+         ordinary AppendEntries if the retained log still reaches its starting index)"
     );
 
     let baseline_applied = leader_sm.last_applied().index;

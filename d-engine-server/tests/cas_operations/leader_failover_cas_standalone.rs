@@ -240,12 +240,33 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
                 ..
             }) => continue,
             Err(ClientApiError::Network {
-                code: ErrorCode::ConnectionTimeout | ErrorCode::NotLeader,
+                code: ErrorCode::NotLeader,
                 ..
             }) => {
                 client.refresh(None).await?;
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
+            }
+            Err(ClientApiError::Network {
+                code: ErrorCode::ConnectionTimeout,
+                ..
+            }) => {
+                // A ConnectionTimeout means the response was lost, not that the server
+                // didn't act — the server may have already committed this exact CAS
+                // before the timeout. Retrying blindly with the same `expected_value`
+                // would then legitimately get `Ok(false)` (the value moved on from what
+                // client_b expected), which this loop would misreport as "client_b's
+                // CAS failed" even though it actually succeeded on the first attempt.
+                // Read reality first: if the lock already shows client_b's own value,
+                // the earlier attempt won — accept it instead of firing a second CAS.
+                client.refresh(None).await?;
+                match client.get(lock_key).await {
+                    Ok(Some(v)) if v.as_ref() == b"client_b".as_slice() => break true,
+                    _ => {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                }
             }
             Err(e) => return Err(e),
         }

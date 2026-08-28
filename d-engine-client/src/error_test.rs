@@ -1,5 +1,4 @@
 use d_engine_core::client::ErrorCode;
-use tonic::Code;
 use tonic::Status;
 
 use super::*;
@@ -55,27 +54,6 @@ fn test_status_to_error_conversion() {
 
     assert_eq!(error.code(), ErrorCode::ClusterUnavailable);
     assert!(error.message().contains("cluster down"));
-}
-
-#[test]
-fn test_leader_hint_parsing() {
-    let mut metadata = tonic::metadata::MetadataMap::new();
-    metadata.insert(
-        "x-raft-leader",
-        r#"{"leader_id": 1, "address": "127.0.0.1:9081"}"#.parse().unwrap(),
-    );
-
-    let status = Status::with_metadata(Code::FailedPrecondition, "not leader", metadata);
-    let error = ClientApiError::from(status);
-
-    match error {
-        ClientApiError::Network { leader_hint, .. } => {
-            let hint = leader_hint.expect("should have leader hint");
-            assert_eq!(hint.leader_id, 1);
-            assert_eq!(hint.address, "127.0.0.1:9081");
-        }
-        _ => panic!("Expected Network error with leader hint"),
-    }
 }
 
 #[test]

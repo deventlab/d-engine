@@ -39,6 +39,17 @@ fn captured_temp_dir_for_test_with_path() -> (std::path::PathBuf, OwnedSnapshotD
     (dir, guard)
 }
 
+/// Builds a freshly-acquired `OwnedMutexGuard<()>` — the `guard` field on
+/// `LocalSnapshotReady` now carries `capture_install_lock`'s guard end-to-end so it
+/// isn't released until any superseded-capture cleanup finishes (#442 review). Tests
+/// that drive `LocalSnapshotReady` directly (not through the full `CaptureLocalSnapshot`
+/// round trip) don't have a real one from the Worker, so this stands in for it — its
+/// own backing `Mutex` is independent and irrelevant to these tests, only its identity
+/// as *a* valid owned guard that can be dropped matters.
+async fn fresh_capture_guard() -> tokio::sync::OwnedMutexGuard<()> {
+    Arc::new(tokio::sync::Mutex::new(())).try_lock_owned().unwrap()
+}
+
 /// `OwnedSnapshotDir`'s `Drop` fallback cleans up on a detached OS thread, not
 /// synchronously — so a directory that's about to disappear via `Drop` isn't
 /// guaranteed gone the instant the value is dropped. Poll instead of asserting once,
@@ -1152,6 +1163,199 @@ async fn test_capture_superseded_by_install_even_when_capture_is_more_advanced()
     wait_until_removed(&superseded_dir_path).await;
 }
 
+/// End-to-end version of `test_superseded_capture_directory_gone_by_the_time_response_resolves`:
+/// a second `CaptureLocalSnapshot` fired while a superseded capture's cleanup is still
+/// running must not be allowed to start — `capture_local_snapshot()` is `.times(1)` on
+/// the mock, so a broken guard-release-too-early implementation would panic mockall
+/// instead of this test cleanly observing `CaptureSkipped`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_second_capture_at_same_path_waits_for_superseded_cleanup_to_finish() {
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(Some(release_rx));
+
+    let big_dir = tempfile::tempdir().unwrap().keep();
+    for i in 0..500 {
+        std::fs::write(big_dir.join(format!("file_{i}")), vec![0u8; 4096]).unwrap();
+    }
+    let big_dir_guard = std::sync::Mutex::new(Some(
+        OwnedSnapshotDir::from_existing(big_dir.clone()).unwrap(),
+    ));
+
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
+        let rx = release_rx.lock().unwrap().take().expect("called once");
+        let _ = rx.recv();
+        Ok(CapturedLocalSnapshot {
+            metadata: SnapshotMetadata {
+                last_included: Some(LogId {
+                    index: 100,
+                    term: 1,
+                }),
+                ..Default::default()
+            },
+            temp_dir: big_dir_guard.lock().unwrap().take().expect("called once"),
+        })
+    });
+    mock_smw.expect_install_prepared_snapshot().times(1).returning(|_, _| {
+        Ok(SnapshotApplyResult::Applied {
+            last_included: LogId { index: 90, term: 1 },
+        })
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (capture1_response, capture1_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::CaptureLocalSnapshot {
+            response: capture1_response,
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let (install_response, install_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::InstallSnapshot {
+            snapshot: PreparedSnapshot {
+                metadata: SnapshotMetadata::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            },
+            response: install_response,
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let _ = release_tx.send(());
+
+    let install_result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), install_response_rx).await;
+    assert!(
+        matches!(
+            install_result,
+            Ok(Ok(Ok(SnapshotApplyResult::Applied { .. })))
+        ),
+        "install must complete, got: {install_result:?}"
+    );
+
+    // Fired immediately — capture #1's cleanup of a 500-file directory cannot
+    // plausibly be finished yet.
+    let (capture2_response, capture2_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::CaptureLocalSnapshot {
+            response: capture2_response,
+        })
+        .unwrap();
+
+    let capture2_result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), capture2_response_rx).await;
+    match capture2_result {
+        Ok(Ok(Err(Error::Consensus(ConsensusError::Snapshot(SnapshotError::CaptureSkipped))))) => {}
+        other => panic!(
+            "expected CaptureSkipped (a second capture must not start while a superseded \
+             capture's cleanup at the same path is still in flight), got: {other:?}"
+        ),
+    }
+
+    let capture1_result =
+        tokio::time::timeout(std::time::Duration::from_millis(500), capture1_response_rx).await;
+    assert!(
+        matches!(
+            capture1_result,
+            Ok(Ok(Err(Error::Consensus(ConsensusError::Snapshot(
+                SnapshotError::CaptureSuperseded
+            )))))
+        ),
+        "expected capture #1 to resolve as CaptureSuperseded, got: {capture1_result:?}"
+    );
+
+    wait_until_removed(&big_dir).await;
+}
+
+/// If cleanup of a superseded capture's directory itself fails (disk error,
+/// permissions, ...), the Worker must not silently report `CaptureSuperseded` as if
+/// cleanup succeeded — a caller (or worse, a retry capture reusing this same
+/// deterministic path) would then wrongly believe the path is clear. It must surface
+/// as an explicit `OperationFailed` instead.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_local_snapshot_ready_reports_operation_failed_when_superseded_cleanup_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir_path = tempfile::tempdir().unwrap().keep();
+    std::fs::write(dir_path.join("f"), b"x").unwrap();
+
+    // Deny write on the parent so `remove_dir_all(dir_path)` can't unlink its child
+    // (Unix: removing a directory entry requires write permission on the parent).
+    let mut perms = std::fs::metadata(&dir_path).unwrap().permissions();
+    perms.set_mode(0o500); // r-x, no write
+    std::fs::set_permissions(&dir_path, perms).unwrap();
+
+    let guard = OwnedSnapshotDir::from_existing(dir_path.clone()).unwrap();
+
+    let mock_smw = MockStateMachineWriterOps::new();
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (response, response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::LocalSnapshotReady {
+            captured: Ok(CapturedLocalSnapshot {
+                metadata: SnapshotMetadata::default(),
+                temp_dir: guard,
+            }),
+            epoch_before: 1, // fresh Worker's install_epoch is 0 — instant "superseded"
+            response,
+            guard: fresh_capture_guard().await,
+        })
+        .unwrap();
+
+    let result = response_rx.await.unwrap();
+
+    // Restore permissions before any assertion can panic and skip this — otherwise
+    // the tempdir is left behind, unremovable by the test harness's own cleanup.
+    let mut perms = std::fs::metadata(&dir_path).unwrap().permissions();
+    perms.set_mode(0o700);
+    std::fs::set_permissions(&dir_path, perms).unwrap();
+    std::fs::remove_dir_all(&dir_path).unwrap();
+
+    assert!(
+        matches!(
+            result,
+            Err(Error::Consensus(ConsensusError::Snapshot(
+                SnapshotError::OperationFailed(_)
+            )))
+        ),
+        "cleanup failure must surface as OperationFailed, not silently report \
+         CaptureSuperseded: {result:?}"
+    );
+}
+
 /// PR #442 review regression: the other leak path CodeRabbit flagged alongside
 /// `CaptureSuperseded` — `LocalSnapshotReady`'s `let _ = response.send(result);`
 /// silently drops `result` (which can carry a freshly-captured
@@ -1195,6 +1399,7 @@ async fn test_local_snapshot_ready_cleans_up_capture_when_response_receiver_drop
             }),
             epoch_before: 0,
             response,
+            guard: fresh_capture_guard().await,
         })
         .unwrap();
 
@@ -1285,5 +1490,73 @@ async fn test_shutdown_waits_for_in_flight_capture_before_returning() {
     assert!(
         matches!(capture_result, Ok(Err(_))),
         "expected the response channel to resolve (not hang), got: {capture_result:?}"
+    );
+}
+
+/// Superseded-capture cleanup must complete before `CaptureSuperseded` reaches the
+/// caller — not just "eventually" via `Drop`'s detached thread. `capture_local_snapshot`
+/// reuses a deterministic path per `last_included` (writer.rs), so a slow cleanup could
+/// otherwise race a same-path retry and delete its fresh content.
+///
+/// Directory is heavily populated so `remove_dir_all` measurably outlasts `Drop`'s
+/// thread-spawn, making failure deterministic instead of timing-luck.
+#[tokio::test]
+async fn test_superseded_capture_directory_gone_by_the_time_response_resolves() {
+    let dir_path = tempfile::tempdir().unwrap().keep();
+    for i in 0..500 {
+        std::fs::write(dir_path.join(format!("file_{i}")), vec![0u8; 4096]).unwrap();
+    }
+    let guard = OwnedSnapshotDir::from_existing(dir_path.clone()).unwrap();
+
+    let mock_smw = MockStateMachineWriterOps::new();
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (response, response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::LocalSnapshotReady {
+            captured: Ok(CapturedLocalSnapshot {
+                metadata: SnapshotMetadata::default(),
+                temp_dir: guard,
+            }),
+            // A fresh Worker's install_epoch starts at 0 — any non-zero value here is
+            // an instant, unconditional "superseded", no real InstallSnapshot needed.
+            epoch_before: 1,
+            response,
+            guard: fresh_capture_guard().await,
+        })
+        .unwrap();
+
+    let result = response_rx.await.unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(Error::Consensus(ConsensusError::Snapshot(
+                SnapshotError::CaptureSuperseded
+            )))
+        ),
+        "expected CaptureSuperseded, got: {result:?}"
+    );
+
+    assert!(
+        !dir_path.exists(),
+        "superseded capture's directory must already be gone by the time the caller \
+         observes CaptureSuperseded — today cleanup runs on a Drop-spawned detached \
+         thread with no ordering guarantee, so a caller (or a same-path retry capture, \
+         since temp_work_path is deterministic per last_included) can observe/reuse \
+         this path before cleanup has actually run"
     );
 }

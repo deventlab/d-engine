@@ -13,6 +13,19 @@ use crate::alias::SMWOF;
 use crate::{InternalEvent, SnapshotApplyResult};
 use crate::{PreparedSnapshot, SnapshotError};
 
+/// Shared, read-only-after-construction context `handle_command` needs — split out
+/// from `sm_apply_rx` (which needs `&mut` exclusive access in the loop) purely to
+/// keep `handle_command`'s own argument count sane (was 9, clippy's cap is 8).
+struct HandlerContext<T: TypeConfig> {
+    node_id: u32,
+    state_machine_writer: Arc<SMWOF<T>>,
+    sm_apply_tx: mpsc::UnboundedSender<StateMachineCommand>,
+    internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
+    capture_install_lock: Arc<tokio::sync::Mutex<()>>,
+    capture_cleanup_lock: Arc<tokio::sync::Mutex<()>>,
+    install_epoch: Arc<AtomicU64>,
+}
+
 /// State Machine Worker
 ///
 /// Decouples state machine apply operations from CommitHandler.
@@ -49,6 +62,10 @@ pub struct StateMachineWorker<T: TypeConfig> {
     internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
     /// Coordinates CaptureLocalSnapshot vs InstallSnapshot only (#436).
     capture_install_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Separate from `capture_install_lock` on purpose (#442): merging them deadlocks
+    /// `InstallSnapshot`'s inline lock wait against a `LocalSnapshotReady` message that
+    /// can only be dequeued after that wait returns.
+    capture_cleanup_lock: Arc<tokio::sync::Mutex<()>>,
     /// Bumped on each successful install; lets a capture detect it was superseded.
     install_epoch: Arc<AtomicU64>,
     /// Signals graceful shutdown.
@@ -72,6 +89,7 @@ impl<T: TypeConfig> StateMachineWorker<T> {
             sm_apply_rx,
             internal_event_tx,
             capture_install_lock: Arc::new(tokio::sync::Mutex::new(())),
+            capture_cleanup_lock: Arc::new(tokio::sync::Mutex::new(())),
             install_epoch: Arc::new(AtomicU64::new(0)),
             shutdown_signal,
             node_id,
@@ -84,15 +102,20 @@ impl<T: TypeConfig> StateMachineWorker<T> {
 
     pub async fn run(self) -> Result<()> {
         debug!("[Node-{}] SM Worker started", self.node_id);
-        let node_id = self.node_id;
-        let state_machine_writer = self.state_machine_writer;
-        let sm_apply_tx = self.sm_apply_tx;
-        let internal_event_tx = self.internal_event_tx;
         let mut sm_apply_rx = self.sm_apply_rx;
         let mut shutdown_signal = self.shutdown_signal.clone();
         let mut shutdown = false;
-        let capture_install_lock = self.capture_install_lock;
-        let install_epoch = self.install_epoch;
+
+        let node_id = self.node_id;
+        let ctx = HandlerContext {
+            node_id,
+            state_machine_writer: self.state_machine_writer,
+            sm_apply_tx: self.sm_apply_tx,
+            internal_event_tx: self.internal_event_tx,
+            capture_install_lock: self.capture_install_lock,
+            capture_cleanup_lock: self.capture_cleanup_lock,
+            install_epoch: self.install_epoch,
+        };
 
         // Tracks the in-flight capture task so shutdown can wait for it (#436).
         let mut in_flight_capture: Option<tokio::task::JoinHandle<()>> = None;
@@ -109,7 +132,7 @@ impl<T: TypeConfig> StateMachineWorker<T> {
                 command = sm_apply_rx.recv() => {
                     match command {
                         Some(command) => {
-                            Self::handle_command(&node_id, &state_machine_writer, &sm_apply_tx, &internal_event_tx, &capture_install_lock, &install_epoch, &mut in_flight_capture, command).await?;
+                            Self::handle_command(&ctx, &mut in_flight_capture, command).await?;
                                                    }
                         None => {
                             debug!("[Node-{}] SM Worker: apply channel closed", node_id);
@@ -128,17 +151,7 @@ impl<T: TypeConfig> StateMachineWorker<T> {
         // Graceful drain: process remaining entries after shutdown signal
         debug!("[Node-{}] SM Worker draining pending applies", node_id);
         while let Ok(command) = sm_apply_rx.try_recv() {
-            Self::handle_command(
-                &node_id,
-                &state_machine_writer,
-                &sm_apply_tx,
-                &internal_event_tx,
-                &capture_install_lock,
-                &install_epoch,
-                &mut in_flight_capture,
-                command,
-            )
-            .await?;
+            Self::handle_command(&ctx, &mut in_flight_capture, command).await?;
         }
 
         // Wait for a still-running capture rather than leaving it orphaned — see
@@ -160,47 +173,55 @@ impl<T: TypeConfig> StateMachineWorker<T> {
     /// Single dispatch point for all `StateMachineCommand` variants — the
     /// only place allowed to touch the state machine's destructive APIs.
     async fn handle_command(
-        node_id: &u32,
-        state_machine_writer: &Arc<SMWOF<T>>,
-        sm_apply_tx: &mpsc::UnboundedSender<StateMachineCommand>,
-        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
-        capture_install_lock: &Arc<tokio::sync::Mutex<()>>,
-        install_epoch: &Arc<AtomicU64>,
+        ctx: &HandlerContext<T>,
         in_flight_capture: &mut Option<tokio::task::JoinHandle<()>>,
         command: StateMachineCommand,
     ) -> Result<()> {
         match command {
             StateMachineCommand::ApplyEntries { entries } => {
-                Self::apply_and_notify(node_id, state_machine_writer, internal_event_tx, entries)
-                    .await
+                Self::apply_and_notify(
+                    &ctx.node_id,
+                    &ctx.state_machine_writer,
+                    &ctx.internal_event_tx,
+                    entries,
+                )
+                .await
             }
             StateMachineCommand::InstallSnapshot { snapshot, response } => {
                 // temp_dir must outlive the install; cleaned up when this scope ends.
                 let PreparedSnapshot { metadata, temp_dir } = snapshot;
                 let dir = temp_dir.path().to_path_buf();
                 // Leader-authoritative: always waits for the lock, never skips.
-                let _guard = capture_install_lock.lock().await;
+                let _guard = ctx.capture_install_lock.lock().await;
                 let result = call_with_timing_guard(
                     "install_prepared_snapshot",
                     Duration::from_secs(5),
-                    state_machine_writer.install_prepared_snapshot(metadata, dir),
+                    ctx.state_machine_writer.install_prepared_snapshot(metadata, dir),
                 )
                 .await;
                 if matches!(result, Ok(SnapshotApplyResult::Applied { .. })) {
-                    install_epoch.fetch_add(1, Ordering::Release);
+                    ctx.install_epoch.fetch_add(1, Ordering::Release);
                 }
                 let _ = response.send(result);
                 Ok(())
             }
             StateMachineCommand::CaptureLocalSnapshot { response } => {
                 // Spawned so the slow export never blocks this loop (#436).
-                let writer = state_machine_writer.clone();
-                let lock = capture_install_lock.clone();
-                let epoch = install_epoch.clone();
-                let self_tx = sm_apply_tx.clone();
+                let writer = ctx.state_machine_writer.clone();
+                let write_lock = ctx.capture_install_lock.clone();
+                let cleanup_lock = ctx.capture_cleanup_lock.clone();
+                let epoch = ctx.install_epoch.clone();
+                let self_tx = ctx.sm_apply_tx.clone();
 
                 let handle = tokio::spawn(async move {
-                    let Ok(_guard) = lock.try_lock() else {
+                    // Checked first, before `write_lock` — a previous superseded
+                    // capture's cleanup at this reusable path may still be running,
+                    // and there is nothing useful to do until it clears (#442 review).
+                    let Ok(cleanup_guard) = cleanup_lock.try_lock_owned() else {
+                        let _ = response.send(Err(SnapshotError::CaptureSkipped.into()));
+                        return;
+                    };
+                    let Ok(write_guard) = write_lock.try_lock_owned() else {
                         let _ = response.send(Err(SnapshotError::CaptureSkipped.into()));
                         return;
                     };
@@ -211,12 +232,18 @@ impl<T: TypeConfig> StateMachineWorker<T> {
                         writer.capture_local_snapshot(),
                     )
                     .await;
-                    drop(_guard);
+                    // Released immediately here, NOT carried into `LocalSnapshotReady`
+                    // — `InstallSnapshot`'s inline wait on this same lock must only
+                    // ever wait for an in-flight *write*, never for a queued message
+                    // it can't process until its own handler already returned.
+                    drop(write_guard);
+
                     // Fresh/stale decided on Worker's own loop, not here (#436).
                     let _ = self_tx.send(StateMachineCommand::LocalSnapshotReady {
                         captured,
                         epoch_before,
                         response,
+                        guard: cleanup_guard,
                     });
                 });
                 // Keep the older handle if it's still running — that's the one worth waiting for.
@@ -229,21 +256,38 @@ impl<T: TypeConfig> StateMachineWorker<T> {
                 captured,
                 epoch_before,
                 response,
+                guard,
             } => {
                 // Runs on Worker's loop, not the spawned task above — the only way
-                // this stays FIFO-ordered with InstallSnapshot (#436).
-                let result = match captured {
-                    Err(e) => Err(e),
+                // this stays FIFO-ordered with InstallSnapshot (#436). `guard` here
+                // is `capture_cleanup_lock`'s guard, not `capture_install_lock`'s —
+                // dropping it late (superseded branch below) only blocks the next
+                // `CaptureLocalSnapshot`, never `InstallSnapshot`.
+                match captured {
+                    Err(e) => {
+                        drop(guard);
+                        let _ = response.send(Err(e));
+                    }
                     Ok(captured) => {
                         // Leader install wins unconditionally — no boundary comparison (#436).
-                        if install_epoch.load(Ordering::Acquire) != epoch_before {
-                            Err(SnapshotError::CaptureSuperseded.into())
+                        if ctx.install_epoch.load(Ordering::Acquire) != epoch_before {
+                            tokio::spawn(async move {
+                                let result = match captured.temp_dir.remove().await {
+                                                   Ok(()) => Err(SnapshotError::CaptureSuperseded.into()),
+                                                   Err(e) => Err(SnapshotError::OperationFailed(format!(
+                                                       "capture superseded, but failed to synchronously remove its \
+                                                        reusable temp directory: {e}"
+                                                   )).into()),
+                                               };
+                                let _ = response.send(result);
+                                drop(guard);
+                            });
                         } else {
-                            Ok(captured)
+                            drop(guard);
+                            let _ = response.send(Ok(captured));
                         }
                     }
                 };
-                let _ = response.send(result);
                 Ok(())
             }
         }

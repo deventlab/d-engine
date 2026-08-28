@@ -2,14 +2,13 @@
 //! all state-machine mutations.
 //! one serial writer.
 
-use std::path::Path;
-use std::path::PathBuf;
-
 use crate::Result;
 use crate::SnapshotApplyResult;
 use crate::SnapshotError;
 use d_engine_proto::common::Entry;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use std::path::Path;
+use std::path::PathBuf;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -63,12 +62,16 @@ impl OwnedSnapshotDir {
     /// state-machine export can be a non-trivial recursive delete.
     pub(crate) async fn remove(self) -> Result<()> {
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || std::fs::remove_dir_all(path))
-            .await
-            .map_err(|e| SnapshotError::OperationFailed(format!("cleanup task panicked: {e}")))?
-            .map_err(|e| {
-                SnapshotError::OperationFailed(format!("failed to remove snapshot dir: {e}")).into()
-            })
+        tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        })
+        .await
+        .map_err(|e| SnapshotError::OperationFailed(format!("cleanup task panicked: {e}")))?
+        .map_err(|e| {
+            SnapshotError::OperationFailed(format!("failed to remove snapshot dir: {e}")).into()
+        })
     }
 }
 
@@ -143,6 +146,7 @@ pub enum StateMachineCommand {
         captured: Result<CapturedLocalSnapshot>,
         epoch_before: u64,
         response: oneshot::Sender<Result<CapturedLocalSnapshot>>,
+        guard: tokio::sync::OwnedMutexGuard<()>,
     },
 }
 

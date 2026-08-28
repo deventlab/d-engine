@@ -24,6 +24,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
+use tracing::warn;
 
 /// Sled database tree namespaces
 pub(crate) const STATE_MACHINE_TREE: &str = "_state_machine_tree";
@@ -38,6 +39,12 @@ pub(crate) const LAST_SNAPSHOT_METADATA_KEY: &str = "_raft_last_snapshot_metadat
 
 pub struct SledStateMachine {
     node_id: u32,
+
+    /// This state machine's own configured data directory — the sled db actually lives
+    /// at `path.join("state_machine")` (see `init_sled_state_machine_db`). Needed by
+    /// `apply_snapshot_from_file` so an installed snapshot's content ends up living
+    /// *here*, not in the caller's temporary decompression directory (#442 review).
+    path: PathBuf,
 
     db: ArcSwap<sled::Db>,
 
@@ -396,11 +403,14 @@ impl StateMachine for SledStateMachine {
         // single queue (#436), so this call never races a concurrent snapshot generation
         // or another install.
 
-        // Stale/duplicate/boundary classification — every StateMachine implementation must
-        // honor this contract, not just the built-in RocksDB/File adaptors (#436). A snapshot
-        // that doesn't advance our state is a no-op, not an error; only a genuine boundary
-        // conflict (same index, different term) is.
-        let new_last_included = metadata.last_included.unwrap_or_default();
+        // Boundary classification (#436, every StateMachine impl must honor this): stale or
+        // duplicate is a no-op, same-index-different-term is a conflict error, and a missing
+        // boundary can't be classified at all — reject it outright (mirrors
+        // prepare_transfer_meta's handling of the same field).
+        let new_last_included = metadata.last_included.ok_or_else(|| {
+            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
+        })?;
+
         let current = self.last_applied();
         match new_last_included.index.cmp(&current.index) {
             std::cmp::Ordering::Less => {
@@ -450,16 +460,62 @@ impl StateMachine for SledStateMachine {
             return Err(SnapshotError::ChecksumMismatch.into());
         }
 
+        // `decompressed_snapshot_path` is a temporary directory owned by the caller
+        // (see `PreparedSnapshot`), not this state machine's own `self.path`. Opening a
+        // sled::Db directly there and swapping `self.db` to point at it — the previous
+        // approach — left the live database permanently rooted in that ephemeral
+        // storage: correct until the next restart, then silently gone, because
+        // `SledStateMachine::new` only ever reopens `self.path`, which never received
+        // the new content (#442 review). Move the content home to `self.path` first.
         debug!(
             ?decompressed_snapshot_path,
-            "Initializing new state machine database"
+            "Moving decompressed snapshot into this node's own data directory"
         );
-        let db = init_sled_state_machine_db(&decompressed_snapshot_path)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        let db_dir = self.path.join("state_machine");
+        let backup_dir = self.path.join("state_machine.pre-install-backup");
+        let incoming_db_dir = decompressed_snapshot_path.join("state_machine");
 
-        debug!("Atomically replacing current database");
-        // Critical for maintaining consistency per Raft spec.
+        // Release the old db's file lock before touching its directory — sled refuses
+        // to open two instances at the same path concurrently.
+        drop(self.db.load_full());
+
+        tokio::task::spawn_blocking(move || -> std::result::Result<(), std::io::Error> {
+            if backup_dir.exists() {
+                std::fs::remove_dir_all(&backup_dir)?;
+            }
+            // Not fully crash-atomic: a crash between these two renames leaves
+            // `db_dir` absent and the new content sitting at `backup_dir` — recovered
+            // by the startup check in `SledStateMachine::new`, not rolled back here.
+            // Sled has no cross-directory atomic-replace primitive; this two-step
+            // rename is the simplest thing that survives the *normal* restart case,
+            // which is the bug this fixes. This is an example adaptor, not the
+            // production RocksDB/File ones.
+            std::fs::rename(&db_dir, &backup_dir)?;
+            if let Err(e) = std::fs::rename(&incoming_db_dir, &db_dir) {
+                // Temp storage and the data directory can be on different
+                // filesystems (e.g. `/tmp` vs a data disk) — rename can't hop
+                // devices. Fall back to a recursive copy in that case only.
+                if e.kind() == std::io::ErrorKind::CrossesDevices {
+                    copy_dir_recursive(&incoming_db_dir, &db_dir)?;
+                } else {
+                    return Err(e);
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::DbError(format!("snapshot install task panicked: {e}")))?
+        .map_err(|e| StorageError::DbError(format!("failed to move snapshot into place: {e}")))?;
+
+        debug!("Reopening state machine database at its permanent path");
+        let db = init_sled_state_machine_db(&self.path)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
         self.db.store(Arc::new(db));
+
+        // Best-effort: a leftover `*.pre-install-backup` is harmless (just disk space)
+        // if this fails or the process dies here — it's never read again once
+        // `db_dir` exists, only by the startup check when `db_dir` is absent.
+        let _ = tokio::fs::remove_dir_all(self.path.join("state_machine.pre-install-backup")).await;
 
         debug!(
             ?new_last_included,
@@ -468,6 +524,8 @@ impl StateMachine for SledStateMachine {
         );
         self.update_last_applied(new_last_included);
         self.update_last_snapshot_metadata(metadata)?;
+
+        self.save_hard_state()?;
 
         Ok(SnapshotApplyResult::Applied {
             last_included: new_last_included,
@@ -524,8 +582,26 @@ impl SledStateMachine {
         path: P,
         node_id: u32,
     ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+
+        // Recovery from a crash mid-install (see `apply_snapshot_from_file`): if the
+        // live `state_machine` directory is missing but a pre-install backup is still
+        // there, the previous process died between renaming the old content aside and
+        // renaming the new content into place. Restore the backup instead of silently
+        // opening (and then re-initializing) an empty database.
+        let db_dir = path.join("state_machine");
+        let backup_dir = path.join("state_machine.pre-install-backup");
+        if !db_dir.exists() && backup_dir.exists() {
+            warn!(
+                ?backup_dir,
+                "Recovering from an interrupted snapshot install: restoring pre-install backup"
+            );
+            std::fs::rename(&backup_dir, &db_dir)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+        }
+
         let db = Arc::new(
-            init_sled_state_machine_db(path).map_err(|e| StorageError::DbError(e.to_string()))?,
+            init_sled_state_machine_db(&path).map_err(|e| StorageError::DbError(e.to_string()))?,
         );
 
         let state_machine_meta_tree = db
@@ -540,6 +616,7 @@ impl SledStateMachine {
 
         let sm = SledStateMachine {
             db: ArcSwap::from(db),
+            path,
             is_serving: Arc::new(AtomicBool::new(true)),
             node_id,
 
@@ -649,6 +726,27 @@ impl SledStateMachine {
         tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
+}
+
+/// Recursively copies `src` into `dst`, creating `dst` if needed. Fallback for
+/// `apply_snapshot_from_file` when the decompressed snapshot's temp directory and this
+/// node's data directory are on different filesystems, so `std::fs::rename` can't just
+/// hop them across devices.
+fn copy_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
 }
 
 /// TODO: how to refactor with `current_tree`

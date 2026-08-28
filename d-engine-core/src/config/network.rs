@@ -38,7 +38,7 @@ pub struct NetworkConfig {
 }
 
 /// Low-level network parameters for a specific connection type
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConnectionParams {
     /// TCP connect timeout in milliseconds
     #[serde(default = "default_connect_timeout")]
@@ -67,6 +67,26 @@ pub struct ConnectionParams {
     /// Initial stream-level flow control window in bytes
     #[serde(default = "default_stream_window_size")]
     pub stream_window_size: u32,
+}
+
+impl Default for ConnectionParams {
+    /// Must stay in lockstep with the `#[serde(default = "...")]` helper on each field
+    /// above — a `#[derive(Default)]` here would silently diverge from them (every
+    /// field would fall back to its Rust zero value, e.g. `connection_window_size: 0`,
+    /// instead of `default_conn_window_size()`'s `20_971_520`), so any caller reaching
+    /// for `ConnectionParams::default()` — not just serde deserializing a partial
+    /// config — gets the same values a missing field would.
+    fn default() -> Self {
+        Self {
+            connect_timeout_in_ms: default_connect_timeout(),
+            request_timeout_in_ms: default_request_timeout(),
+            tcp_keepalive_in_secs: default_tcp_keepalive(),
+            http2_keep_alive_interval_in_secs: default_h2_keepalive_interval(),
+            http2_keep_alive_timeout_in_secs: default_h2_keepalive_timeout(),
+            connection_window_size: default_conn_window_size(),
+            stream_window_size: default_stream_window_size(),
+        }
+    }
 }
 
 impl Default for NetworkConfig {

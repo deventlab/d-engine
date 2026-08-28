@@ -369,6 +369,60 @@ fn test_server_transport_params_validate_success() {
     );
 }
 
+/// PR #442 review: `ConnectionParams` used to `#[derive(Default)]`, which silently
+/// diverged from its own `#[serde(default = "...")]` field helpers — every field fell
+/// back to its Rust zero value (e.g. `connection_window_size: 0`) instead of the
+/// value a missing field in a real config file actually gets (`20_971_520`, via
+/// `default_conn_window_size()`). `ConnectionParams::default()` and "every field
+/// absent in the source" must produce identical values — locks that in so a future
+/// field addition (or a reintroduced `#[derive(Default)]`) can't silently reopen the
+/// gap.
+#[test]
+fn test_connection_params_default_matches_all_fields_absent_in_source() {
+    use config::Config;
+
+    let from_empty_source: ConnectionParams =
+        Config::builder().build().unwrap().try_deserialize().unwrap();
+
+    let rust_default = ConnectionParams::default();
+
+    assert_eq!(
+        rust_default.connect_timeout_in_ms,
+        from_empty_source.connect_timeout_in_ms
+    );
+    assert_eq!(
+        rust_default.request_timeout_in_ms,
+        from_empty_source.request_timeout_in_ms
+    );
+    assert_eq!(
+        rust_default.tcp_keepalive_in_secs,
+        from_empty_source.tcp_keepalive_in_secs
+    );
+    assert_eq!(
+        rust_default.http2_keep_alive_interval_in_secs,
+        from_empty_source.http2_keep_alive_interval_in_secs
+    );
+    assert_eq!(
+        rust_default.http2_keep_alive_timeout_in_secs,
+        from_empty_source.http2_keep_alive_timeout_in_secs
+    );
+    assert_eq!(
+        rust_default.connection_window_size,
+        from_empty_source.connection_window_size
+    );
+    assert_eq!(
+        rust_default.stream_window_size,
+        from_empty_source.stream_window_size
+    );
+
+    // The specific regression CodeRabbit flagged: a bare `#[derive(Default)]` would
+    // have produced 0 here, not the real ~20MB default.
+    assert_eq!(
+        ConnectionParams::default().connection_window_size,
+        20_971_520
+    );
+}
+
 #[test]
 fn test_server_transport_params_validate_default_is_valid() {
     let params = ServerTransportParams::default();

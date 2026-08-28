@@ -563,9 +563,13 @@ async fn apply_snapshot_from_file(
 }
 ```
 
-Return `IgnoredStale`/`IgnoredDuplicate` instead of `Err(...)` for a snapshot that's older than or
-equal to what's already applied — that's Raft's own idempotency check on the install call, not a
-failure. Reserve `Err` for a genuine failure (checksum mismatch, I/O error, corrupted data).
+Return `IgnoredStale` for a snapshot strictly older than what's already applied, and
+`IgnoredDuplicate` only when the index **and** term both match what's already applied — that's
+Raft's own idempotency check on the install call, not a failure. An equal index with a
+**different** term is not a duplicate: it means two different leadership terms produced
+conflicting content at the same boundary, which the public error contract classifies as fatal —
+return `Err(SnapshotError::BoundaryConflict { .. })` for that case. Reserve `Err` generally for a
+genuine failure (checksum mismatch, I/O error, corrupted data, or this boundary conflict).
 
 Built-in implementations (`FileStateMachine`, `RocksDBStateMachine`) are already updated.
 Compilation fails with "incompatible type for trait" until a custom implementation is updated.
