@@ -22,7 +22,6 @@ use serial_test::serial;
 use tracing::info;
 
 use crate::common::get_available_ports;
-use crate::common::wait_for_snapshot;
 
 /// Deterministic, incompressible payload so the snapshot does not shrink under gzip —
 /// keeps the transferred snapshot representative of a real, non-trivial payload.
@@ -181,22 +180,26 @@ push_queue_size = 1
             .await?;
     }
 
-    let leader_id = leader_info.leader_id as u64;
-    let leader_snapshots_dir = data_dir.join(format!("node{leader_id}/db/snapshots"));
-    assert!(
-        wait_for_snapshot(&leader_snapshots_dir, Duration::from_secs(15)).await,
-        "Leader snapshot must exist before the learner starts"
-    );
-
-    // Recorded here (not at test start): only a purge logged from this point on can be
-    // the Leader's own, chained off the snapshot `wait_for_snapshot` just confirmed. A
-    // purge from another node's independent local capture (#436 lets every node capture
-    // on its own schedule) landing earlier in the buffer must not satisfy the wait below —
-    // it says nothing about whether the Leader's retained log has actually moved.
+    // Recorded here (right after the baseline writes, not at test start): with
+    // SNAPSHOT_THRESHOLD=64 > RETAINED_LOGS=8 (checked below), no node's log can cross a
+    // purge boundary before these writes land, so nothing earlier in the buffer can
+    // satisfy the match below — no extra gate is needed to make `since` safe.
+    //
+    // This used to gate `since` on a `wait_for_snapshot` directory scan for the leader's
+    // `.gz` file first, on the theory that "file exists" proves the snapshot is built.
+    // It doesn't: `compress_directory` (default_state_machine_handler.rs) calls
+    // `File::create` on the *final* snapshot path before writing a single tar/gzip byte
+    // into it, so the scan can observe an empty, still-being-written file milliseconds
+    // into the build. That gate returned almost immediately in practice, contributing
+    // none of its 15s budget to the real wait — it just added false confidence while the
+    // actual bottleneck (the fixed window below) stayed exactly as tight. That's what
+    // made this test flake under CI load: RocksDB checkpoint export + tar/gzip
+    // compression + metadata persist is genuinely sequential disk+CPU work that slows
+    // down under contention.
     let since = logs.lock().unwrap().len();
 
     // The retained-log purge boundary — the actual signal this test needs, not just "a
-    // snapshot file exists" (see comment above `logs` for why those differ). Emitted by
+    // snapshot file exists" (see comment above for why those differ). Emitted by
     // `schedule_and_execute_purge` as `info!("purge_upto_index={purge_upto_index}")`
     // whenever ANY node completes a local snapshot capture, unconditionally — including
     // the `purge_upto_index=0` case where nothing is actually purged (retained_log_entries
