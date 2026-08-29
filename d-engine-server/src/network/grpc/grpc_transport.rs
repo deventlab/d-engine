@@ -7,7 +7,6 @@ use d_engine_core::BackoffPolicy;
 use d_engine_core::ClusterUpdateResult;
 use d_engine_core::ConnectionType;
 use d_engine_core::Error;
-use d_engine_core::InstallSnapshotBackoffPolicy;
 use d_engine_core::Membership;
 use d_engine_core::NetworkError;
 use d_engine_core::ReplicationStream;
@@ -29,12 +28,7 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::raft_election_service_client::RaftElectionServiceClient;
 use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_client::RaftReplicationServiceClient;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::snapshot_service_client::SnapshotServiceClient;
-use dashmap::DashMap;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
@@ -42,33 +36,18 @@ use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::task;
-use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
-
-pub struct PeerAppender {
-    pub(crate) sender: mpsc::Sender<AppendRequest>,
-    pub(crate) task_handle: JoinHandle<()>,
-}
-
-pub struct AppendRequest {
-    pub(crate) request: AppendEntriesRequest,
-    pub(crate) response_sender: oneshot::Sender<Result<AppendEntriesResponse>>,
-}
 
 pub struct GrpcTransport<T>
 where
     T: TypeConfig,
 {
     pub(crate) my_id: u32,
-
-    peer_appenders: Arc<DashMap<u32, PeerAppender>>,
 
     /// Fire-and-forget channel to report peer stream failures for zombie detection.
     /// `None` in tests that construct via `GrpcTransport::new(node_id)`.
@@ -185,38 +164,6 @@ where
         })
     }
 
-    async fn send_append_request(
-        &self,
-        peer_id: u32,
-        request: AppendEntriesRequest,
-        retry_policies: &RetryPolicies,
-        membership: Arc<MOF<T>>,
-        response_compress_enabled: bool,
-    ) -> Result<AppendEntriesResponse> {
-        let appender = self
-            .get_or_create_appender(
-                peer_id,
-                retry_policies.clone(),
-                membership,
-                response_compress_enabled,
-            )
-            .await?;
-
-        let (response_tx, response_rx) = oneshot::channel();
-        appender
-            .send(AppendRequest {
-                request,
-                response_sender: response_tx,
-            })
-            .await
-            .map_err(|_| Error::from(NetworkError::ResponseChannelClosed))?;
-
-        match response_rx.await {
-            Ok(result) => result,
-            Err(_) => Err(Error::from(NetworkError::ResponseChannelClosed)),
-        }
-    }
-
     async fn send_vote_request(
         &self,
         peer_id: u32,
@@ -327,6 +274,7 @@ where
         &self,
         peer_id: u32,
         metadata: d_engine_proto::server::storage::SnapshotMetadata,
+        leader_term: u64,
         state_machine_handler: Arc<SMHOF<T>>,
         membership: Arc<MOF<T>>,
         config: SnapshotConfig,
@@ -338,8 +286,10 @@ where
             .await
             .ok_or(NetworkError::PeerConnectionNotFound(peer_id))?;
 
-        let data_stream =
-            state_machine_handler.load_snapshot_data(metadata).await.map_err(|e| {
+        let data_stream = state_machine_handler
+            .load_snapshot_data(metadata, leader_term)
+            .await
+            .map_err(|e| {
                 error!(%peer_id, "Failed to load snapshot data: {:?}", e);
                 e
             })?;
@@ -400,72 +350,6 @@ where
             receiver,
         })
     }
-
-    async fn request_snapshot_from_leader(
-        &self,
-        leader_id: u32,
-        ack_rx: mpsc::Receiver<SnapshotAck>,
-        _retry: &InstallSnapshotBackoffPolicy,
-        membership: Arc<MOF<T>>,
-    ) -> Result<mpsc::Receiver<SnapshotChunk>> {
-        debug!("Fetching snapshot from leader {}", leader_id);
-
-        // Get bulk connection channel
-        let channel = membership
-            .get_peer_channel(leader_id, ConnectionType::Bulk)
-            .await
-            .ok_or(NetworkError::PeerConnectionNotFound(leader_id))?;
-
-        let channel = channel.clone();
-        let mut client = SnapshotServiceClient::new(channel)
-            .send_compressed(CompressionEncoding::Gzip)
-            .accept_compressed(CompressionEncoding::Gzip);
-
-        // ReceiverStream adapts mpsc::Receiver to Stream type
-        let request_stream = ReceiverStream::new(ack_rx);
-        let response = client
-            .stream_snapshot(tonic::Request::new(request_stream))
-            .await
-            .map_err(|e| NetworkError::TonicStatusError(Box::new(e)))?;
-
-        let mut tonic_stream = response.into_inner();
-        let (tx, rx) = mpsc::channel(32);
-
-        tokio::spawn(async move {
-            while let Some(chunk) = tonic_stream.next().await {
-                match chunk {
-                    Ok(c) => {
-                        if tx.send(c).await.is_err() {
-                            break; //receive stops
-                        }
-                    }
-                    Err(e) => {
-                        //network error, drop tx, rx will receive None
-                        error!("{:?}", e);
-                        break;
-                    }
-                }
-            }
-        });
-        Ok(rx)
-    }
-}
-
-impl<T> Drop for GrpcTransport<T>
-where
-    T: TypeConfig,
-{
-    fn drop(&mut self) {
-        // Abort all background peer appender tasks to ensure fast shutdown.
-        // Without this, tasks may hang in membership.get_peer_channel() retries.
-        for entry in self.peer_appenders.iter() {
-            entry.value().task_handle.abort();
-        }
-        debug!(
-            "Aborted {} peer appender tasks during GrpcTransport drop",
-            self.peer_appenders.len()
-        );
-    }
 }
 
 impl<T> GrpcTransport<T>
@@ -476,7 +360,6 @@ where
     pub(crate) fn new(node_id: u32) -> Self {
         Self {
             my_id: node_id,
-            peer_appenders: Arc::new(DashMap::new()),
             peer_failure_tx: None,
             peer_success_tx: None,
             _marker: PhantomData,
@@ -495,7 +378,6 @@ where
     ) -> Self {
         Self {
             my_id: node_id,
-            peer_appenders: Arc::new(DashMap::new()),
             peer_failure_tx: Some(peer_failure_tx),
             peer_success_tx: Some(peer_success_tx),
             _marker: PhantomData,
@@ -523,182 +405,5 @@ where
                 None
             }
         }
-    }
-
-    // Get or create appender for a specific peer (lock-free)
-    async fn get_or_create_appender(
-        &self,
-        peer_id: u32,
-        retry_policy: RetryPolicies,
-        membership: Arc<MOF<T>>,
-        response_compress_enabled: bool,
-    ) -> Result<mpsc::Sender<AppendRequest>> {
-        // Use entry API to handle concurrent creation attempts atomically
-        match self.peer_appenders.entry(peer_id) {
-            dashmap::mapref::entry::Entry::Occupied(entry) => {
-                // Appender already exists, use it
-                Ok(entry.get().sender.clone())
-            }
-            dashmap::mapref::entry::Entry::Vacant(entry) => {
-                // Create new appender
-                let (tx, rx) = mpsc::channel(100);
-                let retry_policy = retry_policy.append_entries;
-                let membership = membership.clone();
-                let my_id = self.my_id;
-
-                let task_handle = tokio::spawn(Self::peer_appender_task(
-                    peer_id,
-                    rx,
-                    retry_policy,
-                    membership,
-                    my_id,
-                    response_compress_enabled,
-                ));
-
-                let appender = PeerAppender {
-                    sender: tx.clone(),
-                    task_handle,
-                };
-
-                entry.insert(appender);
-                Ok(tx)
-            }
-        }
-    }
-
-    // Long-running task for a specific peer
-    async fn peer_appender_task(
-        peer_id: u32,
-        mut receiver: mpsc::Receiver<AppendRequest>,
-        retry_policy: BackoffPolicy,
-        membership: Arc<MOF<T>>,
-        my_id: u32,
-        replication_response_compress_enabled: bool,
-    ) {
-        // Cache the channel for the lifetime of this task; refresh only on failure.
-        // Avoids per-request RwLock + DashMap + health-monitor overhead.
-        let mut cached_channel: Option<Channel> = None;
-
-        while let Some(req) = receiver.recv().await {
-            let AppendRequest {
-                request,
-                response_sender,
-            } = req;
-
-            // Refresh channel only when cache is empty (first use or after error).
-            if cached_channel.is_none() {
-                cached_channel = membership.get_peer_channel(peer_id, ConnectionType::Data).await;
-            }
-
-            let channel = match cached_channel.clone() {
-                Some(chan) => chan,
-                None => {
-                    let _ = response_sender.send(Err(Error::from(
-                        NetworkError::PeerConnectionNotFound(peer_id),
-                    )));
-                    continue;
-                }
-            };
-
-            let result = Self::send_single_append_request(
-                peer_id,
-                request,
-                retry_policy,
-                channel,
-                my_id,
-                replication_response_compress_enabled,
-            )
-            .await;
-
-            // On error, invalidate the cached channel so the next request reconnects.
-            if result.is_err() {
-                cached_channel = None;
-            }
-
-            let _ = response_sender.send(result);
-        }
-
-        // Clean up when channel is closed
-        debug!("Peer appender task for peer {} is shutting down", peer_id);
-    }
-
-    // Helper function to send a single append request
-    async fn send_single_append_request(
-        peer_id: u32,
-        request: AppendEntriesRequest,
-        retry_policy: BackoffPolicy,
-        channel: Channel,
-        my_id: u32,
-        replication_response_compress_enabled: bool,
-    ) -> Result<AppendEntriesResponse> {
-        let closure = || {
-            let channel = channel.clone();
-            let mut client = RaftReplicationServiceClient::new(channel);
-            // Check configuration to determine if compression should be applied
-            if replication_response_compress_enabled {
-                client = client
-                    .send_compressed(CompressionEncoding::Gzip)
-                    .accept_compressed(CompressionEncoding::Gzip);
-            }
-
-            let req = request.clone();
-            async move {
-                let t0 = std::time::Instant::now();
-                let result = client.append_entries(tonic::Request::new(req)).await;
-                metrics::histogram!("server.raft.replicate.rtt_ms", "peer" => peer_id.to_string())
-                    .record(t0.elapsed().as_secs_f64() * 1000.0);
-                result
-            }
-        };
-
-        match grpc_task_with_timeout_and_exponential_backoff(
-            "append_entries",
-            closure,
-            retry_policy,
-        )
-        .await
-        {
-            Ok(response) => {
-                debug!(
-                    "[send_append_requests| {my_id}->{peer_id}] response: {:?}",
-                    response
-                );
-                Ok(response.into_inner())
-            }
-            Err(e) => {
-                debug!(
-                    "[send_append_requests | {my_id}->{peer_id}] Received RPC error: {}",
-                    e
-                );
-                Err(e)
-            }
-        }
-    }
-
-    // Clean up method to remove appenders for peers that are no longer needed
-    pub async fn remove_peer_appender(
-        &self,
-        peer_id: u32,
-    ) {
-        if let Some((_, appender)) = self.peer_appenders.remove(&peer_id) {
-            appender.task_handle.abort();
-            debug!("Removed appender task for peer {}", peer_id);
-        }
-    }
-
-    /// Abort all background peer appender tasks immediately.
-    /// Called during node shutdown to prevent connection retry spam.
-    pub fn abort_all_tasks(&self) {
-        for entry in self.peer_appenders.iter() {
-            entry.value().task_handle.abort();
-        }
-        debug!("Aborted {} peer appender tasks", self.peer_appenders.len());
-    }
-
-    /// Check if any peer appender tasks are still running.
-    /// Used in tests to verify tasks are properly aborted.
-    #[cfg(test)]
-    pub fn has_active_tasks(&self) -> bool {
-        self.peer_appenders.iter().any(|entry| !entry.value().task_handle.is_finished())
     }
 }

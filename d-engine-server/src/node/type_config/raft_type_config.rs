@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use d_engine_core::DefaultCommitHandler;
 use d_engine_core::DefaultPurgeExecutor;
 use d_engine_core::DefaultStateMachineHandler;
+use d_engine_core::DefaultStateMachineWriter;
 use d_engine_core::ElectionHandler;
 use d_engine_core::LogSizePolicy;
 use d_engine_core::ReplicationHandler;
@@ -45,6 +46,8 @@ where
     type C = DefaultCommitHandler<Self>;
 
     type SMH = DefaultStateMachineHandler<Self>;
+
+    type SMW = DefaultStateMachineWriter<Self>;
 
     type SNP = LogSizePolicy;
 

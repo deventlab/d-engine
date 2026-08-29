@@ -527,11 +527,6 @@ pub struct SnapshotConfig {
     #[serde(default = "default_max_log_entries_before_snapshot")]
     pub max_log_entries_before_snapshot: u64,
 
-    /// Minimum duration to wait between consecutive snapshot checks.
-    /// Acts as a cooldown period to avoid overly frequent snapshot evaluations.
-    #[serde(default = "default_snapshot_cool_down_since_last_check")]
-    pub snapshot_cool_down_since_last_check: Duration,
-
     /// Number of historical snapshot versions to retain during cleanup
     /// Ensures we maintain a safety buffer of previous states for recovery
     #[serde(default = "default_cleanup_retain_count")]
@@ -546,7 +541,17 @@ pub struct SnapshotConfig {
     #[serde(default = "default_chunk_size")]
     pub chunk_size: usize,
 
-    /// Number of log entries to retain (0 = disable retention)
+    /// Number of log entries kept *behind* the snapshot boundary after compaction.
+    ///
+    /// This is the AppendEntries catch-up window: a follower whose `match_index`
+    /// is within `retained_log_entries` of `last_included` can be caught up via
+    /// cheap AppendEntries; any further behind requires a full InstallSnapshot
+    /// (expensive, transfers the entire state). Larger values trade log disk space
+    /// for fewer snapshot transfers to lagging peers.
+    ///
+    /// Must be >= 1 (0 is rejected by `validate`). Should be kept smaller than
+    /// `max_log_entries_before_snapshot`, otherwise compaction never actually
+    /// purges anything on the first snapshot.
     #[serde(default = "default_retained_log_entries")]
     pub retained_log_entries: u64,
 
@@ -557,9 +562,6 @@ pub struct SnapshotConfig {
     /// Number of chunks to process before yielding the task
     #[serde(default = "default_receiver_yield_every_n_chunks")]
     pub receiver_yield_every_n_chunks: usize,
-
-    #[serde(default = "default_max_bandwidth_mbps")]
-    pub max_bandwidth_mbps: u32,
 
     #[serde(default = "default_push_queue_size")]
     pub push_queue_size: usize,
@@ -596,14 +598,12 @@ impl Default for SnapshotConfig {
     fn default() -> Self {
         Self {
             max_log_entries_before_snapshot: default_max_log_entries_before_snapshot(),
-            snapshot_cool_down_since_last_check: default_snapshot_cool_down_since_last_check(),
             cleanup_retain_count: default_cleanup_retain_count(),
             snapshots_dir_prefix: default_snapshots_dir_prefix(),
             chunk_size: default_chunk_size(),
             retained_log_entries: default_retained_log_entries(),
             sender_yield_every_n_chunks: default_sender_yield_every_n_chunks(),
             receiver_yield_every_n_chunks: default_receiver_yield_every_n_chunks(),
-            max_bandwidth_mbps: default_max_bandwidth_mbps(),
             push_queue_size: default_push_queue_size(),
             cache_size: default_cache_size(),
             max_retries: default_max_retries(),
@@ -689,15 +689,7 @@ fn default_snapshot_enabled() -> bool {
 
 /// Default threshold for triggering snapshot creation
 fn default_max_log_entries_before_snapshot() -> u64 {
-    1000
-}
-
-/// Default cooldown duration between snapshot checks.
-///
-/// Prevents constant evaluation of snapshot conditions in tight loops.
-/// Reduced from 3600s to 60s to allow timely log compaction under typical workloads.
-fn default_snapshot_cool_down_since_last_check() -> Duration {
-    Duration::from_secs(60)
+    10000
 }
 
 /// Default number of historical snapshots to retain
@@ -731,7 +723,7 @@ fn default_rpc_enable_compression() -> bool {
 }
 
 fn default_retained_log_entries() -> u64 {
-    1
+    100
 }
 
 fn default_sender_yield_every_n_chunks() -> usize {
@@ -739,10 +731,6 @@ fn default_sender_yield_every_n_chunks() -> usize {
 }
 
 fn default_receiver_yield_every_n_chunks() -> usize {
-    1
-}
-
-fn default_max_bandwidth_mbps() -> u32 {
     1
 }
 

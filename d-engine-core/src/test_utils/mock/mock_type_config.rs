@@ -7,6 +7,7 @@ use crate::MockReplicationCore;
 use crate::MockSnapshotPolicy;
 use crate::MockStateMachine;
 use crate::MockStateMachineHandler;
+use crate::MockStateMachineWriterOps;
 use crate::MockStorageEngine;
 use crate::MockTransport;
 use crate::TypeConfig;
@@ -32,6 +33,8 @@ impl TypeConfig for MockTypeConfig {
     type C = MockCommitHandler;
 
     type SMH = MockStateMachineHandler<Self>;
+
+    type SMW = MockStateMachineWriterOps<Self>;
 
     type SNP = MockSnapshotPolicy;
 

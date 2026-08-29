@@ -10,6 +10,9 @@ mod background_snapshot_transfer;
 
 #[cfg(test)]
 mod background_snapshot_transfer_test;
+
+#[cfg(any(test, feature = "__test_support"))]
+mod snapshot_transfer_gate;
 use async_trait::async_trait;
 pub use background_snapshot_transfer::*;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
@@ -18,11 +21,16 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use futures::stream::BoxStream;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
+#[cfg(any(test, feature = "__test_support"))]
+pub use snapshot_transfer_gate::SnapshotTransferGate;
+#[cfg(any(test, feature = "__test_support"))]
+pub use snapshot_transfer_gate::SnapshotTransferGateGuard;
+#[cfg(any(test, feature = "__test_support"))]
+pub use snapshot_transfer_gate::install_snapshot_transfer_gate;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -189,30 +197,6 @@ where
         membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<Vec<d_engine_proto::server::cluster::LeaderDiscoveryResponse>>;
 
-    /// Send a single AppendEntries request to one peer (used by ReplicationWorker).
-    ///
-    /// Non-blocking from the caller's perspective: the caller fires this and the
-    /// per-follower worker task awaits the response independently. Reuses the
-    /// existing FIFO `peer_appender_task` infrastructure internally.
-    ///
-    /// # Parameters
-    /// - `peer_id`: Target follower node ID
-    /// - `request`: AppendEntries RPC request
-    /// - `retry`: Retry / timeout configuration
-    /// - `membership`: Cluster membership for channel resolution
-    /// - `response_compress_enabled`: Enable gRPC response compression
-    ///
-    /// # Returns
-    /// `Ok(AppendEntriesResponse)` on success, `Err` on network / timeout failure
-    async fn send_append_request(
-        &self,
-        peer_id: u32,
-        request: AppendEntriesRequest,
-        retry: &RetryPolicies,
-        membership: std::sync::Arc<crate::alias::MOF<T>>,
-        response_compress_enabled: bool,
-    ) -> Result<AppendEntriesResponse>;
-
     /// Pushes a snapshot to a lagging peer (called by per-follower ReplicationWorker).
     ///
     /// Used when a peer's `next_index` falls below the leader's purge boundary and
@@ -223,6 +207,8 @@ where
     /// # Parameters
     /// - `peer_id`: Target follower node ID
     /// - `metadata`: Snapshot metadata (term, index, size)
+    /// - `leader_term`: Sender's own current term, not `metadata`'s (the snapshotted
+    ///   data's boundary term can be stale after a leader change — #436)
     /// - `state_machine_handler`: Used to load the snapshot data stream
     /// - `membership`: Cluster membership for bulk-channel resolution
     /// - `config`: Snapshot transfer configuration (chunk size, timeout, etc.)
@@ -233,32 +219,11 @@ where
         &self,
         peer_id: u32,
         metadata: SnapshotMetadata,
+        leader_term: u64,
         state_machine_handler: std::sync::Arc<crate::alias::SMHOF<T>>,
         membership: std::sync::Arc<crate::alias::MOF<T>>,
         config: crate::SnapshotConfig,
     ) -> Result<()>;
-
-    /// Requests and streams a snapshot from the current leader.
-    ///
-    /// # Parameters
-    /// - `leader_id`: Current leader node ID
-    /// - `retry`: Retry configuration (currently unused in implementation)
-    /// - `membership`: Cluster membership for channel resolution
-    ///
-    /// # Returns
-    /// Streaming of snapshot chunks from the leader
-    ///
-    /// # Errors
-    /// Returns `NetworkError` if:
-    /// - Connection to leader fails
-    /// - gRPC call fails
-    async fn request_snapshot_from_leader(
-        &self,
-        leader_id: u32,
-        ack_tx: tokio::sync::mpsc::Receiver<d_engine_proto::server::storage::SnapshotAck>,
-        retry: &crate::InstallSnapshotBackoffPolicy,
-        membership: std::sync::Arc<crate::alias::MOF<T>>,
-    ) -> Result<mpsc::Receiver<SnapshotChunk>>;
 
     /// Opens a persistent bidirectional AppendEntries stream to the given peer.
     ///

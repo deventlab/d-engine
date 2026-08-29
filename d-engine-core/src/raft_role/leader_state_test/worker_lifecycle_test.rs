@@ -108,7 +108,7 @@ async fn test_worker_spawned_on_first_request() {
         .times(1)
         .returning(|_, _, _, _, _| {
             Ok(crate::PrepareResult {
-                append_requests: vec![(2, stub_request())],
+                append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
             })
         });
@@ -118,9 +118,6 @@ async fn test_worker_spawned_on_first_request() {
     // tokio task and may not have executed by test teardown — this test's focus is the
     // worker count assertion, not the transport call count.
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport
-        .expect_send_append_request()
-        .returning(|_, _, _, _, _| Ok(stub_response()));
     // Worker opens bidi stream at startup (new behavior in #345)
     transport.expect_open_replication_stream().returning(|_, _, _| {
         let (req_tx, mut req_rx) = tokio::sync::mpsc::channel(128);
@@ -198,7 +195,7 @@ async fn test_worker_reused_on_subsequent_requests() {
         .times(2)
         .returning(|_, _, _, _, _| {
             Ok(crate::PrepareResult {
-                append_requests: vec![(2, stub_request())],
+                append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
             })
         });
@@ -206,9 +203,6 @@ async fn test_worker_reused_on_subsequent_requests() {
     // Transport: allow async calls from the worker; exact count not asserted here
     // because the worker runs in background and may not have executed by teardown.
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport
-        .expect_send_append_request()
-        .returning(|_, _, _, _, _| Ok(stub_response()));
     // Worker opens bidi stream at startup (new behavior in #345)
     transport.expect_open_replication_stream().returning(|_, _, _| {
         let (req_tx, mut req_rx) = tokio::sync::mpsc::channel(128);
@@ -263,7 +257,7 @@ async fn test_worker_reused_on_subsequent_requests() {
 /// - A dead worker handle is injected for peer 2 via `inject_dead_worker_for_test`.
 /// - `process_batch` returns one request for peer 2.
 /// - `send_to_worker_or_spawn` detects the dead channel and rebuilds the worker.
-/// - The new worker calls `send_append_request` and emits `InternalEvent::AppendResult`.
+/// - The new worker opens a bidi stream and emits `InternalEvent::AppendResult`.
 ///
 /// # Guarantees checked
 /// - `worker_count_for_test() == 1` after the rebuild (old dead handle replaced).
@@ -282,7 +276,7 @@ async fn test_worker_rebuilt_after_death() {
         .times(1)
         .returning(|_, _, _, _, _| {
             Ok(crate::PrepareResult {
-                append_requests: vec![(2, stub_request())],
+                append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
             })
         });
@@ -290,9 +284,6 @@ async fn test_worker_rebuilt_after_death() {
     // Transport: allow async calls from the rebuilt worker. We verify delivery
     // indirectly via AppendResult on internal_event_rx rather than mock call count.
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport
-        .expect_send_append_request()
-        .returning(|_, _, _, _, _| Ok(stub_response()));
     // Worker opens bidi stream at startup (new behavior in #345)
     transport.expect_open_replication_stream().returning(|_, _, _| {
         let (req_tx, mut req_rx) = tokio::sync::mpsc::channel(128);
@@ -385,7 +376,7 @@ async fn test_replication_worker_exits_when_handle_dropped() {
         .times(1)
         .returning(|_, _, _, _, _| {
             Ok(crate::PrepareResult {
-                append_requests: vec![(2, stub_request())],
+                append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
             })
         });
@@ -398,9 +389,6 @@ async fn test_replication_worker_exits_when_handle_dropped() {
     let (first_attempt_tx, mut first_attempt_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport
-        .expect_send_append_request()
-        .returning(|_, _, _, _, _| Ok(stub_response()));
     transport.expect_open_replication_stream().returning(move |_, _, _| {
         let n = call_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
         if n == 1 {
@@ -448,22 +436,22 @@ async fn test_replication_worker_exits_when_handle_dropped() {
     );
 }
 
-/// A bidi stream recv error must surface as `PeerStreamError` so the Raft loop
-/// resets `next_index` and re-sends unACKed entries.
+/// Worker reconnects when the bidi stream's receiver yields an error.
 ///
-/// # Why it matters
-/// A broken ACK stream means in-flight AppendEntries were never acknowledged;
-/// without `PeerStreamError` the leader would wrongly advance its commit index.
+/// # Scenario
+/// - `open_replication_stream` succeeds, but its receiver immediately yields `Err(status)`.
+/// - The worker's recv task detects the error; the main loop emits `PeerStreamError`
+///   and reconnects (calls `open_replication_stream` again).
 ///
-/// # Covered branch
-/// `Some(Err(status))` in the recv task (post-#438 refactor), which now `break`s
-/// and relies on the main loop's `recv_handle` arm for shared disconnect handling.
+/// # Why
+/// - This is the "peer went away mid-stream" recovery path: without it, a broken
+///   stream would silently stop replication for that peer.
 #[tokio::test]
 #[traced_test]
-async fn test_replication_worker_recv_stream_error_emits_peer_stream_error() {
+async fn test_worker_reconnects_on_stream_recv_error() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut ctx = mock_raft_context(
-        "/tmp/test_replication_worker_recv_stream_error_emits_peer_stream_error",
+        "/tmp/test_worker_reconnects_on_stream_recv_error",
         graceful_rx,
         None,
     );
@@ -476,32 +464,35 @@ async fn test_replication_worker_recv_stream_error_emits_peer_stream_error() {
         .times(1)
         .returning(|_, _, _, _, _| {
             Ok(crate::PrepareResult {
-                append_requests: vec![(2, stub_request())],
+                append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
             })
         });
 
-    // The worker reconnects after a broken stream. The first stream yields an
-    // immediate recv error to exercise the recv path; later reconnects park on a
-    // pending ACK stream so the worker stops reconnecting and the test stays quiet.
-    let open_count = Arc::new(AtomicUsize::new(0));
-    let open_count_clone = Arc::clone(&open_count);
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let call_count_clone = Arc::clone(&call_count);
+
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport.expect_open_replication_stream().times(..).returning(move |_, _, _| {
-        let attempt = open_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
-        // Keep a live sender receiver so the sender path stays healthy; this test
-        // targets the recv path only and must not hit the sender-closed branch.
-        let (sender, mut send_receiver) = tokio::sync::mpsc::channel::<AppendEntriesRequest>(128);
-        tokio::spawn(async move { while send_receiver.recv().await.is_some() {} });
-        let receiver = if attempt == 1 {
-            futures::stream::iter(vec![Err::<AppendEntriesResponse, tonic::Status>(
-                tonic::Status::unavailable("recv stream broken"),
+    transport.expect_open_replication_stream().returning(move |_, _, _| {
+        let n = call_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == 1 {
+            // First open succeeds, but the stream immediately errors.
+            let (req_tx, mut req_rx) = mpsc::channel::<AppendEntriesRequest>(128);
+            // Drain requests so the worker's Append send succeeds — this test
+            // exercises the recv-error path, not a send failure.
+            tokio::spawn(async move { while req_rx.recv().await.is_some() {} });
+            let stream = futures::stream::iter(vec![Err::<AppendEntriesResponse, tonic::Status>(
+                tonic::Status::internal("stream broken"),
             )])
-            .boxed()
+            .boxed();
+            Ok(crate::ReplicationStream {
+                sender: req_tx,
+                receiver: stream,
+            })
         } else {
-            futures::stream::pending::<Result<AppendEntriesResponse, tonic::Status>>().boxed()
-        };
-        Ok(crate::ReplicationStream { sender, receiver })
+            // Reconnect fails so the worker enters backoff instead of spinning.
+            Err(crate::NetworkError::ConnectError("peer unreachable".into()).into())
+        }
     });
     ctx.transport = Arc::new(transport);
 
@@ -517,13 +508,25 @@ async fn test_replication_worker_recv_stream_error_emits_peer_stream_error() {
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
 
-    let event = tokio::time::timeout(std::time::Duration::from_secs(2), internal_event_rx.recv())
-        .await
-        .expect("timed out waiting for PeerStreamError")
-        .expect("event channel closed before PeerStreamError");
+    // Give the worker time to detect the recv error and reconnect.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let mut saw_peer_stream_error = false;
+    while let Ok(event) = internal_event_rx.try_recv() {
+        if matches!(event, InternalEvent::PeerStreamError { peer_id: 2 }) {
+            saw_peer_stream_error = true;
+            break;
+        }
+    }
     assert!(
-        matches!(event, InternalEvent::PeerStreamError { peer_id: 2 }),
-        "expected PeerStreamError for peer 2, got {event:?}"
+        saw_peer_stream_error,
+        "PeerStreamError must be emitted when the stream receiver errors"
+    );
+
+    assert!(
+        call_count.load(Ordering::SeqCst) >= 2,
+        "open_replication_stream must be called at least twice (initial + reconnect), got {}",
+        call_count.load(Ordering::SeqCst)
     );
 }
 
@@ -555,7 +558,7 @@ async fn test_replication_worker_sender_closed_emits_peer_stream_error() {
         .times(1)
         .returning(|_, _, _, _, _| {
             Ok(crate::PrepareResult {
-                append_requests: vec![(2, stub_request())],
+                append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
             })
         });
@@ -598,5 +601,93 @@ async fn test_replication_worker_sender_closed_emits_peer_stream_error() {
     assert!(
         matches!(event, InternalEvent::PeerStreamError { peer_id: 2 }),
         "expected PeerStreamError for peer 2, got {event:?}"
+    );
+}
+
+/// Worker forwards a successful stream ACK as `AppendResult`.
+///
+/// # Scenario
+/// - `open_replication_stream` succeeds; its receiver yields `Ok(response)`.
+/// - The worker's recv task relays it as `InternalEvent::AppendResult { result: Ok(..) }`.
+///
+/// # Why
+/// - This is the ACK path that lets the leader advance `match_index` / `commit_index`.
+#[tokio::test]
+#[traced_test]
+async fn test_worker_forwards_append_result_on_recv() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context(
+        "/tmp/test_worker_forwards_append_result_on_recv",
+        graceful_rx,
+        None,
+    );
+
+    ctx.membership = Arc::new(two_peer_membership());
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_request(), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let call_count_clone = Arc::clone(&call_count);
+
+    let mut transport = MockTransport::<MockTypeConfig>::new();
+    transport.expect_open_replication_stream().returning(move |_, _, _| {
+        let n = call_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == 1 {
+            // First open succeeds and delivers one successful ACK.
+            let (req_tx, mut req_rx) = mpsc::channel::<AppendEntriesRequest>(128);
+            // Drain requests so the worker's Append send succeeds — this test
+            // exercises the ACK-forwarding path, not a send failure.
+            tokio::spawn(async move { while req_rx.recv().await.is_some() {} });
+            let stream = futures::stream::iter(vec![Ok::<AppendEntriesResponse, tonic::Status>(
+                stub_response(),
+            )])
+            .boxed();
+            Ok(crate::ReplicationStream {
+                sender: req_tx,
+                receiver: stream,
+            })
+        } else {
+            // Reconnect fails so the worker enters backoff instead of spinning.
+            Err(crate::NetworkError::ConnectError("peer unreachable".into()).into())
+        }
+    });
+    ctx.transport = Arc::new(transport);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+
+    // Give the worker's recv task time to read the ACK and forward it.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let event = internal_event_rx
+        .try_recv()
+        .expect("AppendResult should arrive from the stream ACK");
+    assert!(
+        matches!(
+            event,
+            InternalEvent::AppendResult {
+                follower_id: 2,
+                result: Ok(_)
+            }
+        ),
+        "expected AppendResult for peer 2, got {event:?}"
     );
 }

@@ -1,6 +1,6 @@
 // Re-export LeaderInfo from proto (application layer use)
-pub use d_engine_proto::common::LeaderInfo;
-use d_engine_proto::server::election::VotedFor;
+use std::collections::VecDeque;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::sleep_until;
@@ -27,8 +27,9 @@ use crate::Result;
 use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::TROF;
-use std::collections::VecDeque;
-use std::sync::Arc;
+use crate::role_state::PeerReplicationState;
+pub use d_engine_proto::common::LeaderInfo;
+use d_engine_proto::server::election::VotedFor;
 
 pub struct Raft<T>
 where
@@ -224,33 +225,6 @@ where
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        // Add snapshot handler before main loop
-        if self.ctx.node_config.is_learner() {
-            info!(
-                "Node({}) is learner and needs to fetch initial snapshot.",
-                self.node_id
-            );
-            if let Err(e) = self.role.fetch_initial_snapshot(&self.ctx).await {
-                warn!(
-                    "Initial snapshot failed: {:?}.
-            ================================================
-            Leader has not generate snapshot yet. New node
-            will sync with Leader via append entries requests.
-            ================================================
-            ",
-                    e
-                );
-                println!(
-                    "
-            ================================================
-            Leader has not generate snapshot yet. New node
-            will sync with Leader via append entries requests
-            ================================================
-                    "
-                );
-            }
-        }
-
         info!("Node is running");
 
         if self.role.is_timer_expired() {
@@ -689,17 +663,61 @@ where
                     error!(%node_id, ?e, "handle_zombie_detected failed");
                 }
             }
-            InternalEvent::SnapshotPushCompleted { peer_id, success } => {
-                debug!(%peer_id, %success, "SnapshotPushCompleted");
+            InternalEvent::SnapshotPushCompleted {
+                peer_id,
+                success,
+                term,
+                last_included_index,
+            } => {
+                debug!(%peer_id, %success, ?last_included_index, "SnapshotPushCompleted");
+                // Staleness guard: the snapshot transfer runs in a detached task that can
+                // outlive a leadership change. Only a completion dispatched under the current
+                // term may touch peer progress — a straggler from an earlier term would
+                // otherwise overwrite next_index and silently skip required log entries.
+                if term != self.current_term() {
+                    debug!(
+                        %peer_id,
+                        event_term = term,
+                        current_term = self.current_term(),
+                        "dropping stale SnapshotPushCompleted from a previous term"
+                    );
+                    return Ok(());
+                }
+
+                // Peer-state guard: seeding is only valid for the peer's CURRENT
+                // in-flight snapshot attempt. A straggler completion that arrives after
+                // the peer has moved on must not touch next_index.
+                if self.role.state().peer_replication_state(peer_id)
+                    != PeerReplicationState::Snapshot
+                {
+                    debug!(%peer_id, "dropping SnapshotPushCompleted: peer not in Snapshot state");
+                    return Ok(());
+                }
+
                 if success {
-                    // Reset next_index to last_entry_id + 1 so the peer is no longer below
-                    // the purge boundary and resumes AppendEntries on the next heartbeat.
-                    // Using last_entry_id follows Raft convention (nextIndex = leader last + 1);
-                    // if the peer is behind, the conflict response will walk it back correctly.
-                    let last_entry_id = self.ctx.raft_log().last_entry_id();
-                    let _ = self
-                        .role
-                        .init_peers_next_index_and_match_index(last_entry_id, vec![peer_id]);
+                    // Reset next_index to the snapshot's own boundary + 1, so the peer resumes
+                    // AppendEntries on the next heartbeat. Deliberately NOT the leader's current
+                    // log tip (self.ctx.raft_log().last_entry_id()): the leader's log may have
+                    // advanced further while the transfer was in flight (new writes during a
+                    // slow transfer to a lagging peer are normal, expected), and the peer only
+                    // actually received data up to last_included_index. Using the leader's tip
+                    // here would make the leader believe the peer already has entries it never
+                    // received, silently skipping them forever.
+                    match last_included_index {
+                        Some(last_included_index) => {
+                            let _ = self.role.init_peers_next_index_and_match_index(
+                                last_included_index,
+                                vec![peer_id],
+                            );
+                        }
+                        None => {
+                            error!(
+                                %peer_id,
+                                "SnapshotPushCompleted succeeded but last_included_index was \
+                                 missing; leaving next_index unchanged rather than guessing"
+                            );
+                        }
+                    }
                 }
                 // Update per-peer backoff state; emit error alert + metrics when consecutive
                 // failures reach the configured threshold (leader protection highest priority).

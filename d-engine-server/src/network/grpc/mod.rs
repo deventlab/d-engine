@@ -72,33 +72,24 @@ where
     health_reporter.set_serving::<ClusterManagementServiceServer<Node<T>>>().await;
     health_reporter.set_serving::<SnapshotServiceServer<Node<T>>>().await;
 
-    // Use control plane configuration for base parameters
-    // Rationale: Election RPCs need low latency and high reliability
-    let control_config = &config.network.control;
-
-    // Use data plane configuration for stream/flow control parameters
-    // Rationale: AppendEntries needs higher throughput when large logs are sent
-    let data_config = &config.network.data;
+    let server_config = &config.network.server;
 
     let mut server_builder = tonic::transport::Server::builder()
         // Control-plane parameters for core RPC operations
-        .timeout(Duration::from_millis(control_config.request_timeout_in_ms))
-        .concurrency_limit_per_connection(control_config.concurrency_limit)
-        .max_concurrent_streams(control_config.max_concurrent_streams)
-        .tcp_keepalive(Some(Duration::from_secs(
-            control_config.tcp_keepalive_in_secs,
-        )))
+        .concurrency_limit_per_connection(server_config.concurrency_limit_per_connection)
+        .max_concurrent_streams(server_config.max_concurrent_streams)
+        .http2_max_pending_accept_reset_streams(Some(
+            server_config.max_pending_accept_reset_streams,
+        ))
         .http2_keepalive_interval(Some(Duration::from_secs(
-            control_config.http2_keep_alive_interval_in_secs,
+            server_config.http2_keepalive_interval_in_secs,
         )))
         .http2_keepalive_timeout(Some(Duration::from_secs(
-            control_config.http2_keep_alive_timeout_in_secs,
+            server_config.http2_keepalive_timeout_in_secs,
         )))
         // Data-plane parameters for stream performance
-        .initial_stream_window_size(data_config.stream_window_size)
-        .initial_connection_window_size(data_config.connection_window_size)
-        .http2_adaptive_window(Some(data_config.adaptive_window))
-        .max_frame_size(Some(data_config.max_frame_size))
+        .initial_stream_window_size(server_config.initial_stream_window_size)
+        .initial_connection_window_size(server_config.initial_connection_window_size)
         // Common TCP parameters
         .tcp_nodelay(config.network.tcp_nodelay);
 
@@ -137,6 +128,7 @@ where
         .add_service(health_service)
         .add_service({
             let server = RaftClientServiceServer::from_arc(node.clone())
+                .max_decoding_message_size(server_config.max_decoding_message_size)
                 .accept_compressed(CompressionEncoding::Gzip);
 
             // Client compression based on config
@@ -148,6 +140,7 @@ where
         })
         .add_service({
             let server = RaftElectionServiceServer::from_arc(node.clone())
+                .max_decoding_message_size(server_config.max_decoding_message_size)
                 .accept_compressed(CompressionEncoding::Gzip);
 
             // Election compression based on config
@@ -159,6 +152,7 @@ where
         })
         .add_service({
             let server = RaftReplicationServiceServer::from_arc(node.clone())
+                .max_decoding_message_size(server_config.max_decoding_message_size)
                 .accept_compressed(CompressionEncoding::Gzip);
 
             // Replication compression based on config
@@ -170,6 +164,7 @@ where
         })
         .add_service({
             let server = ClusterManagementServiceServer::from_arc(node.clone())
+                .max_decoding_message_size(server_config.max_decoding_message_size)
                 .accept_compressed(CompressionEncoding::Gzip);
 
             // Cluster management compression based on config
@@ -180,8 +175,9 @@ where
             }
         })
         .add_service({
-            let server =
-                SnapshotServiceServer::from_arc(node).accept_compressed(CompressionEncoding::Gzip);
+            let server = SnapshotServiceServer::from_arc(node)
+                .max_decoding_message_size(server_config.max_decoding_message_size)
+                .accept_compressed(CompressionEncoding::Gzip);
 
             // Snapshot compression based on config
             if config.raft.rpc_compression.snapshot_response {

@@ -39,7 +39,7 @@ fn follower_ctx(last_applied_index: u64) -> SnapshotContext {
 #[traced_test]
 async fn test_composite_policy_time_trigger() {
     // Setup policy with short time interval (100ms) and high log threshold
-    let mut policy = CompositePolicy::new(Duration::from_millis(100), 1000, Duration::from_secs(1));
+    let mut policy = CompositePolicy::new(Duration::from_millis(100), 1000);
     let ctx = leader_ctx(0);
 
     // Should not trigger immediately
@@ -65,7 +65,7 @@ async fn test_composite_policy_time_trigger() {
 async fn test_composite_policy_log_size_trigger() {
     // Setup policy with long time interval (1 hour) and small log threshold (5)
     // Use zero cooldown to avoid timing issues in test
-    let mut policy = CompositePolicy::new(Duration::from_secs(3600), 5, Duration::from_millis(0));
+    let mut policy = CompositePolicy::new(Duration::from_secs(3600), 5);
 
     // Initial state: lag=0 (last_applied=0, last_included=0)
     let mut ctx = leader_ctx(0);
@@ -93,7 +93,7 @@ async fn test_composite_policy_log_size_trigger() {
 #[traced_test]
 async fn test_composite_policy_follower_never_triggers() {
     // Setup policy that should trigger easily
-    let policy = CompositePolicy::new(Duration::from_millis(10), 1, Duration::from_secs(1));
+    let policy = CompositePolicy::new(Duration::from_millis(10), 1);
     let mut ctx = follower_ctx(100); // High log index
 
     // Should never trigger for follower
@@ -113,7 +113,7 @@ async fn test_composite_policy_follower_never_triggers() {
 async fn test_composite_policy_both_conditions() {
     // Setup policy with short time interval and small log threshold
     // Use zero cooldown for log size policy
-    let mut policy = CompositePolicy::new(Duration::from_millis(50), 2, Duration::from_millis(0));
+    let mut policy = CompositePolicy::new(Duration::from_millis(50), 2);
 
     // Test log size trigger
     let mut ctx = leader_ctx(3); // lag=3 (exceeds threshold=2)
@@ -146,7 +146,7 @@ async fn test_composite_policy_both_conditions() {
 #[traced_test]
 async fn test_log_index_update_mechanism() {
     // Setup policy with large time interval and threshold of 5
-    let policy = CompositePolicy::new(Duration::from_secs(3600), 5, Duration::from_millis(0));
+    let policy = CompositePolicy::new(Duration::from_secs(3600), 5);
 
     // Threshold value (lag=4) should not trigger
     let ctx_threshold = leader_ctx(4);

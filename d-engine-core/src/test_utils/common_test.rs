@@ -138,21 +138,13 @@ fn test_snapshot_config_timeout_values() {
 }
 
 #[test]
-fn test_snapshot_config_bandwidth() {
-    let dir = PathBuf::from("/tmp");
-    let config = snapshot_config(dir);
-
-    assert_eq!(config.max_bandwidth_mbps, 1);
-    assert_eq!(config.max_retries, 1);
-}
-
-#[test]
 fn test_snapshot_config_queue_settings() {
     let dir = PathBuf::from("/tmp");
     let config = snapshot_config(dir);
 
     assert_eq!(config.push_queue_size, 1);
     assert_eq!(config.cache_size, 1);
+    assert_eq!(config.max_retries, 1);
 }
 
 #[test]

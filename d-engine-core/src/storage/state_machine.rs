@@ -24,6 +24,20 @@ pub struct ScanResult {
     pub revision: u64,
 }
 
+/// Outcome of `StateMachine::apply_snapshot_from_file`. Not a plain `Result<()>`:
+/// a snapshot can be safely skipped (stale/duplicate) without that being an
+/// error, and callers (StateMachineWorker) need to know which happened for
+/// logging/metrics.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SnapshotApplyResult {
+    /// The destructive install actually ran.
+    Applied { last_included: LogId },
+    /// incoming.index < current applied index — no-op, not an error.
+    IgnoredStale { current: LogId },
+    /// incoming.index == current index, same term — no-op, not an error.
+    IgnoredDuplicate { current: LogId },
+}
+
 /// Result of applying a single log entry to the state machine
 ///
 /// Returned by `StateMachine::apply_chunk()` for each entry in the chunk.
@@ -216,26 +230,29 @@ pub trait StateMachine: Send + Sync + 'static {
     /// 2. Verify compressed file format
     /// 3. Decompress to temporary directory
     /// 4. Validate checklsum
-    /// 5. Initialize new state machine database
-    /// 6. Atomically replace current database
-    /// 7. Update Raft metadata and indexes
+    /// 5. Atomically replace current state with the decompressed data
+    /// 6. Update Raft metadata and indexes
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
         snapshot_path: std::path::PathBuf,
-    ) -> Result<(), Error>;
+    ) -> Result<SnapshotApplyResult, Error>;
 
     /// Generates a snapshot of the state machine's current key-value entries
     /// up to the specified `last_included_index`.
     ///
-    /// This function:
-    /// 1. Creates a new database at `temp_snapshot_path`.
-    /// 2. Copies all key-value entries from the current state machine's database where the key
-    ///    (interpreted as a log index) does not exceed `last_included_index`.
-    /// 3. Uses batch writes for efficiency, committing every 100 records.
-    /// 4. Will update last_included_index and last_included_term in memory
-    /// 5. Will persist last_included_index and last_included_term into current database and new
-    ///    database specified by `temp_snapshot_path`
+    /// Exports the current state (as of `last_included`) to `new_snapshot_dir` and
+    /// returns its checksum. Does NOT publish snapshot metadata — the caller publishes
+    /// it (via `persist_last_snapshot_metadata`) only after the final archive is
+    /// durably built, so a crash mid-snapshot never leaves metadata pointing at a
+    /// missing archive.
+    ///
+    /// # Concurrency contract (#436)
+    /// May run concurrently with `apply_chunk` (never with `apply_snapshot_from_file` — the two
+    /// are mutually exclusive by construction). Must still export an atomically-pinned view: if
+    /// `apply_chunk` runs mid-export, the result must reflect strictly before or strictly after
+    /// it, never a mix — a torn read across related keys silently corrupts data. Verified by
+    /// `test_generate_snapshot_data_is_atomic_under_concurrent_apply`.
     ///
     /// # Arguments
     /// * `new_snapshot_dir` - Temporary path to store the snapshot data.

@@ -255,6 +255,24 @@ pub async fn compute_checksum_from_file_path(file_path: &Path) -> Result<[u8; 32
     Ok(hasher.finalize().into())
 }
 
+/// SHA-256 over every file in a directory, in deterministic (sorted) filename order.
+pub async fn compute_checksum_from_folder_path(folder_path: &Path) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    let mut entries = tokio::fs::read_dir(folder_path).await.map_err(StorageError::IoError)?;
+    let mut files = Vec::new();
+    while let Some(entry) = entries.next_entry().await.map_err(StorageError::IoError)? {
+        if entry.file_type().await.map_err(StorageError::IoError)?.is_file() {
+            files.push(entry);
+        }
+    }
+    files.sort_by_key(|entry| entry.file_name());
+    for entry in files {
+        let data = tokio::fs::read(entry.path()).await.map_err(StorageError::IoError)?;
+        hasher.update(data);
+    }
+    Ok(hasher.finalize().into())
+}
+
 /// Validates compressed file format using magic numbers and extensions
 /// Referenced  flate2 header validation principles and  security practices
 pub(crate) fn validate_compressed_format(path: &Path) -> Result<()> {

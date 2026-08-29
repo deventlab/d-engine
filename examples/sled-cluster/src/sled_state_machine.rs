@@ -8,8 +8,8 @@ use bincode::config;
 use bytes::Bytes;
 use d_engine::BatchOp;
 use d_engine::{
-    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotError, StateMachine,
-    StorageError, common::LogId, server_storage::SnapshotMetadata,
+    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotApplyResult, SnapshotError,
+    StateMachine, StorageError, common::LogId, server_storage::SnapshotMetadata,
 };
 use parking_lot::Mutex;
 use sled::Batch;
@@ -20,11 +20,11 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-use tokio::sync::RwLock;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
+use tracing::warn;
 
 /// Sled database tree namespaces
 pub(crate) const STATE_MACHINE_TREE: &str = "_state_machine_tree";
@@ -39,6 +39,12 @@ pub(crate) const LAST_SNAPSHOT_METADATA_KEY: &str = "_raft_last_snapshot_metadat
 
 pub struct SledStateMachine {
     node_id: u32,
+
+    /// This state machine's own configured data directory — the sled db actually lives
+    /// at `path.join("state_machine")` (see `init_sled_state_machine_db`). Needed by
+    /// `apply_snapshot_from_file` so an installed snapshot's content ends up living
+    /// *here*, not in the caller's temporary decompression directory (#442 review).
+    path: PathBuf,
 
     db: ArcSwap<sled::Db>,
 
@@ -55,9 +61,6 @@ pub struct SledStateMachine {
     last_included_index: AtomicU64, // load from STATE_SNAPSHOT_METADATA_TREE
     last_included_term: AtomicU64,
     last_snapshot_checksum: Mutex<Option<[u8; 32]>>, //SHA-256
-
-    /// Temporary lock when snapshot is generated (to prevent concurrent snapshot generation)
-    snapshot_lock: RwLock<()>,
 }
 
 impl std::fmt::Debug for SledStateMachine {
@@ -343,10 +346,12 @@ impl StateMachine for SledStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: PathBuf,
-        last_included: LogId,
+        _last_included: LogId,
     ) -> Result<Bytes> {
-        // 1. Get a lightweight write lock (to prevent concurrent snapshot generation)
-        let _guard = self.snapshot_lock.write().await;
+        // No internal locking needed: `StateMachineWorker` is the sole caller of
+        // generate_snapshot_data/apply_snapshot_from_file/apply_chunk, and it processes
+        // them one at a time from a single queue (#436) — concurrent snapshot
+        // generation from this trait's methods cannot happen.
 
         // 2. Create a new state machine database instance
         let new_db = init_sled_state_machine_db(&new_snapshot_dir)
@@ -354,7 +359,6 @@ impl StateMachine for SledStateMachine {
 
         let exist_db_tree = self.current_tree();
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
-        let new_snapshot_metadatat_tree = new_tree(&new_db, STATE_SNAPSHOT_METADATA_TREE)?;
 
         let mut batch = sled::Batch::default();
         let mut counter = 0;
@@ -386,24 +390,6 @@ impl StateMachine for SledStateMachine {
         // Calculate the checksum after generating snapshot data
         let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
 
-        println!("checksum = {checksum:?}",);
-        // Make sure last included is updated to the new ones
-
-        let last_snapshot_metadata = SnapshotMetadata {
-            last_included: Some(last_included),
-            checksum: Bytes::copy_from_slice(&checksum),
-        };
-
-        self.update_last_snapshot_metadata(&last_snapshot_metadata)?;
-
-        // Make sure last included is persisted into local database
-        self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
-        // Make sure last included is persisted into the new database
-        self.persist_last_snapshot_metadata_with_tree(
-            new_snapshot_metadatat_tree,
-            &last_snapshot_metadata,
-        )?;
-
         Ok(Bytes::copy_from_slice(&checksum))
     }
 
@@ -411,84 +397,139 @@ impl StateMachine for SledStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         decompressed_snapshot_path: PathBuf,
-    ) -> Result<()> {
-        if let Some(new_last_included) = metadata.last_included {
-            debug!(
-                ?new_last_included,
-                "1. Acquire write lock to prevent concurrent snapshot generation/application"
-            );
-            // 1. Acquire write lock to prevent concurrent snapshot generation/application This
-            //    ensures atomic snapshot application per Raft requirements
-            let _guard = self.snapshot_lock.write().await;
+    ) -> Result<SnapshotApplyResult> {
+        // No internal locking needed — see generate_snapshot_data. `StateMachineWorker`
+        // processes ApplyEntries/InstallSnapshot/CaptureLocalSnapshot one at a time from a
+        // single queue (#436), so this call never races a concurrent snapshot generation
+        // or another install.
 
-            debug!("2. Validate snapshot version - only apply if newer than current state");
-            // 2. Validate snapshot version - only apply if newer than current state
-            if let Some(current_metadata) = self.snapshot_metadata()
-                && let Some(current_last_included) = current_metadata.last_included
-            {
-                // Only allow application when the new snapshot index is larger
-                if new_last_included.index <= current_last_included.index {
-                    return Err(SnapshotError::Outdated.into());
+        // Boundary classification (#436, every StateMachine impl must honor this): stale or
+        // duplicate is a no-op, same-index-different-term is a conflict error, and a missing
+        // boundary can't be classified at all — reject it outright (mirrors
+        // prepare_transfer_meta's handling of the same field).
+        let new_last_included = metadata.last_included.ok_or_else(|| {
+            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
+        })?;
+
+        let current = self.last_applied();
+        match new_last_included.index.cmp(&current.index) {
+            std::cmp::Ordering::Less => {
+                info!(?new_last_included, ?current, "Ignoring stale snapshot");
+                return Ok(SnapshotApplyResult::IgnoredStale { current });
+            }
+            std::cmp::Ordering::Equal if new_last_included.term == current.term => {
+                info!(?new_last_included, ?current, "Ignoring duplicate snapshot");
+                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
+            }
+            std::cmp::Ordering::Equal => {
+                return Err(SnapshotError::BoundaryConflict {
+                    index: current.index,
+                    local_term: current.term,
+                    incoming_term: new_last_included.term,
                 }
+                .into());
             }
-
-            debug!("4. Create temp directory for decompression");
-            debug!(
-                ?decompressed_snapshot_path,
-                "6. CRITICAL SECURITY STEP: Validate checksum"
-            );
-            // 6. CRITICAL SECURITY STEP: Validate checksum Prevents tampered or corrupted snapshots
-            //    from being applied
-            let computed_checksum =
-                compute_checksum_from_folder_path(&decompressed_snapshot_path).await?;
-
-            if metadata.checksum.as_ref() != computed_checksum.as_ref() {
-                error!(
-                    "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
-                    computed_checksum, metadata.checksum
-                );
-
-                metrics::counter!(
-                    "snapshot.checksum_failures",
-                    &[
-                        ("node_id", self.node_id.to_string()),
-                        ("snapshot_index", new_last_included.index.to_string()),
-                    ]
-                )
-                .increment(1);
-
-                return Err(SnapshotError::ChecksumMismatch.into());
+            std::cmp::Ordering::Greater => {
+                // Eligible to install, fall through.
             }
-            debug!(
-                ?decompressed_snapshot_path,
-                "7. Initialize new state machine database"
-            );
-            // 7. Initialize new state machine database Maintains ACID properties during state
-            //    transition
-            let db = init_sled_state_machine_db(&decompressed_snapshot_path)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-
-            debug!("8. Atomically replace current database");
-            // 8. Atomically replace current database Critical for maintaining consistency per Raft
-            //    spec
-            self.db.store(Arc::new(db));
-
-            debug!(
-                ?new_last_included,
-                ?metadata,
-                "9. Update Raft metadata and indexes"
-            );
-            // 9. Update Raft metadata and indexes Follows snapshot application procedure from
-            self.update_last_applied(new_last_included);
-            self.update_last_snapshot_metadata(metadata)?;
-        } else {
-            error!(
-                ?metadata,
-                "apply_snapshot_from_file should not be triggered if metadata is none"
-            );
         }
 
-        Ok(())
+        debug!(
+            ?decompressed_snapshot_path,
+            "Validating checksum before install"
+        );
+        // CRITICAL SECURITY STEP: prevents tampered or corrupted snapshots from being applied.
+        let computed_checksum =
+            compute_checksum_from_folder_path(&decompressed_snapshot_path).await?;
+
+        if metadata.checksum.as_ref() != computed_checksum.as_ref() {
+            error!(
+                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
+                computed_checksum, metadata.checksum
+            );
+
+            metrics::counter!(
+                "snapshot.checksum_failures",
+                &[
+                    ("node_id", self.node_id.to_string()),
+                    ("snapshot_index", new_last_included.index.to_string()),
+                ]
+            )
+            .increment(1);
+
+            return Err(SnapshotError::ChecksumMismatch.into());
+        }
+
+        // `decompressed_snapshot_path` is a temporary directory owned by the caller
+        // (see `PreparedSnapshot`), not this state machine's own `self.path`. Opening a
+        // sled::Db directly there and swapping `self.db` to point at it — the previous
+        // approach — left the live database permanently rooted in that ephemeral
+        // storage: correct until the next restart, then silently gone, because
+        // `SledStateMachine::new` only ever reopens `self.path`, which never received
+        // the new content (#442 review). Move the content home to `self.path` first.
+        debug!(
+            ?decompressed_snapshot_path,
+            "Moving decompressed snapshot into this node's own data directory"
+        );
+        let db_dir = self.path.join("state_machine");
+        let backup_dir = self.path.join("state_machine.pre-install-backup");
+        let incoming_db_dir = decompressed_snapshot_path.join("state_machine");
+
+        // Release the old db's file lock before touching its directory — sled refuses
+        // to open two instances at the same path concurrently.
+        drop(self.db.load_full());
+
+        tokio::task::spawn_blocking(move || -> std::result::Result<(), std::io::Error> {
+            if backup_dir.exists() {
+                std::fs::remove_dir_all(&backup_dir)?;
+            }
+            // Not fully crash-atomic: a crash between these two renames leaves
+            // `db_dir` absent and the new content sitting at `backup_dir` — recovered
+            // by the startup check in `SledStateMachine::new`, not rolled back here.
+            // Sled has no cross-directory atomic-replace primitive; this two-step
+            // rename is the simplest thing that survives the *normal* restart case,
+            // which is the bug this fixes. This is an example adaptor, not the
+            // production RocksDB/File ones.
+            std::fs::rename(&db_dir, &backup_dir)?;
+            if let Err(e) = std::fs::rename(&incoming_db_dir, &db_dir) {
+                // Temp storage and the data directory can be on different
+                // filesystems (e.g. `/tmp` vs a data disk) — rename can't hop
+                // devices. Fall back to a recursive copy in that case only.
+                if e.kind() == std::io::ErrorKind::CrossesDevices {
+                    copy_dir_recursive(&incoming_db_dir, &db_dir)?;
+                } else {
+                    return Err(e);
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::DbError(format!("snapshot install task panicked: {e}")))?
+        .map_err(|e| StorageError::DbError(format!("failed to move snapshot into place: {e}")))?;
+
+        debug!("Reopening state machine database at its permanent path");
+        let db = init_sled_state_machine_db(&self.path)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        self.db.store(Arc::new(db));
+
+        // Best-effort: a leftover `*.pre-install-backup` is harmless (just disk space)
+        // if this fails or the process dies here — it's never read again once
+        // `db_dir` exists, only by the startup check when `db_dir` is absent.
+        let _ = tokio::fs::remove_dir_all(self.path.join("state_machine.pre-install-backup")).await;
+
+        debug!(
+            ?new_last_included,
+            ?metadata,
+            "Updating Raft metadata and indexes"
+        );
+        self.update_last_applied(new_last_included);
+        self.update_last_snapshot_metadata(metadata)?;
+
+        self.save_hard_state()?;
+
+        Ok(SnapshotApplyResult::Applied {
+            last_included: new_last_included,
+        })
     }
 
     fn len(&self) -> usize {
@@ -541,8 +582,26 @@ impl SledStateMachine {
         path: P,
         node_id: u32,
     ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+
+        // Recovery from a crash mid-install (see `apply_snapshot_from_file`): if the
+        // live `state_machine` directory is missing but a pre-install backup is still
+        // there, the previous process died between renaming the old content aside and
+        // renaming the new content into place. Restore the backup instead of silently
+        // opening (and then re-initializing) an empty database.
+        let db_dir = path.join("state_machine");
+        let backup_dir = path.join("state_machine.pre-install-backup");
+        if !db_dir.exists() && backup_dir.exists() {
+            warn!(
+                ?backup_dir,
+                "Recovering from an interrupted snapshot install: restoring pre-install backup"
+            );
+            std::fs::rename(&backup_dir, &db_dir)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+        }
+
         let db = Arc::new(
-            init_sled_state_machine_db(path).map_err(|e| StorageError::DbError(e.to_string()))?,
+            init_sled_state_machine_db(&path).map_err(|e| StorageError::DbError(e.to_string()))?,
         );
 
         let state_machine_meta_tree = db
@@ -557,6 +616,7 @@ impl SledStateMachine {
 
         let sm = SledStateMachine {
             db: ArcSwap::from(db),
+            path,
             is_serving: Arc::new(AtomicBool::new(true)),
             node_id,
 
@@ -566,8 +626,6 @@ impl SledStateMachine {
             last_included_index: AtomicU64::new(0),
             last_included_term: AtomicU64::new(0),
             last_snapshot_checksum: Mutex::new(None),
-
-            snapshot_lock: RwLock::new(()),
         };
 
         // Important to sync the last applied index into memory
@@ -668,6 +726,27 @@ impl SledStateMachine {
         tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
         Ok(())
     }
+}
+
+/// Recursively copies `src` into `dst`, creating `dst` if needed. Fallback for
+/// `apply_snapshot_from_file` when the decompressed snapshot's temp directory and this
+/// node's data directory are on different filesystems, so `std::fs::rename` can't just
+/// hop them across devices.
+fn copy_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
 }
 
 /// TODO: how to refactor with `current_tree`

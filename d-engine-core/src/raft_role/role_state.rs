@@ -1,11 +1,40 @@
-use crate::client::{ClientReadRequest, ClientResponse, KvEntry, LeaderHint};
-use crate::{ConsensusError, PurgeExecutor};
+use super::RaftRole;
+use super::SharedState;
+use super::StateSnapshot;
+use crate::AppendResponseWithUpdates;
+use crate::ConsensusError;
+use crate::InboundEvent;
+use crate::InternalEvent;
+use crate::MaybeCloneOneshotSender;
+use crate::Membership;
+use crate::MembershipError;
+use crate::NetworkError;
+use crate::NewCommitData;
+use crate::PurgeExecutor;
+use crate::RaftContext;
+use crate::RaftLog;
+use crate::ReplicationCore;
+use crate::Result;
+use crate::SnapshotApplyResult;
+use crate::StateMachineHandler;
+use crate::StateTransitionError;
+use crate::TypeConfig;
+use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
+use crate::client::KvEntry;
+use crate::client::LeaderHint;
+use crate::event::ClientCmd;
+use crate::scoped_timer::ScopedTimer;
+use crate::utils::cluster::error;
 use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_proto::server::storage::SnapshotResponse;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -14,30 +43,21 @@ use tracing::error;
 use tracing::warn;
 use tracing::{debug, info};
 
-use super::RaftRole;
-use super::SharedState;
-use super::StateSnapshot;
-use crate::AppendResponseWithUpdates;
-use crate::InboundEvent;
-use crate::InternalEvent;
-use crate::MaybeCloneOneshotSender;
-use crate::Membership;
-use crate::MembershipError;
-use crate::NetworkError;
-use crate::NewCommitData;
-use crate::RaftContext;
-use crate::RaftLog;
-use crate::ReplicationCore;
-use crate::Result;
-use crate::StateMachineHandler;
-use crate::StateTransitionError;
-use crate::TypeConfig;
-use crate::event::ClientCmd;
-use crate::scoped_timer::ScopedTimer;
-use crate::utils::cluster::error;
+/// Per-peer replication trust state (#436): gates optimistic `next_index` advance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PeerReplicationState {
+    /// Unconfirmed: at most one AppendEntries in flight, no speculative advance.
+    Probe,
+    /// Confirmed caught up by a real ACK: safe to speculatively advance next_index.
+    Replicate,
+    /// A full snapshot push to this peer is in flight. Leader must not generate or
+    /// dispatch any AppendEntries for this peer until SnapshotPushCompleted resolves
+    /// it back to Probe — regardless of success or failure.
+    Snapshot,
+}
 
 #[async_trait]
-pub trait RaftRoleState: Send + Sync + 'static {
+pub(crate) trait RaftRoleState: Send + Sync + 'static {
     type T: TypeConfig;
 
     //--- For sharing state behaviors
@@ -46,9 +66,9 @@ pub trait RaftRoleState: Send + Sync + 'static {
     fn node_id(&self) -> u32 {
         self.shared_state().node_id
     }
-    // fn role(&self) -> i32;
 
     // Leader states
+    #[allow(dead_code)]
     fn next_index(
         &self,
         _node_id: u32,
@@ -120,6 +140,8 @@ pub trait RaftRoleState: Send + Sync + 'static {
         // Default: no-op for non-leader roles
         Ok(())
     }
+
+    #[allow(dead_code)]
     fn noop_log_id(&self) -> Result<Option<u64>> {
         warn!("noop_log_id NotLeader error");
         Err(MembershipError::NotLeader.into())
@@ -131,28 +153,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
     ) -> Result<()> {
         warn!("join_cluster NotLearner error");
         Err(MembershipError::NotLearner.into())
-    }
-
-    async fn fetch_initial_snapshot(
-        &self,
-        _ctx: &RaftContext<Self::T>,
-    ) -> Result<()> {
-        warn!("fetch_initial_snapshot NotLearner error");
-        Err(MembershipError::NotLearner.into())
-    }
-
-    fn is_follower(&self) -> bool {
-        false
-    }
-    fn is_candidate(&self) -> bool {
-        false
-    }
-    fn is_leader(&self) -> bool {
-        false
-    }
-
-    fn is_learner(&self) -> bool {
-        false
     }
 
     fn become_leader(&self) -> Result<RaftRole<Self::T>> {
@@ -187,10 +187,7 @@ pub trait RaftRoleState: Send + Sync + 'static {
     ) {
         self.shared_state_mut().update_current_term(term)
     }
-    #[cfg(test)]
-    fn increase_current_term(&mut self) {
-        self.shared_state_mut().increase_current_term()
-    }
+
     fn commit_index(&self) -> u64 {
         self.shared_state().commit_index
     }
@@ -239,26 +236,6 @@ pub trait RaftRoleState: Send + Sync + 'static {
 
     fn voted_for(&self) -> Result<Option<VotedFor>> {
         self.shared_state().voted_for()
-    }
-    #[cfg(test)]
-    fn reset_voted_for(&mut self) -> Result<()> {
-        self.shared_state_mut().reset_voted_for()
-    }
-    #[cfg(test)]
-    fn update_voted_for(
-        &mut self,
-        ctx: &RaftContext<Self::T>,
-        term: Option<u64>,
-        voted_for: Option<VotedFor>,
-    ) -> Result<bool> {
-        if term.is_none() && voted_for.is_none() {
-            return Ok(false);
-        }
-        let result = self.shared_state_mut().set_hard_state(term, voted_for);
-        if result.changed {
-            ctx.raft_log().save_hard_state(&self.shared_state().hard_state())?;
-        }
-        Ok(result.is_new_leader_commitment)
     }
 
     /// Only sanctioned way to change current_term/voted_for: mutate + persist in
@@ -499,34 +476,32 @@ pub trait RaftRoleState: Send + Sync + 'static {
             "handle_inbound_event::InboundEvent::AppendEntries: {:?}",
             &append_entries_request
         );
-        self.reset_timer();
 
         // Init response with success is false
         let raft_log_last_index = ctx.storage.raft_log.last_entry_id();
 
         let my_term = self.current_term();
-        if my_term > append_entries_request.term {
-            let response = AppendEntriesResponse::higher_term(self.node_id(), my_term);
-            debug!("AppendEntriesResponse: {:?}", response);
-
-            for sender in senders {
-                if let Err(e) = sender.send(Ok(response)) {
-                    error!("Failed to send client: {:?}", e);
+        let term_update = match check_incoming_term(my_term, append_entries_request.term) {
+            TermDecision::RejectStale => {
+                let response = AppendEntriesResponse::higher_term(self.node_id(), my_term);
+                debug!("AppendEntriesResponse: {:?}", response);
+                for sender in senders {
+                    if let Err(e) = sender.send(Ok(response)) {
+                        error!("Failed to send client: {:?}", e);
+                    }
                 }
+                return Ok(());
             }
+            TermDecision::Accept => None,
+            TermDecision::AcceptAndUpdateTerm(new_term) => Some(new_term),
+        };
 
-            return Ok(());
-        }
+        // Legitimate leader (term >= ours) confirmed — reset now, not earlier.
+        self.reset_timer();
 
         // Important to confirm heartbeat from Leader immediatelly
         let new_leader_id = append_entries_request.leader_id;
         let request_term = append_entries_request.term;
-
-        let term_update = if my_term < request_term {
-            Some(request_term)
-        } else {
-            None
-        };
 
         // CRITICAL: capture is_new_leader BEFORE setting current_leader — after a
         // restart, current_leader is None (memory cleared), so commit_hard_state's
@@ -623,6 +598,173 @@ pub trait RaftRoleState: Send + Sync + 'static {
         return Ok(());
     }
 
+    /// Returns the purge watermark for roles that track it after an installed snapshot
+    /// (Follower, Learner). Returns `None` for roles that don't call
+    /// `handle_install_snapshot_chunk_workflow` (Candidate, Leader).
+    fn pending_purge_upto_mut(&mut self) -> Option<&mut Option<LogId>> {
+        None
+    }
+
+    /// Shared handling for a leader-pushed `InstallSnapshotChunk` stream. Only Follower
+    /// and Learner call this — Candidate and Leader reject the event outright before
+    /// ever reaching here. Mirrors `handle_append_entries_request_workflow`'s shape:
+    /// validate leader term on the first chunk, hand the stream to the Worker, reply,
+    /// then (on success) advance commit_index and schedule a purge.
+    async fn handle_install_snapshot_chunk_workflow(
+        &mut self,
+        mut stream: mpsc::Receiver<SnapshotChunk>,
+        sender: MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
+        ctx: &RaftContext<Self::T>,
+        internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
+        state_snapshot: &StateSnapshot,
+    ) -> Result<()> {
+        let my_term = self.current_term();
+
+        // Validate leader identity/term on the first chunk, before reading the
+        // rest of the stream — don't burn bandwidth on a stale/illegitimate leader.
+        let first_chunk = match stream.recv().await {
+            Some(chunk) => chunk,
+            None => {
+                warn!("InstallSnapshotChunk stream closed before any chunk arrived");
+                let _ = sender.send(Ok(SnapshotResponse {
+                    term: my_term,
+                    success: false,
+                    next_chunk: 0,
+                }));
+                return Ok(());
+            }
+        };
+
+        let term_update = match check_incoming_term(my_term, first_chunk.leader_term) {
+            TermDecision::RejectStale => {
+                warn!(
+                    my_term,
+                    leader_term = first_chunk.leader_term,
+                    leader_id = first_chunk.leader_id,
+                    "Rejecting InstallSnapshotChunk from stale leader"
+                );
+                let _ = sender.send(Ok(SnapshotResponse {
+                    term: my_term,
+                    success: false,
+                    next_chunk: 0,
+                }));
+                return Ok(());
+            }
+            TermDecision::Accept => None,
+            TermDecision::AcceptAndUpdateTerm(new_term) => Some(new_term),
+        };
+
+        // Legitimate leader (term >= ours) confirmed — reset now, matching AppendEntries.
+        self.reset_timer();
+
+        self.commit_hard_state(
+            ctx,
+            term_update,
+            Some(VotedFor {
+                voted_for_id: first_chunk.leader_id,
+                voted_for_term: first_chunk.leader_term,
+                committed: true,
+            }),
+        )?;
+        self.shared_state().set_current_leader(first_chunk.leader_id);
+        let my_term = first_chunk.leader_term.max(my_term);
+
+        // ack_tx drained in background — push mode never reads it, avoids backpressure (#308).
+        let (ack_tx, mut ack_rx) = mpsc::channel::<SnapshotAck>(32);
+        tokio::spawn(async move {
+            let mut drained = 0u32;
+            while ack_rx.recv().await.is_some() {
+                drained += 1;
+            }
+            debug!(drained, "Snapshot ack channel drained and closed");
+        });
+
+        let prepared = match ctx
+            .state_machine_handler()
+            .prepare_snapshot_stream(first_chunk, stream, ack_tx, &ctx.node_config.raft.snapshot)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                warn!(
+                    ?e,
+                    "Failed to receive/prepare snapshot stream from leader, node continues"
+                );
+                let _ = sender.send(Ok(SnapshotResponse {
+                    term: my_term,
+                    success: false,
+                    next_chunk: 0,
+                }));
+                return Ok(());
+            }
+        };
+
+        // Sole write path: hand the received snapshot to the Worker, await the result.
+        let install_result = ctx.state_machine_commands().install_snapshot(prepared).await;
+
+        // Raft §7: reply success only once the Worker has confirmed install (or a safe no-op).
+        let _ = sender.send(Ok(SnapshotResponse {
+            term: my_term,
+            success: install_result.is_ok(),
+            next_chunk: 0,
+        }));
+
+        match install_result {
+            Err(e) => {
+                if e.is_fatal() {
+                    return Err(e);
+                }
+                warn!(?e, "Snapshot install failed, node continues");
+            }
+            Ok(result) => {
+                info!("Snapshot stream successfully received and applied");
+
+                let boundary = match result {
+                    SnapshotApplyResult::Applied { last_included } => {
+                        if last_included.index > self.commit_index()
+                            && let Err(e) = self.update_commit_index_with_signal(
+                                state_snapshot.role,
+                                my_term,
+                                last_included.index,
+                                &internal_event_tx,
+                            )
+                        {
+                            error!(?e, "Failed to advance commit_index after snapshot install");
+                        }
+                        last_included
+                    }
+                    SnapshotApplyResult::IgnoredStale { current } => current,
+                    SnapshotApplyResult::IgnoredDuplicate { current } => current,
+                };
+
+                let Some(pending_purge_upto) = self.pending_purge_upto_mut() else {
+                    return Err(ConsensusError::RoleViolation {
+                        current_role: "unknown",
+                        required_role: "Follower or Learner",
+                        context: "Role without purge tracking attempted to install a snapshot."
+                            .to_string(),
+                    }
+                    .into());
+                };
+
+                // Purge intent submitted after replying — must not delay or ride on the
+                // leader response.
+                if let Err(e) = schedule_installed_snapshot_purge(
+                    boundary,
+                    ctx,
+                    pending_purge_upto,
+                    &internal_event_tx,
+                )
+                .await
+                {
+                    error!(?e, "Failed to schedule purge after installed snapshot");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn drain_read_buffer(&mut self) -> Result<()> {
         // No-op for non-leader roles (only Leader has read buffer to drain)
         Err(MembershipError::NotLeader.into())
@@ -650,13 +792,31 @@ pub trait RaftRoleState: Send + Sync + 'static {
             return Ok(());
         }
 
-        flag.store(true, Ordering::Release);
         let state_machine_handler = ctx.state_machine_handler().clone();
+
+        // Second, handler-level guard for the same critical section: `flag` above lives
+        // on this role instance and resets on role transition (e.g. Follower -> Candidate),
+        // but the capture (via Worker round-trip) + build (background spawn) below is
+        // `'static` and can outlive that transition. The handler is shared via `Arc` and
+        // survives role changes, so this is the guard that's actually load-bearing across
+        // a transition; `flag` just avoids redundant spawns within the same role.
+        if state_machine_handler.try_begin_local_snapshot_capture().is_err() {
+            info!("Snapshot capture already in progress on handler. Skipping duplicate request.");
+            return Ok(());
+        }
+
+        flag.store(true, Ordering::Release);
+        let sm_command_tx = ctx.state_machine_commands().clone();
 
         // Use spawn to perform snapshot creation in the background
         let internal_event_tx = internal_event_tx.clone();
         tokio::spawn(async move {
-            let result = state_machine_handler.create_snapshot().await;
+            let result = match sm_command_tx.capture_local_snapshot().await {
+                Ok(captured) => state_machine_handler.build_local_snapshot(captured).await,
+                Err(e) => Err(e),
+            };
+            state_machine_handler.end_local_snapshot_capture();
+
             info!("SnapshotCreated event will be processed in another event thread");
             if let Err(e) = internal_event_tx.send(InternalEvent::SnapshotCreated(result)) {
                 error!("Failed to send snapshot creation result: {e:?}");
@@ -765,6 +925,51 @@ pub trait RaftRoleState: Send + Sync + 'static {
         }
         .into())
     }
+
+    fn peer_replication_state(
+        &self,
+        _node_id: u32,
+    ) -> PeerReplicationState {
+        // Default: unknown peer, be conservative. Also the default for non-leader roles.
+        PeerReplicationState::Probe
+    }
+
+    fn set_peer_replication_state(
+        &mut self,
+        _node_id: u32,
+        _state: PeerReplicationState,
+    ) {
+    }
+}
+
+/// Attempts to execute whatever purge target is currently pending, if any. Shared by both
+/// purge paths (local snapshot creation and installed-snapshot cleanup) — on success sends
+/// `LogPurgeCompleted` (cleared by the role's `handle_log_purge_completed`); on failure the
+/// watermark stays set for the next caller to retry.
+async fn execute_pending_purge<T: TypeConfig>(
+    pending_purge_upto: &Option<LogId>,
+    ctx: &RaftContext<T>,
+    internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+) -> Result<()> {
+    if let Some(scheduled) = *pending_purge_upto {
+        match ctx.purge_executor().execute_purge(scheduled).await {
+            Ok(_) => {
+                if let Err(e) = internal_event_tx.send(InternalEvent::LogPurgeCompleted(scheduled))
+                {
+                    error!(%e, "Failed to notify purge completion");
+                }
+            }
+            Err(e) => {
+                error!(?e, ?scheduled, "Log purge execution failed");
+                metrics::counter!(
+                    "core.raft.log.purge_failures",
+                    "node_id" => ctx.node_id.to_string()
+                )
+                .increment(1);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn schedule_and_execute_purge<T: TypeConfig>(
@@ -772,7 +977,7 @@ pub(super) async fn schedule_and_execute_purge<T: TypeConfig>(
     ctx: &RaftContext<T>,
     commit_index: u64,
     last_purged_index: Option<LogId>,
-    scheduled_purge_upto: &mut Option<LogId>,
+    pending_purge_upto: &mut Option<LogId>,
     internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
 ) -> Result<()> {
     // ----------------------
@@ -784,7 +989,7 @@ pub(super) async fn schedule_and_execute_purge<T: TypeConfig>(
     // can still catch up via AppendEntries instead of InstallSnapshot.
     let retained = ctx.node_config().raft.snapshot.retained_log_entries;
     let purge_upto_index = last_included.index.saturating_sub(retained);
-    println!("purge_upto_index={purge_upto_index}");
+    info!("purge_upto_index={purge_upto_index}");
     // retained >= last_included.index → nothing to purge; skip log lookup entirely.
     if purge_upto_index == 0 {
         return Ok(());
@@ -799,9 +1004,9 @@ pub(super) async fn schedule_and_execute_purge<T: TypeConfig>(
         if idx > 0
             && idx < commit_index
             && monotonic
-            && scheduled_purge_upto.map(|e| e.index < idx).unwrap_or(true)
+            && pending_purge_upto.map(|e| e.index < idx).unwrap_or(true)
         {
-            *scheduled_purge_upto = Some(purge_upto);
+            *pending_purge_upto = Some(purge_upto);
         }
     }
 
@@ -809,18 +1014,24 @@ pub(super) async fn schedule_and_execute_purge<T: TypeConfig>(
     // Phase 2: Execute local purge
     // ----------------------
     // Per Raft §7: Leader purges independently without peer coordination
-    if let Some(scheduled) = *scheduled_purge_upto {
-        match ctx.purge_executor().execute_purge(scheduled).await {
-            Ok(_) => {
-                if let Err(e) = internal_event_tx.send(InternalEvent::LogPurgeCompleted(scheduled))
-                {
-                    error!(%e, "Failed to notify purge completion");
-                }
-            }
-            Err(e) => error!(?e, ?scheduled, "Log purge execution failed"),
-        }
+    execute_pending_purge(pending_purge_upto, ctx, internal_event_tx).await
+}
+
+/// Cleanup after an InstallSnapshotChunk install (or a confirmed no-op at/beyond
+/// `target`). Shares `pending_purge_upto` with path①'s watermark — failure isn't cleared,
+/// retried by whichever purge trigger runs next. No `retained_log_entries` subtraction:
+/// entries below `target` are redundant with a snapshot we already have, not held back for
+/// a lagging peer.
+pub(super) async fn schedule_installed_snapshot_purge<T: TypeConfig>(
+    target: LogId,
+    ctx: &RaftContext<T>,
+    pending_purge_upto: &mut Option<LogId>,
+    internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+) -> Result<()> {
+    if pending_purge_upto.map(|e| e.index < target.index).unwrap_or(true) {
+        *pending_purge_upto = Some(target);
     }
-    Ok(())
+    execute_pending_purge(pending_purge_upto, ctx, internal_event_tx).await
 }
 
 /// Send a InboundEvent back into the internal event loop for reprocessing.
@@ -834,6 +1045,30 @@ pub(super) fn send_replay_inbound_event(
             error!("Failed to send: {e:?}");
             NetworkError::SingalSendFailed(format!("{:?}", e)).into()
         })
+}
+
+/// Compares an incoming RPC's term against this node's own current term — the
+/// same Raft rule AppendEntries and InstallSnapshot both need, just checked at
+/// different points (AppendEntries's term is a plain request field; InstallSnapshot's
+/// is only known once the first chunk arrives) (#436-adjacent).
+pub(super) enum TermDecision {
+    /// Incoming term is behind ours — caller must reject without touching state.
+    RejectStale,
+    /// Incoming term matches ours — proceed, no term update needed.
+    Accept,
+    /// Incoming term is ahead of ours — proceed, but adopt this term.
+    AcceptAndUpdateTerm(u64),
+}
+
+pub(super) fn check_incoming_term(
+    my_term: u64,
+    incoming_term: u64,
+) -> TermDecision {
+    match incoming_term.cmp(&my_term) {
+        std::cmp::Ordering::Less => TermDecision::RejectStale,
+        std::cmp::Ordering::Equal => TermDecision::Accept,
+        std::cmp::Ordering::Greater => TermDecision::AcceptAndUpdateTerm(incoming_term),
+    }
 }
 
 /// Check snapshot condition and trigger if met. Used by all role states after SM apply.

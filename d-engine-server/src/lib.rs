@@ -155,11 +155,30 @@ pub use d_engine_core::RaftNodeConfig;
 pub use d_engine_core::BatchOp;
 
 // Internal types required by storage implementations — not part of user API
-#[doc(hidden)]
+
+/// Persisted Raft hard state (current term + voted-for). Required by
+/// [`MetaStore::save_hard_state`]/[`MetaStore::load_hard_state`] — implement these if
+/// you're building a custom storage engine.
 pub use d_engine_core::HardState;
+
+// Purely internal — only reachable via `?`/`From` conversions inside `Error`.
+// No public trait method requires implementors to construct this directly.
 #[doc(hidden)]
 pub use d_engine_core::ProstError;
-#[doc(hidden)]
+
+/// Outcome of installing a snapshot via [`StateMachine::apply_snapshot_from_file`].
+///
+/// Distinguishes "the install actually ran" (`Applied`) from two no-op cases that are not
+/// errors: the incoming snapshot is behind what's already applied (`IgnoredStale`), or is an
+/// idempotent retry of the currently-applied boundary (`IgnoredDuplicate`). A genuine problem
+/// (checksum mismatch, corrupted data, conflicting boundary) should be returned as `Err`, not
+/// encoded as a variant here.
+pub use d_engine_core::SnapshotApplyResult;
+
+/// Snapshot-specific error type. Construct these in
+/// [`StateMachine::apply_snapshot_from_file`] (e.g. `SnapshotError::ChecksumMismatch`) to
+/// report a genuine install failure — the no-op cases are already covered by
+/// [`SnapshotApplyResult`], not this type.
 pub use d_engine_core::SnapshotError;
 // -------------------- Client API --------------------
 pub use api::EmbeddedClient;
@@ -247,6 +266,23 @@ pub use d_engine_core::state_machine_test;
 /// ```
 #[cfg(feature = "__test_support")]
 pub use d_engine_core::storage_engine_test;
+
+/// Deterministically freezes an outbound snapshot push transfer to a given
+/// peer right before its first chunk is sent, for tests that need to observe
+/// a "transfer started but not completed" window without racing wall-clock
+/// timing.
+///
+/// Enable the `__test_support` feature in your `[dev-dependencies]` to access this:
+/// ```toml
+/// [dev-dependencies]
+/// d-engine = { version = "...", features = ["server", "__test_support"] }
+/// ```
+#[cfg(feature = "__test_support")]
+pub use d_engine_core::SnapshotTransferGate;
+#[cfg(feature = "__test_support")]
+pub use d_engine_core::SnapshotTransferGateGuard;
+#[cfg(feature = "__test_support")]
+pub use d_engine_core::install_snapshot_transfer_gate;
 
 /// Test utilities for d-engine-server
 ///

@@ -75,18 +75,16 @@ pub struct TestHarness {
     handle: Option<JoinHandle<()>>,
 }
 #[allow(clippy::too_many_arguments)]
-fn setup_harness<F, G>(
+fn setup_harness<F>(
     role: i32,
     term: u64,
     entries: Vec<Entry>,
     last_applied: u64,
     config_hook: F,
-    command_hook: G,
     snapshot_condition: Option<u64>,
 ) -> TestHarness
 where
     F: Fn() -> bool + 'static + Send + Sync,
-    G: Fn() -> bool + 'static + Send + Sync,
 {
     let (commit_tx, commit_rx) = mpsc::unbounded_channel();
     let (shutdown_tx, shutdown_rx) = watch::channel(());
@@ -98,13 +96,6 @@ where
     mock_smh
         .expect_pending_range()
         .returning(move || Some(1..=cloned_entries.last().map(|e| e.index).unwrap_or(1)));
-    mock_smh.expect_apply_chunk().returning(move |_| {
-        if command_hook() {
-            Err(Error::Fatal("Command execution failed".to_string()))
-        } else {
-            Ok(vec![])
-        }
-    });
     mock_smh.expect_update_pending().returning(|_| {});
     mock_smh.expect_last_applied().returning(move || last_applied);
     mock_smh
@@ -145,6 +136,7 @@ where
 impl TestHarness {
     async fn run_handler(&mut self) {
         let (sm_apply_tx, mut sm_apply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sm_apply_tx = crate::StateMachineCommandSender::new(sm_apply_tx);
 
         let deps = CommitHandlerDependencies {
             state_machine_handler: self.mock_smh.clone(),
@@ -180,6 +172,7 @@ impl TestHarness {
 
     async fn process_batch_handler(&mut self) -> Result<()> {
         let (sm_apply_tx, mut sm_apply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sm_apply_tx = crate::StateMachineCommandSender::new(sm_apply_tx);
 
         let deps = CommitHandlerDependencies {
             state_machine_handler: self.mock_smh.clone(),
@@ -205,6 +198,35 @@ impl TestHarness {
                 // SM Worker simply consumes entries from the channel
             }
         });
+
+        handler.process_batch().await
+    }
+
+    /// Same as `process_batch_handler`, but the SM Worker's receiving end is dropped
+    /// immediately instead of being drained — simulates the Worker task having
+    /// already exited, so `send_to_sm_worker`'s send must fail.
+    async fn process_batch_handler_with_closed_worker_channel(&mut self) -> Result<()> {
+        let (sm_apply_tx, sm_apply_rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(sm_apply_rx);
+        let sm_apply_tx = crate::StateMachineCommandSender::new(sm_apply_tx);
+
+        let deps = CommitHandlerDependencies {
+            state_machine_handler: self.mock_smh.clone(),
+            raft_log: self.mock_log.clone(),
+            membership: self.mock_membership.clone(),
+            internal_event_tx: self.internal_event_tx.clone(),
+            sm_apply_tx,
+            shutdown_signal: self.shutdown_rx.take().unwrap(),
+            max_batch_size: 10,
+        };
+
+        let handler = DefaultCommitHandler::<MockTypeConfig>::new(
+            1,
+            self.role,
+            self.term,
+            deps,
+            self.commit_rx.take().unwrap(),
+        );
 
         handler.process_batch().await
     }
@@ -267,7 +289,6 @@ mod run_test {
             entries,
             last_applied as u64,
             move || false,
-            move || false,
             Some(4),
         );
         harness.run_handler().await;
@@ -302,7 +323,6 @@ mod run_test {
             entries,
             last_applied as u64,
             move || false,
-            move || false,
             None,
         );
 
@@ -332,7 +352,6 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || false,
             move || false,
             Some(4),
         );
@@ -412,7 +431,6 @@ mod run_test {
             entries,
             last_applied as u64,
             move || false,
-            move || false,
             None,
         );
         harness.run_handler().await;
@@ -459,7 +477,6 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || false,
             move || false,
             Some(4),
         );
@@ -511,7 +528,6 @@ mod run_test {
             entries,
             last_applied as u64,
             move || false,
-            move || false,
             None,
         );
         harness.run_handler().await;
@@ -562,7 +578,6 @@ mod run_test {
             entries,
             last_applied as u64,
             move || false,
-            move || false,
             None,
         );
         harness.run_handler().await;
@@ -612,7 +627,6 @@ mod run_test {
             1,
             entries,
             last_applied as u64,
-            move || false,
             move || false,
             None,
         );
@@ -716,11 +730,45 @@ mod process_batch_test {
             vec![],
             last_applied as u64,
             move || false,
-            move || false,
             None,
         );
         let result = harness.process_batch_handler().await;
         assert!(result.is_ok());
+    }
+
+    /// `CommitHandler` sends `ApplyEntries` on its own raw channel handle rather than
+    /// through `StateMachineCommandSender` (the wrapper every other caller of
+    /// `StateMachineWorker` goes through) — so a closed-channel failure here is
+    /// currently classified as `Error::Fatal`, not `SnapshotError::WorkerUnavailable`
+    /// like every other Worker-unavailable error in the codebase.
+    ///
+    /// `spawn_state_machine_commit_listener` (builder.rs) doesn't branch on
+    /// `is_fatal()` — any `Err` from `run()` just logs and lets the task exit either
+    /// way — so this discrepancy has no runtime consequence today. It's still the
+    /// wrong classification: a `StateMachineWorker unavailable` should carry the same
+    /// error type everywhere, not be Fatal only when CommitHandler happens to hit it.
+    #[tokio::test]
+    async fn test_process_batch_reports_worker_unavailable_not_fatal_when_channel_closed() {
+        let entries = build_entries(vec![CommandType::Command(Bytes::from(b"cmd1".to_vec()))], 1);
+        let last_applied = entries.len();
+        let mut harness = setup_harness(
+            Leader as i32,
+            1,
+            entries,
+            last_applied as u64,
+            move || false,
+            None,
+        );
+
+        let result = harness.process_batch_handler_with_closed_worker_channel().await;
+
+        let err = result.expect_err("process_batch must fail when the SM Worker channel is closed");
+        assert!(
+            !err.is_fatal(),
+            "a closed SM Worker channel must be reported the same way every other \
+             Worker-unavailable error is (non-fatal) — not as Error::Fatal, which is \
+             reserved for conditions that require node shutdown"
+        );
     }
 
     #[tokio::test]
@@ -740,7 +788,6 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            move || false,
             move || false,
             None,
         );
@@ -772,7 +819,6 @@ mod process_batch_test {
             entries,
             last_applied as u64,
             move || false,
-            move || false,
             None,
         );
 
@@ -803,7 +849,6 @@ mod process_batch_test {
             entries,
             last_applied as u64,
             move || false,
-            move || false,
             None,
         );
 
@@ -833,7 +878,6 @@ mod process_batch_test {
             entries,
             last_applied as u64,
             move || true, // Config will fail
-            move || false,
             None,
         );
         let result = harness.process_batch_handler().await;
@@ -866,7 +910,6 @@ mod process_batch_test {
             entries,
             last_applied as u64,
             move || false,
-            move || false,
             None,
         );
         let result = harness.process_batch_handler().await;
@@ -889,7 +932,6 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            move || false,
             move || false,
             None,
         );
@@ -923,7 +965,6 @@ mod process_batch_test {
             entries,
             last_applied as u64,
             || false, // Config succeeds
-            || false,
             None,
         );
 
@@ -980,7 +1021,6 @@ mod process_batch_test {
                     false
                 }
             },
-            || false,
             None,
         );
 
@@ -1030,7 +1070,6 @@ mod process_batch_test {
             entries,
             last_applied as u64,
             || true, // Config fails
-            || false,
             None,
         );
 
@@ -1070,7 +1109,7 @@ mod process_batch_test {
             }))],
             1,
         );
-        let mut harness = setup_harness(Leader as i32, 1, entries, 1, || false, || false, None);
+        let mut harness = setup_harness(Leader as i32, 1, entries, 1, || false, None);
         harness.process_batch_handler().await.unwrap();
         assert!(
             matches!(
@@ -1088,7 +1127,7 @@ mod process_batch_test {
             }))],
             1,
         );
-        let mut harness = setup_harness(Leader as i32, 1, entries, 1, || false, || false, None);
+        let mut harness = setup_harness(Leader as i32, 1, entries, 1, || false, None);
         harness.process_batch_handler().await.unwrap();
         assert!(
             matches!(
@@ -1109,7 +1148,7 @@ mod process_batch_test {
             ))],
             1,
         );
-        let mut harness = setup_harness(Leader as i32, 1, entries, 1, || false, || false, None);
+        let mut harness = setup_harness(Leader as i32, 1, entries, 1, || false, None);
         harness.process_batch_handler().await.unwrap();
         assert!(
             matches!(
@@ -1140,7 +1179,6 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            || false,
             || false,
             None,
         );
@@ -1176,7 +1214,6 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            || false,
             || false,
             None,
         );
@@ -1218,7 +1255,6 @@ mod process_batch_test {
             1,
             entries,
             last_applied as u64,
-            || false,
             || false,
             None,
         );

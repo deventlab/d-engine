@@ -317,10 +317,14 @@ async fn test_performance_benchmarks() {
 }
 
 #[tokio::test]
-async fn test_read_performance_remains_lockfree() {
+async fn test_read_performance_under_concurrent_write_load() {
     // Use environment variable to control performance validation mode
     // Set CI=1 to use relaxed threshold for CI environment (10 reads/sec)
     // Without it, use strict performance validation (10K reads/sec)
+    //
+    // `entry()` and `append_entries()` both go through the same `entries: RwLock<SkipMap>`
+    // (see #439) — this asserts the read side stays fast enough under concurrent writes,
+    // it does not assert the absence of a lock.
     let expected_min = if std::env::var("CI").is_ok() {
         10.0
     } else {
@@ -332,7 +336,7 @@ async fn test_read_performance_remains_lockfree() {
         FlushPolicy::Batch {
             idle_flush_interval_ms: 100,
         },
-        "test_lockfree_reads",
+        "test_read_performance_under_concurrent_write_load",
     );
 
     // Pre-populate

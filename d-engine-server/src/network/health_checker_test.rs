@@ -38,14 +38,11 @@ async fn test_check_peer_is_ready_case1() {
         control: ConnectionParams {
             connect_timeout_in_ms: 100,
             request_timeout_in_ms: 100,
-            concurrency_limit: 8192,
             tcp_keepalive_in_secs: 3600,
             http2_keep_alive_interval_in_secs: 300,
             http2_keep_alive_timeout_in_secs: 20,
-            max_frame_size: 12582912,
             connection_window_size: 12582912,
             stream_window_size: 12582912,
-            ..Default::default()
         },
         ..Default::default()
     };
@@ -87,14 +84,11 @@ async fn test_check_peer_is_ready_case2() {
         control: ConnectionParams {
             connect_timeout_in_ms: 100,
             request_timeout_in_ms: 100,
-            concurrency_limit: 8192,
             tcp_keepalive_in_secs: 3600,
             http2_keep_alive_interval_in_secs: 300,
             http2_keep_alive_timeout_in_secs: 20,
-            max_frame_size: 12582912,
             connection_window_size: 12582912,
             stream_window_size: 12582912,
-            ..Default::default()
         },
         ..Default::default()
     };

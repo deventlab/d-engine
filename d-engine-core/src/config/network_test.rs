@@ -1,6 +1,7 @@
 use crate::Error;
 use crate::config::network::ConnectionParams;
 use crate::config::network::NetworkConfig;
+use crate::config::network::ServerTransportParams;
 
 // Helper function to create a valid base ConnectionParams for tests
 fn valid_base_params() -> ConnectionParams {
@@ -11,11 +12,21 @@ fn valid_base_params() -> ConnectionParams {
         http2_keep_alive_timeout_in_secs: 30,
         stream_window_size: 65535,
         connection_window_size: 131070,
-        adaptive_window: false,
-        concurrency_limit: 10,
-        max_concurrent_streams: 100,
         tcp_keepalive_in_secs: 300,
-        max_frame_size: 16777215,
+    }
+}
+
+// Helper function to create a valid base ServerTransportParams for tests
+fn valid_server_params() -> ServerTransportParams {
+    ServerTransportParams {
+        concurrency_limit_per_connection: 1024,
+        max_concurrent_streams: 1024,
+        max_pending_accept_reset_streams: 1000,
+        http2_keepalive_interval_in_secs: 60,
+        http2_keepalive_timeout_in_secs: 30,
+        initial_connection_window_size: 131070,
+        initial_stream_window_size: 65535,
+        max_decoding_message_size: 67_108_864,
     }
 }
 
@@ -30,41 +41,42 @@ fn test_network_config_default_values() {
     // Test control plane defaults
     assert_eq!(config.control.connect_timeout_in_ms, 20);
     assert_eq!(config.control.request_timeout_in_ms, 100);
-    assert_eq!(config.control.concurrency_limit, 1024);
-    assert_eq!(config.control.max_concurrent_streams, 100);
     assert_eq!(config.control.tcp_keepalive_in_secs, 300);
     assert_eq!(config.control.http2_keep_alive_interval_in_secs, 30);
     assert_eq!(config.control.http2_keep_alive_timeout_in_secs, 5);
-    assert_eq!(config.control.max_frame_size, 16777215);
     assert_eq!(config.control.connection_window_size, 1048576);
     assert_eq!(config.control.stream_window_size, 262144);
-    assert!(!config.control.adaptive_window);
 
     // Test data plane defaults
     assert_eq!(config.data.connect_timeout_in_ms, 50);
     assert_eq!(config.data.request_timeout_in_ms, 500);
-    assert_eq!(config.data.concurrency_limit, 8192);
-    assert_eq!(config.data.max_concurrent_streams, 500);
     assert_eq!(config.data.tcp_keepalive_in_secs, 600);
     assert_eq!(config.data.http2_keep_alive_interval_in_secs, 120);
     assert_eq!(config.data.http2_keep_alive_timeout_in_secs, 30);
-    assert_eq!(config.data.max_frame_size, 16777215);
     assert_eq!(config.data.connection_window_size, 6291456);
     assert_eq!(config.data.stream_window_size, 1048576);
-    assert!(config.data.adaptive_window);
 
     // Test bulk transfer defaults
     assert_eq!(config.bulk.connect_timeout_in_ms, 500000);
     assert_eq!(config.bulk.request_timeout_in_ms, 5000000);
-    assert_eq!(config.bulk.concurrency_limit, 4);
-    assert_eq!(config.bulk.max_concurrent_streams, 2);
     assert_eq!(config.bulk.tcp_keepalive_in_secs, 3600);
     assert_eq!(config.bulk.http2_keep_alive_interval_in_secs, 600);
     assert_eq!(config.bulk.http2_keep_alive_timeout_in_secs, 60);
-    assert_eq!(config.bulk.max_frame_size, 16777215);
     assert_eq!(config.bulk.connection_window_size, 67108864);
     assert_eq!(config.bulk.stream_window_size, 16777216);
-    assert!(!config.bulk.adaptive_window);
+
+    // Test server transport defaults (PR #442 review: server no longer borrows
+    // control/data's client-tuned values — it has its own dedicated profile,
+    // since a single listener serves every RPC type uniformly and has no
+    // "plane" to pick per incoming connection).
+    assert_eq!(config.server.concurrency_limit_per_connection, 1024);
+    assert_eq!(config.server.max_concurrent_streams, 1024);
+    assert_eq!(config.server.max_pending_accept_reset_streams, 1000);
+    assert_eq!(config.server.http2_keepalive_interval_in_secs, 60);
+    assert_eq!(config.server.http2_keepalive_timeout_in_secs, 30);
+    assert_eq!(config.server.initial_connection_window_size, 20_971_520);
+    assert_eq!(config.server.initial_stream_window_size, 10_485_760);
+    assert_eq!(config.server.max_decoding_message_size, 67_108_864);
 }
 
 #[test]
@@ -101,7 +113,6 @@ fn test_connection_params_validate_success() {
         http2_keep_alive_timeout_in_secs: 30,
         stream_window_size: 65535,
         connection_window_size: 131070,
-        adaptive_window: false,
         ..Default::default()
     };
 
@@ -187,17 +198,13 @@ fn test_connection_params_validate_keepalive_timeout_larger_than_interval() {
 }
 
 #[test]
-fn test_connection_params_validate_stream_window_too_small_without_adaptive() {
+fn test_connection_params_validate_stream_window_too_small() {
     let mut params = valid_base_params();
     params.stream_window_size = 65534; // Below minimum 65535 (invalid)
     params.connection_window_size = 131070;
-    params.adaptive_window = false;
 
     let result = params.validate("test");
-    assert!(
-        result.is_err(),
-        "Should fail when stream window too small without adaptive"
-    );
+    assert!(result.is_err(), "Should fail when stream window too small");
 
     let error = result.unwrap_err();
     assert!(matches!(error, Error::Config(_)));
@@ -209,7 +216,6 @@ fn test_connection_params_validate_connection_window_smaller_than_stream() {
     let mut params = valid_base_params();
     params.stream_window_size = 131070;
     params.connection_window_size = 65535; // Smaller than stream window (invalid)
-    params.adaptive_window = false;
 
     let result = params.validate("test");
     assert!(
@@ -223,26 +229,10 @@ fn test_connection_params_validate_connection_window_smaller_than_stream() {
 }
 
 #[test]
-fn test_connection_params_validate_adaptive_window_bypasses_window_checks() {
-    // With adaptive window enabled, window size checks should be bypassed
-    let mut params = valid_base_params();
-    params.stream_window_size = 1000; // Very small, would normally fail
-    params.connection_window_size = 500; // Smaller than stream, would normally fail
-    params.adaptive_window = true;
-
-    let result = params.validate("test");
-    assert!(
-        result.is_ok(),
-        "Adaptive window should bypass window size validation"
-    );
-}
-
-#[test]
-fn test_connection_params_validate_minimum_window_sizes_without_adaptive() {
+fn test_connection_params_validate_minimum_window_sizes() {
     let mut params = valid_base_params();
     params.stream_window_size = 65535; // Exactly minimum
     params.connection_window_size = 65535; // Equal to stream (allowed)
-    params.adaptive_window = false;
 
     let result = params.validate("test");
     assert!(result.is_ok(), "Minimum window sizes should be valid");
@@ -253,7 +243,6 @@ fn test_connection_params_validate_larger_connection_window() {
     let mut params = valid_base_params();
     params.stream_window_size = 65535;
     params.connection_window_size = 131070; // Larger than stream (valid)
-    params.adaptive_window = false;
 
     let result = params.validate("test");
     assert!(result.is_ok(), "Larger connection window should be valid");
@@ -267,16 +256,9 @@ fn test_control_params_optimized_for_low_latency() {
     assert_eq!(control.connect_timeout_in_ms, 20);
     assert_eq!(control.request_timeout_in_ms, 100);
 
-    // Moderate concurrency for control operations
-    assert_eq!(control.concurrency_limit, 1024);
-    assert_eq!(control.max_concurrent_streams, 100);
-
     // Frequent keepalives for quick failure detection
     assert_eq!(control.http2_keep_alive_interval_in_secs, 30);
     assert_eq!(control.http2_keep_alive_timeout_in_secs, 5);
-
-    // Stable window sizing for predictable behavior
-    assert!(!control.adaptive_window);
 }
 
 #[test]
@@ -287,16 +269,9 @@ fn test_data_params_optimized_for_throughput() {
     assert_eq!(data.connect_timeout_in_ms, 50);
     assert_eq!(data.request_timeout_in_ms, 500);
 
-    // High concurrency for parallel log operations
-    assert_eq!(data.concurrency_limit, 8192);
-    assert_eq!(data.max_concurrent_streams, 500);
-
     // Moderate keepalives for efficiency
     assert_eq!(data.http2_keep_alive_interval_in_secs, 120);
     assert_eq!(data.http2_keep_alive_timeout_in_secs, 30);
-
-    // Adaptive window sizing for varying loads
-    assert!(data.adaptive_window);
 }
 
 #[test]
@@ -307,10 +282,6 @@ fn test_bulk_params_optimized_for_large_transfers() {
     assert_eq!(bulk.connect_timeout_in_ms, 500000);
     assert_eq!(bulk.request_timeout_in_ms, 5000000); // Effectively disabled
 
-    // Low concurrency to avoid overwhelming the network
-    assert_eq!(bulk.concurrency_limit, 4);
-    assert_eq!(bulk.max_concurrent_streams, 2);
-
     // Long keepalives for persistent connections
     assert_eq!(bulk.http2_keep_alive_interval_in_secs, 600);
     assert_eq!(bulk.http2_keep_alive_timeout_in_secs, 60);
@@ -318,9 +289,6 @@ fn test_bulk_params_optimized_for_large_transfers() {
     // Large window sizes for bulk data
     assert_eq!(bulk.connection_window_size, 67108864); // 64MB
     assert_eq!(bulk.stream_window_size, 16777216); // 16MB
-
-    // Stable window sizing for predictable throughput
-    assert!(!bulk.adaptive_window);
 }
 
 #[test]
@@ -388,4 +356,188 @@ fn test_connection_params_edge_case_keepalives() {
         result.is_ok(),
         "Keepalive timeout just below interval should be valid"
     );
+}
+
+#[test]
+fn test_server_transport_params_validate_success() {
+    let params = valid_server_params();
+
+    let result = params.validate();
+    assert!(
+        result.is_ok(),
+        "Valid server transport params should succeed"
+    );
+}
+
+/// PR #442 review: `ConnectionParams` used to `#[derive(Default)]`, which silently
+/// diverged from its own `#[serde(default = "...")]` field helpers — every field fell
+/// back to its Rust zero value (e.g. `connection_window_size: 0`) instead of the
+/// value a missing field in a real config file actually gets (`20_971_520`, via
+/// `default_conn_window_size()`). `ConnectionParams::default()` and "every field
+/// absent in the source" must produce identical values — locks that in so a future
+/// field addition (or a reintroduced `#[derive(Default)]`) can't silently reopen the
+/// gap.
+#[test]
+fn test_connection_params_default_matches_all_fields_absent_in_source() {
+    use config::Config;
+
+    let from_empty_source: ConnectionParams =
+        Config::builder().build().unwrap().try_deserialize().unwrap();
+
+    let rust_default = ConnectionParams::default();
+
+    assert_eq!(
+        rust_default.connect_timeout_in_ms,
+        from_empty_source.connect_timeout_in_ms
+    );
+    assert_eq!(
+        rust_default.request_timeout_in_ms,
+        from_empty_source.request_timeout_in_ms
+    );
+    assert_eq!(
+        rust_default.tcp_keepalive_in_secs,
+        from_empty_source.tcp_keepalive_in_secs
+    );
+    assert_eq!(
+        rust_default.http2_keep_alive_interval_in_secs,
+        from_empty_source.http2_keep_alive_interval_in_secs
+    );
+    assert_eq!(
+        rust_default.http2_keep_alive_timeout_in_secs,
+        from_empty_source.http2_keep_alive_timeout_in_secs
+    );
+    assert_eq!(
+        rust_default.connection_window_size,
+        from_empty_source.connection_window_size
+    );
+    assert_eq!(
+        rust_default.stream_window_size,
+        from_empty_source.stream_window_size
+    );
+
+    // The specific regression CodeRabbit flagged: a bare `#[derive(Default)]` would
+    // have produced 0 here, not the real ~20MB default.
+    assert_eq!(
+        ConnectionParams::default().connection_window_size,
+        20_971_520
+    );
+}
+
+#[test]
+fn test_server_transport_params_validate_default_is_valid() {
+    let params = ServerTransportParams::default();
+
+    let result = params.validate();
+    assert!(
+        result.is_ok(),
+        "Default server transport params should validate successfully"
+    );
+}
+
+#[test]
+fn test_server_transport_params_validate_zero_concurrency_limit() {
+    let mut params = valid_server_params();
+    params.concurrency_limit_per_connection = 0;
+
+    let result = params.validate();
+    assert!(result.is_err(), "Should fail with zero concurrency limit");
+
+    let error = result.unwrap_err();
+    assert!(matches!(error, Error::Config(_)));
+    assert!(error.to_string().contains("concurrency_limit_per_connection must be > 0"));
+}
+
+#[test]
+fn test_server_transport_params_validate_zero_max_concurrent_streams() {
+    let mut params = valid_server_params();
+    params.max_concurrent_streams = 0;
+
+    let result = params.validate();
+    assert!(
+        result.is_err(),
+        "Should fail with zero max_concurrent_streams"
+    );
+
+    let error = result.unwrap_err();
+    assert!(matches!(error, Error::Config(_)));
+    assert!(error.to_string().contains("max_concurrent_streams must be > 0"));
+}
+
+#[test]
+fn test_server_transport_params_validate_keepalive_timeout_too_large() {
+    let mut params = valid_server_params();
+    params.http2_keepalive_interval_in_secs = 30;
+    params.http2_keepalive_timeout_in_secs = 30; // Equal to interval (invalid)
+
+    let result = params.validate();
+    assert!(
+        result.is_err(),
+        "Should fail when keepalive timeout >= interval"
+    );
+
+    let error = result.unwrap_err();
+    assert!(matches!(error, Error::Config(_)));
+    assert!(error.to_string().contains("must be <"));
+}
+
+#[test]
+fn test_server_transport_params_validate_stream_window_too_small() {
+    let mut params = valid_server_params();
+    params.initial_stream_window_size = 65534; // Below minimum 65535 (invalid)
+
+    let result = params.validate();
+    assert!(result.is_err(), "Should fail when stream window too small");
+
+    let error = result.unwrap_err();
+    assert!(matches!(error, Error::Config(_)));
+    assert!(error.to_string().contains("below minimum"));
+}
+
+#[test]
+fn test_server_transport_params_validate_connection_window_smaller_than_stream() {
+    let mut params = valid_server_params();
+    params.initial_stream_window_size = 131070;
+    params.initial_connection_window_size = 65535; // Smaller than stream window (invalid)
+
+    let result = params.validate();
+    assert!(
+        result.is_err(),
+        "Should fail when connection window smaller than stream window"
+    );
+
+    let error = result.unwrap_err();
+    assert!(matches!(error, Error::Config(_)));
+    assert!(error.to_string().contains("smaller than stream window"));
+}
+
+#[test]
+fn test_server_transport_params_validate_zero_max_decoding_message_size() {
+    let mut params = valid_server_params();
+    params.max_decoding_message_size = 0;
+
+    let result = params.validate();
+    assert!(
+        result.is_err(),
+        "Should fail with zero max_decoding_message_size"
+    );
+
+    let error = result.unwrap_err();
+    assert!(matches!(error, Error::Config(_)));
+    assert!(error.to_string().contains("max_decoding_message_size must be > 0"));
+}
+
+#[test]
+fn test_network_config_validation_cascades_to_server_params() {
+    let mut config = NetworkConfig::default();
+    config.server.max_concurrent_streams = 0;
+
+    let result = config.validate();
+    assert!(
+        result.is_err(),
+        "Should fail when server transport params are invalid"
+    );
+
+    let error = result.unwrap_err();
+    assert!(matches!(error, Error::Config(_)));
+    assert!(error.to_string().contains("max_concurrent_streams must be > 0"));
 }

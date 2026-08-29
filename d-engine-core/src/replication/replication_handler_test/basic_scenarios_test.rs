@@ -43,6 +43,9 @@ async fn test_single_voter_builds_no_replication_requests() {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
     raft_log.expect_first_entry_id().returning(|| 1);
+    // next_index map is empty here, so build_append_request defaults every peer's
+    // recorded_next_index to 1 -> prev_index=0 -> entry_term(0) is always queried.
+    raft_log.expect_entry_term().returning(|_| None);
     context.storage.raft_log = Arc::new(raft_log);
 
     let result = handler
@@ -94,6 +97,9 @@ async fn test_two_node_cluster_builds_one_replication_request() {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
     raft_log.expect_first_entry_id().returning(|| 1);
+    // next_index map is empty here, so build_append_request defaults every peer's
+    // recorded_next_index to 1 -> prev_index=0 -> entry_term(0) is always queried.
+    raft_log.expect_entry_term().returning(|_| None);
     context.storage.raft_log = Arc::new(raft_log);
 
     let result = handler
@@ -156,6 +162,9 @@ async fn test_three_node_cluster_builds_two_replication_requests() {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
     raft_log.expect_first_entry_id().returning(|| 1);
+    // next_index map is empty here, so build_append_request defaults every peer's
+    // recorded_next_index to 1 -> prev_index=0 -> entry_term(0) is always queried.
+    raft_log.expect_entry_term().returning(|_| None);
     context.storage.raft_log = Arc::new(raft_log);
 
     let result = handler
@@ -200,7 +209,7 @@ async fn test_three_node_cluster_builds_two_replication_requests() {
         2,
         "three-node cluster builds 2 replication requests"
     );
-    let peer_ids: Vec<u32> = result.append_requests.iter().map(|(id, _)| *id).collect();
+    let peer_ids: Vec<u32> = result.append_requests.iter().map(|(id, _, _)| *id).collect();
     assert!(peer_ids.contains(&peer2_id), "request for peer 2");
     assert!(peer_ids.contains(&peer3_id), "request for peer 3");
 }
@@ -227,6 +236,9 @@ async fn test_five_node_cluster_builds_four_replication_requests() {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
     raft_log.expect_first_entry_id().returning(|| 1);
+    // next_index map is empty here, so build_append_request defaults every peer's
+    // recorded_next_index to 1 -> prev_index=0 -> entry_term(0) is always queried.
+    raft_log.expect_entry_term().returning(|_| None);
     context.storage.raft_log = Arc::new(raft_log);
 
     let result = handler
@@ -283,7 +295,7 @@ async fn test_five_node_cluster_builds_four_replication_requests() {
         4,
         "five-node cluster builds 4 replication requests"
     );
-    let peer_ids: Vec<u32> = result.append_requests.iter().map(|(id, _)| *id).collect();
+    let peer_ids: Vec<u32> = result.append_requests.iter().map(|(id, _, _)| *id).collect();
     assert!(peer_ids.contains(&peer2_id));
     assert!(peer_ids.contains(&peer3_id));
     assert!(peer_ids.contains(&peer4_id));

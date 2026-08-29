@@ -61,6 +61,20 @@ We're in **active development** based on real user feedback. Our priorities evol
 
 ---
 
+## Versioning Policy
+
+Starting after v0.2.5:
+
+- **Patch (0.2.x → 0.2.x+1)**: bug fixes, docs, performance, internal-only changes — no breaking changes
+- **Minor (0.2.x → 0.3.0)**: breaking API/behavior changes allowed
+- **Pre-release (0.3.0-alpha.N)**: experimental, may break between alphas
+- **1.0.0+**: stable API, breaking changes require a major bump
+
+Already-published versions are not reinterpreted retroactively — if a past
+tag doesn't match this policy, a new version is cut instead of rewriting history.
+
+---
+
 ## Development Workflow
 
 ### Quick Setup

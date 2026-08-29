@@ -104,6 +104,7 @@ mod file_state_machine_tests {
     use std::time::Duration;
 
     use bytes::Bytes;
+    use d_engine_core::file_io::compute_checksum_from_folder_path;
     use d_engine_core::{ApplyEntry, Command, StateMachine};
     use tempfile::TempDir;
     use tokio::time::sleep;
@@ -202,10 +203,11 @@ mod file_state_machine_tests {
             create_file_state_machine_with_lease(temp_dir2.path().to_path_buf(), lease_config)
                 .await;
 
+        let checksum = compute_checksum_from_folder_path(&snapshot_dir).await.unwrap();
         sm2.apply_snapshot_from_file(
             &d_engine_proto::server::storage::SnapshotMetadata {
                 last_included: Some(d_engine_proto::common::LogId { index: 1, term: 1 }),
-                checksum: Bytes::new(),
+                checksum: Bytes::copy_from_slice(&checksum),
             },
             snapshot_dir,
         )

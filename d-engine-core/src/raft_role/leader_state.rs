@@ -9,8 +9,6 @@ use super::read_lease::now_ms;
 use super::role_state::RaftRoleState;
 use super::role_state::check_and_trigger_snapshot;
 use super::role_state::send_replay_inbound_event;
-use crate::BackgroundSnapshotTransfer;
-use crate::ConnectionType;
 use crate::ConsensusError;
 use crate::Error;
 use crate::InboundEvent;
@@ -44,6 +42,7 @@ use crate::alias::TROF;
 use crate::client::{ClientReadRequest, ClientResponse, ErrorCode};
 use crate::event::ClientCmd;
 use crate::network::Transport;
+use crate::role_state::PeerReplicationState;
 use crate::role_state::schedule_and_execute_purge;
 use crate::utils::cluster_printer::print_role_transition_line;
 use async_trait::async_trait;
@@ -80,7 +79,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tonic::Status;
 use tracing::debug;
@@ -206,7 +204,7 @@ enum ReplicationTask {
     /// Normal AppendEntries replication.
     Append(AppendEntriesRequest),
     /// Peer's next_index fell below the purge boundary; transfer the latest snapshot.
-    Snapshot(SnapshotMetadata),
+    Snapshot(SnapshotMetadata, u64),
 }
 
 /// Immutable configuration passed to every per-follower replication worker.
@@ -260,6 +258,12 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// Raft Paper: §5.3 Figure 2 (matchIndex)
     pub(super) match_index: HashMap<u32, u64>,
+
+    /// === Volatile State ===
+    /// Per-peer replication trust state (#436). A parallel map, same convention
+    /// as `next_index`/`match_index` — not merged into a combined struct, to
+    /// keep this change minimal and consistent with existing style.
+    pub(super) peer_replication_state: HashMap<u32, PeerReplicationState>,
 
     /// === Volatile State ===
     /// Temporary storage for no-op entry log ID during leader initialization
@@ -590,10 +594,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             replication_targets.len()
         );
         Ok(())
-    }
-
-    fn is_leader(&self) -> bool {
-        true
     }
 
     fn become_leader(&self) -> Result<RaftRole<T>> {
@@ -1181,48 +1181,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     let msg = "Leader can not find its address? It must be a bug.";
                     error!("{}", msg);
                     panic!("{}", msg);
-                }
-            }
-            InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx) => {
-                debug!("Leader::InboundEvent::StreamSnapshot");
-
-                // Get the latest snapshot metadata
-                if let Some(metadata) = ctx.state_machine().snapshot_metadata() {
-                    // confirm: transfer starting
-                    if let Err(e) = startup_tx.send(Ok(())) {
-                        error!(
-                            ?e,
-                            "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
-                        );
-                    }
-
-                    // Spawn background transfer task
-                    let state_machine_handler = ctx.state_machine_handler().clone();
-                    let config = ctx.node_config.raft.snapshot.clone();
-                    // Load snapshot data stream
-                    let data_stream =
-                        state_machine_handler.load_snapshot_data(metadata.clone()).await?;
-
-                    tokio::spawn(async move {
-                        if let Err(e) = BackgroundSnapshotTransfer::<T>::run_pull_transfer(
-                            ack_rx,
-                            chunk_tx,
-                            data_stream,
-                            config,
-                        )
-                        .await
-                        {
-                            error!("StreamSnapshot failed: {:?}", e);
-                        }
-                    });
-                } else if let Err(e) =
-                    startup_tx.send(Err(Status::not_found("No snapshot available")))
-                {
-                    error!(
-                        ?e,
-                        "StreamSnapshot startup_tx send failed: gRPC receiver already dropped"
-                    );
-                    // chunk_tx dropped
                 }
             }
 
@@ -1924,6 +1882,33 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
         Ok(())
     }
+
+    fn peer_replication_state(
+        &self,
+        node_id: u32,
+    ) -> PeerReplicationState {
+        self.peer_replication_state
+            .get(&node_id)
+            .copied()
+            .unwrap_or(PeerReplicationState::Probe)
+    }
+
+    fn set_peer_replication_state(
+        &mut self,
+        node_id: u32,
+        state: PeerReplicationState,
+    ) {
+        metrics::gauge!(
+            "core.raft.peer.replication_state",
+            "peer_id" => node_id.to_string()
+        )
+        .set(match state {
+            PeerReplicationState::Probe => 0.0,
+            PeerReplicationState::Replicate => 1.0,
+            PeerReplicationState::Snapshot => 2.0,
+        });
+        self.peer_replication_state.insert(node_id, state);
+    }
 }
 
 /// Computes the exponential backoff delay for a snapshot push failure.
@@ -1950,9 +1935,9 @@ impl<T: TypeConfig> LeaderState<T> {
 
     /// Spawn a long-running replication worker task for the given peer.
     ///
-    /// The worker runs a FIFO loop: receives AppendEntriesRequests from `task_tx`,
-    /// calls `transport.send_append_request`, and sends results back via `internal_event_tx`.
-    /// It exits cleanly when `task_tx` is dropped (LeaderState step-down).
+    /// The worker opens a persistent bidi AppendEntries stream, pushes
+    /// `Append`/`Snapshot` tasks through it, and relays ACKs/results back
+    /// via `internal_event_tx`. It exits cleanly when `task_tx` is dropped.
     fn spawn_worker(
         peer_id: u32,
         cfg: ReplicationWorkerConfig<T>,
@@ -1974,7 +1959,7 @@ impl<T: TypeConfig> LeaderState<T> {
     ///   - `Append`: send AppendEntries RPC (skipped while snapshot is in progress)
     ///   - `Snapshot`: push latest snapshot to a lagging peer.
     ///
-    /// Snapshot dedup: `snapshot_in_progress` is set when a snapshot is spawned and
+    /// Snapshot dedup: `snapshot_push_in_progress` is set when a snapshot is spawned and
     /// cleared when it completes.  While true, duplicate `Snapshot` tasks and stale
     /// `Append` tasks (whose prev_log indices are meaningless before the snapshot
     /// base is installed) are discarded.
@@ -1993,10 +1978,6 @@ impl<T: TypeConfig> LeaderState<T> {
             snapshot_config,
         } = cfg;
 
-        // NOTE: snapshot_in_progress is intentionally outside the reconnect loop.
-        // A snapshot transfer must complete (or fail) regardless of stream reconnects;
-        // the bidi stream is only used for AppendEntries, not snapshot chunks.
-        let snapshot_in_progress = Arc::new(AtomicBool::new(false));
         let base_delay_ms = retry_policies.append_entries.base_delay_ms;
         let max_delay_ms = retry_policies.append_entries.max_delay_ms;
 
@@ -2076,13 +2057,6 @@ impl<T: TypeConfig> LeaderState<T> {
 
                         match task {
                             ReplicationTask::Append(request) => {
-                                if snapshot_in_progress.load(Ordering::Acquire) {
-                                    debug!(
-                                        peer_id,
-                                        "Skipping AppendEntries while snapshot is in progress"
-                                    );
-                                    continue;
-                                }
                                 // Push batch directly into the persistent bidi stream (non-blocking)
                                 if stream_sender.send(request).await.is_err() {
                                     warn!(peer_id, "Bidi stream sender closed, reconnecting");
@@ -2092,31 +2066,30 @@ impl<T: TypeConfig> LeaderState<T> {
                                     break;
                                 }
                             }
-                            ReplicationTask::Snapshot(metadata) => {
-                                if snapshot_in_progress.load(Ordering::Acquire) {
-                                    debug!(
-                                        peer_id,
-                                        "Skipping duplicate Snapshot task (already in progress)"
-                                    );
-                                    continue;
-                                }
-                                snapshot_in_progress.store(true, Ordering::Release);
+                            ReplicationTask::Snapshot(metadata, leader_term) => {
+                                // Capture the snapshot's own boundary before `metadata` moves into
+                                // send_snapshot below — this is what the peer will actually end up
+                                // with, regardless of how far the leader's log advances meanwhile.
+                                let last_included_index =
+                                    metadata.last_included.as_ref().map(|id| id.index);
                                 // Spawn snapshot transfer; bidi stream stays open
-                                let flag = snapshot_in_progress.clone();
                                 let t = transport.clone();
                                 let smh = state_machine_handler.clone();
                                 let m = membership.clone();
                                 let c = snapshot_config.clone();
                                 let tx = internal_event_tx.clone();
                                 tokio::spawn(async move {
-                                    let result = t.send_snapshot(peer_id, metadata, smh, m, c).await;
+                                    let result = t.send_snapshot(peer_id, metadata, leader_term, smh, m, c).await;
                                     let success = result.is_ok();
                                     if !success {
                                         warn!(peer_id, "Snapshot push failed: {:?}", result);
                                     }
-                                    flag.store(false, Ordering::Release);
-                                    let _ =
-                                        tx.send(InternalEvent::SnapshotPushCompleted { peer_id, success });
+                                    let _ = tx.send(InternalEvent::SnapshotPushCompleted {
+                                        peer_id,
+                                        success,
+                                        term: leader_term,
+                                        last_included_index,
+                                    });
                                 });
                             }
                         }
@@ -2175,6 +2148,11 @@ impl<T: TypeConfig> LeaderState<T> {
         policy: &crate::InstallSnapshotBackoffPolicy,
         node_id: u32,
     ) {
+        // Symmetric guard: only act if this peer is still actually in Snapshot state. A stale/duplicate completion event (e.g. left over from an earlier failed attempt) arriving after the state has already moved on is a no-op — no need for a separate session id.
+        if self.peer_replication_state(peer_id) != PeerReplicationState::Snapshot {
+            return;
+        }
+
         let Some(handle) = self.replication_workers.get_mut(&peer_id) else {
             return;
         };
@@ -2182,32 +2160,41 @@ impl<T: TypeConfig> LeaderState<T> {
         if success {
             handle.snapshot_failure_count = 0;
             handle.snapshot_next_retry_at = None;
-            return;
+        } else {
+            handle.snapshot_failure_count += 1;
+            let count = handle.snapshot_failure_count;
+            let delay = snapshot_push_backoff_duration(count, policy);
+            handle.snapshot_next_retry_at = Some(Instant::now() + delay);
+
+            if count >= policy.push_failure_alert_threshold {
+                error!(
+                    peer_id,
+                    failure_count = count,
+                    next_retry_secs = delay.as_secs(),
+                    "Snapshot push to peer has failed {} consecutive times; \
+                     peer may be unreachable or out of disk space. \
+                     Next attempt in {}s.",
+                    count,
+                    delay.as_secs()
+                );
+                metrics::counter!(
+                    "core.raft.snapshot.push_consecutive_failures",
+                    "peer_id" => peer_id.to_string(),
+                    "node_id" => node_id.to_string(),
+                )
+                .increment(1);
+            }
         }
 
-        handle.snapshot_failure_count += 1;
-        let count = handle.snapshot_failure_count;
-        let delay = snapshot_push_backoff_duration(count, policy);
-        handle.snapshot_next_retry_at = Some(Instant::now() + delay);
-
-        if count >= policy.push_failure_alert_threshold {
-            error!(
-                peer_id,
-                failure_count = count,
-                next_retry_secs = delay.as_secs(),
-                "Snapshot push to peer has failed {} consecutive times; \
-                 peer may be unreachable or out of disk space. \
-                 Next attempt in {}s.",
-                count,
-                delay.as_secs()
-            );
-            metrics::counter!(
-                "core.raft.snapshot.push_consecutive_failures",
-                "peer_id" => peer_id.to_string(),
-                "node_id" => node_id.to_string(),
-            )
-            .increment(1);
-        }
+        metrics::gauge!(
+            "core.raft.peer.snapshot_in_progress",
+            "peer_id" => peer_id.to_string()
+        )
+        .set(0.0);
+        // #436: push resolved either way — stop blocking AppendEntries, but don't
+        // trust the peer yet either. Wait for a real ACK (etcd: MsgSnapStatus,
+        // success or reject, both -> BecomeProbe, never straight to Replicate).
+        self.set_peer_replication_state(peer_id, PeerReplicationState::Probe);
     }
 
     // ---- Pending client write drain -------------------------------------------------------
@@ -2603,6 +2590,9 @@ impl<T: TypeConfig> LeaderState<T> {
             if let Err(e) = self.update_next_index(follower_id, update.next_index.max(current)) {
                 error!("Failed to update next index: {:?}", e);
             }
+            // #436: a real ACK confirms this peer is caught up — trust speculative
+            // advance again.
+            self.set_peer_replication_state(follower_id, PeerReplicationState::Replicate);
         } else {
             // Conflict: follower explicitly corrects our assumption — allow next_index
             // to retreat to the hint. Floor guard (match_index + 1) inside
@@ -2610,6 +2600,9 @@ impl<T: TypeConfig> LeaderState<T> {
             if let Err(e) = self.update_next_index(follower_id, update.next_index) {
                 error!("Failed to update next index: {:?}", e);
             }
+            // #436: an explicit reject means our ledger was wrong — stop trusting
+            // speculative advance until the next real ACK (etcd: BecomeProbe on reject).
+            self.set_peer_replication_state(follower_id, PeerReplicationState::Probe);
         }
 
         trace!(
@@ -3112,54 +3105,9 @@ impl<T: TypeConfig> LeaderState<T> {
             pending_commit_actions: BTreeMap::new(),
             write_propose_times: HashMap::new(),
             write_commit_times: HashMap::new(),
+            peer_replication_state: HashMap::new(),
             _marker: PhantomData,
         }
-    }
-
-    pub async fn trigger_background_snapshot(
-        node_id: u32,
-        metadata: SnapshotMetadata,
-        state_machine_handler: Arc<SMHOF<T>>,
-        membership: Arc<MOF<T>>,
-        config: SnapshotConfig,
-    ) -> Result<()> {
-        let (result_tx, result_rx) = oneshot::channel();
-
-        // Delegate the actual transfer to a dedicated thread pool
-        tokio::task::spawn_blocking(move || {
-            let rt = tokio::runtime::Handle::current();
-            let result = rt.block_on(async move {
-                let bulk_channel = membership
-                    .get_peer_channel(node_id, ConnectionType::Bulk)
-                    .await
-                    .ok_or(NetworkError::PeerConnectionNotFound(node_id))?;
-
-                let data_stream =
-                    state_machine_handler.load_snapshot_data(metadata.clone()).await?;
-
-                BackgroundSnapshotTransfer::<T>::run_push_transfer(
-                    node_id,
-                    data_stream,
-                    bulk_channel,
-                    config,
-                )
-                .await
-            });
-
-            // Non-blocking send result
-            let _ = result_tx.send(result);
-        });
-
-        // Non-blocking check result
-        tokio::spawn(async move {
-            match result_rx.await {
-                Ok(Ok(_)) => info!("Snapshot to {} completed", node_id),
-                Ok(Err(e)) => error!("Snapshot to {} failed: {:?}", node_id, e),
-                Err(_) => warn!("Snapshot result channel closed unexpectedly"),
-            }
-        });
-
-        Ok(())
     }
 
     /// Removes the first `count` nodes from the pending queue and returns them
@@ -3360,13 +3308,25 @@ impl<T: TypeConfig> LeaderState<T> {
         let snapshot_config = ctx.node_config.raft.snapshot.clone();
 
         // Phase 5: fire AppendEntries requests to per-follower workers (non-blocking).
-        for (peer_id, request) in requests.append_requests {
-            let speculative_next_index = request.prev_log_index + request.entries.len() as u64 + 1;
-            if let Err(e) = self.update_next_index(peer_id, speculative_next_index) {
-                error!(
-                    "speculative next_index advance peer={} failed: {:?}",
-                    peer_id, e
-                );
+        for (peer_id, request, effective_next_index) in requests.append_requests {
+            // Leader-owned authority: never generate/dispatch an Append while this peer
+            // has an outstanding snapshot push — closes the race where a stale-but-still-
+            // in-flight snapshot silently swallowed a data batch the leader had already
+            // optimistically recorded as delivered.
+            if self.peer_replication_state(peer_id) == PeerReplicationState::Snapshot {
+                continue;
+            }
+
+            // #436: write next_index once. When Replicate, trust speculative advance
+            // (always >= effective_next_index, so no separate write is needed for it).
+            let next_index =
+                if self.peer_replication_state(peer_id) == PeerReplicationState::Replicate {
+                    effective_next_index + request.entries.len() as u64
+                } else {
+                    effective_next_index
+                };
+            if let Err(e) = self.update_next_index(peer_id, next_index) {
+                error!("failed to update next_index peer={}: {:?}", peer_id, e);
             }
 
             self.send_to_worker_or_spawn(
@@ -3385,7 +3345,7 @@ impl<T: TypeConfig> LeaderState<T> {
         }
 
         // Phase 6: trigger snapshot push for peers behind the purge boundary.
-        // Each peer has a dedicated worker with a `snapshot_in_progress` flag that
+        // Each peer has a dedicated worker with a `snapshot_push_in_progress` flag that
         // prevents duplicate transfers when multiple heartbeats arrive before completion.
         // Peers within an active backoff window (after consecutive failures) are skipped
         // to protect the leader from repeatedly pushing to unreachable peers.
@@ -3399,15 +3359,18 @@ impl<T: TypeConfig> LeaderState<T> {
                         && let Some(retry_at) = handle.snapshot_next_retry_at
                         && Instant::now() < retry_at
                     {
+                        continue;
+                    }
+                    if self.peer_replication_state(peer_id) == PeerReplicationState::Snapshot {
                         debug!(
                             peer_id,
-                            "Snapshot push backoff active, skipping this heartbeat"
+                            "Snapshot already in flight, skip re-dispatch this heartbeat"
                         );
                         continue;
                     }
                     self.send_to_worker_or_spawn(
                         peer_id,
-                        ReplicationTask::Snapshot(metadata.clone()),
+                        ReplicationTask::Snapshot(metadata.clone(), self.current_term()),
                         ReplicationWorkerConfig {
                             transport: transport.clone(),
                             membership: membership.clone(),
@@ -3418,6 +3381,15 @@ impl<T: TypeConfig> LeaderState<T> {
                             snapshot_config: snapshot_config.clone(),
                         },
                     );
+                    metrics::gauge!(
+                        "core.raft.peer.snapshot_in_progress",
+                        "peer_id" => peer_id.to_string()
+                    )
+                    .set(1.0);
+                    // Leader has now committed to sending this peer a snapshot — hold this
+                    // state until SnapshotPushCompleted resolves it back to Probe. AppendEntries
+                    // must not be attempted for this peer until then (see Phase 5 check above).
+                    self.set_peer_replication_state(peer_id, PeerReplicationState::Snapshot);
                 }
             } else {
                 debug!(
@@ -3888,6 +3860,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             pending_commit_actions: BTreeMap::new(),
             write_propose_times: HashMap::new(),
             write_commit_times: HashMap::new(),
+            peer_replication_state: HashMap::new(),
             _marker: PhantomData,
         }
     }
@@ -3927,3 +3900,102 @@ pub fn calculate_safe_batch_size(
         available.saturating_sub(1)
     }
 }
+
+// ============================================================================
+// Test submodules — declared here (not in a sibling `leader_state_test` module)
+// so they are true descendants of this module and can see its private items
+// (e.g. `send_to_worker_or_spawn`, `ReplicationWorkerHandle`) directly, without
+// everything needing `pub(crate)` just to be reachable from tests.
+// ============================================================================
+
+#[cfg(test)]
+#[path = "leader_state_test/backpressure_test.rs"]
+mod backpressure_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/become_follower_test.rs"]
+mod become_follower_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/buffer_cleanup_test.rs"]
+mod buffer_cleanup_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/client_read_test.rs"]
+mod client_read_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/client_write_test.rs"]
+mod client_write_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/cluster_metadata_test.rs"]
+mod cluster_metadata_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/commit_index_test.rs"]
+mod commit_index_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/deadline_test.rs"]
+mod deadline_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/event_handling_test.rs"]
+mod event_handling_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/fatal_error_test.rs"]
+mod fatal_error_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/lease_refresh_on_log_flushed_test.rs"]
+mod lease_refresh_on_log_flushed_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/lease_send_ts_test.rs"]
+mod lease_send_ts_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/membership_change_test.rs"]
+mod membership_change_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/pending_commit_actions_test.rs"]
+mod pending_commit_actions_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/pending_lease_reads_test.rs"]
+mod pending_lease_reads_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/pending_reads_test.rs"]
+mod pending_reads_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/replication_test.rs"]
+mod replication_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/single_voter_commit_test.rs"]
+mod single_voter_commit_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/snapshot_test.rs"]
+mod snapshot_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/snapshot_worker_test.rs"]
+mod snapshot_worker_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/stale_learner_deadline_test.rs"]
+mod stale_learner_deadline_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/state_management_test.rs"]
+mod state_management_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/worker_lifecycle_test.rs"]
+mod worker_lifecycle_test;

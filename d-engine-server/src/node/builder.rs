@@ -33,7 +33,6 @@ use d_engine_core::CommitHandler;
 use d_engine_core::CommitHandlerDependencies;
 use d_engine_core::DefaultCommitHandler;
 use d_engine_core::DefaultPurgeExecutor;
-use d_engine_core::DefaultStateMachineHandler;
 use d_engine_core::ElectionHandler;
 use d_engine_core::InternalEvent;
 use d_engine_core::LogSizePolicy;
@@ -48,11 +47,13 @@ use d_engine_core::ReplicationHandler;
 use d_engine_core::Result;
 use d_engine_core::SignalParams;
 use d_engine_core::StateMachine;
+use d_engine_core::StateMachineCommand;
 use d_engine_core::StateMachineWorker;
 use d_engine_core::StorageEngine;
 use d_engine_core::SystemError;
 use d_engine_core::alias::MOF;
 use d_engine_core::alias::SMHOF;
+use d_engine_core::alias::SMWOF;
 use d_engine_core::alias::SNP;
 use d_engine_core::alias::TROF;
 use d_engine_core::follower_state::FollowerState;
@@ -79,6 +80,10 @@ use crate::network::grpc;
 use crate::network::grpc::grpc_transport::GrpcTransport;
 use crate::storage::BufferedRaftLog;
 
+type StateMachineHandler<SE, SM> = (
+    Arc<SMHOF<RaftTypeConfig<SE, SM>>>,
+    Arc<SMWOF<RaftTypeConfig<SE, SM>>>,
+);
 /// Builder for creating a Raft node
 ///
 /// Provides a fluent API for configuring and constructing a [`Node`].
@@ -105,7 +110,7 @@ where
     pub(super) membership: Option<MOF<RaftTypeConfig<SE, SM>>>,
     pub(super) state_machine: Option<Arc<SM>>,
     pub(super) transport: Option<TROF<RaftTypeConfig<SE, SM>>>,
-    pub(super) state_machine_handler: Option<Arc<SMHOF<RaftTypeConfig<SE, SM>>>>,
+    pub(super) state_machine_handler: Option<StateMachineHandler<SE, SM>>,
     pub(super) snapshot_policy: Option<SNP<RaftTypeConfig<SE, SM>>>,
     pub(super) shutdown_signal: watch::Receiver<()>,
 
@@ -364,7 +369,6 @@ where
 
         let snapshot_policy = self.snapshot_policy.take().unwrap_or(LogSizePolicy::new(
             node_config.raft.snapshot.max_log_entries_before_snapshot,
-            node_config.raft.snapshot.snapshot_cool_down_since_last_check,
         ));
 
         let shutdown_signal = self.shutdown_signal.clone();
@@ -406,39 +410,42 @@ where
             Some((broadcast_tx, registry, dispatcher_handle, last_applied_ref))
         };
 
-        let state_machine_handler = self.state_machine_handler.take().unwrap_or_else(|| {
-            #[cfg(feature = "watch")]
-            let watch_event_tx = watch_system.as_ref().map(|(tx, _, _, _)| tx.clone());
-
-            // Share the registry's live prev_kv counter Arc so the handler sees real-time updates.
-            #[cfg(feature = "watch")]
-            let prev_kv_count = watch_system
-                .as_ref()
-                .map(|(_, registry, _, _)| registry.prev_kv_watcher_count_arc())
-                .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicUsize::new(0)));
-
-            #[cfg(not(feature = "watch"))]
-            let watch_event_tx: Option<
-                tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
-            > = None;
-
-            Arc::new(DefaultStateMachineHandler::new(
-                node_id,
-                last_applied_index,
-                state_machine.clone(),
-                snapshots_dir,
-                node_config.raft.snapshot.clone(),
-                snapshot_policy,
+        let (state_machine_handler, state_machine_writer) =
+            self.state_machine_handler.take().unwrap_or_else(|| {
                 #[cfg(feature = "watch")]
-                watch_event_tx,
-                #[cfg(not(feature = "watch"))]
-                watch_event_tx,
+                let watch_event_tx = watch_system.as_ref().map(|(tx, _, _, _)| tx.clone());
+
+                // Share the registry's live prev_kv counter Arc so the handler sees real-time updates.
                 #[cfg(feature = "watch")]
-                prev_kv_count,
+                let prev_kv_count = watch_system
+                    .as_ref()
+                    .map(|(_, registry, _, _)| registry.prev_kv_watcher_count_arc())
+                    .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+
                 #[cfg(not(feature = "watch"))]
-                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            ))
-        });
+                let watch_event_tx: Option<
+                    tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
+                > = None;
+
+                let (reader, writer) =
+                    d_engine_core::new_reader_writer_pair::<RaftTypeConfig<SE, SM>>(
+                        node_id,
+                        last_applied_index,
+                        state_machine.clone(),
+                        snapshots_dir,
+                        node_config.raft.snapshot.clone(),
+                        snapshot_policy,
+                        #[cfg(feature = "watch")]
+                        watch_event_tx,
+                        #[cfg(not(feature = "watch"))]
+                        watch_event_tx,
+                        #[cfg(feature = "watch")]
+                        prev_kv_count,
+                        #[cfg(not(feature = "watch"))]
+                        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    );
+                (Arc::new(reader), Arc::new(writer))
+            });
         let (membership_inner, zombie_rx) = self.membership.take().map_or_else(
             || {
                 RaftMembership::new(
@@ -531,6 +538,11 @@ where
             my_role_i32, my_current_term
         );
 
+        // Create SM Worker channel for decoupled apply operations
+        let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel::<StateMachineCommand>();
+        let state_machine_commands =
+            d_engine_core::StateMachineCommandSender::new(sm_apply_tx.clone());
+
         // Construct raft core
         let mut raft_core = Raft::<RaftTypeConfig<SE, SM>>::new(
             node_id,
@@ -544,6 +556,7 @@ where
                 election_handler: ElectionHandler::new(node_id),
                 replication_handler: ReplicationHandler::new(node_id),
                 state_machine_handler: state_machine_handler.clone(),
+                state_machine_commands: state_machine_commands.clone(),
                 purge_executor: Arc::new(purge_executor),
             },
             membership.clone(),
@@ -566,13 +579,11 @@ where
         let leader_notifier = LeaderNotifier::new();
         raft_core.register_leader_change_listener(leader_notifier.sender());
 
-        // Create SM Worker channel for decoupled apply operations
-        let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
-
         // Spawn SM Worker task
         let sm_worker = StateMachineWorker::new(
             node_id,
-            state_machine_handler.clone(),
+            state_machine_writer.clone(),
+            sm_apply_tx.clone(),
             sm_apply_rx,
             internal_event_tx_for_sm,
             self.shutdown_signal.clone(),
@@ -585,7 +596,7 @@ where
             raft_log: raft_core.ctx.storage.raft_log.clone(),
             membership: membership.clone(),
             internal_event_tx: internal_event_tx_clone,
-            sm_apply_tx,
+            sm_apply_tx: state_machine_commands,
             shutdown_signal,
             max_batch_size: raft_core.ctx.node_config.raft.batching.max_batch_size,
         };

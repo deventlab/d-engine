@@ -561,6 +561,7 @@ dependencies = [
  "lru",
  "memmap2",
  "metrics",
+ "parking_lot",
  "prost",
  "rand 0.9.4",
  "serde",

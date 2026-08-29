@@ -1396,6 +1396,321 @@ async fn test_leader_init_three_peers() {
     // All three peers are initialized
 }
 
+// ============================================================================
+// C3. SNAPSHOT PUSH COMPLETION: next_index MUST come from the snapshot's own
+// boundary, not the leader's current log tip (regression coverage — see #436
+// follow-up: a peer catching up via snapshot while the leader keeps accepting
+// new writes was silently marked "fully caught up" past entries it never
+// actually received).
+// ============================================================================
+
+/// Test: `SnapshotPushCompleted` seeds next_index from the snapshot's own boundary
+/// (`last_included_index`), not the leader's current log tip.
+///
+/// # Why this matters
+///
+/// A snapshot's content is fixed at the moment it is created. If the leader's log
+/// advances further while the transfer is in flight — a normal, expected scenario:
+/// new client writes arriving while a lagging peer catches up via snapshot — using
+/// the leader's *current* tip to seed next_index would make the leader believe the
+/// peer already has entries it never actually received, silently skipping them
+/// forever (the peer looks "caught up" but is actually stuck).
+///
+/// # Scenario
+/// - Leader's log tip (`raft_log.last_entry_id()`) is at 12.
+/// - The just-completed snapshot's own boundary is index 5 (simulates the snapshot
+///   having been captured well before the leader's tip advanced to 12).
+/// - Expected: `next_index(peer) == 6` (5 + 1), NOT `13` (12 + 1).
+#[tokio::test]
+async fn test_snapshot_push_completed_uses_snapshot_boundary_not_leader_tip() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
+    assert!(is_leader(raft.role.as_i32()));
+
+    let peer_id = 42;
+    let current_term = raft.current_term();
+    // Establish an active snapshot transfer — the handler seeds next_index only for a
+    // peer that is actually mid-snapshot.
+    raft.role
+        .state_mut()
+        .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Snapshot);
+    raft.handle_internal_event(InternalEvent::SnapshotPushCompleted {
+        peer_id,
+        success: true,
+        last_included_index: Some(5),
+        term: current_term,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        raft.role.state().next_index(peer_id),
+        Some(6),
+        "next_index must be seeded from the snapshot's own boundary (5+1), not the \
+         leader's current log tip"
+    );
+}
+
+/// Test: a failed snapshot push must NOT touch next_index at all.
+///
+/// Only a successful push tells the leader what the peer actually received; on
+/// failure there is no new information to seed next_index with, so it must be
+/// left exactly as it was (whatever `BecomeLeader` initialized it to).
+#[tokio::test]
+async fn test_snapshot_push_completed_failure_does_not_change_next_index() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
+
+    let peer_id = 42;
+    let before = raft.role.state().next_index(peer_id);
+    let current_term = raft.current_term();
+
+    raft.handle_internal_event(InternalEvent::SnapshotPushCompleted {
+        peer_id,
+        success: false,
+        last_included_index: Some(5),
+        term: current_term,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        raft.role.state().next_index(peer_id),
+        before,
+        "a failed snapshot push must not change next_index"
+    );
+}
+
+/// Test: a successful push with a missing `last_included_index` must not fall back
+/// to the leader's current tip (that fallback is exactly the bug this event field
+/// exists to prevent) — it must leave next_index unchanged and not panic.
+#[tokio::test]
+async fn test_snapshot_push_completed_missing_boundary_does_not_fall_back_to_leader_tip() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
+
+    let peer_id = 42;
+    let before = raft.role.state().next_index(peer_id);
+    let current_term = raft.current_term();
+
+    raft.handle_internal_event(InternalEvent::SnapshotPushCompleted {
+        peer_id,
+        success: true,
+        last_included_index: None,
+        term: current_term,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        raft.role.state().next_index(peer_id),
+        before,
+        "missing last_included_index must not fall back to the leader's current tip"
+    );
+}
+
+/// A `SnapshotPushCompleted` dispatched under an OLDER term must be a no-op.
+///
+/// The snapshot transfer runs in a detached `tokio::spawn` task that can outlive a
+/// leadership change. Its completion therefore carries the term it was dispatched
+/// under, so the handler can drop it once that term no longer matches the current
+/// one. Without this guard, a straggler completion from a previous term would
+/// overwrite the peer's current progress and silently skip log entries.
+///
+/// # Scenario
+/// - Leader elected at term `T`.
+/// - A `SnapshotPushCompleted` arrives carrying `term = T - 1` (a straggler from
+///   the previous leadership period).
+/// - Expected: `next_index` is left exactly as it was — not seeded.
+#[tokio::test]
+async fn test_stale_term_snapshot_push_completed_does_not_seed_next_index() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
+    assert!(is_leader(raft.role.as_i32()));
+
+    let current_term = raft.current_term();
+    assert!(
+        current_term > 0,
+        "leader must be elected at a non-zero term"
+    );
+
+    let peer_id = 42;
+    let before = raft.role.state().next_index(peer_id);
+
+    raft.handle_internal_event(InternalEvent::SnapshotPushCompleted {
+        peer_id,
+        success: true,
+        last_included_index: Some(5),
+        term: current_term - 1,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        raft.role.state().next_index(peer_id),
+        before,
+        "a stale-term SnapshotPushCompleted must not seed next_index"
+    );
+}
+
+/// A `SnapshotPushCompleted` for a peer that is NOT in an active snapshot transfer
+/// must not seed its `next_index` — even when the term matches.
+///
+/// Seeding is only valid for the peer's CURRENT in-flight snapshot attempt. A
+/// straggler completion that arrives after the peer has already moved on (e.g. it
+/// caught up via normal replication) carries stale boundary information and must be
+/// dropped before it overwrites `next_index`.
+///
+/// # Scenario
+/// - Leader elected at term `T`; peer 42 has no snapshot in flight (default `Probe`).
+/// - A matching-term `SnapshotPushCompleted { success: true }` arrives.
+/// - Expected: `next_index` is left exactly as it was — not seeded.
+#[tokio::test]
+async fn test_snapshot_push_completed_for_peer_not_in_snapshot_does_not_seed_next_index() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
+    assert!(is_leader(raft.role.as_i32()));
+
+    let current_term = raft.current_term();
+    let peer_id = 42;
+    let before = raft.role.state().next_index(peer_id);
+
+    raft.handle_internal_event(InternalEvent::SnapshotPushCompleted {
+        peer_id,
+        success: true,
+        last_included_index: Some(5),
+        term: current_term,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        raft.role.state().next_index(peer_id),
+        before,
+        "a SnapshotPushCompleted for a peer not in Snapshot state must not seed next_index"
+    );
+}
+
+// ============================================================================
+// C4. PEER STREAM ERROR MUST NOT TOUCH A PEER THAT IS MID-SNAPSHOT: the bidi
+// stream only carries AppendEntries; a snapshot push runs on its own, separate
+// connection. An error on the bidi stream says nothing about whether that
+// separate transfer is still healthy, so it must not downgrade a Snapshot-state
+// peer back to Probe — doing so would let the leader believe the in-flight
+// transfer had ended and dispatch a second, overlapping one for the same peer.
+// ============================================================================
+
+/// Test: `PeerStreamError` for a peer that is currently `Snapshot` must be a no-op.
+///
+/// # Why this matters
+///
+/// If a bidi stream hiccup were allowed to downgrade a Snapshot-state peer to
+/// Probe, the leader would then believe no transfer was in flight for that peer.
+/// The very next heartbeat could re-classify the peer as still needing a
+/// snapshot and dispatch a second transfer — while the first one, running on an
+/// entirely independent connection, is still in progress. Leaving `Snapshot`
+/// state is exclusively the job of a `SnapshotPushCompleted` event for that
+/// attempt.
+///
+/// # Scenario
+/// - Peer 42 is in `Snapshot` state, with `next_index` at some value the leader
+///   recorded when the transfer started.
+/// - A `PeerStreamError` for peer 42 arrives (the bidi stream broke).
+/// - Expected: `peer_replication_state(42)` is still `Snapshot`, and `next_index`
+///   is unchanged.
+#[tokio::test]
+async fn test_peer_stream_error_does_not_touch_peer_in_snapshot_state() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
+
+    let peer_id = 42;
+    raft.role
+        .state_mut()
+        .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Snapshot);
+    let next_index_before = raft.role.state().next_index(peer_id);
+
+    raft.handle_internal_event(InternalEvent::PeerStreamError { peer_id })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        raft.role.state().peer_replication_state(peer_id),
+        crate::role_state::PeerReplicationState::Snapshot,
+        "a bidi stream error must not downgrade a peer that is mid-snapshot-transfer"
+    );
+    assert_eq!(
+        raft.role.state().next_index(peer_id),
+        next_index_before,
+        "a bidi stream error must not touch next_index for a peer that is mid-snapshot-transfer"
+    );
+}
+
+/// Test: `PeerStreamError` for a peer that is NOT in `Snapshot` state behaves as
+/// before — downgrades to `Probe` and resets `next_index` to `match_index + 1`.
+/// Confirms the guard added above is scoped to `Snapshot` only.
+#[tokio::test]
+async fn test_peer_stream_error_downgrades_non_snapshot_peer_to_probe() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
+
+    let peer_id = 42;
+    raft.role
+        .state_mut()
+        .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Replicate);
+
+    raft.handle_internal_event(InternalEvent::PeerStreamError { peer_id })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        raft.role.state().peer_replication_state(peer_id),
+        crate::role_state::PeerReplicationState::Probe,
+        "a bidi stream error for a non-snapshotting peer must still downgrade it to Probe"
+    );
+}
+
 /// Test: Five peer cluster - all peers initialized correctly
 ///
 /// Verifies all five peers initialized for replication.
@@ -2182,45 +2497,6 @@ async fn test_joining_node_flag() {
     let _raft = MockBuilder::new(graceful_rx).build_raft();
 
     // Node starts in follower state (can be marked as joining)
-    assert!(is_follower(_raft.role.as_i32()));
-}
-
-/// Test: fetch_initial_snapshot() called before main loop
-///
-/// Verifies snapshot fetch happens in Raft::run() before event loop.
-/// See H1.2 in test scenarios.
-#[tokio::test]
-async fn test_snapshot_fetch_before_main_loop() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let _raft = MockBuilder::new(graceful_rx).build_raft();
-
-    // Snapshot fetch is called in initialization phase before main loop
-}
-
-/// Test: Snapshot fetch success - node ready for replication
-///
-/// Verifies successful snapshot initializes log state.
-/// See H1.3 in test scenarios.
-#[tokio::test]
-async fn test_snapshot_fetch_success() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let _raft = MockBuilder::new(graceful_rx).build_raft();
-
-    // Snapshot fetch success initializes node for replication
-    assert!(is_follower(_raft.role.as_i32()));
-}
-
-/// Test: Snapshot fetch failure - fallback to append_entries
-///
-/// Verifies graceful fallback when snapshot unavailable.
-/// Node syncs via incremental log entries.
-/// See H1.4 in test scenarios.
-#[tokio::test]
-async fn test_snapshot_fetch_failure_fallback() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let _raft = MockBuilder::new(graceful_rx).build_raft();
-
-    // On snapshot fetch failure, fallback to incremental append_entries
     assert!(is_follower(_raft.role.as_i32()));
 }
 

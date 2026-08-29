@@ -46,6 +46,7 @@ async fn test_two_node_cluster_builds_one_peer_request() {
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 1);
     raft_log.expect_first_entry_id().returning(|| 1);
+    raft_log.expect_entry_term().returning(|_| None);
     context.storage.raft_log = Arc::new(raft_log);
 
     let result = handler

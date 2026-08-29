@@ -24,15 +24,12 @@ use d_engine_proto::server::election::raft_election_service_server::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
-use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
 use tokio_stream::StreamExt;
 use tonic::Streaming;
 use tracing::trace;
-
-use super::snapshot::create_test_snapshot_stream;
 
 #[derive(Clone, Default)]
 pub struct MockRpcService {
@@ -50,7 +47,6 @@ pub struct MockRpcService {
         Option<Arc<dyn Fn(u16) -> Result<ClusterMembership, tonic::Status> + Send + Sync>>,
 
     pub expected_snapshot_response: Option<Result<SnapshotResponse, tonic::Status>>,
-    pub expected_stream_snapshot_response: Option<Result<SnapshotChunk, tonic::Status>>,
 
     pub expected_join_cluster_response: Option<Result<JoinResponse, tonic::Status>>,
     pub expected_discover_leader_response: Option<Result<LeaderDiscoveryResponse, tonic::Status>>,
@@ -227,24 +223,6 @@ impl RaftClientService for MockRpcService {
 
 #[tonic::async_trait]
 impl SnapshotService for MockRpcService {
-    type StreamSnapshotStream = tonic::Streaming<SnapshotChunk>;
-
-    async fn stream_snapshot(
-        &self,
-        _request: tonic::Request<tonic::Streaming<SnapshotAck>>,
-    ) -> std::result::Result<tonic::Response<Self::StreamSnapshotStream>, tonic::Status> {
-        match &self.expected_stream_snapshot_response {
-            Some(Ok(response)) => {
-                let streaming: Self::StreamSnapshotStream =
-                    create_test_snapshot_stream(vec![response.clone()]);
-                Ok(tonic::Response::new(streaming))
-            }
-            Some(Err(status)) => Err(status.clone()),
-            None => Err(tonic::Status::unknown(
-                "No mock install_snapshot response set",
-            )),
-        }
-    }
     async fn install_snapshot(
         &self,
         request: tonic::Request<Streaming<SnapshotChunk>>,

@@ -900,6 +900,70 @@ async fn test_handle_append_entries_rejects_stale_leader() {
     );
 }
 
+/// Test: AppendEntries rejected for a stale term does NOT reset the candidate's
+/// election timer.
+///
+/// Scenario: same illegitimate-sender case as `test_handle_append_entries_rejects_stale_leader`.
+///
+/// Expected: the timer is untouched. `handle_inbound_event`'s `AppendEntries` arm
+/// (candidate_state.rs) currently calls `self.reset_timer()` unconditionally
+/// before checking whether the sender's term is stale — so today this test is
+/// RED. A stale leader that keeps sending (each one rejected) would keep this
+/// candidate's own campaign timer alive, delaying the point where it gives up
+/// and starts a new election round. Same class of bug as
+/// `test_handle_append_entries_rejects_stale_term_does_not_reset_timer` in
+/// follower_state_test.rs (#436), for Candidate instead of Follower.
+#[tokio::test]
+async fn test_handle_append_entries_rejects_stale_term_does_not_reset_timer() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_candidate_append_stale_term_does_not_reset_timer",
+        graceful_rx,
+        None,
+    );
+    let term = 2;
+    let stale_leader_term = term - 1;
+
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_check_append_entries_request_is_legal()
+        .returning(move |_, _, _| AppendEntriesResponse::higher_term(1, term));
+
+    context.membership = Arc::new(MockMembership::new());
+    context.handlers.replication_handler = replication_handler;
+
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.shared_state_mut().update_current_term(term);
+
+    let deadline_before = state.timer.next_deadline;
+
+    let append_entries_request = AppendEntriesRequest {
+        term: stale_leader_term,
+        leader_id: 5,
+        prev_log_index: 0,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok()
+    );
+
+    assert_eq!(
+        state.timer.next_deadline, deadline_before,
+        "a rejected, stale-term AppendEntries must NOT reset the candidate's election \
+         timer — otherwise a stale/misbehaving leader could delay this node giving up \
+         on the current campaign and starting a new one"
+    );
+}
+
 /// Test: Candidate steps down when receiving AppendEntries with same term, even with log conflict.
 ///
 /// Scenario:
@@ -1676,56 +1740,6 @@ async fn test_candidate_rejects_join_cluster() {
         response.unwrap_err().code(),
         Code::PermissionDenied,
         "Candidate must reply PermissionDenied for JoinCluster"
-    );
-}
-
-/// Test: Candidate rejects StreamSnapshot — only Leader streams snapshots.
-///
-/// Scenario:
-/// - Candidate receives StreamSnapshot (misdirected during election)
-///
-/// Expected:
-/// - startup_tx receives Err(FailedPrecondition)
-/// - handle_inbound_event returns Ok() (not a fatal error)
-#[tokio::test]
-async fn test_candidate_rejects_stream_snapshot() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let context = crate::test_utils::mock::mock_raft_context(
-        "/tmp/test_candidate_rejects_stream_snapshot",
-        graceful_rx,
-        None,
-    );
-
-    let mut state = crate::raft_role::candidate_state::CandidateState::<
-        crate::test_utils::mock::MockTypeConfig,
-    >::new(1, context.node_config.clone());
-
-    let (_ack_tx, ack_rx) =
-        tokio::sync::mpsc::channel::<d_engine_proto::server::storage::SnapshotAck>(4);
-    let (chunk_tx, _chunk_rx) = tokio::sync::mpsc::channel::<
-        std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>,
-    >(4);
-    let (startup_tx, startup_rx) =
-        tokio::sync::oneshot::channel::<std::result::Result<(), tonic::Status>>();
-
-    let (internal_event_tx, _internal_event_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    let result = state
-        .handle_inbound_event(
-            InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
-            &context,
-            internal_event_tx,
-        )
-        .await;
-
-    assert!(result.is_ok(), "StreamSnapshot rejection must not be fatal");
-
-    let startup_result = startup_rx.await.expect("startup_tx must be sent");
-    assert!(startup_result.is_err());
-    assert_eq!(
-        startup_result.unwrap_err().code(),
-        tonic::Code::FailedPrecondition,
-        "Candidate must reply FailedPrecondition for StreamSnapshot"
     );
 }
 

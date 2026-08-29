@@ -14,7 +14,6 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::SnapshotResponse;
@@ -86,6 +85,18 @@ pub enum InternalEvent {
     SnapshotPushCompleted {
         peer_id: u32,
         success: bool,
+        /// The leader term this transfer was dispatched under. The detached snapshot
+        /// task can outlive a leadership change, so the handler drops completions
+        /// whose term no longer matches the current one — a stale completion would
+        /// otherwise overwrite the peer's current progress and skip log entries.
+        term: u64,
+        /// The snapshot's own last-included index (its fixed boundary at creation
+        /// time), used to seed the peer's next_index. Deliberately NOT the leader's
+        /// current log tip: the leader's log may have advanced further while the
+        /// transfer was in flight, and the peer only actually received data up to
+        /// this boundary. `None` if the metadata was unexpectedly missing it (should
+        /// not happen — a snapshot always has a boundary).
+        last_included_index: Option<u64>,
     },
 
     /// Noop entry committed — leader has confirmed quorum leadership.
@@ -176,13 +187,6 @@ pub enum InboundEvent {
         MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
     ),
 
-    // Request snapshot stream from Leader
-    StreamSnapshot(
-        tokio::sync::mpsc::Receiver<SnapshotAck>,
-        tokio::sync::mpsc::Sender<std::sync::Arc<SnapshotChunk>>,
-        tokio::sync::oneshot::Sender<std::result::Result<(), Status>>, // startup confirmation
-    ),
-
     JoinCluster(
         JoinRequest,
         MaybeCloneOneshotSender<std::result::Result<JoinResponse, Status>>,
@@ -219,8 +223,6 @@ pub enum TestEvent {
 
     InstallSnapshotChunk,
 
-    StreamSnapshot,
-
     JoinCluster(JoinRequest),
 
     DiscoverLeader(LeaderDiscoveryRequest),
@@ -253,7 +255,6 @@ pub(crate) fn inbound_event_to_test_event(event: &InboundEvent) -> TestEvent {
         InboundEvent::ClusterConfUpdate(req, _) => TestEvent::ClusterConfUpdate(req.clone()),
         InboundEvent::AppendEntries(req, _) => TestEvent::AppendEntries(req.clone()),
         InboundEvent::InstallSnapshotChunk(_, _) => TestEvent::InstallSnapshotChunk,
-        InboundEvent::StreamSnapshot(_, _, _) => TestEvent::StreamSnapshot,
         InboundEvent::JoinCluster(req, _) => TestEvent::JoinCluster(req.clone()),
         InboundEvent::DiscoverLeader(req, _) => TestEvent::DiscoverLeader(req.clone()),
         InboundEvent::FatalError { source, error } => TestEvent::FatalError {

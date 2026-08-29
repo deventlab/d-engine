@@ -31,18 +31,23 @@
 //!   - Atomic visibility guarantees
 //!   - Linearizable read optimizations
 
+mod applied_state;
+mod command;
 mod default_state_machine_handler;
 mod snapshot_assembler;
-mod snapshot_guard;
 mod snapshot_policy;
 mod worker;
+mod writer;
 
+pub use command::*;
 pub use default_state_machine_handler::*;
 pub(crate) use snapshot_assembler::*;
-pub(crate) use snapshot_guard::*;
 pub use snapshot_policy::*;
 pub use worker::*;
+pub use writer::*;
 
+#[cfg(test)]
+mod command_test;
 #[cfg(test)]
 mod default_state_machine_handler_test;
 #[cfg(test)]
@@ -91,15 +96,6 @@ where
         timeout: std::time::Duration,
     ) -> Result<()>;
 
-    /// Applies a batch of committed log entries to the state machine
-    ///
-    /// Returns execution results for each entry in the same order as input.
-    /// The returned vector length MUST equal the input chunk length.
-    async fn apply_chunk(
-        &self,
-        chunk: Vec<d_engine_proto::common::Entry>,
-    ) -> Result<Vec<ApplyResult>>;
-
     /// Reads values from the state machine for given keys
     /// Returns None if any key doesn't exist
     fn read_from_state_machine(
@@ -107,15 +103,21 @@ where
         keys: Vec<bytes::Bytes>,
     ) -> Option<Vec<KvEntry>>;
 
-    /// Receives and installs a snapshot stream pushed by the leader
-    /// Used when leader proactively sends snapshot updates to followers
-    async fn apply_snapshot_stream_from_leader(
+    /// Receives the remaining chunks of a snapshot stream, ACKs each one, and assembles
+    /// + decompresses them into a `PreparedSnapshot`.
+    ///
+    /// `first_chunk` must already have been validated by the caller (leader-term check,
+    /// #436) — this method has **no Raft awareness** and must not gain any:
+    /// it only tracks `(leader_term, leader_id)` from `first_chunk` as an internal
+    /// stream-consistency anchor (every later chunk must match, or the leader changed
+    /// mid-transfer). Must not mutate the state machine.
+    async fn prepare_snapshot_stream(
         &self,
-        current_term: u64,
-        stream_chunk_receiver: tokio::sync::mpsc::Receiver<SnapshotChunk>,
+        first_chunk: d_engine_proto::server::storage::SnapshotChunk,
+        remaining_chunks: tokio::sync::mpsc::Receiver<SnapshotChunk>,
         ack_tx: tokio::sync::mpsc::Sender<d_engine_proto::server::storage::SnapshotAck>,
         config: &crate::SnapshotConfig,
-    ) -> Result<()>;
+    ) -> Result<crate::PreparedSnapshot>;
 
     /// Determines if a snapshot should be created based on new commit data
     fn should_snapshot(
@@ -123,18 +125,22 @@ where
         new_commit_data: NewCommitData,
     ) -> bool;
 
-    /// Asynchronously creates a state machine snapshot with the following steps:
-    /// 1. Acquires a write lock to ensure exclusive access during snapshot creation
-    /// 2. Prepares temporary and final snapshot file paths using:
-    ///    - Last applied index/term from state machine
-    /// 3. Generates snapshot data to temporary file using state machine implementation
-    /// 4. Atomically renames temporary file to final snapshot file to ensure consistency
-    /// 5. Cleans up old snapshots based on last_included_index, retaining only the latest snapshot
-    ///    files as specified by cleanup_retain_count.
-    ///
-    /// Returns new Snapshot metadata and final snapshot path to indicate the new snapshot file has
-    /// been successfully created
-    async fn create_snapshot(&self) -> Result<(SnapshotMetadata, std::path::PathBuf)>;
+    /// Marks a local snapshot capture as started — errors if one is already in
+    /// progress. Not RAII: the in-progress window now spans a round-trip through
+    /// `StateMachineWorker` plus a background compress step, both `'static`; caller
+    /// must call `end_local_snapshot_capture` exactly once when done, success or not.
+    fn try_begin_local_snapshot_capture(&self) -> Result<()>;
+
+    /// Clears the in-progress flag set by `try_begin_local_snapshot_capture`.
+    fn end_local_snapshot_capture(&self);
+
+    /// Compresses an already-captured snapshot (see `CapturedLocalSnapshot`) into its
+    /// final on-disk form and runs retention cleanup. Doesn't touch live state —
+    /// `captured.temp_dir` is already physically independent of it.
+    async fn build_local_snapshot(
+        &self,
+        captured: crate::CapturedLocalSnapshot,
+    ) -> Result<(SnapshotMetadata, std::path::PathBuf)>;
 
     /// Cleans up old snapshots before specified version
     async fn cleanup_snapshot(
@@ -151,15 +157,43 @@ where
     async fn load_snapshot_data(
         &self,
         metadata: SnapshotMetadata,
+        leader_term: u64,
     ) -> Result<BoxStream<'static, Result<SnapshotChunk>>>;
 
-    /// Loads a specific chunk of snapshot data by sequence number
-    #[allow(unused)]
-    async fn load_snapshot_chunk(
-        &self,
-        metadata: &SnapshotMetadata,
-        seq: u32,
-    ) -> Result<SnapshotChunk>;
-
     fn pending_range(&self) -> Option<std::ops::RangeInclusive<u64>>;
+}
+
+/// Destructive state-machine mutation — deliberately a **separate trait** from
+/// `StateMachineHandler`, not two methods on it. `StateMachineHandler` stays importable
+/// and callable from anywhere (role layer, CommitHandler, etc.); this trait is
+/// module-restricted so only code inside `state_machine_handler` (i.e. `StateMachineWorker`)
+/// can even name it, let alone call it. This is real compile-time enforcement, not convention.
+#[cfg_attr(any(test, feature = "__test_support"), automock)]
+#[async_trait]
+pub trait StateMachineWriterOps<T>: Send + Sync + 'static
+where
+    T: TypeConfig,
+{
+    /// Applies a batch of committed log entries to the state machine.
+    /// Fire-and-forget by design — see `StateMachineCommand::ApplyEntries` doc comment.
+    async fn apply_chunk(
+        &self,
+        chunk: Vec<d_engine_proto::common::Entry>,
+    ) -> Result<Vec<ApplyResult>>;
+
+    /// Installs an already-received, already-decompressed snapshot. Thin forward to
+    /// `StateMachine::apply_snapshot_from_file` — must NOT re-run the
+    /// stale/duplicate/boundary classification, that lives exactly once there.
+    async fn install_prepared_snapshot(
+        &self,
+        metadata: SnapshotMetadata,
+        dir: std::path::PathBuf,
+    ) -> Result<crate::SnapshotApplyResult>;
+
+    /// Captures a local snapshot: reads `last_applied` and exports/copies the state
+    /// machine's current content to a temp location under `snapshots_dir`. Read-only
+    /// against the state machine, but must run through the Worker (see
+    /// `StateMachineCommand::CaptureLocalSnapshot`) so this read is ordered against
+    /// concurrent `apply_chunk`/`apply_snapshot_from_file` calls.
+    async fn capture_local_snapshot(&self) -> Result<crate::CapturedLocalSnapshot>;
 }

@@ -62,7 +62,4 @@ message SnapshotAck {
 service SnapshotService {
   // Leader-driven snapshot streaming
   rpc InstallSnapshot(stream SnapshotChunk) returns (SnapshotResponse);
-
-  // Learner-driven snapshot streaming
-  rpc StreamSnapshot(stream SnapshotAck) returns (stream SnapshotChunk);
 }

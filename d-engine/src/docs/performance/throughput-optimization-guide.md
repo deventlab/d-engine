@@ -99,8 +99,6 @@ Same tradeoff as write batching: higher `max_drain` → better throughput, highe
 ### Control Plane (`[network.control]`)
 
 ```toml
-concurrency_limit = 8192
-max_concurrent_streams = 500
 connection_window_size = 2_097_152  # 2MB
 http2_keep_alive_timeout_in_secs = 20  # Aggressive timeout
 
@@ -115,7 +113,6 @@ http2_keep_alive_timeout_in_secs = 20  # Aggressive timeout
 ### Data Plane (`[network.data]`)
 
 ```toml
-max_concurrent_streams = 500
 connection_window_size = 6_291_456  # 6MB
 request_timeout_in_ms = 200          # Batch-friendly
 
@@ -124,7 +121,6 @@ request_timeout_in_ms = 200          # Batch-friendly
 **Optimization rationale:**
 
 - Larger windows accommodate log batches
-- Stream count aligns with typical pipelining depth
 - Timeout tuned for batch processing, not individual entries
 
 ### Bulk Plane (`[network.bulk]` - Recommended)
@@ -133,7 +129,6 @@ request_timeout_in_ms = 200          # Batch-friendly
 # SNAPSHOT-SPECIFIC SETTINGS (EXAMPLE)
 connect_timeout_in_ms = 1000         # Slow-start connections
 request_timeout_in_ms = 30000        # 30s for large transfers
-concurrency_limit = 4                # Few concurrent streams
 connection_window_size = 33_554_432  # 32MB window
 
 ```
@@ -162,12 +157,34 @@ membership.get_peer_channel(leader_id, ConnectionType::Bulk)
 
 ### gRPC Server Tuning
 
+The server side has its own `[network.server]` profile, separate from the
+client-side `control`/`data`/`bulk` planes above — one listener accepts every
+RPC type uniformly, so there's no per-plane timeout to apply. In particular,
+the server must **not** apply a blanket request timeout: a single connection
+carries both fast heartbeats and multi-minute snapshot transfers, so any
+transport-level timeout would either be too tight for snapshots or too loose
+for elections. Per-RPC deadlines are instead the client's responsibility
+(`control_config.request_timeout_in_ms`, etc., enforced via `Endpoint::timeout()`
+on the client side).
+
 ```rust,ignore
 tonic::transport::Server::builder()
-    .timeout(Duration::from_millis(control_config.request_timeout_in_ms))
-    .max_concurrent_streams(control_config.max_concurrent_streams)
-    .max_frame_size(Some(data_config.max_frame_size))
-    .initial_connection_window_size(data_config.connection_window_size)
+    .concurrency_limit_per_connection(server_config.concurrency_limit_per_connection)
+    .max_concurrent_streams(server_config.max_concurrent_streams)
+    .http2_max_pending_accept_reset_streams(Some(server_config.max_pending_accept_reset_streams))
+    .http2_keepalive_interval(Some(Duration::from_secs(server_config.http2_keepalive_interval_in_secs)))
+    .http2_keepalive_timeout(Some(Duration::from_secs(server_config.http2_keepalive_timeout_in_secs)))
+    .initial_stream_window_size(server_config.initial_stream_window_size)
+    .initial_connection_window_size(server_config.initial_connection_window_size)
+
+```
+
+Inbound message size is the one setting that *is* per-service rather than
+transport-wide, so it's applied on each `XxxServiceServer` individually:
+
+```rust,ignore
+RaftReplicationServiceServer::from_arc(node.clone())
+    .max_decoding_message_size(server_config.max_decoding_message_size)
 
 ```
 
@@ -264,19 +281,18 @@ strategy = "MemFirst"
 flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 
 [network.control]
-concurrency_limit = 10
-max_concurrent_streams = 64
 connection_window_size = 1_048_576   # 1MB
 
 [network.data]
-concurrency_limit = 20
-max_concurrent_streams = 128
 connection_window_size = 2_097_152   # 2MB
 
 [network.bulk]
-concurrency_limit = 2
 connection_window_size = 8_388_608   # 8MB
 request_timeout_in_ms = 10_000       # 10s
+
+[network.server]
+concurrency_limit_per_connection = 20
+max_concurrent_streams = 128
 
 ```
 
@@ -294,19 +310,18 @@ strategy = "MemFirst"
 flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 
 [network.control]
-concurrency_limit = 20
-max_concurrent_streams = 128
 connection_window_size = 2_097_152   # 2MB
 
 [network.data]
-concurrency_limit = 30
-max_concurrent_streams = 256
 connection_window_size = 4_194_304   # 4MB
 
 [network.bulk]
-concurrency_limit = 4
 connection_window_size = 33_554_432  # 32MB
 request_timeout_in_ms = 30_000       # 30s for multi-GB snapshots
+
+[network.server]
+concurrency_limit_per_connection = 30
+max_concurrent_streams = 256
 
 ```
 
@@ -324,19 +339,18 @@ strategy = "MemFirst"
 flush_policy = { Batch = { idle_flush_interval_ms = 100 } }  # More frequent flush for durability
 
 [network.control]
-concurrency_limit = 50
-max_concurrent_streams = 256
 connection_window_size = 4_194_304   # 4MB
 
 [network.data]
-concurrency_limit = 80
-max_concurrent_streams = 512
 connection_window_size = 8_388_608   # 8MB
 
 [network.bulk]
-concurrency_limit = 8
 connection_window_size = 67_108_864  # 64MB
 request_timeout_in_ms = 60_000       # 60s for large snapshots
+
+[network.server]
+concurrency_limit_per_connection = 80
+max_concurrent_streams = 512
 
 ```
 
@@ -348,19 +362,18 @@ These parameters are primarily **network-dependent**, not CPU/memory dependent.
 
 Adjust them based on latency, packet loss, and connection stability.
 
-| **Environment**                  | **tcp_keepalive_in_secs** | **http2_keep_alive_interval_in_secs** | **http2_keep_alive_timeout_in_secs** | **max_frame_size** | **Notes**                                                                |
-| -------------------------------- | ------------------------- | ------------------------------------- | ------------------------------------ | ------------------ | ------------------------------------------------------------------------ |
-| **Local / In-Cluster (LAN)**     | 60                        | 10                                    | 5                                    | 16_777_215 (16MB)  | Low latency & stable; defaults are fine                                  |
-| **Cross-Region / Stable WAN**    | 60                        | 15                                    | 8                                    | 16_777_215 (16MB)  | Slightly longer keep-alive to avoid false disconnects                    |
-| **Public Cloud / Moderate Loss** | 60                        | 20                                    | 10                                   | 33_554_432 (32MB)  | Higher interval & timeout for lossy links; larger frame helps batch logs |
-| **High Latency / Unstable WAN**  | 120                       | 30                                    | 15                                   | 33_554_432 (32MB)  | Longer timeouts prevent spurious drops                                   |
+| **Environment**                  | **tcp_keepalive_in_secs** | **http2_keep_alive_interval_in_secs** | **http2_keep_alive_timeout_in_secs** | **Notes**                                              |
+| -------------------------------- | ------------------------- | ------------------------------------- | ------------------------------------ | ------------------------------------------------------- |
+| **Local / In-Cluster (LAN)**     | 60                        | 10                                    | 5                                    | Low latency & stable; defaults are fine                 |
+| **Cross-Region / Stable WAN**    | 60                        | 15                                    | 8                                    | Slightly longer keep-alive to avoid false disconnects   |
+| **Public Cloud / Moderate Loss** | 60                        | 20                                    | 10                                   | Higher interval & timeout for lossy links                |
+| **High Latency / Unstable WAN**  | 120                       | 30                                    | 15                                   | Longer timeouts prevent spurious drops                   |
 
 **Guidelines:**
 
 1. Keep-alive interval ≈ 1/3 of timeout.
-2. Increase `max_frame_size` only if batch logs or snapshots exceed 16MB.
-3. High-latency WAN: favor fewer reconnects over aggressive failure detection.
-4. These settings are independent of CPU and memory; focus on network RTT and stability.
+2. High-latency WAN: favor fewer reconnects over aggressive failure detection.
+3. These settings are independent of CPU and memory; focus on network RTT and stability.
 
 ### RPC Timeout Guidance
 

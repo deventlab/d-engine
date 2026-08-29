@@ -278,9 +278,6 @@
 //!
 //! #### H1. New Node Snapshot Initialization
 //! - **H1.1**: is_learner() flag indicates bootstrap phase
-//! - **H1.2**: fetch_initial_snapshot() called in Raft::run() before main loop
-//! - **H1.3**: Snapshot fetch success - node has log prefix from snapshot
-//! - **H1.4**: Snapshot fetch failure - node falls back to append_entries sync
 //! - **H1.5**: Node starts as Follower (not Candidate, no voting yet)
 //! - **H1.6**: After snapshot, ready to participate in normal replication
 //!

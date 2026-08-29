@@ -4,16 +4,15 @@
 //! SledStateMachine to that suite and adds sled-specific scenarios not covered
 //! by the standard suite.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use bytes::Bytes;
-use d_engine::{ApplyEntry, Command, Error, StateMachine};
 use d_engine::common::LogId;
 use d_engine::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
+use d_engine::{ApplyEntry, Command, Error, StateMachine};
+use std::sync::Arc;
 use tempfile::TempDir;
 
-use crate::{SledStateMachine, init_sled_state_machine_db, STATE_SNAPSHOT_METADATA_TREE};
+use crate::SledStateMachine;
 
 // ── Builder ───────────────────────────────────────────────────────────────────
 
@@ -28,7 +27,9 @@ struct SledBuilder {
 
 impl SledBuilder {
     fn new() -> Self {
-        Self { temp_dir: TempDir::new().expect("create TempDir") }
+        Self {
+            temp_dir: TempDir::new().expect("create TempDir"),
+        }
     }
 }
 
@@ -102,33 +103,6 @@ async fn test_snapshot_captures_all_current_data() {
             "key {key} missing from snapshot"
         );
     }
-
-    // Snapshot metadata must reflect the requested last_included index.
-    let meta = sm.snapshot_metadata().unwrap();
-    assert_eq!(meta.last_included.unwrap().index, 5);
-}
-
-/// Snapshot DB must contain the snapshot metadata tree with the correct index,
-/// so a joining follower can verify the snapshot before applying it.
-#[tokio::test]
-async fn test_snapshot_db_contains_metadata_tree() {
-    let temp = TempDir::new().unwrap();
-    let sm = SledStateMachine::new(temp.path(), 1).unwrap();
-
-    let snap_dir = temp.path().join("meta_snapshot");
-    sm.generate_snapshot_data(snap_dir.clone(), LogId { index: 42, term: 5 })
-        .await
-        .unwrap();
-
-    let snap_db = init_sled_state_machine_db(&snap_dir).unwrap();
-    let metadata_tree = snap_db.open_tree(STATE_SNAPSHOT_METADATA_TREE).unwrap();
-
-    let stored = SledStateMachine::load_snapshot_metadata(&metadata_tree)
-        .unwrap()
-        .expect("snapshot metadata must be present in snapshot DB");
-    let li = stored.last_included.unwrap();
-    assert_eq!(li.index, 42);
-    assert_eq!(li.term, 5);
 }
 
 /// Snapshot must only include data that was in the SM at generation time.
@@ -139,17 +113,15 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
     let sm = SledStateMachine::new(temp.path(), 1).unwrap();
 
     // Write two keys before snapshot
-    let pre_entries = vec![
-        ApplyEntry {
-            index: 1,
-            term: 1,
-            command: Command::Insert {
-                key: Bytes::from_static(b"before"),
-                value: Bytes::from_static(b"v1"),
-                ttl_secs: None,
-            },
+    let pre_entries = vec![ApplyEntry {
+        index: 1,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::from_static(b"before"),
+            value: Bytes::from_static(b"v1"),
+            ttl_secs: None,
         },
-    ];
+    }];
     sm.apply_chunk(&pre_entries).await.unwrap();
 
     let snap_dir = temp.path().join("partial_snapshot");
@@ -176,4 +148,132 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
         Some(Bytes::from_static(b"v1"))
     );
     assert!(snap_sm.get(b"after").unwrap().is_none());
+}
+
+// ── Sled-specific: snapshot install survives a restart ────────────────────────
+
+/// Install must relocate content into this node's own data directory, not just swap
+/// the live `db` pointer at the caller's temp decompression dir — otherwise it looks
+/// correct until the next restart, when `SledStateMachine::new` reopens its own path
+/// and finds none of it. Node B installs a snapshot, gets dropped (simulating a
+/// restart), then reopens from the same path with no reference to the temp dir.
+#[tokio::test]
+async fn test_snapshot_install_content_survives_restart() {
+    let source_dir = TempDir::new().unwrap();
+    let source_sm = SledStateMachine::new(source_dir.path(), 1).unwrap();
+
+    let entries: Vec<_> = (1u64..=3)
+        .map(|i| ApplyEntry {
+            index: i,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from(format!("install_key_{i}")),
+                value: Bytes::from(format!("install_val_{i}")),
+                ttl_secs: None,
+            },
+        })
+        .collect();
+    source_sm.apply_chunk(&entries).await.unwrap();
+
+    let last_included = LogId { index: 3, term: 1 };
+    let export_dir = TempDir::new().unwrap();
+    let checksum = source_sm
+        .generate_snapshot_data(export_dir.path().to_path_buf(), last_included)
+        .await
+        .unwrap();
+
+    let metadata = d_engine::server_storage::SnapshotMetadata {
+        last_included: Some(last_included),
+        checksum: Bytes::from(checksum.to_vec()),
+    };
+
+    // Node B: fresh, empty, behind the purge boundary — installs the snapshot.
+    let node_b_dir = TempDir::new().unwrap();
+    let node_b_path = node_b_dir.path().to_path_buf();
+    {
+        let node_b = SledStateMachine::new(&node_b_path, 2).unwrap();
+        let result = node_b
+            .apply_snapshot_from_file(&metadata, export_dir.path().to_path_buf())
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, d_engine::SnapshotApplyResult::Applied { .. }),
+            "expected Applied, got: {result:?}"
+        );
+        assert_eq!(
+            node_b.get(b"install_key_1").unwrap(),
+            Some(Bytes::from_static(b"install_val_1")),
+            "content must be readable immediately after install"
+        );
+    } // node_b dropped — simulates process exit; nothing keeps `export_dir` in scope
+
+    // export_dir (the temp decompression directory) is still on disk here, but a real
+    // restart would not carry it forward at all — reopening below only ever knows
+    // about `node_b_path`, exactly like `SledStateMachine::new` on real process start.
+    let node_b_reopened = SledStateMachine::new(&node_b_path, 2).unwrap();
+
+    assert_eq!(
+        node_b_reopened.last_applied(),
+        last_included,
+        "BUG: last_applied reverted after restart — the snapshot install must have \
+         swapped the live db to point at the temp decompression directory instead of \
+         relocating its content into node_b_path"
+    );
+    assert_eq!(
+        node_b_reopened.get(b"install_key_1").unwrap(),
+        Some(Bytes::from_static(b"install_val_1")),
+        "BUG: installed data lost after restart"
+    );
+    assert_eq!(
+        node_b_reopened.get(b"install_key_3").unwrap(),
+        Some(Bytes::from_static(b"install_val_3")),
+        "BUG: installed data lost after restart"
+    );
+}
+
+/// A crash between the two renames `apply_snapshot_from_file` uses to move a snapshot
+/// into place must recover on next startup, not silently open an empty database.
+/// Reproduces the on-disk state directly rather than running a real install.
+#[tokio::test]
+async fn test_new_recovers_backup_after_interrupted_install() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_path_buf();
+
+    {
+        let sm = SledStateMachine::new(&path, 1).unwrap();
+        sm.apply_chunk(&[ApplyEntry {
+            index: 1,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from_static(b"pre_crash_key"),
+                value: Bytes::from_static(b"pre_crash_val"),
+                ttl_secs: None,
+            },
+        }])
+        .await
+        .unwrap();
+    } // dropped — releases sled's file lock so the rename below can succeed
+
+    // Reproduce exactly the on-disk state a crash between the two renames in
+    // `apply_snapshot_from_file` would leave: `state_machine` renamed aside, nothing
+    // renamed into its place yet.
+    let db_dir = path.join("state_machine");
+    let backup_dir = path.join("state_machine.pre-install-backup");
+    std::fs::rename(&db_dir, &backup_dir).unwrap();
+    assert!(!db_dir.exists());
+    assert!(backup_dir.exists());
+
+    let recovered = SledStateMachine::new(&path, 1).unwrap();
+
+    assert!(
+        !backup_dir.exists(),
+        "backup must be restored (renamed back), not left alongside a freshly \
+         initialized empty database"
+    );
+    assert_eq!(
+        recovered.get(b"pre_crash_key").unwrap(),
+        Some(Bytes::from_static(b"pre_crash_val")),
+        "BUG: SledStateMachine::new did not recover the pre-install backup — data \
+         from before the interrupted install is gone"
+    );
 }

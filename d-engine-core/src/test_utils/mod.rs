@@ -13,10 +13,10 @@ mod common_test;
 #[cfg(test)]
 mod entry_builder_test;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "__test_support"))]
 mod log_capture;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "__test_support"))]
 pub use log_capture::*;
 
 pub use buffered_raft_log_test_helpers::*;

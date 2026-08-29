@@ -10,11 +10,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_core::capture_logs_globally_filtered;
+use d_engine_core::logs_contain_globally_since;
 use d_engine_server::DefaultEmbeddedEngine;
 use d_engine_server::RocksDBUnifiedEngine;
 use serial_test::serial;
 use tracing::info;
-use tracing_test::traced_test;
 
 use crate::common::get_available_ports;
 use crate::common::wait_for_snapshot;
@@ -52,8 +53,14 @@ use crate::common::wait_for_snapshot;
 /// Snapshot-only entries (purged from log) are readable on C — snapshot was correctly installed
 /// All 140 entries present on C with correct values
 /// No double-apply: each key holds exactly the value written once
+// PR #442 review: was `#[traced_test]`. This test never asserts on captured log
+// content (every `info!` below is local visibility only, correctness is checked via
+// `get_eventual`/`assert_eq!`), so it doesn't need cross-thread log capture at all —
+// and keeping it would have collided with this file's other two tests, which install
+// a process-wide subscriber via `capture_logs_globally_filtered` (only one global
+// tracing subscriber can exist per process; under `cargo test`, which runs every test
+// in a file in one process, whichever install happened second would panic).
 #[tokio::test]
-#[traced_test]
 #[serial]
 async fn test_follower_catchup_within_retained_buffer_and_data_consistency()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -255,5 +262,386 @@ retained_log_entries = {RETAINED_LOGS}
         let _ = engine.stop().await;
     }
 
+    Ok(())
+}
+
+/// Test: follower that reconnects BEYOND the retained-log buffer must recover via
+/// InstallSnapshot, not AppendEntries.
+///
+/// ## Purpose (ticket #436)
+///
+/// This is the companion scenario to `test_follower_catchup_within_retained_buffer_and_data_consistency`
+/// above — same judgment point (`prev_log_term` lookup deciding AppendEntries vs snapshot),
+/// opposite branch. A manual, larger-scale repro (`deventlab-product-design` snapshot-test.sh
+/// scenario_4) found that a follower whose lag exceeds the retained-log window can still end
+/// up "catching up" through ordinary AppendEntries instead of `InstallSnapshot` — the data
+/// happened to come out correct, but the mechanism was wrong, and it stayed wrong through a
+/// leader-killed-and-reconnected cycle without any test catching it. See
+/// `d-engine/tickets/milestones/v0.2.5/436-plan-prev-log-term-fallback.md`.
+///
+/// ## Test Flow
+///
+/// 1. Start a 3-node cluster (`snapshot_threshold=20`, `retained_log_entries=5`).
+/// 2. Write 5 entries so all 3 nodes are in sync at index 5.
+/// 3. Stop one non-leader follower (node C) — it is now frozen at index 5.
+/// 4. Write 40 more entries (index 6..45) to the leader while C is offline. This crosses
+///    the snapshot threshold (20), so the leader's retained window ends up starting well
+///    above index 5 — C's frozen position is now behind the purge boundary, not just behind
+///    the leader.
+/// 5. Restart C with its persisted DB and wait for it to catch up to all 45 entries.
+///
+/// ## Expected Results (this is the assertion that must currently FAIL before #436 is fixed)
+///
+/// The follower's own tracing output must contain evidence that it actually received and
+/// applied a snapshot stream — not just that its data happens to be correct at the end.
+#[tokio::test]
+#[serial]
+async fn test_follower_catchup_beyond_retained_buffer_requires_install_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let logs = capture_logs_globally_filtered(
+        "info,d_engine_core=debug,d_engine_server=debug,h2=off,tonic=warn,hyper=warn",
+    );
+    const SNAPSHOT_THRESHOLD: u64 = 20;
+    const RETAINED_LOGS: u64 = 5;
+    const INITIAL_ENTRIES: u64 = 5;
+    const OFFLINE_ENTRIES: u64 = 40; // pushes last_applied well past SNAPSHOT_THRESHOLD
+
+    let temp_dir = tempfile::tempdir()?;
+    let data_dir = temp_dir.path().join("db");
+
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
+
+    let mut node_paths: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    let mut engines: Vec<Option<DefaultEmbeddedEngine>> = Vec::new();
+
+    for node_id in 1u64..=3 {
+        let config = format!(
+            r#"
+[cluster]
+node_id = {node_id}
+listen_address = '127.0.0.1:{}'
+initial_cluster = [
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 1, status = 3 }},
+    {{ id = 3, name = 'n3', address = '127.0.0.1:{}', role = 1, status = 3 }}
+]
+
+[raft]
+general_raft_timeout_duration_in_ms = 5000
+
+[raft.snapshot]
+max_log_entries_before_snapshot = {SNAPSHOT_THRESHOLD}
+retained_log_entries = {RETAINED_LOGS}
+"#,
+            ports[node_id as usize - 1],
+            ports[0],
+            ports[1],
+            ports[2],
+        );
+
+        let config_path = temp_dir.path().join(format!("node{node_id}.toml"));
+        tokio::fs::write(&config_path, &config).await?;
+
+        let db_path = data_dir.join(format!("node{node_id}/db"));
+        tokio::fs::create_dir_all(&db_path).await?;
+
+        node_paths.push((config_path.clone(), db_path.clone()));
+
+        let (storage, sm) = RocksDBUnifiedEngine::open(&db_path)?;
+        let engine = DefaultEmbeddedEngine::start_custom(
+            &db_path,
+            Arc::new(storage),
+            Arc::new(sm),
+            Some(config_path.to_str().unwrap()),
+        )
+        .await?;
+        engines.push(Some(engine));
+    }
+
+    let leader_info = engines[0].as_ref().unwrap().wait_ready(Duration::from_secs(15)).await?;
+    let leader_idx = engines
+        .iter()
+        .position(|e| e.as_ref().map(|e| e.node_id() == leader_info.leader_id).unwrap_or(false))
+        .expect("leader must be one of the 3 engines");
+    let leader_client = engines[leader_idx].as_ref().unwrap().client().clone();
+    info!(
+        "Leader is node {} (engines idx {})",
+        leader_info.leader_id, leader_idx
+    );
+
+    // Phase 1: small baseline, all 3 nodes in sync.
+    for i in 0..INITIAL_ENTRIES {
+        leader_client
+            .put(
+                format!("key_{i}").into_bytes(),
+                format!("value_{i}").into_bytes(),
+            )
+            .await?;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Phase 2: stop a non-leader follower (node C) — frozen at index INITIAL_ENTRIES.
+    let follower_idx = engines
+        .iter()
+        .position(|e| e.as_ref().map(|e| !e.is_leader()).unwrap_or(false))
+        .expect("must have at least one non-leader");
+    let follower_node_id = engines[follower_idx].as_ref().unwrap().node_id();
+    let (follower_config_path, follower_db_path) = node_paths[follower_idx].clone();
+    info!("Stopping follower node {follower_node_id}, frozen at index {INITIAL_ENTRIES}");
+
+    let stopped = engines[follower_idx].take().unwrap();
+    let _ = stopped.stop().await;
+
+    // Phase 3: write enough entries while offline to cross the snapshot threshold and
+    // push the purge boundary past the follower's frozen position.
+    let total_entries = INITIAL_ENTRIES + OFFLINE_ENTRIES;
+    info!(
+        "Writing {OFFLINE_ENTRIES} entries while follower offline \
+        (crosses snapshot_threshold={SNAPSHOT_THRESHOLD} > follower's frozen index={INITIAL_ENTRIES})"
+    );
+    for i in INITIAL_ENTRIES..total_entries {
+        leader_client
+            .put(
+                format!("key_{i}").into_bytes(),
+                format!("value_{i}").into_bytes(),
+            )
+            .await?;
+    }
+
+    let leader_id = leader_info.leader_id as u64;
+    let leader_snapshots_dir = data_dir.join(format!("node{leader_id}/db/snapshots"));
+    assert!(
+        wait_for_snapshot(&leader_snapshots_dir, Duration::from_secs(15)).await,
+        "Leader snapshot must exist after {total_entries} entries"
+    );
+
+    // Phase 4: restart follower with its persisted DB (still only has entries 0..INITIAL_ENTRIES).
+    //
+    // Record the buffer offset right before restart: the log buffer is process-global
+    // (see log_capture.rs) and shared with every other test in this same binary, so a
+    // match from Phase 1-3 (this test) or an earlier test entirely must not count. Only
+    // entries appended from this point on are evidence about *this* restarted follower.
+    let since = logs.lock().unwrap().len();
+    info!("Restarting follower node {follower_node_id} from persisted DB");
+    let (storage, sm) = RocksDBUnifiedEngine::open(&follower_db_path)?;
+    let restarted = DefaultEmbeddedEngine::start_custom(
+        &follower_db_path,
+        Arc::new(storage),
+        Arc::new(sm),
+        Some(follower_config_path.to_str().unwrap()),
+    )
+    .await?;
+    engines[follower_idx] = Some(restarted);
+
+    // Phase 5: wait for follower to catch up to all entries.
+    let last_key = format!("key_{}", total_entries - 1).into_bytes();
+    let follower_engine = engines[follower_idx].as_ref().unwrap();
+    let mut caught_up = false;
+    for _ in 0..30 {
+        if follower_engine
+            .client()
+            .get_eventual(last_key.clone())
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            caught_up = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert!(
+        caught_up,
+        "Follower node {follower_node_id} failed to catch up within 30 seconds"
+    );
+
+    // Phase 6: data correctness (necessary but NOT sufficient — see phase 7).
+    for i in 0..total_entries {
+        let actual = follower_engine
+            .client()
+            .get_eventual(format!("key_{i}").into_bytes())
+            .await?
+            .unwrap_or_default();
+        assert_eq!(
+            actual,
+            format!("value_{i}").into_bytes(),
+            "key_{i} must be present and correct after catchup"
+        );
+    }
+
+    // Phase 7: THE assertion that actually catches ticket #436. Data being correct is not
+    // enough — #436 was found precisely because a follower's data came out correct while
+    // InstallSnapshot was never invoked (it "caught up" through AppendEntries instead, which
+    // should have been impossible once its lag exceeded the retained-log window). This checks
+    // the follower's own tracing output for proof that it actually went through the snapshot
+    // receive path, not just that the end state happens to look right.
+    assert!(
+        logs_contain_globally_since(
+            &logs,
+            since,
+            "Snapshot stream successfully received and applied"
+        ),
+        "follower's lag ({OFFLINE_ENTRIES}) exceeded the retained-log window ({RETAINED_LOGS}) \
+        after the leader purged past its frozen index — it MUST have caught up via \
+        InstallSnapshot, not AppendEntries. If this fails, the data-correctness assertions in \
+        phase 6 may still have passed by accident (see ticket #436): the follower can end up \
+        with correct data through a wrong mechanism, which does not protect against a follower \
+        that falls behind a gap AppendEntries genuinely cannot supply. Scoped to entries logged \
+        after Phase 4's restart (see `since` above) so a match from the still-alive node during \
+        Phase 3, or from an earlier test sharing this process-global buffer, can't pass this \
+        assertion by accident."
+    );
+
+    for engine in engines.into_iter().flatten() {
+        let _ = engine.stop().await;
+    }
+
+    Ok(())
+}
+
+/// Test: a new learner (empty log) joining a leader that has already compacted
+/// (snapshot + purge) must catch up via InstallSnapshot, not AppendEntries.
+///
+/// This pins the PULL-removal regression: before #436, a learner fetched its
+/// initial snapshot eagerly on startup. After removing that path, the learner
+/// relies on the leader's PUSH replication loop (AppendEntries → reject-retreat
+/// → NeedSnapshot → InstallSnapshot). A brand-new learner with an empty log joins
+/// a leader whose retained log no longer reaches index 1, so AppendEntries cannot
+/// supply the gap — it MUST receive a full snapshot.
+#[tokio::test]
+#[serial]
+async fn test_learner_join_after_compaction_requires_install_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let logs = capture_logs_globally_filtered(
+        "info,d_engine_core=debug,d_engine_server=debug,h2=off,tonic=warn,hyper=warn",
+    );
+    // The log buffer is process-global and shared with every other test in this binary
+    // (including test_follower_catchup_beyond_retained_buffer_requires_install_snapshot
+    // above, which emits this exact same message) — only entries from this point on are
+    // evidence about this test's own learner.
+    let since = logs.lock().unwrap().len();
+    const SNAPSHOT_THRESHOLD: u64 = 20;
+    const RETAINED_LOGS: u64 = 5;
+    const INITIAL_ENTRIES: u64 = 50;
+
+    let temp_dir = tempfile::tempdir()?;
+    let data_dir = temp_dir.path().join("db");
+
+    let mut port_guard = get_available_ports(2).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
+
+    // Single-node leader with a small snapshot threshold so compaction kicks in fast.
+    let leader_config = format!(
+        r#"
+[cluster]
+node_id = 1
+listen_address = '127.0.0.1:{}'
+initial_cluster = [
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }}
+]
+
+[raft]
+general_raft_timeout_duration_in_ms = 5000
+
+[raft.snapshot]
+max_log_entries_before_snapshot = {SNAPSHOT_THRESHOLD}
+retained_log_entries = {RETAINED_LOGS}
+"#,
+        ports[0], ports[0]
+    );
+    let leader_config_path = temp_dir.path().join("leader.toml");
+    tokio::fs::write(&leader_config_path, &leader_config).await?;
+    let leader_db = data_dir.join("leader/db");
+    tokio::fs::create_dir_all(&leader_db).await?;
+    let (storage, sm) = RocksDBUnifiedEngine::open(&leader_db)?;
+    let leader = DefaultEmbeddedEngine::start_custom(
+        &leader_db,
+        Arc::new(storage),
+        Arc::new(sm),
+        Some(leader_config_path.to_str().unwrap()),
+    )
+    .await?;
+    leader.wait_ready(Duration::from_secs(10)).await?;
+
+    // Write enough entries to cross the snapshot threshold and compact the log.
+    for i in 0..INITIAL_ENTRIES {
+        leader
+            .client()
+            .put(
+                format!("key_{i}").into_bytes(),
+                format!("value_{i}").into_bytes(),
+            )
+            .await?;
+    }
+    assert!(
+        wait_for_snapshot(&leader_db.join("snapshots"), Duration::from_secs(15)).await,
+        "leader snapshot must exist after {INITIAL_ENTRIES} entries"
+    );
+
+    // New learner joining the already-compacted leader.
+    let learner_config = format!(
+        r#"
+[cluster]
+node_id = 2
+listen_address = '127.0.0.1:{}'
+initial_cluster = [
+    {{ id = 1, name = 'n1', address = '127.0.0.1:{}', role = 3, status = 3 }},
+    {{ id = 2, name = 'n2', address = '127.0.0.1:{}', role = 4, status = 1 }}
+]
+
+[raft]
+general_raft_timeout_duration_in_ms = 5000
+
+[raft.snapshot]
+max_log_entries_before_snapshot = {SNAPSHOT_THRESHOLD}
+retained_log_entries = {RETAINED_LOGS}
+"#,
+        ports[1], ports[0], ports[1]
+    );
+    let learner_config_path = temp_dir.path().join("learner.toml");
+    tokio::fs::write(&learner_config_path, &learner_config).await?;
+    let learner_db = data_dir.join("learner/db");
+    tokio::fs::create_dir_all(&learner_db).await?;
+    let (storage, sm) = RocksDBUnifiedEngine::open(&learner_db)?;
+    let learner = DefaultEmbeddedEngine::start_custom(
+        &learner_db,
+        Arc::new(storage),
+        Arc::new(sm),
+        Some(learner_config_path.to_str().unwrap()),
+    )
+    .await?;
+
+    // Wait for the learner to catch up to the last written key.
+    let last_key = format!("key_{}", INITIAL_ENTRIES - 1).into_bytes();
+    let mut caught_up = false;
+    for _ in 0..30 {
+        if learner.client().get_eventual(last_key.clone()).await.ok().flatten().is_some() {
+            caught_up = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert!(caught_up, "learner failed to catch up within 30s");
+
+    // The learner's empty log is far behind the purge boundary, so AppendEntries
+    // cannot supply the gap — it MUST have caught up via InstallSnapshot.
+    assert!(
+        logs_contain_globally_since(
+            &logs,
+            since,
+            "Snapshot stream successfully received and applied"
+        ),
+        "learner with empty log joining a compacted leader MUST catch up via \
+        InstallSnapshot, not AppendEntries. Scoped to entries logged after this test \
+        started (see `since` above) so a leftover match from an earlier test sharing \
+        this process-global buffer can't pass this assertion by accident."
+    );
+
+    let _ = learner.stop().await;
+    let _ = leader.stop().await;
     Ok(())
 }

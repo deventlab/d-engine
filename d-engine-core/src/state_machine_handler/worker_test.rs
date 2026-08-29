@@ -8,11 +8,78 @@
 
 use std::sync::Arc;
 
-use d_engine_proto::common::Entry;
+use d_engine_proto::common::{Entry, LogId};
+use d_engine_proto::server::storage::SnapshotMetadata;
+use tokio::sync::oneshot;
 use tokio::sync::{mpsc, watch};
 
 use super::StateMachineWorker;
-use crate::{Error, InternalEvent, MockStateMachineHandler, MockTypeConfig};
+use crate::{
+    ApplyResult, CapturedLocalSnapshot, ConsensusError, Error, InternalEvent,
+    MockStateMachineWriterOps, MockTypeConfig, OwnedSnapshotDir, PreparedSnapshot,
+    SnapshotApplyResult, SnapshotError, StateMachineCommand,
+};
+
+/// A real, throwaway directory adopted by a fresh `OwnedSnapshotDir` — stands in for
+/// the export `capture_local_snapshot` would have produced. `OwnedSnapshotDir::from_existing`
+/// requires the path to actually exist on disk (it adopts, never creates), so these
+/// tests can't get away with a bare fake path like the pre-#442 `PathBuf::from("/tmp/...")`
+/// literals did.
+fn captured_temp_dir_for_test() -> OwnedSnapshotDir {
+    let dir = tempfile::tempdir().unwrap().keep();
+    OwnedSnapshotDir::from_existing(dir).unwrap()
+}
+
+/// Same as `captured_temp_dir_for_test`, but also hands back the raw path — for tests
+/// that need to assert on the directory's existence *after* the guard has been moved
+/// into a `CapturedLocalSnapshot` and dropped somewhere inside the Worker.
+fn captured_temp_dir_for_test_with_path() -> (std::path::PathBuf, OwnedSnapshotDir) {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let guard = OwnedSnapshotDir::from_existing(dir.clone()).unwrap();
+    (dir, guard)
+}
+
+/// Builds a freshly-acquired `OwnedMutexGuard<()>` — the `guard` field on
+/// `LocalSnapshotReady` now carries `capture_install_lock`'s guard end-to-end so it
+/// isn't released until any superseded-capture cleanup finishes (#442 review). Tests
+/// that drive `LocalSnapshotReady` directly (not through the full `CaptureLocalSnapshot`
+/// round trip) don't have a real one from the Worker, so this stands in for it — its
+/// own backing `Mutex` is independent and irrelevant to these tests, only its identity
+/// as *a* valid owned guard that can be dropped matters.
+async fn fresh_capture_guard() -> tokio::sync::OwnedMutexGuard<()> {
+    Arc::new(tokio::sync::Mutex::new(())).try_lock_owned().unwrap()
+}
+
+/// `OwnedSnapshotDir`'s `Drop` fallback cleans up on a detached OS thread, not
+/// synchronously — so a directory that's about to disappear via `Drop` isn't
+/// guaranteed gone the instant the value is dropped. Poll instead of asserting once,
+/// to avoid a flaky test racing that background thread.
+async fn wait_until_removed(path: &std::path::Path) {
+    for _ in 0..100 {
+        if !path.exists() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("{path:?} was not removed within 1s (Drop cleanup fallback never ran?)");
+}
+
+/// Helper: build an InstallSnapshot command backed by a real (empty) temp dir.
+/// Returns the command plus the response receiver to await on.
+fn make_install_snapshot_command() -> (
+    StateMachineCommand,
+    oneshot::Receiver<crate::Result<SnapshotApplyResult>>,
+) {
+    let (response, response_rx) = oneshot::channel();
+    let command = StateMachineCommand::InstallSnapshot {
+        snapshot: PreparedSnapshot {
+            metadata: SnapshotMetadata::default(),
+            temp_dir: tempfile::tempdir().unwrap(),
+        },
+        response,
+    };
+    (command, response_rx)
+}
 
 /// Helper: Create test entry
 fn create_test_entry(
@@ -46,8 +113,8 @@ fn create_test_entry(
 /// - Event contains correct last_index and results
 #[tokio::test]
 async fn test_apply_success_sends_apply_completed() {
-    let mut mock_smh = MockStateMachineHandler::new();
-    mock_smh.expect_apply_chunk().times(1).returning(|entries| {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_apply_chunk().times(1).returning(|entries| {
         let results: Vec<crate::ApplyResult> =
             entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect();
         Ok(results)
@@ -59,7 +126,8 @@ async fn test_apply_success_sends_apply_completed() {
 
     let worker = StateMachineWorker::<MockTypeConfig>::new(
         1,
-        Arc::new(mock_smh),
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
         sm_apply_rx,
         internal_event_tx,
         shutdown_rx,
@@ -70,7 +138,9 @@ async fn test_apply_success_sends_apply_completed() {
     });
 
     sm_apply_tx
-        .send(vec![create_test_entry(1, 1), create_test_entry(2, 1)])
+        .send(StateMachineCommand::ApplyEntries {
+            entries: vec![create_test_entry(1, 1), create_test_entry(2, 1)],
+        })
         .unwrap();
 
     match tokio::time::timeout(
@@ -111,8 +181,8 @@ async fn test_apply_success_sends_apply_completed() {
 /// - Worker returns error (exits run loop)
 #[tokio::test]
 async fn test_apply_failure_sends_fatal_error() {
-    let mut mock_smh = MockStateMachineHandler::new();
-    mock_smh.expect_apply_chunk().times(1).returning(|_| {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_apply_chunk().times(1).returning(|_| {
         Err(Error::Fatal(
             "Disk failure - cannot write to storage".to_string(),
         ))
@@ -124,7 +194,8 @@ async fn test_apply_failure_sends_fatal_error() {
 
     let worker = StateMachineWorker::<MockTypeConfig>::new(
         1,
-        Arc::new(mock_smh),
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
         sm_apply_rx,
         internal_event_tx,
         shutdown_rx,
@@ -132,7 +203,11 @@ async fn test_apply_failure_sends_fatal_error() {
 
     let worker_handle = tokio::spawn(async move { worker.run().await });
 
-    sm_apply_tx.send(vec![create_test_entry(1, 1)]).unwrap();
+    sm_apply_tx
+        .send(StateMachineCommand::ApplyEntries {
+            entries: vec![create_test_entry(1, 1)],
+        })
+        .unwrap();
 
     match tokio::time::timeout(
         std::time::Duration::from_millis(100),
@@ -170,8 +245,8 @@ async fn test_apply_failure_sends_fatal_error() {
 /// - Worker run() returns Ok(())
 #[tokio::test]
 async fn test_shutdown_drains_remaining_entries() {
-    let mut mock_smh = MockStateMachineHandler::new();
-    mock_smh.expect_apply_chunk().times(3).returning(|entries| {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_apply_chunk().times(3).returning(|entries| {
         let results: Vec<crate::ApplyResult> =
             entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect();
         Ok(results)
@@ -183,7 +258,8 @@ async fn test_shutdown_drains_remaining_entries() {
 
     let worker = StateMachineWorker::<MockTypeConfig>::new(
         1,
-        Arc::new(mock_smh),
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
         sm_apply_rx,
         internal_event_tx,
         shutdown_rx,
@@ -192,7 +268,11 @@ async fn test_shutdown_drains_remaining_entries() {
     let worker_handle = tokio::spawn(async move { worker.run().await });
 
     for i in 1..=3 {
-        sm_apply_tx.send(vec![create_test_entry(i, 1)]).unwrap();
+        sm_apply_tx
+            .send(StateMachineCommand::ApplyEntries {
+                entries: vec![create_test_entry(i, 1)],
+            })
+            .unwrap();
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -222,34 +302,102 @@ async fn test_shutdown_drains_remaining_entries() {
     assert!(result.is_ok(), "Worker should exit cleanly after shutdown");
 }
 
-/// Test: Channel Closed - Worker Exits
-///
-/// Verify that when sm_apply_rx channel is closed, worker exits cleanly.
+/// #436: Worker now holds its own clone of `sm_apply_tx` (to route
+/// `LocalSnapshotReady` back to itself), so dropping every *external* clone no
+/// longer closes the channel — Worker's own clone keeps the sender count above
+/// zero for as long as it's running. This replaces the old
+/// `test_channel_closed_worker_exits`, which asserted the opposite (now-false)
+/// behavior. Shutdown must go through `shutdown_signal` — see
+/// `test_worker_exits_when_shutdown_sender_dropped_without_send` below for the
+/// mechanism embedders actually rely on when they drop their handle without
+/// calling `stop()`.
 #[tokio::test]
-async fn test_channel_closed_worker_exits() {
-    let mock_smh = MockStateMachineHandler::new();
+async fn test_dropping_external_senders_alone_does_not_stop_worker() {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw
+        .expect_apply_chunk()
+        .times(1)
+        .returning(|entries| Ok(entries.iter().map(|e| ApplyResult::success(e.index)).collect()));
 
     let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
-    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
 
     let worker = StateMachineWorker::<MockTypeConfig>::new(
         1,
-        Arc::new(mock_smh),
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
         sm_apply_rx,
         internal_event_tx,
         shutdown_rx,
     );
-
     let worker_handle = tokio::spawn(async move { worker.run().await });
 
+    // Drop every external clone — Worker's own internal clone is still alive.
+    drop(sm_apply_tx.clone());
     drop(sm_apply_tx);
 
-    match tokio::time::timeout(std::time::Duration::from_millis(100), worker_handle).await {
+    // Worker must still be alive and functional: it can't be sent a command
+    // through the now-dropped external sender, but the task itself must not
+    // have exited. Prove liveness indirectly via the shutdown path instead —
+    // if the task had already exited, this would just be a no-op join.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !worker_handle.is_finished(),
+        "Worker exited after external senders dropped — self-sender no longer \
+         keeps it alive, channel-closed detection is back (update this test \
+         and the doc comment above if that's an intentional design change)"
+    );
+
+    // Clean up: use the (still valid) internal_event_rx as a proxy for confirming
+    // the spawned worker task exists and isn't leaking test resources.
+    drop(internal_event_rx);
+    worker_handle.abort();
+}
+
+/// #436 / embedded-mode safety net: if the caller drops the `shutdown_signal`
+/// Sender without ever calling `.send(())` — this is exactly what happens when
+/// an embedder drops `EmbeddedEngine` without awaiting `stop()` first, since
+/// `Inner::shutdown_tx` then drops as part of the struct's own teardown — Worker
+/// must still exit. `tokio::sync::watch::Receiver::changed()` resolves (with an
+/// error) once its Sender is dropped, and Worker's shutdown arm (`_ =
+/// shutdown_signal.changed()`) doesn't discriminate Ok from Err, so this must be
+/// sufficient on its own — independent of whether `sm_apply_tx` has any activity,
+/// since Worker now permanently holds its own clone (see test above).
+#[tokio::test]
+async fn test_worker_exits_when_shutdown_sender_dropped_without_send() {
+    let mock_smw = MockStateMachineWriterOps::new();
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    let worker_handle = tokio::spawn(async move { worker.run().await });
+
+    // Keep sm_apply_tx alive throughout, unlike the old channel-closed test —
+    // this proves shutdown works even when the command channel is untouched.
+    let _keep_alive = sm_apply_tx;
+
+    // Drop the sender without ever calling .send(()) — no explicit shutdown signal.
+    drop(shutdown_tx);
+
+    match tokio::time::timeout(std::time::Duration::from_millis(200), worker_handle).await {
         Ok(Ok(Ok(()))) => {}
         Ok(Ok(Err(e))) => panic!("Worker returned error: {e:?}"),
         Ok(Err(e)) => panic!("Worker task panicked: {e:?}"),
-        Err(_) => panic!("Worker did not exit within timeout"),
+        Err(_) => panic!(
+            "Worker did not exit when shutdown_signal's Sender was dropped \
+             without .send() — embedders who drop EmbeddedEngine without \
+             calling stop() would leak the sm-apply OS thread forever"
+        ),
     }
 }
 
@@ -261,8 +409,8 @@ async fn test_channel_closed_worker_exits() {
 /// - 3 ApplyCompleted events received on internal_event_rx with last_index: 2, 4, 6
 #[tokio::test]
 async fn test_multiple_batches_sequential_processing() {
-    let mut mock_smh = MockStateMachineHandler::new();
-    mock_smh.expect_apply_chunk().times(3).returning(|entries| {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_apply_chunk().times(3).returning(|entries| {
         let results: Vec<crate::ApplyResult> =
             entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect();
         Ok(results)
@@ -274,7 +422,8 @@ async fn test_multiple_batches_sequential_processing() {
 
     let worker = StateMachineWorker::<MockTypeConfig>::new(
         1,
-        Arc::new(mock_smh),
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
         sm_apply_rx,
         internal_event_tx,
         shutdown_rx,
@@ -285,13 +434,19 @@ async fn test_multiple_batches_sequential_processing() {
     });
 
     sm_apply_tx
-        .send(vec![create_test_entry(1, 1), create_test_entry(2, 1)])
+        .send(StateMachineCommand::ApplyEntries {
+            entries: vec![create_test_entry(1, 1), create_test_entry(2, 1)],
+        })
         .unwrap();
     sm_apply_tx
-        .send(vec![create_test_entry(3, 1), create_test_entry(4, 1)])
+        .send(StateMachineCommand::ApplyEntries {
+            entries: vec![create_test_entry(3, 1), create_test_entry(4, 1)],
+        })
         .unwrap();
     sm_apply_tx
-        .send(vec![create_test_entry(5, 1), create_test_entry(6, 1)])
+        .send(StateMachineCommand::ApplyEntries {
+            entries: vec![create_test_entry(5, 1), create_test_entry(6, 1)],
+        })
         .unwrap();
 
     for expected_index in [2u64, 4, 6] {
@@ -312,4 +467,1096 @@ async fn test_multiple_batches_sequential_processing() {
             Err(_) => panic!("Timeout waiting for ApplyCompleted event"),
         }
     }
+}
+
+// ============================================================================
+// InstallSnapshot command tests (#436)
+// ============================================================================
+
+/// Worker forwards `Applied` results from `install_prepared_snapshot` back to
+/// the caller via the oneshot response, unmodified.
+///
+/// # Given
+/// - Mock handler's install_prepared_snapshot returns Ok(Applied)
+///
+/// # When
+/// - InstallSnapshot command is sent
+///
+/// # Then
+/// - response_rx receives exactly that Applied result
+#[tokio::test]
+async fn test_install_snapshot_applied_forwards_result_via_response() {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_install_prepared_snapshot().times(1).returning(|_, _| {
+        Ok(SnapshotApplyResult::Applied {
+            last_included: LogId { index: 10, term: 2 },
+        })
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (command, response_rx) = make_install_snapshot_command();
+    sm_apply_tx.send(command).unwrap();
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), response_rx)
+        .await
+        .expect("response must arrive within 100ms")
+        .expect("response sender must not be dropped");
+
+    match result {
+        Ok(SnapshotApplyResult::Applied { last_included }) => {
+            assert_eq!(last_included, LogId { index: 10, term: 2 });
+        }
+        other => panic!("expected Ok(Applied), got: {other:?}"),
+    }
+}
+
+/// A skipped install (stale/duplicate) is not an error — Worker must forward
+/// it as Ok, not translate it into a failure.
+///
+/// # Given
+/// - Mock handler's install_prepared_snapshot returns Ok(IgnoredStale)
+///
+/// # Then
+/// - response_rx receives Ok(IgnoredStale), not Err
+#[tokio::test]
+async fn test_install_snapshot_ignored_stale_forwards_as_ok_not_error() {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_install_prepared_snapshot().times(1).returning(|_, _| {
+        Ok(SnapshotApplyResult::IgnoredStale {
+            current: LogId { index: 20, term: 3 },
+        })
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (command, response_rx) = make_install_snapshot_command();
+    sm_apply_tx.send(command).unwrap();
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), response_rx)
+        .await
+        .expect("response must arrive within 100ms")
+        .expect("response sender must not be dropped");
+
+    assert!(
+        matches!(result, Ok(SnapshotApplyResult::IgnoredStale { .. })),
+        "expected Ok(IgnoredStale), got: {result:?}"
+    );
+}
+
+/// A hard failure (e.g. BoundaryConflict) is forwarded as Err via the
+/// response — and, unlike an ApplyEntries failure, must NOT bring the whole
+/// Worker down: InstallSnapshot errors are per-request, not fatal to the
+/// worker task itself.
+///
+/// # Given
+/// - Mock handler's install_prepared_snapshot returns Err
+///
+/// # Then
+/// - response_rx receives Err
+/// - Worker keeps running afterward (verified by successfully processing a
+///   subsequent ApplyEntries command on the same worker)
+#[tokio::test]
+async fn test_install_snapshot_error_forwards_as_err_worker_survives() {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw
+        .expect_install_prepared_snapshot()
+        .times(1)
+        .returning(|_, _| Err(Error::Fatal("boundary conflict".to_string())));
+    mock_smw.expect_apply_chunk().times(1).returning(|entries| {
+        let results: Vec<crate::ApplyResult> =
+            entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect();
+        Ok(results)
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (command, response_rx) = make_install_snapshot_command();
+    sm_apply_tx.send(command).unwrap();
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), response_rx)
+        .await
+        .expect("response must arrive within 100ms")
+        .expect("response sender must not be dropped");
+    assert!(result.is_err(), "expected Err, got: {result:?}");
+
+    // Worker must still be alive: a subsequent ApplyEntries command is processed normally.
+    sm_apply_tx
+        .send(StateMachineCommand::ApplyEntries {
+            entries: vec![create_test_entry(1, 1)],
+        })
+        .unwrap();
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        internal_event_rx.recv(),
+    )
+    .await
+    {
+        Ok(Some(InternalEvent::ApplyCompleted { .. })) => {}
+        other => panic!("expected worker to keep processing after install error, got: {other:?}"),
+    }
+}
+
+/// ApplyEntries and InstallSnapshot share one queue and are processed
+/// strictly in send order — the invariant the whole StateMachineWorker
+/// design depends on.
+///
+/// # Given
+/// - Send order: ApplyEntries(A) -> InstallSnapshot -> ApplyEntries(B)
+///
+/// # Then
+/// - Both apply_chunk calls and the install call are observed in that exact
+///   order (recorded via a shared, mutex-guarded log)
+#[tokio::test]
+async fn test_apply_and_install_share_single_queue_fifo_order() {
+    let order: Arc<std::sync::Mutex<Vec<&'static str>>> = Arc::new(std::sync::Mutex::new(vec![]));
+
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    {
+        let order = order.clone();
+        mock_smw.expect_apply_chunk().times(2).returning(move |entries| {
+            order.lock().unwrap().push("apply");
+            let results: Vec<crate::ApplyResult> =
+                entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect();
+            Ok(results)
+        });
+    }
+    {
+        let order = order.clone();
+        mock_smw.expect_install_prepared_snapshot().times(1).returning(move |_, _| {
+            order.lock().unwrap().push("install");
+            Ok(SnapshotApplyResult::Applied {
+                last_included: LogId::default(),
+            })
+        });
+    }
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    sm_apply_tx
+        .send(StateMachineCommand::ApplyEntries {
+            entries: vec![create_test_entry(1, 1)],
+        })
+        .unwrap();
+    let (install_command, install_response_rx) = make_install_snapshot_command();
+    sm_apply_tx.send(install_command).unwrap();
+    sm_apply_tx
+        .send(StateMachineCommand::ApplyEntries {
+            entries: vec![create_test_entry(2, 1)],
+        })
+        .unwrap();
+
+    // Drain: 2 ApplyCompleted events + 1 install response, in FIFO order.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        internal_event_rx.recv(),
+    )
+    .await
+    .expect("first ApplyCompleted must arrive");
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(100), install_response_rx)
+        .await
+        .expect("install response must arrive");
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        internal_event_rx.recv(),
+    )
+    .await
+    .expect("second ApplyCompleted must arrive");
+
+    assert_eq!(
+        *order.lock().unwrap(),
+        vec!["apply", "install", "apply"],
+        "commands must execute in send order, not be reordered"
+    );
+}
+
+// ============================================================================
+// call_with_timing_guard tests (#436) — written before the helper exists (TDD).
+//
+// This wraps Worker's synchronous calls into StateMachine trait methods
+// (apply_chunk, apply_snapshot_from_file, and the future create_snapshot capture
+// step). Third-party StateMachine implementations aren't guaranteed to be fast —
+// this makes a slow call observable (warn) without ever cancelling it: a
+// tokio::time::timeout here would drop the underlying future mid-flight, which
+// could abandon a destructive storage operation (e.g. a WriteBatch commit or a
+// CF drop/rebuild) in an unknown state — worse than not having a timeout at all.
+// ============================================================================
+
+/// Under the threshold: returns the correct result promptly, no warning needed.
+#[tokio::test]
+async fn test_call_with_timing_guard_returns_result_when_fast() {
+    let result = super::worker::call_with_timing_guard(
+        "test_op",
+        std::time::Duration::from_millis(200),
+        async { 42 },
+    )
+    .await;
+    assert_eq!(result, 42);
+}
+
+/// Over the threshold: still delivers the correct result — proves the guard
+/// doesn't lose or corrupt the outcome, it only observes.
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn test_call_with_timing_guard_warns_but_still_returns_result_when_slow() {
+    let result = super::worker::call_with_timing_guard(
+        "slow_op",
+        std::time::Duration::from_millis(20),
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            99
+        },
+    )
+    .await;
+    assert_eq!(result, 99, "result must still be delivered, not lost");
+    assert!(
+        logs_contain("slow_op"),
+        "must log a warning identifying which operation exceeded the threshold"
+    );
+}
+
+/// The core safety property: the wrapped future must run to genuine completion
+/// even after the threshold fires — not be dropped/cancelled at that point.
+#[tokio::test]
+async fn test_call_with_timing_guard_never_drops_the_underlying_future() {
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let completed_clone = completed.clone();
+    let _ = super::worker::call_with_timing_guard(
+        "long_op",
+        std::time::Duration::from_millis(10),
+        async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            completed_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        },
+    )
+    .await;
+    assert!(
+        completed.load(std::sync::atomic::Ordering::SeqCst),
+        "the wrapped future must run to completion, not be cancelled at the threshold"
+    );
+}
+
+/// #436 follow-up: a node generating its own local snapshot must not stall the
+/// application of newly committed entries — `CaptureLocalSnapshot` and `ApplyEntries`
+/// are unrelated (the storage engine is responsible for its own internal isolation
+/// between the two, see `StateMachine::generate_snapshot_data`'s doc comment), so they
+/// must not share Worker's FIFO position.
+///
+/// TDD red: today `handle_command` awaits `capture_local_snapshot()` inline in the main
+/// loop, so a slow/in-flight capture blocks `recv()` from ever reaching a subsequent
+/// `ApplyEntries`. This test proves it with a capture that's still gated (hasn't
+/// returned) when `ApplyEntries` is sent — `ApplyCompleted` must still arrive promptly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_capture_local_snapshot_does_not_block_subsequent_apply_entries() {
+    // std::sync::mpsc (blocking, not tokio) — mockall's `.returning()` closure for an
+    // `#[async_trait]` method is synchronous, so it can't `.await` a tokio channel to
+    // model an in-flight call. Blocking the OS thread here is safe under the
+    // multi-thread runtime: the test's own driving code runs on a different worker
+    // thread and isn't affected.
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(Some(release_rx));
+
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
+        let rx = release_rx.lock().unwrap().take().expect("called once");
+        let _ = rx.recv();
+        Ok(CapturedLocalSnapshot {
+            metadata: SnapshotMetadata::default(),
+            temp_dir: captured_temp_dir_for_test(),
+        })
+    });
+    mock_smw
+        .expect_apply_chunk()
+        .times(1)
+        .returning(|entries| Ok(entries.iter().map(|e| ApplyResult::success(e.index)).collect()));
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    // Send CaptureLocalSnapshot first — it will hang on the gate (not released yet).
+    let (capture_response, _capture_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::CaptureLocalSnapshot {
+            response: capture_response,
+        })
+        .unwrap();
+
+    // Give Worker a moment to actually start processing it (not just enqueue it).
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    // Now send ApplyEntries — must be processed without waiting for capture to finish.
+    sm_apply_tx
+        .send(StateMachineCommand::ApplyEntries {
+            entries: vec![create_test_entry(1, 1)],
+        })
+        .unwrap();
+
+    let apply_result = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        internal_event_rx.recv(),
+    )
+    .await;
+
+    // Release the gate regardless of outcome so the spawned capture (if any) can finish
+    // and doesn't leak past the test.
+    let _ = release_tx.send(());
+
+    assert!(
+        matches!(apply_result, Ok(Some(InternalEvent::ApplyCompleted { .. }))),
+        "ApplyEntries must be processed while CaptureLocalSnapshot is still in-flight, \
+         got: {apply_result:?}"
+    );
+}
+
+/// #436: local capture must never wait for the capture/install lock — it's periodic
+/// maintenance, cheap to skip. If the lock is already held, a second
+/// `CaptureLocalSnapshot` must report `CaptureSkipped` without ever calling
+/// `capture_local_snapshot` on the writer. `try_lock()` doesn't care who's holding
+/// the lock, so a second capture is a faithful (and, unlike Install, deterministic)
+/// stand-in for "Install already holds it" — see the ordering note below for why
+/// Install can't be used directly here.
+///
+/// Deterministic by construction: the first capture is sent and gated *inside*
+/// `capture_local_snapshot` — since the lock is acquired before that call, blocking
+/// on the gate only after entering it proves the lock is already held. The second
+/// capture is only sent after observing that gate, so there's no race for it to lose.
+///
+/// Ordering note: Install can't play the "already holds it" role deterministically
+/// here, because `InstallSnapshot` is handled *inline* on Worker's own loop (see
+/// `handle_command`) — while it's blocked waiting for/using the lock, Worker can't
+/// even dequeue a subsequently-sent `CaptureLocalSnapshot`, so that capture wouldn't
+/// attempt `try_lock()` until *after* install finishes and releases it. Capture, by
+/// contrast, is spawned off Worker's loop, so a second capture's `try_lock()` can
+/// genuinely race a first capture's held lock while Worker's loop stays free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_capture_skipped_when_lock_already_held() {
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(Some(release_rx));
+    let (gate_reached_tx, gate_reached_rx) = std::sync::mpsc::channel::<()>();
+
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
+        let _ = gate_reached_tx.send(());
+        let rx = release_rx.lock().unwrap().take().expect("called once");
+        let _ = rx.recv();
+        Ok(CapturedLocalSnapshot {
+            metadata: SnapshotMetadata::default(),
+            temp_dir: captured_temp_dir_for_test(),
+        })
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (first_response, _first_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::CaptureLocalSnapshot {
+            response: first_response,
+        })
+        .unwrap();
+
+    // Blocks until the first capture has entered the mock — i.e. the lock is
+    // provably held — so sending the second capture next is not racing for it.
+    gate_reached_rx.recv().unwrap();
+
+    let (second_response, second_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::CaptureLocalSnapshot {
+            response: second_response,
+        })
+        .unwrap();
+
+    let second_result =
+        tokio::time::timeout(std::time::Duration::from_millis(400), second_response_rx).await;
+
+    let _ = release_tx.send(());
+
+    match second_result {
+        Ok(Ok(Err(Error::Consensus(ConsensusError::Snapshot(SnapshotError::CaptureSkipped))))) => {}
+        other => panic!("expected CaptureSkipped, got {other:?}"),
+    }
+}
+
+/// #436: InstallSnapshot is leader-authoritative — it must never skip; it waits for
+/// the lock instead. This proves it actually blocks until Capture (which got the lock
+/// first) releases it, rather than failing/skipping immediately.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_install_waits_for_capture_to_release_lock() {
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(Some(release_rx));
+
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
+        let rx = release_rx.lock().unwrap().take().expect("called once");
+        let _ = rx.recv();
+        Ok(CapturedLocalSnapshot {
+            metadata: SnapshotMetadata::default(),
+            temp_dir: captured_temp_dir_for_test(),
+        })
+    });
+    mock_smw.expect_install_prepared_snapshot().times(1).returning(|_, _| {
+        Ok(SnapshotApplyResult::Applied {
+            last_included: LogId { index: 1, term: 1 },
+        })
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (capture_response, _capture_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::CaptureLocalSnapshot {
+            response: capture_response,
+        })
+        .unwrap();
+
+    // Let the spawned capture task actually start and grab the lock.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let (install_response, install_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::InstallSnapshot {
+            snapshot: PreparedSnapshot {
+                metadata: SnapshotMetadata::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            },
+            response: install_response,
+        })
+        .unwrap();
+
+    // Install must not resolve while capture still holds the lock.
+    let still_waiting =
+        tokio::time::timeout(std::time::Duration::from_millis(100), install_response_rx).await;
+    assert!(
+        still_waiting.is_err(),
+        "InstallSnapshot must wait for the capture/install lock, got: {still_waiting:?}"
+    );
+
+    // Release capture — install must now complete.
+    let _ = release_tx.send(());
+}
+
+/// #436 product decision: a leader-pushed InstallSnapshot
+/// always wins over a concurrently-running local CaptureLocalSnapshot — unconditionally,
+/// regardless of which one's boundary is actually more advanced. This is a deliberate
+/// choice of the simpler of two possible rules ("semantic A": any install completing
+/// during a capture supersedes it) over the alternative ("semantic B": compare LogId
+/// boundaries and only reject a capture that would regress the current snapshot).
+///
+/// Business scenario this test encodes: a follower fell behind by the leader's (slightly
+/// stale) accounting, so the leader pushes it an Install at boundary index=90. Meanwhile
+/// the follower had already caught up on its own and started a routine local Capture at
+/// index=100 — genuinely *more* advanced than what the leader is pushing. Even so, the
+/// capture must be discarded: the leader is treated as the authoritative source for
+/// snapshot content, never the follower's own local judgment, so "install happened during
+/// my capture" is sufficient to supersede it without comparing boundaries at all.
+///
+/// Mechanism under test: `CaptureLocalSnapshot`'s background task only performs the slow
+/// export; the "is this still fresh" decision is made back on the Worker's own loop when
+/// it processes `LocalSnapshotReady`, which travels through the *same* `sm_apply_tx` FIFO
+/// queue as `InstallSnapshot` (not a separate channel — a separate channel would make
+/// `tokio::select!`'s ordering between the two non-deterministic). Both commands are sent
+/// before the capture's gate is released, with `InstallSnapshot` sent first, so by FIFO
+/// ordering the Worker is guaranteed to fully process the install (bumping `install_epoch`)
+/// before it ever dequeues `LocalSnapshotReady` — deterministic, no `yield_now()`, no sleep
+/// racing the scheduler.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_capture_superseded_by_install_even_when_capture_is_more_advanced() {
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(Some(release_rx));
+
+    // PR #442 review: this capture's export directory must eventually be cleaned up
+    // even though it's rejected (superseded) and never reaches `build_local_snapshot` —
+    // captured below so the test can assert on it after the fact.
+    let (superseded_dir_path, superseded_dir_guard) = captured_temp_dir_for_test_with_path();
+    let superseded_dir_guard = std::sync::Mutex::new(Some(superseded_dir_guard));
+
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    // Capture's own boundary (index=100) is ahead of what the leader is pushing
+    // (index=90) — proves rejection is about "install happened", not "who's newer".
+    mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
+        let rx = release_rx.lock().unwrap().take().expect("called once");
+        let _ = rx.recv();
+        Ok(CapturedLocalSnapshot {
+            metadata: SnapshotMetadata {
+                last_included: Some(LogId {
+                    index: 100,
+                    term: 1,
+                }),
+                ..Default::default()
+            },
+            temp_dir: superseded_dir_guard.lock().unwrap().take().expect("called once"),
+        })
+    });
+    mock_smw.expect_install_prepared_snapshot().times(1).returning(|_, _| {
+        Ok(SnapshotApplyResult::Applied {
+            last_included: LogId { index: 90, term: 1 },
+        })
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (capture_response, capture_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::CaptureLocalSnapshot {
+            response: capture_response,
+        })
+        .unwrap();
+
+    // Let capture start and grab the lock.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    // Install is sent (queued into the same sm_apply_tx FIFO) while capture still
+    // holds the lock — its send() precedes capture's eventual LocalSnapshotReady
+    // send(), which is the only ordering guarantee this test relies on.
+    let (install_response, install_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::InstallSnapshot {
+            snapshot: PreparedSnapshot {
+                metadata: SnapshotMetadata::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            },
+            response: install_response,
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    // Release capture — it drops the lock (install proceeds inline on Worker's loop
+    // and fully completes, bumping install_epoch, before Worker ever dequeues capture's
+    // LocalSnapshotReady message — guaranteed by FIFO order, not scheduler luck).
+    let _ = release_tx.send(());
+
+    let install_result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), install_response_rx).await;
+    assert!(
+        matches!(
+            install_result,
+            Ok(Ok(Ok(SnapshotApplyResult::Applied { .. })))
+        ),
+        "install must complete, got: {install_result:?}"
+    );
+
+    let capture_result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), capture_response_rx).await;
+    match capture_result {
+        Ok(Ok(Err(Error::Consensus(ConsensusError::Snapshot(
+            SnapshotError::CaptureSuperseded,
+        ))))) => {}
+        other => panic!(
+            "expected CaptureSuperseded (leader install always wins, even though \
+             capture's own boundary index=100 > install's index=90), got: {other:?}"
+        ),
+    }
+
+    // PR #442 review regression: the superseded capture's export directory must
+    // still be cleaned up — before the `OwnedSnapshotDir` fix, this directory was
+    // silently leaked (nobody in the `CaptureSuperseded` branch called remove_dir_all).
+    wait_until_removed(&superseded_dir_path).await;
+}
+
+/// End-to-end version of `test_superseded_capture_directory_gone_by_the_time_response_resolves`:
+/// a second `CaptureLocalSnapshot` fired while a superseded capture's cleanup is still
+/// running must not be allowed to start — `capture_local_snapshot()` is `.times(1)` on
+/// the mock, so a broken guard-release-too-early implementation would panic mockall
+/// instead of this test cleanly observing `CaptureSkipped`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_second_capture_at_same_path_waits_for_superseded_cleanup_to_finish() {
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(Some(release_rx));
+
+    let big_dir = tempfile::tempdir().unwrap().keep();
+    for i in 0..500 {
+        std::fs::write(big_dir.join(format!("file_{i}")), vec![0u8; 4096]).unwrap();
+    }
+    let big_dir_guard = std::sync::Mutex::new(Some(
+        OwnedSnapshotDir::from_existing(big_dir.clone()).unwrap(),
+    ));
+
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
+        let rx = release_rx.lock().unwrap().take().expect("called once");
+        let _ = rx.recv();
+        Ok(CapturedLocalSnapshot {
+            metadata: SnapshotMetadata {
+                last_included: Some(LogId {
+                    index: 100,
+                    term: 1,
+                }),
+                ..Default::default()
+            },
+            temp_dir: big_dir_guard.lock().unwrap().take().expect("called once"),
+        })
+    });
+    mock_smw.expect_install_prepared_snapshot().times(1).returning(|_, _| {
+        Ok(SnapshotApplyResult::Applied {
+            last_included: LogId { index: 90, term: 1 },
+        })
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (capture1_response, capture1_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::CaptureLocalSnapshot {
+            response: capture1_response,
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let (install_response, install_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::InstallSnapshot {
+            snapshot: PreparedSnapshot {
+                metadata: SnapshotMetadata::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            },
+            response: install_response,
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let _ = release_tx.send(());
+
+    let install_result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), install_response_rx).await;
+    assert!(
+        matches!(
+            install_result,
+            Ok(Ok(Ok(SnapshotApplyResult::Applied { .. })))
+        ),
+        "install must complete, got: {install_result:?}"
+    );
+
+    // Fired immediately — capture #1's cleanup of a 500-file directory cannot
+    // plausibly be finished yet.
+    let (capture2_response, capture2_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::CaptureLocalSnapshot {
+            response: capture2_response,
+        })
+        .unwrap();
+
+    let capture2_result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), capture2_response_rx).await;
+    match capture2_result {
+        Ok(Ok(Err(Error::Consensus(ConsensusError::Snapshot(SnapshotError::CaptureSkipped))))) => {}
+        other => panic!(
+            "expected CaptureSkipped (a second capture must not start while a superseded \
+             capture's cleanup at the same path is still in flight), got: {other:?}"
+        ),
+    }
+
+    let capture1_result =
+        tokio::time::timeout(std::time::Duration::from_millis(500), capture1_response_rx).await;
+    assert!(
+        matches!(
+            capture1_result,
+            Ok(Ok(Err(Error::Consensus(ConsensusError::Snapshot(
+                SnapshotError::CaptureSuperseded
+            )))))
+        ),
+        "expected capture #1 to resolve as CaptureSuperseded, got: {capture1_result:?}"
+    );
+
+    wait_until_removed(&big_dir).await;
+}
+
+/// If cleanup of a superseded capture's directory itself fails (disk error,
+/// permissions, ...), the Worker must not silently report `CaptureSuperseded` as if
+/// cleanup succeeded — a caller (or worse, a retry capture reusing this same
+/// deterministic path) would then wrongly believe the path is clear. It must surface
+/// as an explicit `OperationFailed` instead.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_local_snapshot_ready_reports_operation_failed_when_superseded_cleanup_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir_path = tempfile::tempdir().unwrap().keep();
+    std::fs::write(dir_path.join("f"), b"x").unwrap();
+
+    // Deny write on the parent so `remove_dir_all(dir_path)` can't unlink its child
+    // (Unix: removing a directory entry requires write permission on the parent).
+    let mut perms = std::fs::metadata(&dir_path).unwrap().permissions();
+    perms.set_mode(0o500); // r-x, no write
+    std::fs::set_permissions(&dir_path, perms).unwrap();
+
+    let guard = OwnedSnapshotDir::from_existing(dir_path.clone()).unwrap();
+
+    let mock_smw = MockStateMachineWriterOps::new();
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (response, response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::LocalSnapshotReady {
+            captured: Ok(CapturedLocalSnapshot {
+                metadata: SnapshotMetadata::default(),
+                temp_dir: guard,
+            }),
+            epoch_before: 1, // fresh Worker's install_epoch is 0 — instant "superseded"
+            response,
+            guard: fresh_capture_guard().await,
+        })
+        .unwrap();
+
+    let result = response_rx.await.unwrap();
+
+    // Restore permissions before any assertion can panic and skip this — otherwise
+    // the tempdir is left behind, unremovable by the test harness's own cleanup.
+    let mut perms = std::fs::metadata(&dir_path).unwrap().permissions();
+    perms.set_mode(0o700);
+    std::fs::set_permissions(&dir_path, perms).unwrap();
+    std::fs::remove_dir_all(&dir_path).unwrap();
+
+    assert!(
+        matches!(
+            result,
+            Err(Error::Consensus(ConsensusError::Snapshot(
+                SnapshotError::OperationFailed(_)
+            )))
+        ),
+        "cleanup failure must surface as OperationFailed, not silently report \
+         CaptureSuperseded: {result:?}"
+    );
+}
+
+/// PR #442 review regression: the other leak path CodeRabbit flagged alongside
+/// `CaptureSuperseded` — `LocalSnapshotReady`'s `let _ = response.send(result);`
+/// silently drops `result` (which can carry a freshly-captured
+/// `CapturedLocalSnapshot`) when the receiving end has already been dropped
+/// (e.g. the caller's task was aborted by a role transition or shutdown before
+/// the capture finished). Before the `OwnedSnapshotDir` fix, that dropped
+/// `result` leaked its export directory just like the superseded case.
+///
+/// Drives `LocalSnapshotReady` directly (rather than going through the full
+/// `CaptureLocalSnapshot` round trip) so the test can deterministically drop
+/// the response receiver *before* the Worker ever processes the command —
+/// no race to win, `send()` is guaranteed to find a dead receiver.
+#[tokio::test]
+async fn test_local_snapshot_ready_cleans_up_capture_when_response_receiver_dropped() {
+    let mock_smw = MockStateMachineWriterOps::new();
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (dir_path, dir_guard) = captured_temp_dir_for_test_with_path();
+    let (response, response_rx) = oneshot::channel();
+    drop(response_rx); // the caller already gave up before the result could arrive
+
+    sm_apply_tx
+        .send(StateMachineCommand::LocalSnapshotReady {
+            captured: Ok(CapturedLocalSnapshot {
+                metadata: SnapshotMetadata::default(),
+                temp_dir: dir_guard,
+            }),
+            epoch_before: 0,
+            response,
+            guard: fresh_capture_guard().await,
+        })
+        .unwrap();
+
+    wait_until_removed(&dir_path).await;
+}
+
+/// #436: shutdown must wait for an in-flight CaptureLocalSnapshot task instead of
+/// returning while it's still writing to disk — see `call_with_timing_guard`'s doc
+/// comment on why a storage op can't just be abandoned mid-flight (same reasoning
+/// applies here: don't leave a capture "orphaned" past the point something else,
+/// e.g. an embedder's `stop()` caller, assumes everything has already stopped and
+/// goes on to close storage or reopen the same data dir).
+///
+/// Proves two things: (1) `run()` does NOT return while the capture is still gated
+/// — shutdown is blocked on it, not racing past it — and (2) once released, `run()`
+/// does complete. The capture's own `response` still resolves to a dropped-channel
+/// error either way (the final `LocalSnapshotReady` message never gets processed —
+/// `run()` awaits the task's `JoinHandle`, not another `sm_apply_rx` read, so that
+/// message is dropped along with the channel on return) — that's fine: the node is
+/// shutting down regardless, nothing downstream still needs a fresh/superseded
+/// verdict. What actually matters — the disk write finishing before `run()` returns
+/// — is what this test checks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_shutdown_waits_for_in_flight_capture_before_returning() {
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(Some(release_rx));
+    let (gate_reached_tx, gate_reached_rx) = std::sync::mpsc::channel::<()>();
+
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
+        let _ = gate_reached_tx.send(());
+        let rx = release_rx.lock().unwrap().take().expect("called once");
+        let _ = rx.recv();
+        Ok(CapturedLocalSnapshot {
+            metadata: SnapshotMetadata::default(),
+            temp_dir: captured_temp_dir_for_test(),
+        })
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    let worker_handle = tokio::spawn(async move { worker.run().await });
+
+    let (capture_response, capture_response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::CaptureLocalSnapshot {
+            response: capture_response,
+        })
+        .unwrap();
+
+    // Blocks until capture has entered the mock — i.e. the export is genuinely
+    // "in flight" — before triggering shutdown.
+    gate_reached_rx.recv().unwrap();
+
+    shutdown_tx.send(()).unwrap();
+
+    // Give shutdown handling a real chance to run, then prove it hasn't returned —
+    // it must be blocked waiting on the still-gated capture, not racing past it.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !worker_handle.is_finished(),
+        "Worker returned from run() while the capture task was still gated mid-export \
+         — shutdown must wait for it, not leave it orphaned"
+    );
+
+    // Release the gate — the capture finishes, and shutdown can now complete.
+    let _ = release_tx.send(());
+
+    let run_result = tokio::time::timeout(std::time::Duration::from_millis(200), worker_handle)
+        .await
+        .expect("Worker must exit once the in-flight capture finishes");
+    assert!(matches!(run_result, Ok(Ok(()))), "got: {run_result:?}");
+
+    // The capture's own response is a dropped-channel error (see doc comment above)
+    // — expected, not a hang.
+    let capture_result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), capture_response_rx).await;
+    assert!(
+        matches!(capture_result, Ok(Err(_))),
+        "expected the response channel to resolve (not hang), got: {capture_result:?}"
+    );
+}
+
+/// Superseded-capture cleanup must complete before `CaptureSuperseded` reaches the
+/// caller — not just "eventually" via `Drop`'s detached thread. `capture_local_snapshot`
+/// reuses a deterministic path per `last_included` (writer.rs), so a slow cleanup could
+/// otherwise race a same-path retry and delete its fresh content.
+///
+/// Directory is heavily populated so `remove_dir_all` measurably outlasts `Drop`'s
+/// thread-spawn, making failure deterministic instead of timing-luck.
+#[tokio::test]
+async fn test_superseded_capture_directory_gone_by_the_time_response_resolves() {
+    let dir_path = tempfile::tempdir().unwrap().keep();
+    for i in 0..500 {
+        std::fs::write(dir_path.join(format!("file_{i}")), vec![0u8; 4096]).unwrap();
+    }
+    let guard = OwnedSnapshotDir::from_existing(dir_path.clone()).unwrap();
+
+    let mock_smw = MockStateMachineWriterOps::new();
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let (response, response_rx) = oneshot::channel();
+    sm_apply_tx
+        .send(StateMachineCommand::LocalSnapshotReady {
+            captured: Ok(CapturedLocalSnapshot {
+                metadata: SnapshotMetadata::default(),
+                temp_dir: guard,
+            }),
+            // A fresh Worker's install_epoch starts at 0 — any non-zero value here is
+            // an instant, unconditional "superseded", no real InstallSnapshot needed.
+            epoch_before: 1,
+            response,
+            guard: fresh_capture_guard().await,
+        })
+        .unwrap();
+
+    let result = response_rx.await.unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(Error::Consensus(ConsensusError::Snapshot(
+                SnapshotError::CaptureSuperseded
+            )))
+        ),
+        "expected CaptureSuperseded, got: {result:?}"
+    );
+
+    assert!(
+        !dir_path.exists(),
+        "superseded capture's directory must already be gone by the time the caller \
+         observes CaptureSuperseded — today cleanup runs on a Drop-spawned detached \
+         thread with no ordering guarantee, so a caller (or a same-path retry capture, \
+         since temp_work_path is deterministic per last_included) can observe/reuse \
+         this path before cleanup has actually run"
+    );
 }

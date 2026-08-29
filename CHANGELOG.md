@@ -43,6 +43,10 @@ All notable changes to this project will be documented in this file.
 
 - **⚠️ `StateMachine::entry_term()` removed from trait** (#418): Term lookup belongs to the log layer, not the state machine. Custom `StateMachine` implementations must delete this method — it is no longer part of the trait. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
 
+- **⚠️ `StateMachine::apply_snapshot_from_file` return type changed** (#436): Was `Result<()>`, now `Result<SnapshotApplyResult>`. The three outcomes (`Applied`/`IgnoredStale`/`IgnoredDuplicate`) are now explicit instead of every call looking identical on success. Custom `StateMachine` implementations must update the signature and return the matching variant. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
+
+- **⚠️ Learner initial-snapshot PULL path removed** (#436): `Transport::request_snapshot_from_leader` and `StateMachineHandler::apply_snapshot_stream_from_leader` are removed. New learners catch up via the leader's PUSH replication loop (AppendEntries / InstallSnapshot) instead of eagerly pulling a snapshot on startup. See [Migration Guide](./MIGRATION_GUIDE.md) for details.
+
 - **KV encoding moved out of `d-engine-core`** (#415): `ClientWriteRequest.command` is now `Option<Bytes>` (pre-serialized). Serialization happens in the server transport layer (embedded/standalone/gRPC handler). Core is encoding-agnostic.
 
 - **Metrics renamed with `core.` namespace prefix**: all `d-engine-core` metrics now use the `core.*`

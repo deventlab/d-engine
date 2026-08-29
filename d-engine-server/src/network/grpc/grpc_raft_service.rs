@@ -36,7 +36,6 @@ use d_engine_proto::server::election::raft_election_service_server::RaftElection
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationService;
-use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
@@ -44,13 +43,10 @@ use futures::Stream;
 use futures::StreamExt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
 use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::time::timeout;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
 use tonic::Response;
@@ -232,58 +228,6 @@ impl<T> SnapshotService for Node<T>
 where
     T: TypeConfig,
 {
-    type StreamSnapshotStream = Pin<Box<dyn Stream<Item = Result<SnapshotChunk, Status>> + Send>>;
-
-    async fn stream_snapshot(
-        &self,
-        request: tonic::Request<tonic::Streaming<SnapshotAck>>,
-    ) -> std::result::Result<tonic::Response<Self::StreamSnapshotStream>, tonic::Status> {
-        if !self.is_rpc_ready() {
-            // Bootstrap-race noise, not a fault (#428).
-            debug!("stream_snapshot: Node-{} is not ready!", self.node_id);
-            return Err(Status::unavailable("Service is not ready"));
-        }
-
-        // Bridge incoming ACK stream: tonic → mpsc
-        let mut ack_stream = request.into_inner();
-        let (ack_tx, ack_rx) = mpsc::channel::<SnapshotAck>(32);
-        tokio::spawn(async move {
-            while let Some(ack) = ack_stream.next().await {
-                match ack {
-                    Ok(a) => {
-                        if ack_tx.send(a).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        // Server creates chunk channel, passes tx to core, keeps rx for gRPC response
-        let (chunk_tx, chunk_rx) = mpsc::channel::<Arc<SnapshotChunk>>(32);
-        let (startup_tx, startup_rx) = oneshot::channel::<Result<(), Status>>();
-
-        self.event_tx
-            .send(InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx))
-            .await
-            .map_err(|_| Status::internal("Event channel closed"))?;
-
-        // Wait for core to confirm it can serve the snapshot
-        match startup_rx.await {
-            Ok(Ok(())) => {
-                debug!("stream request been processed");
-            }
-            Ok(Err(status)) => return Err(status),
-            Err(_) => return Err(Status::internal("Core dropped startup sender")),
-        }
-
-        // Return chunk stream directly — no waiting needed
-        let response_stream =
-            ReceiverStream::new(chunk_rx).map(|arc_chunk| Ok((*arc_chunk).clone()));
-        Ok(Response::new(Box::pin(response_stream)))
-    }
-
     async fn install_snapshot(
         &self,
         request: tonic::Request<Streaming<SnapshotChunk>>,

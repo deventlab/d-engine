@@ -199,55 +199,18 @@ mod client_api_error_tests {
         assert_eq!(err.code(), ErrorCode::Uncategorized);
     }
 
-    /// Code::FailedPrecondition without leader metadata maps to Business { StaleOperation }.
+    /// Code::FailedPrecondition maps to Business { StaleOperation } — unconditionally
+    /// (PR #442 review: the `x-raft-leader` metadata branch that used to special-case
+    /// this was confirmed dead — no server code ever sets that header — and has been
+    /// removed, so this is now the only outcome for this status code).
     #[test]
-    fn test_from_status_failed_precondition_without_leader_maps_to_stale() {
+    fn test_from_status_failed_precondition_maps_to_stale() {
         use tonic::Code;
         use tonic::Status;
         let s = Status::new(Code::FailedPrecondition, "stale");
         let err: ClientApiError = s.into();
         assert_eq!(err.code(), ErrorCode::StaleOperation);
         assert!(matches!(err, ClientApiError::Business { .. }));
-    }
-
-    /// Code::FailedPrecondition with valid x-raft-leader metadata maps to
-    /// Network { LeaderChanged } and populates the leader_hint field.
-    #[test]
-    fn test_from_status_failed_precondition_with_leader_metadata_maps_to_leader_changed() {
-        use tonic::Code;
-        use tonic::Status;
-        use tonic::metadata::MetadataValue;
-        let mut s = Status::new(Code::FailedPrecondition, "leader changed");
-        s.metadata_mut().insert(
-            "x-raft-leader",
-            MetadataValue::from_static(r#"{"leader_id":"2","address":"127.0.0.1:8081"}"#),
-        );
-        let err: ClientApiError = s.into();
-        assert_eq!(err.code(), ErrorCode::LeaderChanged);
-        if let ClientApiError::Network { leader_hint, .. } = err {
-            let hint = leader_hint.expect("leader_hint must be populated");
-            assert_eq!(hint.leader_id, 2);
-            assert_eq!(hint.address, "127.0.0.1:8081");
-        } else {
-            panic!("expected Network variant");
-        }
-    }
-
-    /// parse_leader_from_metadata returns None for malformed metadata values,
-    /// causing FailedPrecondition to fall back to Business { StaleOperation }.
-    #[test]
-    fn test_from_status_failed_precondition_with_malformed_leader_metadata_falls_back_to_stale() {
-        use tonic::Code;
-        use tonic::Status;
-        use tonic::metadata::MetadataValue;
-        let mut s = Status::new(Code::FailedPrecondition, "fp");
-        s.metadata_mut().insert(
-            "x-raft-leader",
-            MetadataValue::from_static("not-valid-json"),
-        );
-        let err: ClientApiError = s.into();
-        // parse_leader_from_metadata must fail to extract a valid LeaderHint → StaleOperation.
-        assert_eq!(err.code(), ErrorCode::StaleOperation);
     }
 }
 

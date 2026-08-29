@@ -1,10 +1,6 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::SystemTime;
-
+use crate::storage::TtlLease;
 use arc_swap::ArcSwapOption;
+use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
@@ -12,14 +8,14 @@ use d_engine_core::Command;
 use d_engine_core::Error;
 use d_engine_core::Lease;
 use d_engine_core::ScanResult;
+use d_engine_core::SnapshotApplyResult;
+use d_engine_core::SnapshotError;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
+use d_engine_core::file_io::compute_checksum_from_folder_path;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
-use std::path::Path;
-
-use async_trait::async_trait;
 use rocksdb::Cache;
 use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::DB;
@@ -35,13 +31,17 @@ use rocksdb::WriteBatchWithIndex;
 use rocksdb::WriteOptions;
 use serde::Deserialize;
 use serde::Serialize;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::SystemTime;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
 use tracing::warn;
-
-use crate::storage::TtlLease;
 
 use super::STATE_MACHINE_CF;
 use super::STATE_MACHINE_META_CF;
@@ -374,6 +374,7 @@ impl RocksDBStateMachine {
     async fn restore_from_snapshot(
         &self,
         metadata: &SnapshotMetadata,
+        last_included: LogId,
         snapshot_dir: &std::path::Path,
     ) -> Result<(), Error> {
         self.with_db(|db| Self::restore_from_cf_export(db, snapshot_dir))?;
@@ -393,9 +394,7 @@ impl RocksDBStateMachine {
         }
 
         *self.last_snapshot_metadata.write() = Some(metadata.clone());
-        if let Some(last_included) = &metadata.last_included {
-            self.update_last_applied(*last_included);
-        }
+        self.update_last_applied(last_included);
 
         self.is_serving.store(true, Ordering::SeqCst);
         info!("Snapshot applied successfully");
@@ -916,13 +915,59 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         snapshot_dir: std::path::PathBuf,
-    ) -> Result<(), Error> {
+    ) -> Result<SnapshotApplyResult, Error> {
+        // A snapshot with no boundary can't be classified (stale/duplicate/conflict/
+        // eligible) at all — reject outright rather than silently falling through to
+        // an unconditional install (#436). Mirrors prepare_transfer_meta's handling
+        // of the same missing-field case.
+        let incoming = metadata.last_included.ok_or_else(|| {
+            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
+        })?;
+
+        let current = self.last_applied();
+        match incoming.index.cmp(&current.index) {
+            std::cmp::Ordering::Less => {
+                // Case 1: incoming index behind current progress — stale, no-op.
+                info!(?incoming, ?current, "Ignoring stale snapshot");
+                return Ok(SnapshotApplyResult::IgnoredStale { current });
+            }
+            std::cmp::Ordering::Equal if incoming.term == current.term => {
+                // Case 2: same boundary, same term — idempotent duplicate, no-op.
+                info!(?incoming, ?current, "Ignoring duplicate snapshot");
+                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
+            }
+            std::cmp::Ordering::Equal => {
+                // Case 3: same index, different term — not a normal stale/duplicate
+                // case. This is a real inconsistency (bad metadata, wrong cluster,
+                // or local corruption) — must not be silently ignored or auto-installed.
+                return Err(SnapshotError::BoundaryConflict {
+                    index: current.index,
+                    local_term: current.term,
+                    incoming_term: incoming.term,
+                }
+                .into());
+            }
+            std::cmp::Ordering::Greater => {
+                // Case 4: incoming index ahead — eligible to install, fall through.
+            }
+        }
+
+        // Verify the snapshot's end-to-end checksum before installing (#436).
+        let computed_checksum = compute_checksum_from_folder_path(&snapshot_dir).await?;
+        if metadata.checksum.as_ref() != computed_checksum.as_ref() {
+            error!(
+                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
+                computed_checksum, metadata.checksum
+            );
+            return Err(SnapshotError::ChecksumMismatch.into());
+        }
+
         info!("Applying snapshot from: {:?}", snapshot_dir);
 
         // Stop serving — prevents SM reads/writes during restore
         self.is_serving.store(false, Ordering::SeqCst);
 
-        let result = self.restore_from_snapshot(metadata, &snapshot_dir).await;
+        let result = self.restore_from_snapshot(metadata, incoming, &snapshot_dir).await;
 
         if let Err(ref e) = result {
             error!(
@@ -935,13 +980,15 @@ impl StateMachine for RocksDBStateMachine {
             self.is_serving.store(true, Ordering::SeqCst);
         }
 
-        result
+        result.map(|()| SnapshotApplyResult::Applied {
+            last_included: incoming,
+        })
     }
 
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        last_included: LogId,
+        _last_included: LogId,
     ) -> Result<Bytes, Error> {
         // Export only SM CFs: compact SST-only export, no Raft log data.
         // export_column_family() creates only the final subdirectory (e.g. "sm"), so the parent
@@ -998,13 +1045,7 @@ impl StateMachine for RocksDBStateMachine {
             tokio::fs::write(&ttl_path, ttl_snapshot).await?;
         }
 
-        // Update metadata
-        let checksum = [0; 32];
-        let snapshot_metadata = SnapshotMetadata {
-            last_included: Some(last_included),
-            checksum: Bytes::copy_from_slice(&checksum),
-        };
-        self.persist_last_snapshot_metadata(&snapshot_metadata)?;
+        let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
 
         info!("Snapshot generated at {:?}", new_snapshot_dir);
         Ok(Bytes::copy_from_slice(&checksum))

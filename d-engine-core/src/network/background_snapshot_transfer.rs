@@ -1,29 +1,20 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::marker::PhantomData;
-use std::num::NonZero;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
-
-use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use d_engine_proto::server::storage::snapshot_service_client::SnapshotServiceClient;
 use futures::Stream;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use lru::LruCache;
+use std::marker::PhantomData;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::time::Instant;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::debug;
 use tracing::trace;
-use tracing::warn;
 
 use crate::NetworkError;
 use crate::Result;
@@ -35,7 +26,6 @@ pub struct BackgroundSnapshotTransfer<T> {
     _marker: PhantomData<T>,
 }
 
-#[allow(unused)]
 impl<T> BackgroundSnapshotTransfer<T>
 where
     T: TypeConfig,
@@ -63,10 +53,16 @@ where
             .send_compressed(CompressionEncoding::Gzip)
             .accept_compressed(CompressionEncoding::Gzip);
 
-        Self::push_transfer_loop(node_id, client, first_chunk, data_stream, config).await?;
+        let result =
+            Self::push_transfer_loop(node_id, client, first_chunk, data_stream, config).await;
 
-        debug!(%node_id, "Push snapshot transfer completed");
-        Ok(())
+        #[cfg(any(test, feature = "__test_support"))]
+        if let Some(gate) = super::snapshot_transfer_gate::lookup_gate(node_id) {
+            gate.mark_completed();
+        }
+
+        debug!(%node_id, ?result, "Push snapshot transfer finished");
+        result
     }
 
     // Dedicated push logic
@@ -77,6 +73,14 @@ where
         mut data_stream: Pin<Box<dyn Stream<Item = Result<SnapshotChunk>> + Send>>,
         config: Arc<SnapshotConfig>,
     ) -> Result<()> {
+        // Test-only: freeze here, right before the first chunk is sent, if a
+        // test has installed a transfer gate for this peer.
+        #[cfg(any(test, feature = "__test_support"))]
+        if let Some(gate) = super::snapshot_transfer_gate::lookup_gate(node_id) {
+            gate.mark_started();
+            gate.wait_release().await;
+        }
+
         // 1. Create a transmission channel
         let (mut request_tx, request_rx) =
             mpsc::channel::<Arc<SnapshotChunk>>(config.push_queue_size);
@@ -166,206 +170,6 @@ where
         }
     }
 
-    // Unified pull transfer entry point
-    pub(crate) async fn run_pull_transfer(
-        ack_rx: mpsc::Receiver<SnapshotAck>,
-        chunk_tx: mpsc::Sender<Arc<SnapshotChunk>>,
-        mut data_stream: BoxStream<'static, Result<SnapshotChunk>>,
-        config: SnapshotConfig,
-    ) -> Result<()> {
-        debug!("Starting pull snapshot transfer");
-
-        // Create processing pipeline
-        let transfer_fut = Self::process_transfer(ack_rx, chunk_tx, data_stream, config.clone());
-
-        // Run with timeout
-        tokio::select! {
-            res = transfer_fut => res,
-            _ = sleep(Duration::from_secs(config.transfer_timeout_in_sec)) => {
-                Err(SnapshotError::TransferTimeout.into())
-            }
-        }
-    }
-
-    // Dedicated pull logic
-    async fn process_transfer(
-        mut ack_rx: mpsc::Receiver<SnapshotAck>,
-        chunk_tx: mpsc::Sender<Arc<SnapshotChunk>>,
-        mut data_stream: Pin<Box<dyn Stream<Item = Result<SnapshotChunk>> + Send>>,
-        config: SnapshotConfig,
-    ) -> Result<()> {
-        let mut chunk_cache = LruCache::new(NonZero::new(config.cache_size).unwrap());
-        let mut pending_acks = HashSet::new();
-        let mut retry_counts = HashMap::new();
-        let mut next_seq = 0;
-        let mut total_chunks = None;
-        let max_bandwidth_mbps: u32 = config.max_bandwidth_mbps;
-
-        // Unified chunk processing loop
-        loop {
-            tokio::select! {
-                // Process incoming ACKs
-                ack = ack_rx.recv() => {
-                    trace!("receive new ack");
-
-                    match ack {
-                        Some(ack) => Self::handle_ack(
-                            ack,
-                            &mut pending_acks,
-                            &mut retry_counts,
-                            &config,
-                        )?,
-                        None => {
-                            if let Some(total) = total_chunks
-                                && next_seq >= total
-                                && pending_acks.is_empty()
-                            {
-                                break;
-                            }
-                            return Err(SnapshotError::TransferFailed.into());
-                        }
-                    }
-                },
-
-                // Process next data chunk
-                chunk = data_stream.next(), if total_chunks.is_none() || next_seq < total_chunks.unwrap() => {
-                    match chunk {
-                        Some(Ok(chunk)) => {
-                            // Validate and cache chunk
-                            trace!(%chunk.seq, %next_seq, "Validate and cache chunk");
-                            if chunk.seq != next_seq {
-                                return Err(SnapshotError::OutOfOrderChunk.into());
-                            }
-
-                            if chunk.seq == 0 {
-                                if chunk.metadata.is_none() {
-                                    return Err(SnapshotError::MissingMetadata.into());
-                                }
-                                trace!(?chunk.total_chunks);
-                                total_chunks = Some(chunk.total_chunks);
-                            }
-
-                            let arc_chunk = Arc::new(chunk);
-
-                            chunk_cache.put(arc_chunk.seq, arc_chunk.clone());
-
-                            trace!(%arc_chunk.seq, "-------- send chunk --------");
-
-                            Self::send_chunk(&chunk_tx, arc_chunk.clone(), max_bandwidth_mbps).await?;
-                            pending_acks.insert(arc_chunk.seq);
-                            next_seq += 1;
-                        }
-                        Some(Err(e)) => return Err(e),
-                        None => return Err(SnapshotError::IncompleteSnapshot.into()),// Data stream exhausted
-                    }
-                },
-
-                // Retry mechanism (separate timer)
-                _ = sleep(Duration::from_millis(config.retry_interval_in_ms)), if !pending_acks.is_empty() => {
-                    trace!(?retry_counts, ?pending_acks, "retrying pending chunks");
-                    Self::handle_retries(
-                        &pending_acks,
-                        &mut retry_counts,
-                        &mut chunk_cache,
-                        &chunk_tx,
-                        &config,
-                    ).await?;
-                }
-            }
-
-            // Completion check
-
-            if let Some(total) = total_chunks
-                && next_seq >= total
-                && pending_acks.is_empty()
-            {
-                debug!("All chunks transferred and acknowledged");
-                break;
-            }
-        }
-
-        debug!("Pull snapshot transfer completed");
-        Ok(())
-    }
-
-    // Handle ACK messages with proper error management
-    fn handle_ack(
-        ack: SnapshotAck,
-        pending_acks: &mut HashSet<u32>,
-        retry_counts: &mut HashMap<u32, u32>,
-        config: &SnapshotConfig,
-    ) -> Result<()> {
-        let seq = ack.seq;
-
-        if seq == u32::MAX {
-            debug!("Received final ACK, marking transfer complete");
-            return Ok(());
-        }
-
-        // Skip if this ACK is for a chunk that's already been processed
-        if !pending_acks.contains(&seq) {
-            trace!(%seq, "Received ACK for already-processed chunk, ignoring");
-            return Ok(());
-        }
-
-        match ChunkStatus::try_from(ack.status) {
-            Ok(ChunkStatus::Accepted) => {
-                trace!(%seq, "remove");
-
-                pending_acks.remove(&seq);
-                retry_counts.remove(&seq);
-
-                trace!(?pending_acks, ?retry_counts, "handle_ack");
-            }
-            Ok(ChunkStatus::ChecksumMismatch) => {
-                trace!(?retry_counts, "ChecksumMismatch");
-
-                let count = retry_counts.entry(seq).or_insert(0);
-                *count += 1;
-
-                if *count > config.max_retries {
-                    trace!(%seq, "Max retries exceeded, removing from pending_acks");
-                    pending_acks.remove(&seq); // Remove if the retry limit is exceeded
-                    return Err(SnapshotError::TransferFailed.into());
-                }
-
-                // Will be resent in next retry cycle
-            }
-            _ => {
-                warn!("Unknown chunk status for seq {}: {}", seq, ack.status);
-                pending_acks.remove(&seq); // Unknown status is also removed
-            }
-        }
-
-        Ok(())
-    }
-
-    // Handle periodic retries
-    async fn handle_retries(
-        pending_acks: &HashSet<u32>,
-        retry_counts: &mut HashMap<u32, u32>,
-        chunk_cache: &mut LruCache<u32, Arc<SnapshotChunk>>,
-        chunk_tx: &mpsc::Sender<Arc<SnapshotChunk>>,
-        config: &SnapshotConfig,
-    ) -> Result<()> {
-        let max_bandwidth_mbps = config.max_bandwidth_mbps;
-
-        for &seq in pending_acks.iter() {
-            let count = retry_counts.entry(seq).or_insert(0);
-            if *count > config.max_retries {
-                trace!(%seq, "skipping retry: max retries exceeded");
-                continue;
-            }
-
-            if let Some(chunk) = chunk_cache.get(&seq) {
-                Self::send_chunk(chunk_tx, chunk.clone(), max_bandwidth_mbps).await?;
-            } else {
-                return Err(SnapshotError::ChunkNotCached(seq).into());
-            }
-        }
-        Ok(())
-    }
-
     // Send chunk with retry logic for push mode
     async fn send_chunk_with_retry(
         tx: &mut mpsc::Sender<Arc<SnapshotChunk>>,
@@ -373,7 +177,7 @@ where
         config: &SnapshotConfig,
     ) -> Result<()> {
         let mut attempt = 0;
-        // let mut backoff = Duration::from_millis(config.snapshot_push_backoff_in_ms);
+        let backoff = Duration::from_millis(config.snapshot_push_backoff_in_ms);
         let max_retry = config.snapshot_push_max_retry;
 
         loop {
@@ -388,13 +192,10 @@ where
                     if attempt >= max_retry {
                         return Err(SnapshotError::Backpressure.into());
                     }
-                    let start = Instant::now();
-                    // Apply rate limiting before retry
-                    Self::apply_rate_limit(&chunk, config.max_bandwidth_mbps).await;
-                    let duration = start.elapsed();
+                    sleep(backoff).await;
 
                     attempt += 1;
-                    trace!(?attempt, ?duration, "apply_rate_limit=");
+                    trace!(?attempt, "retry after backoff");
                 }
                 Err(e) => {
                     trace!(?e, "unknown error");
@@ -402,60 +203,5 @@ where
                 }
             }
         }
-    }
-
-    // Apply rate limiting for chunk transmission
-    async fn apply_rate_limit(
-        chunk: &SnapshotChunk,
-        max_bandwidth_mbps: u32,
-    ) {
-        if max_bandwidth_mbps > 0 {
-            let chunk_size_bits = chunk.data.len() as f64 * 8.0;
-            let bandwidth_bps = max_bandwidth_mbps as f64 * 1_000_000.0;
-            let min_duration_secs = chunk_size_bits / bandwidth_bps;
-
-            let min_duration = Duration::from_secs_f64(min_duration_secs);
-            debug!(
-                chunk_size_bytes = chunk.data.len(),
-                max_bandwidth_mbps,
-                min_duration_secs,
-                min_duration = ?min_duration
-            );
-            sleep(min_duration).await;
-        }
-    }
-
-    // Send chunk with proper error handling
-    async fn send_chunk(
-        chunk_tx: &mpsc::Sender<Arc<SnapshotChunk>>,
-        chunk: Arc<SnapshotChunk>,
-        max_bandwidth_mbps: u32,
-    ) -> Result<()> {
-        Self::apply_rate_limit(&chunk, max_bandwidth_mbps).await;
-
-        chunk_tx
-            .send(chunk)
-            .await
-            .map_err(|_| SnapshotError::ReceiverDisconnected.into())
-    }
-
-    // Load specific chunk from stream
-    pub(super) async fn load_specific_chunk(
-        data_stream: &mut Pin<Box<dyn Stream<Item = Result<SnapshotChunk>> + Send>>,
-        seq: u32,
-        leader_term: u64,
-        leader_id: u32,
-        total_chunks: u32,
-    ) -> Result<Option<SnapshotChunk>> {
-        while let Some(chunk) = data_stream.next().await {
-            let mut chunk = chunk?;
-            if chunk.seq == seq {
-                chunk.leader_term = leader_term;
-                chunk.leader_id = leader_id;
-                chunk.total_chunks = total_chunks;
-                return Ok(Some(chunk));
-            }
-        }
-        Ok(None)
     }
 }

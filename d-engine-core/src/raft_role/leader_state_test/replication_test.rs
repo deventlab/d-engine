@@ -14,6 +14,7 @@ use crate::client::ClientResponse;
 use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
+use crate::role_state::PeerReplicationState;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
@@ -2553,6 +2554,52 @@ mod test_leader_update_next_index {
         );
         assert_eq!(state.next_index.get(&2), Some(&(50 + 1)));
         assert_eq!(state.match_index.get(&2), Some(&50));
+    }
+
+    // A successful ACK confirms the peer is caught up and switches it to
+    // Replicate, re-enabling optimistic next_index advance (#436).
+    #[tokio::test]
+    async fn test_update_peer_index_success_sets_replicate() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context_inner = MockBuilder::new(graceful_rx).build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
+        state.update_peer_index(
+            2,
+            &PeerUpdate {
+                match_index: Some(11),
+                next_index: 12,
+                success: true,
+            },
+        );
+        assert_eq!(
+            state.peer_replication_state.get(&2),
+            Some(&PeerReplicationState::Replicate),
+            "a successful ACK must transition the peer to Replicate"
+        );
+    }
+
+    // A conflict reject means our ledger was wrong — the peer returns to Probe,
+    // disabling optimistic advance until the next real ACK (#436).
+    #[tokio::test]
+    async fn test_update_peer_index_conflict_sets_probe() {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let context_inner = MockBuilder::new(graceful_rx).build_context();
+
+        let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
+        state.update_peer_index(
+            2,
+            &PeerUpdate {
+                match_index: None,
+                next_index: 12,
+                success: false,
+            },
+        );
+        assert_eq!(
+            state.peer_replication_state.get(&2),
+            Some(&PeerReplicationState::Probe),
+            "a conflict reject must transition the peer to Probe"
+        );
     }
 
     // On a success ACK, if the ACK carries a next_index larger than the current

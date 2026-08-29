@@ -35,6 +35,7 @@ use crate::MaybeCloneOneshot;
 use crate::MaybeCloneOneshotSender;
 use crate::MockElectionCore;
 use crate::MockMembership;
+use crate::MockPurgeExecutor;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
@@ -43,6 +44,9 @@ use crate::NewCommitData;
 use crate::RaftContext;
 use crate::RaftLog;
 use crate::RaftOneshot;
+use crate::SnapshotApplyResult;
+use crate::StateMachineCommand;
+use crate::StateMachineCommandSender;
 use crate::StateUpdate;
 use crate::SystemError;
 use crate::raft_role::candidate_state::CandidateState;
@@ -1077,6 +1081,65 @@ async fn test_handle_append_entries_rejects_stale_term() {
     );
 }
 
+/// Test: AppendEntries rejected for a stale term does NOT reset the election timer.
+///
+/// Scenario:
+/// - Follower (term=2) receives AppendEntries from a stale leader (term=1) — the
+///   same illegitimate-sender case as `test_handle_append_entries_rejects_stale_term`.
+///
+/// Expected:
+/// - The timer is untouched. `handle_append_entries_request_workflow`
+///   (role_state.rs) currently calls `self.reset_timer()` unconditionally before
+///   checking whether the sender's term is stale — so today this test is RED: a
+///   rejected, stale-term AppendEntries still resets the timer. If a stale leader
+///   keeps sending (each one rejected), this follower's timer never expires and it
+///   never starts its own election, even though the real current leader may be
+///   unreachable. Same class of bug as `test_handle_vote_request_rejected_does_not_reset_timer`
+///   (ticket #422), for AppendEntries instead of VoteRequest.
+#[tokio::test]
+async fn test_handle_append_entries_rejects_stale_term_does_not_reset_timer() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let follower_term = 2;
+    let stale_leader_term = follower_term - 1;
+
+    let membership = MockMembership::new();
+    context.membership = Arc::new(membership);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state_mut().update_current_term(follower_term);
+
+    let deadline_before = state.timer.next_deadline;
+
+    let append_entries_request = AppendEntriesRequest {
+        term: stale_leader_term,
+        leader_id: 5,
+        prev_log_index: 0,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
+        "handle_inbound_event should succeed"
+    );
+
+    assert_eq!(
+        state.timer.next_deadline, deadline_before,
+        "a rejected, stale-term AppendEntries must NOT reset the timer — otherwise a \
+         stale/misbehaving leader could keep this node from ever starting its own election"
+    );
+}
+
 /// Test: FollowerState handles AppendEntries failure from handler
 ///
 /// Scenario:
@@ -1969,13 +2032,13 @@ mod snapshot_tests {
 
         // LogPurgeCompleted: leader-only, but stale events after step-down must not error.
         // Must also clear scheduled_purge_upto to prevent duplicate execution.
-        state.scheduled_purge_upto = Some(LogId { term: 1, index: 1 });
+        state.pending_purge_upto = Some(LogId { term: 1, index: 1 });
         assert!(
             state.handle_log_purge_completed(LogId { term: 1, index: 1 }).is_ok(),
             "Stale LogPurgeCompleted should be silently ignored"
         );
         assert!(
-            state.scheduled_purge_upto.is_none(),
+            state.pending_purge_upto.is_none(),
             "handle_log_purge_completed must clear scheduled_purge_upto"
         );
 
@@ -2055,7 +2118,7 @@ mod snapshot_tests {
     async fn test_follower_snapshot_created_success_resets_flag_and_purges_logs() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
 
-        // Default retained_log_entries = 1, last_included.index = 50 → purge_upto_index = 49
+        // retained_log_entries = 1, last_included.index = 50 → purge_upto_index = 49
         let mut raft_log = mock_raft_log();
         raft_log
             .expect_entry_term()
@@ -2983,6 +3046,21 @@ async fn test_follower_commit_index_and_ack_both_sent_immediately() {
     assert!(response.unwrap().is_success());
 }
 
+/// Spawns a fake Worker that answers exactly one `InstallSnapshot` command with `result`,
+/// then exits. Returns a `StateMachineCommandSender` wired to it — stands in for the real
+/// `StateMachineWorker`, which isn't running in these role-layer unit tests.
+fn fake_command_sink_install_snapshot(
+    result: crate::Result<SnapshotApplyResult>
+) -> StateMachineCommandSender {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        if let Some(StateMachineCommand::InstallSnapshot { response, .. }) = rx.recv().await {
+            let _ = response.send(result);
+        }
+    });
+    StateMachineCommandSender::new(tx)
+}
+
 // ============================================================================
 // InstallSnapshotChunk Tests
 // ============================================================================
@@ -2990,7 +3068,7 @@ async fn test_follower_commit_index_and_ack_both_sent_immediately() {
 /// Follower reports success when snapshot is fully transferred and applied.
 ///
 /// # Given
-/// - apply_snapshot_stream_from_leader returns Ok(())
+/// - prepare_snapshot_stream returns Ok(())
 ///
 /// # When
 /// - Leader pushes a snapshot (InstallSnapshotChunk event)
@@ -3003,18 +3081,24 @@ async fn test_follower_install_snapshot_reports_success_when_apply_succeeds() {
     let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
     let mut sm_handler = MockStateMachineHandler::new();
-    sm_handler.expect_apply_snapshot_stream_from_leader().once().returning(
-        |_term, _stream, ack_tx, _config| {
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
             let _ = ack_tx.try_send(SnapshotAck {
                 seq: 0,
                 status: ChunkStatus::Accepted as i32,
                 next_requested: 1,
             });
-            Ok(())
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
         },
     );
-    sm_handler.expect_get_latest_snapshot_metadata().returning(|| None);
     context.handlers.state_machine_handler = Arc::new(sm_handler);
+    context.handlers.state_machine_commands =
+        fake_command_sink_install_snapshot(Ok(SnapshotApplyResult::Applied {
+            last_included: LogId { index: 1, term: 1 },
+        }));
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
@@ -3022,7 +3106,13 @@ async fn test_follower_install_snapshot_reports_success_when_apply_succeeds() {
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let (tx, rx) = mpsc::channel(32);
-    tx.send(SnapshotChunk::default()).await.unwrap();
+    tx.send(SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
     drop(tx);
     state
         .handle_inbound_event(
@@ -3045,6 +3135,221 @@ async fn test_follower_install_snapshot_reports_success_when_apply_succeeds() {
     );
 }
 
+/// #436-adjacent: InstallSnapshotChunk from a stale leader (leader_term < follower's
+/// own current_term) must be rejected outright — never reach `prepare_snapshot_stream`
+/// — with a response carrying the follower's own (higher) term, mirroring how
+/// AppendEntries handles the same situation (`role_state.rs`'s
+/// `handle_append_entries_request_workflow`). A legacy/deposed leader that hasn't
+/// learned it lost an election yet must not be able to overwrite this follower's
+/// state machine.
+#[tokio::test]
+async fn test_follower_rejects_install_snapshot_from_stale_leader_term() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    // Never even reached — the term check must short-circuit before it.
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().never();
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    let higher_term = 5;
+    state.shared_state_mut().update_current_term(higher_term);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: higher_term - 1, // stale
+        leader_id: 2,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s")
+        .expect("recv must not fail")
+        .expect("response must be Ok");
+
+    assert!(
+        !response.success,
+        "must reject a snapshot pushed by a stale-term leader"
+    );
+    assert_eq!(
+        response.term, higher_term,
+        "rejection response must carry the follower's own (higher) term, \
+         so the stale leader learns it's stale — mirrors AppendEntriesResponse::higher_term"
+    );
+    assert_eq!(
+        state.current_term(),
+        higher_term,
+        "rejecting a stale leader must not change the follower's own term"
+    );
+}
+
+/// C0 baseline (#436): after a successful InstallSnapshotChunk, the current
+/// (pre-Worker-unification) code path calls purge_logs_up_to with whatever
+/// get_latest_snapshot_metadata() returns at that moment. This test pins down that
+/// existing behavior — none of the other 4 install-snapshot tests exercise this
+/// branch at all, since they all mock get_latest_snapshot_metadata() to return None.
+#[tokio::test]
+async fn test_follower_install_snapshot_purges_to_snapshot_boundary_on_success() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    let expected_boundary = LogId { index: 42, term: 3 };
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+    context.handlers.state_machine_commands =
+        fake_command_sink_install_snapshot(Ok(SnapshotApplyResult::Applied {
+            last_included: expected_boundary,
+        }));
+
+    // Boundary must come from the Worker's own Applied result, not from re-querying
+    // get_latest_snapshot_metadata() after the fact (the race #436 fixes).
+    let mut purge_executor = MockPurgeExecutor::new();
+    purge_executor
+        .expect_execute_purge()
+        .withf(move |boundary| *boundary == expected_boundary)
+        .times(1)
+        .returning(|_| Ok(()));
+    context.handlers.purge_executor = Arc::new(purge_executor);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s");
+    // mock drop verifies purge_logs_up_to was called exactly once with expected_boundary
+}
+
+/// Regression test (PR #442 review): on a successful InstallSnapshotChunk, the Worker
+/// advances `last_applied` to `last_included.index` and this handler schedules a log
+/// purge up to that same boundary — but neither step advances `commit_index`. If the
+/// leader pushes a snapshot before this follower's `commit_index` has caught up via
+/// AppendEntries (e.g. leader crashes/re-elects right after the push), the follower is
+/// left with `last_applied` / `last_purged_index` > `commit_index`, breaking the
+/// invariant that nothing is ever applied or purged ahead of what `commit_index`
+/// confirms as committed.
+///
+/// # Given
+/// - Follower's commit_index starts at 10 (stale, below the snapshot boundary)
+/// - Worker reports SnapshotApplyResult::Applied with last_included.index = 42
+///
+/// # When
+/// - Leader pushes a snapshot (InstallSnapshotChunk event)
+///
+/// # Then
+/// - commit_index must advance to at least 42 (the snapshot boundary), not stay at 10
+#[tokio::test]
+async fn test_follower_install_snapshot_advances_commit_index_to_boundary() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    let snapshot_boundary = LogId { index: 42, term: 3 };
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+    context.handlers.state_machine_commands =
+        fake_command_sink_install_snapshot(Ok(SnapshotApplyResult::Applied {
+            last_included: snapshot_boundary,
+        }));
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.update_commit_index(10).unwrap();
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s");
+
+    assert_eq!(
+        state.commit_index(),
+        snapshot_boundary.index,
+        "commit_index must advance to the installed snapshot boundary — otherwise \
+         last_applied/last_purged_index run ahead of commit_index"
+    );
+}
+
 /// Follower must NOT report success when apply fails after transfer completes (#308).
 ///
 /// # Raft §7 + #308
@@ -3054,7 +3359,7 @@ async fn test_follower_install_snapshot_reports_success_when_apply_succeeds() {
 /// to advance match_index and stop retrying, leaving the follower permanently behind.
 ///
 /// # Given
-/// - apply_snapshot_stream_from_leader: sends Accepted ACK (transfer succeeded),
+/// - prepare_snapshot_stream: sends Accepted ACK (transfer succeeded),
 ///   then returns Err (apply_snapshot_from_file failed)
 ///
 /// # When
@@ -3068,21 +3373,26 @@ async fn test_follower_install_snapshot_reports_failure_when_apply_fails_after_t
     let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
 
     let mut sm_handler = MockStateMachineHandler::new();
-    sm_handler.expect_apply_snapshot_stream_from_leader().once().returning(
-        |_term, _stream, ack_tx, _config| {
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
             // Transfer phase succeeds: all chunks accepted
             let _ = ack_tx.try_send(SnapshotAck {
                 seq: 0,
                 status: ChunkStatus::Accepted as i32,
                 next_requested: 1,
             });
-            // Apply phase fails (apply_snapshot_from_file returned Err)
-            Err(crate::Error::Fatal(
-                "apply_snapshot_from_file failed".into(),
-            ))
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
         },
     );
     context.handlers.state_machine_handler = Arc::new(sm_handler);
+    // Apply phase fails inside the Worker (apply_snapshot_from_file returned a
+    // non-fatal error) — the follower must absorb it, not propagate.
+    context.handlers.state_machine_commands = fake_command_sink_install_snapshot(Err(
+        crate::SnapshotError::OperationFailed("apply_snapshot_from_file failed".into()).into(),
+    ));
 
     let mut state =
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
@@ -3092,7 +3402,13 @@ async fn test_follower_install_snapshot_reports_failure_when_apply_fails_after_t
 
     // Follower absorbs the error and continues (does not propagate)
     let (tx, rx) = mpsc::channel(32);
-    tx.send(SnapshotChunk::default()).await.unwrap();
+    tx.send(SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
     drop(tx);
     let _ = state
         .handle_inbound_event(
@@ -3111,6 +3427,458 @@ async fn test_follower_install_snapshot_reports_failure_when_apply_fails_after_t
     assert!(
         !response.success,
         "Follower must NOT report success when apply failed after transfer (got success:true — #308 bug)"
+    );
+}
+
+/// A fatal install error (e.g. a snapshot boundary conflict — corruption, not a
+/// transient failure) must propagate out of `handle_inbound_event` so the Raft loop
+/// shuts the node down instead of silently continuing with a possibly-corrupt state
+/// (#436). Non-fatal failures are still absorbed; this covers the fatal path only.
+#[tokio::test]
+async fn test_follower_install_snapshot_fatal_error_propagates() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+    // Install fails with a boundary conflict — fatal, must propagate.
+    context.handlers.state_machine_commands =
+        fake_command_sink_install_snapshot(Err(crate::SnapshotError::BoundaryConflict {
+            index: 5,
+            local_term: 1,
+            incoming_term: 2,
+        }
+        .into()));
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    // The leader still gets a failure response before the error propagates.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s");
+
+    assert!(
+        result.is_err(),
+        "a fatal install error must propagate out of handle_inbound_event, got Ok(())"
+    );
+}
+
+/// The role layer must not reply to the leader until the Worker's response genuinely
+/// arrives — proves `install_snapshot(...).await` really blocks on the Worker's oneshot,
+/// it doesn't derive success from something earlier (e.g. `prepare_snapshot_stream`
+/// finishing, or the last chunk ACK — the exact class of bug #308 was about).
+#[tokio::test]
+async fn test_follower_install_snapshot_does_not_reply_before_worker_responds() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    // Fake Worker that withholds its response until explicitly released, so we can
+    // observe that the role layer hasn't replied yet while it's still "in flight".
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let (tx, mut worker_rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        if let Some(StateMachineCommand::InstallSnapshot { response, .. }) = worker_rx.recv().await
+        {
+            let _ = release_rx.await;
+            let _ = response.send(Ok(SnapshotApplyResult::Applied {
+                last_included: LogId { index: 1, term: 1 },
+            }));
+        }
+    });
+    context.handlers.state_machine_commands = StateMachineCommandSender::new(tx);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (chunk_tx, chunk_rx) = mpsc::channel(32);
+    chunk_tx
+        .send(SnapshotChunk {
+            leader_term: 1,
+            leader_id: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    drop(chunk_tx);
+
+    let handle = tokio::spawn(async move {
+        state
+            .handle_inbound_event(
+                InboundEvent::InstallSnapshotChunk(chunk_rx, resp_tx),
+                &context,
+                internal_event_tx,
+            )
+            .await
+    });
+
+    // Give the handler time to reach the point where it's awaiting the Worker.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        resp_rx.try_recv().is_err(),
+        "response must not be sent before the (fake) Worker replies"
+    );
+
+    // Release the fake Worker — only now should the reply follow.
+    let _ = release_tx.send(());
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s")
+        .expect("recv must not fail")
+        .expect("response must be Ok");
+    assert!(
+        response.success,
+        "must report success once the Worker actually completes"
+    );
+
+    handle.await.unwrap().unwrap();
+}
+
+/// If the Worker's command channel is already closed (Worker task exited), the role
+/// layer must report failure cleanly — not panic — and must not hang.
+#[tokio::test]
+async fn test_follower_install_snapshot_channel_closed_does_not_panic() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    // Worker's receiver already dropped — simulates the Worker task having exited.
+    let (tx, rx) = mpsc::unbounded_channel();
+    drop(rx);
+    context.handlers.state_machine_commands = StateMachineCommandSender::new(tx);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (chunk_tx, chunk_rx) = mpsc::channel(32);
+    chunk_tx
+        .send(SnapshotChunk {
+            leader_term: 1,
+            leader_id: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    drop(chunk_tx);
+
+    // Must not panic.
+    let _ = state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(chunk_rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s")
+        .expect("recv must not fail")
+        .expect("response must be Ok");
+    assert!(
+        !response.success,
+        "must report failure (WorkerUnavailable) when the Worker channel is closed, not panic"
+    );
+}
+
+/// A failed install must not schedule any purge — purge intent is only submitted after
+/// a genuinely successful (or safely-ignored) install, never on failure.
+#[tokio::test]
+async fn test_follower_install_snapshot_does_not_purge_on_apply_failure() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+    context.handlers.state_machine_commands = fake_command_sink_install_snapshot(Err(
+        crate::Error::Fatal("apply_snapshot_from_file failed".into()),
+    ));
+
+    let mut purge_executor = MockPurgeExecutor::new();
+    purge_executor.expect_execute_purge().never();
+    context.handlers.purge_executor = Arc::new(purge_executor);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (chunk_tx, chunk_rx) = mpsc::channel(32);
+    chunk_tx
+        .send(SnapshotChunk {
+            leader_term: 1,
+            leader_id: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    drop(chunk_tx);
+
+    let _ = state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(chunk_rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv()).await;
+    // mock drop verifies execute_purge was never called
+}
+
+/// Regression/pin test (PR #442 review, point A): a snapshot stream that closes before
+/// any chunk arrives (a transient transport hiccup — e.g. the leader's connection blipped
+/// right after opening the stream) must still get an explicit `SnapshotResponse{success:
+/// false}` reply before the handler returns, and must not propagate an error. Leaving the
+/// leader to infer failure from a dropped RPC channel — instead of the typed response the
+/// rest of this design consistently sends — would make retry/backoff behavior inconsistent
+/// with every other failure path in this handler. This pins down follower's existing
+/// (already-correct) behavior; the learner-side counterpart of this test is red.
+#[tokio::test]
+async fn test_follower_install_snapshot_replies_before_returning_when_stream_closes_before_first_chunk()
+ {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    // Must never be reached — the handler must bail out before touching the Worker.
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().never();
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel::<SnapshotChunk>(32);
+    drop(tx); // stream closes before any chunk arrives
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "an empty/closed snapshot stream is a transient transport hiccup, not fatal — \
+         must not propagate an error"
+    );
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s")
+        .expect("recv must not fail")
+        .expect("response must be Ok(SnapshotResponse)");
+    assert!(
+        !response.success,
+        "must report failure via the typed SnapshotResponse so the leader retries \
+         through the normal path, instead of inferring it from a dropped RPC channel"
+    );
+}
+
+/// Regression/pin test (PR #442 review, point B): a non-fatal error from the Worker's
+/// install must not propagate out of `handle_inbound_event` — only genuinely fatal
+/// errors (e.g. BoundaryConflict, see `test_follower_install_snapshot_fatal_error_propagates`)
+/// should. The existing `..._reports_failure_when_apply_fails_after_transfer` test only
+/// checks the response's `success` field and discards the `Result`; this test makes the
+/// non-propagation contract itself an explicit assertion. Pins down follower's existing
+/// (already-correct) behavior; the learner-side counterpart of this test is red.
+#[tokio::test]
+async fn test_follower_install_snapshot_non_fatal_apply_error_does_not_propagate() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, ack_tx, _config| {
+            let _ = ack_tx.try_send(SnapshotAck {
+                seq: 0,
+                status: ChunkStatus::Accepted as i32,
+                next_requested: 1,
+            });
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+    context.handlers.state_machine_commands = fake_command_sink_install_snapshot(Err(
+        crate::SnapshotError::OperationFailed("apply_snapshot_from_file failed".into()).into(),
+    ));
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "a non-fatal apply error must be absorbed (warn + continue), not propagated"
+    );
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv()).await;
+}
+
+/// Regression/pin test (PR #442 review, point C): a non-fatal `prepare_snapshot_stream`
+/// failure (e.g. a transient transfer/decompress error) must not propagate out of
+/// `handle_inbound_event` — it's the same category of transient failure as an
+/// apply-phase error, and follower already treats it that way unconditionally (it
+/// doesn't even check `is_fatal()` here — every `prepare_snapshot_stream` error is
+/// treated as recoverable). Pins down follower's existing (already-correct) behavior;
+/// the learner-side counterpart of this test is red.
+#[tokio::test]
+async fn test_follower_install_snapshot_stream_prepare_failure_does_not_propagate() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, _ack_tx, _config| {
+            Err(crate::SnapshotError::OperationFailed("decompress failed".into()).into())
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    let result = state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "a non-fatal prepare_snapshot_stream failure must not propagate an error"
+    );
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), resp_rx.recv())
+        .await
+        .expect("response must arrive within 2s")
+        .expect("recv must not fail")
+        .expect("response must be Ok(SnapshotResponse)");
+    assert!(
+        !response.success,
+        "must report failure via the typed SnapshotResponse"
     );
 }
 
@@ -3178,10 +3946,6 @@ async fn test_follower_cluster_conf_always_exposes_current_leader() {
 }
 
 // ============================================================================
-// StreamSnapshot Rejection Tests
-// ============================================================================
-
-// ============================================================================
 // Role Transition Tests — scheduled_purge_upto / last_purged_index
 // ============================================================================
 
@@ -3201,7 +3965,7 @@ fn test_follower_from_candidate_preserves_last_purged_index_resets_scheduled() {
         follower.last_purged_index,
         Some(LogId { term: 2, index: 10 })
     );
-    assert_eq!(follower.scheduled_purge_upto, None);
+    assert_eq!(follower.pending_purge_upto, None);
 }
 
 /// From<&LeaderState>: both fields preserved across leader-to-follower stepdown.
@@ -3222,7 +3986,7 @@ fn test_follower_from_leader_preserves_both_purge_fields() {
         Some(LogId { term: 2, index: 20 })
     );
     assert_eq!(
-        follower.scheduled_purge_upto,
+        follower.pending_purge_upto,
         Some(LogId { term: 2, index: 18 })
     );
 }
@@ -3233,7 +3997,7 @@ fn test_follower_from_learner_preserves_both_purge_fields() {
     let cfg = Arc::new(node_config("/tmp/test_follower_from_learner_purge"));
     let mut learner = LearnerState::<MockTypeConfig>::new(1, cfg);
     learner.last_purged_index = Some(LogId { term: 1, index: 7 });
-    learner.scheduled_purge_upto = Some(LogId { term: 1, index: 5 });
+    learner.pending_purge_upto = Some(LogId { term: 1, index: 5 });
 
     let follower = FollowerState::from(&learner);
 
@@ -3242,52 +4006,7 @@ fn test_follower_from_learner_preserves_both_purge_fields() {
         Some(LogId { term: 1, index: 7 })
     );
     assert_eq!(
-        follower.scheduled_purge_upto,
+        follower.pending_purge_upto,
         Some(LogId { term: 1, index: 5 })
-    );
-}
-
-/// Test: Follower rejects StreamSnapshot — only Leader streams snapshots to Learners.
-///
-/// Scenario:
-/// - Follower receives StreamSnapshot (misdirected from a Learner)
-///
-/// Expected:
-/// - startup_tx receives Err(FailedPrecondition) — tells caller this node is not the leader
-/// - handle_inbound_event returns Ok() (not a fatal error)
-#[tokio::test]
-async fn test_follower_rejects_stream_snapshot() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let (context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
-
-    let mut state =
-        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
-
-    let (_ack_tx, ack_rx) =
-        tokio::sync::mpsc::channel::<d_engine_proto::server::storage::SnapshotAck>(4);
-    let (chunk_tx, _chunk_rx) = tokio::sync::mpsc::channel::<
-        std::sync::Arc<d_engine_proto::server::storage::SnapshotChunk>,
-    >(4);
-    let (startup_tx, startup_rx) =
-        tokio::sync::oneshot::channel::<std::result::Result<(), tonic::Status>>();
-
-    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
-
-    let result = state
-        .handle_inbound_event(
-            InboundEvent::StreamSnapshot(ack_rx, chunk_tx, startup_tx),
-            &context,
-            internal_event_tx,
-        )
-        .await;
-
-    assert!(result.is_ok(), "StreamSnapshot rejection must not be fatal");
-
-    let startup_result = startup_rx.await.expect("startup_tx must be sent");
-    assert!(startup_result.is_err());
-    assert_eq!(
-        startup_result.unwrap_err().code(),
-        tonic::Code::FailedPrecondition,
-        "Follower must reply FailedPrecondition — not the leader"
     );
 }

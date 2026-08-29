@@ -233,36 +233,6 @@ pub mod snapshot_service_client {
                 );
             self.inner.client_streaming(req, path, codec).await
         }
-        /// Learner-driven snapshot streaming
-        pub async fn stream_snapshot(
-            &mut self,
-            request: impl tonic::IntoStreamingRequest<Message = super::SnapshotAck>,
-        ) -> std::result::Result<
-            tonic::Response<tonic::codec::Streaming<super::SnapshotChunk>>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/d_engine.server.storage.SnapshotService/StreamSnapshot",
-            );
-            let mut req = request.into_streaming_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "d_engine.server.storage.SnapshotService",
-                        "StreamSnapshot",
-                    ),
-                );
-            self.inner.streaming(req, path, codec).await
-        }
     }
 }
 /// Generated server implementations.
@@ -284,20 +254,6 @@ pub mod snapshot_service_server {
             request: tonic::Request<tonic::Streaming<super::SnapshotChunk>>,
         ) -> std::result::Result<
             tonic::Response<super::SnapshotResponse>,
-            tonic::Status,
-        >;
-        /// Server streaming response type for the StreamSnapshot method.
-        type StreamSnapshotStream: tonic::codegen::tokio_stream::Stream<
-                Item = std::result::Result<super::SnapshotChunk, tonic::Status>,
-            >
-            + std::marker::Send
-            + 'static;
-        /// Learner-driven snapshot streaming
-        async fn stream_snapshot(
-            &self,
-            request: tonic::Request<tonic::Streaming<super::SnapshotAck>>,
-        ) -> std::result::Result<
-            tonic::Response<Self::StreamSnapshotStream>,
             tonic::Status,
         >;
     }
@@ -421,53 +377,6 @@ pub mod snapshot_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.client_streaming(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/d_engine.server.storage.SnapshotService/StreamSnapshot" => {
-                    #[allow(non_camel_case_types)]
-                    struct StreamSnapshotSvc<T: SnapshotService>(pub Arc<T>);
-                    impl<
-                        T: SnapshotService,
-                    > tonic::server::StreamingService<super::SnapshotAck>
-                    for StreamSnapshotSvc<T> {
-                        type Response = super::SnapshotChunk;
-                        type ResponseStream = T::StreamSnapshotStream;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::ResponseStream>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<tonic::Streaming<super::SnapshotAck>>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SnapshotService>::stream_snapshot(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = StreamSnapshotSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

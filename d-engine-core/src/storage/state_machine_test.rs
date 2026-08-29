@@ -1,11 +1,13 @@
 use crate::ApplyEntry;
 use crate::Command;
 use crate::Error;
+use crate::SnapshotApplyResult;
 use crate::storage::StateMachine;
 use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -39,10 +41,13 @@ impl StateMachineTestSuite {
         Self::test_batch_operations(builder.build().await?).await?;
         Self::test_last_applied_detection(builder.build().await?).await?;
         Self::test_snapshot_operations(builder.build().await?).await?;
+        Self::test_snapshot_checksum_validation(builder.build().await?).await?;
+        Self::test_snapshot_apply_rejects_missing_boundary(builder.build().await?).await?;
         Self::test_persistence(builder.build().await?).await?;
 
         Self::test_drop_flushes_data(&builder).await?;
         Self::test_drop_persists_last_applied(&builder).await?;
+        Self::test_last_applied_survives_reopen_after_snapshot_install(&builder).await?;
         Self::test_data_survives_reopen(&builder).await?;
         Self::test_batch_survives_reopen(&builder).await?;
         Self::test_ungraceful_shutdown_recovery(&builder).await?;
@@ -55,6 +60,8 @@ impl StateMachineTestSuite {
         Self::test_get_multi_service_registry_coherence(builder.build().await?).await?;
         Self::test_get_multi_election_state_coherence(builder.build().await?).await?;
         Self::test_get_multi_quota_management_coherence(builder.build().await?).await?;
+
+        Self::test_generate_snapshot_data_is_atomic_under_concurrent_apply(&builder).await?;
 
         builder.cleanup().await?;
         Ok(())
@@ -299,10 +306,9 @@ impl StateMachineTestSuite {
             .generate_snapshot_data(snapshot_dir.clone(), last_included)
             .await?;
 
-        // Verify snapshot metadata was updated
-        let metadata = state_machine.snapshot_metadata();
-        assert!(metadata.is_some());
-        assert_eq!(metadata.unwrap().last_included, Some(last_included));
+        // (#436) generate_snapshot_data no longer publishes snapshot metadata — that
+        // moved to build_local_snapshot (the handler), after the archive is durable.
+        // So snapshot_metadata() is expected to remain unchanged here.
 
         // Apply snapshot (simulate receiving from leader)
         // let snapshot_path = snapshot_dir.join("snapshot.bin");
@@ -320,6 +326,17 @@ impl StateMachineTestSuite {
 
         // Assume there were some entries. After applying snapshot, all the old ones should be
         // cleared.
+        //
+        // Deliberately stop this replay BEFORE last_included.index (3): the snapshot's
+        // authoritative stale/duplicate check (#436) compares only the single
+        // (index, term) boundary, not per-entry content, so as long as
+        // current.index < incoming.index the install proceeds and does a full replace
+        // regardless of what garbage sat below the boundary. Replaying all the way to
+        // index 3 would make current == incoming's boundary, which the classification
+        // (correctly) treats as an idempotent duplicate and skips — reaching that state
+        // with *different* content at the same (index, term) can't happen in a real Raft
+        // cluster (Log Matching Property), so doing it here would only be testing an
+        // impossible scenario, not a real one.
         let entries = vec![
             create_insert_entry(
                 1,
@@ -330,11 +347,6 @@ impl StateMachineTestSuite {
                 2,
                 Bytes::from(b"old_key2".to_vec()),
                 Bytes::from(b"vold_alue2".to_vec()),
-            ),
-            create_insert_entry(
-                3,
-                Bytes::from(b"old_key3".to_vec()),
-                Bytes::from(b"old_value3".to_vec()),
             ),
         ];
         state_machine.apply_chunk(&entries).await?;
@@ -357,6 +369,102 @@ impl StateMachineTestSuite {
         assert_eq!(state_machine.get(b"old_key2")?, None);
         assert_eq!(state_machine.get(b"old_key3")?, None);
         assert_eq!(state_machine.last_applied(), last_included);
+
+        Ok(())
+    }
+
+    /// Snapshot checksum must be both computed and enforced.
+    ///
+    /// `generate_snapshot_data` must return a real checksum of the exported data (never an
+    /// all-zero placeholder), and `apply_snapshot_from_file` must reject a snapshot whose
+    /// checksum does not match — so a corrupted or tampered snapshot is never installed
+    /// silently. The per-chunk crc32 only proves "bytes received == bytes sent"; this
+    /// end-to-end checksum proves "bytes received == bytes the leader recorded".
+    ///
+    /// # Scenario
+    /// - Apply entries, then generate a snapshot at the applied boundary.
+    /// - Expected: the returned checksum has at least one non-zero byte (a real checksum).
+    /// - Reset, then install the same snapshot with a WRONG checksum.
+    /// - Expected: the install is rejected.
+    pub async fn test_snapshot_checksum_validation(
+        state_machine: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        let entries = vec![
+            create_insert_entry(
+                1,
+                Bytes::from(b"key1".to_vec()),
+                Bytes::from(b"value1".to_vec()),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from(b"key2".to_vec()),
+                Bytes::from(b"value2".to_vec()),
+            ),
+            create_insert_entry(
+                3,
+                Bytes::from(b"key3".to_vec()),
+                Bytes::from(b"value3".to_vec()),
+            ),
+        ];
+        state_machine.apply_chunk(&entries).await?;
+
+        let temp_dir = TempDir::new()?;
+        let snapshot_dir = temp_dir.path().join("snapshot");
+        let last_included = LogId { index: 3, term: 1 };
+
+        let checksum = state_machine
+            .generate_snapshot_data(snapshot_dir.clone(), last_included)
+            .await?;
+
+        // A real checksum is never all-zero; a placeholder (e.g. [0; 32]) signals the
+        // adapter is not computing a checksum at all.
+        assert!(
+            checksum.iter().any(|&b| b != 0),
+            "generate_snapshot_data returned an all-zero checksum — the adapter must compute \
+             a real checksum of the snapshot content, not a placeholder"
+        );
+
+        // Reset so the snapshot is strictly newer than current state, then install it with a
+        // deliberately wrong checksum. The install must be rejected, not silently accepted.
+        state_machine.reset().await?;
+
+        let wrong_metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: Bytes::from(vec![0; 32]),
+        };
+        let result = state_machine.apply_snapshot_from_file(&wrong_metadata, snapshot_dir).await;
+
+        assert!(
+            result.is_err(),
+            "apply_snapshot_from_file accepted a snapshot with a mismatched checksum — the \
+             adapter must reject it"
+        );
+
+        Ok(())
+    }
+
+    /// `apply_snapshot_from_file` must reject `last_included: None` outright — a missing
+    /// boundary can't be classified stale/duplicate/conflict/eligible, so silently
+    /// defaulting it (`unwrap_or_default()`) turns malformed metadata into a fake no-op.
+    pub async fn test_snapshot_apply_rejects_missing_boundary(
+        state_machine: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        let metadata = SnapshotMetadata {
+            last_included: None,
+            checksum: Bytes::from(vec![0; 32]),
+        };
+        let temp_dir = TempDir::new()?;
+
+        let result = state_machine
+            .apply_snapshot_from_file(&metadata, temp_dir.path().to_path_buf())
+            .await;
+
+        assert!(
+            result.is_err(),
+            "apply_snapshot_from_file accepted SnapshotMetadata{{last_included: None}} — a \
+             missing boundary can't be classified as stale/duplicate/conflict/eligible, it \
+             must be rejected, not silently substituted with a default LogId"
+        );
 
         Ok(())
     }
@@ -629,6 +737,93 @@ impl StateMachineTestSuite {
             sm2.get(b"drop_meta_key3")?,
             Some(Bytes::from(b"drop_meta_value3".to_vec())),
             "Data should also be persisted by Drop"
+        );
+
+        Ok(())
+    }
+
+    /// `last_applied` must survive a crash/restart right after a snapshot install, with
+    /// no further `apply_chunk` — every other crash/reopen scenario in this suite drives
+    /// its data through `apply_chunk` first, so an adapter that only updates
+    /// `last_applied` in memory on install (never persists it) slipped through.
+    pub async fn test_last_applied_survives_reopen_after_snapshot_install<
+        B: StateMachineBuilder,
+    >(
+        builder: &B
+    ) -> Result<(), Error> {
+        let last_included = LogId { index: 3, term: 1 };
+
+        {
+            let sm = builder.build().await?;
+            sm.start().await?;
+
+            let entries = vec![
+                create_insert_entry(
+                    1,
+                    Bytes::from(b"snap_survive_key1".to_vec()),
+                    Bytes::from(b"v1".to_vec()),
+                ),
+                create_insert_entry(
+                    2,
+                    Bytes::from(b"snap_survive_key2".to_vec()),
+                    Bytes::from(b"v2".to_vec()),
+                ),
+                create_insert_entry(
+                    3,
+                    Bytes::from(b"snap_survive_key3".to_vec()),
+                    Bytes::from(b"v3".to_vec()),
+                ),
+            ];
+            sm.apply_chunk(&entries).await?;
+
+            let temp_dir = TempDir::new()?;
+            let snapshot_dir = temp_dir.path().join("snapshot");
+            let checksum = sm.generate_snapshot_data(snapshot_dir.clone(), last_included).await?;
+
+            // Fresh node receiving this snapshot for the first time (current == default),
+            // so the install is strictly "Greater" — eligible, not a stale/duplicate no-op.
+            sm.reset().await?;
+            assert_eq!(sm.last_applied(), LogId::default());
+
+            let metadata = SnapshotMetadata {
+                last_included: Some(last_included),
+                checksum: Bytes::from(checksum.to_vec()),
+            };
+            let result = sm.apply_snapshot_from_file(&metadata, snapshot_dir).await?;
+            assert!(
+                matches!(result, SnapshotApplyResult::Applied { .. }),
+                "expected Applied, got: {result:?}"
+            );
+            assert_eq!(
+                sm.last_applied(),
+                last_included,
+                "last_applied must reflect the install immediately, in memory"
+            );
+
+            // NO apply_chunk, NO stop(), NO flush() below — only Drop (or whatever the
+            // install itself already persisted) may carry last_applied across restart.
+        } // <- Drop runs here
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let sm2 = builder.build().await?;
+        sm2.start().await?;
+
+        assert_eq!(
+            sm2.last_applied(),
+            last_included,
+            "BUG: last_applied not persisted after a snapshot install! If an adapter's \
+             apply_snapshot_from_file updates last_applied only in memory (e.g. via \
+             update_last_applied) without also durably persisting it (e.g. via \
+             persist_last_applied) before returning, this is exactly where it shows up: \
+             the process restarts with no record the install ever happened, and Raft \
+             replays the entire log on top of already-installed snapshot content."
+        );
+
+        assert_eq!(
+            sm2.get(b"snap_survive_key1")?,
+            Some(Bytes::from(b"v1".to_vec())),
+            "snapshot content must also survive the restart"
         );
 
         Ok(())
@@ -1263,6 +1458,128 @@ impl StateMachineTestSuite {
         );
         Ok(())
     }
+
+    /// `generate_snapshot_data` must present a single, atomically-pinned view of the state
+    /// machine (#436): if `apply_chunk` runs concurrently with an in-flight
+    /// `generate_snapshot_data` call, the exported snapshot must reflect either the state
+    /// strictly before or strictly after that `apply_chunk` — never a mix of both. See the
+    /// `generate_snapshot_data` doc comment on the `StateMachine` trait for the contract
+    /// this enforces on implementors.
+    ///
+    /// Races `generate_snapshot_data` against a two-key `apply_chunk` (mirroring the
+    /// service-registry addr/version coherence scenario used by `get_multi` above) many
+    /// times, since a single interleaving is timing-dependent and may not hit an unsafe
+    /// window even on a broken implementation.
+    pub async fn test_generate_snapshot_data_is_atomic_under_concurrent_apply<
+        B: StateMachineBuilder,
+    >(
+        builder: &B
+    ) -> Result<(), Error> {
+        struct Round {
+            _temp_dir: TempDir, // kept alive so snapshot_dir survives to the verification pass
+            snapshot_dir: PathBuf,
+            last_included: LogId,
+            checksum: Bytes,
+            before: (Bytes, Bytes),
+            after: (Bytes, Bytes),
+        }
+
+        let live = builder.build().await?;
+
+        let addr_key = Bytes::from_static(b"/service/payment/addr");
+        let version_key = Bytes::from_static(b"/service/payment/version");
+
+        let mut prev_addr = Bytes::from_static(b"10.0.0.1:8080");
+        let mut prev_version = Bytes::from_static(b"v1");
+        live.apply_chunk(&[
+            create_insert_entry(1, addr_key.clone(), prev_addr.clone()),
+            create_insert_entry(2, version_key.clone(), prev_version.clone()),
+        ])
+        .await?;
+
+        // Racing phase: keep every round's exported directory around (don't verify yet) —
+        // `StateMachineBuilder` implementations (e.g. RocksDB) only support one live handle
+        // per path, so verifying via reset+reload here would clobber `live` mid-race.
+        let mut rounds = Vec::with_capacity(200);
+        let mut next_index = 3u64;
+        for round_num in 0u32..200 {
+            let last_included = LogId {
+                index: next_index - 1,
+                term: 1,
+            };
+            let temp_dir = TempDir::new()?;
+            let snapshot_dir = temp_dir.path().join("snapshot");
+
+            let new_addr = Bytes::from(format!("10.0.0.{}:8080", round_num + 2));
+            let new_version = Bytes::from(format!("v{}", round_num + 2));
+
+            let export_fut = {
+                let live = live.clone();
+                let dir = snapshot_dir.clone();
+                async move { live.generate_snapshot_data(dir, last_included).await }
+            };
+            let apply_fut = {
+                let live = live.clone();
+                let (addr_key, version_key) = (addr_key.clone(), version_key.clone());
+                let (new_addr, new_version) = (new_addr.clone(), new_version.clone());
+                let idx = next_index;
+                async move {
+                    live.apply_chunk(&[
+                        create_insert_entry(idx, addr_key, new_addr),
+                        create_insert_entry(idx + 1, version_key, new_version),
+                    ])
+                    .await
+                }
+            };
+
+            let (export_result, apply_result) = tokio::join!(export_fut, apply_fut);
+            let checksum = export_result?;
+            apply_result?;
+            next_index += 2;
+
+            rounds.push(Round {
+                _temp_dir: temp_dir,
+                snapshot_dir,
+                last_included,
+                checksum: Bytes::from(checksum.to_vec()),
+                before: (prev_addr.clone(), prev_version.clone()),
+                after: (new_addr.clone(), new_version.clone()),
+            });
+
+            prev_addr = new_addr;
+            prev_version = new_version;
+        }
+
+        // Verification phase: now that racing is done, reuse `live` sequentially
+        // (reset + reload) to inspect what each round's export actually captured.
+        for r in &rounds {
+            live.reset().await?;
+            let metadata = SnapshotMetadata {
+                last_included: Some(r.last_included),
+                checksum: r.checksum.clone(),
+            };
+            live.apply_snapshot_from_file(&metadata, r.snapshot_dir.clone()).await?;
+
+            let got_addr = live.get(&addr_key)?;
+            let got_version = live.get(&version_key)?;
+
+            let matches_before =
+                got_addr.as_ref() == Some(&r.before.0) && got_version.as_ref() == Some(&r.before.1);
+            let matches_after =
+                got_addr.as_ref() == Some(&r.after.0) && got_version.as_ref() == Some(&r.after.1);
+
+            assert!(
+                matches_before || matches_after,
+                "torn snapshot at last_included={:?}: addr={got_addr:?} version={got_version:?}, \
+                 expected either before={:?} or after={:?}",
+                r.last_included,
+                r.before,
+                r.after
+            );
+        }
+
+        Ok(())
+    }
 }
 
 /// Helper function to create an Insert ApplyEntry
@@ -1342,7 +1659,7 @@ mod default_scan_prefix_tests {
     use d_engine_proto::server::storage::SnapshotMetadata;
 
     use crate::storage::state_machine::{ApplyResult, StateMachine};
-    use crate::{ApplyEntry, Error};
+    use crate::{ApplyEntry, Error, SnapshotApplyResult};
 
     struct MinimalSm {
         running: AtomicBool,
@@ -1419,10 +1736,12 @@ mod default_scan_prefix_tests {
 
         async fn apply_snapshot_from_file(
             &self,
-            _metadata: &SnapshotMetadata,
+            metadata: &SnapshotMetadata,
             _snapshot_path: std::path::PathBuf,
-        ) -> Result<(), Error> {
-            Ok(())
+        ) -> Result<SnapshotApplyResult, Error> {
+            Ok(SnapshotApplyResult::Applied {
+                last_included: metadata.last_included.unwrap_or_default(),
+            })
         }
 
         async fn generate_snapshot_data(

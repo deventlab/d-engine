@@ -28,7 +28,8 @@ config/local.toml
 .vscode/settings.json
 
 snapshots
-.cargo
+.cargo/*
+!.cargo/audit.toml
 
 # Docker Related
 docker/.env
@@ -58,3 +59,5 @@ CLAUDE.md
 # MemPalace per-project files (issue #185)
 mempalace.yaml
 entities.json
+
+skills-lock.json
