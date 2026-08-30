@@ -461,6 +461,53 @@ fn test_run_until_caught_up_discards_stale_generation_result_without_advancing()
     );
 }
 
+/// The other half of the fence: when `generation` at completion still
+/// matches `generation` at the round's start (nothing fenced it while the
+/// physical flush was running), the result must be accepted normally —
+/// `durable_index` advances and queued replies resolve to `Ok`.
+///
+/// Bumps `generation` twice before the round starts (so this isn't just
+/// "stays at the default 0"), proving it's the *match*, not the specific
+/// value, that matters.
+///
+/// Expected:
+///   - `durable_index()` advances to the round's `max_index`.
+///   - The queued reply resolves to `Ok(())`.
+#[test]
+fn test_run_until_caught_up_accepts_result_when_generation_unchanged() {
+    let (storage, _flush_call_count) = MockStorageEngine::not_durable(
+        "run_until_caught_up_accepts_result_when_generation_unchanged".into(),
+    );
+    let coord = FsyncCoordinator::new();
+    let raft_log = minimal_raft_log(storage);
+
+    // Two unrelated fences happened earlier — generation is 2, not 0 — before
+    // this round is even recorded as in flight.
+    coord.fence_reset();
+    coord.fence_reset();
+    assert_eq!(coord.generation.load(Ordering::Acquire), 2);
+
+    let (tx, mut rx) = oneshot::channel::<Result<()>>();
+    coord.inflight.store(true, Ordering::Release);
+    coord.pending_max.store(5, Ordering::Release);
+    coord.pending_replies.lock().unwrap().push(tx);
+
+    // Nothing fences this round while it runs — generation stays at 2.
+    coord.run_until_caught_up(&raft_log);
+
+    assert_eq!(
+        raft_log.durable_index.load(Ordering::Acquire),
+        5,
+        "a matching generation must let the result advance durable_index normally"
+    );
+    assert!(
+        rx.try_recv()
+            .expect("reply must have been answered")
+            .is_ok(),
+        "a matching generation must resolve queued replies as Ok, not Err"
+    );
+}
+
 /// Multiple `submit()` calls made while a round is in flight are coalesced
 /// into a single subsequent physical `flush()` call by the same task — not
 /// one physical flush per `submit()` call.

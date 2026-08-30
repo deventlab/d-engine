@@ -197,6 +197,15 @@ impl TermSegments {
 /// on tokio worker threads or the inbound event loop.
 #[derive(Debug)]
 pub enum IOTask {
+    /// Persist entries on the IO thread. `append_entries()` sends this and
+    /// awaits `done` — replaces the old inline `persist_entries()` call that
+    /// ran on the caller's own task (raft-core-loop), which could block
+    /// behind the IO thread's own concurrent fsync.
+    Persist {
+        entries: Vec<Entry>,
+        done: oneshot::Sender<Result<()>>,
+    },
+
     /// Atomically truncate from `truncate_from` then persist `new_entries`.
     /// Conflict-resolution path: truncate + write are a single atomic IO unit.
     /// `done` is signalled after the IO thread finishes the replace so callers
@@ -258,6 +267,10 @@ where
     // Raft must not tell a client or a peer a write is safe ahead of this point,
     // regardless of what's already visible in `entries`.
     pub(crate) durable_index: AtomicU64,
+    // Highest index handed to the storage engine (page cache), not yet
+    // fsynced. Set by append_entries()'s synchronous persist_entries() call.
+    // Lets the IO thread know what to fsync without re-scanning/re-writing.
+    persisted_index: AtomicU64,
     // The next index to be allocated
     pub(crate) next_id: AtomicU64,
 
@@ -465,10 +478,30 @@ where
         }
 
         self.insert_to_memory(&entries);
-        // Signal IO thread to persist. Multiple concurrent notify_one() calls
-        // while the IO thread is busy coalesce into one wakeup — no per-write
-        // kernel cond_signal. IO thread reads from SkipMap via max_index.
+
+        let max_idx = entries.last().map(|e| e.index).unwrap_or(0);
+        self.log_store.persist_entries(entries).await?;
+        if max_idx > 0 {
+            self.persisted_index.fetch_max(max_idx, Ordering::AcqRel);
+        }
         self.write_notify.notify_one();
+
+        // // Route the actual write through the IO thread — never call
+        // // persist_entries() inline from this task. Keeps the real RocksDB
+        // // write on the one thread designed for it, matching ReplaceRange/
+        // // Purge/Reset, and matching this codebase's own established fix for
+        // // this exact class of bug (batch_processor, SM Worker, snapshot —
+        // // see ADR/tickets). Still blocks the caller until truly persisted.
+        // let (done_tx, done_rx) = oneshot::channel();
+        // self.command_sender
+        //     .send(IOTask::Persist {
+        //         entries,
+        //         done: done_tx,
+        //     })
+        //     .map_err(|e| NetworkError::SingalSendFailed(format!("Persist send failed: {e:?}")))?;
+        // done_rx
+        //     .await
+        //     .map_err(|_| NetworkError::SingalSendFailed("Persist done channel closed".into()))??;
 
         Ok(())
     }
@@ -839,6 +872,7 @@ where
                 last_purged_index: AtomicU64::new(last_purged_index_val),
                 last_purged_term: AtomicU64::new(last_purged_term_val),
                 durable_index: AtomicU64::new(disk_len),
+                persisted_index: AtomicU64::new(disk_len),
                 next_id: AtomicU64::new(disk_len + 1),
                 write_notify: Arc::new(Notify::new()),
                 command_sender: command_sender.clone(),
@@ -956,9 +990,7 @@ where
                     if should_break { break; }
                 }
                 _ = safety_timer.tick() => {
-                    let start = this.durable_index.load(Ordering::Acquire) + 1;
-                    let end = this.max_index.load(Ordering::Acquire);
-                    let _ = Self::persist_pending_range(&this, start, end, &mut pending_max, "safety-net").await;
+                    Self::fold_persisted_watermark(&this, &mut pending_max);
 
                     if pending_max > 0 {
                         this.fsync_coordinator.submit(&this, pending_max, vec![]);
@@ -969,38 +1001,14 @@ where
         }
     }
 
-    /// Writes entries in `(from, to]` that haven't reached page cache yet
-    /// (no fsync). Advances `pending_max` on success; propagates the error
-    /// as-is on failure — whether to notify any waiting `Flush` caller is
-    /// left to the caller.
-    async fn persist_pending_range(
+    /// Folds `persisted_index` (set by `append_entries()`'s synchronous
+    /// write) into `pending_max`, so the IO thread still dispatches fsync
+    /// for it even though writing is no longer this thread's job.
+    fn fold_persisted_watermark(
         this: &Arc<Self>,
-        from: u64,
-        to: u64,
         pending_max: &mut u64,
-        ctx: &str,
-    ) -> Result<()> {
-        if this.is_poisoned() {
-            return Err(Error::Fatal("raft log storage is poisoned".to_string()));
-        }
-
-        if from > to {
-            return Ok(());
-        }
-        let entries = this.get_entries_range(from..=to)?;
-        if entries.is_empty() {
-            return Ok(());
-        }
-        this.log_store
-            .persist_entries(entries)
-            .await
-            .inspect(|_| {
-                *pending_max = (*pending_max).max(to);
-            })
-            .inspect_err(|e| {
-                error!("{ctx} persist_entries failed: {e:?}");
-                this.mark_poisoned_and_notify(format!("{ctx}: persist_entries failed: {e:?}"));
-            })
+    ) {
+        *pending_max = (*pending_max).max(this.persisted_index.load(Ordering::Acquire));
     }
 
     async fn run_batch_turn(
@@ -1010,15 +1018,7 @@ where
         mut replies: Vec<oneshot::Sender<Result<()>>>,
         mut seen_shutdown: bool,
     ) -> bool {
-        let start = this.durable_index.load(Ordering::Acquire) + 1;
-        let end = this.max_index.load(Ordering::Acquire);
-        let mut persist_failed = false;
-        if let Err(e) = Self::persist_pending_range(this, start, end, pending_max, "batch").await {
-            for reply in replies.drain(..) {
-                let _ = reply.send(Err(Error::Fatal(format!("persist_entries failed: {e:?}"))));
-            }
-            persist_failed = true;
-        }
+        Self::fold_persisted_watermark(this, pending_max);
 
         // `seen_shutdown` is not a gate here — regardless of whether the
         // caller already knows shutdown is happening, any commands still
@@ -1041,13 +1041,6 @@ where
                     }
                 }
             }
-        }
-
-        if !replies.is_empty() && !persist_failed {
-            let start = *pending_max + 1;
-            let end = this.max_index.load(Ordering::Acquire);
-            let _ =
-                Self::persist_pending_range(this, start, end, pending_max, "batch catch-up").await;
         }
 
         this.fsync_coordinator.submit(this, *pending_max, replies);
@@ -1078,6 +1071,26 @@ where
             IOTask::Shutdown => {
                 unreachable!("Shutdown is always filtered out before reaching handle_non_write_cmd")
             }
+            IOTask::Persist { entries, done } => {
+                if this.is_poisoned() {
+                    let _ = done.send(Err(Error::Fatal("raft log storage is poisoned".into())));
+                    return true; // signal batch_processor to exit — disk state is untrusted
+                }
+                let max_idx = entries.last().map(|e| e.index).unwrap_or(0);
+                let result = this.log_store.persist_entries(entries).await;
+                if let Err(ref e) = result {
+                    error!("IOTask::Persist failed (fatal): {e:?}");
+                    this.mark_poisoned_and_notify(format!("Persist failed: {e:?}"));
+                    let _ = done.send(result);
+                    return true; // signal batch_processor to exit — disk state is corrupted
+                }
+                if max_idx > 0 {
+                    this.persisted_index.fetch_max(max_idx, Ordering::AcqRel);
+                    this.fsync_coordinator.submit(this, max_idx, vec![]);
+                }
+                let _ = done.send(result);
+                false // write succeeded, storage still trustworthy — keep the IO thread running
+            }
             IOTask::ReplaceRange {
                 truncate_from,
                 new_entries,
@@ -1101,6 +1114,7 @@ where
                 }
                 if max_idx > 0 {
                     *pending_max = (*pending_max).max(max_idx);
+                    this.fsync_coordinator.submit(this, max_idx, vec![]);
                 }
                 let _ = done.send(result);
                 false
@@ -1148,6 +1162,7 @@ where
 
         self.entries.write().clear();
         self.durable_index.store(0, Ordering::Release);
+        self.persisted_index.store(0, Ordering::Release);
         self.next_id.store(1, Ordering::Release);
 
         // Reset boundaries
@@ -1283,6 +1298,24 @@ where
         let (new_min, new_max) = self.remove_range_locked(&entries, range);
         self.min_index.store(new_min, Ordering::Release);
         self.max_index.store(new_max, Ordering::Release);
+
+        // `entries` guard drops here — everything above is now visible together
+        // to any reader acquiring the read lock or loading these atomics after.
+        // Truncating the tail (term-conflict recovery) can leave persisted_index
+        // pointing past what's now in memory — clamp it down so a later fsync
+        // never claims durability for entries that no longer exist.
+        let mut current = self.persisted_index.load(Ordering::Acquire);
+        while current > new_max {
+            match self.persisted_index.compare_exchange_weak(
+                current,
+                new_max,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
         // `entries` guard drops here (end of scope) — write lock released.
     }
 
@@ -1382,9 +1415,6 @@ where
         // then term (Acquire) always observe a consistent pair.
         self.last_purged_term.store(cutoff.term, Ordering::Release);
         self.last_purged_index.store(cutoff.index, Ordering::Release);
-
-        // `entries` guard drops here — everything above is now visible together
-        // to any reader acquiring the read lock or loading these atomics after.
     }
 
     // Update the term index (completely lock-free)
@@ -1504,8 +1534,16 @@ mod id_allocation_test;
 mod performance_test;
 
 #[cfg(test)]
+#[path = "buffered_raft_log_test/persisted_index_clamp_test.rs"]
+mod persisted_index_clamp_test;
+
+#[cfg(test)]
 #[path = "buffered_raft_log_test/pipeline_overlap_test.rs"]
 mod pipeline_overlap_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/process_crash_safety_test.rs"]
+mod process_crash_safety_test;
 
 #[cfg(test)]
 #[path = "buffered_raft_log_test/quorum_durability_test.rs"]
@@ -1520,6 +1558,10 @@ mod raft_properties_test;
 mod remove_range_test;
 
 #[cfg(test)]
+#[path = "buffered_raft_log_test/replace_range_fsync_test.rs"]
+mod replace_range_fsync_test;
+
+#[cfg(test)]
 #[path = "buffered_raft_log_test/shutdown_test.rs"]
 mod shutdown_test;
 
@@ -1530,6 +1572,10 @@ mod term_index_test;
 #[cfg(test)]
 #[path = "buffered_raft_log_test/term_segments_test.rs"]
 mod term_segments_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/truncation_fsync_fence_test.rs"]
+mod truncation_fsync_fence_test;
 
 #[cfg(test)]
 #[path = "buffered_raft_log_test/worker_test.rs"]
