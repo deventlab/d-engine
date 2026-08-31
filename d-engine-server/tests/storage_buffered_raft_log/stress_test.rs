@@ -123,8 +123,15 @@ async fn test_high_concurrency_mixed_operations() {
 
     // Verify data integrity
     assert_eq!(ctx.raft_log.len(), 10000);
+    // append_entries() now round-trips through a dedicated IO thread via
+    // oneshot (see #444: leader's own write must reach the storage engine
+    // before counting toward quorum) — an intentional correctness/speed
+    // tradeoff, not a regression. The old 10s bound predates that fix;
+    // observed wall-clock for this test's 10k concurrent writes is now
+    // 13-18s depending on machine load. New bound leaves real headroom
+    // above that range rather than chasing the exact number.
     assert!(
-        duration < Duration::from_secs(10),
+        duration < Duration::from_secs(30),
         "Operations took too long: {duration:?}"
     );
 }

@@ -828,6 +828,9 @@ async fn test_poisoned_skips_purge() {
     let raft_log = raft_log.start(receiver, None);
     std::thread::sleep(Duration::from_millis(10));
 
+    // advance_durable_and_notify() clamps against max_index — simulate a log
+    // that already has the entry this test purges up to.
+    raft_log.set_max_index_for_test(1);
     raft_log.poisoned.store(true, Ordering::SeqCst);
 
     let result = raft_log.purge_logs_up_to(LogId { term: 1, index: 1 }).await;
@@ -843,13 +846,21 @@ async fn test_poisoned_skips_purge() {
 /// 2026-07-19 — `run_batch_turn`'s drain loop now replies before returning,
 /// instead of silently dropping the oneshot sender).
 ///
-/// Ordering is made deterministic (not timing-sensitive) by gating the IO
-/// thread inside its first `persist_entries()` call. While it's blocked, an
+/// Ordering is made deterministic (not timing-sensitive) by gating the base
+/// entries' `persist_entries()` call — `append_entries()` now calls it
+/// synchronously, so the base append is spawned as its own task and blocks
+/// there instead of returning immediately. While it's blocked, an
 /// `IOTask::Flush` is sent directly (guaranteed FIFO-first) followed by a
 /// conflict-triggering `filter_out_conflicts_and_append` call (sends
-/// `IOTask::ReplaceRange` second). Releasing the gate lets `run_batch_turn`
-/// drain both in one pass, in that order.
-#[tokio::test]
+/// `IOTask::ReplaceRange` second). Releasing the gate lets the base append
+/// finish and `run_batch_turn` drain both queued commands in one pass, in
+/// that order.
+///
+/// Needs `flavor = "multi_thread"`: the gate blocks on a synchronous
+/// `std::sync::mpsc::Receiver::recv()`, which would otherwise freeze the
+/// single default executor thread that the spawned base-append task, the
+/// conflict task, and this test body all need to share.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_run_batch_turn_replace_range_failure_replies_err_to_queued_flush() {
     let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
     let gate_rx = std::sync::Mutex::new(Some(gate_rx));
@@ -900,30 +911,34 @@ async fn test_run_batch_turn_replace_range_failure_replies_err_to_queued_flush()
     let raft_log = raft_log.start(receiver, None);
     std::thread::sleep(Duration::from_millis(10));
 
-    // Base entries land in memory synchronously; the IO thread wakes and
-    // immediately blocks inside the gated persist_entries() call, before it
-    // ever drains the command queue.
-    raft_log
-        .append_entries(vec![
-            Entry {
-                index: 1,
-                term: 1,
-                payload: None,
-            },
-            Entry {
-                index: 2,
-                term: 1,
-                payload: None,
-            },
-            Entry {
-                index: 3,
-                term: 1,
-                payload: None,
-            },
-        ])
-        .await
-        .unwrap();
-    sleep(Duration::from_millis(20)).await; // let the IO thread reach the gate
+    // Base entries land in memory synchronously (before the gate), then
+    // append_entries() blocks inside its own gated persist_entries() call —
+    // spawned so the rest of this test can proceed while it's stuck there.
+    let base_append_task = tokio::spawn({
+        let raft_log = raft_log.clone();
+        async move {
+            raft_log
+                .append_entries(vec![
+                    Entry {
+                        index: 1,
+                        term: 1,
+                        payload: None,
+                    },
+                    Entry {
+                        index: 2,
+                        term: 1,
+                        payload: None,
+                    },
+                    Entry {
+                        index: 3,
+                        term: 1,
+                        payload: None,
+                    },
+                ])
+                .await
+        }
+    });
+    sleep(Duration::from_millis(20)).await; // let it reach the gate
 
     // Send Flush directly — guarantees it's enqueued before the ReplaceRange
     // sent below, so it's the one already sitting in `replies` when the
@@ -954,6 +969,12 @@ async fn test_run_batch_turn_replace_range_failure_replies_err_to_queued_flush()
     });
     sleep(Duration::from_millis(50)).await; // let the ReplaceRange send land
     gate_tx.send(()).unwrap();
+
+    timeout(Duration::from_secs(2), base_append_task)
+        .await
+        .expect("base append task must not hang")
+        .expect("base append task must not panic")
+        .expect("base append must succeed once the gate releases");
 
     let flush_result = timeout(Duration::from_secs(2), flush_rx)
         .await
@@ -1045,7 +1066,7 @@ async fn test_poisoned_survives_reset() {
 
 /// A `persist_entries()` (page-cache write) failure poisons the log, exactly
 /// like an fsync failure does — these are two independent failure surfaces
-/// (see `persist_pending_range` vs `FsyncCoordinator::run_until_caught_up`)
+/// (see `IOTask::Persist` vs `FsyncCoordinator::run_until_caught_up`)
 /// and both must reach the same fatal outcome.
 ///
 /// Without this test, a bug that only wires up ONE of the two poisoning
@@ -1073,18 +1094,20 @@ async fn test_persist_entries_failure_poisons() {
     let raft_log = raft_log.start(receiver, None);
     std::thread::sleep(Duration::from_millis(10)); // ensure IO thread is ready
 
-    // Triggers the IO thread's persist_pending_range call, which hits the
-    // mock's first (failing) persist_entries() — this is the
-    // persist_pending_range poisoning path, NOT FsyncCoordinator's.
-    raft_log
+    // append_entries() routes the write through IOTask::Persist and awaits
+    // the IO thread's reply — a persist failure now surfaces synchronously,
+    // right here, not discovered later by some other task.
+    let result = raft_log
         .append_entries(vec![Entry {
             index: 1,
             term: 1,
             payload: None,
         }])
-        .await
-        .unwrap();
-    sleep(Duration::from_millis(20)).await; // let the IO thread process it
+        .await;
+    assert!(
+        result.is_err(),
+        "a persist_entries() failure must surface synchronously from append_entries()"
+    );
 
     assert!(
         raft_log.is_poisoned(),
@@ -1104,6 +1127,70 @@ async fn test_persist_entries_failure_poisons() {
         result.is_err(),
         "append_entries() must reject writes once poisoned"
     );
+}
+
+/// `IOTask::Persist`'s own `is_poisoned()` guard (top of its handler, on the
+/// IO thread) is a *different* check from `append_entries()`'s caller-side
+/// fast-fail (line ~471) — that one only protects writes submitted *after*
+/// poisoning already happened. This test targets the IO-thread-side guard
+/// specifically, for a `Persist` task that was already queued *before* the
+/// log got poisoned by something else (e.g. a concurrent ReplaceRange/Purge
+/// failure): send `IOTask::Persist` directly through `command_sender`,
+/// bypassing `append_entries()` entirely. Uses a plain always-succeeds mock
+/// (`with_id`, no call-count requirement) — if the IO-thread-side guard is
+/// missing or removed, `persist_entries()` would run and `done` would carry
+/// `Ok(())` instead of the expected "...poisoned..." error, which the
+/// `other => panic!` arm below catches either way.
+#[tokio::test]
+async fn test_poisoned_rejects_queued_persist_task() {
+    let storage = Arc::new(MockStorageEngine::with_id(
+        "poisoned_rejects_queued_persist_task".into(),
+    ));
+    let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
+        1,
+        PersistenceConfig {
+            strategy: PersistenceStrategy::MemFirst,
+            flush_policy: FlushPolicy::Batch {
+                idle_flush_interval_ms: 60_000,
+            },
+            max_buffered_entries: 1000,
+            shutdown_timeout_ms: 5000,
+        },
+        storage,
+    );
+    let raft_log = raft_log.start(receiver, None);
+    std::thread::sleep(Duration::from_millis(10));
+
+    // Poisoned by something unrelated to this Persist task — simulated
+    // directly, same as the other `test_poisoned_skips_*` tests in this file.
+    raft_log.poisoned.store(true, Ordering::SeqCst);
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    raft_log
+        .command_sender
+        .send(IOTask::Persist {
+            entries: vec![Entry {
+                index: 1,
+                term: 1,
+                payload: None,
+            }],
+            done: done_tx,
+        })
+        .expect("IO thread must still be alive to receive the task");
+
+    let result = done_rx.await.expect("IO thread must reply, not drop the sender");
+    match result {
+        Err(Error::Fatal(msg)) => assert!(
+            msg.contains("poisoned"),
+            "expected the poisoned short-circuit to fire before persist_entries() \
+             was ever called, got: {msg}"
+        ),
+        other => panic!(
+            "expected Err(Fatal(\"...poisoned...\")), got: {other:?} — this means \
+             the IO-thread-side is_poisoned() guard did not fire and \
+             persist_entries() ran anyway",
+        ),
+    }
 }
 
 /// If `notify_fatal`'s underlying channel is already closed when a failure

@@ -313,6 +313,10 @@ async fn test_durable_index_monotonic_when_fsyncs_complete_out_of_order() {
     let raft_log = raft_log.start(receiver, Some(log_flush_tx));
     std::thread::sleep(Duration::from_millis(10)); // ensure IO thread is ready
 
+    // advance_durable_and_notify() clamps against max_index — simulate a log
+    // that already has 150 entries, matching the highest value used below.
+    raft_log.set_max_index_for_test(150);
+
     // Simulates a fsync task completing with index 150, then a second, older
     // fsync task (dispatched earlier, finishing later) completing with 100.
     raft_log.advance_durable_and_notify(150);

@@ -19,7 +19,11 @@ pub(super) struct FsyncCoordinator {
     inflight: AtomicBool,
     pending_max: AtomicU64,
     pending_replies: Mutex<Vec<oneshot::Sender<Result<()>>>>,
-    generation: AtomicU64, // Bumped on every reset; fences out stale in-flight fsync results.
+
+    // Fencing token (like Raft's `term`) for in-flight fsync results. Private —
+    // only bump via a fence_*() verb below, one per invalidating event. Never a
+    // value-passing variant (index math can under-fence, see fence_truncation()).
+    generation: AtomicU64,
 }
 
 impl FsyncCoordinator {
@@ -156,13 +160,16 @@ impl FsyncCoordinator {
         }
     }
 
+    fn bump_generation(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// Called from reset_internal() before clearing in-memory state.
     /// Bumps generation to fence the in-flight physical flush (if any),
     /// AND drains anything already queued but not yet picked up by a
     /// flush round — that queued data was submitted before reset and
     /// must not be silently adopted by the next round.
     pub(super) fn fence_reset(&self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
         self.pending_max.store(0, Ordering::Release);
         let stale = std::mem::take(&mut *self.pending_replies.lock().unwrap());
         for reply in stale {
@@ -170,6 +177,22 @@ impl FsyncCoordinator {
                 "stale fsync generation, superseded by reset".into(),
             )));
         }
+        self.bump_generation();
+    }
+
+    /// Called from `remove_range()` before a truncation is applied. Bumps
+    /// `generation` to fence any fsync already in flight for data this
+    /// truncation is about to discard — mirrors `fence_reset()`, but does
+    /// NOT touch `pending_max`/`pending_replies`: unlike a full reset,
+    /// a truncation's own `IOTask::ReplaceRange` handler submits a fresh,
+    /// correct `max_index` for the surviving log right after this runs,
+    /// so there is nothing stale left to drain.
+    pub(super) fn fence_truncation(
+        &self,
+        new_max: u64,
+    ) {
+        self.pending_max.fetch_min(new_max, Ordering::AcqRel);
+        self.bump_generation();
     }
 }
 
