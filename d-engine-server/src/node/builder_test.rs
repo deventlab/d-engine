@@ -7,7 +7,6 @@ use d_engine_core::LogStore;
 use d_engine_core::MockStateMachine;
 use d_engine_core::MockStorageEngine;
 use d_engine_core::PersistenceConfig;
-use d_engine_core::PersistenceStrategy;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
@@ -58,7 +57,6 @@ async fn test_set_raft_log_replaces_default() {
         BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
             id,
             PersistenceConfig {
-                strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms: 1,
                 },

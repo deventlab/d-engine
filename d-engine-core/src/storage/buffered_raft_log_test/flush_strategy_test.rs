@@ -13,7 +13,7 @@ use d_engine_proto::common::{Entry, EntryPayload};
 use tokio::time::{Duration, sleep};
 
 use crate::test_utils::BufferedRaftLogTestContext;
-use crate::{FlushPolicy, PersistenceStrategy, RaftLog};
+use crate::{FlushPolicy, RaftLog};
 
 /// Test MemFirst with threshold=1 persists entries after flush
 ///
@@ -23,7 +23,6 @@ use crate::{FlushPolicy, PersistenceStrategy, RaftLog};
 #[tokio::test]
 async fn test_mem_first_entries_durable_after_flush() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -52,7 +51,6 @@ async fn test_mem_first_entries_durable_after_flush() {
 #[tokio::test]
 async fn test_mem_first_concurrent_writes_durable_after_flush() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -102,7 +100,6 @@ async fn test_mem_first_concurrent_writes_durable_after_flush() {
 #[tokio::test]
 async fn test_mem_first_crash_recovery_restores_flushed_entries() {
     let original_ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -149,7 +146,6 @@ async fn test_mem_first_crash_recovery_restores_flushed_entries() {
 #[tokio::test]
 async fn test_mem_first_buffers_entries_before_flush() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1000,
         },
@@ -173,7 +169,6 @@ async fn test_mem_first_buffers_entries_before_flush() {
 #[tokio::test]
 async fn test_mem_first_flushes_asynchronously() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -202,7 +197,6 @@ async fn test_mem_first_flushes_asynchronously() {
 #[tokio::test]
 async fn test_mem_first_concurrent_buffering() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 5000,
         },
@@ -243,7 +237,6 @@ async fn test_mem_first_concurrent_buffering() {
 #[tokio::test]
 async fn test_batched_flushes_at_threshold() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 10000, // High interval to test threshold trigger
         },
@@ -269,7 +262,6 @@ async fn test_batched_flushes_at_threshold() {
 #[tokio::test]
 async fn test_batched_flushes_at_interval() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 50,
         },
@@ -295,7 +287,6 @@ async fn test_batched_flushes_at_interval() {
 #[tokio::test]
 async fn test_batched_partial_flush_recovery() {
     let original_ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },

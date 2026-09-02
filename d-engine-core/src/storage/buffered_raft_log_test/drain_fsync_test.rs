@@ -20,7 +20,6 @@ use crate::MockMetaStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::PersistenceConfig;
-use crate::PersistenceStrategy;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 use std::sync::Arc;
@@ -156,7 +155,6 @@ async fn test_pending_max_zeroed_on_reset_preventing_durable_index_corruption() 
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             // Safety-net disabled: only write_notify triggers fsync.
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
@@ -288,7 +286,6 @@ async fn test_flush_propagates_io_error() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -350,7 +347,6 @@ async fn test_fsync_failure_poisons_and_rejects_writes_after_reset() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -407,7 +403,6 @@ async fn test_replace_range_failure_poisons() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -497,7 +492,6 @@ async fn test_purge_failure_poisons() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -547,7 +541,6 @@ async fn test_reset_failure_poisons() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -596,7 +589,6 @@ async fn test_save_hard_state_failure_poisons() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -645,7 +637,6 @@ async fn test_poisoned_rejects_save_hard_state() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -693,7 +684,6 @@ async fn test_poisoned_skips_replace_range() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -775,7 +765,6 @@ async fn test_poisoned_does_not_skip_reset() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -816,7 +805,6 @@ async fn test_poisoned_skips_purge() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -899,7 +887,6 @@ async fn test_run_batch_turn_replace_range_failure_replies_err_to_queued_flush()
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -1010,7 +997,6 @@ async fn test_new_buffered_raft_log_starts_unpoisoned() {
     let (raft_log, _receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             // Safety-net disabled: only write_notify triggers fsync.
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
@@ -1042,7 +1028,6 @@ async fn test_poisoned_survives_reset() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             // Safety-net disabled: only write_notify triggers fsync.
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
@@ -1082,7 +1067,6 @@ async fn test_persist_entries_failure_poisons() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -1149,7 +1133,6 @@ async fn test_poisoned_rejects_queued_persist_task() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
@@ -1216,7 +1199,6 @@ async fn test_notify_fatal_channel_closed_still_poisons_and_logs() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },

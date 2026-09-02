@@ -19,7 +19,6 @@ use crate::MockMetaStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::PersistenceConfig;
-use crate::PersistenceStrategy;
 use crate::Result;
 use std::sync::Arc;
 
@@ -31,7 +30,6 @@ fn minimal_raft_log(storage: MockStorageEngine) -> Arc<BufferedRaftLog<MockTypeC
     let (raft_log, _receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },

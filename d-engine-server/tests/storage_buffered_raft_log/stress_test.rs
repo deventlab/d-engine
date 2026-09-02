@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::{FlushPolicy, LogStore, PersistenceStrategy, RaftLog, StorageEngine};
+use d_engine_core::{FlushPolicy, LogStore, RaftLog, StorageEngine};
 use d_engine_proto::common::{Entry, EntryPayload};
 use futures::future::join_all;
 use tokio::time::Instant;
@@ -23,7 +23,6 @@ use super::TestContext;
 #[tokio::test]
 async fn test_high_concurrency() {
     let ctx = TestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -63,7 +62,6 @@ async fn test_high_concurrency() {
 #[traced_test]
 async fn test_high_concurrency_mixed_operations() {
     let ctx = TestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 100,
         },
@@ -142,7 +140,6 @@ mod mem_first_tests {
     #[tokio::test]
     async fn test_basic_write_before_persist() {
         let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
                 idle_flush_interval_ms: 1,
             },
@@ -158,7 +155,6 @@ mod mem_first_tests {
     #[tokio::test]
     async fn test_async_persistence() {
         let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
                 idle_flush_interval_ms: 1,
             },
@@ -177,7 +173,6 @@ mod mem_first_tests {
     #[tokio::test]
     async fn test_power_loss_data_loss() {
         let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
                 idle_flush_interval_ms: 1,
             },
@@ -195,7 +190,6 @@ mod mem_first_tests {
     #[tokio::test]
     async fn test_high_concurrency_memory_only() {
         let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
                 idle_flush_interval_ms: 1,
             },
@@ -232,7 +226,6 @@ mod mem_first_tests {
 #[tokio::test]
 async fn test_term_index_correctness_under_load() {
     let ctx = TestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },

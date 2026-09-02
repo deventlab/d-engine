@@ -6,16 +6,12 @@ use tokio::sync::mpsc;
 
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::{BufferedRaftLogTestContext, MockStorageEngine, simulate_insert_command};
-use crate::{
-    BufferedRaftLog, FlushPolicy, InternalEvent, MockTypeConfig, PersistenceConfig,
-    PersistenceStrategy,
-};
+use crate::{BufferedRaftLog, FlushPolicy, InternalEvent, MockTypeConfig, PersistenceConfig};
 use d_engine_proto::common::{Entry, LogId};
 
 #[tokio::test]
 async fn test_durable_index_monotonic_under_concurrency() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -55,7 +51,6 @@ async fn test_durable_index_monotonic_under_concurrency() {
 #[tokio::test]
 async fn test_durable_index_with_non_contiguous_entries() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -126,7 +121,6 @@ async fn test_purge_does_not_regress_durable_index_already_ahead() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },

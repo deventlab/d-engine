@@ -12,15 +12,13 @@ use bytes::Bytes;
 use d_engine_proto::common::{Entry, EntryPayload};
 
 use crate::{
-    BufferedRaftLog, FlushPolicy, MockStorageEngine, MockTypeConfig, PersistenceConfig,
-    PersistenceStrategy, RaftLog,
+    BufferedRaftLog, FlushPolicy, MockStorageEngine, MockTypeConfig, PersistenceConfig, RaftLog,
 };
 
 /// Test context for BufferedRaftLog tests
 pub struct BufferedRaftLogTestContext {
     pub raft_log: Arc<BufferedRaftLog<MockTypeConfig>>,
     pub storage: Arc<MockStorageEngine>,
-    pub strategy: PersistenceStrategy,
     pub flush_policy: FlushPolicy,
     pub instance_id: String,
 }
@@ -28,7 +26,6 @@ pub struct BufferedRaftLogTestContext {
 impl BufferedRaftLogTestContext {
     /// Create a new test context with specified strategy and flush policy
     pub fn new(
-        strategy: PersistenceStrategy,
         flush_policy: FlushPolicy,
         instance_id: &str,
     ) -> Self {
@@ -37,7 +34,6 @@ impl BufferedRaftLogTestContext {
         let (raft_log, receiver) = BufferedRaftLog::new(
             1,
             PersistenceConfig {
-                strategy: strategy.clone(),
                 flush_policy: flush_policy.clone(),
                 max_buffered_entries: 1000,
                 shutdown_timeout_ms: 5000,
@@ -52,7 +48,6 @@ impl BufferedRaftLogTestContext {
         Self {
             raft_log,
             storage,
-            strategy,
             flush_policy,
             instance_id: instance_id.to_string(),
         }
@@ -92,7 +87,6 @@ impl BufferedRaftLogTestContext {
         let (raft_log, receiver) = BufferedRaftLog::new(
             1,
             PersistenceConfig {
-                strategy: PersistenceStrategy::MemFirst,
                 flush_policy: flush_policy.clone(),
                 max_buffered_entries: 1000,
                 shutdown_timeout_ms: 5000,
@@ -105,7 +99,6 @@ impl BufferedRaftLogTestContext {
         let ctx = Self {
             raft_log,
             storage,
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy,
             instance_id: instance_id.to_string(),
         };
@@ -120,7 +113,6 @@ impl BufferedRaftLogTestContext {
         let (raft_log, receiver) = BufferedRaftLog::new(
             1,
             PersistenceConfig {
-                strategy: self.strategy.clone(),
                 flush_policy: self.flush_policy.clone(),
                 max_buffered_entries: 1000,
                 shutdown_timeout_ms: 5000,
@@ -135,7 +127,6 @@ impl BufferedRaftLogTestContext {
         Self {
             raft_log,
             storage,
-            strategy: self.strategy.clone(),
             flush_policy: self.flush_policy.clone(),
             instance_id: self.instance_id.clone(),
         }

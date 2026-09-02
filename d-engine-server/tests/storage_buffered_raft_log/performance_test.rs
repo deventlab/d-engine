@@ -6,9 +6,7 @@
 
 use super::TestContext;
 use bytes::Bytes;
-use d_engine_core::{
-    BufferedRaftLog, FlushPolicy, PersistenceConfig, PersistenceStrategy, RaftLog,
-};
+use d_engine_core::{BufferedRaftLog, FlushPolicy, PersistenceConfig, RaftLog};
 use d_engine_proto::common::{Entry, EntryPayload};
 use d_engine_server::{FileStateMachine, FileStorageEngine, node::RaftTypeConfig};
 use std::collections::HashMap;
@@ -33,7 +31,6 @@ mod filter_out_conflicts_and_append_performance_tests {
         for (idle_flush_interval_ms, max_duration_ms) in test_cases {
             // Create MemFirst storage with batch policy
             let config = PersistenceConfig {
-                strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms,
                 },
@@ -104,7 +101,6 @@ mod filter_out_conflicts_and_append_performance_tests {
         for (idle_flush_interval_ms, max_duration_ms) in test_cases {
             // Create MemFirst storage with batch policy
             let config = PersistenceConfig {
-                strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms,
                 },
@@ -171,7 +167,6 @@ mod filter_out_conflicts_and_append_performance_tests {
 async fn test_last_entry_id_performance() {
     // Set up test context
     let test_context = TestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 360_000,
         },
@@ -252,7 +247,6 @@ async fn test_performance_benchmarks() {
     };
 
     let ctx = TestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 100,
         },
@@ -342,7 +336,6 @@ async fn test_read_performance_under_concurrent_write_load() {
     };
 
     let ctx = TestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 100,
         },

@@ -15,15 +15,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::{
-    BufferedRaftLog, FlushPolicy, PersistenceConfig, PersistenceStrategy, RaftLog, alias::ROF,
-};
+use d_engine_core::{BufferedRaftLog, FlushPolicy, PersistenceConfig, RaftLog, alias::ROF};
 use d_engine_proto::common::{Entry, EntryPayload};
 use d_engine_server::{FileStateMachine, FileStorageEngine, node::RaftTypeConfig};
 use tempfile::tempdir;
 
 mod crash_recovery_test;
 mod performance_test;
+mod quorum_crash_recovery_test;
 mod storage_integration_test;
 mod stress_test;
 
@@ -32,7 +31,6 @@ pub struct TestContext {
     pub raft_log: Arc<ROF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
     pub storage: Arc<FileStorageEngine>,
     pub _temp_dir: Option<tempfile::TempDir>,
-    pub strategy: PersistenceStrategy,
     pub flush_policy: FlushPolicy,
     pub path: String,
 }
@@ -40,7 +38,6 @@ pub struct TestContext {
 impl TestContext {
     /// Create new test context with FileStorageEngine
     pub fn new(
-        strategy: PersistenceStrategy,
         flush_policy: FlushPolicy,
         instance_id: &str,
     ) -> Self {
@@ -51,7 +48,6 @@ impl TestContext {
         let (raft_log, receiver) = BufferedRaftLog::new(
             1,
             PersistenceConfig {
-                strategy: strategy.clone(),
                 flush_policy: flush_policy.clone(),
                 max_buffered_entries: 10000,
                 shutdown_timeout_ms: 5000,
@@ -67,7 +63,6 @@ impl TestContext {
             path: path.to_str().unwrap().to_string(),
             raft_log,
             storage,
-            strategy,
             flush_policy,
             _temp_dir: Some(temp_dir),
         }
@@ -92,7 +87,6 @@ impl TestContext {
         let (raft_log, receiver) = BufferedRaftLog::new(
             1,
             PersistenceConfig {
-                strategy: self.strategy.clone(),
                 flush_policy: self.flush_policy.clone(),
                 max_buffered_entries: 10000,
                 shutdown_timeout_ms: 5000,
@@ -106,7 +100,6 @@ impl TestContext {
         Self {
             raft_log,
             storage,
-            strategy: self.strategy.clone(),
             flush_policy: self.flush_policy.clone(),
             _temp_dir: Some(temp_dir),
             path: self.path.clone(),

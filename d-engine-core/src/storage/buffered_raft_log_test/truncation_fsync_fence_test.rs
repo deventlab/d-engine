@@ -21,10 +21,7 @@ use std::time::Duration;
 use d_engine_proto::common::Entry;
 
 use crate::storage::raft_log::RaftLog;
-use crate::{
-    BufferedRaftLog, FlushPolicy, MockStorageEngine, MockTypeConfig, PersistenceConfig,
-    PersistenceStrategy,
-};
+use crate::{BufferedRaftLog, FlushPolicy, MockStorageEngine, MockTypeConfig, PersistenceConfig};
 
 fn entry(
     index: u64,
@@ -54,7 +51,6 @@ async fn test_durable_index_does_not_adopt_a_stale_fsync_after_truncation() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },

@@ -8,9 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::{
-    BufferedRaftLog, FlushPolicy, PersistenceConfig, PersistenceStrategy, RaftLog,
-};
+use d_engine_core::{BufferedRaftLog, FlushPolicy, PersistenceConfig, RaftLog};
 use d_engine_proto::common::{Entry, EntryPayload};
 use d_engine_server::{FileStateMachine, FileStorageEngine, node::RaftTypeConfig};
 use tokio::time::sleep;
@@ -21,7 +19,6 @@ use super::TestContext;
 async fn test_crash_recovery() {
     // Create and populate storage
     let original_ctx = TestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -65,7 +62,6 @@ async fn test_crash_recovery() {
 async fn test_crash_recovery_with_multiple_entries() {
     // Create and populate storage
     let original_ctx = TestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -128,7 +124,6 @@ async fn test_partial_flush_with_graceful_shutdown() {
             BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
                 1,
                 PersistenceConfig {
-                    strategy: PersistenceStrategy::MemFirst,
                     flush_policy: FlushPolicy::Batch {
                         idle_flush_interval_ms: 100,
                     },
@@ -165,7 +160,6 @@ async fn test_partial_flush_with_graceful_shutdown() {
         BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
             1,
             PersistenceConfig {
-                strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms: 1,
                 },
@@ -210,7 +204,6 @@ async fn test_partial_flush_after_crash() {
             BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
                 1,
                 PersistenceConfig {
-                    strategy: PersistenceStrategy::MemFirst,
                     flush_policy: FlushPolicy::Batch {
                         idle_flush_interval_ms: 100,
                     },
@@ -259,7 +252,6 @@ async fn test_partial_flush_after_crash() {
         BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
             1,
             PersistenceConfig {
-                strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms: 1,
                 },
@@ -299,21 +291,18 @@ async fn test_recovery_under_different_scenarios() {
     // drain cycle, so all 100 entries are always durable after explicit flush().
     let scenarios = vec![
         (
-            PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
                 idle_flush_interval_ms: 1,
             },
             100usize,
         ),
         (
-            PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
                 idle_flush_interval_ms: 10,
             },
             100,
         ),
         (
-            PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
                 idle_flush_interval_ms: 1000,
             },
@@ -321,9 +310,9 @@ async fn test_recovery_under_different_scenarios() {
         ),
     ];
 
-    for (strategy, flush_policy, expected_recovery) in scenarios {
-        let instance_id = format!("recovery_test_{strategy:?}_{flush_policy:?}");
-        let original_ctx = TestContext::new(strategy.clone(), flush_policy.clone(), &instance_id);
+    for (flush_policy, expected_recovery) in scenarios {
+        let instance_id = format!("recovery_test_{flush_policy:?}");
+        let original_ctx = TestContext::new(flush_policy.clone(), &instance_id);
 
         // Add test data
         for i in 1..=100 {
@@ -351,7 +340,7 @@ async fn test_recovery_under_different_scenarios() {
         assert_eq!(
             recovered_ctx.raft_log.len(),
             expected_recovery,
-            "Recovery mismatch for strategy {strategy:?} policy {flush_policy:?}"
+            "Recovery mismatch for policy {flush_policy:?}"
         );
         recovered_ctx.close().await;
     }
@@ -363,7 +352,6 @@ async fn test_memfirst_crash_recovery_durability() {
 
     let recovered_path = {
         let ctx = TestContext::new(
-            PersistenceStrategy::MemFirst,
             FlushPolicy::Batch {
                 idle_flush_interval_ms: 10000,
             },
@@ -390,7 +378,6 @@ async fn test_memfirst_crash_recovery_durability() {
         BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
             1,
             PersistenceConfig {
-                strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms: 1,
                 },
@@ -424,7 +411,6 @@ async fn test_diskfirst_crash_recovery_durability() {
             BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
                 1,
                 PersistenceConfig {
-                    strategy: PersistenceStrategy::MemFirst,
                     flush_policy: FlushPolicy::Batch {
                         idle_flush_interval_ms: 1,
                     },
@@ -458,7 +444,6 @@ async fn test_diskfirst_crash_recovery_durability() {
         BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
             1,
             PersistenceConfig {
-                strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms: 1,
                 },

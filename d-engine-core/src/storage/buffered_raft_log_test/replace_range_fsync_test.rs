@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use d_engine_proto::common::Entry;
 
+use crate::FlushPolicy;
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::BufferedRaftLogTestContext;
-use crate::{FlushPolicy, PersistenceStrategy};
 
 fn entry(
     index: u64,
@@ -45,7 +45,6 @@ fn entry(
 #[tokio::test]
 async fn test_replace_range_becomes_durable_without_a_following_append() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 60_000, // effectively disabled for this test's timeframe
         },

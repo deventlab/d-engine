@@ -7,7 +7,7 @@ use crate::storage::raft_log::RaftLog;
 use crate::test_utils::BufferedRaftLogTestContext;
 use crate::{
     BufferedRaftLog, FlushPolicy, MockLogStore, MockMetaStore, MockStorageEngine, MockTypeConfig,
-    PersistenceConfig, PersistenceStrategy,
+    PersistenceConfig,
 };
 use d_engine_proto::common::{Entry, EntryPayload};
 
@@ -47,7 +47,6 @@ fn test_io_thread_survives_runtime_drop() {
         let (log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
             1,
             PersistenceConfig {
-                strategy: PersistenceStrategy::MemFirst,
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms: 50,
                 },
@@ -84,7 +83,6 @@ fn test_io_thread_survives_runtime_drop() {
 #[tokio::test]
 async fn test_shutdown_closes_channel_properly() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 100,
         },
@@ -113,7 +111,6 @@ async fn test_shutdown_closes_channel_properly() {
 #[tokio::test]
 async fn test_shutdown_awaits_worker_completion() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 5000,
         },
@@ -159,7 +156,6 @@ async fn test_shutdown_handles_slow_workers() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 100,
             },
@@ -203,7 +199,6 @@ async fn test_shutdown_handles_slow_workers() {
 #[tokio::test]
 async fn test_shutdown_with_multiple_flushes() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 100,
         },
@@ -289,7 +284,6 @@ async fn test_replace_range_failure_propagates_error_and_shuts_down_io_thread() 
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000, // no auto-flush
             },

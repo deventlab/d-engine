@@ -359,6 +359,9 @@ where
         }
     }
 
+    // #446: this is what election-eligibility comparisons (is_target_log_more_recent)
+    // read. It must keep reflecting the in-memory tail, never durable_index — a node
+    // with an un-fsynced entry must still be able to reject a less-up-to-date candidate.
     fn last_log_id(&self) -> Option<LogId> {
         let last_index = self.last_entry_id();
         if last_index > 0 {
@@ -640,11 +643,10 @@ where
         mut peer_matched_ids: Vec<u64>,
     ) -> Option<u64> {
         let _timer = ScopedTimer::new("calculate_majority_matched_index");
-        // Leader's contribution: last_entry_id (in-memory). With MemFirst (Level 2), db.write()
-        // returns once data reaches OS page cache — durable_index advances immediately.
-        // Followers also ACK after OS page cache write (no fsync wait). Crash safety is
-        // OS page cache level: process crash is recoverable, power loss is not.
-        peer_matched_ids.push(self.last_entry_id());
+        // RPO=0 (#446): leader's own contribution must be its own durable (fsynced)
+        // position, not the in-memory tail — otherwise a majority-looking commit can
+        // still lose data on correlated power loss.
+        peer_matched_ids.push(self.durable_index());
 
         // Sort in descending order
         peer_matched_ids.sort_unstable_by(|a, b| b.cmp(a));
@@ -775,8 +777,8 @@ where
             idle_flush_interval_ms,
         } = persistence_config.flush_policy;
         debug!(
-            "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, idle_flush_interval_ms: {:?}, disk_len: {:?}",
-            node_id, persistence_config.strategy, idle_flush_interval_ms, disk_len
+            "Creating BufferedRaftLog with node_id: {}, idle_flush_interval_ms: {:?}, disk_len: {:?}",
+            node_id, idle_flush_interval_ms, disk_len
         );
 
         let shutdown_timeout_ms = persistence_config.shutdown_timeout_ms;

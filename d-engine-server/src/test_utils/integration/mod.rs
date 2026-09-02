@@ -49,7 +49,6 @@ use d_engine_core::FlushPolicy;
 use d_engine_core::LogSizePolicy;
 use d_engine_core::MockStateMachine;
 use d_engine_core::PersistenceConfig;
-use d_engine_core::PersistenceStrategy;
 use d_engine_core::RaftLog;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::ReplicationHandler;
@@ -181,7 +180,6 @@ pub fn setup_raft_components(
     let (buffered_raft_log, receiver) = BufferedRaftLog::new(
         id,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 1,
             },

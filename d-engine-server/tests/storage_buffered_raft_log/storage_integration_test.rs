@@ -3,7 +3,7 @@
 //! These tests verify BufferedRaftLog integration with FileStorageEngine
 //! at the storage layer, including compaction and storage-specific operations.
 
-use d_engine_core::{FlushPolicy, PersistenceStrategy, RaftLog};
+use d_engine_core::{FlushPolicy, RaftLog};
 use d_engine_proto::common::LogId;
 
 use super::TestContext;
@@ -14,7 +14,6 @@ use super::TestContext;
 #[tokio::test]
 async fn test_log_compaction() {
     let ctx = TestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },

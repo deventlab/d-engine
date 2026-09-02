@@ -28,10 +28,7 @@ use d_engine_proto::common::Entry;
 
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::BufferedRaftLogTestContext;
-use crate::{
-    BufferedRaftLog, FlushPolicy, MockStorageEngine, MockTypeConfig, PersistenceConfig,
-    PersistenceStrategy,
-};
+use crate::{BufferedRaftLog, FlushPolicy, MockStorageEngine, MockTypeConfig, PersistenceConfig};
 
 fn entry(
     index: u64,
@@ -49,7 +46,6 @@ fn entry(
 #[tokio::test]
 async fn test_durable_index_never_exceeds_log_after_truncation_and_resync() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 60_000, // isolate from the safety-net timer
         },
@@ -134,7 +130,6 @@ async fn test_persisted_index_does_not_adopt_a_stale_persist_after_truncation() 
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },

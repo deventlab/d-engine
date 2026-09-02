@@ -1,12 +1,11 @@
+use crate::FlushPolicy;
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::{BufferedRaftLogTestContext, simulate_insert_command};
-use crate::{FlushPolicy, PersistenceStrategy};
 use d_engine_proto::common::Entry;
 
 #[tokio::test]
 async fn test_log_matching_property() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -46,7 +45,6 @@ async fn test_log_matching_property() {
 #[tokio::test]
 async fn test_leader_completeness_property() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -84,7 +82,6 @@ async fn test_leader_completeness_property() {
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case0() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -108,7 +105,6 @@ async fn test_calculate_majority_matched_index_case0() {
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case1() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -132,7 +128,6 @@ async fn test_calculate_majority_matched_index_case1() {
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case2() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -157,7 +152,6 @@ async fn test_calculate_majority_matched_index_case2() {
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case3() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -180,7 +174,6 @@ async fn test_calculate_majority_matched_index_case3() {
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case4() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -204,7 +197,6 @@ async fn test_calculate_majority_matched_index_case4() {
 #[tokio::test]
 async fn test_calculate_majority_matched_index_case5() {
     let ctx = BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },

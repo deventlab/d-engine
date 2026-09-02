@@ -20,7 +20,7 @@ use d_engine_proto::common::Entry;
 
 use crate::{
     BufferedRaftLog, FlushPolicy, LogStore, MockStorageEngine, MockTypeConfig, PersistenceConfig,
-    PersistenceStrategy, RaftLog, StorageEngine,
+    RaftLog, StorageEngine,
 };
 
 /// `append_entries()` must not return before the entry reaches the storage
@@ -48,7 +48,6 @@ async fn test_append_entries_waits_for_storage_engine_before_returning() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
