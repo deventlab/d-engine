@@ -474,7 +474,6 @@ async fn test_io_task_replace_range_delegates_to_replace_range_not_truncate() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,

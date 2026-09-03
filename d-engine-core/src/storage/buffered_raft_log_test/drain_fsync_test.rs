@@ -38,7 +38,7 @@ use crate::{FlushPolicy, RaftLog};
 /// automatically — no explicit `flush()` required.
 #[tokio::test]
 async fn test_writes_become_durable_via_io_thread() {
-    let (ctx, flush_count) = BufferedRaftLogTestContext::new_not_durable(
+    let (mut ctx, flush_count) = BufferedRaftLogTestContext::new_not_durable(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 60_000,
         },
@@ -68,6 +68,7 @@ async fn test_writes_become_durable_via_io_thread() {
 
     // Give IO thread time to process write_notify wakeup and fsync.
     sleep(Duration::from_millis(50)).await;
+    ctx.drain_fsync_completions();
 
     // durable_index must have advanced via IO thread auto-fsync (no explicit flush).
     assert_eq!(
@@ -94,7 +95,7 @@ async fn test_writes_become_durable_via_io_thread() {
 /// N entries in one call → ≤2 fsyncs (not N), regardless of storage speed.
 #[tokio::test]
 async fn test_batch_append_produces_one_flush() {
-    let (ctx, flush_count) = BufferedRaftLogTestContext::new_not_durable(
+    let (mut ctx, flush_count) = BufferedRaftLogTestContext::new_not_durable(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 60_000,
         },
@@ -112,6 +113,7 @@ async fn test_batch_append_produces_one_flush() {
     ctx.raft_log.append_entries(entries).await.unwrap();
 
     ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
 
     assert_eq!(ctx.raft_log.durable_index(), 100);
 
@@ -134,7 +136,7 @@ async fn test_batch_append_produces_one_flush() {
 /// `else { pending_max = 0 }` branch is skipped.
 ///
 /// ## Original bug (fixed pre-#422)
-/// `handle_non_write_cmd(IOTask::Reset)` wiped the on-disk log but did NOT zero
+/// `run_storage_tasks(IOTask::Reset)` wiped the on-disk log but did NOT zero
 /// `pending_max`. On the next `write_notify` wakeup the IO thread would compute:
 /// ```
 /// pending_max = pending_max.max(new_end)   // stale 10 wins over new 3
@@ -159,7 +161,6 @@ async fn test_pending_max_zeroed_on_reset_preventing_durable_index_corruption() 
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -219,7 +220,7 @@ async fn test_pending_max_zeroed_on_reset_preventing_durable_index_corruption() 
 /// flush() call must be durable when flush() returns, regardless of internal batching.
 #[tokio::test]
 async fn test_flush_is_strict_durability_barrier() {
-    let (ctx, _flush_count) = BufferedRaftLogTestContext::new_not_durable(
+    let (mut ctx, _flush_count) = BufferedRaftLogTestContext::new_not_durable(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 60_000,
         },
@@ -238,6 +239,7 @@ async fn test_flush_is_strict_durability_barrier() {
             .unwrap();
     }
     ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
     assert_eq!(
         ctx.raft_log.durable_index(),
         20,
@@ -256,6 +258,7 @@ async fn test_flush_is_strict_durability_barrier() {
             .unwrap();
     }
     ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
     assert_eq!(
         ctx.raft_log.durable_index(),
         50,
@@ -289,7 +292,6 @@ async fn test_flush_propagates_io_error() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -350,7 +352,6 @@ async fn test_fsync_failure_poisons_and_rejects_writes_after_reset() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -406,7 +407,6 @@ async fn test_replace_range_failure_poisons() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -495,7 +495,6 @@ async fn test_purge_failure_poisons() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -544,7 +543,6 @@ async fn test_reset_failure_poisons() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -592,7 +590,6 @@ async fn test_save_hard_state_failure_poisons() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -640,7 +637,6 @@ async fn test_poisoned_rejects_save_hard_state() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -665,7 +661,7 @@ async fn test_poisoned_rejects_save_hard_state() {
 }
 
 // ============================================================================
-// Gap fix: handle_non_write_cmd now checks is_poisoned() before executing
+// Gap fix: run_storage_tasks now checks is_poisoned() before executing
 // ReplaceRange/Purge/Reset, instead of only checking it in run_batch_turn's
 // drain loop (which missed the direct-dispatch path in batch_processor's
 // top-level select, and the "just poisoned mid-turn" race).
@@ -687,7 +683,6 @@ async fn test_poisoned_skips_replace_range() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -768,7 +763,6 @@ async fn test_poisoned_does_not_skip_reset() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -808,7 +802,6 @@ async fn test_poisoned_skips_purge() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -818,7 +811,7 @@ async fn test_poisoned_skips_purge() {
 
     // advance_durable_and_notify() clamps against max_index — simulate a log
     // that already has the entry this test purges up to.
-    raft_log.set_max_index_for_test(1);
+    raft_log.set_memory_max_index_for_test(1);
     raft_log.poisoned.store(true, Ordering::SeqCst);
 
     let result = raft_log.purge_logs_up_to(LogId { term: 1, index: 1 }).await;
@@ -890,7 +883,6 @@ async fn test_run_batch_turn_replace_range_failure_replies_err_to_queued_flush()
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -1001,7 +993,6 @@ async fn test_new_buffered_raft_log_starts_unpoisoned() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage),
@@ -1032,7 +1023,6 @@ async fn test_poisoned_survives_reset() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage),
@@ -1070,7 +1060,6 @@ async fn test_persist_entries_failure_poisons() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage),
@@ -1136,7 +1125,6 @@ async fn test_poisoned_rejects_queued_persist_task() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,
@@ -1202,7 +1190,6 @@ async fn test_notify_fatal_channel_closed_still_poisons_and_logs() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage),

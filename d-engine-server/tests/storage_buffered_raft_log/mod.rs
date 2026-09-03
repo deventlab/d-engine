@@ -33,6 +33,7 @@ pub struct TestContext {
     pub _temp_dir: Option<tempfile::TempDir>,
     pub flush_policy: FlushPolicy,
     pub path: String,
+    log_flush_rx: tokio::sync::mpsc::UnboundedReceiver<d_engine_core::InternalEvent>,
 }
 
 impl TestContext {
@@ -49,12 +50,12 @@ impl TestContext {
             1,
             PersistenceConfig {
                 flush_policy: flush_policy.clone(),
-                max_buffered_entries: 10000,
                 shutdown_timeout_ms: 5000,
             },
             storage.clone(),
         );
-        let raft_log = raft_log.start(receiver, None);
+        let (log_flush_tx, log_flush_rx) = tokio::sync::mpsc::unbounded_channel();
+        let raft_log = raft_log.start(receiver, Some(log_flush_tx));
 
         // Small delay to ensure processor is ready
         std::thread::sleep(Duration::from_millis(10));
@@ -65,6 +66,23 @@ impl TestContext {
             storage,
             flush_policy,
             _temp_dir: Some(temp_dir),
+            log_flush_rx,
+        }
+    }
+
+    /// Stands in for `raft.rs`'s `InternalEvent::FsyncCompleted` handler,
+    /// which isn't running in these `BufferedRaftLog`-only integration
+    /// tests. Since #446/#447, `durable_index` only advances when something
+    /// drains that event and calls `try_advance_durable_index` — call this
+    /// after any operation that should make `durable_index` advance and
+    /// before asserting on it. Not needed after `recover_from_crash()`: the
+    /// recovered context's `durable_index` is derived directly from on-disk
+    /// state at construction, not from this event.
+    pub fn drain_fsync_completions(&mut self) {
+        while let Ok(event) = self.log_flush_rx.try_recv() {
+            if let d_engine_core::InternalEvent::FsyncCompleted { index, term } = event {
+                self.raft_log.try_advance_durable_index(index, term);
+            }
         }
     }
 
@@ -88,12 +106,12 @@ impl TestContext {
             1,
             PersistenceConfig {
                 flush_policy: self.flush_policy.clone(),
-                max_buffered_entries: 10000,
                 shutdown_timeout_ms: 5000,
             },
             storage.clone(),
         );
-        let raft_log = raft_log.start(receiver, None);
+        let (log_flush_tx, log_flush_rx) = tokio::sync::mpsc::unbounded_channel();
+        let raft_log = raft_log.start(receiver, Some(log_flush_tx));
 
         std::thread::sleep(Duration::from_millis(10));
 
@@ -103,6 +121,7 @@ impl TestContext {
             flush_policy: self.flush_policy.clone(),
             _temp_dir: Some(temp_dir),
             path: self.path.clone(),
+            log_flush_rx,
         }
     }
 

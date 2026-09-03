@@ -22,7 +22,7 @@ use crate::{FlushPolicy, RaftLog};
 /// - Expected: durable_index == 5 after explicit flush()
 #[tokio::test]
 async fn test_mem_first_entries_durable_after_flush() {
-    let ctx = BufferedRaftLogTestContext::new(
+    let mut ctx = BufferedRaftLogTestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -32,6 +32,7 @@ async fn test_mem_first_entries_durable_after_flush() {
     // Act: Append entries then wait for durability
     ctx.append_entries(1, 5, 1).await;
     ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
 
     // Assert: All entries durable after flush
     assert_eq!(
@@ -50,7 +51,7 @@ async fn test_mem_first_entries_durable_after_flush() {
 /// - Expected: All 1000 entries durable after flush(), no data loss
 #[tokio::test]
 async fn test_mem_first_concurrent_writes_durable_after_flush() {
-    let ctx = BufferedRaftLogTestContext::new(
+    let mut ctx = BufferedRaftLogTestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -81,6 +82,7 @@ async fn test_mem_first_concurrent_writes_durable_after_flush() {
 
     // Wait for all entries to become durable
     ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
 
     // Assert: All entries durable after flush
     assert_eq!(
@@ -168,7 +170,7 @@ async fn test_mem_first_buffers_entries_before_flush() {
 /// - Expected: Entries become durable after flush
 #[tokio::test]
 async fn test_mem_first_flushes_asynchronously() {
-    let ctx = BufferedRaftLogTestContext::new(
+    let mut ctx = BufferedRaftLogTestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -181,6 +183,7 @@ async fn test_mem_first_flushes_asynchronously() {
     // Act: Explicit flush
     ctx.raft_log.flush().await.unwrap();
     sleep(Duration::from_millis(100)).await; // Allow async flush
+    ctx.drain_fsync_completions();
 
     // Assert: Entries now durable
     assert!(
@@ -236,7 +239,7 @@ async fn test_mem_first_concurrent_buffering() {
 /// - Expected: Flush triggered at threshold
 #[tokio::test]
 async fn test_batched_flushes_at_threshold() {
-    let ctx = BufferedRaftLogTestContext::new(
+    let mut ctx = BufferedRaftLogTestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 10000, // High interval to test threshold trigger
         },
@@ -246,6 +249,7 @@ async fn test_batched_flushes_at_threshold() {
     // Act: Append exactly threshold entries
     ctx.append_entries(1, 5, 1).await;
     sleep(Duration::from_millis(100)).await; // Allow flush
+    ctx.drain_fsync_completions();
 
     // Assert: Entries should be flushed
     assert!(
@@ -261,7 +265,7 @@ async fn test_batched_flushes_at_threshold() {
 /// - Expected: Flush triggered by timer
 #[tokio::test]
 async fn test_batched_flushes_at_interval() {
-    let ctx = BufferedRaftLogTestContext::new(
+    let mut ctx = BufferedRaftLogTestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 50,
         },
@@ -271,6 +275,7 @@ async fn test_batched_flushes_at_interval() {
     // Act: Append few entries and wait for interval
     ctx.append_entries(1, 2, 1).await;
     sleep(Duration::from_millis(200)).await; // Wait for interval flush
+    ctx.drain_fsync_completions();
 
     // Assert: Entries flushed by timer
     assert!(

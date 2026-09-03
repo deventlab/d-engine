@@ -54,7 +54,6 @@ async fn test_durable_index_does_not_adopt_a_stale_fsync_after_truncation() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage),

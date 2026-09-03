@@ -60,7 +60,6 @@ lease_duration_ms = 500
 
 [raft.persistence]
 flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
-max_buffered_entries = 10000
 ```
 
 **Key differences from single-node expansion:**

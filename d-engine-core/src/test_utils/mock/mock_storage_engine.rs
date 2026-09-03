@@ -322,7 +322,7 @@ impl MockStorageEngine {
     /// After a failed fsync, `batch_processor` logs the error and does NOT zero
     /// `pending_max` (the success branch `else { pending_max = 0 }` is not taken).
     /// This is the deterministic pre-condition needed to exercise the bug where
-    /// `handle_non_write_cmd(IOTask::Reset)` forgets to zero `pending_max`.
+    /// `run_storage_tasks(IOTask::Reset)` forgets to zero `pending_max`.
     pub fn not_durable_first_flush_fails(id: String) -> Self {
         let mut mock_log_store = MockLogStore::new();
         let mut mock_meta_store = MockMetaStore::new();
@@ -393,7 +393,7 @@ impl MockStorageEngine {
 
     /// Create a MockStorageEngine where `replace_range()` always fails,
     /// simulating a fatal storage error during conflict-resolution
-    /// (truncate + write). `handle_non_write_cmd`'s `IOTask::ReplaceRange`
+    /// (truncate + write). `run_storage_tasks`'s `IOTask::ReplaceRange`
     /// arm treats this as unrecoverable — disk state is now uncertain.
     pub fn not_durable_replace_range_fails(id: String) -> Self {
         let mut mock_log_store = MockLogStore::new();

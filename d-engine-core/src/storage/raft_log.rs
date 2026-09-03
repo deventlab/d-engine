@@ -77,6 +77,18 @@ pub trait RaftLog: Send + Sync + 'static {
     /// - DiskFirst: equals `last_entry_id()` (every append blocks until durable).
     fn durable_index(&self) -> u64;
 
+    /// Content-validated durable-watermark advance. `index`/`term` describe
+    /// what a completed fsync claims is now safe — rejected (`None`) if
+    /// `entry_term(index) != Some(term)`, meaning the log content at that
+    /// index has changed (truncated + replaced) since fsync started on it.
+    /// `Some(new_value)` only when it actually advanced — callers use this
+    /// to decide whether to fire `handle_log_flushed`.
+    fn try_advance_durable_index(
+        &self,
+        index: u64,
+        term: u64,
+    ) -> Option<u64>;
+
     /// Returns the LogId (term + index) of the last entry.
     ///
     /// # Returns

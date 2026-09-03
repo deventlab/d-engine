@@ -847,13 +847,6 @@ pub struct PersistenceConfig {
     #[serde(default = "default_flush_policy")]
     pub flush_policy: FlushPolicy,
 
-    /// Maximum number of in-memory log entries to buffer when using async strategies
-    ///
-    /// This acts as a safety valve to prevent memory exhaustion during periods of
-    /// high write throughput or when disk persistence is slow.
-    #[serde(default = "default_max_buffered_entries")]
-    pub max_buffered_entries: usize,
-
     /// Maximum time to wait, on shutdown, for an in-flight fsync task to finish
     /// before giving up. Bounds close() against a stuck/slow disk — the task
     /// itself is not cancelled, it keeps running in the background regardless.
@@ -869,11 +862,6 @@ fn default_flush_policy() -> FlushPolicy {
     FlushPolicy::Batch {
         idle_flush_interval_ms: 1000,
     }
-}
-
-/// Default maximum buffered log entries
-fn default_max_buffered_entries() -> usize {
-    10_000
 }
 
 fn default_shutdown_timeout_ms() -> u64 {
@@ -904,7 +892,6 @@ impl Default for PersistenceConfig {
     fn default() -> Self {
         Self {
             flush_policy: default_flush_policy(),
-            max_buffered_entries: default_max_buffered_entries(),
             shutdown_timeout_ms: default_shutdown_timeout_ms(),
         }
     }

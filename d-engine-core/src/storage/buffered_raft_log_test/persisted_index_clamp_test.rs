@@ -45,7 +45,7 @@ fn entry(
 /// claim durability for an index that doesn't exist in the log anymore.
 #[tokio::test]
 async fn test_durable_index_never_exceeds_log_after_truncation_and_resync() {
-    let ctx = BufferedRaftLogTestContext::new(
+    let mut ctx = BufferedRaftLogTestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 60_000, // isolate from the safety-net timer
         },
@@ -77,6 +77,7 @@ async fn test_durable_index_never_exceeds_log_after_truncation_and_resync() {
     // Trigger a disk sync and give it time to complete.
     ctx.raft_log.flush().await.unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
+    ctx.drain_fsync_completions();
 
     // The follower must never advertise durability for an index it doesn't
     // actually have. If persisted_index wasn't clamped down during the
@@ -133,7 +134,6 @@ async fn test_persisted_index_does_not_adopt_a_stale_persist_after_truncation() 
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage),

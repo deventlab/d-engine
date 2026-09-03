@@ -183,7 +183,6 @@ pub fn setup_raft_components(
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 1,
             },
-            max_buffered_entries: 10000,
             shutdown_timeout_ms: 5000,
         },
         storage_engine.clone(),

@@ -61,7 +61,7 @@ async fn test_crash_recovery() {
 #[tokio::test]
 async fn test_crash_recovery_with_multiple_entries() {
     // Create and populate storage
-    let original_ctx = TestContext::new(
+    let mut original_ctx = TestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -85,6 +85,7 @@ async fn test_crash_recovery_with_multiple_entries() {
 
     // Ensure all entries are persisted for DiskFirst strategy
     original_ctx.raft_log.flush().await.unwrap();
+    original_ctx.drain_fsync_completions();
 
     // Verify all entries are in memory and durable
     assert_eq!(original_ctx.raft_log.durable_index(), 5);
@@ -127,7 +128,6 @@ async fn test_partial_flush_with_graceful_shutdown() {
                     flush_policy: FlushPolicy::Batch {
                         idle_flush_interval_ms: 100,
                     },
-                    max_buffered_entries: 10000,
                     shutdown_timeout_ms: 5000,
                 },
                 storage,
@@ -163,7 +163,6 @@ async fn test_partial_flush_with_graceful_shutdown() {
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms: 1,
                 },
-                max_buffered_entries: 10000,
                 shutdown_timeout_ms: 5000,
             },
             storage,
@@ -207,7 +206,6 @@ async fn test_partial_flush_after_crash() {
                     flush_policy: FlushPolicy::Batch {
                         idle_flush_interval_ms: 100,
                     },
-                    max_buffered_entries: 10000,
                     shutdown_timeout_ms: 5000,
                 },
                 storage,
@@ -255,7 +253,6 @@ async fn test_partial_flush_after_crash() {
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms: 1,
                 },
-                max_buffered_entries: 10000,
                 shutdown_timeout_ms: 5000,
             },
             storage,
@@ -381,7 +378,6 @@ async fn test_memfirst_crash_recovery_durability() {
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms: 1,
                 },
-                max_buffered_entries: 10000,
                 shutdown_timeout_ms: 5000,
             },
             storage,
@@ -414,7 +410,6 @@ async fn test_diskfirst_crash_recovery_durability() {
                     flush_policy: FlushPolicy::Batch {
                         idle_flush_interval_ms: 1,
                     },
-                    max_buffered_entries: 10000,
                     shutdown_timeout_ms: 5000,
                 },
                 storage,
@@ -447,7 +442,6 @@ async fn test_diskfirst_crash_recovery_durability() {
                 flush_policy: FlushPolicy::Batch {
                     idle_flush_interval_ms: 1,
                 },
-                max_buffered_entries: 10000,
                 shutdown_timeout_ms: 5000,
             },
             storage,

@@ -44,7 +44,7 @@ use d_engine_core::RaftLog;
 
 #[tokio::test]
 async fn test_quorum_acknowledged_index_survives_real_crash_and_reopen() {
-    let ctx = TestContext::new(
+    let mut ctx = TestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -54,6 +54,7 @@ async fn test_quorum_acknowledged_index_survives_real_crash_and_reopen() {
     // First 5 entries, explicitly flushed: genuinely durable, deterministic.
     ctx.append_entries(1, 5, 1).await;
     ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
     assert_eq!(ctx.raft_log.durable_index(), 5);
 
     // 3-node cluster: both followers already report match_index=5 (post-Stage2
@@ -81,6 +82,7 @@ async fn test_quorum_acknowledged_index_survives_real_crash_and_reopen() {
     // simulated crash — keeps this test's crash/recovery assertions exact, not bounded.
     ctx.append_entries(6, 5, 1).await;
     ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
     assert_eq!(ctx.raft_log.durable_index(), 10);
 
     let recovered = ctx.recover_from_crash();

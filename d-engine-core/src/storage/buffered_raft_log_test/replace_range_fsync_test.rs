@@ -1,7 +1,7 @@
 //! `IOTask::ReplaceRange` (term-conflict truncation, see
 //! `filter_out_conflicts_and_append`'s slow path) writes to the storage engine
 //! synchronously and bumps `pending_max`, but is dispatched through the
-//! `receiver.recv()` => `cmd => { handle_non_write_cmd(...) }` arm of the IO
+//! `receiver.recv()` => `cmd => { run_storage_tasks(...) }` arm of the IO
 //! thread's select loop — a branch that, unlike `run_batch_turn`, never calls
 //! `fsync_coordinator.submit()`. If no further `append_entries()` call arrives
 //! afterward (which would separately trigger a `run_batch_turn` via
@@ -44,7 +44,7 @@ fn entry(
 /// truncation, because the replaced entries' fsync was never submitted.
 #[tokio::test]
 async fn test_replace_range_becomes_durable_without_a_following_append() {
-    let ctx = BufferedRaftLogTestContext::new(
+    let mut ctx = BufferedRaftLogTestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 60_000, // effectively disabled for this test's timeframe
         },
@@ -54,6 +54,7 @@ async fn test_replace_range_becomes_durable_without_a_following_append() {
     // Arrange: log [1,2,3] all term=1, explicitly flushed durable.
     ctx.append_entries(1, 3, 1).await;
     ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
     assert_eq!(ctx.raft_log.durable_index(), 3, "baseline must be durable");
 
     // Act: leader (term=2) sends entries that conflict at index=2 and extend
@@ -76,6 +77,7 @@ async fn test_replace_range_becomes_durable_without_a_following_append() {
     // Give the IO thread ample time to have submitted fsync, if anything
     // besides the (disabled) safety net were going to do it.
     tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.drain_fsync_completions();
 
     // FIXED: ReplaceRange's handler now submits fsync directly instead of
     // relying on a following append/notify or the safety net.

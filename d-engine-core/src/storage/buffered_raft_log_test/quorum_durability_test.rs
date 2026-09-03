@@ -82,7 +82,6 @@ async fn test_quorum_uses_durable_index_not_last_entry_id() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage),
@@ -132,7 +131,6 @@ async fn test_election_eligibility_reads_memory_log_not_durable_index() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage),
@@ -165,7 +163,7 @@ async fn test_election_eligibility_reads_memory_log_not_durable_index() {
 /// that a separate, broader safety argument for #446 relies on.
 #[tokio::test]
 async fn test_majority_matched_index_requires_actual_majority_of_reports() {
-    let ctx = BufferedRaftLogTestContext::new(
+    let mut ctx = BufferedRaftLogTestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -174,6 +172,7 @@ async fn test_majority_matched_index_requires_actual_majority_of_reports() {
 
     ctx.append_entries(1, 10, 1).await;
     ctx.raft_log.flush().await.unwrap(); // leader's own entries now durable through 10
+    ctx.drain_fsync_completions();
 
     assert_eq!(ctx.raft_log.durable_index(), 10);
 
@@ -198,7 +197,7 @@ async fn test_majority_matched_index_requires_actual_majority_of_reports() {
 /// quorum should proceed normally.
 #[tokio::test]
 async fn test_quorum_succeeds_after_leader_flush() {
-    let ctx = BufferedRaftLogTestContext::new(
+    let mut ctx = BufferedRaftLogTestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 999_999, // only threshold trigger, no timer
         },
@@ -210,6 +209,7 @@ async fn test_quorum_succeeds_after_leader_flush() {
 
     // Wait for flush to complete
     tokio::time::sleep(Duration::from_millis(50)).await;
+    ctx.drain_fsync_completions();
 
     assert_eq!(ctx.raft_log.last_entry_id(), 1);
     assert_eq!(
@@ -249,7 +249,6 @@ async fn test_last_entry_id_diverges_from_durable_index_with_mem_first() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage),
@@ -274,7 +273,7 @@ async fn test_last_entry_id_diverges_from_durable_index_with_mem_first() {
 /// After explicit flush, durable_index must equal last_entry_id.
 #[tokio::test]
 async fn test_durable_index_equals_last_entry_id_after_flush() {
-    let ctx = BufferedRaftLogTestContext::new(
+    let mut ctx = BufferedRaftLogTestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -283,6 +282,7 @@ async fn test_durable_index_equals_last_entry_id_after_flush() {
 
     ctx.append_entries(1, 5, 1).await;
     ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
 
     let last = ctx.raft_log.last_entry_id();
     let durable = ctx.raft_log.durable_index();

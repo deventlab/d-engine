@@ -14,13 +14,16 @@
 
 use super::*;
 use crate::FlushPolicy;
+use crate::InternalEvent;
 use crate::MockLogStore;
 use crate::MockMetaStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::PersistenceConfig;
 use crate::Result;
+use d_engine_proto::common::Entry;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// Build a `BufferedRaftLog` for direct `FsyncCoordinator` method calls —
 /// never `.start()`-ed, no IO thread, no channel plumbing. Only `log_store`/
@@ -33,7 +36,6 @@ fn minimal_raft_log(storage: MockStorageEngine) -> Arc<BufferedRaftLog<MockTypeC
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage),
@@ -338,15 +340,44 @@ fn test_run_until_caught_up_advances_durable_index_on_success() {
         "run_until_caught_up_advances_durable_index_on_success".into(),
     );
     let coord = FsyncCoordinator::new();
-    let raft_log = minimal_raft_log(storage);
-    // advance_durable_and_notify() clamps against max_index — this test
-    // simulates a log that already has 5 entries, matching pending_max below.
-    raft_log.set_max_index_for_test(5);
+    // run_until_caught_up() now only *reports* completion (notify_fsync_completed) —
+    // durable_index only moves once something (normally raft.rs) drains that
+    // report and calls try_advance_durable_index, which content-validates
+    // against entry_term(index). Needs a real backing entry (not just
+    // set_memory_max_index_for_test's raw atomic poke) and a registered
+    // log_flush_tx to receive the report — minimal_raft_log() has neither, so
+    // this test builds its own instead of using it.
+    let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
+        1,
+        PersistenceConfig {
+            flush_policy: FlushPolicy::Batch {
+                idle_flush_interval_ms: 60_000,
+            },
+            shutdown_timeout_ms: 5000,
+        },
+        Arc::new(storage),
+    );
+    let (log_flush_tx, mut log_flush_rx) = mpsc::unbounded_channel();
+    let raft_log = raft_log.start(receiver, Some(log_flush_tx));
+    raft_log.entries.write().insert(
+        5,
+        Entry {
+            index: 5,
+            term: 1,
+            payload: None,
+        },
+    );
+    raft_log.set_memory_max_index_for_test(5);
 
     coord.inflight.store(true, Ordering::Release);
     coord.pending_max.store(5, Ordering::Release);
 
     coord.run_until_caught_up(&raft_log);
+
+    // Stand in for raft.rs's InternalEvent::FsyncCompleted handler.
+    while let Ok(InternalEvent::FsyncCompleted { index, term }) = log_flush_rx.try_recv() {
+        raft_log.try_advance_durable_index(index, term);
+    }
 
     assert_eq!(
         raft_log.durable_index.load(Ordering::Acquire),
@@ -480,9 +511,31 @@ fn test_run_until_caught_up_accepts_result_when_generation_unchanged() {
         "run_until_caught_up_accepts_result_when_generation_unchanged".into(),
     );
     let coord = FsyncCoordinator::new();
-    let raft_log = minimal_raft_log(storage);
-    // advance_durable_and_notify() clamps against max_index — matches pending_max below.
-    raft_log.set_max_index_for_test(5);
+    // See test_run_until_caught_up_advances_durable_index_on_success for why
+    // this doesn't use minimal_raft_log(): needs a real backing entry for
+    // try_advance_durable_index's content check, and a registered
+    // log_flush_tx to receive the FsyncCompleted report.
+    let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
+        1,
+        PersistenceConfig {
+            flush_policy: FlushPolicy::Batch {
+                idle_flush_interval_ms: 60_000,
+            },
+            shutdown_timeout_ms: 5000,
+        },
+        Arc::new(storage),
+    );
+    let (log_flush_tx, mut log_flush_rx) = mpsc::unbounded_channel();
+    let raft_log = raft_log.start(receiver, Some(log_flush_tx));
+    raft_log.entries.write().insert(
+        5,
+        Entry {
+            index: 5,
+            term: 1,
+            payload: None,
+        },
+    );
+    raft_log.set_memory_max_index_for_test(5);
 
     // Two unrelated fences happened earlier — generation is 2, not 0 — before
     // this round is even recorded as in flight.
@@ -497,6 +550,11 @@ fn test_run_until_caught_up_accepts_result_when_generation_unchanged() {
 
     // Nothing fences this round while it runs — generation stays at 2.
     coord.run_until_caught_up(&raft_log);
+
+    // Stand in for raft.rs's InternalEvent::FsyncCompleted handler.
+    while let Ok(InternalEvent::FsyncCompleted { index, term }) = log_flush_rx.try_recv() {
+        raft_log.try_advance_durable_index(index, term);
+    }
 
     assert_eq!(
         raft_log.durable_index.load(Ordering::Acquire),
@@ -525,7 +583,7 @@ fn test_run_until_caught_up_coalesces_queued_submits_into_one_flush() {
     let coord = FsyncCoordinator::new();
     let raft_log = minimal_raft_log(storage);
     // advance_durable_and_notify() clamps against max_index — matches pending_max below.
-    raft_log.set_max_index_for_test(10);
+    raft_log.set_memory_max_index_for_test(10);
 
     // Simulate two submit() calls that both lost the CAS while a round was
     // in flight — both just accumulated into the same pending state.

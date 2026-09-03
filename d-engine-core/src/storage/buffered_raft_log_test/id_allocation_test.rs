@@ -22,7 +22,6 @@ fn setup_memory() -> Arc<BufferedRaftLog<MockTypeConfig>> {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 1,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,

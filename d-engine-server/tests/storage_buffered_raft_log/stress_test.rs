@@ -22,7 +22,7 @@ use super::TestContext;
 
 #[tokio::test]
 async fn test_high_concurrency() {
-    let ctx = TestContext::new(
+    let mut ctx = TestContext::new(
         FlushPolicy::Batch {
             idle_flush_interval_ms: 1,
         },
@@ -52,6 +52,7 @@ async fn test_high_concurrency() {
 
     // With MemFirst, entries are buffered; wait for all to be durable before asserting.
     ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
 
     // Verify all entries persisted
     assert_eq!(ctx.raft_log.durable_index(), 1000);
@@ -154,7 +155,7 @@ mod mem_first_tests {
 
     #[tokio::test]
     async fn test_async_persistence() {
-        let ctx = TestContext::new(
+        let mut ctx = TestContext::new(
             FlushPolicy::Batch {
                 idle_flush_interval_ms: 1,
             },
@@ -164,6 +165,7 @@ mod mem_first_tests {
 
         // Trigger flush
         ctx.raft_log.flush().await.unwrap();
+        ctx.drain_fsync_completions();
 
         // Verify persistence
         assert_eq!(ctx.raft_log.durable_index(), 100);

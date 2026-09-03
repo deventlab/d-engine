@@ -59,7 +59,6 @@ async fn test_reset_performance_during_active_flush() {
         let storage = create_delayed_storage(FLUSH_DELAY_MS);
         let config = PersistenceConfig {
             flush_policy: flush_policy.clone(),
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         };
 
@@ -119,7 +118,6 @@ async fn test_filter_conflicts_performance_during_flush() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         };
 
@@ -201,7 +199,6 @@ async fn test_fresh_cluster_performance_consistency() {
 
         let config = PersistenceConfig {
             flush_policy: flush_policy.clone(),
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         };
 

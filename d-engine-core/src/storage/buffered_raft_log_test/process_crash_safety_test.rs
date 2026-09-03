@@ -51,7 +51,6 @@ async fn test_append_entries_waits_for_storage_engine_before_returning() {
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         Arc::new(storage.clone()),
