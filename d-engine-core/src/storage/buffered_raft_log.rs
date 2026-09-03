@@ -18,7 +18,7 @@
 //! ## IO thread (notify-then-spawn-fsync)
 //!
 //! On wakeup from `write_notify`:
-//! 1. **Read** — scan SkipMap range `(durable_index, max_index]`
+//! 1. **Read** — scan SkipMap range `(durable_index, memory_max_index]`
 //! 2. **Persist** — write range to OS page cache via `persist_entries`
 //! 3. **Spawn fsync** — dispatch fdatasync to `spawn_blocking` pool via `spawn_fsync`, return immediately
 //! 4. **Loop** — back to `select!` for next wakeup; prior fsync runs concurrently in pool
@@ -197,6 +197,15 @@ impl TermSegments {
 /// on tokio worker threads or the inbound event loop.
 #[derive(Debug)]
 pub enum IOTask {
+    /// Persist entries on the IO thread. `append_entries()` sends this and
+    /// awaits `done` — replaces the old inline `persist_entries()` call that
+    /// ran on the caller's own task (raft-core-loop), which could block
+    /// behind the IO thread's own concurrent fsync.
+    Persist {
+        entries: Vec<Entry>,
+        done: oneshot::Sender<Result<()>>,
+    },
+
     /// Atomically truncate from `truncate_from` then persist `new_entries`.
     /// Conflict-resolution path: truncate + write are a single atomic IO unit.
     /// `done` is signalled after the IO thread finishes the replace so callers
@@ -258,14 +267,18 @@ where
     // Raft must not tell a client or a peer a write is safe ahead of this point,
     // regardless of what's already visible in `entries`.
     pub(crate) durable_index: AtomicU64,
+    // Highest index handed to the storage engine (page cache), not yet
+    // fsynced. Set by append_entries()'s synchronous persist_entries() call.
+    // Lets the IO thread know what to fsync without re-scanning/re-writing.
+    persisted_index: AtomicU64,
     // The next index to be allocated
     pub(crate) next_id: AtomicU64,
 
     // --- In-memory index ---
     // O(1) answer to "is this index currently held in memory" — lets callers
     // (e.g. entry_term()) reject an out-of-range index without touching `entries`.
-    min_index: AtomicU64, // Smallest log index (0 if empty)
-    max_index: AtomicU64, // Largest log index (0 if empty)
+    min_index: AtomicU64,        // Smallest log index (0 if empty)
+    memory_max_index: AtomicU64, // Largest log index held in memory (0 if empty) — may be ahead of what's persisted/durable
 
     // The term of the last entry ever purged (compacted away after a snapshot).
     // Raft's AppendEntries consistency check needs the term at prev_log_index
@@ -273,7 +286,7 @@ where
     // this, a follower can't tell "purged, but we agree" apart from "conflict".
     //
     // Must be published in the same critical section as the entries removal
-    // and the min_index/max_index advance it corresponds to — a reader must
+    // and the min_index/memory_max_index advance it corresponds to — a reader must
     // never be able to observe the entry gone but this boundary not yet set.
     last_purged_index: AtomicU64,
     last_purged_term: AtomicU64,
@@ -329,7 +342,7 @@ where
     }
 
     fn last_entry_id(&self) -> u64 {
-        self.max_index.load(Ordering::Acquire)
+        self.memory_max_index.load(Ordering::Acquire)
     }
 
     fn durable_index(&self) -> u64 {
@@ -346,6 +359,9 @@ where
         }
     }
 
+    // #446: this is what election-eligibility comparisons (is_target_log_more_recent)
+    // read. It must keep reflecting the in-memory tail, never durable_index — a node
+    // with an un-fsynced entry must still be able to reject a less-up-to-date candidate.
     fn last_log_id(&self) -> Option<LogId> {
         let last_index = self.last_entry_id();
         if last_index > 0 {
@@ -378,7 +394,7 @@ where
         entry_id: u64,
     ) -> Option<u64> {
         // Bounds check: skip TermSegments entirely for out-of-range queries.
-        let max = self.max_index.load(Ordering::Acquire);
+        let max = self.memory_max_index.load(Ordering::Acquire);
         let min = self.min_index.load(Ordering::Acquire);
         if max == 0 || entry_id < min || entry_id > max {
             // Cold path: check purge boundary so that AppendEntries built with
@@ -465,10 +481,20 @@ where
         }
 
         self.insert_to_memory(&entries);
-        // Signal IO thread to persist. Multiple concurrent notify_one() calls
-        // while the IO thread is busy coalesce into one wakeup — no per-write
-        // kernel cond_signal. IO thread reads from SkipMap via max_index.
-        self.write_notify.notify_one();
+
+        // Route the actual write through the IO thread — never call
+        // persist_entries() inline from this task.
+        // Still blocks the caller until truly persisted.
+        let (done_tx, done_rx) = oneshot::channel();
+        self.command_sender
+            .send(IOTask::Persist {
+                entries,
+                done: done_tx,
+            })
+            .map_err(|e| NetworkError::SingalSendFailed(format!("Persist send failed: {e:?}")))?;
+        done_rx
+            .await
+            .map_err(|_| NetworkError::SingalSendFailed("Persist done channel closed".into()))??;
 
         Ok(())
     }
@@ -573,7 +599,7 @@ where
                     if diverge_index <= last_current_index {
                         // Real term conflict: truncate from diverge_index, replace with tail.
                         // Await the done channel so callers can flush() knowing the truncation
-                        // is durable — durable_index may exceed max_index after truncation,
+                        // is durable — durable_index may exceed memory_max_index after truncation,
                         // which would cause flush() to short-circuit before the replace lands.
                         self.remove_range(diverge_index..=u64::MAX);
                         self.insert_to_memory(tail);
@@ -617,11 +643,10 @@ where
         mut peer_matched_ids: Vec<u64>,
     ) -> Option<u64> {
         let _timer = ScopedTimer::new("calculate_majority_matched_index");
-        // Leader's contribution: last_entry_id (in-memory). With MemFirst (Level 2), db.write()
-        // returns once data reaches OS page cache — durable_index advances immediately.
-        // Followers also ACK after OS page cache write (no fsync wait). Crash safety is
-        // OS page cache level: process crash is recoverable, power loss is not.
-        peer_matched_ids.push(self.last_entry_id());
+        // RPO=0 (#446): leader's own contribution must be its own durable (fsynced)
+        // position, not the in-memory tail — otherwise a majority-looking commit can
+        // still lose data on correlated power loss.
+        peer_matched_ids.push(self.durable_index());
 
         // Sort in descending order
         peer_matched_ids.sort_unstable_by(|a, b| b.cmp(a));
@@ -657,10 +682,16 @@ where
         self.purge_prefix(cutoff_index);
 
         // Purged entries are backed by the snapshot; treat cutoff as durable.
-        // fetch_max is monotonic — avoids racing fsync_coordinator's concurrent
-        // advance on the raft-io thread — and this fires LogFlushed consistently
-        // with every other durable_index advancement in this file.
-        self.advance_durable_and_notify(cutoff_index.index);
+        // Already running on the single owner (called from role_state.rs, same
+        // thread as remove_range) — safe to apply directly, no message hop needed.
+        if let Some(new_durable) =
+            self.try_advance_durable_index(cutoff_index.index, cutoff_index.term)
+            && let Some(ref tx) = self.log_flush_tx
+        {
+            let _ = tx.send(crate::InternalEvent::LogFlushed {
+                durable_index: new_durable,
+            });
+        }
 
         // Route purge through the IO thread so it never blocks the inbound event loop.
         // Also writes the purge boundary to META_CF in the RocksDB implementation.
@@ -678,12 +709,36 @@ where
         Ok(())
     }
 
+    fn try_advance_durable_index(
+        &self,
+        index: u64,
+        term: u64,
+    ) -> Option<u64> {
+        let prev = self.durable_index.load(Ordering::Acquire);
+        if index <= prev {
+            return None;
+        }
+        if self.entry_term(index) != Some(term) {
+            return None;
+        }
+        let safe = index.min(
+            self.memory_max_index
+                .load(Ordering::Acquire)
+                .max(self.last_purged_index.load(Ordering::Acquire)),
+        );
+        if safe <= prev {
+            return None;
+        }
+        self.durable_index.fetch_max(safe, Ordering::AcqRel);
+        Some(safe)
+    }
+
     async fn flush(&self) -> Result<()> {
-        let max_index = self.max_index.load(Ordering::Acquire);
-        if max_index == 0 {
+        let memory_max_index = self.memory_max_index.load(Ordering::Acquire);
+        if memory_max_index == 0 {
             return Ok(());
         }
-        if self.durable_index.load(Ordering::Acquire) >= max_index {
+        if self.durable_index.load(Ordering::Acquire) >= memory_max_index {
             return Ok(());
         }
         let (tx, rx) = oneshot::channel();
@@ -753,8 +808,8 @@ where
             idle_flush_interval_ms,
         } = persistence_config.flush_policy;
         debug!(
-            "Creating BufferedRaftLog with node_id: {}, strategy: {:?}, idle_flush_interval_ms: {:?}, disk_len: {:?}",
-            node_id, persistence_config.strategy, idle_flush_interval_ms, disk_len
+            "Creating BufferedRaftLog with node_id: {}, idle_flush_interval_ms: {:?}, disk_len: {:?}",
+            node_id, idle_flush_interval_ms, disk_len
         );
 
         let shutdown_timeout_ms = persistence_config.shutdown_timeout_ms;
@@ -806,7 +861,7 @@ where
 
         // Initialize atomic boundaries
         let min_index = entries.front().map(|e| *e.key()).unwrap_or(0);
-        let max_index = entries.back().map(|e| *e.key()).unwrap_or(0);
+        let memory_max_index = entries.back().map(|e| *e.key()).unwrap_or(0);
 
         if disk_len > 0 && loaded_count == 0 {
             warn!(
@@ -835,10 +890,11 @@ where
                 shutdown_timeout_ms,
                 entries: RwLock::new(entries),
                 min_index: AtomicU64::new(min_index),
-                max_index: AtomicU64::new(max_index),
+                memory_max_index: AtomicU64::new(memory_max_index),
                 last_purged_index: AtomicU64::new(last_purged_index_val),
                 last_purged_term: AtomicU64::new(last_purged_term_val),
                 durable_index: AtomicU64::new(disk_len),
+                persisted_index: AtomicU64::new(disk_len),
                 next_id: AtomicU64::new(disk_len + 1),
                 write_notify: Arc::new(Notify::new()),
                 command_sender: command_sender.clone(),
@@ -912,7 +968,7 @@ where
     /// from one-per-write to one-per-burst.
     ///
     /// On each wakeup:
-    ///   1. Read entries in `(durable_index, max_index]` from SkipMap.
+    ///   1. Read entries in `(durable_index, memory_max_index]` from SkipMap.
     ///   2. persist_entries to OS page cache (no fsync).
     ///   3. Drain any pending control commands from the mpsc channel.
     ///   4. fsync once — advance durable_index, wake WaitDurable callers.
@@ -947,7 +1003,7 @@ where
                         IOTask::Shutdown => Self::run_batch_turn(&this, &mut receiver, &mut pending_max, Vec::new(), true).await,
                         IOTask::Flush(reply) => Self::run_batch_turn(&this, &mut receiver, &mut pending_max, vec![reply], false).await,
                         cmd => {
-                            if Self::handle_non_write_cmd(cmd, &this, &mut pending_max).await {
+                            if Self::run_storage_tasks(cmd, &this, &mut pending_max).await {
                                 break;
                             }
                             continue;
@@ -956,9 +1012,7 @@ where
                     if should_break { break; }
                 }
                 _ = safety_timer.tick() => {
-                    let start = this.durable_index.load(Ordering::Acquire) + 1;
-                    let end = this.max_index.load(Ordering::Acquire);
-                    let _ = Self::persist_pending_range(&this, start, end, &mut pending_max, "safety-net").await;
+                    Self::fold_persisted_watermark(&this, &mut pending_max);
 
                     if pending_max > 0 {
                         this.fsync_coordinator.submit(&this, pending_max, vec![]);
@@ -969,38 +1023,14 @@ where
         }
     }
 
-    /// Writes entries in `(from, to]` that haven't reached page cache yet
-    /// (no fsync). Advances `pending_max` on success; propagates the error
-    /// as-is on failure — whether to notify any waiting `Flush` caller is
-    /// left to the caller.
-    async fn persist_pending_range(
+    /// Folds `persisted_index` (set by `append_entries()`'s synchronous
+    /// write) into `pending_max`, so the IO thread still dispatches fsync
+    /// for it even though writing is no longer this thread's job.
+    fn fold_persisted_watermark(
         this: &Arc<Self>,
-        from: u64,
-        to: u64,
         pending_max: &mut u64,
-        ctx: &str,
-    ) -> Result<()> {
-        if this.is_poisoned() {
-            return Err(Error::Fatal("raft log storage is poisoned".to_string()));
-        }
-
-        if from > to {
-            return Ok(());
-        }
-        let entries = this.get_entries_range(from..=to)?;
-        if entries.is_empty() {
-            return Ok(());
-        }
-        this.log_store
-            .persist_entries(entries)
-            .await
-            .inspect(|_| {
-                *pending_max = (*pending_max).max(to);
-            })
-            .inspect_err(|e| {
-                error!("{ctx} persist_entries failed: {e:?}");
-                this.mark_poisoned_and_notify(format!("{ctx}: persist_entries failed: {e:?}"));
-            })
+    ) {
+        *pending_max = (*pending_max).max(this.persisted_index.load(Ordering::Acquire));
     }
 
     async fn run_batch_turn(
@@ -1010,15 +1040,7 @@ where
         mut replies: Vec<oneshot::Sender<Result<()>>>,
         mut seen_shutdown: bool,
     ) -> bool {
-        let start = this.durable_index.load(Ordering::Acquire) + 1;
-        let end = this.max_index.load(Ordering::Acquire);
-        let mut persist_failed = false;
-        if let Err(e) = Self::persist_pending_range(this, start, end, pending_max, "batch").await {
-            for reply in replies.drain(..) {
-                let _ = reply.send(Err(Error::Fatal(format!("persist_entries failed: {e:?}"))));
-            }
-            persist_failed = true;
-        }
+        Self::fold_persisted_watermark(this, pending_max);
 
         // `seen_shutdown` is not a gate here — regardless of whether the
         // caller already knows shutdown is happening, any commands still
@@ -1032,7 +1054,7 @@ where
                 }
                 IOTask::Flush(reply) => replies.push(reply),
                 cmd => {
-                    if Self::handle_non_write_cmd(cmd, this, pending_max).await {
+                    if Self::run_storage_tasks(cmd, this, pending_max).await {
                         for reply in replies {
                             let _ = reply
                                 .send(Err(Error::Fatal("fatal IO error, batch aborted".into())));
@@ -1043,13 +1065,6 @@ where
             }
         }
 
-        if !replies.is_empty() && !persist_failed {
-            let start = *pending_max + 1;
-            let end = this.max_index.load(Ordering::Acquire);
-            let _ =
-                Self::persist_pending_range(this, start, end, pending_max, "batch catch-up").await;
-        }
-
         this.fsync_coordinator.submit(this, *pending_max, replies);
         *pending_max = 0;
         if seen_shutdown {
@@ -1058,25 +1073,49 @@ where
         seen_shutdown
     }
 
-    /// Handle IOTask variants that are NOT `Flush` or `Shutdown`.
-    ///
-    /// Callers (`batch_processor`) dispatch `Flush` and `Shutdown` directly in the outer
-    /// `match` before this function is ever called — those two arms are unreachable here.
+    /// Runs one storage-mutating IOTask (Persist/ReplaceRange/Purge/Reset)
+    /// against log_store. Flush/Shutdown are intercepted by the caller
+    /// (`batch_processor`) before this is called — unreachable here.
     ///
     /// Returns `true` if `batch_processor` must exit immediately (fatal IO error).
-    async fn handle_non_write_cmd(
+    async fn run_storage_tasks(
         cmd: IOTask,
         this: &Arc<Self>,
         pending_max: &mut u64,
     ) -> bool {
         match cmd {
             IOTask::Flush(_) => {
-                unreachable!(
-                    "Flush must be intercepted in the drain loop before handle_non_write_cmd"
-                )
+                unreachable!("Flush must be intercepted in the drain loop before run_storage_tasks")
             }
             IOTask::Shutdown => {
-                unreachable!("Shutdown is always filtered out before reaching handle_non_write_cmd")
+                unreachable!("Shutdown is always filtered out before reaching run_storage_tasks")
+            }
+            IOTask::Persist { entries, done } => {
+                if this.is_poisoned() {
+                    let _ = done.send(Err(Error::Fatal("raft log storage is poisoned".into())));
+                    return true; // signal batch_processor to exit — disk state is untrusted
+                }
+                let max_idx = entries.last().map(|e| e.index).unwrap_or(0);
+                let result = this.log_store.persist_entries(entries).await;
+                if let Err(ref e) = result {
+                    error!("IOTask::Persist failed (fatal): {e:?}");
+                    this.mark_poisoned_and_notify(format!("Persist failed: {e:?}"));
+                    let _ = done.send(result);
+                    return true; // signal batch_processor to exit — disk state is corrupted
+                }
+                if max_idx > 0 {
+                    let current_bound = this
+                        .memory_max_index
+                        .load(Ordering::Acquire)
+                        .max(this.last_purged_index.load(Ordering::Acquire));
+                    let safe_max_idx = max_idx.min(current_bound);
+                    if safe_max_idx > 0 {
+                        this.persisted_index.fetch_max(safe_max_idx, Ordering::AcqRel);
+                        this.fsync_coordinator.submit(this, safe_max_idx, vec![]);
+                    }
+                }
+                let _ = done.send(result);
+                false // write succeeded, storage still trustworthy — keep the IO thread running
             }
             IOTask::ReplaceRange {
                 truncate_from,
@@ -1099,8 +1138,15 @@ where
                     let _ = done.send(result);
                     return true; // signal batch_processor to exit — disk state is corrupted
                 }
+                // persisted_index moved here from remove_range — this handler
+                // is the sole writer now, single-threaded, no content check needed.
+                this.persisted_index
+                    .fetch_min(truncate_from.saturating_sub(1), Ordering::AcqRel);
+
                 if max_idx > 0 {
                     *pending_max = (*pending_max).max(max_idx);
+                    this.persisted_index.fetch_max(max_idx, Ordering::AcqRel);
+                    this.fsync_coordinator.submit(this, max_idx, vec![]);
                 }
                 let _ = done.send(result);
                 false
@@ -1148,11 +1194,12 @@ where
 
         self.entries.write().clear();
         self.durable_index.store(0, Ordering::Release);
+        self.persisted_index.store(0, Ordering::Release);
         self.next_id.store(1, Ordering::Release);
 
         // Reset boundaries
         self.min_index.store(0, Ordering::Release);
-        self.max_index.store(0, Ordering::Release);
+        self.memory_max_index.store(0, Ordering::Release);
 
         // Clear term indexes to ensure consistency after reset
         self.term_first_index.clear();
@@ -1207,9 +1254,9 @@ where
         }
 
         if let Some(last_entry) = entries.last() {
-            let mut current_max = self.max_index.load(Ordering::Relaxed);
+            let mut current_max = self.memory_max_index.load(Ordering::Relaxed);
             while last_entry.index > current_max {
-                match self.max_index.compare_exchange_weak(
+                match self.memory_max_index.compare_exchange_weak(
                     current_max,
                     last_entry.index,
                     Ordering::AcqRel,
@@ -1222,18 +1269,15 @@ where
         }
     }
 
-    /// Advance `durable_index` to `new_durable` (monotonically) and send `LogFlushed`.
-    pub(super) fn advance_durable_and_notify(
+    /// Fire-and-forget signal to the single owner (raft.rs's event loop).
+    /// Called by fsync_coordinator (C) — never writes `durable_index` itself.
+    pub(super) fn notify_fsync_completed(
         &self,
-        new_durable: u64,
+        index: u64,
+        term: u64,
     ) {
-        let prev = self.durable_index.fetch_max(new_durable, Ordering::AcqRel);
-        if new_durable > prev
-            && let Some(ref tx) = self.log_flush_tx
-        {
-            let _ = tx.send(crate::InternalEvent::LogFlushed {
-                durable_index: new_durable,
-            });
+        if let Some(ref tx) = self.log_flush_tx {
+            let _ = tx.send(crate::InternalEvent::FsyncCompleted { index, term });
         }
     }
 
@@ -1282,7 +1326,12 @@ where
         let entries = self.entries.write();
         let (new_min, new_max) = self.remove_range_locked(&entries, range);
         self.min_index.store(new_min, Ordering::Release);
-        self.max_index.store(new_max, Ordering::Release);
+        self.memory_max_index.store(new_max, Ordering::Release);
+
+        self.durable_index.fetch_min(new_max, Ordering::AcqRel);
+        // Clamps pending_max and bumps generation, in that order — see
+        // fence_truncation()'s doc comment for why the order matters.
+        self.fsync_coordinator.fence_truncation(new_max);
         // `entries` guard drops here (end of scope) — write lock released.
     }
 
@@ -1365,7 +1414,7 @@ where
 
     /// Purge entries at/below `cutoff.index`, publishing `last_purged_index`/
     /// `last_purged_term` in the SAME critical section as the entries removal
-    /// and the min_index/max_index advance. Only place that should ever write
+    /// and the min_index/memory_max_index advance. Only place that should ever write
     /// `last_purged_*` — a reader must never observe the entries gone but the
     /// boundary not yet recorded (#442).
     pub fn purge_prefix(
@@ -1376,15 +1425,12 @@ where
         let (new_min, new_max) = self.remove_range_locked(&entries, 0..=cutoff.index);
 
         self.min_index.store(new_min, Ordering::Release);
-        self.max_index.store(new_max, Ordering::Release);
+        self.memory_max_index.store(new_max, Ordering::Release);
 
         // Write term before index (Release) so readers that load index first
         // then term (Acquire) always observe a consistent pair.
         self.last_purged_term.store(cutoff.term, Ordering::Release);
         self.last_purged_index.store(cutoff.index, Ordering::Release);
-
-        // `entries` guard drops here — everything above is now visible together
-        // to any reader acquiring the read lock or loading these atomics after.
     }
 
     // Update the term index (completely lock-free)
@@ -1438,6 +1484,14 @@ where
     #[cfg(any(test, feature = "__test_support"))]
     pub fn is_empty(&self) -> bool {
         self.entries.read().is_empty()
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_memory_max_index_for_test(
+        &self,
+        value: u64,
+    ) {
+        self.memory_max_index.store(value, Ordering::Release);
     }
 }
 
@@ -1504,8 +1558,16 @@ mod id_allocation_test;
 mod performance_test;
 
 #[cfg(test)]
+#[path = "buffered_raft_log_test/persisted_index_clamp_test.rs"]
+mod persisted_index_clamp_test;
+
+#[cfg(test)]
 #[path = "buffered_raft_log_test/pipeline_overlap_test.rs"]
 mod pipeline_overlap_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/process_crash_safety_test.rs"]
+mod process_crash_safety_test;
 
 #[cfg(test)]
 #[path = "buffered_raft_log_test/quorum_durability_test.rs"]
@@ -1520,6 +1582,10 @@ mod raft_properties_test;
 mod remove_range_test;
 
 #[cfg(test)]
+#[path = "buffered_raft_log_test/replace_range_fsync_test.rs"]
+mod replace_range_fsync_test;
+
+#[cfg(test)]
 #[path = "buffered_raft_log_test/shutdown_test.rs"]
 mod shutdown_test;
 
@@ -1530,6 +1596,14 @@ mod term_index_test;
 #[cfg(test)]
 #[path = "buffered_raft_log_test/term_segments_test.rs"]
 mod term_segments_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/truncation_fsync_fence_test.rs"]
+mod truncation_fsync_fence_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/content_validated_watermark_test.rs"]
+mod content_validated_watermark_test;
 
 #[cfg(test)]
 #[path = "buffered_raft_log_test/worker_test.rs"]

@@ -13,12 +13,11 @@ use d_engine_proto::common::Entry;
 use crate::test_utils::BufferedRaftLogTestContext;
 use crate::{
     BufferedRaftLog, FlushPolicy, MockLogStore, MockMetaStore, MockStorageEngine, MockTypeConfig,
-    PersistenceConfig, PersistenceStrategy, RaftLog,
+    PersistenceConfig, RaftLog,
 };
 
 fn ctx(name: &str) -> BufferedRaftLogTestContext {
     BufferedRaftLogTestContext::new(
-        PersistenceStrategy::MemFirst,
         FlushPolicy::Batch {
             idle_flush_interval_ms: 50,
         },
@@ -472,11 +471,9 @@ async fn test_io_task_replace_range_delegates_to_replace_range_not_truncate() {
     let (raft_log, receiver) = BufferedRaftLog::<MockTypeConfig>::new(
         1,
         PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
             flush_policy: FlushPolicy::Batch {
                 idle_flush_interval_ms: 60_000,
             },
-            max_buffered_entries: 1000,
             shutdown_timeout_ms: 5000,
         },
         storage,

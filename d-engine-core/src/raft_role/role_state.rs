@@ -31,10 +31,13 @@ use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use d_engine_proto::server::storage::SnapshotResponse;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -54,6 +57,17 @@ pub(crate) enum PeerReplicationState {
     /// dispatch any AppendEntries for this peer until SnapshotPushCompleted resolves
     /// it back to Probe — regardless of success or failure.
     Snapshot,
+}
+
+/// An AppendEntries response withheld because this node's own `durable_index` hasn't
+/// caught up to what it would claim yet (RPO=0, #446). Keyed by the claimed index in
+/// `pending_append_acks` (BTreeMap<u64, PendingAck>) — `senders` accumulates via
+/// `entry().or_insert_with()` if more than one request lands on the same threshold
+/// (retry, or a heartbeat landing on the same tail).
+pub(crate) struct PendingAck {
+    pub(super) response: AppendEntriesResponse,
+    pub(super) senders:
+        Vec<MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>>,
 }
 
 #[async_trait]
@@ -402,11 +416,25 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
     /// Default: no-op for Candidate/Follower/Learner (ACK already sent on memory write).
     async fn handle_log_flushed(
         &mut self,
-        _durable: u64,
+        durable: u64,
         _ctx: &RaftContext<Self::T>,
         _internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) {
-        // Candidate: no-op
+        // RPO=0 (#446): release any withheld AppendEntries responses whose claimed
+        // index is now durable. No-op for Candidate/Leader (pending_append_acks_mut
+        // returns None for them; Leader overrides this whole method anyway).
+        let Some(pending) = self.pending_append_acks_mut() else {
+            return;
+        };
+        let later = pending.split_off(&(durable.saturating_add(1)));
+        let ready = std::mem::replace(pending, later);
+        for (_, ack) in ready {
+            for sender in ack.senders {
+                if let Err(e) = sender.send(Ok(ack.response)) {
+                    error!("Failed to send released AppendEntriesResponse: {:?}", e);
+                }
+            }
+        }
     }
 
     /// Handle AppendEntries result from a per-follower ReplicationWorker.
@@ -560,13 +588,48 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 }
                 debug!("AppendEntriesResponse: {:?}", response);
 
-                // MemFirst: ACK immediately after memory write. IO thread fsyncs async.
-                // Safety: quorum uses last_entry_id (in-memory); crash safety is guaranteed by
-                // majority replication, not per-follower durability.
+                // RPO=0 (#446): a success response must not go out until this node's
+                // own durable_index has caught up to what it claims — an ACK asserts
+                // durability, and it must not lie about that. Conflict/higher-term
+                // responses don't claim any durable state, so they're never withheld.
+                let claimed_index = match &response.result {
+                    Some(append_entries_response::Result::Success(SuccessResult {
+                        last_match: Some(log_id),
+                    })) => Some(log_id.index),
+                    _ => None,
+                };
 
-                for sender in senders {
-                    if let Err(e) = sender.send(Ok(response)) {
-                        error!("Failed to send: {:?}", e);
+                let withhold =
+                    claimed_index.is_some_and(|idx| ctx.storage.raft_log.durable_index() < idx);
+
+                if withhold {
+                    let idx = claimed_index.unwrap();
+                    match self.pending_append_acks_mut() {
+                        Some(pending) => {
+                            pending
+                                .entry(idx)
+                                .or_insert_with(|| PendingAck {
+                                    response,
+                                    senders: Vec::new(),
+                                })
+                                .senders
+                                .extend(senders);
+                        }
+                        None => {
+                            // Should never happen — only Follower/Learner reach this
+                            // branch. Fail loud rather than silently dropping an ACK
+                            // the leader is waiting on.
+                            error!("no pending_append_acks slot on a role that should have one");
+                            for sender in senders {
+                                let _ = sender.send(Ok(response));
+                            }
+                        }
+                    }
+                } else {
+                    for sender in senders {
+                        if let Err(e) = sender.send(Ok(response)) {
+                            error!("Failed to send: {:?}", e);
+                        }
                     }
                 }
             }
@@ -939,6 +1002,12 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         _node_id: u32,
         _state: PeerReplicationState,
     ) {
+    }
+
+    /// Follower/Learner's withheld-response queue. `None` for Candidate/Leader —
+    /// same pattern as `pending_purge_upto_mut` below.
+    fn pending_append_acks_mut(&mut self) -> Option<&mut BTreeMap<u64, PendingAck>> {
+        None
     }
 }
 

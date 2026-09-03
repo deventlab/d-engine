@@ -1,6 +1,7 @@
 use crate::BufferedRaftLog;
 use crate::Error;
 use crate::LogStore;
+use crate::RaftLog;
 use crate::Result;
 use crate::TypeConfig;
 use std::sync::Arc;
@@ -9,17 +10,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::oneshot;
 use tracing::error;
 
-/// Tracks whether a fsync task is currently running on the blocking pool.
-/// Ensures at most one physical `flush_wal` call is in flight at any time,
-/// restoring natural batching: entries that arrive while a fsync is running
-/// accumulate in `pending_max`/`pending_replies`, and are picked up by the
-/// SAME task once it finishes its current round — rather than spawning a
-/// new competing task per `write_notify` wakeup.
+/// Schedules physical fsync calls — batches concurrent requests into one
+/// flush() at a time. Does not judge whether results are still valid; see
+/// BufferedRaftLog::apply_durable_report.
 pub(super) struct FsyncCoordinator {
     inflight: AtomicBool,
     pending_max: AtomicU64,
     pending_replies: Mutex<Vec<oneshot::Sender<Result<()>>>>,
-    generation: AtomicU64, // Bumped on every reset; fences out stale in-flight fsync results.
+
+    // Lets a stale round skip its reply early. Optional — not required for correctness.
+    generation: AtomicU64,
 }
 
 impl FsyncCoordinator {
@@ -74,6 +74,7 @@ impl FsyncCoordinator {
             let gen_at_start = self.generation.load(Ordering::Acquire);
 
             let max_index = self.pending_max.swap(0, Ordering::AcqRel);
+            let max_term = this.entry_term(max_index).unwrap_or(0);
             let replies = std::mem::take(&mut *self.pending_replies.lock().unwrap());
 
             if this.is_poisoned() {
@@ -122,8 +123,7 @@ impl FsyncCoordinator {
                 r
             };
 
-            // Fence check: if a reset happened while this batch was in flight,
-            // its result is for data that no longer exists — discard.
+            // Skip replying if this round is already known stale.
             if self.generation.load(Ordering::Acquire) != gen_at_start {
                 for reply in replies {
                     let _ = reply.send(Err(crate::Error::Fatal(
@@ -134,7 +134,7 @@ impl FsyncCoordinator {
             }
 
             match &result {
-                Ok(()) => this.advance_durable_and_notify(max_index),
+                Ok(()) => this.notify_fsync_completed(max_index, max_term),
                 Err(e) => {
                     // One fsync failure = fatal, no threshold, no retry-and-hope.
                     // Durability state is now unknown, this node
@@ -156,13 +156,16 @@ impl FsyncCoordinator {
         }
     }
 
+    fn bump_generation(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// Called from reset_internal() before clearing in-memory state.
     /// Bumps generation to fence the in-flight physical flush (if any),
     /// AND drains anything already queued but not yet picked up by a
     /// flush round — that queued data was submitted before reset and
     /// must not be silently adopted by the next round.
     pub(super) fn fence_reset(&self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
         self.pending_max.store(0, Ordering::Release);
         let stale = std::mem::take(&mut *self.pending_replies.lock().unwrap());
         for reply in stale {
@@ -170,6 +173,15 @@ impl FsyncCoordinator {
                 "stale fsync generation, superseded by reset".into(),
             )));
         }
+        self.bump_generation();
+    }
+
+    pub(super) fn fence_truncation(
+        &self,
+        new_max: u64,
+    ) {
+        self.pending_max.fetch_min(new_max, Ordering::AcqRel);
+        self.bump_generation();
     }
 }
 
