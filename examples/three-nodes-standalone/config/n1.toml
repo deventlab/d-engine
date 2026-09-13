@@ -42,7 +42,7 @@ max_pending_reads = 500
 flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 
 [raft.snapshot]
-enable = true
+enable = false
 max_log_entries_before_snapshot = 5000
 retained_log_entries = 100
 cleanup_retain_count = 100

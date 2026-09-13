@@ -61,8 +61,10 @@ impl FsyncCoordinator {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
+            metrics::counter!("core.raft.fsync.coalesced_submit").increment(1);
             return; // Already running — it will pick up what we just recorded.
         }
+        metrics::counter!("core.raft.fsync.fresh_round").increment(1);
 
         metrics::gauge!("core.raft.fsync.inflight").set(1.0);
 

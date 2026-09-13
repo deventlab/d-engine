@@ -171,7 +171,7 @@ fn generate_value(size: usize) -> Vec<u8> {
     (0..size).map(|_| rng.random()).collect()
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     // Initialize logging
     tracing_subscriber::fmt()

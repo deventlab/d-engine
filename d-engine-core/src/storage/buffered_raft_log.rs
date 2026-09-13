@@ -999,7 +999,46 @@ where
                         IOTask::Shutdown => Self::run_flush_turn(&this, &mut receiver, &mut persisted_index,Vec::new(), true).await,
                         IOTask::Flush(reply) => Self::run_flush_turn(&this, &mut receiver, &mut persisted_index, vec![reply], false).await,
                         cmd => {
-                            if Self::run_storage_tasks(cmd, &this, &mut persisted_index).await {
+                            let mut extra = Vec::new();
+                            let mut control: Option<IOTask> = None;
+                            while let Ok(next) = receiver.try_recv() {
+                                match next {
+                                    IOTask::Persist => {} // redundant — the persist below covers it
+                                    f @ (IOTask::Flush(_) | IOTask::Shutdown) => {
+
+                                        control = Some(f);
+                                        break;
+                                    }
+                                    other => extra.push(other),
+                                }
+                            }
+
+
+
+                            let mut fatal = Self::run_storage_tasks(cmd, &this, &mut persisted_index).await;
+                            if !fatal {
+                                for other in extra {
+                                    if Self::run_storage_tasks(other, &this, &mut persisted_index).await {
+                                        fatal = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if fatal {
+                                break;
+                            }
+
+                            let should_break = match control {
+                                Some(IOTask::Shutdown) => {
+                                    Self::run_flush_turn(&this, &mut receiver, &mut persisted_index, Vec::new(), true).await
+                                }
+                                Some(IOTask::Flush(reply)) => {
+                                    Self::run_flush_turn(&this, &mut receiver, &mut persisted_index, vec![reply], false).await
+                                }
+                                Some(_) => unreachable!(),
+                                None => false,
+                            };
+                            if should_break {
                                 break;
                             }
                             continue;

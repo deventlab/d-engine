@@ -354,6 +354,7 @@ where
         }
         if count > 0 {
             trace!("Drained {} client commands", count);
+            metrics::histogram!("core.raft.client_cmd.batch_size").record(count as f64);
         }
         Ok(())
     }
