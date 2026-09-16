@@ -641,10 +641,18 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         // My term might be updated, has to fetch it again
         let my_term = self.current_term();
 
+        // `state_snapshot` was captured at the top of `handle_inbound_event`, before
+        // `commit_hard_state` above may have advanced our term. Patch it here so the
+        // AppendEntriesResponse reports the real, just-updated term — not the stale
+        // snapshot.
+        let state_snapshot = StateSnapshot {
+            current_term: my_term,
+            ..state_snapshot.clone()
+        };
         // Handle replication request
         match ctx
             .replication_handler()
-            .handle_append_entries(append_entries_request, state_snapshot, ctx.raft_log())
+            .handle_append_entries(append_entries_request, &state_snapshot, ctx.raft_log())
             .await
         {
             Ok(AppendResponseWithUpdates {
@@ -1071,21 +1079,6 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
             ),
         }
         .into())
-    }
-
-    fn peer_replication_state(
-        &self,
-        _node_id: u32,
-    ) -> PeerReplicationState {
-        // Default: unknown peer, be conservative. Also the default for non-leader roles.
-        PeerReplicationState::Probe
-    }
-
-    fn set_peer_replication_state(
-        &mut self,
-        _node_id: u32,
-        _state: PeerReplicationState,
-    ) {
     }
 
     /// The withheld-ACK queue, for the roles that keep one (Follower, Learner).

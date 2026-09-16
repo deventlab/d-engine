@@ -1437,9 +1437,10 @@ async fn test_snapshot_push_completed_uses_snapshot_boundary_not_leader_tip() {
     let current_term = raft.current_term();
     // Establish an active snapshot transfer — the handler seeds next_index only for a
     // peer that is actually mid-snapshot.
-    raft.role
-        .state_mut()
-        .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Snapshot);
+    let crate::RaftRole::Leader(leader) = &mut raft.role else {
+        panic!("expected Leader role after BecomeLeader");
+    };
+    leader.set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Snapshot);
     raft.handle_internal_event(InternalEvent::SnapshotPushCompleted {
         peer_id,
         success: true,
@@ -1660,17 +1661,24 @@ async fn test_peer_stream_error_does_not_touch_peer_in_snapshot_state() {
     raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
 
     let peer_id = 42;
-    raft.role
-        .state_mut()
-        .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Snapshot);
+    {
+        let crate::RaftRole::Leader(leader) = &mut raft.role else {
+            panic!("expected Leader role after BecomeLeader");
+        };
+        leader
+            .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Snapshot);
+    }
     let next_index_before = raft.role.state().next_index(peer_id);
 
     raft.handle_internal_event(InternalEvent::PeerStreamError { peer_id })
         .await
         .unwrap();
 
+    let crate::RaftRole::Leader(leader) = &raft.role else {
+        panic!("expected Leader role after BecomeLeader");
+    };
     assert_eq!(
-        raft.role.state().peer_replication_state(peer_id),
+        leader.peer_replication_state(peer_id),
         crate::role_state::PeerReplicationState::Snapshot,
         "a bidi stream error must not downgrade a peer that is mid-snapshot-transfer"
     );
@@ -1696,16 +1704,25 @@ async fn test_peer_stream_error_downgrades_non_snapshot_peer_to_probe() {
     raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
 
     let peer_id = 42;
-    raft.role
-        .state_mut()
-        .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Replicate);
+    {
+        let crate::RaftRole::Leader(leader) = &mut raft.role else {
+            panic!("expected Leader role after BecomeLeader");
+        };
+        leader.set_peer_replication_state(
+            peer_id,
+            crate::role_state::PeerReplicationState::Replicate,
+        );
+    }
 
     raft.handle_internal_event(InternalEvent::PeerStreamError { peer_id })
         .await
         .unwrap();
 
+    let crate::RaftRole::Leader(leader) = &raft.role else {
+        panic!("expected Leader role after BecomeLeader");
+    };
     assert_eq!(
-        raft.role.state().peer_replication_state(peer_id),
+        leader.peer_replication_state(peer_id),
         crate::role_state::PeerReplicationState::Probe,
         "a bidi stream error for a non-snapshotting peer must still downgrade it to Probe"
     );

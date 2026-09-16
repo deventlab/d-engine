@@ -20,6 +20,7 @@ use d_engine_proto::server::replication::{AppendEntriesResponse, SuccessResult};
 use rand::distr::SampleString;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{mpsc, watch};
 
 fn success_response(
@@ -35,6 +36,15 @@ fn success_response(
                 index: match_index,
             }),
         })),
+    }
+}
+
+fn voter_meta(id: u32) -> NodeMeta {
+    NodeMeta {
+        id,
+        address: "".into(),
+        status: NodeStatus::Active as i32,
+        role: Follower.into(),
     }
 }
 
@@ -259,6 +269,84 @@ async fn test_multi_voter_commit_respects_quorum_result() {
     assert!(
         internal_event_rx.try_recv().is_err(),
         "NotifyNewCommitIndex must not fire"
+    );
+}
+
+// ── handle_append_result: quorum computed exactly once per ACK ───────────────
+
+/// A multi-voter leader must compute the majority-matched index exactly once per
+/// AppendEntries ACK. The pre-fix code called `calculate_majority_matched_index`
+/// twice in a single `handle_append_result` — once inside `calculate_new_commit_index`
+/// and once more for the `quorum_confirmed` lease check — with identical inputs
+/// (`current_term`, `commit_index`, and the same voter-filtered `match_index`).
+///
+/// The single result must drive both outcomes: commit_index advance AND lease
+/// (quorum) confirmation. This test fails if the method runs twice, or if either
+/// consumer stops receiving the result.
+#[tokio::test]
+async fn test_handle_append_result_computes_quorum_once_per_ack() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+
+    let mut ctx = mock_raft_context(
+        "/tmp/test_handle_append_result_quorum_once",
+        graceful_rx,
+        None,
+    );
+
+    // Two follower voters → multi-voter; `replication_peers` must list them so
+    // `handle_append_result` treats peer 2 as a voter (drives the quorum path).
+    let mut membership = crate::MockMembership::<MockTypeConfig>::new();
+    membership.expect_voters().returning(|| vec![voter_meta(2), voter_meta(3)]);
+    membership
+        .expect_replication_peers()
+        .returning(|| vec![voter_meta(2), voter_meta(3)]);
+    ctx.membership = Arc::new(membership);
+
+    // Count every quorum computation; return a majority index of 1 so the single
+    // result is exercised by BOTH the commit path and the lease-confirmation path.
+    let call_count = Arc::new(AtomicU64::new(0));
+    let call_count_clone = call_count.clone();
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_calculate_majority_matched_index().returning(move |_, _, _| {
+        call_count_clone.fetch_add(1, Ordering::Relaxed);
+        Some(1)
+    });
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+    assert!(!state.cluster_metadata.single_voter);
+
+    ctx.handlers
+        .replication_handler
+        .expect_handle_success_response()
+        .returning(|_, _, _, _| {
+            Ok(PeerUpdate {
+                match_index: Some(1),
+                next_index: 2,
+                success: true,
+            })
+        });
+
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let resp = success_response(1, 1);
+    state.handle_append_result(2, Ok(resp), &ctx, &internal_event_tx).await.unwrap();
+
+    // Root-cause assertion: one ACK must trigger exactly one majority computation.
+    assert_eq!(
+        call_count.load(Ordering::Relaxed),
+        1,
+        "calculate_majority_matched_index must run exactly once per AppendEntries ACK"
+    );
+    // Both consumers of that single result must still observe it.
+    assert_eq!(
+        state.commit_index(),
+        1,
+        "commit must advance from the single majority result"
+    );
+    assert!(
+        state.is_lease_valid(),
+        "quorum confirmation (lease) must reuse the single majority result"
     );
 }
 

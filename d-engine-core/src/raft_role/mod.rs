@@ -50,7 +50,6 @@ use super::InternalEvent;
 use super::RaftContext;
 use crate::Result;
 use crate::TypeConfig;
-use crate::role_state::PeerReplicationState;
 
 /// The role state focuses solely on its own logic
 /// and does not directly manipulate the underlying storage or network.
@@ -416,28 +415,6 @@ impl<T: TypeConfig> RaftRole<T> {
         peer_ids: Vec<u32>,
     ) -> Result<()> {
         self.state_mut().init_peers_next_index_and_match_index(last_entry_id, peer_ids)
-    }
-
-    /// Reset `next_index[peer] = match_index[peer] + 1` after a bidi stream disconnect.
-    /// Ensures the next heartbeat re-sends any unACKed in-flight entries.
-    pub(crate) fn handle_peer_stream_error(
-        &mut self,
-        peer_id: u32,
-    ) {
-        // The bidi stream only carries AppendEntries. While this peer is in Snapshot
-        // state, an error on this stream says nothing about the independent
-        // connection the snapshot transfer runs on, so it has no authority to act
-        // (mirrors etcd raft.go MsgUnreachable: only BecomeProbe() when StateReplicate).
-        if self.state().peer_replication_state(peer_id) == PeerReplicationState::Snapshot {
-            return;
-        }
-        let match_idx = self.state().match_index(peer_id).unwrap_or(0);
-        let _ = self.state_mut().update_next_index(peer_id, match_idx + 1);
-
-        // #436: stream is down, we don't know what (if anything) the peer received —
-        // stop trusting speculative advance (etcd: BecomeProbe on MsgUnreachable).
-        self.state_mut()
-            .set_peer_replication_state(peer_id, PeerReplicationState::Probe);
     }
 
     pub(crate) async fn handle_zombie_detected(

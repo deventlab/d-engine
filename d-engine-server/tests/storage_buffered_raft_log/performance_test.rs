@@ -81,10 +81,17 @@ mod filter_out_conflicts_and_append_performance_tests {
                 "Duration {duration}ms exceeds max {max_duration_ms}ms for {idle_flush_interval_ms}ms interval"
             );
 
-            // Verify correctness
-            assert!(log.entry(500).unwrap().is_none());
+            // Verify correctness: index=501 term=1 already exists (populated above), so this
+            // prev_log_index=0 resend is a pure duplicate — must be a no-op, not a reset.
+            // See 446-expert-q-probe-backpressure-fix-8020.md.
+            assert_eq!(
+                log.last_entry_id(),
+                1000,
+                "duplicate resend must not touch the log"
+            );
+            assert!(log.entry(500).unwrap().is_some());
             assert!(log.entry(501).unwrap().is_some());
-            assert!(log.entry(502).unwrap().is_none());
+            assert!(log.entry(502).unwrap().is_some());
         }
     }
 

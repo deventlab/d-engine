@@ -516,22 +516,16 @@ where
         new_entries: Vec<Entry>,
     ) -> Result<Option<LogId>> {
         let _timer = ScopedTimer::new("filter_out_conflicts_and_append");
-        // prev_log_index == 0 means the leader wants the follower to start from scratch
-        // (e.g. new follower joining, or follower log fully diverged). Reset and replace.
-        if prev_log_index == 0 && prev_log_term == 0 {
-            self.reset().await?;
-            self.append_entries(new_entries.clone()).await?;
-            return Ok(new_entries.last().map(|e| LogId {
-                term: e.term,
-                index: e.index,
-            }));
-        }
 
-        // Check log consistency: use entry_term() so purge-boundary entries
-        // (entries removed from the SkipMap but recorded in last_purged_index/term)
-        // are still recognised as valid prev_log positions after snapshot install.
-        if self.entry_term(prev_log_index) != Some(prev_log_term) {
-            return Ok(self.last_log_id());
+        // prev_log_index==0 has no real entry to compare against, not a reset signal
+        let is_virtual_log_start = prev_log_index == 0 && prev_log_term == 0;
+        if !is_virtual_log_start {
+            // Check log consistency: use entry_term() so purge-boundary entries
+            // (entries removed from the SkipMap but recorded in last_purged_index/term)
+            // are still recognised as valid prev_log positions after snapshot install.
+            if self.entry_term(prev_log_index) != Some(prev_log_term) {
+                return Ok(self.last_log_id());
+            }
         }
 
         let last_current_index = self.last_entry_id();
@@ -1712,3 +1706,7 @@ mod content_validated_watermark_test;
 #[cfg(test)]
 #[path = "buffered_raft_log_test/worker_test.rs"]
 mod worker_test;
+
+#[cfg(test)]
+#[path = "buffered_raft_log_test/prev_log_index_zero_idempotency_test.rs"]
+mod prev_log_index_zero_idempotency_test;

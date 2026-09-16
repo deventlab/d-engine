@@ -201,8 +201,9 @@ pub struct ClusterMetadata {
 
 /// Task routed to a per-follower replication worker.
 enum ReplicationTask {
-    /// Normal AppendEntries replication.
-    Append(AppendEntriesRequest),
+    /// Normal AppendEntries replication. Second field is the enqueue time, used to
+    /// measure how long the task waited in `task_tx` before the worker sent it.
+    Append(AppendEntriesRequest, Instant),
     /// Peer's next_index fell below the purge boundary; transfer the latest snapshot.
     Snapshot(SnapshotMetadata, u64),
 }
@@ -264,6 +265,8 @@ pub struct LeaderState<T: TypeConfig> {
     /// as `next_index`/`match_index` — not merged into a combined struct, to
     /// keep this change minimal and consistent with existing style.
     pub(super) peer_replication_state: HashMap<u32, PeerReplicationState>,
+
+    in_flight: HashMap<u32, bool>,
 
     /// === Volatile State ===
     /// Temporary storage for no-op entry log ID during leader initialization
@@ -1343,7 +1346,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         ctx: &RaftContext<T>,
         internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) {
-        let new_commit_index = if self.cluster_metadata.single_voter {
+        let next_commit_index = if self.cluster_metadata.single_voter {
             // RPO=0 (#446): single-voter has no majority to fall back on — commit
             // must not advance past what this node has itself fsynced.
             if durable > self.commit_index() {
@@ -1355,10 +1358,11 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             // Multi-voter: quorum of match_index determines commit.
             // Only voter peers (non-Learner role) may contribute to majority.
             // Learners replicate entries but must never count toward commit quorum.
-            self.calculate_new_commit_index(ctx.raft_log())
+            let (commit_index, majority) = self.majority_matched_index(ctx.raft_log());
+            Self::new_commit_index(commit_index, majority)
         };
 
-        if let Some(new_commit) = new_commit_index {
+        if let Some(new_commit) = next_commit_index {
             if let Err(e) = self.update_commit_index_with_signal(
                 Leader as i32,
                 self.current_term(),
@@ -1487,6 +1491,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     "AppendResult from peer {} has no result variant",
                     follower_id
                 );
+                self.set_peer_in_flight(follower_id, false);
                 return Ok(());
             }
         };
@@ -1529,7 +1534,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
         // Re-calculate commit index after updating this voter's match_index.
         if peer_update.success && is_voter {
-            if let Some(new_commit) = self.calculate_new_commit_index(ctx.raft_log()) {
+            let (commit_index, majority) = self.majority_matched_index(ctx.raft_log());
+            let quorum_confirmed = majority.is_some();
+
+            if let Some(new_commit) = Self::new_commit_index(commit_index, majority) {
                 self.update_commit_index_with_signal(
                     Leader as i32,
                     self.current_term(),
@@ -1543,25 +1551,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             // Lease refresh and pending_lease_reads drain are triggered by quorum ACK,
             // independent of whether commit_index advanced. When an expired lease fires an
             // empty AppendEntries heartbeat, commit_index does not change (nothing new to
-            // commit), so calculate_new_commit_index returns None and the block above is
-            // skipped. We must check quorum confirmation separately here.
-            let quorum_confirmed = ctx
-                .raft_log()
-                .calculate_majority_matched_index(
-                    self.current_term(),
-                    self.commit_index(),
-                    self.match_index
-                        .iter()
-                        .filter(|(id, _)| {
-                            self.cluster_metadata.replication_targets.iter().any(|n| {
-                                n.id == **id
-                                    && n.role != d_engine_proto::common::NodeRole::Learner as i32
-                            })
-                        })
-                        .map(|(_, idx)| *idx)
-                        .collect(),
-                )
-                .is_some();
+            // commit), so new_commit_index yields None and the block above is skipped.
+            // We still reuse the single majority computation (majority.is_some()) to
+            // confirm quorum here.
             if quorum_confirmed {
                 // Anchor deadline to send time (not ACK time) to eliminate the RTT/2 window.
                 // Falls back to now_ms() only in tests that bypass execute_and_process_raft_rpc.
@@ -1875,33 +1867,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
         Ok(())
     }
-
-    fn peer_replication_state(
-        &self,
-        node_id: u32,
-    ) -> PeerReplicationState {
-        self.peer_replication_state
-            .get(&node_id)
-            .copied()
-            .unwrap_or(PeerReplicationState::Probe)
-    }
-
-    fn set_peer_replication_state(
-        &mut self,
-        node_id: u32,
-        state: PeerReplicationState,
-    ) {
-        metrics::gauge!(
-            "core.raft.peer.replication_state",
-            "peer_id" => node_id.to_string()
-        )
-        .set(match state {
-            PeerReplicationState::Probe => 0.0,
-            PeerReplicationState::Replicate => 1.0,
-            PeerReplicationState::Snapshot => 2.0,
-        });
-        self.peer_replication_state.insert(node_id, state);
-    }
 }
 
 /// Computes the exponential backoff delay for a snapshot push failure.
@@ -2049,7 +2014,12 @@ impl<T: TypeConfig> LeaderState<T> {
                         }
 
                         match task {
-                            ReplicationTask::Append(request) => {
+                            ReplicationTask::Append(request, enqueued_at) => {
+                                metrics::histogram!(
+                                    "core.raft.replication_worker.queue_wait_ms",
+                                    "peer_id" => peer_id.to_string()
+                                )
+                                .record(enqueued_at.elapsed().as_secs_f64() * 1_000.0);
                                 // Push batch directly into the persistent bidi stream (non-blocking)
                                 if stream_sender.send(request).await.is_err() {
                                     warn!(peer_id, "Bidi stream sender closed, reconnecting");
@@ -2575,6 +2545,7 @@ impl<T: TypeConfig> LeaderState<T> {
         follower_id: u32,
         update: &PeerUpdate,
     ) {
+        self.set_peer_in_flight(follower_id, false);
         if update.success {
             // Success: trust speculative advance — never regress next_index below what
             // the leader has already pipeline-sent. ACK confirms a lower bound only;
@@ -2819,12 +2790,16 @@ impl<T: TypeConfig> LeaderState<T> {
         Ok(())
     }
 
-    /// Calculate new submission index
-    fn calculate_new_commit_index(
+    /// Compute the majority-matched index for the current term.
+    ///
+    /// Returns `(commit_index, majority)` where `commit_index` is the base used as
+    /// the quorum floor, so callers apply the advance rule against the *same* base
+    /// the majority was computed with.
+    fn majority_matched_index(
         &self,
         raft_log: &Arc<ROF<T>>,
-    ) -> Option<u64> {
-        let old_commit_index = self.commit_index();
+    ) -> (u64, Option<u64>) {
+        let commit_index = self.commit_index();
         let current_term = self.current_term();
         let replication_targets = &self.cluster_metadata.replication_targets;
         let learner_role = d_engine_proto::common::NodeRole::Learner as i32;
@@ -2839,14 +2814,21 @@ impl<T: TypeConfig> LeaderState<T> {
             .map(|(_, idx)| *idx)
             .collect();
 
-        let new_commit_index =
-            raft_log.calculate_majority_matched_index(current_term, old_commit_index, matched_ids);
+        let majority =
+            raft_log.calculate_majority_matched_index(current_term, commit_index, matched_ids);
+        (commit_index, majority)
+    }
 
-        if new_commit_index.is_some() && new_commit_index.unwrap() > old_commit_index {
-            new_commit_index
-        } else {
-            None
-        }
+    /// Turn a majority-matched index into the new commit index.
+    ///
+    /// Pure function: compares against the same `commit_index` that `majority` was
+    /// computed with. Callers must not hand-write the `>` — this is the single
+    /// source of truth for strict advance.
+    fn new_commit_index(
+        commit_index: u64,
+        majority: Option<u64>,
+    ) -> Option<u64> {
+        majority.filter(|m| *m > commit_index)
     }
 
     /// Calculate safe read index for linearizable reads.
@@ -3099,6 +3081,7 @@ impl<T: TypeConfig> LeaderState<T> {
             write_propose_times: HashMap::new(),
             write_commit_times: HashMap::new(),
             peer_replication_state: HashMap::new(),
+            in_flight: HashMap::new(),
             _marker: PhantomData,
         }
     }
@@ -3310,6 +3293,12 @@ impl<T: TypeConfig> LeaderState<T> {
                 continue;
             }
 
+            let is_probe = self.peer_replication_state(peer_id) == PeerReplicationState::Probe;
+            let is_heartbeat = request.entries.is_empty();
+            if !is_heartbeat && is_probe && self.peer_in_flight(peer_id) {
+                continue;
+            }
+
             // #436: write next_index once. When Replicate, trust speculative advance
             // (always >= effective_next_index, so no separate write is needed for it).
             let next_index =
@@ -3322,9 +3311,13 @@ impl<T: TypeConfig> LeaderState<T> {
                 error!("failed to update next_index peer={}: {:?}", peer_id, e);
             }
 
+            if !is_heartbeat && is_probe {
+                self.set_peer_in_flight(peer_id, true);
+            }
+
             self.send_to_worker_or_spawn(
                 peer_id,
-                ReplicationTask::Append(request),
+                ReplicationTask::Append(request, Instant::now()),
                 ReplicationWorkerConfig {
                     transport: transport.clone(),
                     membership: membership.clone(),
@@ -3800,6 +3793,67 @@ impl<T: TypeConfig> LeaderState<T> {
         let response = ClientResponse::read_results(results);
         let _ = sender.send(Ok(response));
     }
+
+    pub(crate) fn peer_replication_state(
+        &self,
+        node_id: u32,
+    ) -> PeerReplicationState {
+        self.peer_replication_state
+            .get(&node_id)
+            .copied()
+            .unwrap_or(PeerReplicationState::Probe)
+    }
+
+    pub(crate) fn set_peer_replication_state(
+        &mut self,
+        node_id: u32,
+        state: PeerReplicationState,
+    ) {
+        metrics::gauge!(
+            "core.raft.peer.replication_state",
+            "peer_id" => node_id.to_string()
+        )
+        .set(match state {
+            PeerReplicationState::Probe => 0.0,
+            PeerReplicationState::Replicate => 1.0,
+            PeerReplicationState::Snapshot => 2.0,
+        });
+        self.peer_replication_state.insert(node_id, state);
+    }
+
+    /// Whether `peer_id` has an unacknowledged AppendEntries outstanding.
+    pub(super) fn peer_in_flight(
+        &self,
+        peer_id: u32,
+    ) -> bool {
+        self.in_flight.get(&peer_id).copied().unwrap_or(false)
+    }
+
+    pub(super) fn set_peer_in_flight(
+        &mut self,
+        peer_id: u32,
+        in_flight: bool,
+    ) {
+        self.in_flight.insert(peer_id, in_flight);
+    }
+
+    /// Reset `next_index[peer] = match_index[peer] + 1` after a bidi stream disconnect.
+    /// Ensures the next heartbeat re-sends any unACKed in-flight entries.
+    /// Moved here from `raft_role/mod.rs` — this is leader-only, the generic
+    /// `RaftRole`-level dispatch was the anti-pattern that hid the `in_flight` gap.
+    pub(crate) fn handle_peer_stream_error(
+        &mut self,
+        peer_id: u32,
+    ) {
+        if self.peer_replication_state(peer_id) == PeerReplicationState::Snapshot {
+            return;
+        }
+        let match_idx = self.match_index(peer_id).unwrap_or(0);
+        let _ = self.update_next_index(peer_id, match_idx + 1);
+
+        self.set_peer_replication_state(peer_id, PeerReplicationState::Probe);
+        self.set_peer_in_flight(peer_id, false);
+    }
 }
 
 impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
@@ -3854,6 +3908,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
             write_propose_times: HashMap::new(),
             write_commit_times: HashMap::new(),
             peer_replication_state: HashMap::new(),
+            in_flight: HashMap::new(),
             _marker: PhantomData,
         }
     }
@@ -3992,3 +4047,7 @@ mod state_management_test;
 #[cfg(test)]
 #[path = "leader_state_test/worker_lifecycle_test.rs"]
 mod worker_lifecycle_test;
+
+#[cfg(test)]
+#[path = "leader_state_test/probe_backpressure_test.rs"]
+mod probe_backpressure_test;

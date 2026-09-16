@@ -61,6 +61,12 @@
 
 ---
 
+## AI Assistance
+
+- [ ] This PR was written in part with the assistance of generative AI. All ideas and architecture decisions are mine; I have fully reviewed all changes.
+
+---
+
 ## Reviewer Notes
 
 (Optional: anything reviewers should focus on)

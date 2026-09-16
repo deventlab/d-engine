@@ -1009,6 +1009,81 @@ async fn test_handle_append_entries_success_from_new_leader() {
     assert!(response.is_success(), "Response should indicate success");
 }
 
+/// Test: the `AppendEntriesResponse` sent back to the leader must report the follower's
+/// just-updated term, not whatever term was captured in the `StateSnapshot` before
+/// `commit_hard_state` ran.
+///
+/// # Why this needs its own test
+/// `test_handle_append_entries_success_from_new_leader` above hard-codes `new_leader_term`
+/// directly into the mocked response, so it never actually reads what
+/// `handle_append_entries_request_workflow` (role_state.rs) passes as the `state_snapshot`
+/// argument to `handle_append_entries` — it can't catch a caller that passes a stale snapshot.
+/// This test's mock instead echoes back `state_snapshot.current_term`, exactly mirroring what
+/// the real `ReplicationHandler::handle_append_entries` does
+/// (`replication_handler.rs`: `let current_term = state_snapshot.current_term;`), so it's
+/// sensitive to whether the caller passes the pre-update or post-update snapshot.
+///
+/// # Scenario
+/// Follower (term=1) receives AppendEntries from a leader at term=2 — its first-ever contact.
+///
+/// # Expected (RED until fixed)
+/// `response.term == 2` — the follower's real term was correctly updated by `commit_hard_state`
+/// before responding; the response must reflect that, not the term=1 snapshot taken before it.
+#[tokio::test]
+async fn test_handle_append_entries_response_reports_updated_term_not_stale_snapshot() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let follower_term = 1;
+    let new_leader_term = follower_term + 1;
+
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_handle_append_entries()
+        .returning(move |_, state_snapshot, _| {
+            Ok(AppendResponseWithUpdates {
+                response: AppendEntriesResponse::success(1, state_snapshot.current_term, None),
+                commit_index_update: None,
+            })
+        });
+
+    context.membership = Arc::new(MockMembership::new());
+    context.handlers.replication_handler = replication_handler;
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state_mut().update_current_term(follower_term);
+
+    let append_entries_request = AppendEntriesRequest {
+        term: new_leader_term,
+        leader_id: 5,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let inbound_event = InboundEvent::AppendEntries(append_entries_request, vec![resp_tx]);
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    assert!(
+        state
+            .handle_inbound_event(inbound_event, &context, internal_event_tx)
+            .await
+            .is_ok(),
+        "handle_inbound_event should succeed"
+    );
+
+    // No claimed log entry in this batch, so RPO=0 withhold doesn't apply — response is
+    // available immediately.
+    let response = resp_rx.recv().await.expect("should receive response").unwrap();
+    assert_eq!(
+        response.term, new_leader_term,
+        "AppendEntriesResponse must report the follower's just-updated term ({new_leader_term}), \
+         not a StateSnapshot captured before commit_hard_state updated it ({follower_term})"
+    );
+}
+
 /// Test: FollowerState rejects AppendEntries with stale term
 ///
 /// Scenario:

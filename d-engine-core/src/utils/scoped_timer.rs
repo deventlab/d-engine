@@ -19,5 +19,7 @@ impl Drop for ScopedTimer {
     fn drop(&mut self) {
         let elapsed = self.start.elapsed();
         trace!(target: "timing", "[TIMING] {} took {} ms", self.name, elapsed.as_millis());
+        metrics::histogram!("core.timing.scoped_duration_ms", "phase" => self.name)
+            .record(elapsed.as_secs_f64() * 1_000.0);
     }
 }

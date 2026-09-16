@@ -429,7 +429,7 @@ async fn test_worker_forwards_any_append_task_it_is_given_without_inspecting_sta
     // Bypasses process_batch/Phase 5 on purpose — see doc comment above.
     state.send_to_worker_or_spawn(
         2,
-        super::ReplicationTask::Append(stub_append_request()),
+        super::ReplicationTask::Append(stub_append_request(), tokio::time::Instant::now()),
         super::ReplicationWorkerConfig {
             transport: Arc::new(transport),
             membership: ctx.membership.clone(),

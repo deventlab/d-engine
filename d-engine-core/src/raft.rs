@@ -671,7 +671,9 @@ where
             }
             InternalEvent::PeerStreamError { peer_id } => {
                 debug!(%peer_id, "PeerStreamError: bidi stream disconnected, resetting next_index");
-                self.role.handle_peer_stream_error(peer_id);
+                if let RaftRole::Leader(leader) = &mut self.role {
+                    leader.handle_peer_stream_error(peer_id);
+                }
             }
             InternalEvent::ZombieDetected(node_id) => {
                 debug!(%node_id, "ZombieDetected: forwarding to leader for BatchRemove");
@@ -707,9 +709,11 @@ where
                 // Peer-state guard: seeding is only valid for the peer's CURRENT
                 // in-flight snapshot attempt. A straggler completion that arrives after
                 // the peer has moved on must not touch next_index.
-                if self.role.state().peer_replication_state(peer_id)
-                    != PeerReplicationState::Snapshot
-                {
+                let in_snapshot_state = matches!(
+                    &self.role,
+                    RaftRole::Leader(leader) if leader.peer_replication_state(peer_id) == PeerReplicationState::Snapshot
+                );
+                if !in_snapshot_state {
                     debug!(%peer_id, "dropping SnapshotPushCompleted: peer not in Snapshot state");
                     return Ok(());
                 }

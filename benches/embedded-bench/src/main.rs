@@ -256,6 +256,7 @@ async fn run_benchmark_task(
 
     let stats = Arc::new(BenchmarkStats::new());
     let key_counter = Arc::new(AtomicU64::new(0));
+    let failed_count = Arc::new(AtomicU64::new(0));
     let start_time = Instant::now();
 
     let mut handles = Vec::with_capacity(clients);
@@ -264,6 +265,7 @@ async fn run_benchmark_task(
         let engine = engine.clone();
         let stats = stats.clone();
         let key_counter = key_counter.clone();
+        let failed_count = failed_count.clone();
         let command = command.clone();
 
         let handle = tokio::spawn(async move {
@@ -289,7 +291,15 @@ async fn run_benchmark_task(
                                     }
                                 }
                             }
-                            Err(_) => continue,
+                            Err(e) => {
+                                let n = failed_count.fetch_add(1, Ordering::Relaxed);
+                                if n < 5 {
+                                    eprintln!("Put failed: {e:?}");
+                                } else if n == 5 {
+                                    eprintln!("Put failed: (further failures suppressed)");
+                                }
+                                continue;
+                            }
                         }
                     }
                     Commands::Get { consistency } => {
@@ -327,6 +337,10 @@ async fn run_benchmark_task(
 
     futures::future::join_all(handles).await;
     stats.summary(start_time.elapsed());
+    let failed = failed_count.load(Ordering::Relaxed);
+    if failed > 0 {
+        println!("Failed requests: {failed}");
+    }
 }
 
 /// Run all benchmark tests in batch mode
@@ -563,6 +577,7 @@ async fn run_local_benchmark(cli: Cli) {
 
             let stats = Arc::new(BenchmarkStats::new());
             let key_counter = Arc::new(AtomicU64::new(0));
+            let failed_count = Arc::new(AtomicU64::new(0));
             let start_time = Instant::now();
 
             let mut handles = Vec::with_capacity(cli.clients);
@@ -571,6 +586,7 @@ async fn run_local_benchmark(cli: Cli) {
                 let engine = engine.clone();
                 let stats = stats.clone();
                 let key_counter = key_counter.clone();
+                let failed_count = failed_count.clone();
                 let cli = cli.clone();
 
                 let handle = tokio::spawn(async move {
@@ -625,8 +641,13 @@ async fn run_local_benchmark(cli: Cli) {
                                             }
                                         }
                                     }
-                                    Err(_) => {
-                                        // Write failed - skip recording
+                                    Err(e) => {
+                                        let n = failed_count.fetch_add(1, Ordering::Relaxed);
+                                        if n < 5 {
+                                            eprintln!("Put failed: {e:?}");
+                                        } else if n == 5 {
+                                            eprintln!("Put failed: (further failures suppressed)");
+                                        }
                                         continue;
                                     }
                                 }
@@ -676,6 +697,10 @@ async fn run_local_benchmark(cli: Cli) {
 
             futures::future::join_all(handles).await;
             stats.summary(start_time.elapsed());
+            let failed = failed_count.load(Ordering::Relaxed);
+            if failed > 0 {
+                println!("Failed requests: {failed}");
+            }
 
             println!("\nBenchmark completed. Press Ctrl+C to shutdown.");
             let _ = shutdown_rx.changed().await;
