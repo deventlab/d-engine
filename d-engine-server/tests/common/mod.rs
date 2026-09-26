@@ -122,6 +122,9 @@ pub async fn create_node_config(
             {initial_cluster_entries}
         ]
 
+        [raft]
+        general_raft_timeout_duration_in_ms = 5000
+
         [raft.persistence]
         flush_policy = {{ Batch = {{ threshold = 100, idle_flush_interval_ms = 1 }} }}
 
@@ -606,6 +609,20 @@ pub async fn wait_for_stable_leader(client: &Client) -> Result<(), ClientApiErro
                 },
             ) => {
                 last_err = Some(e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            // New leader hasn't committed its own term's noop entry yet (Raft
+            // safety requirement before serving reads) — same cascading-election
+            // window as the arms above, just a different stage of it. Transient.
+            Err(
+                ref e @ ClientApiError::Business {
+                    code: ErrorCode::ClusterUnavailable,
+                    ref message,
+                    ..
+                },
+            ) if message.contains("noop not committed") => {
+                last_err = Some(e.clone());
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
