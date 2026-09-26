@@ -55,22 +55,25 @@ async fn test_leader_failover_cas_standalone() -> Result<(), ClientApiError> {
     info!("Starting 3-node cluster for CAS failover test (gRPC mode)");
     for (i, port) in ports.iter().enumerate() {
         let node_data_dir = temp_dir.path().join(format!("node{}", i + 1));
-        let (graceful_tx, node_handle) = start_node(
-            &node_data_dir,
-            node_config(
-                &create_node_config(
-                    (i + 1) as u64,
-                    *port,
-                    ports,
-                    &node_data_dir.to_string_lossy(),
-                    &log_dir,
-                )
-                .await,
-            ),
-            None,
-            None,
-        )
-        .await?;
+        let mut node_cfg = node_config(
+            &create_node_config(
+                (i + 1) as u64,
+                *port,
+                ports,
+                &node_data_dir.to_string_lossy(),
+                &log_dir,
+            )
+            .await,
+        );
+        // TODO(#428): widen the election timeout for this test only. After the leader is
+        // killed, the 2 surviving nodes re-elect; with the default 300ms min, slow CI can
+        // livelock (the new leader's 100ms heartbeat slips past the follower's 300ms
+        // timeout, so the follower votes it out and split-vote cascades). 3000/6000 gives
+        // the leader time to establish — same rationale as `create_rejoin_node_config`.
+        // Revert once #428 (leader lease) lands.
+        node_cfg.raft.election.election_timeout_min = 3000;
+        node_cfg.raft.election.election_timeout_max = 6000;
+        let (graceful_tx, node_handle) = start_node(&node_data_dir, node_cfg, None, None).await?;
         ctx.graceful_txs.push(graceful_tx);
         ctx.node_handles.push(node_handle);
     }
