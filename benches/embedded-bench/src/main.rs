@@ -173,13 +173,23 @@ fn generate_value(size: usize) -> Vec<u8> {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
+    if std::env::var("TOKIO_CONSOLE").is_ok() {
+        let tokio_console_port: u16 = std::env::var("TOKIO_CONSOLE_PORT")
+            .map(|v| v.parse::<u16>().expect("TOKIO_CONSOLE_PORT must be a valid port"))
+            .unwrap_or(6669);
+        println!("Tokio Console port: {tokio_console_port}");
+        console_subscriber::Builder::default()
+            .server_addr(([127, 0, 0, 1], tokio_console_port))
+            .init();
+    } else {
+        // Initialize logging
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive(tracing::Level::INFO.into()),
+            )
+            .init();
+    }
 
     let config_path = std::env::var("CONFIG_PATH").ok();
     let data_dir = std::env::var("DATA_DIR").ok();

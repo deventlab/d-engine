@@ -380,7 +380,7 @@ fn test_run_until_caught_up_advances_durable_index_on_success() {
     coord.run_until_caught_up(&raft_log);
 
     // Stand in for raft.rs's InternalEvent::FsyncCompleted handler.
-    while let Ok(InternalEvent::FsyncCompleted(mark)) = log_flush_rx.try_recv() {
+    while let Ok(InternalEvent::FsyncCompleted { mark, sent_at: _ }) = log_flush_rx.try_recv() {
         raft_log.try_advance_durable_index(mark);
     }
 
@@ -557,7 +557,7 @@ fn test_run_until_caught_up_accepts_result_when_generation_unchanged() {
     coord.run_until_caught_up(&raft_log);
 
     // Stand in for raft.rs's InternalEvent::FsyncCompleted handler.
-    while let Ok(InternalEvent::FsyncCompleted(mark)) = log_flush_rx.try_recv() {
+    while let Ok(InternalEvent::FsyncCompleted { mark, sent_at: _ }) = log_flush_rx.try_recv() {
         raft_log.try_advance_durable_index(mark);
     }
 
@@ -682,7 +682,7 @@ fn test_submit_term_first_keeps_valid_mark_over_stale_higher_index() {
 
     coord.run_until_caught_up(&raft_log);
 
-    while let Ok(InternalEvent::FsyncCompleted(mark)) = log_flush_rx.try_recv() {
+    while let Ok(InternalEvent::FsyncCompleted { mark, sent_at: _ }) = log_flush_rx.try_recv() {
         raft_log.try_advance_durable_index(mark);
     }
 

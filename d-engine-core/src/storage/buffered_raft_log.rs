@@ -33,7 +33,7 @@
 //! ## How `durable_index` advances (#446 single-owner)
 //!
 //! The blocking fsync task does **not** write `durable_index`. On completion it
-//! calls `notify_fsync_completed(mark)`, sending `InternalEvent::FsyncCompleted(LogId)` to `raft.rs`'s
+//! calls `notify_fsync_completed(mark)`, sending `InternalEvent::FsyncCompleted` to `raft.rs`'s
 //! event loop — the sole owner of `durable_index`. That loop calls
 //! `try_advance_durable_index(mark)`, which rejects the report if
 //! `entry_term(mark.index) != Some(mark.term)` and clamps to `memory_max_index`
@@ -1086,6 +1086,8 @@ where
         }) else {
             return Ok(None);
         };
+
+        let t0 = std::time::Instant::now();
         this.log_store.persist_entries(entries).await.inspect_err(|e| {
             error!(
                 persist_path = ctx,
@@ -1093,6 +1095,8 @@ where
             );
             this.mark_poisoned_and_notify(format!("{ctx}: persist_entries failed: {e:?}"));
         })?;
+        metrics::histogram!("core.raft.log_store.persist_entries_duration_ms")
+            .record(t0.elapsed().as_secs_f64() * 1_000.0);
         Ok(Some(mark))
     }
 
@@ -1381,7 +1385,10 @@ where
         mark: LogId,
     ) {
         if let Some(ref tx) = self.log_flush_tx {
-            let _ = tx.send(crate::InternalEvent::FsyncCompleted(mark));
+            let _ = tx.send(crate::InternalEvent::FsyncCompleted {
+                mark,
+                sent_at: tokio::time::Instant::now(),
+            });
         }
     }
 

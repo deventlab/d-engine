@@ -48,6 +48,8 @@ pub struct ProposeBatchBuffer {
     pub last_flush: Instant,
     /// Pre-allocated metric labels for zero-allocation hot path.
     metrics_labels: Option<Arc<[(String, String)]>>,
+    /// Set when the buffer receives the first payload of a new batch, cleared on flush — measures how long the first request waited before the batch got drained (#446).
+    oldest_pending_since: Option<Instant>,
 }
 
 impl ProposeBatchBuffer {
@@ -59,6 +61,7 @@ impl ProposeBatchBuffer {
             senders: Vec::with_capacity(initial_capacity),
             last_flush: Instant::now(),
             metrics_labels: None,
+            oldest_pending_since: None,
         }
     }
 
@@ -87,6 +90,9 @@ impl ProposeBatchBuffer {
         payload: EntryPayload,
         sender: ProposeSender,
     ) {
+        if self.payloads.is_empty() {
+            self.oldest_pending_since = Some(Instant::now());
+        }
         self.payloads.push(payload);
         self.senders.push(sender);
 
@@ -108,6 +114,11 @@ impl ProposeBatchBuffer {
             return None;
         }
         self.last_flush = Instant::now();
+
+        if let Some(since) = self.oldest_pending_since.take() {
+            metrics::histogram!("core.raft.propose_buffer.oldest_pending_wait_ms")
+                .record(since.elapsed().as_secs_f64() * 1_000.0);
+        }
 
         // Allocate replacement Vecs sized to actual batch length, not a fixed max.
         // After swap: self holds the exact-sized empty Vecs; caller gets the filled ones.

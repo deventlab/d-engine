@@ -73,6 +73,9 @@ pub(crate) enum PeerReplicationState {
 pub(crate) struct PendingAck {
     pub(crate) claimed_term: u64,
     pub(crate) term_when_withheld: u64,
+    /// When this ACK was first withheld — diffed against release time to measure
+    /// how long the follower sat waiting for its own fsync before it could reply.
+    pub(crate) withheld_at: std::time::Instant,
     pub(crate) senders:
         Vec<MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>>,
 }
@@ -86,6 +89,11 @@ fn resolve_pending_ack(
     confirm: bool,
     current_term: u64,
 ) {
+    metrics::histogram!(
+        "core.raft.follower.ack_withhold_ms",
+        "outcome" => if confirm { "confirmed" } else { "rejected" }
+    )
+    .record(ack.withheld_at.elapsed().as_secs_f64() * 1_000.0);
     let response = if confirm {
         AppendEntriesResponse::success(
             node_id,
@@ -697,6 +705,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                                     .or_insert_with(|| PendingAck {
                                         claimed_term,
                                         term_when_withheld,
+                                        withheld_at: std::time::Instant::now(),
                                         senders: Vec::new(),
                                     })
                                     .senders
@@ -1165,7 +1174,7 @@ pub(super) async fn schedule_and_execute_purge<T: TypeConfig>(
 }
 
 /// Cleanup after an InstallSnapshotChunk install (or a confirmed no-op at/beyond
-/// `target`). Shares `pending_purge_upto` with path①'s watermark — failure isn't cleared,
+/// `target`). Shares `pending_purge_upto` with `schedule_and_execute_purge`'s watermark — failure isn't cleared,
 /// retried by whichever purge trigger runs next. No `retained_log_entries` subtraction:
 /// entries below `target` are redundant with a snapshot we already have, not held back for
 /// a lagging peer.

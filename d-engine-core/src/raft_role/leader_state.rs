@@ -68,6 +68,7 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::append_entries_response;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use futures::StreamExt;
+use parking_lot::Mutex;
 use rand::distr::SampleString;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -1888,6 +1889,53 @@ fn snapshot_push_backoff_duration(
     std::time::Duration::from_millis(millis)
 }
 
+/// Records an RTT sample if one is currently outstanding for this peer (#446).
+/// No-op fast path: a single atomic load when no sample is pending.
+fn record_rtt_sample(
+    sample_pending: &AtomicBool,
+    inflight: &Mutex<Option<(u64, Instant)>>,
+    peer_metric_labels: &[(String, String)],
+    result: &Option<append_entries_response::Result>,
+) {
+    if !sample_pending.load(Ordering::Acquire) {
+        return;
+    }
+    match result {
+        Some(append_entries_response::Result::Success(success)) => {
+            let Some(ref last_match) = success.last_match else {
+                return;
+            };
+            let mut inflight = inflight.lock();
+            // Match on "follower's progress has caught up to (or passed) the
+            // sampled index", not exact equality — a fast/deeply-pipelined
+            // follower can coalesce several acks into one report. At most one
+            // sample is ever in flight (`sample_pending` gates new inserts).
+            if let Some((sampled_index, sent_at)) = *inflight
+                && sampled_index <= last_match.index
+            {
+                metrics::histogram!(
+                    "core.raft.replication.rpc_round_trip_ms",
+                    peer_metric_labels
+                )
+                .record(sent_at.elapsed().as_secs_f64() * 1_000.0);
+                *inflight = None;
+            }
+            if inflight.is_none() {
+                sample_pending.store(false, Ordering::Release);
+            }
+        }
+        // Sampled batch got rejected or superseded — abandon this sample instead
+        // of leaking `sample_pending` forever (neither variant carries a
+        // `last_match` to key off of).
+        Some(append_entries_response::Result::Conflict(_))
+        | Some(append_entries_response::Result::HigherTerm(_)) => {
+            *inflight.lock() = None;
+            sample_pending.store(false, Ordering::Release);
+        }
+        None => {}
+    }
+}
+
 impl<T: TypeConfig> LeaderState<T> {
     // ---- Per-follower ReplicationWorker management ----------------------------------------
 
@@ -1939,6 +1987,17 @@ impl<T: TypeConfig> LeaderState<T> {
         let base_delay_ms = retry_policies.append_entries.base_delay_ms;
         let max_delay_ms = retry_policies.append_entries.max_delay_ms;
 
+        // RTT sampling (#446): sample-based replication RPC round-trip measurement.
+        // 1-in-16 attempt rate, gated to at most one outstanding sample (real rate is
+        // lower — skipped while the previous sample is still unresolved). Match is
+        // "index reached or passed", not exact equality — pipelined followers can
+        // coalesce several ACKs into one report.
+        let mut rtt_sample_counter: u64 = 0;
+        let rtt_sample_pending = Arc::new(AtomicBool::new(false));
+        let rtt_inflight: Arc<Mutex<Option<(u64, Instant)>>> = Arc::new(Mutex::new(None));
+        let peer_metric_labels: Arc<[(String, String)]> =
+            Arc::from([("peer_id".to_string(), peer_id.to_string())]);
+
         // Open persistent bidi stream with backoff reconnection
         loop {
             let mut backoff_ms = base_delay_ms;
@@ -1974,14 +2033,24 @@ impl<T: TypeConfig> LeaderState<T> {
             let stream_broken = Arc::new(AtomicBool::new(false));
             // Spawn recv task to monitor ACKs and detect stream disconnection
             let recv_internal_event_tx = internal_event_tx.clone();
+            let recv_rtt_sample_pending = rtt_sample_pending.clone();
+            let recv_rtt_inflight = rtt_inflight.clone();
+            let recv_peer_metric_labels = peer_metric_labels.clone();
 
             let mut recv_handle = tokio::spawn(async move {
                 loop {
                     match stream_receiver.next().await {
                         Some(Ok(response)) => {
+                            record_rtt_sample(
+                                &recv_rtt_sample_pending,
+                                &recv_rtt_inflight,
+                                &recv_peer_metric_labels,
+                                &response.result,
+                            );
                             let _ = recv_internal_event_tx.send(InternalEvent::AppendResult {
                                 follower_id: peer_id,
                                 result: Ok(response),
+                                sent_at: Instant::now(),
                             });
                         }
                         Some(Err(status)) => {
@@ -2020,8 +2089,29 @@ impl<T: TypeConfig> LeaderState<T> {
                                     "peer_id" => peer_id.to_string()
                                 )
                                 .record(enqueued_at.elapsed().as_secs_f64() * 1_000.0);
-                                // Push batch directly into the persistent bidi stream (non-blocking)
-                                if stream_sender.send(request).await.is_err() {
+
+                                // RTT sampling (#446): start a new RTT sample every 16th send, only
+                                // if no sample is currently outstanding. See declaration above.
+                                rtt_sample_counter += 1;
+                                if rtt_sample_counter.is_multiple_of(16)
+                                    && !rtt_sample_pending.load(Ordering::Acquire)
+                                    && let Some(last_entry) = request.entries.last()
+                                {
+                                     *rtt_inflight.lock() = Some((last_entry.index, Instant::now()));
+                                     rtt_sample_pending.store(true, Ordering::Release);
+                                }
+
+                                // Push batch into the persistent bidi stream's bounded (128) send
+                                // channel — this blocks once that buffer is full, i.e. once the
+                                // peer has fallen more than 128 requests behind draining it.
+                                let send_t0 = Instant::now();
+                                let send_result = stream_sender.send(request).await;
+                                metrics::histogram!(
+                                    "core.raft.replication_worker.send_blocked_ms",
+                                     peer_metric_labels.as_ref()
+                                )
+                                .record(send_t0.elapsed().as_secs_f64() * 1_000.0);
+                                if send_result.is_err() {
                                     warn!(peer_id, "Bidi stream sender closed, reconnecting");
                                     stream_broken.store(true, Ordering::Release);
                                     let _ =
@@ -2066,7 +2156,19 @@ impl<T: TypeConfig> LeaderState<T> {
                 debug!(peer_id, "Replication worker exiting (leader stepped down)");
                 break;
             }
-            // Otherwise reconnect (flag persists across reconnects)
+            // Otherwise reconnect. abort() cancels the dead recv_handle at its next poll
+            // point, not at completion, so it never reaches its own reset logic (the
+            // Success/Conflict branches above) — an in-flight sample must be reset here
+            // instead, or rtt_sample_pending stays stuck true forever (#446).
+            if rtt_sample_pending.swap(false, Ordering::AcqRel) {
+                *rtt_inflight.lock() = None;
+                debug!(peer_id, "RTT sample reset after reconnect");
+                metrics::counter!(
+                    "core.raft.replication.rtt_sample_interrupted_by_reconnect",
+                    "peer_id" => peer_id.to_string()
+                )
+                .increment(1);
+            }
         }
     }
 

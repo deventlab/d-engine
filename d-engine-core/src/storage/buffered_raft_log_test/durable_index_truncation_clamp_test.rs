@@ -147,7 +147,7 @@ async fn test_stale_persist_after_truncation_does_not_advance_durable_index() {
 
     // Drain fsync completions the way raft.rs's event loop would.
     while let Ok(event) = log_flush_rx.try_recv() {
-        if let crate::InternalEvent::FsyncCompleted(mark) = event {
+        if let crate::InternalEvent::FsyncCompleted { mark, sent_at: _ } = event {
             raft_log.try_advance_durable_index(mark);
         }
     }

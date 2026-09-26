@@ -18,6 +18,7 @@ use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
 use futures::StreamExt;
 use tokio::sync::{mpsc, watch};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing_test::traced_test;
 
 use crate::MockMembership;
@@ -59,6 +60,20 @@ fn two_peer_membership() -> MockMembership<MockTypeConfig> {
 /// A minimal `AppendEntriesRequest` stub usable as a worker task payload.
 fn stub_request() -> AppendEntriesRequest {
     AppendEntriesRequest::default()
+}
+
+/// Like `stub_request()`, but with one real `Entry` — needed wherever the code
+/// under test reads `request.entries.last()` (e.g. RTT sampling), which a
+/// default/empty request can never satisfy.
+fn stub_request_with_entry(index: u64) -> AppendEntriesRequest {
+    AppendEntriesRequest {
+        entries: vec![d_engine_proto::common::Entry {
+            index,
+            term: 1,
+            payload: None,
+        }],
+        ..Default::default()
+    }
 }
 
 /// A minimal `AppendEntriesResponse` with `success = true`.
@@ -685,9 +700,119 @@ async fn test_worker_forwards_append_result_on_recv() {
             event,
             InternalEvent::AppendResult {
                 follower_id: 2,
-                result: Ok(_)
+                result: Ok(_),
+                ..
             }
         ),
         "expected AppendResult for peer 2, got {event:?}"
+    );
+}
+
+/// Reconnecting mid-sample must reset `rtt_sample_pending`, or RTT sampling
+/// permanently stops for the rest of this worker's lifetime (#446).
+///
+/// # Scenario
+/// - 16 sends land on the sampling boundary exactly once (the 16th), starting
+///   an RTT sample that never resolves — the mock stream stays pending, no ACK.
+/// - The stream then errors, forcing `recv_handle.abort()` + reconnect.
+///
+/// # Guarantee checked
+/// The reconnect path must reset the interrupted sample (logged as "RTT sample
+/// reset after reconnect"), not leave `rtt_sample_pending` stuck `true` forever.
+#[tokio::test]
+#[traced_test]
+async fn test_rtt_sample_reset_on_reconnect_after_interrupted_sample() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context(
+        "/tmp/test_rtt_sample_reset_on_reconnect_after_interrupted_sample",
+        graceful_rx,
+        None,
+    );
+
+    ctx.membership = Arc::new(two_peer_membership());
+
+    let prepare_count = Arc::new(AtomicUsize::new(0));
+    let prepare_count_clone = Arc::clone(&prepare_count);
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(16)
+        .returning(move |_, _, _, _, _| {
+            let n = prepare_count_clone.fetch_add(1, Ordering::SeqCst) as u64 + 1;
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_request_with_entry(n), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    let open_count = Arc::new(AtomicUsize::new(0));
+    let open_count_clone = Arc::clone(&open_count);
+    let (break_tx, break_rx) =
+        mpsc::unbounded_channel::<Result<AppendEntriesResponse, tonic::Status>>();
+    // `returning` takes an `FnMut`, so it must be able to run more than once —
+    // wrap the receiver so only the first (successful) call can move it out.
+    let break_rx = std::sync::Mutex::new(Some(break_rx));
+
+    let mut transport = MockTransport::<MockTypeConfig>::new();
+    transport.expect_open_replication_stream().returning(move |_, _, _| {
+        let n = open_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == 1 {
+            let (req_tx, mut req_rx) = mpsc::channel::<AppendEntriesRequest>(128);
+            // Drain requests so all 16 sends succeed — this test exercises the
+            // sample-reset-on-reconnect path, not a send failure.
+            tokio::spawn(async move { while req_rx.recv().await.is_some() {} });
+            // Stays pending (no ACK, so the sample started on send #16 never
+            // resolves) until the test pushes the break signal below.
+            let rx = break_rx
+                .lock()
+                .unwrap()
+                .take()
+                .expect("stream should only open successfully once");
+            let stream = UnboundedReceiverStream::new(rx).boxed();
+            Ok(crate::ReplicationStream {
+                sender: req_tx,
+                receiver: stream,
+            })
+        } else {
+            // Reconnect fails so the worker enters backoff instead of spinning.
+            Err(crate::NetworkError::ConnectError("peer unreachable".into()).into())
+        }
+    });
+    ctx.transport = Arc::new(transport);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    // 16 sends: the 16th lands on the sampling boundary and starts a sample
+    // that never resolves (mock stream stays pending, no ACK). A new peer
+    // starts in Probe state, which allows only one in-flight request at a
+    // time (leader_state.rs:3384) — since this test never sends a real ACK,
+    // that flag would never clear naturally, so it's reset by hand here to
+    // let all 16 attempts actually reach the worker.
+    for _ in 0..16 {
+        state.set_peer_in_flight(2, false);
+        state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    }
+
+    // Give the worker time to process all 16 sends before breaking the stream.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Break the stream mid-sample to force recv_handle.abort() + reconnect.
+    let _ = break_tx.send(Err(tonic::Status::internal("stream broken")));
+
+    // Give the worker time to detect the break, abort, and reconnect.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    assert!(
+        logs_contain("RTT sample reset after reconnect"),
+        "reconnecting mid-sample must reset the interrupted RTT sample"
     );
 }

@@ -185,7 +185,6 @@ impl RocksDBLogStore {
 
 #[async_trait]
 impl LogStore for RocksDBLogStore {
-    #[instrument(skip(self, entries))]
     async fn persist_entries(
         &self,
         entries: Vec<Entry>,
@@ -197,11 +196,15 @@ impl LogStore for RocksDBLogStore {
 
         let mut batch = WriteBatch::default();
         let mut max_index = 0;
+        let mut value_buf = Vec::new();
 
         for entry in entries {
             let key = Self::index_to_key(entry.index);
-            let value = entry.encode_to_vec();
-            batch.put_cf(&cf, key, value);
+            value_buf.clear();
+            entry
+                .encode(&mut value_buf)
+                .map_err(|e| StorageError::SerializationError(e.to_string()))?;
+            batch.put_cf(&cf, key, &value_buf);
             max_index = max_index.max(entry.index);
         }
 

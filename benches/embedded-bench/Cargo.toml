@@ -18,3 +18,4 @@ futures = "0.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = { version = "0.1" }
 metrics-exporter-prometheus = "0.17.2"
+console-subscriber = "0.5"

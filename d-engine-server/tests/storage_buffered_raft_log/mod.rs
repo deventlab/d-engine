@@ -80,7 +80,7 @@ impl TestContext {
     /// state at construction, not from this event.
     pub fn drain_fsync_completions(&mut self) {
         while let Ok(event) = self.log_flush_rx.try_recv() {
-            if let d_engine_core::InternalEvent::FsyncCompleted(mark) = event {
+            if let d_engine_core::InternalEvent::FsyncCompleted { mark, sent_at: _ } = event {
                 self.raft_log.try_advance_durable_index(mark);
             }
         }

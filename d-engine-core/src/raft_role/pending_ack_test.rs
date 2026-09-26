@@ -71,6 +71,7 @@ fn withhold(
             PendingAck {
                 claimed_term,
                 term_when_withheld,
+                withheld_at: std::time::Instant::now(),
                 senders: vec![tx],
             },
         );
@@ -144,6 +145,7 @@ fn test_resolve_answers_every_sender_on_an_index() {
         PendingAck {
             claimed_term: 5,
             term_when_withheld: 5,
+            withheld_at: std::time::Instant::now(),
             senders: vec![tx1, tx2],
         },
     );

@@ -1442,7 +1442,7 @@ async fn test_flush_turn_catch_up_persists_writes_coalesced_during_the_turn() {
 
     flush_task.await.unwrap().unwrap();
     while let Ok(ev) = log_flush_rx.try_recv() {
-        if let crate::InternalEvent::FsyncCompleted(mark) = ev {
+        if let crate::InternalEvent::FsyncCompleted { mark, sent_at: _ } = ev {
             raft_log.try_advance_durable_index(mark);
         }
     }

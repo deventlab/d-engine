@@ -41,6 +41,7 @@ pub(super) fn base_db_options() -> Options {
     // This is NOT fdatasync — it spreads dirty page writeback to avoid IO spikes,
     // but provides no durability guarantee. Pairs well with Level 3 (flush_wal) if added.
     opts.set_wal_bytes_per_sync(1024 * 1024);
+    opts.set_manual_wal_flush(true);
     opts.set_max_background_jobs(4);
     opts.set_max_open_files(5000);
     opts.set_use_direct_io_for_flush_and_compaction(true);
