@@ -2,11 +2,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use d_engine_core::Error;
-use d_engine_core::FlushPolicy;
 use d_engine_core::LogStore;
 use d_engine_core::MockStateMachine;
 use d_engine_core::MockStorageEngine;
-use d_engine_core::PersistenceConfig;
+use d_engine_core::RaftLogCore;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
@@ -20,7 +19,6 @@ use crate::FileStateMachine;
 use crate::FileStorageEngine;
 use crate::node::NodeBuilder;
 use crate::node::RaftTypeConfig;
-use crate::storage::BufferedRaftLog;
 use crate::test_utils::insert_raft_log;
 use crate::test_utils::insert_state_machine;
 
@@ -53,18 +51,12 @@ async fn test_set_raft_log_replaces_default() {
     let mock_storage_engine =
         Arc::new(FileStorageEngine::new(temp_dir.path().join("storage_engine")).unwrap());
 
-    let (buffered_raft_log, receiver) =
-        BufferedRaftLog::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
-            id,
-            PersistenceConfig {
-                flush_policy: FlushPolicy::Batch {
-                    idle_flush_interval_ms: 1,
-                },
-                shutdown_timeout_ms: 5000,
-            },
-            mock_storage_engine.clone(),
-        );
-    let buffered_raft_log = buffered_raft_log.start(receiver, None);
+    let buffered_raft_log = RaftLogCore::<RaftTypeConfig<FileStorageEngine, FileStateMachine>>::new(
+        id,
+        mock_storage_engine.clone(),
+        None,
+        5000,
+    );
 
     // diff customization raft_log with orgional one
     let expected_raft_log_ids = vec![1, 2];

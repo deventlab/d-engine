@@ -4,6 +4,7 @@ mod buffered_raft_log_test_helpers;
 mod common;
 mod entry_builder;
 pub mod mock;
+mod raft_log_core_test_helpers;
 mod replication_test_helpers;
 mod snapshot;
 
@@ -23,6 +24,7 @@ pub use buffered_raft_log_test_helpers::*;
 pub use common::*;
 pub use entry_builder::*;
 pub use mock::*;
+pub use raft_log_core_test_helpers::*;
 pub use replication_test_helpers::*;
 pub use snapshot::*;
 

@@ -22,7 +22,9 @@ mod leader_election;
 mod replication_and_sync;
 
 // Storage layer integration tests
-mod storage_buffered_raft_log;
+// mod storage_buffered_raft_log;
+
+mod storage_raft_log;
 
 #[cfg(feature = "rocksdb")]
 mod readonly_and_learner_mode;

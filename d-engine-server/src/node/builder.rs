@@ -40,6 +40,7 @@ use d_engine_core::NewCommitData;
 use d_engine_core::Raft;
 use d_engine_core::RaftCoreHandlers;
 use d_engine_core::RaftLog;
+use d_engine_core::RaftLogCore;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::RaftRole;
 use d_engine_core::RaftStorageHandles;
@@ -78,7 +79,6 @@ use crate::Node;
 use crate::membership::RaftMembership;
 use crate::network::grpc;
 use crate::network::grpc::grpc_transport::GrpcTransport;
-use crate::storage::BufferedRaftLog;
 
 type StateMachineHandler<SE, SM> = (
     Arc<SMHOF<RaftTypeConfig<SE, SM>>>,
@@ -348,15 +348,12 @@ where
         let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
 
         let raft_log = {
-            let (log, receiver) = BufferedRaftLog::new(
+            RaftLogCore::new(
                 node_id,
-                node_config.raft.persistence.clone(),
                 storage_engine.clone(),
-            );
-
-            // Start processor and get Arc-wrapped instance.
-            // Pass internal_event_tx so batch_processor sends InternalEvent::LogFlushed after each fsync.
-            log.start(receiver, Some(internal_event_tx.clone()))
+                Some(internal_event_tx.clone()),
+                node_config.raft.persistence.shutdown_timeout_ms,
+            )
         };
 
         // Peer health channels: transport fires try_send(peer_id) on stream failure/success.

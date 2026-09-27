@@ -180,9 +180,10 @@ pub fn mock_empty_entries(
         .collect()
 }
 
-/// Insert single entry helper
-pub async fn insert_single_entry(
-    raft_log: &Arc<BufferedRaftLog<MockTypeConfig>>,
+/// Insert single entry helper. Generic over `L: RaftLog` so both
+/// `BufferedRaftLog` and `RaftLogCore` tests can share this one definition.
+pub async fn insert_single_entry<L: RaftLog>(
+    raft_log: &Arc<L>,
     index: u64,
     term: u64,
 ) {
@@ -204,8 +205,8 @@ fn mock_insert_command_payload(ids: Vec<u64>) -> Bytes {
 ///
 /// Creates command entries with pre-allocated indexes and appends them to the log.
 /// Each ID becomes a command payload with the given term.
-pub async fn simulate_insert_command(
-    raft_log: &Arc<BufferedRaftLog<MockTypeConfig>>,
+pub async fn simulate_insert_command<L: RaftLog>(
+    raft_log: &Arc<L>,
     ids: Vec<u64>,
     term: u64,
 ) {
@@ -226,8 +227,8 @@ pub async fn simulate_insert_command(
 ///
 /// Creates delete command entries for each ID in the specified range and appends
 /// them to the log. Each ID in the range becomes a separate delete command entry.
-pub async fn simulate_delete_command(
-    raft_log: &Arc<BufferedRaftLog<MockTypeConfig>>,
+pub async fn simulate_delete_command<L: RaftLog>(
+    raft_log: &Arc<L>,
     id_range: std::ops::RangeInclusive<u64>,
     term: u64,
 ) {
@@ -254,8 +255,8 @@ pub async fn simulate_delete_command(
 /// advance must drain that channel through this helper — otherwise the
 /// event sits unread and `durable_index()` never moves, no matter how long
 /// you sleep.
-pub fn drain_and_apply_fsync_completions(
-    raft_log: &Arc<BufferedRaftLog<MockTypeConfig>>,
+pub fn drain_and_apply_fsync_completions<L: RaftLog>(
+    raft_log: &Arc<L>,
     log_flush_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::InternalEvent>,
 ) {
     while let Ok(event) = log_flush_rx.try_recv() {

@@ -764,10 +764,6 @@ where
         })
     }
 
-    fn is_poisoned(&self) -> bool {
-        self.is_poisoned()
-    }
-
     async fn close(&self) {
         // Signal the IO thread to flush remaining data and exit.
         let _ = self.command_sender.send(IOTask::Shutdown);
@@ -1564,6 +1560,10 @@ where
         }
     }
 
+    /// Returns `true` if a storage-layer failure has permanently poisoned this
+    /// log — no further writes/commands will be attempted, and callers above
+    /// the storage layer (e.g. the Raft protocol loop) must stop dispatching
+    /// new work to this node.
     pub(super) fn is_poisoned(&self) -> bool {
         self.poisoned.load(Ordering::Relaxed)
     }
