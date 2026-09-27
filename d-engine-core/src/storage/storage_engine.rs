@@ -126,7 +126,7 @@ pub trait LogStore: Send + Sync + 'static {
     /// Load the purge boundary persisted by the last `purge()` call.
     ///
     /// Returns the `LogId` (index + term) of the highest entry ever purged,
-    /// or `None` if `purge()` has never been called. `BufferedRaftLog::new()`
+    /// or `None` if `purge()` has never been called. `RaftLogCore::new()`
     /// uses this to restore `last_purged_index/term` after a restart so that
     /// `entry_term(last_purged_index)` returns the correct term even though
     /// the entry has been removed from the in-memory log.

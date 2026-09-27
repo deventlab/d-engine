@@ -31,17 +31,18 @@ use tokio::time::{Duration, sleep};
 use crate::RaftLog;
 use crate::test_utils::RaftLogCoreTestContext;
 
-/// The IO thread auto-fsyncs on each write_notify wakeup without any timer.
+/// Each `append_entries` persists the new tail and auto-submits it to `FsyncWorker`
+/// for fsync — no timer, no explicit `flush()` required.
 ///
-/// After `append_entries`, the IO thread is notified via `write_notify`, reads
-/// pending entries from the SkipMap, and calls fsync. `durable_index` advances
-/// automatically — no explicit `flush()` required.
+/// After `append_entries`, the new tail is written to the page cache and handed to
+/// `FsyncWorker`, which fsyncs it. `durable_index` advances automatically once the
+/// fsync completes and raft.rs drains the `FsyncCompleted` event.
 #[tokio::test]
 async fn test_writes_become_durable_via_io_thread() {
     let (mut ctx, flush_count) =
         RaftLogCoreTestContext::new_not_durable("writes_become_durable_via_io_thread");
 
-    // Append 5 entries — each calls write_notify.notify_one().
+    // Append 5 entries — each persists and submits the new tail to FsyncWorker.
     for i in 1u64..=5 {
         ctx.raft_log
             .append_entries(vec![Entry {
@@ -62,30 +63,30 @@ async fn test_writes_become_durable_via_io_thread() {
         );
     }
 
-    // Give IO thread time to process write_notify wakeup and fsync.
+    // Give FsyncWorker time to process the submit and fsync.
     sleep(Duration::from_millis(50)).await;
     ctx.drain_fsync_completions();
 
-    // durable_index must have advanced via IO thread auto-fsync (no explicit flush).
+    // durable_index must have advanced via FsyncWorker auto-fsync (no explicit flush).
     assert_eq!(
         ctx.raft_log.durable_index(),
         5,
-        "durable_index must advance via IO thread drain-then-fsync"
+        "durable_index must advance via FsyncWorker fsync"
     );
 
-    // IO thread called log_store.flush() at least once.
+    // FsyncWorker called log_store.flush() at least once.
     assert!(
         flush_count.load(Ordering::Relaxed) >= 1,
-        "IO thread must have called flush at least once"
+        "FsyncWorker must have called flush at least once"
     );
 }
 
 /// A single `append_entries` call with 100 entries batches into far fewer fsyncs
 /// than individual writes.
 ///
-/// `append_entries` calls `write_notify.notify_one()` once regardless of how many
-/// entries are in the batch. The IO thread wakes once, persists all entries to page
-/// cache, then dispatches fsync via `FsyncCoordinator`. The explicit `flush()` call
+/// `append_entries` persists the whole batch and submits one fsync regardless of how many
+/// entries are in the batch. The new tail is written to page cache once, then fsynced via
+/// `FsyncWorker`. The explicit `flush()` call
 /// may race with the spawned fsync task: if it observes `durable_index` before the
 /// first task completes, it submits a second round (coalesced by the coordinator).
 /// N entries in one call → ≤2 fsyncs (not N), regardless of storage speed.
@@ -108,8 +109,8 @@ async fn test_batch_append_produces_one_flush() {
 
     assert_eq!(ctx.raft_log.durable_index(), 100);
 
-    // One notify_one() → IO thread wakes once → far fewer fsyncs than entries.
-    // With FsyncCoordinator the explicit flush() may add one extra round if it
+    // One append → one fsync submit → far fewer fsyncs than entries.
+    // With FsyncWorker the explicit flush() may add one extra round if it
     // races with the in-flight spawned task; the invariant is "not N flushes".
     let flushes = flush_count.load(Ordering::Relaxed);
     assert!(
@@ -146,12 +147,12 @@ async fn test_pending_max_zeroed_on_reset_preventing_durable_index_corruption() 
         "pending_max_zeroed_on_reset".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
-    std::thread::sleep(Duration::from_millis(10)); // ensure IO thread is ready
+    std::thread::sleep(Duration::from_millis(10)); // let the spawned fsync task start
 
     // Phase 1: append 10 entries.
-    // IO thread wakes on write_notify: persist succeeds, fsync FAILS (first call).
+    // FsyncWorker persists then fsyncs: persist succeeds, fsync FAILS (first call).
     // Failed fsync leaves pending_max = 10 (not zeroed — only success path zeros
-    // it) AND now poisons the log permanently (see FsyncCoordinator).
+    // it) AND now poisons the log permanently (see FsyncWorker).
     let entries: Vec<Entry> = (1u64..=10)
         .map(|i| Entry {
             index: i,
@@ -160,7 +161,7 @@ async fn test_pending_max_zeroed_on_reset_preventing_durable_index_corruption() 
         })
         .collect();
     raft_log.append_entries(entries).await.unwrap();
-    // Wait for IO thread to process write_notify (persist ok, fsync fails).
+    // Wait for FsyncWorker to process the submit (persist ok, fsync fails).
     sleep(Duration::from_millis(20)).await;
     assert!(
         raft_log.is_poisoned(),
@@ -177,7 +178,7 @@ async fn test_pending_max_zeroed_on_reset_preventing_durable_index_corruption() 
 
     // Phase 3: attempt to append 3 new entries starting from index 1 — this is
     // the exact sequence that used to reproduce the durable_index corruption.
-    // It must now be rejected outright, never reaching the IO thread at all.
+    // It must now be rejected outright, never reaching FsyncWorker at all.
     let new_entries: Vec<Entry> = (1u64..=3)
         .map(|i| Entry {
             index: i,
@@ -257,7 +258,7 @@ async fn test_flush_is_strict_durability_barrier() {
 #[tokio::test]
 async fn test_flush_propagates_io_error() {
     // Every flush() call on the underlying log store returns an error.
-    // This covers both the auto-fsync triggered by write_notify and the explicit
+    // This covers both the auto-fsync triggered by append_entries and the explicit
     // flush() call, so timing between the two does not affect the outcome.
     let storage = Arc::new(MockStorageEngine::not_durable_always_failing_flush(
         "flush_propagates_io_error".into(),
@@ -297,7 +298,7 @@ async fn test_flush_propagates_io_error() {
 }
 
 /// Test: a real fsync failure poisons the log end-to-end (via the actual
-/// `FsyncCoordinator` failure path, not by forcing the flag directly like
+/// `FsyncWorker` failure path, not by forcing the flag directly like
 /// `test_poisoned_survives_reset` does), and poisoning survives a
 /// subsequent `reset()` — writes afterward are rejected.
 ///
@@ -313,9 +314,9 @@ async fn test_fsync_failure_poisons_and_rejects_writes_after_reset() {
         "fsync_failure_poisons_and_rejects_writes_after_reset".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
-    std::thread::sleep(Duration::from_millis(10)); // ensure IO thread is ready
+    std::thread::sleep(Duration::from_millis(10)); // let the spawned fsync task start
 
-    // Trigger a real fsync failure via the actual FsyncCoordinator path.
+    // Trigger a real fsync failure via the actual FsyncWorker path.
     raft_log
         .append_entries(vec![Entry {
             index: 1,
@@ -358,7 +359,7 @@ async fn test_replace_range_failure_poisons() {
         "replace_range_failure_poisons".into(),
     ));
     let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
-    std::thread::sleep(Duration::from_millis(10)); // ensure IO thread is ready
+    std::thread::sleep(Duration::from_millis(10)); // let the spawned fsync task start
 
     // Base log: 3 entries at term 1.
     raft_log
@@ -724,7 +725,7 @@ async fn test_new_raft_log_core_starts_unpoisoned() {
 }
 
 /// Once poisoned, the state survives `reset()` — it must NOT be cleared by
-/// `reset_internal()` / `FsyncCoordinator::fence_reset()`.
+/// `reset_internal()` / `FsyncWorker::fence_reset()`.
 ///
 /// Why this matters: `reset()` is also invoked mid-flight for legitimate
 /// reasons (snapshot install, log conflict rewind). If poisoned were treated
@@ -838,7 +839,7 @@ async fn test_notify_fatal_channel_closed_still_poisons_and_logs() {
         }])
         .await
         .unwrap();
-    sleep(Duration::from_millis(20)).await; // let the IO thread hit the fsync failure
+    sleep(Duration::from_millis(20)).await; // let the spawned fsync task hit the fsync failure
 
     assert!(
         raft_log.is_poisoned(),
@@ -851,10 +852,10 @@ async fn test_notify_fatal_channel_closed_still_poisons_and_logs() {
     );
 }
 
-/// Efficiency: the IO thread's persist scan must start from its own page-cache
+/// Efficiency: the persist scan must start from its own page-cache
 /// frontier, not from `durable_index`. Since #446 `durable_index` only advances
 /// after an `FsyncCompleted` round-trips through raft.rs's event loop; under
-/// load it lags far behind what the IO thread has already written. If the scan
+/// load it lags far behind what has already been written. If the scan
 /// restarted from `durable_index + 1` on every wakeup, each of N appends would
 /// re-scan and re-`persist_entries` the whole not-yet-durable window — O(N^2)
 /// total work.
@@ -908,7 +909,7 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
             }])
             .await
             .unwrap();
-        // flush() forces the IO thread to persist up to memory_max_index right
+        // flush() forces the persist up to memory_max_index right
         // now, so the scan boundary is exercised once per append — deterministic,
         // no sleeps.
         raft_log.flush().await.unwrap();
@@ -929,7 +930,7 @@ async fn test_persist_scan_tracks_frontier_not_stuck_durable_index() {
 }
 
 /// Cold start: after a restart, `durable_index` starts at the disk length and
-/// the IO thread's persist frontier must start *past* it. The first write's
+/// the persist frontier must start *past* it. The first write's
 /// persist scan begins at `durable_index + 1` — an already-durable entry on
 /// disk must never be handed back to `persist_entries`.
 ///

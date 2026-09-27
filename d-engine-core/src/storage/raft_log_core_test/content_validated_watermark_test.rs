@@ -131,12 +131,11 @@ async fn test_durable_report_then_truncation_is_order_independent() {
 }
 
 /// Regression test for the `flush()` short-circuit (`durable_index >=
-/// memory_max_index` at `buffered_raft_log.rs:710`). This isn't proving a
+/// memory_max_index`). This isn't proving a
 /// live bug in the current design (`remove_range` clamps `durable_index`
 /// synchronously, so the short-circuit's precondition always holds) — it's
 /// pinning down that invariant so a future change that defers the clamp
-/// (e.g. copying openraft's "don't touch the watermark on truncation, rely
-/// on term comparison instead") doesn't silently reopen the RPO=0 violation
+/// doesn't silently reopen the RPO=0 violation
 /// this whole fix was for: `flush()` returning `Ok(())` before the real,
 /// post-truncation tail has actually been fsynced.
 ///

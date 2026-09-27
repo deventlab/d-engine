@@ -2,6 +2,7 @@ use super::DefaultStateMachineHandler;
 use super::DefaultStateMachineWriter;
 use super::StateMachineHandler;
 use super::StateMachineWriterOps;
+#[cfg(feature = "watch")]
 use super::broadcast_watch_events;
 use super::new_reader_writer_pair;
 use crate::Error;

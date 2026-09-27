@@ -188,7 +188,7 @@ async fn test_term_index_functions_with_purged_logs() {
 
 /// Sequential multi-term insertion correctness test.
 ///
-/// Production invariant: all writes to BufferedRaftLog go through the single
+/// Production invariant: all writes to RaftLogCore go through the single
 /// inbound event-loop task; there are no concurrent writers. The previous version
 /// of this test spawned multiple tasks writing concurrently, which is not a
 /// production scenario and masked the real invariant. This test verifies
@@ -225,7 +225,7 @@ async fn test_term_index_sequential_multi_term_insertion() {
 /// are correctly rebuilt from disk after a restart.
 ///
 /// # Why this matters
-/// `BufferedRaftLog::new()` loads all entries from disk and rebuilds three
+/// `RaftLogCore::new()` loads all entries from disk and rebuilds three
 /// in-memory term indexes from scratch. If any of them are incorrectly populated,
 /// queries like `first_index_for_term()` silently return `None` instead of the
 /// correct boundary — causing the #346 conflict-skip optimization to fall back
@@ -251,7 +251,7 @@ async fn test_term_indexes_rebuilt_correctly_after_restart() {
     ctx.raft_log.insert_batch(entries).await.unwrap();
     ctx.raft_log.flush().await.unwrap();
 
-    // Simulate process restart: new BufferedRaftLog loads from same storage.
+    // Simulate process restart: new RaftLogCore loads from same storage.
     let recovered = ctx.recover_from_crash();
 
     // first_index_for_term — used by #346 conflict-skip optimization

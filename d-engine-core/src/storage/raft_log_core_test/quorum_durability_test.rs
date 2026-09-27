@@ -25,8 +25,8 @@
 //!
 //! Tests that need a genuine, un-fsynced gap between `last_entry_id` and `durable_index`
 //! use `MockStorageEngine::not_durable_gated_flush` — a real channel-based gate, not a
-//! timing guess. An earlier version of this file relied on a long `idle_flush_interval_ms`
-//! and assumed the dedicated `raft-io-*` OS thread just wouldn't get scheduled before the
+//! timing guess. An earlier version of this file relied on a long idle-flush timer
+//! and assumed a background IO thread just wouldn't get scheduled before the
 //! assertions ran; that's a real race (the IO thread is independent of the test's own
 //! runtime), and it was intermittently losing under load — flaky, not broken logic. Do not
 //! reintroduce that pattern here.

@@ -5,8 +5,7 @@
 
 use crate::{
     Error, HardState, InternalEvent, LogStore, MetaStore, NetworkError, RaftLog, Result,
-    StorageEngine, TermSegments, TypeConfig, alias::SOF, fsync_worker::FsyncWorker,
-    scoped_timer::ScopedTimer,
+    StorageEngine, TypeConfig, alias::SOF, fsync_worker::FsyncWorker, scoped_timer::ScopedTimer,
 };
 use crossbeam_skiplist::SkipMap;
 use d_engine_proto::common::{Entry, LogId};
@@ -16,7 +15,7 @@ use std::{
     ops::RangeInclusive,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -747,6 +746,10 @@ where
         to: u64,
         ctx: &str,
     ) -> Result<Option<LogId>> {
+        if self.is_poisoned() {
+            return Err(Error::Fatal("raft log storage is poisoned".to_string()));
+        }
+
         if from > to {
             return Ok(None);
         }
@@ -921,7 +924,8 @@ where
                 vec![],
             );
         }
-        self.persisted_index.fetch_max(new_tail, Ordering::AcqRel);
+        self.persisted_index.store(new_tail, Ordering::Release);
+
         Ok(())
     }
 
@@ -1034,6 +1038,118 @@ where
         value: u64,
     ) {
         self.memory_max_index.store(value, Ordering::Release);
+    }
+}
+
+/// Maximum number of historical term segments (one per leader election).
+/// 1024 is far more than any realistic cluster lifetime.
+const MAX_TERM_SEGMENTS: usize = 1024;
+
+/// Compact term boundary index for O(1) `entry_term()` lookups.
+///
+/// Hot path (99%+ of queries): two `Acquire` loads, no lock, no CAS.
+/// Cold path (election recovery): atomic array reverse-scan, no lock, no unsafe.
+///
+/// When the array is full, new segments are silently dropped and `entry_term()`
+/// falls back to the SkipMap (O(log n)) — correct but slower.
+///
+/// Memory: 2 AtomicU64 + 1 AtomicUsize + 2×1024 AtomicU64 = ~16KB, all inline.
+pub(crate) struct TermSegments {
+    /// Term of the most-recently appended segment.
+    pub(crate) last_term: AtomicU64,
+    /// First log index belonging to `last_term`.
+    pub(crate) last_term_start: AtomicU64,
+    /// Number of valid historical segments stored in `seg_starts`/`seg_terms`.
+    seg_count: AtomicUsize,
+    /// First index of each historical segment, in append order.
+    seg_starts: [AtomicU64; MAX_TERM_SEGMENTS],
+    /// Term of each historical segment, parallel to `seg_starts`.
+    seg_terms: [AtomicU64; MAX_TERM_SEGMENTS],
+}
+
+impl TermSegments {
+    pub(crate) fn new() -> Self {
+        Self {
+            last_term: AtomicU64::new(0),
+            last_term_start: AtomicU64::new(0),
+            seg_count: AtomicUsize::new(0),
+            seg_starts: std::array::from_fn(|_| AtomicU64::new(0)),
+            seg_terms: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    /// Return the term for `index`, or `None` if the log is empty or index is out of range.
+    ///
+    /// Hot path: two `Acquire` loads, no lock, no CAS — O(1).
+    /// Cold path: reverse-scan atomic array, k = election count (typically < 10) — O(k).
+    pub(crate) fn get(
+        &self,
+        index: u64,
+    ) -> Option<u64> {
+        let last_start = self.last_term_start.load(Ordering::Acquire);
+        let last_term = self.last_term.load(Ordering::Acquire);
+        if last_term == 0 {
+            return None;
+        }
+        if index >= last_start {
+            return Some(last_term);
+        }
+        // Cold path: reverse-scan historical segments.
+        let count = self.seg_count.load(Ordering::Acquire);
+        (0..count).rev().find_map(|i| {
+            let start = self.seg_starts[i].load(Ordering::Acquire);
+            if start <= index {
+                Some(self.seg_terms[i].load(Ordering::Acquire))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Update after appending entries at the tail. Entries must be in ascending index order.
+    ///
+    /// Common case (same term): one `Acquire` load, no write — O(1).
+    /// Term change: two atomic stores to next slot, no lock — O(1).
+    pub(crate) fn on_append(
+        &self,
+        entries: &[Entry],
+    ) {
+        for entry in entries {
+            let lt = self.last_term.load(Ordering::Acquire);
+            if entry.term == lt {
+                // Same term: pull segment start back if needed (truncation + re-insert).
+                let ls = self.last_term_start.load(Ordering::Acquire);
+                if entry.index < ls {
+                    self.last_term_start.store(entry.index, Ordering::Release);
+                }
+                continue;
+            }
+            if lt == 0 {
+                // First entries ever: initialise hot atomics.
+                self.last_term_start.store(entry.index, Ordering::Release);
+                self.last_term.store(entry.term, Ordering::Release);
+                continue;
+            }
+            // New term boundary: archive current segment into the next slot.
+            // When the array is full, skip the write — entry_term() falls back
+            // to the SkipMap cold path for any overflow segments.
+            let ls = self.last_term_start.load(Ordering::Acquire);
+            let i = self.seg_count.fetch_add(1, Ordering::AcqRel);
+            if i < MAX_TERM_SEGMENTS {
+                self.seg_starts[i].store(ls, Ordering::Release);
+                self.seg_terms[i].store(lt, Ordering::Release);
+            }
+            // Always update hot atomics so the current term remains O(1).
+            self.last_term_start.store(entry.index, Ordering::Release);
+            self.last_term.store(entry.term, Ordering::Release);
+        }
+    }
+
+    /// Reset to empty. Called on log reset (snapshot install / full rewind).
+    pub(crate) fn clear(&self) {
+        self.seg_count.store(0, Ordering::Release);
+        self.last_term.store(0, Ordering::Release);
+        self.last_term_start.store(0, Ordering::Release);
     }
 }
 

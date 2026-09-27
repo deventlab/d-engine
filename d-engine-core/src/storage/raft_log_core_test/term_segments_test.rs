@@ -15,7 +15,7 @@
 use d_engine_proto::common::Entry;
 
 use crate::RaftLog;
-use crate::storage::buffered_raft_log::TermSegments;
+use crate::storage::raft_log_core::TermSegments;
 use crate::test_utils::RaftLogCoreTestContext;
 
 // ---------------------------------------------------------------------------

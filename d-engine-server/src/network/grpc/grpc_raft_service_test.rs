@@ -260,7 +260,7 @@ async fn test_handle_rpc_services_successfully() {
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
     // Create role channel so the test can inject LogFlushed events directly into the raft loop.
-    // Commit in single-voter mode is now async (driven by LogFlushed from BufferedRaftLog);
+    // Commit in single-voter mode is now async (driven by LogFlushed from RaftLogCore);
     // since this test uses MockRaftLog (no real batch_processor), we send LogFlushed manually.
     let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
     let test_internal_event_tx = internal_event_tx.clone();

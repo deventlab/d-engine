@@ -15,9 +15,6 @@ max_drain = 1024
 # Maximum number of commands to accumulate in a single batch during drain operations
 max_batch_size = 200
 
-[raft.persistence]
-flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
-
 [raft.metrics]
 enable_backpressure = false
 enable_batch = false

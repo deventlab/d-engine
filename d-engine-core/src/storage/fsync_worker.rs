@@ -239,6 +239,6 @@ impl<L: LogStore> FsyncWorker<L> {
     }
 }
 
-// TODO: FsyncWorker needs its own dedicated test module — the old
-// fsync_coordinator_test.rs tests FsyncCoordinator/BufferedRaftLog directly
-// and can't be shared via #[path] with this struct.
+#[cfg(test)]
+#[path = "fsync_worker_test.rs"]
+mod fsync_worker_test;

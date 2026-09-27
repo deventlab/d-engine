@@ -1,6 +1,6 @@
-//! Integration tests for BufferedRaftLog with real FileStorageEngine
+//! Integration tests for RaftLogCore with real FileStorageEngine
 //!
-//! These tests verify BufferedRaftLog behavior with actual disk I/O,
+//! These tests verify RaftLogCore behavior with actual disk I/O,
 //! crash recovery semantics, and performance characteristics.
 //!
 //! ## Test Modules
@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use d_engine_core::{FlushPolicy, RaftLog, RaftLogCore, alias::ROF};
+use d_engine_core::{RaftLog, RaftLogCore, alias::ROF};
 use d_engine_proto::common::{Entry, EntryPayload};
 use d_engine_server::{FileStateMachine, FileStorageEngine, node::RaftTypeConfig};
 use tempfile::tempdir;
@@ -30,17 +30,13 @@ pub struct TestContext {
     pub raft_log: Arc<ROF<RaftTypeConfig<FileStorageEngine, FileStateMachine>>>,
     pub storage: Arc<FileStorageEngine>,
     pub _temp_dir: Option<tempfile::TempDir>,
-    pub flush_policy: FlushPolicy,
     pub path: String,
     log_flush_rx: tokio::sync::mpsc::UnboundedReceiver<d_engine_core::InternalEvent>,
 }
 
 impl TestContext {
     /// Create new test context with FileStorageEngine
-    pub fn new(
-        flush_policy: FlushPolicy,
-        instance_id: &str,
-    ) -> Self {
+    pub fn new(instance_id: &str) -> Self {
         let temp_dir = tempdir().unwrap();
         let path = temp_dir.path().to_path_buf().join(instance_id);
         let storage = Arc::new(FileStorageEngine::new(path.clone()).unwrap());
@@ -52,14 +48,13 @@ impl TestContext {
             path: path.to_str().unwrap().to_string(),
             raft_log,
             storage,
-            flush_policy,
             _temp_dir: Some(temp_dir),
             log_flush_rx,
         }
     }
 
     /// Stands in for `raft.rs`'s `InternalEvent::FsyncCompleted` handler,
-    /// which isn't running in these `BufferedRaftLog`-only integration
+    /// which isn't running in these `RaftLogCore`-only integration
     /// tests. Since #446/#447, `durable_index` only advances when something
     /// drains that event and calls `try_advance_durable_index` — call this
     /// after any operation that should make `durable_index` advance and
@@ -74,15 +69,13 @@ impl TestContext {
         }
     }
 
-    /// Explicitly close the raft log IO thread.
+    /// Explicitly close the raft log.
     ///
-    /// Must be called at the end of tests using graceful-shutdown semantics.
-    /// Unlike `drop()` which only sends Shutdown (fire-and-forget), `close()`
-    /// joins the IO thread before returning, preventing Tokio runtime
-    /// shutdown panics.
+    /// Must be called at the end of tests using graceful-shutdown semantics:
+    /// `close()` flushes remaining data (bounded by `shutdown_timeout_ms`) before
+    /// returning, preventing Tokio runtime shutdown panics.
     pub async fn close(self) {
         self.raft_log.close().await;
-        // _temp_dir drops here, after the IO thread has fully exited
     }
 
     /// Simulate crash recovery by creating new context from same storage path
@@ -96,7 +89,6 @@ impl TestContext {
         Self {
             raft_log,
             storage,
-            flush_policy: self.flush_policy.clone(),
             _temp_dir: Some(temp_dir),
             path: self.path.clone(),
             log_flush_rx,

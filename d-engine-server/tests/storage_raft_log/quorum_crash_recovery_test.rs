@@ -2,7 +2,7 @@
 //!
 //! Composes two pieces that are each already covered in isolation elsewhere, but never
 //! together: `calculate_majority_matched_index` (RPO=0 quorum arithmetic, unit-tested
-//! against a gated mock in `buffered_raft_log_test/quorum_durability_test.rs`) and real
+//! against a gated mock in `raft_log_core_test/quorum_durability_test.rs`) and real
 //! `FileStorageEngine` crash/reopen (unit-tested without any quorum math in
 //! `crash_recovery_test.rs`). This file proves they actually compose: an index that the
 //! quorum calculation says is safe to acknowledge to the client is still there after a
@@ -16,8 +16,8 @@
 //! Deliberately NOT attempted here, and now CONFIRMED impossible with this engine's
 //! architecture (not just a flakiness risk — an actual dead end, verified by building and
 //! deadlocking it): proving that an entry which never reached quorum-durable is genuinely
-//! absent from a real crash + reopen. `BufferedRaftLog::append_entries`
-//! (`d-engine-core/src/storage/buffered_raft_log.rs:467-500`) is documented and
+//! absent from a real crash + reopen. `RaftLogCore::append_entries`
+//! (`d-engine-core/src/storage/raft_log_core.rs`) is documented and
 //! implemented to block the caller until `persist_entries()` returns — "still blocks the
 //! caller until truly persisted" — and `FileLogStore::persist_entries`
 //! (`d-engine-server/src/storage/adaptors/file/file_storage_engine.rs:254`) already writes
@@ -39,17 +39,11 @@
 //! Jepsen/lazyfs work for #444).
 
 use super::TestContext;
-use d_engine_core::FlushPolicy;
 use d_engine_core::RaftLog;
 
 #[tokio::test]
 async fn test_quorum_acknowledged_index_survives_real_crash_and_reopen() {
-    let mut ctx = TestContext::new(
-        FlushPolicy::Batch {
-            idle_flush_interval_ms: 1,
-        },
-        "test_quorum_ack_survives_crash",
-    );
+    let mut ctx = TestContext::new("test_quorum_ack_survives_crash");
 
     // First 5 entries, explicitly flushed: genuinely durable, deterministic.
     ctx.append_entries(1, 5, 1).await;

@@ -822,42 +822,14 @@ fn default_stale_learner_threshold() -> Duration {
     Duration::from_secs(300)
 }
 
-/// Interval (ms) between periodic fsyncs on the IO thread. Must be > 0.
-///
-/// Writes fsync on their own path (`flush()`, `append_entries` →
-/// `IOTask::Persist`). This timer only re-fsyncs `(durable_index,
-/// memory_max_index]` when the log is idle, so `durable_index` still advances
-/// if a fsync-completion notification is lost.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub enum FlushPolicy {
-    Batch { idle_flush_interval_ms: u64 },
-}
-
 /// Configuration parameters for log persistence behavior
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PersistenceConfig {
-    /// Flush policy for asynchronous strategies
-    ///
-    /// This controls when log entries are flushed to disk. The choice impacts
-    /// write performance and durability guarantees.
-    #[serde(default = "default_flush_policy")]
-    pub flush_policy: FlushPolicy,
-
     /// Maximum time to wait, on shutdown, for an in-flight fsync task to finish
     /// before giving up. Bounds close() against a stuck/slow disk — the task
     /// itself is not cancelled, it keeps running in the background regardless.
     #[serde(default = "default_shutdown_timeout_ms")]
     pub shutdown_timeout_ms: u64,
-}
-
-/// Default flush policy for asynchronous strategies
-///
-/// This controls when log entries are flushed to disk. The choice impacts
-/// write performance and durability guarantees.
-fn default_flush_policy() -> FlushPolicy {
-    FlushPolicy::Batch {
-        idle_flush_interval_ms: 1000,
-    }
 }
 
 fn default_shutdown_timeout_ms() -> u64 {
@@ -866,14 +838,6 @@ fn default_shutdown_timeout_ms() -> u64 {
 
 impl PersistenceConfig {
     pub fn validate(&self) -> Result<()> {
-        let FlushPolicy::Batch {
-            idle_flush_interval_ms,
-        } = self.flush_policy;
-        if idle_flush_interval_ms == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "flush_policy.idle_flush_interval_ms must be greater than 0".into(),
-            )));
-        }
         if self.shutdown_timeout_ms == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "shutdown_timeout_ms must be greater than 0".into(),
@@ -887,7 +851,6 @@ impl PersistenceConfig {
 impl Default for PersistenceConfig {
     fn default() -> Self {
         Self {
-            flush_policy: default_flush_policy(),
             shutdown_timeout_ms: default_shutdown_timeout_ms(),
         }
     }

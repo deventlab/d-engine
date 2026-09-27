@@ -194,7 +194,7 @@ async fn test_single_voter_commit_advances_after_durable() {
 /// Multi-voter path: quorum calculation (via calculate_majority_matched_index) correctly
 /// blocks commit when leader's durable_index=0, even if last_entry_id=1.
 ///
-/// This path was fixed in Step 2 (buffered_raft_log.rs). This test ensures the
+/// This path was fixed in Step 2 (raft_log_core.rs). This test ensures the
 /// MockRaftLog-based quorum mock correctly gates the commit index.
 #[tokio::test]
 async fn test_multi_voter_commit_respects_quorum_result() {

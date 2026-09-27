@@ -11,7 +11,6 @@ use d_engine_core::alias::SOF;
 use d_engine_core::client::ErrorCode;
 use d_engine_core::config::BackoffPolicy;
 use d_engine_core::config::ElectionConfig;
-use d_engine_core::config::FlushPolicy;
 use d_engine_core::config::PersistenceConfig;
 use d_engine_core::config::RaftConfig;
 use d_engine_core::config::RaftNodeConfig;
@@ -125,9 +124,6 @@ pub async fn create_node_config(
         [raft]
         general_raft_timeout_duration_in_ms = 5000
 
-        [raft.persistence]
-        flush_policy = {{ Batch = {{ threshold = 100, idle_flush_interval_ms = 1 }} }}
-
         [raft.election]
         election_timeout_min = 300
         election_timeout_max = 3000
@@ -174,9 +170,6 @@ pub async fn create_node_config_with_role(
             {initial_cluster_entries}
         ]
 
-        [raft.persistence]
-        flush_policy = {{ Batch = {{ threshold = 1, idle_flush_interval_ms = 1 }} }}
-
         [raft.election]
         election_timeout_min = 300
         election_timeout_max = 3000
@@ -218,9 +211,6 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             ..Default::default()
         },
         persistence: PersistenceConfig {
-            flush_policy: FlushPolicy::Batch {
-                idle_flush_interval_ms: 1,
-            },
             ..Default::default()
         },
         election: ElectionConfig {

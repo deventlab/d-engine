@@ -1,12 +1,12 @@
-//! High concurrency stress tests for BufferedRaftLog
+//! High concurrency stress tests for RaftLogCore
 //!
-//! These tests verify BufferedRaftLog behavior under high load with
+//! These tests verify RaftLogCore behavior under high load with
 //! real FileStorageEngine, testing race conditions and resource limits.
 
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::{FlushPolicy, LogStore, RaftLog, StorageEngine};
+use d_engine_core::{LogStore, RaftLog, StorageEngine};
 use d_engine_proto::common::{Entry, EntryPayload};
 use futures::future::join_all;
 use tokio::time::Instant;
@@ -22,12 +22,7 @@ use super::TestContext;
 
 #[tokio::test]
 async fn test_high_concurrency() {
-    let mut ctx = TestContext::new(
-        FlushPolicy::Batch {
-            idle_flush_interval_ms: 1,
-        },
-        "test_high_concurrency",
-    );
+    let mut ctx = TestContext::new("test_high_concurrency");
     let mut handles = vec![];
 
     for i in 0..10 {
@@ -62,12 +57,7 @@ async fn test_high_concurrency() {
 #[tokio::test]
 #[traced_test]
 async fn test_high_concurrency_mixed_operations() {
-    let ctx = TestContext::new(
-        FlushPolicy::Batch {
-            idle_flush_interval_ms: 100,
-        },
-        "test_high_concurrency_mixed_operations",
-    );
+    let ctx = TestContext::new("test_high_concurrency_mixed_operations");
 
     let mut handles = vec![];
     let start_time = Instant::now();
@@ -140,12 +130,7 @@ mod mem_first_tests {
 
     #[tokio::test]
     async fn test_basic_write_before_persist() {
-        let ctx = TestContext::new(
-            FlushPolicy::Batch {
-                idle_flush_interval_ms: 1,
-            },
-            "test_basic_write_before_persist",
-        );
+        let ctx = TestContext::new("test_basic_write_before_persist");
         ctx.append_entries(1, 5, 1).await;
 
         // Verify in memory but not yet durable
@@ -155,12 +140,7 @@ mod mem_first_tests {
 
     #[tokio::test]
     async fn test_async_persistence() {
-        let mut ctx = TestContext::new(
-            FlushPolicy::Batch {
-                idle_flush_interval_ms: 1,
-            },
-            "test_async_persistence",
-        );
+        let mut ctx = TestContext::new("test_async_persistence");
         ctx.append_entries(1, 100, 1).await;
 
         // Trigger flush
@@ -174,12 +154,7 @@ mod mem_first_tests {
 
     #[tokio::test]
     async fn test_power_loss_data_loss() {
-        let ctx = TestContext::new(
-            FlushPolicy::Batch {
-                idle_flush_interval_ms: 1,
-            },
-            "test_power_loss_data_loss",
-        );
+        let ctx = TestContext::new("test_power_loss_data_loss");
         ctx.append_entries(1, 100, 1).await;
 
         // Simulate power loss before flush
@@ -191,12 +166,7 @@ mod mem_first_tests {
 
     #[tokio::test]
     async fn test_high_concurrency_memory_only() {
-        let ctx = TestContext::new(
-            FlushPolicy::Batch {
-                idle_flush_interval_ms: 1,
-            },
-            "test_high_concurrency_memory_only",
-        );
+        let ctx = TestContext::new("test_high_concurrency_memory_only");
         let mut handles = vec![];
 
         for i in 0..10 {
@@ -227,12 +197,7 @@ mod mem_first_tests {
 
 #[tokio::test]
 async fn test_term_index_correctness_under_load() {
-    let ctx = TestContext::new(
-        FlushPolicy::Batch {
-            idle_flush_interval_ms: 1,
-        },
-        "test_term_index_under_load",
-    );
+    let ctx = TestContext::new("test_term_index_under_load");
 
     // Concurrent writes with different terms
     let mut handles = vec![];

@@ -306,7 +306,7 @@ where
 
     async fn handle_shutdown(&mut self) -> Result<()> {
         info!("[Raft:{}] shutdown signal received.", self.node_id);
-        // Close IO thread BEFORE returning (before runtime shutdown)
+        // Close the raft log (before runtime shutdown)
         // This ensures RocksDB file lock is released before tokio runtime shuts down
         self.ctx.storage.raft_log.close().await;
         // Unblock any tasks stuck in event_tx.send().await (e.g. gRPC stream handlers).

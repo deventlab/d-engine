@@ -2,7 +2,7 @@
 //!
 //! `tracing-test`'s `#[traced_test]` only captures events emitted on the
 //! annotated test's own thread. Some code under test runs on a dedicated OS
-//! thread with its own tokio runtime (e.g. `BufferedRaftLog`'s IO thread),
+//! thread with its own tokio runtime (e.g. a dedicated IO thread),
 //! whose log output `#[traced_test]` cannot see. This installs a
 //! process-wide subscriber instead, visible from any thread.
 //!

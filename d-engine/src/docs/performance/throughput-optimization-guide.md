@@ -23,24 +23,18 @@ pub(crate) enum ConnectionType {
 
 ## Persistence Strategy & Throughput/Latency Trade-offs
 
-- **Write Path**: Entries are written to OS page cache via `db.write()` / `file.write()`; the IO
-  thread batches them and calls fsync (`flush_wal(true)` / `sync_all()`) before advancing
-  `durable_index`. Raft only counts an entry toward quorum after fsync completes.
+- **Write Path**: Entries are written to OS page cache via `db.write()` / `file.write()`, then
+  fsynced (`flush_wal(true)` / `sync_all()`) before `durable_index` advances. Raft only counts an
+  entry toward quorum after fsync completes.
 - **Durability**:
   - _Process crash_: OS page cache survives a process restart → full recovery via WAL replay. ✅
   - _Power loss (single node)_: In a multi-node cluster, Raft quorum ensures committed data
     survives a single-node power failure — the other quorum members retain the data. ✅
-  - _Power loss (majority of nodes simultaneously)_: Entries in the current unflushed batch
-    (written since the last fsync) may be lost. This window is bounded by
-    `idle_flush_interval_ms`. Raft has not yet counted these entries toward quorum, so no
-    client-acknowledged write is lost — the leader will re-replicate after re-election. ⚠️
-- **Throughput**: High. Multiple writes share a single fsync; no per-write fsync overhead.
-
-### `FlushPolicy` Tuning
-
-- **`Batch { idle_flush_interval_ms }`**: Flush (fsync) after this many milliseconds of idle time.
-  - Lower values reduce the unflushed batch window but increase IO pressure.
-  - Default `1000` ms is suitable for most workloads.
+  - _Power loss (majority of nodes simultaneously)_: Entries not yet fsynced on a quorum may be
+    lost. Raft has not yet counted these entries toward quorum, so no client-acknowledged write
+    is lost — the leader will re-replicate after re-election. ⚠️
+- **Throughput**: High. Concurrent writes are coalesced into a single fsync by `FsyncWorker`; no
+  per-write fsync overhead.
 
 > **Note**: Writes are batched into a single fsync, reducing IO overhead while still providing
 > disk-level durability for all client-acknowledged (committed) writes.
@@ -184,7 +178,7 @@ RaftReplicationServiceServer::from_arc(node.clone())
 | p99.9 Latency | 14015 µs    | 11279 µs    | -19.5%     |
 
 > **Key improvement**: 15% reduction in tail latency - critical for consensus stability  
-> **Note**: These metrics show the impact of connection pooling optimization. These results can be further improved by tuning `FlushPolicy` for your specific workload.
+> **Note**: These metrics show the impact of connection pooling optimization.
 >
 > For absolute performance benchmarks, see [v0.2.4 Performance Report](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4/bench_report_v0.2.4.md)
 
@@ -230,12 +224,6 @@ client.request_vote(...)  // Control operation on data channel
 get_peer_channel(peer_id, ConnectionType::Control).await?;
 client.request_vote(...)
 
-// DON'T: Set idle_flush_interval_ms too low — defeats batching.
-flush_policy = { Batch = { idle_flush_interval_ms = 1 } } // Near-synchronous; low throughput
-
-// DO: Use a generous idle interval to amortize disk I/O cost.
-flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
-
 ```
 
 ## Why Connection Isolation and Strategy Choice Matters
@@ -247,7 +235,7 @@ flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 3. **Improves fault containment**
    Connection issues affect only one operation type
 4. **Decouples Performance from Ack Latency**
-   Client-acknowledged writes are always fsync-durable — that's not tunable. `idle_flush_interval_ms` lets you balance write throughput against how long a client waits for that fsync.
+   Client-acknowledged writes are always fsync-durable — that's not tunable.
 
 ## Reference Deployment Configurations
 
@@ -261,9 +249,6 @@ Adjust values based on snapshot size, log append rate, and cluster size.
   • Network: Localhost
 
 ```toml
-[raft.persistence]
-flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
-
 [network.control]
 connection_window_size = 1_048_576   # 1MB
 
@@ -289,9 +274,6 @@ max_concurrent_streams = 128
   • Priority: Balanced throughput and durability
 
 ```toml
-[raft.persistence]
-flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
-
 [network.control]
 connection_window_size = 2_097_152   # 2MB
 
@@ -308,7 +290,7 @@ max_concurrent_streams = 256
 
 ```
 
-**Tip**: For public cloud, moderate concurrency and 32MB bulk windows ensure stable snapshot streaming without affecting heartbeats. The batch policy is tuned for high throughput; acknowledged writes are never at risk regardless of the interval, only ack latency and unflushed-batch replay time on restart scale with it.
+**Tip**: For public cloud, moderate concurrency and 32MB bulk windows ensure stable snapshot streaming without affecting heartbeats. Acknowledged writes are never at risk; only client-facing ack latency and the amount of in-flight (un-fsynced) data on restart scale with write concurrency.
 
 ### 3. 5-Node High-Durability Cluster (Production)
 
@@ -317,9 +299,6 @@ max_concurrent_streams = 256
   • Priority: Data Integrity over Write Latency
 
 ```toml
-[raft.persistence]
-flush_policy = { Batch = { idle_flush_interval_ms = 100 } }  # More frequent flush, shorter ack latency
-
 [network.control]
 connection_window_size = 4_194_304   # 4MB
 
@@ -336,7 +315,7 @@ max_concurrent_streams = 512
 
 ```
 
-**Tip**: Lower `idle_flush_interval_ms` (e.g., 100ms) shortens client-facing write latency and shrinks the unflushed-batch window an IO thread has to redo on restart. Acknowledged writes are power-loss safe regardless of this setting — Raft only counts an entry toward quorum, and acknowledges it to the client, after fsync completes.
+**Tip**: Client-facing write latency is fsync-bound. Acknowledged writes are power-loss safe — Raft only counts an entry toward quorum, and acknowledges it to the client, after fsync completes.
 
 ## Network Environment Tuning Recommendations
 
@@ -540,19 +519,19 @@ Client write
 
 ### Metrics Reference
 
-| Metric                                            | Type        | Answers                                |
-| ------------------------------------------------- | ----------- | -------------------------------------- |
-| `core.raft.buffer.length{buffer="propose"}`       | Gauge       | Is the proposal channel backlogged?    |
-| `core.raft.fsync.duration_ms`                     | Histogram   | How long does each fsync take?         |
-| `core.raft.fsync.batch_entries`                   | Histogram   | Is FsyncCoordinator coalescing writes? |
-| `core.raft.fsync.inflight`                        | Gauge (0/1) | Is a fsync task currently running?     |
-| `core.raft.fsync.busy_nanos_total`                | Counter     | fsync thread utilization               |
-| `core.state_machine.apply_chunk.duration_ms`      | Histogram   | SM apply latency                       |
-| `core.state_machine.apply_chunk.batch_size`       | Histogram   | Entries applied per chunk              |
-| `core.state_machine.apply.busy_nanos_total`       | Counter     | SM apply utilization                   |
-| `core.raft.write.propose_to_apply_ms`             | Histogram   | End-to-end write latency               |
-| `core.raft.write.propose_to_commit_ms`            | Histogram   | Propose-to-commit latency              |
-| `core.raft.backpressure.rejections{node_id,type}` | Counter     | Rejected requests (write/read)         |
+| Metric                                            | Type        | Answers                             |
+| ------------------------------------------------- | ----------- | ----------------------------------- |
+| `core.raft.buffer.length{buffer="propose"}`       | Gauge       | Is the proposal channel backlogged? |
+| `core.raft.fsync.duration_ms`                     | Histogram   | How long does each fsync take?      |
+| `core.raft.fsync.batch_entries`                   | Histogram   | Is FsyncWorker coalescing writes?   |
+| `core.raft.fsync.inflight`                        | Gauge (0/1) | Is a fsync task currently running?  |
+| `core.raft.fsync.busy_nanos_total`                | Counter     | fsync thread utilization            |
+| `core.state_machine.apply_chunk.duration_ms`      | Histogram   | SM apply latency                    |
+| `core.state_machine.apply_chunk.batch_size`       | Histogram   | Entries applied per chunk           |
+| `core.state_machine.apply.busy_nanos_total`       | Counter     | SM apply utilization                |
+| `core.raft.write.propose_to_apply_ms`             | Histogram   | End-to-end write latency            |
+| `core.raft.write.propose_to_commit_ms`            | Histogram   | Propose-to-commit latency           |
+| `core.raft.backpressure.rejections{node_id,type}` | Counter     | Rejected requests (write/read)      |
 
 ### Finding the Bottleneck: Utilization Ratio
 
@@ -582,7 +561,7 @@ Example interpretation:
 
 **`fsync.batch_entries` p50 = 1 under high write load**
 
-FsyncCoordinator is not coalescing. Each proposal triggers its own fsync. Under a single-
+FsyncWorker is not coalescing. Each proposal triggers its own fsync. Under a single-
 client benchmark this is expected and correct — batching requires concurrent writers. Under
 multi-client load, if batch_entries stays at 1, investigate whether proposals are arriving
 in rapid bursts or at a steady trickle.
@@ -590,7 +569,6 @@ in rapid bursts or at a steady trickle.
 **`fsync.duration_ms` p99 >> p50 (high tail latency)**
 
 Occasional long fsyncs (disk GC, cloud volume throttling). Check storage I/O metrics.
-Increasing `idle_flush_interval_ms` allows larger batches that amortize these spikes.
 
 **End-to-end latency high, both utilization metrics low**
 

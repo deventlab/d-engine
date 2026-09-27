@@ -356,8 +356,8 @@ impl MockStorageEngine {
     ///
     /// Distinct from `not_durable_first_flush_fails`, which only fails the later
     /// fsync step — `persist_entries()` and `flush()` are two independent failure
-    /// surfaces in `BufferedRaftLog` (`persist_pending_range` vs
-    /// `FsyncCoordinator::run_until_caught_up`). `flush()` itself always succeeds
+    /// surfaces in `RaftLogCore` (`persist_pending_range` vs
+    /// `FsyncWorker::run_until_caught_up`). `flush()` itself always succeeds
     /// here, keeping the two surfaces isolated. All subsequent `persist_entries()`
     /// calls succeed.
     pub fn not_durable_first_persist_fails(id: String) -> Self {

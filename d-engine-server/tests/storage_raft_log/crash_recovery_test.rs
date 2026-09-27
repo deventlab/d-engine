@@ -1,6 +1,6 @@
-//! Crash recovery integration tests for BufferedRaftLog
+//! Crash recovery integration tests for RaftLogCore
 //!
-//! These tests verify BufferedRaftLog behavior with real disk persistence
+//! These tests verify RaftLogCore behavior with real disk persistence
 //! and crash recovery semantics using FileStorageEngine.
 
 use std::path::PathBuf;
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::{FlushPolicy, RaftLog, RaftLogCore};
+use d_engine_core::{RaftLog, RaftLogCore};
 use d_engine_proto::common::{Entry, EntryPayload};
 use d_engine_server::{FileStateMachine, FileStorageEngine, node::RaftTypeConfig};
 use tokio::time::sleep;
@@ -18,12 +18,7 @@ use super::TestContext;
 #[tokio::test]
 async fn test_crash_recovery() {
     // Create and populate storage
-    let original_ctx = TestContext::new(
-        FlushPolicy::Batch {
-            idle_flush_interval_ms: 1,
-        },
-        "test_crash_recovery",
-    );
+    let original_ctx = TestContext::new("test_crash_recovery");
 
     // Append an entry
     original_ctx
@@ -36,19 +31,19 @@ async fn test_crash_recovery() {
         .await
         .unwrap();
 
-    // Ensure the entry is persisted for DiskFirst strategy
+    // Ensure the entry is persisted
     original_ctx.raft_log.flush().await.unwrap();
 
     // Recover from the same storage (simulating restart)
     let recovered_ctx = original_ctx.recover_from_crash();
 
-    // Graceful shutdown: close() joins the IO thread before returning,
+    // Graceful shutdown: close() flushes remaining data before returning,
     // preventing Tokio runtime shutdown panics.
     original_ctx.close().await;
 
     sleep(Duration::from_millis(50)).await; // Allow recovery
 
-    // Verify recovery - for DiskFirst, entries should be immediately durable
+    // Verify recovery - entries should be immediately durable
     assert_eq!(recovered_ctx.raft_log.durable_index(), 1);
 
     // The entry should be available
@@ -61,12 +56,7 @@ async fn test_crash_recovery() {
 #[tokio::test]
 async fn test_crash_recovery_with_multiple_entries() {
     // Create and populate storage
-    let mut original_ctx = TestContext::new(
-        FlushPolicy::Batch {
-            idle_flush_interval_ms: 1,
-        },
-        "test_crash_recovery_with_multiple_entries",
-    );
+    let mut original_ctx = TestContext::new("test_crash_recovery_with_multiple_entries");
 
     // Append multiple entries
     for i in 1..=5 {
@@ -83,7 +73,7 @@ async fn test_crash_recovery_with_multiple_entries() {
             .unwrap();
     }
 
-    // Ensure all entries are persisted for DiskFirst strategy
+    // Ensure all entries are persisted
     original_ctx.raft_log.flush().await.unwrap();
     original_ctx.drain_fsync_completions();
 
@@ -94,7 +84,7 @@ async fn test_crash_recovery_with_multiple_entries() {
     // Recover from the same storage (simulating restart)
     let recovered_ctx = original_ctx.recover_from_crash();
 
-    // Graceful shutdown: close() joins the IO thread before returning,
+    // Graceful shutdown: close() flushes remaining data before returning,
     // preventing Tokio runtime shutdown panics.
     original_ctx.close().await;
 
@@ -159,14 +149,13 @@ async fn test_partial_flush_with_graceful_shutdown() {
     raft_log.close().await;
 }
 
-/// MemFirst crash semantics with notify-then-fsync architecture.
+/// Crash semantics with inline-persist + FsyncWorker architecture.
 ///
-/// `append_entries` calls `write_notify.notify_one()` on every write, which eagerly
-/// wakes the IO thread regardless of `idle_flush_interval_ms`. The idle timer is a
-/// safety-net only — the normal path persists data almost immediately after each append.
+/// `append_entries` persists the new tail and submits it to FsyncWorker on every
+/// write. There is no idle timer — the normal path fsyncs immediately after each append.
 ///
-/// True crash (kill -9 / power loss) means data MAY survive if the IO thread had time
-/// to run before the crash. This test verifies:
+/// True crash (kill -9 / power loss) means data MAY survive if the fsync had time
+/// to complete before the crash. This test verifies:
 /// - Entries flushed before the crash (first batch, waited 150ms) always survive.
 /// - Entries written immediately before crash (second batch, no wait) may or may not
 ///   survive depending on IO thread scheduling at crash time.
@@ -212,7 +201,7 @@ async fn test_partial_flush_after_crash() {
         raft_log.append_entries(second_batch).await.unwrap();
 
         // Simulate crash immediately: Skip Drop with mem::forget (like kill -9 or power loss)
-        // This prevents the processor from flushing the remaining 25 entries
+        // This prevents the remaining 25 entries from being flushed.
         // Storage is moved into raft_log, so forgetting raft_log is enough
         std::mem::forget(raft_log);
     }
@@ -225,9 +214,9 @@ async fn test_partial_flush_after_crash() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // With notify-then-fsync, the IO thread processes writes eagerly.
-    // At minimum, the first batch (flushed by safety timer) must survive.
-    // The second batch may also survive depending on IO thread scheduling.
+    // With inline-persist + FsyncWorker, writes are fsynced eagerly.
+    // At minimum, the first batch (fsynced before the crash) must survive.
+    // The second batch may also survive depending on fsync timing.
     let recovered = raft_log.len();
     assert!(
         recovered >= batch_size,
@@ -247,64 +236,41 @@ async fn test_partial_flush_after_crash() {
 
 #[tokio::test]
 async fn test_recovery_under_different_scenarios() {
-    // Test various recovery scenarios
-    // Method C (drain-then-fsync): all writes are fsynced by the IO thread after each
-    // drain cycle, so all 100 entries are always durable after explicit flush().
-    let scenarios = vec![
-        (
-            FlushPolicy::Batch {
-                idle_flush_interval_ms: 1,
-            },
-            100usize,
-        ),
-        (
-            FlushPolicy::Batch {
-                idle_flush_interval_ms: 10,
-            },
-            100,
-        ),
-        (
-            FlushPolicy::Batch {
-                idle_flush_interval_ms: 1000,
-            },
-            100,
-        ),
-    ];
+    // With inline-persist + FsyncWorker, all writes are fsynced after explicit
+    // flush(), so all 100 entries are always durable.
+    let expected_recovery = 100usize;
 
-    for (flush_policy, expected_recovery) in scenarios {
-        let instance_id = format!("recovery_test_{flush_policy:?}");
-        let original_ctx = TestContext::new(flush_policy.clone(), &instance_id);
+    let original_ctx = TestContext::new("test_recovery_under_different_scenarios");
 
-        // Add test data
-        for i in 1..=100 {
-            original_ctx
-                .raft_log
-                .append_entries(vec![Entry {
-                    index: i,
-                    term: 1,
-                    payload: Some(EntryPayload::command(Bytes::from(
-                        format!("data{i}").into_bytes(),
-                    ))),
-                }])
-                .await
-                .unwrap();
-        }
-
-        // Explicit flush ensures all entries are durable before crash simulation.
-        original_ctx.raft_log.flush().await.unwrap();
-
-        // Simulate crash and recovery
-        let recovered_ctx = original_ctx.recover_from_crash();
-        original_ctx.close().await;
-
-        // Verify recovery based on expected behavior
-        assert_eq!(
-            recovered_ctx.raft_log.len(),
-            expected_recovery,
-            "Recovery mismatch for policy {flush_policy:?}"
-        );
-        recovered_ctx.close().await;
+    // Add test data
+    for i in 1..=100 {
+        original_ctx
+            .raft_log
+            .append_entries(vec![Entry {
+                index: i,
+                term: 1,
+                payload: Some(EntryPayload::command(Bytes::from(
+                    format!("data{i}").into_bytes(),
+                ))),
+            }])
+            .await
+            .unwrap();
     }
+
+    // Explicit flush ensures all entries are durable before crash simulation.
+    original_ctx.raft_log.flush().await.unwrap();
+
+    // Simulate crash and recovery
+    let recovered_ctx = original_ctx.recover_from_crash();
+    original_ctx.close().await;
+
+    // Verify recovery
+    assert_eq!(
+        recovered_ctx.raft_log.len(),
+        expected_recovery,
+        "Recovery mismatch: expected {expected_recovery}"
+    );
+    recovered_ctx.close().await;
 }
 
 #[tokio::test]
@@ -312,12 +278,7 @@ async fn test_memfirst_crash_recovery_durability() {
     let instance_id = "test_memfirst_durability";
 
     let recovered_path = {
-        let ctx = TestContext::new(
-            FlushPolicy::Batch {
-                idle_flush_interval_ms: 10000,
-            },
-            instance_id,
-        );
+        let ctx = TestContext::new(instance_id);
 
         ctx.append_entries(1, 100, 1).await;
 

@@ -1,5 +1,3 @@
-mod buffered_raft_log;
-pub(super) mod fsync_coordinator;
 pub(super) mod fsync_worker;
 mod lease;
 mod raft_log;
@@ -9,16 +7,12 @@ mod state_machine;
 mod storage_engine;
 pub use raft_log_core::*;
 
-pub use buffered_raft_log::*;
 pub use lease::*;
 #[doc(hidden)]
 pub use raft_log::*;
 pub(crate) use snapshot_path_manager::*;
 pub use state_machine::*;
 pub use storage_engine::*;
-
-// #[cfg(test)]
-// mod buffered_raft_log_test;
 
 #[cfg(test)]
 mod snapshot_path_manager_test;

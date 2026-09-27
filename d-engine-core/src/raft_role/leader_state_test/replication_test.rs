@@ -667,7 +667,7 @@ async fn setup_commit_index_test_context(
 ///
 /// # When
 /// - process_batch is called (no peers → no replication requests sent)
-/// - handle_log_flushed(7) is called to simulate the async LogFlushed event from BufferedRaftLog
+/// - handle_log_flushed(7) is called to simulate the async LogFlushed event from RaftLogCore
 ///
 /// # Then
 /// - Commit index advances to 7 (driven by the simulated LogFlushed event)
@@ -708,8 +708,8 @@ async fn test_single_node_cluster_commit_index() {
         .await;
     assert!(result.is_ok());
 
-    // Simulate the async LogFlushed event that BufferedRaftLog's batch_processor fires
-    // after fsync. MemFirst: set last_entry_id=7 before flush.
+    // Simulate the async LogFlushed event that RaftLogCore emits after fsync.
+    // Set last_entry_id=7 before flush.
     last_entry_id.store(7, Ordering::Relaxed);
     context
         .state
@@ -909,7 +909,7 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
 ///
 /// # When
 /// - execute_request_immediately is called
-/// - handle_log_flushed(5) is called to simulate the async LogFlushed event from BufferedRaftLog
+/// - handle_log_flushed(5) is called to simulate the async LogFlushed event from RaftLogCore
 ///
 /// # Then
 /// - Commit index advances to 5

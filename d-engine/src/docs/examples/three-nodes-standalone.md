@@ -57,9 +57,6 @@ initial_cluster = [
 [raft.read_consistency]
 default_policy = "LeaseRead"
 lease_duration_ms = 500
-
-[raft.persistence]
-flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
 ```
 
 **Key differences from single-node expansion:**
@@ -121,7 +118,7 @@ All performance reports in `/benches/standalone-bench/reports` use this exact co
 
 **Raft settings:**
 
-- Persistence: batched fsync (Level 3, fdatasync) with 1000ms idle flush interval
+- Persistence: inline fsync (Level 3, fdatasync)
 - Read consistency: `LeaseRead` (500ms lease duration)
 - Replication: Batched append entries (5000 threshold, 0ms delay)
 - Network: Tuned for high throughput (see `config/n1.toml` for details)

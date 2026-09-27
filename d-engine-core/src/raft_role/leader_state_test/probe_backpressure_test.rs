@@ -1,13 +1,13 @@
 //! Test for the missing per-peer in-flight gate during `PeerReplicationState::Probe`.
 //!
 //! Background (see `446-expert-q-probe-backpressure-fix-8020.md` in the product-design repo):
-//! every reference Raft implementation (etcd/raft, tikv/raft-rs, openraft) limits a `Probe`-state
+//! every reference Raft implementation limits a `Probe`-state
 //! peer to at most one outstanding (unacknowledged) `AppendEntries` request. d-engine's
 //! `PeerReplicationState::Probe`/`Replicate` only controls whether `next_index` is optimistically
 //! advanced before sending — it never checks whether the peer already has a request in flight.
 //! Left unchecked, the leader keeps re-sending `prev_log_index=0` probes to a peer whose first
 //! attempt hasn't been acknowledged yet, and each one forces the follower to wipe and rebuild its
-//! entire log (`buffered_raft_log::reset`), which is the root cause of the throughput collapse
+//! entire log (`RaftLogCore::reset`), which is the root cause of the throughput collapse
 //! this ticket investigated.
 //!
 //! This test is intentionally RED until the in-flight gate is implemented in
@@ -104,8 +104,7 @@ fn one_entry_batch() -> VecDeque<RaftRequestWithSignal> {
 ///   dispatched.
 ///
 /// # Expected
-/// `Probe` means "at most one unacknowledged `AppendEntries` at a time" (etcd/raft
-/// `MsgAppFlowPaused`, openraft `Inflight::is_none()`), not "at most one ever". A response must
+/// `Probe` means "at most one unacknowledged `AppendEntries` at a time", not "at most one ever". A response must
 /// re-arm the gate, never latch it shut: a latched `Probe` peer receives nothing further — not
 /// even heartbeats, since they share this dispatch path — while the frozen follower times out
 /// into candidacy and the leader cannot reach quorum.
@@ -222,8 +221,7 @@ async fn test_probe_peer_dispatches_next_probe_after_reject() {
 ///
 /// # Expected (once the fix lands)
 /// Batch 2 must NOT produce a second dispatch to peer 2's worker: a `Probe`-state peer with an
-/// unacknowledged request in flight must wait for that response (etcd/raft `MsgAppFlowPaused`,
-/// openraft `Inflight::is_none()`) before being sent to again.
+/// unacknowledged request in flight must wait for that response before being sent to again.
 ///
 /// # Current behavior (why this test is RED today)
 /// `execute_and_process_raft_rpc`'s Phase 5 loop sends to every peer in `append_requests`

@@ -21,31 +21,31 @@ rocksdb.*` vs `server.storage.file.*`).
 
 ## Write Pipeline Core
 
-| Metric | Type | Normal Range | Answers |
-|---|---|---|---|
-| `core.raft.buffer.length{buffer}` | Gauge | Near 0, draining between ticks | Is the propose/linearizable/lease/eventual buffer backlogged? |
-| `core.raft.fsync.duration_ms` | Histogram | p99 low single-digit ms on SSD | How long does one physical fsync take? |
-| `core.raft.fsync.batch_entries` | Histogram | Grows with write concurrency | Is FsyncCoordinator coalescing concurrent writes? |
-| `core.raft.fsync.inflight` | Gauge (0/1) | — | Is a fsync task running right now? |
-| `core.raft.fsync.busy_nanos_total` | Counter | `rate(...)/1e9` should stay < 0.7 | fsync thread utilization |
-| `server.storage.rocksdb.wal_flush_ms` | Histogram | p99 low single-digit ms | State machine's own RocksDB WAL flush duration (a separate DB from the Raft log — do not conflate with `fsync.duration_ms`). Only emitted when the `rocksdb` storage adaptor is active. |
-| `server.storage.file.flush_ms` | Histogram | p99 low single-digit ms | Durability sync duration (`flush()` + `sync_all()`) for the default `file` storage adaptor. Only emitted when the `file` adaptor is active — no WAL concept, so this is the direct equivalent of `wal_flush_ms`. |
-| `core.state_machine.apply_chunk.duration_ms` | Histogram | p99 low single-digit ms | How long does one apply_chunk call take? |
-| `core.state_machine.apply_chunk.batch_size` | Histogram | Grows with write concurrency | Entries applied per chunk |
-| `core.state_machine.apply_chunk.count` | Counter | — | Total apply_chunk invocations |
-| `core.state_machine.apply_chunk.success` | Counter | ≈ `.count` | Successful applies |
-| `core.state_machine.apply_chunk.error{error_type}` | Counter | 0 | Failed applies, classified by error type |
-| `core.state_machine.apply.busy_nanos_total` | Counter | `rate(...)/1e9` should stay < 0.7 | SM apply thread utilization |
-| `core.raft.commit_index` | Gauge | Monotonically increasing | Highest log index this node has committed |
-| `core.raft.apply_index` | Gauge | Tracks `commit_index` closely | Highest log index this node has applied |
+| Metric                                             | Type        | Normal Range                      | Answers                                                                                                                                                                                                          |
+| -------------------------------------------------- | ----------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core.raft.buffer.length{buffer}`                  | Gauge       | Near 0, draining between ticks    | Is the propose/linearizable/lease/eventual buffer backlogged?                                                                                                                                                    |
+| `core.raft.fsync.duration_ms`                      | Histogram   | p99 low single-digit ms on SSD    | How long does one physical fsync take?                                                                                                                                                                           |
+| `core.raft.fsync.batch_entries`                    | Histogram   | Grows with write concurrency      | Is FsyncWorker coalescing concurrent writes?                                                                                                                                                                     |
+| `core.raft.fsync.inflight`                         | Gauge (0/1) | —                                 | Is a fsync task running right now?                                                                                                                                                                               |
+| `core.raft.fsync.busy_nanos_total`                 | Counter     | `rate(...)/1e9` should stay < 0.7 | fsync thread utilization                                                                                                                                                                                         |
+| `server.storage.rocksdb.wal_flush_ms`              | Histogram   | p99 low single-digit ms           | State machine's own RocksDB WAL flush duration (a separate DB from the Raft log — do not conflate with `fsync.duration_ms`). Only emitted when the `rocksdb` storage adaptor is active.                          |
+| `server.storage.file.flush_ms`                     | Histogram   | p99 low single-digit ms           | Durability sync duration (`flush()` + `sync_all()`) for the default `file` storage adaptor. Only emitted when the `file` adaptor is active — no WAL concept, so this is the direct equivalent of `wal_flush_ms`. |
+| `core.state_machine.apply_chunk.duration_ms`       | Histogram   | p99 low single-digit ms           | How long does one apply_chunk call take?                                                                                                                                                                         |
+| `core.state_machine.apply_chunk.batch_size`        | Histogram   | Grows with write concurrency      | Entries applied per chunk                                                                                                                                                                                        |
+| `core.state_machine.apply_chunk.count`             | Counter     | —                                 | Total apply_chunk invocations                                                                                                                                                                                    |
+| `core.state_machine.apply_chunk.success`           | Counter     | ≈ `.count`                        | Successful applies                                                                                                                                                                                               |
+| `core.state_machine.apply_chunk.error{error_type}` | Counter     | 0                                 | Failed applies, classified by error type                                                                                                                                                                         |
+| `core.state_machine.apply.busy_nanos_total`        | Counter     | `rate(...)/1e9` should stay < 0.7 | SM apply thread utilization                                                                                                                                                                                      |
+| `core.raft.commit_index`                           | Gauge       | Monotonically increasing          | Highest log index this node has committed                                                                                                                                                                        |
+| `core.raft.apply_index`                            | Gauge       | Tracks `commit_index` closely     | Highest log index this node has applied                                                                                                                                                                          |
 
 ## Write Latency Breakdown (leader-only)
 
-| Metric | Type | Normal Range | Answers |
-|---|---|---|---|
-| `core.raft.write.propose_to_commit_ms` | Histogram | Low single-digit ms | Client write → Raft commit |
-| `core.raft.write.commit_to_apply_ms` | Histogram | Should stay well below `propose_to_commit_ms` | Raft commit → state machine apply |
-| `core.raft.write.propose_to_apply_ms` | Histogram | Sum of the two above | End-to-end write latency (what the client experiences) |
+| Metric                                 | Type      | Normal Range                                  | Answers                                                |
+| -------------------------------------- | --------- | --------------------------------------------- | ------------------------------------------------------ |
+| `core.raft.write.propose_to_commit_ms` | Histogram | Low single-digit ms                           | Client write → Raft commit                             |
+| `core.raft.write.commit_to_apply_ms`   | Histogram | Should stay well below `propose_to_commit_ms` | Raft commit → state machine apply                      |
+| `core.raft.write.propose_to_apply_ms`  | Histogram | Sum of the two above                          | End-to-end write latency (what the client experiences) |
 
 ### How the segments add up
 
@@ -56,8 +56,7 @@ propose_to_commit_ms + commit_to_apply_ms = propose_to_apply_ms
 ```
 
 This is an exact per-request identity — the three timestamps are recorded
-against the same log index. **Percentiles do not add**: `p99(propose_to_commit)
-+ p99(commit_to_apply)` will not generally equal `p99(propose_to_apply)`,
+against the same log index. **Percentiles do not add**: `p99(propose_to_commit) + p99(commit_to_apply)` will not generally equal `p99(propose_to_apply)`,
 because the slowest 1% of requests in each stage aren't necessarily the same
 requests. If you need to verify the identity, compare it per-request or via
 the mean, not by summing percentiles.
@@ -84,18 +83,18 @@ together).
 
 ## Replication
 
-| Metric | Type | Normal Range | Answers |
-|---|---|---|---|
-| `server.raft.replicate.rtt_ms{peer}` | Histogram | Should track your network's baseline RTT | AppendEntries round-trip time to a specific peer |
-| `core.raft.snapshot.push_consecutive_failures` | Counter | 0 | Consecutive snapshot push failures to a peer |
+| Metric                                         | Type      | Normal Range                             | Answers                                          |
+| ---------------------------------------------- | --------- | ---------------------------------------- | ------------------------------------------------ |
+| `server.raft.replicate.rtt_ms{peer}`           | Histogram | Should track your network's baseline RTT | AppendEntries round-trip time to a specific peer |
+| `core.raft.snapshot.push_consecutive_failures` | Counter   | 0                                        | Consecutive snapshot push failures to a peer     |
 
 ## Cluster Health & Guardrails
 
-| Metric | Type | Normal Range | Answers |
-|---|---|---|---|
-| `core.raft.backpressure.rejections{node_id,type}` | Counter | 0 | Requests rejected due to backpressure (write/read) |
-| `core.membership.stale_learner_removed` | Counter | 0 | Learners auto-removed for falling too far behind |
-| `core.cluster.unsafe_join_attempts` | Counter | 0 | Join requests rejected because they would create an even-voter cluster |
+| Metric                                            | Type    | Normal Range | Answers                                                                |
+| ------------------------------------------------- | ------- | ------------ | ---------------------------------------------------------------------- |
+| `core.raft.backpressure.rejections{node_id,type}` | Counter | 0            | Requests rejected due to backpressure (write/read)                     |
+| `core.membership.stale_learner_removed`           | Counter | 0            | Learners auto-removed for falling too far behind                       |
+| `core.cluster.unsafe_join_attempts`               | Counter | 0            | Join requests rejected because they would create an even-voter cluster |
 
 ---
 
@@ -104,10 +103,10 @@ together).
 d-engine's metrics operate at two different granularities. Comparing across
 them directly leads to wrong conclusions:
 
-| Granularity | Metrics |
-|---|---|
+| Granularity                                     | Metrics                                                                                         |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | Per fsync/apply batch (may cover many requests) | `fsync.duration_ms`, `fsync.batch_entries`, `apply_chunk.duration_ms`, `apply_chunk.batch_size` |
-| Per single client request | `write.propose_to_commit_ms`, `write.commit_to_apply_ms`, `write.propose_to_apply_ms` |
+| Per single client request                       | `write.propose_to_commit_ms`, `write.commit_to_apply_ms`, `write.propose_to_apply_ms`           |
 
 Example: `fsync.duration_ms` p99 of 5ms does not mean "any given
 `propose_to_commit_ms` sample near 5ms is explained by that fsync" — one fsync

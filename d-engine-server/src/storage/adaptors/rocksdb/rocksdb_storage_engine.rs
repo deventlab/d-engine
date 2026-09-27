@@ -316,7 +316,7 @@ impl LogStore for RocksDBLogStore {
         self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
 
         // Persist purge boundary to META_CF for crash recovery.
-        // BufferedRaftLog::new() reads this on restart to restore last_purged_index/term
+        // RaftLogCore::new() reads this on restart to restore last_purged_index/term
         // so that entry_term(last_purged_index) returns the correct term after restart.
         if let Some(cf_meta) = self.db.cf_handle(META_CF) {
             let encoded = cutoff_index.encode_to_vec();

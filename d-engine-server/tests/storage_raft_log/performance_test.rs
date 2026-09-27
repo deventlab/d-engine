@@ -1,4 +1,4 @@
-//! Performance benchmark integration tests for BufferedRaftLog
+//! Performance benchmark integration tests for RaftLogCore
 //!
 //! These tests measure real I/O performance with FileStorageEngine.
 //! Most tests are marked with #[ignore] and can be run explicitly or
@@ -6,7 +6,7 @@
 
 use super::TestContext;
 use bytes::Bytes;
-use d_engine_core::{FlushPolicy, RaftLog, RaftLogCore};
+use d_engine_core::{RaftLog, RaftLogCore};
 use d_engine_proto::common::{Entry, EntryPayload};
 use d_engine_server::{FileStateMachine, FileStorageEngine, node::RaftTypeConfig};
 use std::collections::HashMap;
@@ -155,12 +155,7 @@ mod filter_out_conflicts_and_append_performance_tests {
 #[tokio::test]
 async fn test_last_entry_id_performance() {
     // Set up test context
-    let test_context = TestContext::new(
-        FlushPolicy::Batch {
-            idle_flush_interval_ms: 360_000,
-        },
-        "test_last_entry_id_performance",
-    );
+    let test_context = TestContext::new("test_last_entry_id_performance");
 
     // Create a large number of entries
     const ENTRY_COUNT: usize = 1_000_000;
@@ -235,12 +230,7 @@ async fn test_performance_benchmarks() {
         ]
     };
 
-    let ctx = TestContext::new(
-        FlushPolicy::Batch {
-            idle_flush_interval_ms: 100,
-        },
-        "performance_benchmark",
-    );
+    let ctx = TestContext::new("performance_benchmark");
 
     // Pre-populate with data
     let mut entries = Vec::new();
@@ -324,12 +314,7 @@ async fn test_read_performance_under_concurrent_write_load() {
         10_000.0
     };
 
-    let ctx = TestContext::new(
-        FlushPolicy::Batch {
-            idle_flush_interval_ms: 100,
-        },
-        "test_read_performance_under_concurrent_write_load",
-    );
+    let ctx = TestContext::new("test_read_performance_under_concurrent_write_load");
 
     // Pre-populate
     ctx.append_entries(1, 10000, 1).await;

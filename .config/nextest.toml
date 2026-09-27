@@ -19,7 +19,7 @@ threads-required = 'num-cpus'
 # Serialize wall-clock perf assertions — CPU contention causes false failures, not the
 # assertions. Don't #[ignore] them, isolate instead.
 [[profile.default.overrides]]
-filter = "test(storage_buffered_raft_log::performance_test)"
+filter = "test(raft_log_core::performance_test)"
 threads-required = 'num-cpus'
 
 # Per-directory, not per-file — a few dirs also hold light tests, throttled as fallout.
@@ -47,7 +47,7 @@ filter = "test(tmp_db) | test(config_path_env) | test(data_dir_lock) | test(sing
 threads-required = 'num-cpus'
 
 [[profile.ci.overrides]]
-filter = "test(storage_buffered_raft_log::performance_test)"
+filter = "test(raft_log_core::performance_test)"
 threads-required = 'num-cpus'
 
 [[profile.ci.overrides]]
