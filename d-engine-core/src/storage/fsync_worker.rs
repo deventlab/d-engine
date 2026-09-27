@@ -87,7 +87,7 @@ impl<L: LogStore> FsyncWorker<L> {
         metrics::gauge!("core.raft.fsync.inflight").set(1.0);
 
         let worker = Arc::clone(self);
-        std::thread::spawn(move || worker.run_until_caught_up());
+        tokio::task::spawn_blocking(move || worker.run_until_caught_up());
     }
 
     /// Runs on the blocking pool. Keeps fsyncing and re-checking for newly
