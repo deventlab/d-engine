@@ -365,24 +365,31 @@ where
         });
 
         let max_log_entries = node_config.raft.snapshot.max_log_entries_before_snapshot;
+        let retained_log_entries = node_config.raft.snapshot.retained_log_entries;
 
         // Startup memory-budget line — visible on stdout regardless of log setup.
         {
             const EST_LOG_ENTRY_BYTES: u64 = 512; // small/medium KV write + proto + SkipMap node overhead
-            let peak_mb = max_log_entries.saturating_mul(EST_LOG_ENTRY_BYTES) / (1024 * 1024);
+            let est_mb = max_log_entries
+                .saturating_add(retained_log_entries)
+                .saturating_mul(EST_LOG_ENTRY_BYTES)
+                / (1024 * 1024);
             tracing::info!(
                 node_id,
                 max_log_entries,
-                est_peak_ram_mb = peak_mb,
-                "Raft log memory: peak ~{peak_mb} MB in memory between snapshots \
-                        ({max_log_entries} entries × ~512 B/entry est.), purged after each snapshot"
+                retained_log_entries,
+                est_log_ram_mb = est_mb,
+                "Raft log memory estimate: ~{est_mb} MB \
+                 (({max_log_entries} snapshot-trigger + {retained_log_entries} retained entries) \
+                 × ~512 B/entry). Excludes snapshot backlog"
             );
-            if peak_mb > 100 {
+            if est_mb > 100 {
                 tracing::warn!(
                     node_id,
-                    est_peak_ram_mb = peak_mb,
-                    "in-memory Raft log budget > 100 MB — lower \
-                       raft.snapshot.max_log_entries_before_snapshot if RAM-constrained"
+                    est_log_ram_mb = est_mb,
+                    "in-memory Raft log estimate > 100 MB — lower \
+                        raft.snapshot.max_log_entries_before_snapshot or \
+                        raft.snapshot.retained_log_entries if RAM-constrained"
                 );
             }
         }

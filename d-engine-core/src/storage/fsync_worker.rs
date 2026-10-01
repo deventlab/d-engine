@@ -144,6 +144,20 @@ impl<L: LogStore> FsyncWorker<L> {
                 r
             };
 
+            // Before the generation fence: a truncation can't make a failed fsync harmless.
+            if let Err(e) = &result {
+                self.mark_poisoned_and_notify(format!("fsync failed: {e:?}"));
+                error!(
+                    ?self.node_id,
+                    "WAL fsync failed at index {}: {:?} — node entering fatal state",
+                    mark.index, e
+                );
+                for reply in replies {
+                    let _ = reply.send(Err(Error::Fatal(format!("WAL fsync failed: {:?}", e))));
+                }
+                continue; // next round sees `poisoned` and drains the rest
+            }
+
             // Skip replying if this round is already known stale.
             if self.generation.load(Ordering::Acquire) != gen_at_start {
                 for reply in replies {
@@ -151,32 +165,14 @@ impl<L: LogStore> FsyncWorker<L> {
                         "stale fsync generation, superseded by reset".into(),
                     )));
                 }
-                continue; // do NOT call advance_durable_and_notify
+                continue; // do not publish FsyncCompleted
             }
 
-            match &result {
-                Ok(()) => {
-                    self.last_synced_index.store(mark.index, Ordering::Release);
-                    self.notify_fsync_completed(mark);
-                }
-                Err(e) => {
-                    // One fsync failure = fatal, no threshold, no retry-and-hope.
-                    // Durability state is now unknown, this node
-                    // must stop promising any further persistence.
-                    self.mark_poisoned_and_notify(format!("fsync failed: {e:?}")); // mirrors advance_durable_and_notify's pattern
-                    error!(
-                        ?self.node_id,
-                        "WAL fsync failed at index {}: {:?} — node entering fatal state",
-                        mark.index, e
-                    );
-                }
-            }
+            self.last_synced_index.store(mark.index, Ordering::Release);
+            self.notify_fsync_completed(mark);
 
             for reply in replies {
-                let _ = reply.send(match &result {
-                    Ok(()) => Ok(()),
-                    Err(e) => Err(Error::Fatal(format!("WAL fsync failed: {:?}", e))),
-                });
+                let _ = reply.send(Ok(()));
             }
         }
     }

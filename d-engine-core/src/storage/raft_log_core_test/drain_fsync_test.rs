@@ -119,17 +119,15 @@ async fn test_batch_append_produces_one_flush() {
     );
 }
 
-/// `IOTask::Reset` must zero `pending_max`; stale value corrupts `durable_index`.
+/// `reset()` must not let a stale `pending_max` corrupt `durable_index`.
 ///
 /// ## Background
-/// `batch_processor` tracks `pending_max`: the highest log index written to the OS
-/// page cache but not yet fsynced. After a successful `fsync_and_advance`, it is
-/// zeroed (`pending_max = 0`). After a **failed** fsync, it is NOT zeroed — the
-/// `else { pending_max = 0 }` branch is skipped.
+/// `FsyncWorker::pending_max` holds the highest mark written to the OS page cache
+/// but not yet fsynced. `reset()` calls `fence_reset()`, which zeroes it.
 ///
-/// ## Original bug (fixed pre-#422)
-/// `run_storage_tasks(IOTask::Reset)` wiped the on-disk log but did NOT zero
-/// `pending_max`. On the next `write_notify` wakeup the IO thread would compute:
+/// ## Original bug (fixed pre-#422, in the since-removed IO-thread design)
+/// The IO thread's reset path wiped the on-disk log but did NOT zero
+/// `pending_max`. On the next wakeup the IO thread would compute:
 /// ```
 /// pending_max = pending_max.max(new_end)   // stale 10 wins over new 3
 /// fsync_and_advance(10)                    // advances durable_index to 10 — WRONG
@@ -245,16 +243,15 @@ async fn test_flush_is_strict_durability_barrier() {
 
 /// flush() must return Err when the underlying fsync fails — not hang indefinitely.
 ///
-/// ## Bug (pre-fix)
-/// `flush()` sends `IOTask::FlushNow` (fire-and-forget), then calls `wait_durable()`
-/// which registers a `WaitDurable` waiter. If the IO thread's fsync fails, it logs the
-/// error and moves on — `durable_index` never advances, the waiter is never notified,
-/// and `flush()` blocks forever.
+/// ## Bug (pre-fix, in the since-removed IO-thread design)
+/// `flush()` sent a fire-and-forget flush request, then registered a durable waiter.
+/// If the IO thread's fsync failed, it logged the error and moved on — `durable_index`
+/// never advanced, the waiter was never notified, and `flush()` blocked forever.
 ///
-/// ## Fix (#331)
-/// Replace `FlushNow` + `WaitDurable` with a single `IOTask::Flush(oneshot::Sender<Result<()>>)`.
-/// The IO thread performs fsync and sends the result (Ok or Err) directly back to the
-/// caller via the oneshot channel, so `flush()` always returns within bounded time.
+/// ## Invariant (#331)
+/// `flush()` submits to `FsyncWorker` together with a reply oneshot. The worker sends
+/// the fsync result (Ok or Err) directly back through it, so `flush()` always returns
+/// within bounded time.
 #[tokio::test]
 async fn test_flush_propagates_io_error() {
     // Every flush() call on the underlying log store returns an error.
@@ -385,7 +382,7 @@ async fn test_replace_range_failure_poisons() {
     sleep(Duration::from_millis(20)).await;
 
     // A new leader (term 2) overwrites from index 2 onward — a real conflict
-    // that must truncate + replace, routing through IOTask::ReplaceRange.
+    // that must truncate + replace, routing through `replace_range_and_submit`.
     let result = raft_log
         .filter_out_conflicts_and_append(
             1,

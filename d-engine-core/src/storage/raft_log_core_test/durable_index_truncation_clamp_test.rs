@@ -188,9 +188,9 @@ async fn test_persist_pending_range_reports_written_max_not_scan_bound() {
     );
 }
 
-/// After a term-conflict truncation, the IO thread's persist frontier must land
-/// *past* the new tail — not on it. `IOTask::ReplaceRange` already wrote (and
-/// fsynced) the new tail via `replace_range`; the next write's persist scan must
+/// After a term-conflict truncation, the persist frontier (`persisted_index`) must land
+/// *past* the new tail — not on it. `replace_range_and_submit` already wrote the new
+/// tail via `replace_range` and submitted its fsync; the next write's persist scan must
 /// start at `new_tail + 1`. If the frontier is left *at* `new_tail`, every
 /// subsequent write re-scans and re-`persist_entries` that one boundary entry
 /// (and re-submits a redundant fsync for it) — the exact waste #446 removes.
@@ -238,20 +238,31 @@ async fn test_persist_frontier_skips_new_tail_after_truncation() {
     raft_log.flush().await.unwrap();
 
     // New leader (term 2): conflict at index 6 → truncate [6..], replace with
-    // [6, 7] (term 2). `filter_out_conflicts_and_append` awaits the
-    // `IOTask::ReplaceRange` reply, so the frontier is at new-tail 7 on return.
+    // [6, 7] (term 2). `filter_out_conflicts_and_append` awaits
+    // `replace_range_and_submit`, so the frontier is at new-tail 7 on return.
     raft_log
         .filter_out_conflicts_and_append(5, 1, vec![entry(6, 2), entry(7, 2)])
         .await
         .unwrap();
 
     // Only care about persist calls from here on — no flush() in between, so the
-    // next append's `IOTask::Persist` is the first thing to touch the frontier.
+    // next append's persist is the first thing to touch the frontier.
     persist_calls.lock().unwrap().clear();
 
     // Next write extends the log. Its persist scan must start at 8, not 7.
     raft_log.append_entries((8..=10).map(|i| entry(i, 2)).collect()).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Wait until the new entries were actually handed to persist_entries; an empty
+    // record would make the "no re-persist" check below pass without observing anything.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !persist_calls.lock().unwrap().iter().flatten().any(|&idx| idx == 10) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "entries 8..=10 were never passed to persist_entries. Got calls: {:?}",
+            persist_calls.lock().unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     let calls = persist_calls.lock().unwrap().clone();
     let re_persisted_tail = calls.iter().flatten().any(|&idx| idx <= 7);
@@ -418,5 +429,56 @@ async fn test_flush_after_poisoned_does_not_call_persist_entries() {
     assert!(
         persist_calls.lock().unwrap().is_empty(),
         "persist_entries must never be called again once the log is poisoned"
+    );
+}
+
+/// `flush()` must surface the error of its own catch-up persist, not swallow it.
+///
+/// Entries that sit in memory but were never persisted (`persisted_index <
+/// memory_max_index`) make `flush()` persist them itself. If that persist fails, the
+/// caller must get the underlying disk error directly. Before the explicit `?`,
+/// the error was dropped and `flush()` only failed later, with a generic
+/// "storage is poisoned" reply from the fsync worker — correct outcome, but it relied
+/// on that indirect chain and hid the root cause.
+#[tokio::test]
+async fn test_flush_returns_catch_up_persist_error_instead_of_swallowing_it() {
+    let mut log_store = MockLogStore::new();
+    log_store.expect_last_index().returning(|| 0);
+    log_store
+        .expect_persist_entries()
+        .returning(|_| Err(crate::Error::Fatal("simulated disk failure".into())));
+    log_store.expect_replace_range().returning(|_, _| Ok(0));
+    log_store.expect_truncate().returning(|_| Ok(()));
+    log_store.expect_entry().returning(|_| Ok(None));
+    log_store.expect_get_entries().returning(|_| Ok(vec![]));
+    log_store.expect_purge().returning(|_| Ok(()));
+    log_store.expect_load_purge_boundary().returning(|| Ok(None));
+    log_store.expect_reset().returning(|| Ok(()));
+    log_store.expect_is_write_durable().returning(|| false);
+    log_store.expect_flush().returning(|| Ok(()));
+    log_store.expect_flush_async().returning(|| Ok(()));
+
+    let mut meta_store = MockMetaStore::new();
+    meta_store.expect_save_hard_state().returning(|_| Ok(()));
+    meta_store.expect_load_hard_state().returning(|| Ok(None));
+    meta_store.expect_flush().returning(|| Ok(()));
+    meta_store.expect_flush_async().returning(|| Ok(()));
+
+    let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
+    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
+
+    // In memory only: persisted_index (0) < memory_max_index (1), log not poisoned yet.
+    raft_log.insert_to_memory(&[entry(1, 1)]);
+    assert!(!raft_log.is_poisoned());
+
+    let err = raft_log.flush().await.expect_err("catch-up persist failed, flush must fail");
+
+    assert!(
+        format!("{err:?}").contains("simulated disk failure"),
+        "flush() must return the catch-up persist error itself, got: {err:?}"
+    );
+    assert!(
+        raft_log.is_poisoned(),
+        "a failed persist must poison the log"
     );
 }

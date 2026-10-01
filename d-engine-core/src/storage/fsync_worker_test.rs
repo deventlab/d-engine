@@ -369,6 +369,65 @@ fn test_run_until_caught_up_discards_stale_generation_result_without_advancing()
     );
 }
 
+/// A failed physical flush must poison the node even when a truncation / reset
+/// bumps `generation` while the flush is in flight.
+///
+/// Scenario: a follower's fdatasync for entries 1..=10 fails (EIO) at the same
+/// moment a new leader's conflict truncation bumps `generation`. The stale-generation
+/// fence only decides whether a *successful* result may be published; it must never
+/// swallow a *failure*. Otherwise the node keeps running, a later fsync may report
+/// success over pages the kernel already gave up on, and `durable_index` could
+/// advance past data that is not on disk.
+///
+/// Expected:
+///   - `poisoned == true`
+///   - a `FatalError` event is sent
+///   - no `FsyncCompleted` is sent
+#[test]
+fn test_run_until_caught_up_poisons_on_flush_failure_even_when_generation_changed() {
+    let poisoned = Arc::new(AtomicBool::new(false));
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    let worker: Arc<FsyncWorker<MockLogStore>> = Arc::new_cyclic({
+        let poisoned = poisoned.clone();
+        move |weak: &std::sync::Weak<FsyncWorker<MockLogStore>>| {
+            let weak_in_mock = weak.clone();
+            let mut mock_log_store = MockLogStore::new();
+            mock_log_store.expect_is_write_durable().returning(|| false);
+            mock_log_store.expect_flush().returning(move || {
+                // Truncation lands while the fdatasync is in flight, then it fails.
+                if let Some(w) = weak_in_mock.upgrade() {
+                    w.generation.fetch_add(1, Ordering::AcqRel);
+                }
+                Err(crate::Error::Fatal("simulated fdatasync EIO".into()))
+            });
+            FsyncWorker::new(1, Arc::new(mock_log_store), poisoned, Some(tx))
+        }
+    });
+
+    worker.inflight.store(true, Ordering::Release);
+    *worker.pending_max.lock() = LogId { term: 1, index: 10 };
+
+    worker.run_until_caught_up();
+
+    assert!(
+        poisoned.load(Ordering::Acquire),
+        "a failed fsync must poison the node even if generation changed mid-flight"
+    );
+
+    let mut saw_fatal = false;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            InternalEvent::FatalError { .. } => saw_fatal = true,
+            InternalEvent::FsyncCompleted { .. } => {
+                panic!("a failed flush must not emit FsyncCompleted")
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_fatal, "a failed fsync must notify FatalError");
+}
+
 /// The other half of the fence: a matching generation accepts the result —
 /// `FsyncCompleted` emitted, replies resolve `Ok`.
 #[test]

@@ -40,7 +40,7 @@ async fn test_replace_range_becomes_durable_without_a_following_append() {
     // Act: leader (term=2) sends entries that conflict at index=2 and extend
     // the log to index=4. filter_out_conflicts_and_append's slow path detects
     // the term mismatch at index=2, truncates [2,3], and replaces with
-    // [2,3,4] (term=2) via IOTask::ReplaceRange — with no append_entries()
+    // [2,3,4] (term=2) via `replace_range_and_submit` — with no append_entries()
     // call afterward.
     let result = ctx
         .raft_log

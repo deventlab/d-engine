@@ -319,10 +319,8 @@ impl MockStorageEngine {
     /// Create a MockStorageEngine where `is_write_durable()=false` and the **first**
     /// `flush()` call returns an error, simulating a transient fsync failure.
     ///
-    /// After a failed fsync, `batch_processor` logs the error and does NOT zero
-    /// `pending_max` (the success branch `else { pending_max = 0 }` is not taken).
-    /// This is the deterministic pre-condition needed to exercise the bug where
-    /// `run_storage_tasks(IOTask::Reset)` forgets to zero `pending_max`.
+    /// A failed fsync poisons the log permanently (see `FsyncWorker`). This is the
+    /// deterministic way to reach the poisoned state through a real fsync failure.
     pub fn not_durable_first_flush_fails(id: String) -> Self {
         let mut mock_log_store = MockLogStore::new();
         let mut mock_meta_store = MockMetaStore::new();
@@ -393,8 +391,8 @@ impl MockStorageEngine {
 
     /// Create a MockStorageEngine where `replace_range()` always fails,
     /// simulating a fatal storage error during conflict-resolution
-    /// (truncate + write). `run_storage_tasks`'s `IOTask::ReplaceRange`
-    /// arm treats this as unrecoverable — disk state is now uncertain.
+    /// (truncate + write). `replace_range_and_submit` treats this as
+    /// unrecoverable and poisons the log — disk state is now uncertain.
     pub fn not_durable_replace_range_fails(id: String) -> Self {
         let mut mock_log_store = MockLogStore::new();
         let mut mock_meta_store = MockMetaStore::new();

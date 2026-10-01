@@ -289,7 +289,7 @@ async fn test_filter_conflicts_bench_pattern_no_truncation() {
 /// must restore the post-conflict entries, not the original pre-conflict ones.
 ///
 /// # Why this matters
-/// A real term conflict routes through IOTask::ReplaceRange in the IO thread
+/// A real term conflict routes through `replace_range_and_submit`
 /// (truncate old entries from disk, persist new ones). If this path is not correctly
 /// flushed, crash recovery would replay the original WAL and restore the stale entries —
 /// violating the Raft log matching property (§5.3).
@@ -313,7 +313,7 @@ async fn test_replace_range_conflict_persists_correctly_after_crash() {
 
     // Act: leader sends conflict — index=4 was term=1, leader has term=2
     // filter_out_conflicts_and_append detects conflict at index=4,
-    // sends IOTask::ReplaceRange(truncate_from=4, new_entries=[4(t2), 5(t2)])
+    // calls replace_range_and_submit(truncate_from=4, new_entries=[4(t2), 5(t2)])
     let result = ctx
         .raft_log
         .filter_out_conflicts_and_append(2, 1, vec![entry(3, 1), entry(4, 2), entry(5, 2)])
@@ -321,7 +321,7 @@ async fn test_replace_range_conflict_persists_correctly_after_crash() {
         .unwrap();
     assert_eq!(result.unwrap().index, 5);
 
-    // Flush ensures IOTask::ReplaceRange is fully processed and persisted by IO thread
+    // Flush makes the replaced tail durable before the simulated crash
     ctx.raft_log.flush().await.unwrap();
 
     // Verify memory state before crash
@@ -377,7 +377,7 @@ async fn test_replace_range_removes_entries_beyond_new_tail() {
     assert_eq!(ctx.raft_log.last_entry_id(), 5);
 
     // Act: leader conflict at index=3 (term mismatch); new suffix is only [3(t2), 4(t2)]
-    // IOTask::ReplaceRange(truncate_from=3, new_entries=[3(t2), 4(t2)]) — entry 5 must vanish
+    // replace_range_and_submit(truncate_from=3, new_entries=[3(t2), 4(t2)]) — entry 5 must vanish
     ctx.raft_log
         .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)])
         .await
@@ -409,7 +409,7 @@ async fn test_replace_range_removes_entries_beyond_new_tail() {
     assert_eq!(recovered.raft_log.entry(3).unwrap().unwrap().term, 2);
 }
 
-/// IOTask::ReplaceRange must call LogStore::replace_range() as a single operation,
+/// `replace_range_and_submit` must call LogStore::replace_range() as a single operation,
 /// not truncate() + persist_entries() separately.
 ///
 /// # Why
@@ -417,11 +417,10 @@ async fn test_replace_range_removes_entries_beyond_new_tail() {
 /// (e.g. single RocksDB WriteBatch). Calling truncate + persist_entries separately
 /// breaks this contract regardless of what the backend implements.
 ///
-/// # Red/Green
-/// This test FAILS before implementation (truncate IS called separately).
-/// It PASSES after IOTask::ReplaceRange is updated to call replace_range().
+/// # Invariant
+/// One conflict resolution issues exactly one replace_range() call and never truncate().
 #[tokio::test]
-async fn test_io_task_replace_range_delegates_to_replace_range_not_truncate() {
+async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate() {
     let replace_range_count = Arc::new(AtomicU64::new(0));
     let truncate_count = Arc::new(AtomicU64::new(0));
 
@@ -434,7 +433,7 @@ async fn test_io_task_replace_range_delegates_to_replace_range_not_truncate() {
         Ok(new_entries.last().map(|e| e.index).unwrap_or(0))
     });
 
-    // truncate() must NOT be called — IOTask::ReplaceRange owns the full operation
+    // truncate() must NOT be called — replace_range_and_submit owns the full operation
     let tr_counter = truncate_count.clone();
     log_store.expect_truncate().returning(move |_| {
         tr_counter.fetch_add(1, Ordering::Relaxed);
@@ -468,7 +467,7 @@ async fn test_io_task_replace_range_delegates_to_replace_range_not_truncate() {
         .await
         .unwrap();
 
-    // Trigger IOTask::ReplaceRange: conflict at index=3 (term mismatch 1 vs 2)
+    // Trigger replace_range_and_submit: conflict at index=3 (term mismatch 1 vs 2)
     raft_log
         .filter_out_conflicts_and_append(2, 1, vec![entry(3, 2), entry(4, 2)])
         .await

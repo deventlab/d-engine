@@ -476,7 +476,7 @@ where
         }
         let persisted = self.persisted_index.load(Ordering::Acquire);
         if persisted < target
-            && let Ok(Some(m)) = self.persist_pending_range(persisted + 1, target, "flush").await
+            && let Some(m) = self.persist_pending_range(persisted + 1, target, "flush").await?
         {
             self.persisted_index.fetch_max(m.index, Ordering::AcqRel);
         }
