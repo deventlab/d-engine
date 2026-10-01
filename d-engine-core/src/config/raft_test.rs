@@ -330,6 +330,27 @@ fn test_raft_config_propagates_read_actor_validation() {
     );
 }
 
+#[test]
+fn test_raft_config_max_pending_append_responses_zero_is_invalid() {
+    let mut config = RaftConfig::default();
+    config.max_pending_append_responses = 0;
+    assert!(
+        config.validate().is_err(),
+        "max_pending_append_responses = 0 must be rejected (mpsc::channel(0) panics, \
+         and the stream can never read a request)"
+    );
+}
+
+#[test]
+fn test_raft_config_max_pending_append_responses_one_is_valid() {
+    let mut config = RaftConfig::default();
+    config.max_pending_append_responses = 1;
+    assert!(
+        config.validate().is_ok(),
+        "max_pending_append_responses = 1 is the smallest legal value"
+    );
+}
+
 /// lease_duration_ms + network_rtt_p99_ms/2 must account for RTT/2 in the safety bound.
 ///
 /// Invariant (Raft §6.4): lease_duration_ms + rtt_p99_ms/2 < election_timeout_min

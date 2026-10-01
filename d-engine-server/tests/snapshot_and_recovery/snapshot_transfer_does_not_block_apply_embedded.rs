@@ -221,9 +221,12 @@ push_queue_size = 1
     // see comment above) plus that shared-mutex contention can push real completion past
     // 15s even though nothing is actually wrong — same root cause already documented in
     // stress_test.rs's 30s bound.
+    // Scoped to the leader's node id: the capture buffer is process-global, so a follower's
+    // (or another test's) purge line must not satisfy this wait.
+    let leader_purge_needle = format!("node_id={} purge_upto_index=", leader_info.leader_id);
     let mut purged = false;
     for _ in 0..60 {
-        if logs_contain_globally_since(&logs, since, "purge_upto_index=") {
+        if logs_contain_globally_since(&logs, since, &leader_purge_needle) {
             purged = true;
             break;
         }

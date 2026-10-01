@@ -169,6 +169,14 @@ impl RaftConfig {
             )));
         }
 
+        if self.max_pending_append_responses == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "max_pending_append_responses must be at least 1 \
+                 (0 causes mpsc::channel to panic)"
+                    .into(),
+            )));
+        }
+
         self.replication.validate()?;
         self.batching.validate()?;
         self.election.validate()?;

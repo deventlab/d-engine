@@ -1145,7 +1145,12 @@ pub(super) async fn schedule_and_execute_purge<T: TypeConfig>(
     // can still catch up via AppendEntries instead of InstallSnapshot.
     let retained = ctx.node_config().raft.snapshot.retained_log_entries;
     let purge_upto_index = last_included.index.saturating_sub(retained);
-    info!("purge_upto_index={purge_upto_index}");
+
+    info!(
+        "node_id={} purge_upto_index={purge_upto_index}",
+        ctx.node_id
+    );
+
     // retained >= last_included.index → nothing to purge; skip log lookup entirely.
     if purge_upto_index == 0 {
         return Ok(());
