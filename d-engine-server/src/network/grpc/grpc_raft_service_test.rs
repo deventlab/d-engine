@@ -864,11 +864,12 @@ async fn test_stream_append_entries_closes_response_stream_after_inbound_ends() 
         .expect("stream must yield the response")
         .expect("must be Ok, not a transport error");
 
-    let end = time::timeout(Duration::from_secs(2), out_stream.next())
-        .await
-        .expect(
-            "response stream must end once inbound closed and nothing is pending — if this \
+    let end = time::timeout(Duration::from_secs(2), out_stream.next()).await.expect(
+        "response stream must end once inbound closed and nothing is pending — if this \
              times out, the forwarder task is leaked waiting on shutdown",
-        );
-    assert!(end.is_none(), "no further items expected after the only response");
+    );
+    assert!(
+        end.is_none(),
+        "no further items expected after the only response"
+    );
 }

@@ -332,8 +332,10 @@ fn test_raft_config_propagates_read_actor_validation() {
 
 #[test]
 fn test_raft_config_max_pending_append_responses_zero_is_invalid() {
-    let mut config = RaftConfig::default();
-    config.max_pending_append_responses = 0;
+    let config = RaftConfig {
+        max_pending_append_responses: 0,
+        ..Default::default()
+    };
     assert!(
         config.validate().is_err(),
         "max_pending_append_responses = 0 must be rejected (mpsc::channel(0) panics, \
@@ -343,8 +345,10 @@ fn test_raft_config_max_pending_append_responses_zero_is_invalid() {
 
 #[test]
 fn test_raft_config_max_pending_append_responses_one_is_valid() {
-    let mut config = RaftConfig::default();
-    config.max_pending_append_responses = 1;
+    let config = RaftConfig {
+        max_pending_append_responses: 1,
+        ..Default::default()
+    };
     assert!(
         config.validate().is_ok(),
         "max_pending_append_responses = 1 is the smallest legal value"

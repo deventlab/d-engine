@@ -44,7 +44,7 @@ use crate::RaftNodeConfig;
 use crate::Result;
 use crate::StateTransitionError;
 use crate::TypeConfig;
-use crate::role_state::PendingAck;
+use crate::role_state::PendingAcks;
 use crate::role_state::schedule_and_execute_purge;
 use crate::utils::cluster::error;
 use crate::utils::cluster_printer::print_role_transition_line;
@@ -76,8 +76,8 @@ pub struct FollowerState<T: TypeConfig> {
     pub last_purged_index: Option<LogId>,
 
     /// AppendEntries responses withheld pending this node's own durable_index.
-    /// See `role_state::PendingAck`.
-    pending_append_acks: BTreeMap<u64, PendingAck>,
+    /// See `role_state::PendingAcks`.
+    pending_append_acks: PendingAcks,
 
     // -- Snapshot Management --
     /// Prevents concurrent snapshot creation
@@ -470,9 +470,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         Some(&mut self.pending_purge_upto)
     }
 
-    fn pending_append_acks_mut(
-        &mut self
-    ) -> Option<&mut std::collections::BTreeMap<u64, super::role_state::PendingAck>> {
+    fn pending_append_acks_mut(&mut self) -> Option<&mut PendingAcks> {
         Some(&mut self.pending_append_acks)
     }
 }

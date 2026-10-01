@@ -64,7 +64,7 @@ pub(crate) enum PeerReplicationState {
 /// claims. Held until fsync catches up, so an ACK never asserts durability the
 /// node cannot yet guarantee (RPO=0, #446).
 ///
-/// Keyed by the claimed index. `senders` accumulates when more than one request
+/// `senders` accumulates when more than one request from the same leader term
 /// claims the same index (a leader retry, or a heartbeat landing on the tail).
 ///
 /// The response body is not stored: it is rebuilt on release, after re-checking
@@ -72,13 +72,19 @@ pub(crate) enum PeerReplicationState {
 /// since left must never be sent.
 pub(crate) struct PendingAck {
     pub(crate) claimed_term: u64,
-    pub(crate) term_when_withheld: u64,
     /// When this ACK was first withheld — diffed against release time to measure
     /// how long the follower sat waiting for its own fsync before it could reply.
     pub(crate) withheld_at: std::time::Instant,
     pub(crate) senders:
         Vec<MaybeCloneOneshotSender<std::result::Result<AppendEntriesResponse, Status>>>,
 }
+
+/// Withheld ACKs keyed by `(term withheld under, claimed index)`.
+///
+/// The term is part of the key so an entry left by a previous leader can never
+/// absorb a request from a newer one: they land in different slots, and the
+/// stale one is failed on the next release.
+pub(crate) type PendingAcks = BTreeMap<(u64, u64), PendingAck>;
 
 /// Send the terminal response for one withheld ACK — a rebuilt success if
 /// `confirm`, a conflict otherwise — to every accumulated sender.
@@ -118,11 +124,11 @@ fn resolve_pending_ack(
 /// the leader those ACKs were owed to, so that leader's replication worker should
 /// retry now rather than wait out an RPC timeout.
 pub(crate) fn reject_pending_acks(
-    acks: BTreeMap<u64, PendingAck>,
+    acks: PendingAcks,
     node_id: u32,
     current_term: u64,
 ) {
-    for (index, ack) in acks {
+    for ((_, index), ack) in acks {
         resolve_pending_ack(node_id, index, ack, false, current_term);
     }
 }
@@ -492,21 +498,21 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         if pending.is_empty() {
             return;
         }
-        let resolved: Vec<(u64, bool)> = pending
+        let resolved: Vec<((u64, u64), bool)> = pending
             .iter()
-            .filter_map(|(&index, ack)| {
-                if ack.term_when_withheld != current_term {
-                    Some((index, false)) // stale term -> conflict
+            .filter_map(|(&(term, index), _)| {
+                if term != current_term {
+                    Some(((term, index), false)) // stale term -> conflict
                 } else if index <= durable {
-                    Some((index, true)) // durable -> success
+                    Some(((term, index), true)) // durable -> success
                 } else {
                     None // keep waiting
                 }
             })
             .collect();
-        for (index, confirm) in resolved {
-            if let Some(ack) = pending.remove(&index) {
-                resolve_pending_ack(node_id, index, ack, confirm, current_term);
+        for (key, confirm) in resolved {
+            if let Some(ack) = pending.remove(&key) {
+                resolve_pending_ack(node_id, key.1, ack, confirm, current_term);
             }
         }
     }
@@ -701,10 +707,9 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                         match self.pending_append_acks_mut() {
                             Some(pending) => {
                                 pending
-                                    .entry(index)
+                                    .entry((term_when_withheld, index))
                                     .or_insert_with(|| PendingAck {
                                         claimed_term,
-                                        term_when_withheld,
                                         withheld_at: std::time::Instant::now(),
                                         senders: Vec::new(),
                                     })
@@ -1093,7 +1098,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
     /// The withheld-ACK queue, for the roles that keep one (Follower, Learner).
     /// `None` for Candidate and Leader. Carried across a Follower<->Learner
     /// transition by `RaftRole::take_pending_acks` / `restore_pending_acks` (#446).
-    fn pending_append_acks_mut(&mut self) -> Option<&mut BTreeMap<u64, PendingAck>> {
+    fn pending_append_acks_mut(&mut self) -> Option<&mut PendingAcks> {
         None
     }
 }

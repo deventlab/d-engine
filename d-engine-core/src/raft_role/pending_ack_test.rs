@@ -67,10 +67,9 @@ fn withhold(
         .pending_append_acks_mut()
         .expect("role keeps a pending-ack queue")
         .insert(
-            index,
+            (term_when_withheld, index),
             PendingAck {
                 claimed_term,
-                term_when_withheld,
                 withheld_at: std::time::Instant::now(),
                 senders: vec![tx],
             },
@@ -141,10 +140,9 @@ fn test_resolve_answers_every_sender_on_an_index() {
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     let (tx2, mut rx2) = MaybeCloneOneshot::new();
     role.state_mut().pending_append_acks_mut().unwrap().insert(
-        8,
+        (5, 8),
         PendingAck {
             claimed_term: 5,
-            term_when_withheld: 5,
             withheld_at: std::time::Instant::now(),
             senders: vec![tx1, tx2],
         },

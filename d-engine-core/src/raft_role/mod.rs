@@ -50,6 +50,7 @@ use super::InternalEvent;
 use super::RaftContext;
 use crate::Result;
 use crate::TypeConfig;
+use crate::role_state::PendingAcks;
 
 /// The role state focuses solely on its own logic
 /// and does not directly manipulate the underlying storage or network.
@@ -381,9 +382,7 @@ impl<T: TypeConfig> RaftRole<T> {
     /// A withheld ACK describes this node's durable log, not its role. Dropping it
     /// on a `Learner -> Follower` promotion would strand the leader waiting on a
     /// response that never arrives (#446).
-    pub(crate) fn take_pending_acks(
-        &mut self
-    ) -> std::collections::BTreeMap<u64, role_state::PendingAck> {
+    pub(crate) fn take_pending_acks(&mut self) -> PendingAcks {
         self.state_mut()
             .pending_append_acks_mut()
             .map(std::mem::take)
@@ -395,7 +394,7 @@ impl<T: TypeConfig> RaftRole<T> {
     /// entries are failed with a conflict response.
     pub(crate) fn restore_pending_acks(
         &mut self,
-        acks: std::collections::BTreeMap<u64, role_state::PendingAck>,
+        acks: PendingAcks,
     ) {
         let node_id = self.state().node_id();
         let current_term = self.state().current_term();

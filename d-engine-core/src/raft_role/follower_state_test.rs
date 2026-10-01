@@ -3129,6 +3129,99 @@ async fn test_multiple_requests_at_same_threshold_all_receive_response() {
     assert!(response2.is_success());
 }
 
+/// #446: a request from a newer term that claims an index already withheld under an
+/// older term must be answered on its own merits — not inherit the stale entry's
+/// conflict.
+///
+/// term 2: request A claims index 5, withheld.
+/// term 3: a new leader's request B claims the same index 5, withheld.
+/// index 5 becomes durable: A (term 2, now stale) gets a conflict; B (term 3) gets success.
+#[tokio::test]
+async fn test_newer_term_request_on_same_index_is_not_failed_by_stale_pending_ack() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let claimed_index = 5u64;
+    let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let calls_in_mock = calls.clone();
+
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler
+        .expect_handle_append_entries()
+        .times(2)
+        .returning(move |_, _, _| {
+            let term = if calls_in_mock.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                2
+            } else {
+                3
+            };
+            Ok(AppendResponseWithUpdates {
+                response: AppendEntriesResponse::success(
+                    1,
+                    term,
+                    Some(LogId {
+                        term,
+                        index: claimed_index,
+                    }),
+                ),
+                commit_index_update: None,
+            })
+        });
+    context.handlers.replication_handler = replication_handler;
+    context.membership = Arc::new(MockMembership::new());
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state_mut().update_current_term(2);
+
+    let request = |term: u64| AppendEntriesRequest {
+        term,
+        leader_id: 2,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+
+    let (tx_old, mut rx_old) = MaybeCloneOneshot::new();
+    state
+        .handle_inbound_event(
+            InboundEvent::AppendEntries(request(2), vec![tx_old]),
+            &context,
+            internal_event_tx.clone(),
+        )
+        .await
+        .unwrap();
+
+    // A new leader takes over at term 3 before index 5 is durable. The term bump
+    // must come from the request itself (via `commit_hard_state`), as in production.
+    let (tx_new, mut rx_new) = MaybeCloneOneshot::new();
+    state
+        .handle_inbound_event(
+            InboundEvent::AppendEntries(request(3), vec![tx_new]),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    let (flush_tx, _flush_rx) = mpsc::unbounded_channel();
+    state.handle_log_flushed(claimed_index, &context, &flush_tx).await;
+
+    let old = rx_old.try_recv().expect("term-2 request must be answered").unwrap();
+    assert!(
+        !old.is_success(),
+        "term-2 ACK was withheld under a term this node has left — must be a conflict"
+    );
+    let new = rx_new.try_recv().expect("term-3 request must be answered").unwrap();
+    assert!(
+        new.is_success(),
+        "term-3 request claims a durable index under the current term — it must not \
+         be failed by the stale term-2 entry on the same index"
+    );
+}
+
 /// Follower sends ACK immediately for heartbeat (no entries).
 #[tokio::test]
 async fn test_follower_acks_immediately_for_heartbeat() {

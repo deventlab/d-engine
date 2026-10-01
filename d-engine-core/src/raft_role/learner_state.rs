@@ -22,7 +22,7 @@ use crate::alias::MOF;
 use crate::cluster_printer::print_learner_join_success;
 use crate::cluster_printer::print_learner_promoted_to_voter;
 use crate::cluster_printer::print_role_transition_line;
-use crate::role_state::PendingAck;
+use crate::role_state::PendingAcks;
 use crate::role_state::schedule_and_execute_purge;
 use async_trait::async_trait;
 use d_engine_proto::common::LogId;
@@ -91,8 +91,8 @@ pub struct LearnerState<T: TypeConfig> {
     pub last_purged_index: Option<LogId>,
 
     /// AppendEntries responses withheld pending this node's own durable_index.
-    /// See `role_state::PendingAck`.
-    pending_append_acks: BTreeMap<u64, PendingAck>,
+    /// See `role_state::PendingAcks`.
+    pending_append_acks: PendingAcks,
 
     // -- Snapshot Management --
     /// Prevents concurrent snapshot creation
@@ -521,7 +521,7 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         Some(&mut self.pending_purge_upto)
     }
 
-    fn pending_append_acks_mut(&mut self) -> Option<&mut BTreeMap<u64, PendingAck>> {
+    fn pending_append_acks_mut(&mut self) -> Option<&mut PendingAcks> {
         Some(&mut self.pending_append_acks)
     }
 }
