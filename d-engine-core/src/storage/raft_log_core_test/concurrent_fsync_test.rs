@@ -6,6 +6,7 @@
 //! - **Concurrency**: Reset races, out-of-order completion, crash recovery
 
 use crate::test_utils::drain_and_apply_fsync_completions;
+use crate::test_utils::wait_for_durable_index;
 use crate::{MockStorageEngine, MockTypeConfig, RaftLog, RaftLogCore};
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
@@ -64,10 +65,7 @@ async fn test_durable_index_not_advanced_before_fsync_completes() {
     // Release the gate — flush() returns, notify_fsync_completed(1, 1) fires.
     flush_gate.send(()).unwrap();
 
-    // Pick a polling/backoff strategy instead of a fixed sleep,
-    // to avoid flakiness under CI load.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    drain_and_apply_fsync_completions(&raft_log, &mut log_flush_rx);
+    wait_for_durable_index(&raft_log, &mut log_flush_rx, 1, Duration::from_secs(5)).await;
 
     assert_eq!(
         raft_log.durable_index(),
@@ -141,8 +139,13 @@ async fn test_majority_matched_index_uses_durable_not_memory() {
     );
 
     flush_gate.send(()).unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    drain_and_apply_fsync_completions(&raft_log, &mut log_flush_rx);
+    wait_for_durable_index(
+        &raft_log,
+        &mut log_flush_rx,
+        pre_write_durable_index + size,
+        Duration::from_secs(5),
+    )
+    .await;
 
     assert_eq!(
         raft_log.durable_index(),

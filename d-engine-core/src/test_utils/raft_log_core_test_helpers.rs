@@ -215,3 +215,29 @@ pub fn drain_and_apply_fsync_completions<L: RaftLog>(
         }
     }
 }
+
+/// Like `drain_and_apply_fsync_completions`, but waits: applies `FsyncCompleted`
+/// events as they arrive until `durable_index() >= target`. Panics after `timeout`,
+/// so a fsync that never completes fails loudly instead of racing a fixed sleep.
+pub async fn wait_for_durable_index<L: RaftLog>(
+    raft_log: &Arc<L>,
+    log_flush_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::InternalEvent>,
+    target: u64,
+    timeout: std::time::Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while raft_log.durable_index() < target {
+        let event = tokio::time::timeout_at(deadline, log_flush_rx.recv())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "durable_index stuck at {} (< {target}) after {timeout:?}",
+                    raft_log.durable_index()
+                )
+            })
+            .expect("log_flush channel closed before durable_index reached target");
+        if let crate::InternalEvent::FsyncCompleted { mark, sent_at: _ } = event {
+            raft_log.try_advance_durable_index(mark);
+        }
+    }
+}
