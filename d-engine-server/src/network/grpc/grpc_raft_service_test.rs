@@ -780,3 +780,95 @@ async fn test_stream_append_entries_does_not_block_ready_response_behind_pending
          (marker term=111) is still withheld and must not be observed yet, nor block this one"
     );
 }
+
+/// `stream_append_entries` must end the response stream once the inbound stream has
+/// closed and every pending response has been delivered. Otherwise the forwarder task
+/// (which owns `out_tx`) waits on `shutdown` alone, leaking one task + one channel per
+/// closed connection.
+///
+/// One request whose claimed index (3) is already `<= durable_index` (5) is answered
+/// immediately; the synthetic input stream then ends. After the single response, the
+/// output stream must yield `None`. If the loop has no exit for "inbound closed and
+/// nothing pending", the second `next()` never completes and the timeout fires.
+#[tokio::test]
+async fn test_stream_append_entries_closes_response_stream_after_inbound_ends() {
+    tokio::time::pause();
+    let settings = RaftNodeConfig::new().expect("Should succeed to init RaftNodeConfig.");
+    let mut settings = settings.validate().expect("Validate RaftNodeConfig successfully");
+    settings.raft.general_raft_timeout_duration_in_ms = 200;
+    settings.raft.batching.max_batch_size = 1;
+
+    let mut membership = MockMembership::<MockTypeConfig>::new();
+    membership.expect_voters().returning(Vec::new);
+    membership.expect_members().returning(Vec::new);
+    membership.expect_replication_peers().returning(Vec::new);
+    membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_load_hard_state().returning(|| Ok(None));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    raft_log.expect_last_log_id().returning(|| None);
+    raft_log.expect_durable_index().returning(|| 5);
+
+    let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
+    replication_handler
+        .expect_check_append_entries_request_is_legal()
+        .returning(|my_term, _, _| AppendEntriesResponse::success(1, my_term, None));
+    replication_handler.expect_handle_append_entries().returning(|_, _, _| {
+        Ok(AppendResponseWithUpdates {
+            response: AppendEntriesResponse::success(1, 1, Some(LogId { term: 1, index: 3 })),
+            commit_index_update: None,
+        })
+    });
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let node = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_membership(membership)
+        .with_replication_handler(replication_handler)
+        .with_node_config(settings)
+        .build_node();
+    node.set_rpc_ready(true);
+
+    let raft_lock = node.raft_core.clone();
+    let _raft_handle = tokio::spawn(async move {
+        let mut raft = raft_lock.lock().await;
+        let _ = time::timeout(Duration::from_secs(5), raft.run()).await;
+    });
+
+    tokio::time::advance(Duration::from_millis(2)).await;
+    tokio::time::sleep(Duration::from_millis(2)).await;
+
+    let req = AppendEntriesRequest {
+        term: 1,
+        leader_id: 1,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let stream = crate::test_utils::create_test_snapshot_stream(vec![req]);
+
+    let response = node
+        .stream_append_entries(Request::new(stream))
+        .await
+        .expect("stream_append_entries must accept the request");
+    use futures::StreamExt;
+    let mut out_stream = response.into_inner();
+
+    time::timeout(Duration::from_secs(2), out_stream.next())
+        .await
+        .expect("the single ready response must arrive")
+        .expect("stream must yield the response")
+        .expect("must be Ok, not a transport error");
+
+    let end = time::timeout(Duration::from_secs(2), out_stream.next())
+        .await
+        .expect(
+            "response stream must end once inbound closed and nothing is pending — if this \
+             times out, the forwarder task is leaked waiting on shutdown",
+        );
+    assert!(end.is_none(), "no further items expected after the only response");
+}

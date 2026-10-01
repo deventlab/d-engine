@@ -246,6 +246,9 @@ where
                         }
                     }
                 }
+                if !inbound_open && pending.is_empty() {
+                    break;
+                }
             }
         });
 
