@@ -176,7 +176,7 @@ async fn test_tick_removes_stale_learner_when_deadline_fires() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(..)
-        .returning(move |payloads, _, _, _, _| {
+        .returning(move |payloads, _, _, _, _, _| {
             captured_clone.lock().extend(payloads.clone());
             Ok(crate::PrepareResult::default())
         });

@@ -122,6 +122,7 @@ async fn test_prepare_batch_requests_routes_lagging_peer_to_snapshot() {
                 total_voters: 2,
             },
             &ctx,
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -191,6 +192,7 @@ async fn test_prepare_batch_requests_caught_up_peer_gets_append_entries() {
                 total_voters: 2,
             },
             &ctx,
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -261,6 +263,7 @@ async fn test_prepare_batch_requests_splits_snapshot_and_append_peers() {
                 total_voters: 3,
             },
             &ctx,
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -349,6 +352,7 @@ async fn test_prepare_batch_requests_routes_fresh_peer_to_append_when_log_never_
                 total_voters: 2,
             },
             &ctx,
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -420,6 +424,7 @@ async fn test_prepare_batch_requests_routes_never_replicated_peer_to_snapshot_ex
                 total_voters: 2,
             },
             &ctx,
+            &HashMap::new(),
         )
         .await
         .unwrap();

@@ -121,7 +121,7 @@ async fn test_worker_spawned_on_first_request() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
@@ -134,7 +134,7 @@ async fn test_worker_spawned_on_first_request() {
     // worker count assertion, not the transport call count.
     let mut transport = MockTransport::<MockTypeConfig>::new();
     // Worker opens bidi stream at startup (new behavior in #345)
-    transport.expect_open_replication_stream().returning(|_, _, _| {
+    transport.expect_open_replication_stream().returning(|_, _, _, _| {
         let (req_tx, mut req_rx) = tokio::sync::mpsc::channel(128);
         let (resp_tx, resp_rx) = tokio::sync::mpsc::channel(128);
 
@@ -208,7 +208,7 @@ async fn test_worker_reused_on_subsequent_requests() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(2)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
@@ -219,7 +219,7 @@ async fn test_worker_reused_on_subsequent_requests() {
     // because the worker runs in background and may not have executed by teardown.
     let mut transport = MockTransport::<MockTypeConfig>::new();
     // Worker opens bidi stream at startup (new behavior in #345)
-    transport.expect_open_replication_stream().returning(|_, _, _| {
+    transport.expect_open_replication_stream().returning(|_, _, _, _| {
         let (req_tx, mut req_rx) = tokio::sync::mpsc::channel(128);
         let (resp_tx, resp_rx) = tokio::sync::mpsc::channel(128);
 
@@ -289,7 +289,7 @@ async fn test_worker_rebuilt_after_death() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
@@ -300,7 +300,7 @@ async fn test_worker_rebuilt_after_death() {
     // indirectly via AppendResult on internal_event_rx rather than mock call count.
     let mut transport = MockTransport::<MockTypeConfig>::new();
     // Worker opens bidi stream at startup (new behavior in #345)
-    transport.expect_open_replication_stream().returning(|_, _, _| {
+    transport.expect_open_replication_stream().returning(|_, _, _, _| {
         let (req_tx, mut req_rx) = tokio::sync::mpsc::channel(128);
         let (resp_tx, resp_rx) = tokio::sync::mpsc::channel(128);
 
@@ -389,7 +389,7 @@ async fn test_replication_worker_exits_when_handle_dropped() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
@@ -404,7 +404,7 @@ async fn test_replication_worker_exits_when_handle_dropped() {
     let (first_attempt_tx, mut first_attempt_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport.expect_open_replication_stream().returning(move |_, _, _| {
+    transport.expect_open_replication_stream().returning(move |_, _, _, _| {
         let n = call_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
         if n == 1 {
             // Signal test that worker reached the reconnect loop.
@@ -477,7 +477,7 @@ async fn test_worker_reconnects_on_stream_recv_error() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
@@ -488,7 +488,7 @@ async fn test_worker_reconnects_on_stream_recv_error() {
     let call_count_clone = Arc::clone(&call_count);
 
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport.expect_open_replication_stream().returning(move |_, _, _| {
+    transport.expect_open_replication_stream().returning(move |_, _, _, _| {
         let n = call_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
         if n == 1 {
             // First open succeeds, but the stream immediately errors.
@@ -571,7 +571,7 @@ async fn test_replication_worker_sender_closed_emits_peer_stream_error() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
@@ -583,18 +583,21 @@ async fn test_replication_worker_sender_closed_emits_peer_stream_error() {
     let open_count = Arc::new(AtomicUsize::new(0));
     let open_count_clone = Arc::clone(&open_count);
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport.expect_open_replication_stream().times(..).returning(move |_, _, _| {
-        let attempt = open_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
-        let (sender, send_receiver) = tokio::sync::mpsc::channel::<AppendEntriesRequest>(128);
-        if attempt == 1 {
-            drop(send_receiver);
-        }
-        // Keep the ACK stream pending so the biased select! reaches the Append arm
-        // (attempt 1) and the worker parks (later attempts).
-        let receiver =
-            futures::stream::pending::<Result<AppendEntriesResponse, tonic::Status>>().boxed();
-        Ok(crate::ReplicationStream { sender, receiver })
-    });
+    transport
+        .expect_open_replication_stream()
+        .times(..)
+        .returning(move |_, _, _, _| {
+            let attempt = open_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            let (sender, send_receiver) = tokio::sync::mpsc::channel::<AppendEntriesRequest>(128);
+            if attempt == 1 {
+                drop(send_receiver);
+            }
+            // Keep the ACK stream pending so the biased select! reaches the Append arm
+            // (attempt 1) and the worker parks (later attempts).
+            let receiver =
+                futures::stream::pending::<Result<AppendEntriesResponse, tonic::Status>>().boxed();
+            Ok(crate::ReplicationStream { sender, receiver })
+        });
     ctx.transport = Arc::new(transport);
 
     let mut raft_log = MockRaftLog::new();
@@ -612,6 +615,82 @@ async fn test_replication_worker_sender_closed_emits_peer_stream_error() {
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), internal_event_rx.recv())
         .await
         .expect("timed out waiting for PeerStreamError")
+        .expect("event channel closed before PeerStreamError");
+    assert!(
+        matches!(event, InternalEvent::PeerStreamError { peer_id: 2 }),
+        "expected PeerStreamError for peer 2, got {event:?}"
+    );
+}
+
+/// A full (not closed) bidi send buffer must also surface as `PeerStreamError` instead of
+/// parking the worker: the peer is alive but not draining, so the leader has to stop trusting
+/// its optimistic pipeline for this peer rather than silently wedge behind the buffer.
+///
+/// # Covered branch
+/// `stream_sender.try_send(request)` returning `Full`. The sender's receiver stays alive and
+/// undrained, with the channel pre-filled to capacity, so the failure is `Full`, not `Closed`.
+/// With a blocking `send().await` this test would time out instead of seeing the event.
+#[tokio::test]
+#[traced_test]
+async fn test_replication_worker_send_buffer_full_emits_peer_stream_error() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context(
+        "/tmp/test_replication_worker_send_buffer_full_emits_peer_stream_error",
+        graceful_rx,
+        None,
+    );
+
+    ctx.membership = Arc::new(two_peer_membership());
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_request(), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    // First stream: capacity-1 channel, already full, receiver kept alive (never drained).
+    // Later reconnects park on a pending ACK stream so the worker stops reconnecting.
+    let open_count = Arc::new(AtomicUsize::new(0));
+    let open_count_clone = Arc::clone(&open_count);
+    let held_receivers = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let held_receivers_clone = Arc::clone(&held_receivers);
+    let mut transport = MockTransport::<MockTypeConfig>::new();
+    transport
+        .expect_open_replication_stream()
+        .times(..)
+        .returning(move |_, _, _, _| {
+            let attempt = open_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            let (sender, send_receiver) = tokio::sync::mpsc::channel::<AppendEntriesRequest>(1);
+            if attempt == 1 {
+                sender.try_send(AppendEntriesRequest::default()).unwrap();
+            }
+            held_receivers_clone.lock().unwrap().push(send_receiver);
+            let receiver =
+                futures::stream::pending::<Result<AppendEntriesResponse, tonic::Status>>().boxed();
+            Ok(crate::ReplicationStream { sender, receiver })
+        });
+    ctx.transport = Arc::new(transport);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), internal_event_rx.recv())
+        .await
+        .expect("timed out — worker parked on a full send buffer instead of failing fast")
         .expect("event channel closed before PeerStreamError");
     assert!(
         matches!(event, InternalEvent::PeerStreamError { peer_id: 2 }),
@@ -643,7 +722,7 @@ async fn test_worker_forwards_append_result_on_recv() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_request(), 1)],
                 snapshot_targets: vec![],
@@ -654,7 +733,7 @@ async fn test_worker_forwards_append_result_on_recv() {
     let call_count_clone = Arc::clone(&call_count);
 
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport.expect_open_replication_stream().returning(move |_, _, _| {
+    transport.expect_open_replication_stream().returning(move |_, _, _, _| {
         let n = call_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
         if n == 1 {
             // First open succeeds and delivers one successful ACK.
@@ -737,7 +816,7 @@ async fn test_rtt_sample_reset_on_reconnect_after_interrupted_sample() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(16)
-        .returning(move |_, _, _, _, _| {
+        .returning(move |_, _, _, _, _, _| {
             let n = prepare_count_clone.fetch_add(1, Ordering::SeqCst) as u64 + 1;
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_request_with_entry(n), 1)],
@@ -754,7 +833,7 @@ async fn test_rtt_sample_reset_on_reconnect_after_interrupted_sample() {
     let break_rx = std::sync::Mutex::new(Some(break_rx));
 
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport.expect_open_replication_stream().returning(move |_, _, _| {
+    transport.expect_open_replication_stream().returning(move |_, _, _, _| {
         let n = open_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
         if n == 1 {
             let (req_tx, mut req_rx) = mpsc::channel::<AppendEntriesRequest>(128);
@@ -798,7 +877,7 @@ async fn test_rtt_sample_reset_on_reconnect_after_interrupted_sample() {
     // that flag would never clear naturally, so it's reset by hand here to
     // let all 16 attempts actually reach the worker.
     for _ in 0..16 {
-        state.set_peer_in_flight(2, false);
+        state.reset_in_flight(2);
         state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
     }
 
@@ -814,5 +893,75 @@ async fn test_rtt_sample_reset_on_reconnect_after_interrupted_sample() {
     assert!(
         logs_contain("RTT sample reset after reconnect"),
         "reconnecting mid-sample must reset the interrupted RTT sample"
+    );
+}
+
+/// The queue capacity configured in `replication_send_queue_capacity` must be the value the
+/// worker hands to the transport when it opens the stream — otherwise the knob is decorative.
+#[tokio::test]
+#[traced_test]
+async fn test_worker_opens_stream_with_configured_send_queue_capacity() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context(
+        "/tmp/test_worker_opens_stream_with_configured_capacity",
+        graceful_rx,
+        None,
+    );
+    ctx.membership = Arc::new(two_peer_membership());
+
+    let mut cfg = (*ctx.node_config).clone();
+    cfg.raft.replication.replication_send_queue_capacity = 777;
+    ctx.node_config = Arc::new(cfg);
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_request(), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    let seen_capacity = Arc::new(AtomicUsize::new(0));
+    let seen = seen_capacity.clone();
+    let mut transport = MockTransport::<MockTypeConfig>::new();
+    transport.expect_open_replication_stream().returning(move |_, _, _, capacity| {
+        seen.store(capacity, Ordering::SeqCst);
+        let (req_tx, mut req_rx) = tokio::sync::mpsc::channel(capacity);
+        let (resp_tx, resp_rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            while req_rx.recv().await.is_some() {
+                let _ = resp_tx.send(Ok(stub_response())).await;
+            }
+        });
+        Ok(crate::ReplicationStream {
+            sender: req_tx,
+            receiver: tokio_stream::wrappers::ReceiverStream::new(resp_rx).boxed(),
+        })
+    });
+    ctx.transport = Arc::new(transport);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+
+    let (internal_event_tx, _rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while seen_capacity.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        seen_capacity.load(Ordering::SeqCst),
+        777,
+        "the worker must pass replication_send_queue_capacity to open_replication_stream"
     );
 }

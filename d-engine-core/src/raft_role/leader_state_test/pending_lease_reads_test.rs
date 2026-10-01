@@ -89,7 +89,7 @@ async fn setup_multi_voter_expired_lease(
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_prepare_batch_requests()
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 10);
@@ -261,7 +261,7 @@ async fn test_single_voter_lease_read_served_immediately_on_expired_lease() {
     let mut replication_handler = MockReplicationCore::new();
     replication_handler
         .expect_prepare_batch_requests()
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 5);

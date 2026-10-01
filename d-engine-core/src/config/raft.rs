@@ -279,6 +279,15 @@ pub struct ReplicationConfig {
     /// Maximum log entries per single AppendEntries RPC to a follower.
     #[serde(default = "default_entries_per_replication")]
     pub append_entries_max_entries_per_replication: u64,
+
+    /// Max un-acknowledged AppendEntries requests allowed in flight
+    #[serde(default = "default_max_inflight_append_requests")]
+    pub max_inflight_append_requests: usize,
+
+    /// Per-peer send queue capacity (requests). Must be >= max_inflight_append_requests,
+    /// otherwise the queue reports Full before the in-flight window does.
+    #[serde(default = "default_replication_send_queue_capacity")]
+    pub replication_send_queue_capacity: usize,
 }
 
 impl Default for ReplicationConfig {
@@ -286,6 +295,8 @@ impl Default for ReplicationConfig {
         Self {
             rpc_append_entries_clock_in_ms: default_append_interval(),
             append_entries_max_entries_per_replication: default_entries_per_replication(),
+            max_inflight_append_requests: default_max_inflight_append_requests(),
+            replication_send_queue_capacity: default_replication_send_queue_capacity(),
         }
     }
 }
@@ -300,6 +311,18 @@ impl ReplicationConfig {
         if self.append_entries_max_entries_per_replication == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "append_entries_max_entries_per_replication must be > 0".into(),
+            )));
+        }
+
+        if self.max_inflight_append_requests == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "max_inflight_append_requests must be > 0".into(),
+            )));
+        }
+
+        if self.replication_send_queue_capacity < self.max_inflight_append_requests {
+            return Err(Error::Config(ConfigError::Message(
+                "replication_send_queue_capacity must be >= max_inflight_append_requests".into(),
             )));
         }
 
@@ -375,6 +398,13 @@ fn default_max_merge_entries() -> usize {
 
 fn default_entries_per_replication() -> u64 {
     100
+}
+
+fn default_max_inflight_append_requests() -> usize {
+    256
+}
+fn default_replication_send_queue_capacity() -> usize {
+    1024
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ElectionConfig {

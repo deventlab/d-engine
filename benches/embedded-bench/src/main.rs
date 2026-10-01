@@ -242,6 +242,20 @@ async fn start_metrics_server(port: u16) {
             MS_BUCKETS,
         )
         .expect("failed to configure _ms buckets")
+        .set_buckets_for_metric(
+            metrics_exporter_prometheus::Matcher::Full(
+                "core.raft.peer.in_flight_at_dispatch".into(),
+            ),
+            &[0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0],
+        )
+        .expect("buckets")
+        .set_buckets_for_metric(
+            metrics_exporter_prometheus::Matcher::Full(
+                "core.raft.replication.entries_per_request".into(),
+            ),
+            &[1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0],
+        )
+        .expect("buckets")
         .install()
         .expect("failed to start Prometheus metrics exporter");
 }
@@ -523,6 +537,9 @@ async fn run_local_benchmark(cli: Cli) {
 
     println!("Leader elected: {}", leader_info.leader_id);
     println!("Node ID: {}", engine.node_id());
+
+    // Let every peer's replication stream settle before load starts; see #450 startup race.
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Signal file used to coordinate follower auto-shutdown in batch mode
     let done_signal_path = "/tmp/embedded-bench-done";

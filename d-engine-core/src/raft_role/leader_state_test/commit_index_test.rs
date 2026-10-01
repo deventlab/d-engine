@@ -119,7 +119,7 @@ async fn test_single_voter_commit_must_not_advance_before_durable() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (req, _rx) = write_request();
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
@@ -164,7 +164,7 @@ async fn test_single_voter_commit_advances_after_durable() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (req, _rx) = write_request();
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
@@ -238,7 +238,7 @@ async fn test_multi_voter_commit_respects_quorum_result() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
     ctx.handlers
         .replication_handler
         .expect_handle_success_response()
@@ -307,6 +307,7 @@ async fn test_handle_append_result_computes_quorum_once_per_ack() {
     let call_count = Arc::new(AtomicU64::new(0));
     let call_count_clone = call_count.clone();
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 1);
     raft_log.expect_calculate_majority_matched_index().returning(move |_, _, _| {
         call_count_clone.fetch_add(1, Ordering::Relaxed);
         Some(1)

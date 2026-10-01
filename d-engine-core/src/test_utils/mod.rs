@@ -19,6 +19,12 @@ mod log_capture;
 #[cfg(any(test, feature = "__test_support"))]
 pub use log_capture::*;
 
+#[cfg(any(test, feature = "__test_support"))]
+mod metrics_capture;
+
+#[cfg(any(test, feature = "__test_support"))]
+pub use metrics_capture::MetricsCapture;
+
 pub use common::*;
 pub use entry_builder::*;
 pub use mock::*;

@@ -414,3 +414,92 @@ fn test_startup_quorum_timeout_is_developer_configurable() {
         Duration::from_secs(90)
     );
 }
+
+#[test]
+fn test_max_inflight_append_requests_default_is_256() {
+    let config = RaftConfig::default();
+    assert_eq!(config.replication.max_inflight_append_requests, 256);
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn test_max_inflight_append_requests_zero_is_invalid() {
+    let mut config = RaftConfig::default();
+    config.replication.max_inflight_append_requests = 0;
+
+    let err = config.validate().expect_err("a zero window must be rejected");
+    assert!(
+        err.to_string().contains("max_inflight_append_requests"),
+        "the error must name the offending field, got: {err}"
+    );
+}
+
+#[test]
+fn test_max_inflight_append_requests_missing_key_uses_default() {
+    // A config file written before this key existed must still load with the default window.
+    let config: RaftConfig = load_toml("[replication]\nrpc_append_entries_clock_in_ms = 100\n");
+    assert_eq!(config.replication.max_inflight_append_requests, 256);
+}
+
+#[test]
+fn test_max_inflight_append_requests_explicit_value_is_honored() {
+    let config: RaftConfig = load_toml("[replication]\nmax_inflight_append_requests = 3\n");
+    assert_eq!(config.replication.max_inflight_append_requests, 3);
+}
+
+#[test]
+fn test_replication_send_queue_capacity_default_is_1024() {
+    let config = RaftConfig::default();
+    assert_eq!(config.replication.replication_send_queue_capacity, 1024);
+}
+
+#[test]
+fn test_replication_send_queue_capacity_default_covers_default_window() {
+    let config = RaftConfig::default();
+    assert!(
+        config.replication.replication_send_queue_capacity
+            >= config.replication.max_inflight_append_requests,
+        "defaults must not report Full before the in-flight window does"
+    );
+}
+
+#[test]
+fn test_replication_send_queue_capacity_below_window_is_invalid() {
+    let mut config = RaftConfig::default();
+    config.replication.max_inflight_append_requests = 256;
+    config.replication.replication_send_queue_capacity = 255;
+    let err = config.validate().expect_err("capacity below the window must be rejected");
+    assert!(
+        err.to_string().contains("replication_send_queue_capacity"),
+        "error must name the offending key, got: {err}"
+    );
+}
+
+#[test]
+fn test_replication_send_queue_capacity_equal_to_window_is_valid() {
+    let mut config = RaftConfig::default();
+    config.replication.max_inflight_append_requests = 256;
+    config.replication.replication_send_queue_capacity = 256;
+    config.validate().expect("capacity == window is the tightest valid setting");
+}
+
+#[test]
+fn test_replication_send_queue_capacity_missing_key_uses_default() {
+    let config: RaftConfig = load_toml("[replication]\nmax_inflight_append_requests = 3\n");
+    assert_eq!(config.replication.replication_send_queue_capacity, 1024);
+}
+
+#[test]
+fn test_replication_send_queue_capacity_explicit_value_is_honored() {
+    let config: RaftConfig = load_toml("[replication]\nreplication_send_queue_capacity = 2048\n");
+    assert_eq!(config.replication.replication_send_queue_capacity, 2048);
+}
+
+fn load_toml(text: &str) -> RaftConfig {
+    config::Config::builder()
+        .add_source(config::File::from_str(text, config::FileFormat::Toml))
+        .build()
+        .expect("toml must parse")
+        .try_deserialize()
+        .expect("config must deserialize")
+}

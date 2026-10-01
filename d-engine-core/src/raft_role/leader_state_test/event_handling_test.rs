@@ -524,7 +524,7 @@ async fn test_handle_client_propose_success() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
     context.storage.raft_log = Arc::new(raft_log);
@@ -578,7 +578,7 @@ async fn test_handle_client_read_linearizable_failure() {
     replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::Fatal("".to_string())));
+        .returning(|_, _, _, _, _, _| Err(Error::Fatal("".to_string())));
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -645,7 +645,7 @@ async fn test_handle_client_read_linearizable_success() {
     replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     // Mock state machine handler: read_from_state_machine called when ApplyCompleted fires.
     let mut state_machine_handler = MockStateMachineHandler::new();
@@ -768,7 +768,7 @@ async fn test_handle_client_read_encounters_higher_term() {
     replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     // Initializing Shutdown Signal
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -914,7 +914,7 @@ async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
     replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut node_config = RaftNodeConfig::default();

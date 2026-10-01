@@ -41,3 +41,6 @@ mod quorum_calculation_test;
 
 #[cfg(test)]
 mod snapshot_trigger_test;
+
+#[cfg(test)]
+mod heartbeat_match_index_test;

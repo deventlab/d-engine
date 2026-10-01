@@ -66,7 +66,7 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
         .expect_prepare_batch_requests()
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;

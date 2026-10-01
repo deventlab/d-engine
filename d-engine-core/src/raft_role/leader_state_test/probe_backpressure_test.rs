@@ -35,6 +35,7 @@ use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
 use crate::network::PeerUpdate;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::{PeerReplicationState, RaftRoleState};
+use crate::test_utils::MetricsCapture;
 use crate::test_utils::mock::{MockTypeConfig, mock_raft_context};
 
 /// Two-voter membership (peers 2 & 3) so the cluster is multi-voter — a single-voter leader
@@ -130,7 +131,7 @@ async fn test_probe_peer_dispatches_next_probe_after_reject() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(2)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_probe_request(), 1)],
                 snapshot_targets: vec![],
@@ -243,7 +244,7 @@ async fn test_probe_peer_with_pending_ack_receives_no_second_dispatch() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(2)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_probe_request(), 1)],
                 snapshot_targets: vec![],
@@ -347,7 +348,7 @@ async fn test_probe_peer_dispatches_next_probe_after_unparseable_response() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(2)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_probe_request(), 1)],
                 snapshot_targets: vec![],
@@ -391,7 +392,7 @@ async fn test_heartbeat_does_not_latch_gate() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(2)
-        .returning(move |_, _, _, _, _| {
+        .returning(move |_, _, _, _, _, _| {
             let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let req = if n == 0 {
                 stub_request()
@@ -430,7 +431,7 @@ async fn test_heartbeat_bypasses_gate_while_probe_in_flight() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(2)
-        .returning(move |_, _, _, _, _| {
+        .returning(move |_, _, _, _, _, _| {
             let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let req = if n == 0 {
                 stub_probe_request()
@@ -468,7 +469,7 @@ async fn test_stale_term_response_keeps_gate_latched() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(2)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::PrepareResult {
                 append_requests: vec![(2, stub_probe_request(), 1)],
                 snapshot_targets: vec![],
@@ -497,5 +498,543 @@ async fn test_stale_term_response_keeps_gate_latched() {
     assert!(
         task_rx.try_recv().is_err(),
         "a stale-term response must not reopen the gate — the outstanding probe is still in flight"
+    );
+}
+
+/// Completes the story `test_stale_term_response_keeps_gate_latched` deliberately stops short
+/// of: a stale response must not release the slot, but the *real* (term-matching) response for
+/// the same outstanding request must still release it once it arrives. Without this, "stale
+/// responses don't release" could be (mis)implemented as "nothing ever releases".
+///
+/// # Scenario
+/// - Batch 1 dispatched to peer 2 — gate latches (Probe, window=1).
+/// - A stale-term response arrives (term 0 < leader_term 1) — ignored, gate stays latched
+///   (same setup as the sibling test above).
+/// - The *real* response for that outstanding probe arrives (term 1, a reject) — this is the
+///   response Phase 5 actually sent the probe to elicit, so it must release the slot.
+/// - Batch 2 must now dispatch — proves the slot was released by the real response, not
+///   permanently stuck after the stale one was ignored.
+#[tokio::test]
+#[traced_test]
+async fn test_real_response_after_stale_still_releases_the_gate() {
+    let (mut ctx, mut state, mut task_rx, internal_event_tx) =
+        setup_gate_harness("/tmp/test_real_response_after_stale_still_releases_the_gate").await;
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(2)
+        .returning(|_, _, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_probe_request(), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+    ctx.handlers
+        .replication_handler
+        .expect_handle_conflict_response()
+        .returning(|_, _, _, _| {
+            Ok(PeerUpdate {
+                match_index: None,
+                next_index: 1,
+                success: false,
+            })
+        });
+
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    assert!(task_rx.try_recv().is_ok(), "first probe must be dispatched");
+    assert_eq!(
+        state.in_flight_count(2),
+        1,
+        "setup: probe dispatch must occupy the one Probe-window slot"
+    );
+
+    // Stale response: term 0 < leader_term 1 — must not release the slot.
+    state
+        .handle_append_result(
+            2,
+            Ok(AppendEntriesResponse {
+                node_id: 2,
+                term: 0,
+                result: None,
+            }),
+            &ctx,
+            &internal_event_tx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state.in_flight_count(2),
+        1,
+        "a stale-term response must not release the slot"
+    );
+
+    // The real response to the original probe: term matches, a reject (conflict) — this must
+    // release the slot regardless of accept/reject, because it genuinely resolves the request
+    // Phase 5 was tracking.
+    state
+        .handle_append_result(
+            2,
+            Ok(AppendEntriesResponse {
+                node_id: 2,
+                term: 1,
+                result: Some(append_entries_response::Result::Conflict(ConflictResult {
+                    conflict_term: None,
+                    conflict_index: Some(1),
+                })),
+            }),
+            &ctx,
+            &internal_event_tx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state.in_flight_count(2),
+        0,
+        "the real (term-matching) response must release the slot the stale one could not"
+    );
+
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    assert!(
+        task_rx.try_recv().is_ok(),
+        "the slot was released by the real response, so the corrected probe must go out"
+    );
+}
+
+/// `record_in_flight` must never fire for a heartbeat dispatch, in `Replicate` state exactly
+/// as much as in `Probe` state — the "heartbeats occupy zero window slots" contract is
+/// state-independent. Without this, repeated heartbeats to an idle Replicate-state peer would
+/// silently fill its window (default 256) and eventually start gating genuine data sends, even
+/// though nothing was ever un-acknowledged.
+///
+/// # Scenario
+/// - Peer 2 in `Replicate` state (window = configured `max_inflight_append_requests`).
+/// - Ten consecutive heartbeat batches (empty entries) are dispatched.
+/// - `in_flight_count` must remain 0 throughout — heartbeats never occupied a slot.
+#[tokio::test]
+#[traced_test]
+async fn test_heartbeat_in_replicate_state_does_not_occupy_window() {
+    let (mut ctx, mut state, mut task_rx, internal_event_tx) =
+        setup_gate_harness("/tmp/test_heartbeat_in_replicate_state_does_not_occupy_window").await;
+
+    state.set_peer_replication_state(2, PeerReplicationState::Replicate);
+    state.next_index.insert(2, 1);
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(10)
+        .returning(|_, _, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                // Empty entries: build_append_request's natural heartbeat fallback shape.
+                append_requests: vec![(2, stub_request(), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    for i in 0..10 {
+        state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+        assert!(
+            task_rx.try_recv().is_ok(),
+            "heartbeat #{i} must still be dispatched"
+        );
+        assert_eq!(
+            state.in_flight_count(2),
+            0,
+            "heartbeat #{i} must not occupy a window slot in Replicate state"
+        );
+    }
+}
+
+/// Ledger invariant for any "dispatched but lost" path (stream torn down, send buffer full,
+/// or a future drop-on-unreachable): Phase 5 writes `next_index` and `in_flight` *before* the
+/// request leaves the leader, so recovering from a lost request must rewind both.
+///
+/// # Scenario
+/// - Peer 2 in `Replicate`, `match_index = 5`. One data request (1 entry, effective next 6) is
+///   dispatched: `next_index` advances optimistically to 7 and `in_flight` becomes 1.
+/// - The request is lost: `handle_peer_stream_error(2)`.
+/// - Expected: `Probe`, `in_flight = 0`, `next_index = match_index + 1 = 6`, so the same range is
+///   offered again instead of being skipped.
+#[tokio::test]
+#[traced_test]
+async fn test_lost_dispatch_rewinds_next_index_and_in_flight() {
+    let (mut ctx, mut state, mut task_rx, internal_event_tx) =
+        setup_gate_harness("/tmp/test_lost_dispatch_rewinds_next_index_and_in_flight").await;
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_probe_request(), 6)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    state.set_peer_replication_state(2, PeerReplicationState::Replicate);
+    state.match_index.insert(2, 5);
+    state.next_index.insert(2, 6);
+
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    assert!(
+        task_rx.try_recv().is_ok(),
+        "the data request must be dispatched"
+    );
+    assert_eq!(
+        state.next_index.get(&2).copied(),
+        Some(7),
+        "setup: Replicate advances next_index optimistically at dispatch"
+    );
+    assert_eq!(
+        state.in_flight_count(2),
+        1,
+        "setup: dispatch occupies one slot"
+    );
+
+    state.handle_peer_stream_error(2);
+
+    assert_eq!(state.peer_replication_state(2), PeerReplicationState::Probe);
+    assert_eq!(
+        state.in_flight_count(2),
+        0,
+        "the lost request's slot must be released, or the gate stays closed"
+    );
+    assert_eq!(
+        state.next_index.get(&2).copied(),
+        Some(6),
+        "next_index must rewind to match_index + 1 so the lost range is offered again"
+    );
+}
+
+/// Two-peer harness: both peers' worker channels are held by the test, so each peer's dispatch is
+/// observable independently.
+async fn setup_two_worker_harness(
+    path: &str
+) -> (
+    crate::raft_context::RaftContext<MockTypeConfig>,
+    LeaderState<MockTypeConfig>,
+    mpsc::UnboundedReceiver<super::ReplicationTask>,
+    mpsc::UnboundedReceiver<super::ReplicationTask>,
+    mpsc::UnboundedSender<InternalEvent>,
+) {
+    let (ctx, mut state, task_rx2, internal_event_tx) = setup_gate_harness(path).await;
+    let (task_tx3, task_rx3) = mpsc::unbounded_channel();
+    state.replication_workers.insert(
+        3,
+        super::ReplicationWorkerHandle {
+            task_tx: task_tx3,
+            snapshot_failure_count: 0,
+            snapshot_next_retry_at: None,
+        },
+    );
+    (ctx, state, task_rx2, task_rx3, internal_event_tx)
+}
+
+/// One peer's closed window must not block another peer's dispatch.
+///
+/// # Scenario
+/// - Peer 2 is `Probe` (window 1) with its one probe unanswered; peer 3 is `Replicate`.
+/// - Every batch offers a data request to both peers.
+/// - Expected: batch 1 reaches both; batch 2 is withheld from peer 2 (window full) but still
+///   reaches peer 3.
+#[tokio::test]
+#[traced_test]
+async fn test_gated_peer_does_not_block_other_peer() {
+    let (mut ctx, mut state, mut rx2, mut rx3, internal_event_tx) =
+        setup_two_worker_harness("/tmp/test_gated_peer_does_not_block_other_peer").await;
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(2)
+        .returning(|_, _, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_probe_request(), 1), (3, stub_probe_request(), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    state.set_peer_replication_state(3, PeerReplicationState::Replicate);
+
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    assert!(rx2.try_recv().is_ok(), "batch 1 must reach peer 2");
+    assert!(rx3.try_recv().is_ok(), "batch 1 must reach peer 3");
+
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    assert!(
+        rx2.try_recv().is_err(),
+        "peer 2's window is full, batch 2 must be withheld from it"
+    );
+    assert!(
+        rx3.try_recv().is_ok(),
+        "peer 2 being gated must not stop peer 3 from receiving batch 2"
+    );
+}
+
+/// A stream failure on one peer must leave the other peer's ledger untouched.
+///
+/// # Scenario
+/// - Peer 2 and peer 3 are both `Replicate` with a request in flight; `next_index` recorded.
+/// - `handle_peer_stream_error(2)`.
+/// - Expected: peer 2 is demoted and cleared; peer 3 keeps its state, in-flight count and
+///   `next_index`.
+#[tokio::test]
+#[traced_test]
+async fn test_stream_error_on_one_peer_leaves_other_peer_untouched() {
+    let (_ctx, mut state, _rx2, _rx3, _tx) =
+        setup_two_worker_harness("/tmp/test_stream_error_on_one_peer_leaves_other_untouched").await;
+
+    for peer in [2_u32, 3] {
+        state.set_peer_replication_state(peer, PeerReplicationState::Replicate);
+        state.match_index.insert(peer, 5);
+        state.next_index.insert(peer, 9);
+        state.record_in_flight(peer, 6);
+    }
+
+    state.handle_peer_stream_error(2);
+
+    assert_eq!(state.peer_replication_state(2), PeerReplicationState::Probe);
+    assert_eq!(state.in_flight_count(2), 0);
+    assert_eq!(
+        state.peer_replication_state(3),
+        PeerReplicationState::Replicate,
+        "peer 3 must not be demoted by peer 2's failure"
+    );
+    assert_eq!(
+        state.in_flight_count(3),
+        1,
+        "peer 3's in-flight slot must survive"
+    );
+    assert_eq!(
+        state.next_index.get(&3).copied(),
+        Some(9),
+        "peer 3's next_index must not be rewound"
+    );
+}
+
+/// End-to-end window behavior in `Replicate`: several requests may be in flight without any ACK
+/// (not serialized to one), and the dispatch that would exceed the window is withheld.
+///
+/// # Scenario
+/// - `max_inflight_append_requests = 3`, peer 2 in `Replicate`, every batch offers a data request.
+/// - Batches 1..3 are all dispatched with no response in between (in flight 1, 2, 3).
+/// - Batch 4 would be the fourth outstanding request: it must be withheld, in flight stays 3.
+#[tokio::test]
+#[traced_test]
+async fn test_replicate_dispatches_up_to_window_then_withholds() {
+    let (mut ctx, mut state, mut task_rx, internal_event_tx) =
+        setup_gate_harness("/tmp/test_replicate_dispatches_up_to_window_then_withholds").await;
+
+    let mut cfg = (*ctx.node_config).clone();
+    cfg.raft.replication.max_inflight_append_requests = 3;
+    state.node_config = Arc::new(cfg);
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(4)
+        .returning(|_, _, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_probe_request(), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    state.set_peer_replication_state(2, PeerReplicationState::Replicate);
+    state.next_index.insert(2, 1);
+
+    for expected in 1..=3usize {
+        state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+        assert!(
+            task_rx.try_recv().is_ok(),
+            "request {expected} must be dispatched without waiting for an ACK"
+        );
+        assert_eq!(state.in_flight_count(2), expected);
+    }
+
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    assert!(
+        task_rx.try_recv().is_err(),
+        "the fourth outstanding request exceeds the window and must be withheld"
+    );
+    assert_eq!(
+        state.in_flight_count(2),
+        3,
+        "a withheld request must not occupy a slot"
+    );
+}
+
+/// Window=3, four dispatch attempts: the first three are recorded (occupancy before each
+/// dispatch is 0,1,2, one entry each), the fourth is withheld and is counted as gated but
+/// must not add a histogram sample (it never dispatched).
+#[tokio::test]
+#[traced_test]
+async fn test_dispatch_metrics_record_occupancy_entries_and_gated_count() {
+    let capture = MetricsCapture::new();
+    let _guard = metrics::set_default_local_recorder(&capture);
+
+    let (mut ctx, mut state, mut task_rx, internal_event_tx) =
+        setup_gate_harness("/tmp/test_dispatch_metrics_record_occupancy").await;
+
+    let mut cfg = (*ctx.node_config).clone();
+    cfg.raft.replication.max_inflight_append_requests = 3;
+    state.node_config = Arc::new(cfg);
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(4)
+        .returning(|_, _, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, stub_probe_request(), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    state.set_peer_replication_state(2, PeerReplicationState::Replicate);
+    state.next_index.insert(2, 1);
+
+    for _ in 0..4 {
+        state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    }
+    assert!(task_rx.try_recv().is_ok(), "sanity: dispatches happened");
+
+    assert_eq!(
+        capture.histogram("core.raft.peer.in_flight_at_dispatch", &[("peer_id", "2")]),
+        vec![0.0, 1.0, 2.0],
+        "occupancy is sampled before each of the 3 real dispatches; the withheld one adds nothing"
+    );
+    assert_eq!(
+        capture.histogram("core.raft.replication.entries_per_request", &[]),
+        vec![1.0, 1.0, 1.0],
+        "one sample per real dispatch, equal to the request's entry count"
+    );
+    assert_eq!(
+        capture.counter("core.raft.peer.dispatch_gated_total", &[("peer_id", "2")]),
+        1,
+        "exactly the fourth attempt was withheld by the window"
+    );
+}
+
+/// A heartbeat (empty entries) occupies no window slot, so it must neither be counted as
+/// gated when the window is full nor contribute to the dispatch histograms.
+#[tokio::test]
+#[traced_test]
+async fn test_heartbeat_emits_no_dispatch_metrics_even_when_window_full() {
+    let capture = MetricsCapture::new();
+    let _guard = metrics::set_default_local_recorder(&capture);
+
+    let (mut ctx, mut state, _task_rx, internal_event_tx) =
+        setup_gate_harness("/tmp/test_heartbeat_emits_no_dispatch_metrics").await;
+
+    let mut cfg = (*ctx.node_config).clone();
+    cfg.raft.replication.max_inflight_append_requests = 1;
+    state.node_config = Arc::new(cfg);
+
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, AppendEntriesRequest::default(), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    state.set_peer_replication_state(2, PeerReplicationState::Replicate);
+    state.next_index.insert(2, 1);
+    state.record_in_flight(2, 1);
+    assert!(state.should_gate_by_inflight(2), "setup: window is full");
+
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+
+    assert_eq!(
+        capture.counter("core.raft.peer.dispatch_gated_total", &[("peer_id", "2")]),
+        0,
+        "a heartbeat bypasses the gate, so it is not a gated dispatch"
+    );
+    assert!(
+        capture
+            .histogram("core.raft.peer.in_flight_at_dispatch", &[("peer_id", "2")])
+            .is_empty(),
+        "heartbeats are not window dispatches"
+    );
+    assert!(
+        capture.histogram("core.raft.replication.entries_per_request", &[]).is_empty(),
+        "an empty heartbeat must not skew the entries-per-request distribution"
+    );
+}
+
+/// The two config gauges are the reference line for reading occupancy / batch-size
+/// distributions; they must carry the values the leader was actually built with.
+#[tokio::test]
+#[traced_test]
+async fn test_config_gauges_reflect_configured_values() {
+    let capture = MetricsCapture::new();
+    let _guard = metrics::set_default_local_recorder(&capture);
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let ctx = mock_raft_context("/tmp/test_config_gauges_reflect_values", graceful_rx, None);
+    let mut cfg = (*ctx.node_config).clone();
+    cfg.raft.replication.max_inflight_append_requests = 7;
+    cfg.raft.replication.append_entries_max_entries_per_replication = 42;
+    cfg.raft.replication.replication_send_queue_capacity = 900;
+
+    let _state = LeaderState::<MockTypeConfig>::new(1, Arc::new(cfg));
+
+    assert_eq!(
+        capture.gauge("core.raft.config.max_inflight_append_requests", &[]),
+        Some(7.0)
+    );
+    assert_eq!(
+        capture.gauge(
+            "core.raft.config.append_entries_max_entries_per_replication",
+            &[]
+        ),
+        Some(42.0)
+    );
+    assert_eq!(
+        capture.gauge("core.raft.config.replication_send_queue_capacity", &[]),
+        Some(900.0)
+    );
+}
+
+/// Real elections build the leader via `From<&CandidateState>`, not `LeaderState::new`,
+/// so the config gauges must be set on that path too or they never reach a running cluster.
+#[tokio::test]
+#[traced_test]
+async fn test_config_gauges_are_set_when_leader_is_built_from_candidate() {
+    let capture = MetricsCapture::new();
+    let _guard = metrics::set_default_local_recorder(&capture);
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let ctx = mock_raft_context("/tmp/test_config_gauges_from_candidate", graceful_rx, None);
+    let mut cfg = (*ctx.node_config).clone();
+    cfg.raft.replication.max_inflight_append_requests = 7;
+    cfg.raft.replication.append_entries_max_entries_per_replication = 42;
+    cfg.raft.replication.replication_send_queue_capacity = 900;
+
+    let candidate =
+        crate::raft_role::candidate_state::CandidateState::<MockTypeConfig>::new(1, Arc::new(cfg));
+    let _leader = LeaderState::<MockTypeConfig>::from(&candidate);
+
+    assert_eq!(
+        capture.gauge("core.raft.config.max_inflight_append_requests", &[]),
+        Some(7.0),
+        "production builds the leader via From<&CandidateState>; gauge must be set there"
+    );
+    assert_eq!(
+        capture.gauge(
+            "core.raft.config.append_entries_max_entries_per_replication",
+            &[]
+        ),
+        Some(42.0)
+    );
+    assert_eq!(
+        capture.gauge("core.raft.config.replication_send_queue_capacity", &[]),
+        Some(900.0)
     );
 }

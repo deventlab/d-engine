@@ -240,12 +240,12 @@ async fn test_handle_rpc_services_successfully() {
             commit_index_update: Some(1),
         })
     });
-    replication_handler
-        .expect_prepare_batch_requests()
-        .returning(move |payloads, _, _, _, _| {
+    replication_handler.expect_prepare_batch_requests().returning(
+        move |payloads, _, _, _, _, _| {
             li_prepare.fetch_add(payloads.len() as u64, Ordering::Relaxed);
             Ok(d_engine_core::PrepareResult::default())
-        });
+        },
+    );
     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
     election_handler
         .expect_broadcast_vote_requests()

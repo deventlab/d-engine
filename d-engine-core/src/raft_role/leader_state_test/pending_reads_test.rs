@@ -206,7 +206,7 @@ async fn test_multi_voter_fast_path_linear_read_is_queued() {
     replication
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (mut state, context, internal_event_tx, _internal_event_rx) = setup_multi_voter(
         "/tmp/test_multi_voter_fast_path_linear_read_is_queued",
@@ -572,7 +572,7 @@ async fn test_linearizable_read_served_immediately_with_valid_lease_in_multi_vot
     replication
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (mut state, context, internal_event_tx, _internal_event_rx) = setup_multi_voter(
         "/tmp/test_linearizable_read_served_immediately_with_valid_lease_in_multi_voter",
@@ -644,7 +644,7 @@ async fn test_linearizable_read_queued_when_sm_behind_despite_valid_lease() {
     replication
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (mut state, context, internal_event_tx, _internal_event_rx) = setup_multi_voter(
         "/tmp/test_linearizable_read_queued_when_sm_behind_despite_valid_lease",
@@ -714,7 +714,7 @@ async fn test_linearizable_read_not_served_when_lease_expired_in_multi_voter() {
     replication
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (mut state, context, internal_event_tx, _internal_event_rx) = setup_multi_voter(
         "/tmp/test_linearizable_read_not_served_when_lease_expired_in_multi_voter",

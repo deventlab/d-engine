@@ -167,7 +167,7 @@ fn open_stream_capturing_appends() -> (
 ) {
     let (append_tx, append_rx) = mpsc::channel::<AppendEntriesRequest>(128);
     let mut transport = MockTransport::<MockTypeConfig>::new();
-    transport.expect_open_replication_stream().returning(move |_, _, _| {
+    transport.expect_open_replication_stream().returning(move |_, _, _, _| {
         let stream = futures::stream::pending().boxed();
         Ok(crate::ReplicationStream {
             sender: append_tx.clone(),
@@ -202,7 +202,7 @@ async fn test_worker_handles_snapshot_task_and_emits_completed_event() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::replication::PrepareResult {
                 append_requests: vec![],
                 snapshot_targets: vec![2],
@@ -211,7 +211,7 @@ async fn test_worker_handles_snapshot_task_and_emits_completed_event() {
 
     let mut transport = MockTransport::<MockTypeConfig>::new();
     transport.expect_send_snapshot().times(1).returning(|_, _, _, _, _, _| Ok(()));
-    transport.expect_open_replication_stream().returning(|_, _, _| {
+    transport.expect_open_replication_stream().returning(|_, _, _, _| {
         let (tx, _rx) = mpsc::channel(128);
         let stream = futures::stream::empty().boxed();
         Ok(crate::ReplicationStream {
@@ -265,7 +265,7 @@ async fn test_phase6_skips_redispatch_when_snapshot_already_in_flight() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::replication::PrepareResult {
                 append_requests: vec![],
                 snapshot_targets: vec![2],
@@ -275,7 +275,7 @@ async fn test_phase6_skips_redispatch_when_snapshot_already_in_flight() {
     let mut transport = MockTransport::<MockTypeConfig>::new();
     // Must NEVER be called — the leader-side check must skip dispatch entirely.
     transport.expect_send_snapshot().times(0);
-    transport.expect_open_replication_stream().returning(|_, _, _| {
+    transport.expect_open_replication_stream().returning(|_, _, _, _| {
         let (tx, _rx) = mpsc::channel(128);
         let stream = futures::stream::empty().boxed();
         Ok(crate::ReplicationStream {
@@ -316,7 +316,7 @@ async fn test_phase6_snapshot_dispatch_sets_snapshot_state() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::replication::PrepareResult {
                 append_requests: vec![],
                 snapshot_targets: vec![2],
@@ -325,7 +325,7 @@ async fn test_phase6_snapshot_dispatch_sets_snapshot_state() {
 
     let mut transport = MockTransport::<MockTypeConfig>::new();
     transport.expect_send_snapshot().times(1).returning(|_, _, _, _, _, _| Ok(()));
-    transport.expect_open_replication_stream().returning(|_, _, _| {
+    transport.expect_open_replication_stream().returning(|_, _, _, _| {
         let (tx, _rx) = mpsc::channel(128);
         let stream = futures::stream::empty().boxed();
         Ok(crate::ReplicationStream {
@@ -372,7 +372,7 @@ async fn test_phase5_skips_append_and_leaves_next_index_untouched_while_peer_in_
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::replication::PrepareResult {
                 append_requests: vec![(2, stub_append_request(), 1)],
                 snapshot_targets: vec![],
@@ -417,28 +417,22 @@ async fn test_phase5_skips_append_and_leaves_next_index_untouched_while_peer_in_
 /// - Expected: the request reaches the worker's bidi stream unmodified.
 #[tokio::test]
 async fn test_worker_forwards_any_append_task_it_is_given_without_inspecting_state() {
-    let (mut state, ctx) = new_leader_and_ctx(
+    let (mut state, mut ctx) = new_leader_and_ctx(
         "/tmp/test_worker_forwards_any_append_task_it_is_given_without_inspecting_state",
     );
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
     state.set_peer_replication_state(2, PeerReplicationState::Snapshot);
 
     let (transport, mut append_rx) = open_stream_capturing_appends();
+    ctx.transport = Arc::new(transport);
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Bypasses process_batch/Phase 5 on purpose — see doc comment above.
     state.send_to_worker_or_spawn(
         2,
         super::ReplicationTask::Append(stub_append_request(), tokio::time::Instant::now()),
-        super::ReplicationWorkerConfig {
-            transport: Arc::new(transport),
-            membership: ctx.membership.clone(),
-            retry_policies: ctx.node_config.retry.clone(),
-            response_compress_enabled: ctx.node_config.raft.rpc_compression.replication_response,
-            internal_event_tx,
-            state_machine_handler: ctx.state_machine_handler().clone(),
-            snapshot_config: ctx.node_config.raft.snapshot.clone(),
-        },
+        &ctx,
+        &internal_event_tx,
     );
 
     let received = tokio::time::timeout(Duration::from_millis(200), append_rx.recv())
@@ -477,7 +471,7 @@ async fn test_snapshot_completion_success_returns_to_probe_and_allows_append() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::replication::PrepareResult {
                 append_requests: vec![],
                 snapshot_targets: vec![2],
@@ -501,7 +495,7 @@ async fn test_snapshot_completion_success_returns_to_probe_and_allows_append() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::replication::PrepareResult {
                 append_requests: vec![(2, stub_append_request(), 1)],
                 snapshot_targets: vec![],
@@ -538,7 +532,7 @@ async fn test_snapshot_completion_failure_returns_to_probe_with_backoff() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::replication::PrepareResult {
                 append_requests: vec![],
                 snapshot_targets: vec![2],
@@ -549,7 +543,7 @@ async fn test_snapshot_completion_failure_returns_to_probe_with_backoff() {
         .expect_send_snapshot()
         .times(1)
         .returning(|_, _, _, _, _, _| Ok(()));
-    dispatch_transport.expect_open_replication_stream().returning(|_, _, _| {
+    dispatch_transport.expect_open_replication_stream().returning(|_, _, _, _| {
         let (tx, _rx) = mpsc::channel(128);
         let stream = futures::stream::empty().boxed();
         Ok(crate::ReplicationStream {
@@ -637,7 +631,7 @@ async fn test_backoff_window_blocks_redispatch_even_when_classification_still_re
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::replication::PrepareResult {
                 append_requests: vec![],
                 snapshot_targets: vec![2],
@@ -645,7 +639,7 @@ async fn test_backoff_window_blocks_redispatch_even_when_classification_still_re
         });
     let mut transport = MockTransport::<MockTypeConfig>::new();
     transport.expect_send_snapshot().times(1).returning(|_, _, _, _, _, _| Ok(()));
-    transport.expect_open_replication_stream().returning(|_, _, _| {
+    transport.expect_open_replication_stream().returning(|_, _, _, _| {
         let (tx, _rx) = mpsc::channel(128);
         let stream = futures::stream::empty().boxed();
         Ok(crate::ReplicationStream {
@@ -672,7 +666,7 @@ async fn test_backoff_window_blocks_redispatch_even_when_classification_still_re
     // backoff window from the failure above has not expired yet.
     let mut transport2 = MockTransport::<MockTypeConfig>::new();
     transport2.expect_send_snapshot().times(0); // must NOT be called again — still in backoff
-    transport2.expect_open_replication_stream().returning(|_, _, _| {
+    transport2.expect_open_replication_stream().returning(|_, _, _, _| {
         let (tx, _rx) = mpsc::channel(128);
         let stream = futures::stream::empty().boxed();
         Ok(crate::ReplicationStream {
@@ -685,7 +679,7 @@ async fn test_backoff_window_blocks_redispatch_even_when_classification_still_re
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             Ok(crate::replication::PrepareResult {
                 append_requests: vec![],
                 snapshot_targets: vec![2],

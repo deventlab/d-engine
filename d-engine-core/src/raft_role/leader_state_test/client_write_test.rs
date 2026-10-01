@@ -92,7 +92,7 @@ async fn setup_process_raft_request_test_context(
     replication_handler
         .expect_prepare_batch_requests()
         .times(prepare_batch_requests_expect_times)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let last_entry_id = Arc::new(AtomicU64::new(4));
     let last_entry_id_clone = last_entry_id.clone();
@@ -352,7 +352,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
     replication_handler
         .expect_prepare_batch_requests()
         .times(2)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     // last_entry_id increments per call: first=4 → start_index=5, second=5 → start_index=6
     let call_count = Arc::new(AtomicU64::new(0));
@@ -548,7 +548,7 @@ async fn test_drain_single_write_no_delay() {
     replication
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let last_entry_id = Arc::new(AtomicU64::new(4));
     let last_entry_id_clone = last_entry_id.clone();
@@ -647,7 +647,7 @@ async fn test_drain_multiple_writes_natural_batch() {
     replication
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let last_entry_id = Arc::new(AtomicU64::new(4));
     let last_entry_id_clone = last_entry_id.clone();
@@ -825,7 +825,7 @@ async fn test_write_batch_single_replication() {
     replication
         .expect_prepare_batch_requests()
         .times(1) // KEY: Single replication for all writes
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let last_entry_id = Arc::new(AtomicU64::new(4));
     let last_entry_id_clone = last_entry_id.clone();
@@ -953,7 +953,7 @@ async fn test_client_write_deferred_until_sm_apply() {
     replication
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let last_entry_id = Arc::new(AtomicU64::new(4));
     let last_entry_id_clone = last_entry_id.clone();
@@ -1040,7 +1040,7 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
     replication
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let last_entry_id = Arc::new(AtomicU64::new(4));
     let last_entry_id_clone = last_entry_id.clone();
@@ -1121,7 +1121,7 @@ async fn test_config_change_quorum_check_responds_immediately_without_sm_apply()
     replication
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let last_entry_id = Arc::new(AtomicU64::new(4));
     let last_entry_id_clone = last_entry_id.clone();
@@ -1249,7 +1249,7 @@ async fn test_single_voter_client_write_completes_after_log_flushed() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config());
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
@@ -1380,7 +1380,7 @@ async fn test_probe_state_does_not_speculatively_advance_next_index() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(move |_, _, _, _, _| {
+        .returning(move |_, _, _, _, _, _| {
             Ok(PrepareResult {
                 append_requests: [(
                     2,
@@ -1472,7 +1472,7 @@ async fn test_replicate_state_advances_next_index_speculatively() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(move |_, _, _, _, _| {
+        .returning(move |_, _, _, _, _, _| {
             Ok(PrepareResult {
                 append_requests: [(
                     2,
