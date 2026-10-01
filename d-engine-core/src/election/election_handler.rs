@@ -1,14 +1,12 @@
-use std::collections::HashSet;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
-use futures::StreamExt;
-use futures::stream::FuturesUnordered;
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tokio::task::JoinSet;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -84,8 +82,9 @@ where
             last_log_term,
         };
 
-        // Dispatch one independent task per peer from the core layer
-        let mut tasks = FuturesUnordered::new();
+        // One task per peer. Dropping the JoinSet aborts RPCs still in flight, so a decided
+        // election never leaves retry loops behind.
+        let mut tasks = JoinSet::new();
         let mut peer_ids = HashSet::new();
         for peer in members {
             let peer_id = peer.id;
@@ -97,29 +96,33 @@ where
             let transport = transport.clone();
             let membership = membership.clone();
             let retry = settings.retry.clone();
-            tasks.push(tokio::spawn(async move {
+            tasks.spawn(async move {
                 transport.send_vote_request(peer_id, request, &retry, membership).await
-            }));
+            });
         }
 
-        let mut responses = Vec::new();
-        while let Some(result) = tasks.next().await {
-            match result {
-                Ok(r) => responses.push(r),
+        let required = peer_ids.len() + 1;
+        let mut succeed = 1; // own vote
+        // Tally as responses arrive and decide as soon as the outcome is known. Waiting
+        // for every peer lets one dead peer's RPC retries (seconds) hold the Raft loop
+        // past our own election timeout, discarding a majority we already won.
+        while let Some(joined) = tasks.join_next().await {
+            let response = match joined {
+                Ok(r) => r,
                 Err(e) => {
                     error!("Task failed with error: {:?}", &e);
-                    responses.push(Err(Error::from(NetworkError::TaskFailed(e))));
+                    Err(Error::from(NetworkError::TaskFailed(e)))
                 }
-            }
-        }
-
-        let mut succeed = 1;
-        for response in responses {
+            };
             match response {
                 Ok(vote_response) => {
                     if vote_response.vote_granted {
                         debug!("send_vote_requests_to_peers success!");
                         succeed += 1;
+                        if is_majority(succeed, required) {
+                            debug!("send_vote_requests receives majority.");
+                            return Ok(());
+                        }
                     } else {
                         debug!(
                             "if_higher_term_found({}, {}, false)",
@@ -157,19 +160,12 @@ where
                 }
             }
         }
+
         debug!(
-            "send_vote_requests to: {:?} with succeed number = {}",
+            "failed to receive majority votes: {:?} succeed number = {}",
             &peer_ids, succeed
         );
-
-        let required = peer_ids.len() + 1;
-        if !peer_ids.is_empty() && is_majority(succeed, required) {
-            debug!("send_vote_requests receives majority.");
-            Ok(())
-        } else {
-            debug!("failed to receive majority votes.");
-            Err(ElectionError::QuorumFailure { required, succeed }.into())
-        }
+        Err(ElectionError::QuorumFailure { required, succeed }.into())
     }
 
     async fn handle_vote_request(

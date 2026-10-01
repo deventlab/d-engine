@@ -972,6 +972,175 @@ mod single_node_election_tests {
         );
     }
 
+    /// Transport for the slow-peer election test: peer 2 grants the vote at once, any other
+    /// peer stays silent for a long time and then fails, like a dead node whose RPC retries
+    /// are still running.
+    ///
+    /// Hand-written instead of `MockTransport`: mockall holds an internal lock while a mock
+    /// closure runs, so a "slow" closure would also stall the fast peer's call and make the
+    /// timing depend on which task happened to run first.
+    struct SlowPeerTransport;
+
+    const SLOW_PEER_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+    #[async_trait::async_trait]
+    impl crate::Transport<SlowVoteTypeConfig> for SlowPeerTransport {
+        async fn send_vote_request(
+            &self,
+            peer_id: u32,
+            _request: VoteRequest,
+            _retry: &crate::RetryPolicies,
+            _membership: Arc<crate::alias::MOF<SlowVoteTypeConfig>>,
+        ) -> crate::Result<VoteResponse> {
+            if peer_id == 2 {
+                return Ok(VoteResponse {
+                    term: 1,
+                    vote_granted: true,
+                    last_log_index: 1,
+                    last_log_term: 1,
+                });
+            }
+            tokio::time::sleep(SLOW_PEER_DELAY).await;
+            Err(Error::from(crate::NetworkError::ServiceUnavailable(
+                "peer is down".to_string(),
+            )))
+        }
+
+        async fn send_cluster_update(
+            &self,
+            _req: d_engine_proto::server::cluster::ClusterConfChangeRequest,
+            _retry: &crate::RetryPolicies,
+            _membership: Arc<crate::alias::MOF<SlowVoteTypeConfig>>,
+        ) -> crate::Result<crate::ClusterUpdateResult> {
+            unimplemented!("not used by the election test")
+        }
+
+        async fn join_cluster(
+            &self,
+            _leader_id: u32,
+            _request: d_engine_proto::server::cluster::JoinRequest,
+            _retry: crate::BackoffPolicy,
+            _membership: Arc<crate::alias::MOF<SlowVoteTypeConfig>>,
+        ) -> crate::Result<d_engine_proto::server::cluster::JoinResponse> {
+            unimplemented!("not used by the election test")
+        }
+
+        async fn discover_leader(
+            &self,
+            _request: d_engine_proto::server::cluster::LeaderDiscoveryRequest,
+            _rpc_enable_compression: bool,
+            _membership: Arc<crate::alias::MOF<SlowVoteTypeConfig>>,
+        ) -> crate::Result<Vec<d_engine_proto::server::cluster::LeaderDiscoveryResponse>> {
+            unimplemented!("not used by the election test")
+        }
+
+        async fn send_snapshot(
+            &self,
+            _peer_id: u32,
+            _metadata: d_engine_proto::server::storage::SnapshotMetadata,
+            _leader_term: u64,
+            _state_machine_handler: Arc<crate::alias::SMHOF<SlowVoteTypeConfig>>,
+            _membership: Arc<crate::alias::MOF<SlowVoteTypeConfig>>,
+            _config: crate::SnapshotConfig,
+        ) -> crate::Result<()> {
+            unimplemented!("not used by the election test")
+        }
+
+        async fn open_replication_stream(
+            &self,
+            _peer_id: u32,
+            _membership: Arc<crate::alias::MOF<SlowVoteTypeConfig>>,
+            _compress: bool,
+            _send_queue_capacity: usize,
+        ) -> crate::Result<crate::ReplicationStream> {
+            unimplemented!("not used by the election test")
+        }
+    }
+
+    /// `MockTypeConfig` with `SlowPeerTransport` as the transport.
+    #[derive(Debug)]
+    struct SlowVoteTypeConfig;
+
+    impl crate::TypeConfig for SlowVoteTypeConfig {
+        type R = MockRaftLog;
+        type SE = crate::MockStorageEngine;
+        type E = crate::MockElectionCore<Self>;
+        type TR = SlowPeerTransport;
+        type SM = crate::MockStateMachine;
+        type M = MockMembership<Self>;
+        type REP = crate::MockReplicationCore<Self>;
+        type C = crate::MockCommitHandler;
+        type SMH = crate::MockStateMachineHandler<Self>;
+        type SMW = crate::MockStateMachineWriterOps<Self>;
+        type SNP = crate::MockSnapshotPolicy;
+        type PE = crate::MockPurgeExecutor;
+    }
+
+    /// Test: broadcast_vote_requests must not wait for slow peers once a majority has voted
+    ///
+    /// Scenario:
+    /// - Three-node cluster: candidate (node 1) + peers 2 and 3
+    /// - Peer 2 grants the vote immediately (self + peer 2 = 2/3, a majority)
+    /// - Peer 3 is dead: its RPC only fails after a long retry sequence
+    ///
+    /// Expected:
+    /// - Returns Ok(()) as soon as the majority is reached, without waiting for peer 3
+    ///
+    /// The caller awaits this inside the Raft loop. If it waits for the dead peer, the
+    /// candidate's own election timer expires meanwhile and the won election is discarded
+    /// by the next term, so a cluster with one node down can fail to elect a leader.
+    ///
+    /// The clock is paused: time only moves when every task is idle. A broadcast that
+    /// waits for peer 3 lets the runtime jump to the 1 s timeout first, deterministically.
+    #[tokio::test(start_paused = true)]
+    async fn test_broadcast_vote_requests_returns_on_majority_without_waiting_for_slow_peer() {
+        let election_handler = ElectionHandler::<SlowVoteTypeConfig>::new(1);
+
+        let mut raft_log_mock = MockRaftLog::new();
+        raft_log_mock
+            .expect_last_log_id()
+            .times(1)
+            .returning(|| Some(LogId { index: 1, term: 1 }));
+
+        let mut membership = MockMembership::<SlowVoteTypeConfig>::new();
+        membership.expect_is_single_node_cluster().returning(|| false);
+        membership.expect_voters().returning(|| {
+            [2, 3]
+                .into_iter()
+                .map(|id| NodeMeta {
+                    id,
+                    address: format!("http://127.0.0.1:5500{id}"),
+                    role: 0,
+                    status: 2,
+                })
+                .collect()
+        });
+
+        let node_config = RaftNodeConfig::new().expect("Should create default config");
+        let node_config = node_config.validate().expect("Should validate config");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            election_handler.broadcast_vote_requests(
+                1,
+                Arc::new(membership),
+                &Arc::new(raft_log_mock),
+                &Arc::new(SlowPeerTransport),
+                &Arc::new(node_config),
+            ),
+        )
+        .await
+        .expect(
+            "broadcast_vote_requests waited for the slow peer instead of returning once a \
+             majority had voted",
+        );
+
+        assert!(
+            result.is_ok(),
+            "majority (self + peer 2) must win the election, got: {result:?}"
+        );
+    }
+
     /// Test: broadcast_vote_requests steps down when a peer responds with a higher term
     ///
     /// Scenario:
