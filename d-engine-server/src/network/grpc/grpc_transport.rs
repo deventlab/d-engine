@@ -308,6 +308,7 @@ where
         peer_id: u32,
         membership: Arc<MOF<T>>,
         compress: bool,
+        send_queue_capacity: usize,
     ) -> Result<ReplicationStream> {
         debug!(%peer_id, "Opening persistent bidi replication stream");
 
@@ -316,8 +317,8 @@ where
             .await
             .ok_or(NetworkError::PeerConnectionNotFound(peer_id))?;
 
-        // Bounded send channel (capacity 128) provides natural backpressure to the Raft loop.
-        let (req_tx, req_rx) = mpsc::channel::<AppendEntriesRequest>(128);
+        // Bounded send channel provides natural backpressure to the Raft loop.
+        let (req_tx, req_rx) = mpsc::channel::<AppendEntriesRequest>(send_queue_capacity);
         let req_stream = ReceiverStream::new(req_rx);
 
         let mut client = RaftReplicationServiceClient::new(channel);

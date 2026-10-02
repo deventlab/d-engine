@@ -65,6 +65,7 @@ fn write_metadata(
         senders: vec![tx],
         wait_for_apply: false,
         deadline,
+        proposed_at: std::time::Instant::now(),
     };
     (meta, rx)
 }

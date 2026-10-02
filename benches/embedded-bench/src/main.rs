@@ -171,15 +171,25 @@ fn generate_value(size: usize) -> Vec<u8> {
     (0..size).map(|_| rng.random()).collect()
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
+    if std::env::var("TOKIO_CONSOLE").is_ok() {
+        let tokio_console_port: u16 = std::env::var("TOKIO_CONSOLE_PORT")
+            .map(|v| v.parse::<u16>().expect("TOKIO_CONSOLE_PORT must be a valid port"))
+            .unwrap_or(6669);
+        println!("Tokio Console port: {tokio_console_port}");
+        console_subscriber::Builder::default()
+            .server_addr(([127, 0, 0, 1], tokio_console_port))
+            .init();
+    } else {
+        // Initialize logging
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive(tracing::Level::INFO.into()),
+            )
+            .init();
+    }
 
     let config_path = std::env::var("CONFIG_PATH").ok();
     let data_dir = std::env::var("DATA_DIR").ok();
@@ -232,6 +242,20 @@ async fn start_metrics_server(port: u16) {
             MS_BUCKETS,
         )
         .expect("failed to configure _ms buckets")
+        .set_buckets_for_metric(
+            metrics_exporter_prometheus::Matcher::Full(
+                "core.raft.peer.in_flight_at_dispatch".into(),
+            ),
+            &[0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0],
+        )
+        .expect("buckets")
+        .set_buckets_for_metric(
+            metrics_exporter_prometheus::Matcher::Full(
+                "core.raft.replication.entries_per_request".into(),
+            ),
+            &[1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0],
+        )
+        .expect("buckets")
         .install()
         .expect("failed to start Prometheus metrics exporter");
 }
@@ -256,6 +280,7 @@ async fn run_benchmark_task(
 
     let stats = Arc::new(BenchmarkStats::new());
     let key_counter = Arc::new(AtomicU64::new(0));
+    let failed_count = Arc::new(AtomicU64::new(0));
     let start_time = Instant::now();
 
     let mut handles = Vec::with_capacity(clients);
@@ -264,6 +289,7 @@ async fn run_benchmark_task(
         let engine = engine.clone();
         let stats = stats.clone();
         let key_counter = key_counter.clone();
+        let failed_count = failed_count.clone();
         let command = command.clone();
 
         let handle = tokio::spawn(async move {
@@ -289,7 +315,15 @@ async fn run_benchmark_task(
                                     }
                                 }
                             }
-                            Err(_) => continue,
+                            Err(e) => {
+                                let n = failed_count.fetch_add(1, Ordering::Relaxed);
+                                if n < 5 {
+                                    eprintln!("Put failed: {e:?}");
+                                } else if n == 5 {
+                                    eprintln!("Put failed: (further failures suppressed)");
+                                }
+                                continue;
+                            }
                         }
                     }
                     Commands::Get { consistency } => {
@@ -327,6 +361,10 @@ async fn run_benchmark_task(
 
     futures::future::join_all(handles).await;
     stats.summary(start_time.elapsed());
+    let failed = failed_count.load(Ordering::Relaxed);
+    if failed > 0 {
+        println!("Failed requests: {failed}");
+    }
 }
 
 /// Run all benchmark tests in batch mode
@@ -500,6 +538,9 @@ async fn run_local_benchmark(cli: Cli) {
     println!("Leader elected: {}", leader_info.leader_id);
     println!("Node ID: {}", engine.node_id());
 
+    // Let every peer's replication stream settle before load starts; see #450 startup race.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
     // Signal file used to coordinate follower auto-shutdown in batch mode
     let done_signal_path = "/tmp/embedded-bench-done";
 
@@ -563,6 +604,7 @@ async fn run_local_benchmark(cli: Cli) {
 
             let stats = Arc::new(BenchmarkStats::new());
             let key_counter = Arc::new(AtomicU64::new(0));
+            let failed_count = Arc::new(AtomicU64::new(0));
             let start_time = Instant::now();
 
             let mut handles = Vec::with_capacity(cli.clients);
@@ -571,6 +613,7 @@ async fn run_local_benchmark(cli: Cli) {
                 let engine = engine.clone();
                 let stats = stats.clone();
                 let key_counter = key_counter.clone();
+                let failed_count = failed_count.clone();
                 let cli = cli.clone();
 
                 let handle = tokio::spawn(async move {
@@ -625,8 +668,13 @@ async fn run_local_benchmark(cli: Cli) {
                                             }
                                         }
                                     }
-                                    Err(_) => {
-                                        // Write failed - skip recording
+                                    Err(e) => {
+                                        let n = failed_count.fetch_add(1, Ordering::Relaxed);
+                                        if n < 5 {
+                                            eprintln!("Put failed: {e:?}");
+                                        } else if n == 5 {
+                                            eprintln!("Put failed: (further failures suppressed)");
+                                        }
                                         continue;
                                     }
                                 }
@@ -676,6 +724,10 @@ async fn run_local_benchmark(cli: Cli) {
 
             futures::future::join_all(handles).await;
             stats.summary(start_time.elapsed());
+            let failed = failed_count.load(Ordering::Relaxed);
+            if failed > 0 {
+                println!("Failed requests: {failed}");
+            }
 
             println!("\nBenchmark completed. Press Ctrl+C to shutdown.");
             let _ = shutdown_rx.changed().await;

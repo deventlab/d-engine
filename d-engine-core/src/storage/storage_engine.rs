@@ -79,16 +79,19 @@ pub trait LogStore: Send + Sync + 'static {
     ///
     /// Default implementation calls `truncate` then `persist_entries` sequentially
     /// (non-atomic). Override with a single WriteBatch for true crash atomicity.
+    /// Returns the highest log index on disk after the operation: the last of
+    /// `new_entries`, or `from_index - 1` when `new_entries` is empty.
     async fn replace_range(
         &self,
         from_index: u64,
         new_entries: Vec<Entry>,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
+        let new_last = new_entries.last().map(|e| e.index).unwrap_or(from_index.saturating_sub(1));
         self.truncate(from_index).await?;
         if !new_entries.is_empty() {
             self.persist_entries(new_entries).await?;
         }
-        Ok(())
+        Ok(new_last)
     }
 
     /// Whether a single `persist_entries` call is crash-safe without an explicit `flush()`.
@@ -123,7 +126,7 @@ pub trait LogStore: Send + Sync + 'static {
     /// Load the purge boundary persisted by the last `purge()` call.
     ///
     /// Returns the `LogId` (index + term) of the highest entry ever purged,
-    /// or `None` if `purge()` has never been called. `BufferedRaftLog::new()`
+    /// or `None` if `purge()` has never been called. `RaftLogCore::new()`
     /// uses this to restore `last_purged_index/term` after a restart so that
     /// `entry_term(last_purged_index)` returns the correct term even though
     /// the entry has been removed from the in-memory log.

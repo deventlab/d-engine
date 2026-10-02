@@ -123,6 +123,13 @@ where
     /// The caller (leader Raft loop) then fires each request to a per-follower
     /// `ReplicationWorker` task and returns immediately — no blocking `.await`.
     ///
+    /// `peer_gating_decisions` marks which peers have a full in-flight window.
+    /// The caller computes this once, before calling here, and reuses the same
+    /// map again at dispatch time. Passed straight through to
+    /// `retrieve_to_be_synced_logs_for_peers`, which skips entry prep for gated
+    /// peers. One shared map, not two separate calculations — a peer gated here
+    /// but not at dispatch (or vice versa) would block that peer's heartbeat.
+    ///
     /// # Returns
     /// - `Ok(PrepareResult)` — append requests per in-range peer + snapshot targets.
     ///   Empty `append_requests` when there are no replication targets or all need snapshots.
@@ -134,6 +141,7 @@ where
         leader_state_snapshot: LeaderStateSnapshot,
         cluster_metadata: &crate::raft_role::ClusterMetadata,
         ctx: &crate::RaftContext<T>,
+        peer_gating_decisions: &HashMap<u32, bool>,
     ) -> Result<PrepareResult>;
 
     /// Handles successful AppendEntries responses
@@ -163,10 +171,10 @@ where
     /// Determines follower commit index advancement
     ///
     /// Applies Leader's commit index according to:
-    /// - min(leader_commit, last_local_log_index)
+    /// - min(leader_commit, last_verified_log_index)
     fn if_update_commit_index_as_follower(
         my_commit_index: u64,
-        last_raft_log_id: u64,
+        last_verified_log_index: u64,
         leader_commit_index: u64,
     ) -> Option<u64>;
 
@@ -181,6 +189,14 @@ where
     ///
     /// `first_index` is the leader's retained-log boundary (`raft_log.first_entry_id()`),
     /// passed in so the purge check happens before the range fetch, not after.
+    ///
+    /// `peer_gating_decisions[peer_id] == true` means that peer's in-flight
+    /// window is full: skip it here, insert nothing into the result map. The
+    /// caller's dispatch phase sees no entries for this peer and sends an
+    /// empty-entries heartbeat instead — this is how the window-full peer
+    /// still gets a liveness heartbeat without new data. This map is computed
+    /// once by the top-level caller, not here, so the same gating decision
+    /// also governs dispatch — see `prepare_batch_requests` doc above.
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
         new_entries: &[Entry],
@@ -189,6 +205,7 @@ where
         peer_next_indices: &HashMap<u32, u64>,
         raft_log: &Arc<ROF<T>>,
         first_index: u64,
+        peer_gating_decisions: &HashMap<u32, bool>,
     ) -> HashMap<u32, PeerEntriesResult>;
 
     /// Handles an incoming AppendEntries RPC request (called by ALL ROLES)

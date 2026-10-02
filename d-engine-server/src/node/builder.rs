@@ -40,6 +40,7 @@ use d_engine_core::NewCommitData;
 use d_engine_core::Raft;
 use d_engine_core::RaftCoreHandlers;
 use d_engine_core::RaftLog;
+use d_engine_core::RaftLogCore;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::RaftRole;
 use d_engine_core::RaftStorageHandles;
@@ -78,7 +79,6 @@ use crate::Node;
 use crate::membership::RaftMembership;
 use crate::network::grpc;
 use crate::network::grpc::grpc_transport::GrpcTransport;
-use crate::storage::BufferedRaftLog;
 
 type StateMachineHandler<SE, SM> = (
     Arc<SMHOF<RaftTypeConfig<SE, SM>>>,
@@ -348,15 +348,12 @@ where
         let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
 
         let raft_log = {
-            let (log, receiver) = BufferedRaftLog::new(
+            RaftLogCore::new(
                 node_id,
-                node_config.raft.persistence.clone(),
                 storage_engine.clone(),
-            );
-
-            // Start processor and get Arc-wrapped instance.
-            // Pass internal_event_tx so batch_processor sends InternalEvent::LogFlushed after each fsync.
-            log.start(receiver, Some(internal_event_tx.clone()))
+                Some(internal_event_tx.clone()),
+                node_config.raft.persistence.shutdown_timeout_ms,
+            )
         };
 
         // Peer health channels: transport fires try_send(peer_id) on stream failure/success.
@@ -367,9 +364,38 @@ where
             GrpcTransport::new_with_channels(node_id, peer_failure_tx, peer_success_tx)
         });
 
-        let snapshot_policy = self.snapshot_policy.take().unwrap_or(LogSizePolicy::new(
-            node_config.raft.snapshot.max_log_entries_before_snapshot,
-        ));
+        let max_log_entries = node_config.raft.snapshot.max_log_entries_before_snapshot;
+        let retained_log_entries = node_config.raft.snapshot.retained_log_entries;
+
+        // Startup memory-budget line — visible on stdout regardless of log setup.
+        {
+            const EST_LOG_ENTRY_BYTES: u64 = 512; // small/medium KV write + proto + SkipMap node overhead
+            let est_mb = max_log_entries
+                .saturating_add(retained_log_entries)
+                .saturating_mul(EST_LOG_ENTRY_BYTES)
+                / (1024 * 1024);
+            tracing::info!(
+                node_id,
+                max_log_entries,
+                retained_log_entries,
+                est_log_ram_mb = est_mb,
+                "Raft log memory estimate: ~{est_mb} MB \
+                 (({max_log_entries} snapshot-trigger + {retained_log_entries} retained entries) \
+                 × ~512 B/entry). Excludes snapshot backlog"
+            );
+            if est_mb > 100 {
+                tracing::warn!(
+                    node_id,
+                    est_log_ram_mb = est_mb,
+                    "in-memory Raft log estimate > 100 MB — lower \
+                        raft.snapshot.max_log_entries_before_snapshot or \
+                        raft.snapshot.retained_log_entries if RAM-constrained"
+                );
+            }
+        }
+
+        let snapshot_policy =
+            self.snapshot_policy.take().unwrap_or(LogSizePolicy::new(max_log_entries));
 
         let shutdown_signal = self.shutdown_signal.clone();
 

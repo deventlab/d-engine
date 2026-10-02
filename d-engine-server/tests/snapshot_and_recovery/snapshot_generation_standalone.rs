@@ -114,7 +114,18 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
             _ => None,
         };
 
-        let node_config = node_config(&config);
+        let mut node_config = node_config(&config);
+        // `node_config()`'s default election_timeout_min (300ms) is tuned for fast
+        // *first*-election tests, not this one: this test hard-codes which node
+        // wins (node 3, pre-seeded with the longest log) and everything after
+        // that depends on node 3 staying leader. Under CI CPU contention a
+        // heartbeat can land >300ms late even after the cluster reports ready,
+        // triggering a spurious re-election that hands leadership to a
+        // different node — the snapshot then never appears where this test
+        // looks for it (root cause of the observed CI flake). Widen the window
+        // so a late heartbeat doesn't cost us the election.
+        node_config.raft.election.election_timeout_min = 1500;
+        node_config.raft.election.election_timeout_max = 6000;
 
         let (graceful_tx, node_handle) =
             start_node(&node_data_dir, node_config, Some(state_machine), raft_log).await?;
@@ -132,11 +143,22 @@ async fn test_snapshot_scenario() -> Result<(), ClientApiError> {
 
     println!("[test_snapshot_scenario] Cluster started. Running tests...");
 
-    sleep(Duration::from_secs(3)).await;
-
-    // Verify snapshot file exists on leader (node 3)
+    // Poll instead of a fixed sleep + single assert: a fixed window races CI
+    // scheduling jitter (see the election_timeout widening above for why that
+    // jitter matters here) — poll until the snapshot appears or we genuinely
+    // time out, rather than guessing a duration that "usually" works.
     let snapshot_path = format!("{SNAPSHOT_CASE1_DATA_DIR}/cs/3/snapshots");
-    assert!(check_path_contents(&snapshot_path).unwrap_or(false));
+    let snapshot_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if check_path_contents(&snapshot_path).unwrap_or(false) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < snapshot_deadline,
+            "snapshot did not appear at {snapshot_path} within 15s"
+        );
+        sleep(Duration::from_millis(200)).await;
+    }
 
     // Verify state machine data via client API (snapshot has been applied to leader)
     let mut client_manager = ClientManager::new(&create_bootstrap_urls(ports)).await?;

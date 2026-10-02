@@ -6,6 +6,7 @@ use d_engine_core::DefaultStateMachineHandler;
 use d_engine_core::DefaultStateMachineWriter;
 use d_engine_core::ElectionHandler;
 use d_engine_core::LogSizePolicy;
+use d_engine_core::RaftLogCore;
 use d_engine_core::ReplicationHandler;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageEngine;
@@ -13,7 +14,6 @@ use d_engine_core::TypeConfig;
 
 use crate::membership::RaftMembership;
 use crate::network::grpc::grpc_transport::GrpcTransport;
-use crate::storage::BufferedRaftLog;
 
 #[derive(Debug)]
 pub struct RaftTypeConfig<SE, SM>
@@ -33,7 +33,7 @@ where
 
     type SM = SM;
 
-    type R = BufferedRaftLog<Self>;
+    type R = RaftLogCore<Self>;
 
     type TR = GrpcTransport<Self>;
 

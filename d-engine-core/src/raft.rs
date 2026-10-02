@@ -43,6 +43,11 @@ where
     event_tx: mpsc::Sender<InboundEvent>,
     event_rx: mpsc::Receiver<InboundEvent>,
     buffered_inbound_event: VecDeque<InboundEvent>,
+    /// Set to `Instant::now()` when `buffered_inbound_event` goes empty→non-empty,
+    /// cleared on the next `process_inbound_events` drain. Batch-level, not
+    /// per-event — same simplification as `ProposeBatchBuffer::oldest_pending_since`.
+    /// Measures inbound-event queue wait before this node's event loop drains it (#446).
+    inbound_event_oldest_pending_since: Option<std::time::Instant>,
 
     // Client commands (drain-driven)
     cmd_tx: mpsc::Sender<super::ClientCmd>,
@@ -139,6 +144,7 @@ where
             event_tx: signal_params.event_tx,
             event_rx: signal_params.event_rx,
             buffered_inbound_event: VecDeque::new(),
+            inbound_event_oldest_pending_since: None,
 
             cmd_tx: signal_params.cmd_tx,
             cmd_rx: signal_params.cmd_rx,
@@ -278,6 +284,9 @@ where
                 // P4: Other events — handle first, drain rest after select
                 Some(inbound_event) = self.event_rx.recv() => {
                     trace!(%self.node_id, ?inbound_event, "receive inbound event");
+                    if self.buffered_inbound_event.is_empty() {
+                        self.inbound_event_oldest_pending_since = Some(std::time::Instant::now());
+                    }
                     self.buffered_inbound_event.push_back(inbound_event);
                     self.drain_inbound_events().await?;
                 }
@@ -297,7 +306,7 @@ where
 
     async fn handle_shutdown(&mut self) -> Result<()> {
         info!("[Raft:{}] shutdown signal received.", self.node_id);
-        // Close IO thread BEFORE returning (before runtime shutdown)
+        // Close the raft log (before runtime shutdown)
         // This ensures RocksDB file lock is released before tokio runtime shuts down
         self.ctx.storage.raft_log.close().await;
         // Unblock any tasks stuck in event_tx.send().await (e.g. gRPC stream handlers).
@@ -314,6 +323,9 @@ where
         while count < max {
             match self.event_rx.try_recv() {
                 Ok(inbound_event) => {
+                    if self.buffered_inbound_event.is_empty() {
+                        self.inbound_event_oldest_pending_since = Some(std::time::Instant::now());
+                    }
                     self.buffered_inbound_event.push_back(inbound_event);
                     count += 1;
                 }
@@ -354,6 +366,7 @@ where
         }
         if count > 0 {
             trace!("Drained {} client commands", count);
+            metrics::histogram!("core.raft.client_cmd.batch_size").record(count as f64);
         }
         Ok(())
     }
@@ -372,6 +385,10 @@ where
     }
 
     async fn process_inbound_events(&mut self) -> Result<()> {
+        if let Some(since) = self.inbound_event_oldest_pending_since.take() {
+            metrics::histogram!("core.raft.inbound_event_queue_wait_ms")
+                .record(since.elapsed().as_secs_f64() * 1_000.0);
+        }
         while !self.buffered_inbound_event.is_empty() {
             // Avoid none AE event pop and push into queue
             if matches!(
@@ -475,7 +492,10 @@ where
                 let _ = self.role.drain_read_buffer();
 
                 debug!("BecomeFollower");
-                self.role = self.role.become_follower()?;
+                let mut new_role = self.role.become_follower()?;
+                let withheld_acks = self.role.take_pending_acks();
+                new_role.restore_pending_acks(withheld_acks);
+                self.role = new_role;
 
                 // Reset vote when stepping down (new term, no vote yet)
                 self.role.state_mut().commit_vote_reset(&self.ctx)?;
@@ -494,7 +514,10 @@ where
                 let _ = self.role.drain_read_buffer();
 
                 debug!("BecomeCandidate");
-                self.role = self.role.become_candidate()?;
+                let mut new_role = self.role.become_candidate()?;
+                let withheld_acks = self.role.take_pending_acks();
+                new_role.restore_pending_acks(withheld_acks);
+                self.role = new_role;
 
                 // No leader during candidate state
                 let current_term = self.role.current_term();
@@ -505,7 +528,10 @@ where
             }
             InternalEvent::BecomeLeader => {
                 debug!("BecomeLeader");
-                self.role = self.role.become_leader()?;
+                let mut new_role = self.role.become_leader()?;
+                let withheld_acks = self.role.take_pending_acks();
+                new_role.restore_pending_acks(withheld_acks);
+                self.role = new_role;
 
                 // Mark vote as committed (candidate → leader transition)
                 let current_term = self.role.current_term();
@@ -551,7 +577,10 @@ where
                 let _ = self.role.drain_read_buffer();
 
                 debug!("BecomeLearner");
-                self.role = self.role.become_learner()?;
+                let mut new_role = self.role.become_learner()?;
+                let withheld_acks = self.role.take_pending_acks();
+                new_role.restore_pending_acks(withheld_acks);
+                self.role = new_role;
 
                 // Learner has no leader initially
                 let current_term = self.role.current_term();
@@ -609,10 +638,23 @@ where
                     .handle_log_flushed(durable_index, &self.ctx, &self.internal_event_tx)
                     .await;
             }
+            InternalEvent::FsyncCompleted { mark, sent_at } => {
+                metrics::histogram!("core.raft.fsync.completion_wait_ms")
+                    .record(sent_at.elapsed().as_secs_f64() * 1_000.0);
+
+                if let Some(new_durable) = self.ctx.raft_log().try_advance_durable_index(mark) {
+                    self.role
+                        .handle_log_flushed(new_durable, &self.ctx, &self.internal_event_tx)
+                        .await;
+                }
+            }
             InternalEvent::AppendResult {
                 follower_id,
                 result,
+                sent_at,
             } => {
+                metrics::histogram!("core.raft.central_loop.append_result_queue_wait_ms")
+                    .record(sent_at.elapsed().as_secs_f64() * 1_000.0);
                 debug!("AppendResult: follower_id={}", follower_id);
                 if let Err(e) = self
                     .role
@@ -651,7 +693,9 @@ where
             }
             InternalEvent::PeerStreamError { peer_id } => {
                 debug!(%peer_id, "PeerStreamError: bidi stream disconnected, resetting next_index");
-                self.role.handle_peer_stream_error(peer_id);
+                if let RaftRole::Leader(leader) = &mut self.role {
+                    leader.handle_peer_stream_error(peer_id);
+                }
             }
             InternalEvent::ZombieDetected(node_id) => {
                 debug!(%node_id, "ZombieDetected: forwarding to leader for BatchRemove");
@@ -687,9 +731,11 @@ where
                 // Peer-state guard: seeding is only valid for the peer's CURRENT
                 // in-flight snapshot attempt. A straggler completion that arrives after
                 // the peer has moved on must not touch next_index.
-                if self.role.state().peer_replication_state(peer_id)
-                    != PeerReplicationState::Snapshot
-                {
+                let in_snapshot_state = matches!(
+                    &self.role,
+                    RaftRole::Leader(leader) if leader.peer_replication_state(peer_id) == PeerReplicationState::Snapshot
+                );
+                if !in_snapshot_state {
                     debug!(%peer_id, "dropping SnapshotPushCompleted: peer not in Snapshot state");
                     return Ok(());
                 }

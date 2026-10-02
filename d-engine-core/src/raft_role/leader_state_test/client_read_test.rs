@@ -409,7 +409,7 @@ async fn test_linearizable_read_quorum_failure() {
     replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::Fatal("Quorum verification failed".to_string())));
+        .returning(|_, _, _, _, _, _| Err(Error::Fatal("Quorum verification failed".to_string())));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
@@ -489,7 +489,7 @@ async fn test_linearizable_read_quorum_success() {
     replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             // New architecture: prepare_batch_requests returns empty vector for read-only batches
             // Reads fire in Phase 3 when last_applied >= read_index
             Ok(crate::PrepareResult::default())
@@ -600,14 +600,13 @@ async fn test_linearizable_read_quorum_success() {
 async fn test_linearizable_read_encounters_higher_term() {
     // Given: Leader with higher term detected during prepare phase
     let mut replication_handler = MockReplicationCore::new();
-    replication_handler
-        .expect_prepare_batch_requests()
-        .times(1)
-        .returning(move |_, _, _, _, _| {
+    replication_handler.expect_prepare_batch_requests().times(1).returning(
+        move |_, _, _, _, _, _| {
             // New architecture: Higher term detection now happens via handle_append_result
             // For testing, we simulate fatal error during prepare phase
             Err(Error::Fatal("Higher term detected".to_string()))
-        });
+        },
+    );
 
     let expect_new_commit_index = 3;
     let mut raft_log = MockRaftLog::new();
@@ -869,7 +868,7 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
     replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             // Unspecified policy defaults to LinearizableRead
             Ok(crate::PrepareResult::default())
         });
@@ -1086,10 +1085,13 @@ async fn test_linearizable_read_batch_shared_quorum() {
 
     // Mock replication handler - expect exactly 1 call for the entire batch
     let mut replication = MockReplicationCore::new();
-    replication.expect_prepare_batch_requests().times(1).returning(|_, _, _, _, _| {
-        // Multiple requests batched naturally
-        Ok(crate::PrepareResult::default())
-    });
+    replication
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            // Multiple requests batched naturally
+            Ok(crate::PrepareResult::default())
+        });
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_linearizable_read_batch_shared_quorum")
@@ -1175,10 +1177,13 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
 
     // Mock replication - expect only 1 call (from LinearizableRead only)
     let mut replication = MockReplicationCore::new();
-    replication.expect_prepare_batch_requests().times(1).returning(|_, _, _, _, _| {
-        // Linearizable read refreshes lease (via handle_log_flushed in single-voter)
-        Ok(crate::PrepareResult::default())
-    });
+    replication
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            // Linearizable read refreshes lease (via handle_log_flushed in single-voter)
+            Ok(crate::PrepareResult::default())
+        });
 
     // MemFirst: handle_log_flushed(1) commits to last_entry_id(), must be >= durable=1.
     let mut raft_log = MockRaftLog::new();
@@ -1433,10 +1438,13 @@ async fn test_client_policy_override_denied() {
 
     // Mock replication handler for LinearizableRead quorum verification
     let mut replication = MockReplicationCore::new();
-    replication.expect_prepare_batch_requests().times(1).returning(|_, _, _, _, _| {
-        // Single-voter cluster: reads fire immediately in Phase 3
-        Ok(crate::PrepareResult::default())
-    });
+    replication
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            // Single-voter cluster: reads fire immediately in Phase 3
+            Ok(crate::PrepareResult::default())
+        });
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_client_policy_override_denied")
@@ -1511,10 +1519,13 @@ async fn test_drain_single_request_no_delay() {
 
     // Mock replication for quorum verification
     let mut replication = MockReplicationCore::new();
-    replication.expect_prepare_batch_requests().times(1).returning(|_, _, _, _, _| {
-        // Server enforces LinearizableRead despite client request
-        Ok(crate::PrepareResult::default())
-    });
+    replication
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            // Server enforces LinearizableRead despite client request
+            Ok(crate::PrepareResult::default())
+        });
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_drain_single_request")
@@ -1591,10 +1602,13 @@ async fn test_drain_multiple_requests_natural_batch() {
 
     // Mock replication - expect single call for entire batch
     let mut replication = MockReplicationCore::new();
-    replication.expect_prepare_batch_requests().times(1).returning(|_, _, _, _, _| {
-        // Single request immediately processed
-        Ok(crate::PrepareResult::default())
-    });
+    replication
+        .expect_prepare_batch_requests()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            // Single request immediately processed
+            Ok(crate::PrepareResult::default())
+        });
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_drain_multiple_requests")
@@ -1765,7 +1779,7 @@ async fn test_linearizable_read_batch_single_quorum() {
     replication
         .expect_prepare_batch_requests()
         .times(1) // KEY: Single quorum check for all requests
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             // Batch optimization: single quorum for all 5 reads
             Ok(crate::PrepareResult::default())
         });
@@ -1912,7 +1926,7 @@ async fn test_linearizable_read_rejected_when_noop_not_committed() {
     replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.batching.max_batch_size = 1;
@@ -1982,7 +1996,7 @@ async fn test_lease_read_empty_payload_verification_hangs_in_multi_node() {
     let mut replication = MockReplicationCore::new();
     replication
         .expect_prepare_batch_requests()
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_lease_verification_empty_payload_hangs")
@@ -2124,7 +2138,7 @@ async fn test_linearizable_read_served_without_quorum_in_minority_partition() {
     replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut node_config = RaftNodeConfig::default();
     node_config.raft.read_consistency.allow_client_override = true;

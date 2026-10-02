@@ -1,26 +1,24 @@
 # Makefile for embedded-bench
 # Provides benchmark commands matching embedded-bench/reports/v0.2.0/report_v0.2.0_final.md
 
-.PHONY: help build clean test-single-write test-high-conc-write test-linearizable-read test-lease-read test-eventual-read test-hot-key all-tests
+.PHONY: help build clean clean-log-db test-single-write test-high-conc-write test-linearizable-read test-lease-read test-eventual-read test-hot-key all-tests \
+        all-ram-tests ramdisk-create clean-ram-log-db ramdisk-release
 
+# ===============================
+# Global Variables
+# ===============================
 BENCH_BIN := ./target/release/embedded-bench
 CONFIG_DIR := ./config
+LOG_LEVEL ?= warn
 
 # Node selection (default: n1)
 NODE ?= n1
 CONFIG_PATH := $(CONFIG_DIR)/$(NODE).toml
 SINGLE_NODE_CONFIG_PATH := $(CONFIG_DIR)/single_node.toml
-DATA_DIR := ./data/$(NODE)
-SINGLE_NODE_DATA_DIR := ./data/single-node
 
 # Metrics port per node — same scheme as examples/three-nodes-standalone
 # (8081/8082/8083), reused because the two setups never run concurrently.
 METRICS_PORT := $(if $(filter n2,$(NODE)),8082,$(if $(filter n3,$(NODE)),8083,8081))
-
-# ===============================
-# Global Variables
-# ===============================
-LOG_LEVEL ?= warn
 
 # Common parameters (matching Standalone tests)
 KEY_SIZE := 8
@@ -35,6 +33,25 @@ CLIENTS ?= 1000
 VERIFY ?= false
 VERIFY_FLAG := $(if $(filter true,$(VERIFY)),--verify-write,)
 
+# RAM disk (macOS only, optional) — isolates this node's storage on its own
+# independent RAM disk volume, to strip physical-disk latency out of a
+# benchmark. Not a general fix for unrelated flakiness — see
+# tickets/milestones/v0.2.5/446-perf-batching-measurement-2026-09-13.md.
+# One-shot: `make all-ram-tests`. Manual/single-node: add RAMDISK=true to
+# any test-* target (needs the other two nodes already running for quorum).
+RAMDISK ?= false
+RAMDISK_SIZE_MB ?= 1024
+RAMDISK_SECTORS := $(shell echo $$(( $(RAMDISK_SIZE_MB) * 2048 )))
+RAMDISK_VOLUMES := RAMDisk1 RAMDisk2 RAMDisk3
+RAMDISK_INDEX := $(if $(filter n2,$(NODE)),2,$(if $(filter n3,$(NODE)),3,1))
+
+ifeq ($(RAMDISK),true)
+DATA_DIR := /Volumes/RAMDisk$(RAMDISK_INDEX)/$(NODE)
+SINGLE_NODE_DATA_DIR := /Volumes/RAMDisk1/single-node
+else
+DATA_DIR := ./data/$(NODE)
+SINGLE_NODE_DATA_DIR := ./data/single-node
+endif
 
 # On macOS with Homebrew: auto-detect compression lib paths to skip bundled C++
 # compilation of RocksDB dependencies, which fails under macOS 26 + Xcode 26
@@ -57,7 +74,6 @@ endif
 ifneq ($(ZSTD_PREFIX),)
   BREW_ROCKSDB_ENV += ZSTD_LIB_DIR=$(ZSTD_PREFIX)/lib
 endif
-
 
 help:
 	@echo "Embedded-bench Makefile - Performance Testing"
@@ -82,6 +98,14 @@ help:
 	@echo ""
 	@echo "Run All:"
 	@echo "  make all-tests          Run all benchmark tests"
+	@echo ""
+	@echo "RAM Disk Cluster (macOS only, optional — isolates disk latency):"
+	@echo "  make all-ram-tests NODE=nX       Create RAM disks, run full --batch suite on this node (like all-tests)"
+	@echo "                                   Run in 3 terminals with NODE=n1/n2/n3 to form the cluster"
+	@echo "  make ramdisk-create              Create RAMDisk1/2/3 if not already mounted"
+	@echo "  make clean-ram-log-db            Wipe node data off the RAM disks (keeps them mounted)"
+	@echo "  make ramdisk-release             Unmount RAMDisk1/2/3, freeing the memory"
+	@echo "  Add RAMDISK=true to any single test-* target (needs the other 2 nodes already running)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make test-linearizable-read              # Run on n1 (default)"
@@ -109,6 +133,7 @@ clean-log-db:
 	rm -rf ./logs/*
 	rm -rf ./data/*
 	rm -rf ./snapshots/*
+
 # ============================================
 # Write Performance Tests
 # ============================================
@@ -262,4 +287,34 @@ all-tests: build
 		put
 	@echo ""
 	@echo "Compare results with Standalone mode:"
-	@echo "  Standalone report: ../../benches/standalone-bench/reports/v0.2.2/report_v0.2.2.md"
+
+# ============================================
+# RAM Disk Cluster (macOS only, optional)
+# ============================================
+# Isolates each node's storage on its own independent RAM disk volume — use
+# this to strip physical-disk latency out of a benchmark (e.g. to study
+# fsync/scheduling behavior in isolation), not as a general fix for
+# unrelated flakiness. See tickets/milestones/v0.2.5/446-perf-batching-measurement-2026-09-13.md.
+
+# Ensures the RAM disks exist, then runs the full --batch suite for this
+# node on its own RAM disk volume — same scope/shape as `make all-tests
+# NODE=nX`, just on RAM disk. This is single-node, like all-tests: run it in
+# 3 separate terminals with NODE=n1/n2/n3 to form the cluster, e.g.
+#   make all-ram-tests NODE=n2 CLIENTS=100
+all-ram-tests: ramdisk-create
+	$(MAKE) all-tests RAMDISK=true NODE=$(NODE) CLIENTS=$(CLIENTS)
+
+# Idempotent — mounts any of RAMDisk1/2/3 that aren't already present.
+ramdisk-create:
+	@[ "$$(uname)" = "Darwin" ] || { echo "RAM disk targets need macOS."; exit 1; }
+	@for v in $(RAMDISK_VOLUMES); do \
+		[ -d "/Volumes/$$v" ] || diskutil erasevolume HFS+ $$v `hdiutil attach -nomount ram://$(RAMDISK_SECTORS)` >/dev/null; \
+	done
+
+# Wipes node data off the RAM disks; keeps the volumes mounted.
+clean-ram-log-db:
+	@for v in $(RAMDISK_VOLUMES); do rm -rf /Volumes/$$v/*; done
+
+# Unmounts the RAM disks entirely, releasing the memory back to the OS.
+ramdisk-release:
+	@for v in $(RAMDISK_VOLUMES); do diskutil eject /Volumes/$$v 2>/dev/null || true; done

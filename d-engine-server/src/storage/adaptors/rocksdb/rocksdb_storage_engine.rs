@@ -185,7 +185,6 @@ impl RocksDBLogStore {
 
 #[async_trait]
 impl LogStore for RocksDBLogStore {
-    #[instrument(skip(self, entries))]
     async fn persist_entries(
         &self,
         entries: Vec<Entry>,
@@ -197,11 +196,15 @@ impl LogStore for RocksDBLogStore {
 
         let mut batch = WriteBatch::default();
         let mut max_index = 0;
+        let mut value_buf = Vec::new();
 
         for entry in entries {
             let key = Self::index_to_key(entry.index);
-            let value = entry.encode_to_vec();
-            batch.put_cf(&cf, key, value);
+            value_buf.clear();
+            entry
+                .encode(&mut value_buf)
+                .map_err(|e| StorageError::SerializationError(e.to_string()))?;
+            batch.put_cf(&cf, key, &value_buf);
             max_index = max_index.max(entry.index);
         }
 
@@ -313,7 +316,7 @@ impl LogStore for RocksDBLogStore {
         self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
 
         // Persist purge boundary to META_CF for crash recovery.
-        // BufferedRaftLog::new() reads this on restart to restore last_purged_index/term
+        // RaftLogCore::new() reads this on restart to restore last_purged_index/term
         // so that entry_term(last_purged_index) returns the correct term after restart.
         if let Some(cf_meta) = self.db.cf_handle(META_CF) {
             let encoded = cutoff_index.encode_to_vec();
@@ -383,7 +386,7 @@ impl LogStore for RocksDBLogStore {
         &self,
         from_index: u64,
         new_entries: Vec<Entry>,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let cf = self
             .db
             .cf_handle(LOG_CF)
@@ -404,7 +407,7 @@ impl LogStore for RocksDBLogStore {
 
         self.db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
         self.last_index.store(new_last_index, Ordering::SeqCst);
-        Ok(())
+        Ok(new_last_index)
     }
 
     fn is_write_durable(&self) -> bool {

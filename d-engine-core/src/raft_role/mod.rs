@@ -16,6 +16,8 @@ mod follower_state_test;
 #[cfg(test)]
 mod learner_state_test;
 #[cfg(test)]
+mod pending_ack_test;
+#[cfg(test)]
 mod role_state_test;
 
 use std::collections::HashMap;
@@ -48,7 +50,7 @@ use super::InternalEvent;
 use super::RaftContext;
 use crate::Result;
 use crate::TypeConfig;
-use crate::role_state::PeerReplicationState;
+use crate::role_state::PendingAcks;
 
 /// The role state focuses solely on its own logic
 /// and does not directly manipulate the underlying storage or network.
@@ -374,6 +376,34 @@ impl<T: TypeConfig> RaftRole<T> {
     pub(crate) fn become_learner(&self) -> Result<RaftRole<T>> {
         self.state().become_learner()
     }
+    /// Move the withheld-ACK queue out of the current role before a transition.
+    /// Only Follower and Learner keep one; every other role yields an empty map.
+    ///
+    /// A withheld ACK describes this node's durable log, not its role. Dropping it
+    /// on a `Learner -> Follower` promotion would strand the leader waiting on a
+    /// response that never arrives (#446).
+    pub(crate) fn take_pending_acks(&mut self) -> PendingAcks {
+        self.state_mut()
+            .pending_append_acks_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    /// Install a carried withheld-ACK queue into the role a transition produced.
+    /// Follower and Learner adopt it; any other role cannot hold it, so its
+    /// entries are failed with a conflict response.
+    pub(crate) fn restore_pending_acks(
+        &mut self,
+        acks: PendingAcks,
+    ) {
+        let node_id = self.state().node_id();
+        let current_term = self.state().current_term();
+        match self.state_mut().pending_append_acks_mut() {
+            Some(queue) => *queue = acks,
+            None => role_state::reject_pending_acks(acks, node_id, current_term),
+        }
+    }
+
     pub fn current_term(&self) -> u64 {
         self.state().current_term()
     }
@@ -384,28 +414,6 @@ impl<T: TypeConfig> RaftRole<T> {
         peer_ids: Vec<u32>,
     ) -> Result<()> {
         self.state_mut().init_peers_next_index_and_match_index(last_entry_id, peer_ids)
-    }
-
-    /// Reset `next_index[peer] = match_index[peer] + 1` after a bidi stream disconnect.
-    /// Ensures the next heartbeat re-sends any unACKed in-flight entries.
-    pub(crate) fn handle_peer_stream_error(
-        &mut self,
-        peer_id: u32,
-    ) {
-        // The bidi stream only carries AppendEntries. While this peer is in Snapshot
-        // state, an error on this stream says nothing about the independent
-        // connection the snapshot transfer runs on, so it has no authority to act
-        // (mirrors etcd raft.go MsgUnreachable: only BecomeProbe() when StateReplicate).
-        if self.state().peer_replication_state(peer_id) == PeerReplicationState::Snapshot {
-            return;
-        }
-        let match_idx = self.state().match_index(peer_id).unwrap_or(0);
-        let _ = self.state_mut().update_next_index(peer_id, match_idx + 1);
-
-        // #436: stream is down, we don't know what (if anything) the peer received —
-        // stop trusting speculative advance (etcd: BecomeProbe on MsgUnreachable).
-        self.state_mut()
-            .set_peer_replication_state(peer_id, PeerReplicationState::Probe);
     }
 
     pub(crate) async fn handle_zombie_detected(

@@ -69,8 +69,7 @@ opt-level = 3 # All dependency optimization levels
 [profile.release]
 incremental = true
 debug = false
-# opt-level = 3
-opt-level = 'z'        # Optimized for minimum size
+opt-level = 3
 overflow-checks = true
 lto = true             # Eliminate redundant code and reduce size
 codegen-units = 1      # Reduce parallel code generation units to improve optimization effect

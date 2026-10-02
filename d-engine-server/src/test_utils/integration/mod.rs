@@ -45,12 +45,10 @@ use std::sync::Arc;
 use bytes::Bytes;
 use d_engine_core::DefaultStateMachineHandler;
 use d_engine_core::ElectionHandler;
-use d_engine_core::FlushPolicy;
 use d_engine_core::LogSizePolicy;
 use d_engine_core::MockStateMachine;
-use d_engine_core::PersistenceConfig;
-use d_engine_core::PersistenceStrategy;
 use d_engine_core::RaftLog;
+use d_engine_core::RaftLogCore;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::ReplicationHandler;
 use d_engine_core::StateMachine;
@@ -77,7 +75,6 @@ use crate::FileStorageEngine;
 use crate::membership::RaftMembership;
 use crate::network::grpc::grpc_transport::GrpcTransport;
 use crate::node::RaftTypeConfig;
-use crate::storage::BufferedRaftLog;
 
 /// Complete testing environment for Raft consensus algorithm integration tests.
 ///
@@ -178,19 +175,7 @@ pub fn setup_raft_components(
         storage_engine.log_store().reset_sync().unwrap();
     }
 
-    let (buffered_raft_log, receiver) = BufferedRaftLog::new(
-        id,
-        PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
-            flush_policy: FlushPolicy::Batch {
-                idle_flush_interval_ms: 1,
-            },
-            max_buffered_entries: 10000,
-            shutdown_timeout_ms: 5000,
-        },
-        storage_engine.clone(),
-    );
-    let buffered_raft_log = buffered_raft_log.start(receiver, None);
+    let buffered_raft_log = RaftLogCore::new(id, storage_engine.clone(), None, 5000);
     let mock_state_machine = mock_state_machine();
     let last_applied_pair = mock_state_machine.last_applied();
 

@@ -79,11 +79,15 @@ pub struct RaftConfig {
     #[serde(default = "default_cmd_channel_capacity")]
     pub cmd_channel_capacity: usize,
 
-    /// Ordered channel capacity for stream_append_entries ordering
-    /// Controls buffering of response receivers in FIFO order
-    /// Default value is set via default_ordered_channel_capacity() function
-    #[serde(default = "default_ordered_channel_capacity")]
-    pub ordered_channel_capacity: usize,
+    /// Max in-flight AppendEntries requests on `stream_append_entries` that can be
+    /// dispatched to the Raft loop and awaiting their response at once. Once this many
+    /// are pending, the stream stops reading new requests until one completes — this
+    /// bounds memory/task growth if this node's own durable_index stalls (RPO=0, #446).
+    /// Also used directly as the output channel's buffer size, since completed
+    /// responses can never outnumber in-flight requests.
+    /// Default value is set via default_max_pending_append_responses() function
+    #[serde(default = "default_max_pending_append_responses")]
+    pub max_pending_append_responses: usize,
 
     /// ReadActor configuration — tuning for the dedicated Eventual/LeaseRead fast path.
     #[serde(default)]
@@ -141,7 +145,7 @@ impl Default for RaftConfig {
             auto_join: AutoJoinConfig::default(),
             snapshot_rpc_timeout_ms: default_snapshot_rpc_timeout_ms(),
             cmd_channel_capacity: default_cmd_channel_capacity(),
-            ordered_channel_capacity: default_ordered_channel_capacity(),
+            max_pending_append_responses: default_max_pending_append_responses(),
             read_actor: ReadActorConfig::default(),
             read_consistency: ReadConsistencyConfig::default(),
             backpressure: BackpressureConfig::default(),
@@ -162,6 +166,14 @@ impl RaftConfig {
         if self.general_raft_timeout_duration_in_ms < 1 {
             return Err(Error::Config(ConfigError::Message(
                 "general_raft_timeout_duration_in_ms must be at least 1ms".into(),
+            )));
+        }
+
+        if self.max_pending_append_responses == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "max_pending_append_responses must be at least 1 \
+                 (0 causes mpsc::channel to panic)"
+                    .into(),
             )));
         }
 
@@ -201,7 +213,7 @@ fn default_cmd_channel_capacity() -> usize {
     1024
 }
 
-fn default_ordered_channel_capacity() -> usize {
+fn default_max_pending_append_responses() -> usize {
     1024
 }
 
@@ -275,6 +287,15 @@ pub struct ReplicationConfig {
     /// Maximum log entries per single AppendEntries RPC to a follower.
     #[serde(default = "default_entries_per_replication")]
     pub append_entries_max_entries_per_replication: u64,
+
+    /// Max un-acknowledged AppendEntries requests allowed in flight
+    #[serde(default = "default_max_inflight_append_requests")]
+    pub max_inflight_append_requests: usize,
+
+    /// Per-peer send queue capacity (requests). Must be >= max_inflight_append_requests,
+    /// otherwise the queue reports Full before the in-flight window does.
+    #[serde(default = "default_replication_send_queue_capacity")]
+    pub replication_send_queue_capacity: usize,
 }
 
 impl Default for ReplicationConfig {
@@ -282,6 +303,8 @@ impl Default for ReplicationConfig {
         Self {
             rpc_append_entries_clock_in_ms: default_append_interval(),
             append_entries_max_entries_per_replication: default_entries_per_replication(),
+            max_inflight_append_requests: default_max_inflight_append_requests(),
+            replication_send_queue_capacity: default_replication_send_queue_capacity(),
         }
     }
 }
@@ -296,6 +319,18 @@ impl ReplicationConfig {
         if self.append_entries_max_entries_per_replication == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "append_entries_max_entries_per_replication must be > 0".into(),
+            )));
+        }
+
+        if self.max_inflight_append_requests == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "max_inflight_append_requests must be > 0".into(),
+            )));
+        }
+
+        if self.replication_send_queue_capacity < self.max_inflight_append_requests {
+            return Err(Error::Config(ConfigError::Message(
+                "replication_send_queue_capacity must be >= max_inflight_append_requests".into(),
             )));
         }
 
@@ -371,6 +406,13 @@ fn default_max_merge_entries() -> usize {
 
 fn default_entries_per_replication() -> u64 {
     100
+}
+
+fn default_max_inflight_append_requests() -> usize {
+    256
+}
+fn default_replication_send_queue_capacity() -> usize {
+    1024
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ElectionConfig {
@@ -817,93 +859,15 @@ impl Default for PromotionConfig {
 fn default_stale_learner_threshold() -> Duration {
     Duration::from_secs(300)
 }
-/// Defines how Raft log entries are persisted and accessed.
-///
-/// All strategies use a configurable [`FlushPolicy`] to control when memory contents
-/// are flushed to disk, affecting write latency and durability guarantees.
-///
-/// **Note:** Both strategies now fully load all log entries from disk into memory at startup.
-/// The in-memory `SkipMap` serves as the primary data structure for reads in all modes.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub enum PersistenceStrategy {
-    /// Memory-first persistence strategy.
-    ///
-    /// - **Write path**: On append, the log entry is first written to the in-memory `SkipMap` and
-    ///   acknowledged immediately. Disk persistence happens asynchronously in the background,
-    ///   governed by [`FlushPolicy`].
-    ///
-    /// - **Read path**: Reads are always served from the in-memory `SkipMap`.
-    ///
-    /// - **Startup behavior**: All log entries are loaded from disk into memory at startup.
-    ///
-    MemFirst,
-}
-
-/// Controls when in-memory logs should be flushed to disk.
-///
-/// Flush is triggered by whichever comes first:
-/// - An explicit `flush()` call (immediate, no wait).
-/// - `append_entries` calls `write_notify.notify_one()` for an immediate persist+fsync.
-/// - The idle safety-net timer fires after `idle_flush_interval_ms` of inactivity.
-///
-/// `idle_flush_interval_ms` must be greater than zero. It only fires when no
-/// writes have arrived for that duration; normal-path latency is determined by
-/// the fsync execution time (drain-then-fsync architecture).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub enum FlushPolicy {
-    Batch { idle_flush_interval_ms: u64 },
-}
 
 /// Configuration parameters for log persistence behavior
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PersistenceConfig {
-    /// Strategy for persisting Raft logs
-    ///
-    /// This controls the trade-off between durability guarantees and performance
-    /// characteristics. The choice impacts both write throughput and recovery
-    /// behavior after node failures.
-    #[serde(default = "default_persistence_strategy")]
-    pub strategy: PersistenceStrategy,
-
-    /// Flush policy for asynchronous strategies
-    ///
-    /// This controls when log entries are flushed to disk. The choice impacts
-    /// write performance and durability guarantees.
-    #[serde(default = "default_flush_policy")]
-    pub flush_policy: FlushPolicy,
-
-    /// Maximum number of in-memory log entries to buffer when using async strategies
-    ///
-    /// This acts as a safety valve to prevent memory exhaustion during periods of
-    /// high write throughput or when disk persistence is slow.
-    #[serde(default = "default_max_buffered_entries")]
-    pub max_buffered_entries: usize,
-
     /// Maximum time to wait, on shutdown, for an in-flight fsync task to finish
     /// before giving up. Bounds close() against a stuck/slow disk — the task
     /// itself is not cancelled, it keeps running in the background regardless.
     #[serde(default = "default_shutdown_timeout_ms")]
     pub shutdown_timeout_ms: u64,
-}
-
-/// Default persistence strategy (optimized for balanced workloads)
-fn default_persistence_strategy() -> PersistenceStrategy {
-    PersistenceStrategy::MemFirst
-}
-
-/// Default flush policy for asynchronous strategies
-///
-/// This controls when log entries are flushed to disk. The choice impacts
-/// write performance and durability guarantees.
-fn default_flush_policy() -> FlushPolicy {
-    FlushPolicy::Batch {
-        idle_flush_interval_ms: 1000,
-    }
-}
-
-/// Default maximum buffered log entries
-fn default_max_buffered_entries() -> usize {
-    10_000
 }
 
 fn default_shutdown_timeout_ms() -> u64 {
@@ -912,14 +876,6 @@ fn default_shutdown_timeout_ms() -> u64 {
 
 impl PersistenceConfig {
     pub fn validate(&self) -> Result<()> {
-        let FlushPolicy::Batch {
-            idle_flush_interval_ms,
-        } = self.flush_policy;
-        if idle_flush_interval_ms == 0 {
-            return Err(Error::Config(ConfigError::Message(
-                "flush_policy.idle_flush_interval_ms must be greater than 0".into(),
-            )));
-        }
         if self.shutdown_timeout_ms == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "shutdown_timeout_ms must be greater than 0".into(),
@@ -933,9 +889,6 @@ impl PersistenceConfig {
 impl Default for PersistenceConfig {
     fn default() -> Self {
         Self {
-            strategy: default_persistence_strategy(),
-            flush_policy: default_flush_policy(),
-            max_buffered_entries: default_max_buffered_entries(),
             shutdown_timeout_ms: default_shutdown_timeout_ms(),
         }
     }

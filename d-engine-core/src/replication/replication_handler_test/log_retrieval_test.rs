@@ -69,6 +69,7 @@ async fn test_retrieve_only_new_entries_when_peer_caught_up() {
         &peer_next_indices,
         &context.raft_log,
         1,
+        &HashMap::new(),
     );
 
     // Assert: Only new entries returned (peer already has old logs)
@@ -125,6 +126,7 @@ async fn test_retrieve_old_and_new_entries_when_peer_behind() {
         &peer_next_indices,
         &context.raft_log,
         1,
+        &HashMap::new(),
     );
 
     // Assert: Both old and new entries returned
@@ -177,6 +179,7 @@ async fn test_retrieve_only_old_entries_when_no_new_entries() {
         &peer_next_indices,
         &context.raft_log,
         1,
+        &HashMap::new(),
     );
 
     // Assert: Only old entry returned (no new entries)
@@ -230,6 +233,7 @@ async fn test_retrieve_limited_old_entries_with_max_limit() {
         &peer_next_indices,
         &context.raft_log,
         1,
+        &HashMap::new(),
     );
 
     // Assert: Only first 2 old entries + new entry (limited by max)
@@ -285,6 +289,7 @@ async fn test_retrieve_only_new_entries_when_max_limit_zero() {
         &peer_next_indices,
         &context.raft_log,
         1,
+        &HashMap::new(),
     );
 
     // Assert: Only new entry (no old logs due to max=0)
@@ -340,6 +345,7 @@ async fn test_leader_id_excluded_from_replication_targets() {
         &peer_next_indices,
         &context.raft_log,
         1,
+        &HashMap::new(),
     );
 
     // Assert: Peer3 receives entries
@@ -395,6 +401,7 @@ async fn test_retrieve_corrupt_gap_when_range_read_short() {
         &peer_next_indices,
         &context.raft_log,
         11, // first_index
+        &HashMap::new(),
     );
 
     assert_eq!(
@@ -459,6 +466,7 @@ async fn test_retrieve_corrupt_gap_when_range_read_gapped() {
         &peer_next_indices,
         &context.raft_log,
         11,
+        &HashMap::new(),
     );
 
     assert_eq!(
@@ -471,5 +479,45 @@ async fn test_retrieve_corrupt_gap_when_range_read_gapped() {
             count: 4,
         }),
         "gapped range read must be classified as CorruptGap"
+    );
+}
+
+/// A peer whose in-flight window is gated must get no prepared entries, while an ungated peer
+/// with the same position still does. The gate is checked before the log is touched.
+///
+/// # Scenario
+/// - Peers 2 and 3 are both behind (`next_index = 1`), one old entry exists at index 1.
+/// - `peer_gating_decisions = {2: true, 3: false}`.
+/// - Expected: peer 3 is `Ready(old entry)`; peer 2 has no entry in the result.
+#[tokio::test]
+async fn test_gated_peer_gets_no_entries_while_ungated_peer_does() {
+    let mut context = setup_mock_replication_test_context(1);
+    let my_id = 1;
+
+    let old_entries = mock_insert_log_entries(vec![1], 1, 1);
+    let raft_log_mut = Arc::get_mut(&mut context.raft_log).unwrap();
+    mock_log_entries_exist(raft_log_mut, old_entries.clone());
+
+    let peer_next_indices = HashMap::from([(2_u32, 1_u64), (3_u32, 1_u64)]);
+    let handler = ReplicationHandler::<MockTypeConfig>::new(my_id);
+
+    let result = handler.retrieve_to_be_synced_logs_for_peers(
+        &[],
+        1,
+        100,
+        &peer_next_indices,
+        &context.raft_log,
+        1,
+        &HashMap::from([(2_u32, true), (3_u32, false)]),
+    );
+
+    assert!(
+        !result.contains_key(&2),
+        "a window-full peer must not have entries prepared"
+    );
+    assert_eq!(
+        result.get(&3),
+        Some(&crate::PeerEntriesResult::Ready(old_entries)),
+        "an ungated peer at the same position must still get its entries"
     );
 }

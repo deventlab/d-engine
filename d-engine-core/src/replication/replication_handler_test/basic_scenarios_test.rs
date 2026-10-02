@@ -68,6 +68,7 @@ async fn test_single_voter_builds_no_replication_requests() {
                 total_voters: 1,
             },
             &context,
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -127,6 +128,7 @@ async fn test_two_node_cluster_builds_one_replication_request() {
                 total_voters: 2,
             },
             &context,
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -200,6 +202,7 @@ async fn test_three_node_cluster_builds_two_replication_requests() {
                 total_voters: 3,
             },
             &context,
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -286,6 +289,7 @@ async fn test_five_node_cluster_builds_four_replication_requests() {
                 total_voters: 5,
             },
             &context,
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -300,4 +304,89 @@ async fn test_five_node_cluster_builds_four_replication_requests() {
     assert!(peer_ids.contains(&peer3_id));
     assert!(peer_ids.contains(&peer4_id));
     assert!(peer_ids.contains(&peer5_id));
+}
+
+/// A window-gated peer must still receive a request, just without entries (liveness), and its
+/// position fields must match what an ungated peer at the same position gets.
+///
+/// # Scenario
+/// - Peers 2 and 3 both at `next_index = 1`, one old entry at index 1.
+/// - `peer_gating_decisions = {2: true}`.
+/// - Expected: two requests; peer 2's has empty entries, peer 3's has one entry; both carry the
+///   same `prev_log_index`.
+#[tokio::test]
+async fn test_gated_peer_still_gets_empty_request_for_liveness() {
+    use crate::mock_insert_log_entries;
+    use crate::mock_log_entries_exist;
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_gated_peer_still_gets_empty_request_for_liveness",
+        graceful_rx,
+        None,
+    );
+    let handler = ReplicationHandler::<MockTypeConfig>::new(1);
+
+    let old_entries = mock_insert_log_entries(vec![1], 1, 1);
+    let mut raft_log = MockRaftLog::new();
+    mock_log_entries_exist(&mut raft_log, old_entries);
+    raft_log.expect_first_entry_id().returning(|| 1);
+    raft_log.expect_entry_term().returning(|_| None);
+    context.storage.raft_log = Arc::new(raft_log);
+
+    let peer = |id: u32| NodeMeta {
+        id,
+        address: format!("http://127.0.0.1:{}", 55000 + id),
+        role: NodeRole::Follower.into(),
+        status: NodeStatus::Active.into(),
+    };
+
+    let result = handler
+        .prepare_batch_requests(
+            vec![],
+            StateSnapshot {
+                current_term: 1,
+                voted_for: None,
+                commit_index: 0,
+                role: Leader.into(),
+            },
+            LeaderStateSnapshot {
+                next_index: HashMap::from([(2, 1), (3, 1)]),
+                match_index: HashMap::new(),
+                noop_log_id: None,
+            },
+            &ClusterMetadata {
+                single_voter: false,
+                replication_targets: vec![peer(2), peer(3)],
+                total_voters: 3,
+            },
+            &context,
+            &HashMap::from([(2_u32, true)]),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.append_requests.len(), 2, "both peers get a request");
+    let req_of = |id: u32| {
+        &result
+            .append_requests
+            .iter()
+            .find(|(p, _, _)| *p == id)
+            .unwrap_or_else(|| panic!("no request for peer {id}"))
+            .1
+    };
+    assert!(
+        req_of(2).entries.is_empty(),
+        "the gated peer's request is an empty keepalive"
+    );
+    assert_eq!(
+        req_of(3).entries.len(),
+        1,
+        "the ungated peer still gets its entry"
+    );
+    assert_eq!(
+        req_of(2).prev_log_index,
+        req_of(3).prev_log_index,
+        "the keepalive is a consistent request at the same position"
+    );
 }

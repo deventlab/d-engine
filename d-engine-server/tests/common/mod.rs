@@ -11,9 +11,7 @@ use d_engine_core::alias::SOF;
 use d_engine_core::client::ErrorCode;
 use d_engine_core::config::BackoffPolicy;
 use d_engine_core::config::ElectionConfig;
-use d_engine_core::config::FlushPolicy;
 use d_engine_core::config::PersistenceConfig;
-use d_engine_core::config::PersistenceStrategy;
 use d_engine_core::config::RaftConfig;
 use d_engine_core::config::RaftNodeConfig;
 use d_engine_core::config::SnapshotConfig;
@@ -123,9 +121,8 @@ pub async fn create_node_config(
             {initial_cluster_entries}
         ]
 
-        [raft.persistence]
-        strategy = "MemFirst"
-        flush_policy = {{ Batch = {{ threshold = 100, idle_flush_interval_ms = 1 }} }}
+        [raft]
+        general_raft_timeout_duration_in_ms = 5000
 
         [raft.election]
         election_timeout_min = 300
@@ -173,10 +170,6 @@ pub async fn create_node_config_with_role(
             {initial_cluster_entries}
         ]
 
-        [raft.persistence]
-        strategy = "MemFirst"
-        flush_policy = {{ Batch = {{ threshold = 1, idle_flush_interval_ms = 1 }} }}
-
         [raft.election]
         election_timeout_min = 300
         election_timeout_max = 3000
@@ -218,10 +211,6 @@ pub fn node_config(cluster_toml: &str) -> RaftNodeConfig {
             ..Default::default()
         },
         persistence: PersistenceConfig {
-            strategy: PersistenceStrategy::MemFirst,
-            flush_policy: FlushPolicy::Batch {
-                idle_flush_interval_ms: 1,
-            },
             ..Default::default()
         },
         election: ElectionConfig {
@@ -560,12 +549,15 @@ election_timeout_max = 6000
 ///
 /// Equivalent to the Phase 2+3 retry loop in `leader_failover_cas_standalone`.
 ///
-/// Bounded to 30s: if elections never stabilize (a real regression, not just a slow
+/// Bounded to 45s: if elections never stabilize (a real regression, not just a slow
 /// CI box), this returns the last transient error instead of hanging the test forever
 /// with no diagnostic — an unbounded loop here turns "election liveness broke" into a
 /// bare test-runner timeout with no indication of what was actually still failing.
+///
+/// TODO(#428): 45s (was 30s) gives the 2-node re-election room to converge with the
+/// widened 3000/6000 election timeout in `node_config`. Tighten once leader lease lands.
 pub async fn wait_for_stable_leader(client: &Client) -> Result<(), ClientApiError> {
-    const DEADLINE: Duration = Duration::from_secs(30);
+    const DEADLINE: Duration = Duration::from_secs(45);
     let deadline = tokio::time::Instant::now() + DEADLINE;
     let mut last_err: Option<ClientApiError> = None;
 
@@ -610,6 +602,20 @@ pub async fn wait_for_stable_leader(client: &Client) -> Result<(), ClientApiErro
                 },
             ) => {
                 last_err = Some(e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            // New leader hasn't committed its own term's noop entry yet (Raft
+            // safety requirement before serving reads) — same cascading-election
+            // window as the arms above, just a different stage of it. Transient.
+            Err(
+                ref e @ ClientApiError::Business {
+                    code: ErrorCode::ClusterUnavailable,
+                    ref message,
+                    ..
+                },
+            ) if message.contains("noop not committed") => {
+                last_err = Some(e.clone());
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }

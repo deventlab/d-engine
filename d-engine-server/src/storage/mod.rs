@@ -19,11 +19,9 @@
 /// This module contains pluggable storage backends including file-based
 /// and RocksDB-based state machines that implement the `StateMachine` trait.
 pub mod adaptors;
-mod buffered;
 mod lease;
 
 pub use adaptors::*;
-pub use buffered::*;
 // Re-export Lease trait from core for convenience
 pub use d_engine_core::Lease;
 pub use lease::TtlLease;

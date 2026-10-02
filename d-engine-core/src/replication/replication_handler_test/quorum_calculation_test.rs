@@ -74,6 +74,7 @@ async fn test_two_node_cluster_builds_one_peer_request() {
                 total_voters: 2,
             },
             &context,
+            &HashMap::new(),
         )
         .await
         .unwrap();

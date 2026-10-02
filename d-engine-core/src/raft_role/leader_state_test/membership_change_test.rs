@@ -103,7 +103,7 @@ async fn test_join_cluster_precondition_checks() {
         .handlers
         .replication_handler
         .expect_prepare_batch_requests()
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, raft_context.node_config.clone());
 
@@ -192,7 +192,7 @@ async fn test_join_cluster_creates_correct_config_change() {
         .handlers
         .replication_handler
         .expect_prepare_batch_requests()
-        .returning(move |payloads, _, _, _, _| {
+        .returning(move |payloads, _, _, _, _, _| {
             // Capture payloads for validation
             captured_clone.lock().extend(payloads.clone());
             // Return empty to let test proceed without waiting for commit
@@ -324,7 +324,7 @@ async fn test_join_cluster_triggers_verification() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1) // Must be called exactly once
-        .returning(|_, _, _, _, _| {
+        .returning(|_, _, _, _, _, _| {
             // Verification triggered successfully
             Ok(crate::PrepareResult::default())
         });
@@ -459,7 +459,7 @@ async fn test_handle_join_cluster_quorum_failed() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(..)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
@@ -560,7 +560,7 @@ async fn test_handle_join_cluster_quorum_error() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::Fatal("Simulated quorum error".to_string())));
+        .returning(|_, _, _, _, _, _| Err(Error::Fatal("Simulated quorum error".to_string())));
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
 
@@ -730,7 +730,7 @@ mod stale_learner_tests {
 
         // Mock replication handler to capture payloads
         ctx.handlers.replication_handler.expect_prepare_batch_requests().returning(
-            move |payloads, _, _, _, _| {
+            move |payloads, _, _, _, _, _| {
                 captured_clone.lock().extend(payloads.clone());
                 Ok(crate::PrepareResult::default()) // Return empty, test focuses on config creation
             },
@@ -1186,7 +1186,7 @@ mod pending_promotion_tests {
             let capture_clone = captured_payloads.clone();
             let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
             replication_handler.expect_prepare_batch_requests().times(..).returning(
-                move |payloads, _, _, _, _| {
+                move |payloads, _, _, _, _, _| {
                     capture_clone.lock().extend(payloads.clone());
                     Ok(crate::PrepareResult::default())
                 },
@@ -1336,7 +1336,7 @@ mod pending_promotion_tests {
             .handlers
             .replication_handler
             .expect_prepare_batch_requests()
-            .returning(move |payloads, _, _, _, _| {
+            .returning(move |payloads, _, _, _, _, _| {
                 captured_clone.lock().extend(payloads.clone());
                 Ok(crate::PrepareResult::default()) // Return empty, test focuses on config creation
             });
@@ -1613,7 +1613,7 @@ mod zombie_purge_tests {
             .replication_handler
             .expect_prepare_batch_requests()
             .times(0) // Must NOT be called — zombie detection is warn-only
-            .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+            .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().returning(|| 10);
@@ -1652,7 +1652,7 @@ mod zombie_purge_tests {
             .replication_handler
             .expect_prepare_batch_requests()
             .times(0)
-            .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+            .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
         let mut raft_log = MockRaftLog::new();
         raft_log.expect_last_entry_id().returning(|| 10);
@@ -1694,7 +1694,7 @@ mod zombie_purge_tests {
             .replication_handler
             .expect_prepare_batch_requests()
             .times(0) // Must NOT be called — node is already removed
-            .returning(move |payloads, _, _, _, _| {
+            .returning(move |payloads, _, _, _, _, _| {
                 captured_clone.lock().extend(payloads.clone());
                 Ok(crate::PrepareResult::default())
             });

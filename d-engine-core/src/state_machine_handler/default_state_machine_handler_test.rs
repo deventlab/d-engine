@@ -2,6 +2,7 @@ use super::DefaultStateMachineHandler;
 use super::DefaultStateMachineWriter;
 use super::StateMachineHandler;
 use super::StateMachineWriterOps;
+#[cfg(feature = "watch")]
 use super::broadcast_watch_events;
 use super::new_reader_writer_pair;
 use crate::Error;
@@ -14,9 +15,7 @@ use crate::test_utils::snapshot_config;
 use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::batch_op::Op;
-use d_engine_proto::client::write_command::{
-    Batch, BatchOp as ProtoBatchOp, Insert, Operation, batch_op,
-};
+use d_engine_proto::client::write_command::{Batch, BatchOp as ProtoBatchOp, Insert, Operation};
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
@@ -313,7 +312,7 @@ mod apply_chunk_test {
         let cmd = WriteCommand {
             operation: Some(Operation::Batch(Batch {
                 ops: vec![ProtoBatchOp {
-                    op: Some(batch_op::Op::Insert(Insert {
+                    op: Some(Op::Insert(Insert {
                         key: Bytes::from_static(b"k1"),
                         value: Bytes::from_static(b"v1"),
                         ttl_secs: 0,
@@ -374,7 +373,7 @@ mod apply_chunk_test {
         let cmd = WriteCommand {
             operation: Some(Operation::Batch(Batch {
                 ops: vec![ProtoBatchOp {
-                    op: Some(batch_op::Op::Insert(Insert {
+                    op: Some(Op::Insert(Insert {
                         key: Bytes::from_static(b"k1"),
                         value: Bytes::from_static(b"v1"),
                         ttl_secs: 0,

@@ -83,12 +83,12 @@ fn prepare_succeed_majority_confirmation() -> (
     // last_entry_id() / durable_index() return the post-write value.  This is
     // required for the single-voter inline-flush path in verify_internal_quorum
     // to advance past the noop entry and fire the commit signal.
-    replication_handler
-        .expect_prepare_batch_requests()
-        .returning(move |payloads, _, _, _, _| {
+    replication_handler.expect_prepare_batch_requests().returning(
+        move |payloads, _, _, _, _, _| {
             li_prepare.fetch_add(payloads.len() as u64, Ordering::Relaxed);
             Ok(crate::PrepareResult::default())
-        });
+        },
+    );
 
     (raft_log, replication_handler)
 }
@@ -681,7 +681,7 @@ async fn test_leader_verification_fails_downgrades() {
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
         .expect_prepare_batch_requests()
-        .returning(|_, _, _, _, _| Err(crate::Error::Fatal("Verification failed".to_string())));
+        .returning(|_, _, _, _, _, _| Err(crate::Error::Fatal("Verification failed".to_string())));
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
@@ -936,9 +936,11 @@ async fn test_leader_ready_notification_suppressed_when_noop_fails() {
     // prepare_batch_requests returning Err simulates noop failure:
     // verify_internal_quorum returns Err → BecomeFollower queued → notify_leader_change(Some) never sent.
     let mut replication_handler = crate::MockReplicationCore::new();
-    replication_handler.expect_prepare_batch_requests().returning(|_, _, _, _, _| {
-        Err(crate::Error::Fatal("Noop verification failed".to_string()))
-    });
+    replication_handler
+        .expect_prepare_batch_requests()
+        .returning(|_, _, _, _, _, _| {
+            Err(crate::Error::Fatal("Noop verification failed".to_string()))
+        });
 
     raft.ctx.storage.raft_log = Arc::new(raft_log);
     raft.ctx.handlers.replication_handler = replication_handler;
@@ -1437,9 +1439,10 @@ async fn test_snapshot_push_completed_uses_snapshot_boundary_not_leader_tip() {
     let current_term = raft.current_term();
     // Establish an active snapshot transfer — the handler seeds next_index only for a
     // peer that is actually mid-snapshot.
-    raft.role
-        .state_mut()
-        .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Snapshot);
+    let crate::RaftRole::Leader(leader) = &mut raft.role else {
+        panic!("expected Leader role after BecomeLeader");
+    };
+    leader.set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Snapshot);
     raft.handle_internal_event(InternalEvent::SnapshotPushCompleted {
         peer_id,
         success: true,
@@ -1660,17 +1663,24 @@ async fn test_peer_stream_error_does_not_touch_peer_in_snapshot_state() {
     raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
 
     let peer_id = 42;
-    raft.role
-        .state_mut()
-        .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Snapshot);
+    {
+        let crate::RaftRole::Leader(leader) = &mut raft.role else {
+            panic!("expected Leader role after BecomeLeader");
+        };
+        leader
+            .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Snapshot);
+    }
     let next_index_before = raft.role.state().next_index(peer_id);
 
     raft.handle_internal_event(InternalEvent::PeerStreamError { peer_id })
         .await
         .unwrap();
 
+    let crate::RaftRole::Leader(leader) = &raft.role else {
+        panic!("expected Leader role after BecomeLeader");
+    };
     assert_eq!(
-        raft.role.state().peer_replication_state(peer_id),
+        leader.peer_replication_state(peer_id),
         crate::role_state::PeerReplicationState::Snapshot,
         "a bidi stream error must not downgrade a peer that is mid-snapshot-transfer"
     );
@@ -1696,16 +1706,25 @@ async fn test_peer_stream_error_downgrades_non_snapshot_peer_to_probe() {
     raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
 
     let peer_id = 42;
-    raft.role
-        .state_mut()
-        .set_peer_replication_state(peer_id, crate::role_state::PeerReplicationState::Replicate);
+    {
+        let crate::RaftRole::Leader(leader) = &mut raft.role else {
+            panic!("expected Leader role after BecomeLeader");
+        };
+        leader.set_peer_replication_state(
+            peer_id,
+            crate::role_state::PeerReplicationState::Replicate,
+        );
+    }
 
     raft.handle_internal_event(InternalEvent::PeerStreamError { peer_id })
         .await
         .unwrap();
 
+    let crate::RaftRole::Leader(leader) = &raft.role else {
+        panic!("expected Leader role after BecomeLeader");
+    };
     assert_eq!(
-        raft.role.state().peer_replication_state(peer_id),
+        leader.peer_replication_state(peer_id),
         crate::role_state::PeerReplicationState::Probe,
         "a bidi stream error for a non-snapshotting peer must still downgrade it to Probe"
     );
@@ -1936,7 +1955,7 @@ async fn test_leadership_verification_failure_downgrades() {
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
         .expect_prepare_batch_requests()
-        .returning(|_, _, _, _, _| Err(crate::Error::Fatal("Majority timeout".to_string())));
+        .returning(|_, _, _, _, _, _| Err(crate::Error::Fatal("Majority timeout".to_string())));
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
@@ -2039,7 +2058,7 @@ async fn test_network_partition_minority_loses_leadership() {
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
         .expect_prepare_batch_requests()
-        .returning(|_, _, _, _, _| Err(crate::Error::Fatal("Partition".to_string())));
+        .returning(|_, _, _, _, _, _| Err(crate::Error::Fatal("Partition".to_string())));
 
     let mut raft_log = crate::MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 11);
@@ -2673,5 +2692,50 @@ async fn test_graceful_shutdown_persists_hardstate() {
     assert!(
         matches!(result, Ok(Ok(()))),
         "Expected clean exit, but got {result:?}"
+    );
+}
+
+/// Test: a node that loses leadership and is elected again must not carry any per-peer
+/// replication state from its previous term. Both the trust state and the in-flight
+/// bookkeeping belong to one leadership; reusing them would let stale in-flight slots gate
+/// the new term's first sends.
+///
+/// # Scenario
+/// - Node becomes leader; peer 42 is promoted to `Replicate` (a real ACK was seen).
+/// - Node steps down to follower, then wins again.
+/// - Expected: peer 42 is back to the default `Probe` (nothing carried over).
+#[tokio::test]
+async fn test_re_elected_leader_starts_with_fresh_peer_state() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let (raft_log, replication_core) = prepare_succeed_majority_confirmation();
+    raft.ctx.storage.raft_log = Arc::new(raft_log);
+    raft.ctx.handlers.replication_handler = replication_core;
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
+
+    let peer_id = 42;
+    {
+        let crate::RaftRole::Leader(leader) = &mut raft.role else {
+            panic!("expected Leader role after BecomeLeader");
+        };
+        leader.set_peer_replication_state(
+            peer_id,
+            crate::role_state::PeerReplicationState::Replicate,
+        );
+    }
+
+    raft.handle_internal_event(InternalEvent::BecomeFollower(None)).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+    raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
+
+    let crate::RaftRole::Leader(leader) = &raft.role else {
+        panic!("expected Leader role after the second BecomeLeader");
+    };
+    assert_eq!(
+        leader.peer_replication_state(peer_id),
+        crate::role_state::PeerReplicationState::Probe,
+        "a new leadership must start every peer from the default Probe, not the previous term's state"
     );
 }

@@ -175,7 +175,7 @@ async fn test_process_batch_quorum_achieved() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let last_entry_id = Arc::new(AtomicU64::new(4));
     let last_entry_id_clone = last_entry_id.clone();
@@ -255,7 +255,7 @@ async fn test_process_batch_quorum_failed_verifiable() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -316,7 +316,7 @@ async fn test_process_batch_quorum_non_verifiable_failure() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -370,7 +370,7 @@ async fn test_process_batch_higher_term() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -446,7 +446,7 @@ async fn test_process_batch_partial_timeouts() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -497,7 +497,7 @@ async fn test_process_batch_all_timeout() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -548,7 +548,7 @@ async fn test_process_batch_fatal_error() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
+        .returning(|_, _, _, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -667,7 +667,7 @@ async fn setup_commit_index_test_context(
 ///
 /// # When
 /// - process_batch is called (no peers → no replication requests sent)
-/// - handle_log_flushed(7) is called to simulate the async LogFlushed event from BufferedRaftLog
+/// - handle_log_flushed(7) is called to simulate the async LogFlushed event from RaftLogCore
 ///
 /// # Then
 /// - Commit index advances to 7 (driven by the simulated LogFlushed event)
@@ -687,7 +687,7 @@ async fn test_single_node_cluster_commit_index() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let last_entry_id = Arc::new(AtomicU64::new(6));
     let last_entry_id_clone = last_entry_id.clone();
@@ -708,8 +708,8 @@ async fn test_single_node_cluster_commit_index() {
         .await;
     assert!(result.is_ok());
 
-    // Simulate the async LogFlushed event that BufferedRaftLog's batch_processor fires
-    // after fsync. MemFirst: set last_entry_id=7 before flush.
+    // Simulate the async LogFlushed event that RaftLogCore emits after fsync.
+    // Set last_entry_id=7 before flush.
     last_entry_id.store(7, Ordering::Relaxed);
     context
         .state
@@ -763,7 +763,7 @@ async fn test_multi_node_cluster_empty_peer_updates_commit_index() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 9);
@@ -831,7 +831,7 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
     context
         .raft_context
         .handlers
@@ -909,7 +909,7 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
 ///
 /// # When
 /// - execute_request_immediately is called
-/// - handle_log_flushed(5) is called to simulate the async LogFlushed event from BufferedRaftLog
+/// - handle_log_flushed(5) is called to simulate the async LogFlushed event from RaftLogCore
 ///
 /// # Then
 /// - Commit index advances to 5
@@ -937,7 +937,7 @@ async fn test_verify_internal_quorum_success() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let last_entry_id = Arc::new(AtomicU64::new(4));
     let last_entry_id_clone = last_entry_id.clone();
@@ -1015,7 +1015,7 @@ async fn test_verify_internal_quorum_verifiable_failure() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -1078,7 +1078,7 @@ async fn test_verify_internal_quorum_non_verifiable_failure() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -1168,7 +1168,7 @@ async fn test_verify_internal_quorum_partial_timeouts() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -1226,7 +1226,7 @@ async fn test_verify_internal_quorum_all_timeouts() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -1291,7 +1291,7 @@ async fn test_verify_internal_quorum_higher_term() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -1367,7 +1367,7 @@ async fn test_verify_internal_quorum_critical_failure() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
+        .returning(|_, _, _, _, _, _| Err(Error::Fatal("Storage failure".to_string())));
 
     let mut raft_log = MockRaftLog::new();
     raft_log.expect_last_entry_id().returning(|| 4);
@@ -1436,7 +1436,7 @@ async fn test_execute_and_process_raft_rpc_multi_node_empty_peer_updates() {
         .replication_handler
         .expect_prepare_batch_requests()
         .times(1)
-        .returning(|_, _, _, _, _| Ok(crate::PrepareResult::default()));
+        .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let mut raft_log = MockRaftLog::new();
     // Sentinel: if single-node path were taken, commit would jump to 10 (wrong)
@@ -1609,6 +1609,7 @@ async fn test_handle_append_result_two_node_quorum_achieved() {
         });
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 3);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(3));
     raft_context.storage.raft_log = Arc::new(raft_log);
 
@@ -1674,6 +1675,7 @@ async fn test_handle_append_result_three_node_quorum_all_peers() {
         });
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 10);
     raft_log
         .expect_calculate_majority_matched_index()
         .returning(
@@ -1762,6 +1764,7 @@ async fn test_handle_append_result_three_node_quorum_partial_timeout() {
         });
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 10);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(10));
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
@@ -1842,6 +1845,7 @@ async fn test_handle_append_result_five_node_quorum_majority() {
         });
 
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 10);
     raft_log
         .expect_calculate_majority_matched_index()
         .returning(
@@ -1976,6 +1980,7 @@ async fn test_handle_append_result_three_node_no_quorum_single_peer_insufficient
 
     // calculate_majority returns None — peer's match_index too low for new commit
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 4);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
@@ -2056,6 +2061,7 @@ async fn test_handle_append_result_five_node_no_quorum_minority() {
 
     // 1 peer (2/5 nodes) is minority — calculate_majority returns None
     let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 10);
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
@@ -2338,8 +2344,14 @@ async fn setup_state_with_next_and_match(
     });
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut context_inner =
-        MockBuilder::new(graceful_rx).with_replication_handler(rep).build_context();
+    // The conflict hint carries `next_index`; the leader must own a log at least that
+    // long so `bounded_by_leader_log` doesn't clamp the hint below itself.
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(move || next_index);
+    let mut context_inner = MockBuilder::new(graceful_rx)
+        .with_replication_handler(rep)
+        .with_raft_log(raft_log)
+        .build_context();
 
     // Set up membership with peer 2 and 3 as voters (same as setup_commit_index_test_context).
     let mut membership = MockMembership::new();

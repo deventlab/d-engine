@@ -118,9 +118,16 @@ async fn test_create_channel_success() {
         cluster_ready_timeout: Duration::from_secs(5),
     };
 
-    // Test with an invalid address to verify timeout behavior
+    // Bind a port and immediately drop the listener — the port is now guaranteed
+    // closed, so the connection below fails deterministically, independent of the
+    // host's DNS resolver (some resolvers redirect nonexistent hostnames to a
+    // sinkhole IP instead of failing lookup, which broke this test on such hosts).
+    let closed_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
     let result =
-        ConnectionPool::create_channel("http://invalid.address:50051".to_string(), &config).await;
+        ConnectionPool::create_channel(format!("http://127.0.0.1:{closed_port}"), &config).await;
     assert!(result.is_err());
 }
 

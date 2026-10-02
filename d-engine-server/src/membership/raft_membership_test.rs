@@ -1192,9 +1192,22 @@ async fn test_health_monitoring_integration() {
 
     let (membership, mut zombie_rx) = RaftMembership::<MockTypeConfig>::new(1, vec![], config);
 
+    // Bind a port and immediately drop the listener — the port is now guaranteed
+    // closed, so the connection attempts below fail deterministically, independent
+    // of the host's DNS resolver (some resolvers redirect nonexistent hostnames to
+    // a sinkhole IP instead of failing lookup, which broke this test on such hosts).
+    let closed_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+
     // Add test node
     membership
-        .add_learner(100, "invalid.address".to_string(), NodeStatus::Promotable)
+        .add_learner(
+            100,
+            format!("127.0.0.1:{closed_port}"),
+            NodeStatus::Promotable,
+        )
         .await
         .unwrap();
 

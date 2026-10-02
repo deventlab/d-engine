@@ -1,9 +1,9 @@
 //! the test_utils folder here will share utils or test components between unit
 //! tests and integration tests
-mod buffered_raft_log_test_helpers;
 mod common;
 mod entry_builder;
 pub mod mock;
+mod raft_log_core_test_helpers;
 mod replication_test_helpers;
 mod snapshot;
 
@@ -19,10 +19,16 @@ mod log_capture;
 #[cfg(any(test, feature = "__test_support"))]
 pub use log_capture::*;
 
-pub use buffered_raft_log_test_helpers::*;
+#[cfg(any(test, feature = "__test_support"))]
+mod metrics_capture;
+
+#[cfg(any(test, feature = "__test_support"))]
+pub use metrics_capture::MetricsCapture;
+
 pub use common::*;
 pub use entry_builder::*;
 pub use mock::*;
+pub use raft_log_core_test_helpers::*;
 pub use replication_test_helpers::*;
 pub use snapshot::*;
 

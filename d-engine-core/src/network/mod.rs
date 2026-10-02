@@ -10,6 +10,8 @@ mod background_snapshot_transfer;
 
 #[cfg(test)]
 mod background_snapshot_transfer_test;
+#[cfg(test)]
+mod peer_update_test;
 
 #[cfg(any(test, feature = "__test_support"))]
 mod snapshot_transfer_gate;
@@ -46,7 +48,7 @@ use crate::TypeConfig;
 /// pushes `AppendEntriesRequest` batches; the receiver yields
 /// `AppendEntriesResponse` ACKs. Dropping the sender closes the stream.
 pub struct ReplicationStream {
-    /// Push AppendEntries batches directly into the open h2 stream (capacity = 128).
+    /// Push AppendEntries batches directly into the open h2 stream.
     pub sender: mpsc::Sender<AppendEntriesRequest>,
     /// Receive ACKs from the follower; items are `Result<_, tonic::Status>`.
     pub receiver: BoxStream<'static, std::result::Result<AppendEntriesResponse, tonic::Status>>,
@@ -92,6 +94,17 @@ impl PeerUpdate {
             next_index: 1,
             success: false,
         }
+    }
+
+    /// Caps the update at the leader's own log: a peer cannot have matched past
+    /// `leader_last_index`, and `next_index` is never useful beyond the entry after it.
+    pub fn bounded_by_leader_log(
+        mut self,
+        leader_last_index: u64,
+    ) -> Self {
+        self.match_index = self.match_index.map(|index| index.min(leader_last_index));
+        self.next_index = self.next_index.min(leader_last_index + 1);
+        self
     }
 }
 
@@ -244,6 +257,7 @@ where
         peer_id: u32,
         membership: std::sync::Arc<crate::alias::MOF<T>>,
         compress: bool,
+        send_queue_capacity: usize,
     ) -> Result<ReplicationStream>;
 }
 

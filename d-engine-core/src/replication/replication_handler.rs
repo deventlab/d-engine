@@ -1,10 +1,3 @@
-use std::cmp;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use bytes::BytesMut;
 use d_engine_proto::client::WriteCommand;
@@ -17,6 +10,12 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
 use prost::Message;
+use std::cmp;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
 use tracing::debug;
 use tracing::error;
 use tracing::trace;
@@ -68,6 +67,7 @@ where
         leader_state_snapshot: LeaderStateSnapshot,
         cluster_metadata: &crate::raft_role::ClusterMetadata,
         ctx: &crate::RaftContext<T>,
+        peer_gating_decisions: &HashMap<u32, bool>,
     ) -> Result<PrepareResult> {
         let replication_targets = &cluster_metadata.replication_targets;
 
@@ -101,6 +101,7 @@ where
             &replication_data.peer_next_indices,
             raft_log,
             min_log_index,
+            peer_gating_decisions,
         );
 
         let mut append_requests = Vec::with_capacity(replication_targets.len());
@@ -255,6 +256,7 @@ where
         peer_next_indices: &HashMap<u32, u64>,
         raft_log: &Arc<ROF<T>>,
         first_index: u64,
+        peer_gating_decisions: &HashMap<u32, bool>,
     ) -> HashMap<u32, PeerEntriesResult> {
         let _timer = ScopedTimer::new("retrieve_to_be_synced_logs_for_peers");
 
@@ -267,6 +269,18 @@ where
 
         for (&id, &peer_next_id) in peer_next_indices {
             if id == self.my_id {
+                continue;
+            }
+
+            // Phase 2 window gate: same peer_gating_decisions Phase 5 dispatch uses
+            // (computed once in execute_and_process_raft_rpc before Phase 1). If gated,
+            // skip entry preparation — Phase 5 falls back to an empty-entries heartbeat
+            // automatically, so liveness is never blocked by window pressure.
+            if peer_gating_decisions.get(&id).copied().unwrap_or(false) {
+                trace!(
+                    "peer {} in-flight window full, skip entry preparation (will send heartbeat)",
+                    id
+                );
                 continue;
             }
 
@@ -347,9 +361,14 @@ where
             self.my_id, request
         );
         let current_term = state_snapshot.current_term;
-        let mut last_log_id_option = raft_log.last_log_id();
 
-        //if there is no new entries need to insert, we just return the last local log index
+        // Only `prev_log_index` is verified here; the follower's own tail may differ.
+        let mut last_log_id_option = Some(LogId {
+            term: request.prev_log_term,
+            index: request.prev_log_index,
+        });
+
+        // With no new entries, the verified point is `prev_log_index` itself.
         let mut commit_index_update = None;
 
         let response = self.check_append_entries_request_is_legal(current_term, &request, raft_log);
@@ -381,7 +400,7 @@ where
 
         if let Some(new_commit_index) = Self::if_update_commit_index_as_follower(
             state_snapshot.commit_index,
-            raft_log.last_entry_id(),
+            last_log_id_option.map(|id| id.index).unwrap_or(request.prev_log_index),
             request.leader_commit_index,
         ) {
             debug!("new commit index received: {:?}", new_commit_index);
@@ -399,11 +418,10 @@ where
         })
     }
 
-    ///If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index
-    /// of last new entry)
+    ///If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, last_verified_log_index)
     fn if_update_commit_index_as_follower(
         my_commit_index: u64,
-        last_raft_log_id: u64,
+        last_verified_log_index: u64,
         leader_commit_index: u64,
     ) -> Option<u64> {
         debug!(
@@ -414,7 +432,7 @@ where
         );
 
         if leader_commit_index > my_commit_index {
-            return Some(cmp::min(leader_commit_index, last_raft_log_id));
+            return Some(cmp::min(leader_commit_index, last_verified_log_index));
         }
         None
     }

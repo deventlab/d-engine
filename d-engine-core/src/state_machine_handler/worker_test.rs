@@ -1337,12 +1337,21 @@ async fn test_local_snapshot_ready_reports_operation_failed_when_superseded_clea
 
     let result = response_rx.await.unwrap();
 
-    // Restore permissions before any assertion can panic and skip this — otherwise
-    // the tempdir is left behind, unremovable by the test harness's own cleanup.
-    let mut perms = std::fs::metadata(&dir_path).unwrap().permissions();
-    perms.set_mode(0o700);
-    std::fs::set_permissions(&dir_path, perms).unwrap();
-    std::fs::remove_dir_all(&dir_path).unwrap();
+    // The tempdir might already be gone: `OwnedSnapshotDir::drop`'s detached cleanup
+    // thread (command.rs) races this teardown and, under load, can win — that's a
+    // benign outcome (goal is just "no leftover dir"), not a test failure.
+    if let Ok(meta) = std::fs::metadata(&dir_path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&dir_path, perms).unwrap();
+        if let Err(e) = std::fs::remove_dir_all(&dir_path) {
+            assert_eq!(
+                e.kind(),
+                std::io::ErrorKind::NotFound,
+                "unexpected teardown error: {e}"
+            );
+        }
+    }
 
     assert!(
         matches!(
