@@ -671,7 +671,8 @@ where
                 self.notify_leader_change(Some(self.node_id), term);
             }
             InternalEvent::FatalError { source, error } => {
-                error!(%self.node_id, %source, %error, "Fatal error from SM worker — shutting down");
+                error!(%self.node_id, %source, %error, "Fatal error from {source} — shutting down");
+
                 return Err(crate::Error::Fatal(format!("{source}: {error}")));
             }
             InternalEvent::ApplyCompleted {

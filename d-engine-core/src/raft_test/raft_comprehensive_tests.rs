@@ -2695,6 +2695,46 @@ async fn test_graceful_shutdown_persists_hardstate() {
     );
 }
 
+/// Test: a FatalError sent through `internal_event_tx` makes `run()` return Err(Fatal).
+///
+/// This is the last hop of the storage-failure path: `RaftLogCore` poisons itself and sends
+/// `InternalEvent::FatalError { source: "RaftLog", .. }`; if `run()` kept looping instead of
+/// returning, the node would keep serving with a log that rejects every write.
+/// `process_internal_events` is already covered on its own; this drives the real select loop.
+///
+/// # Scenario
+/// - `run()` is started on a healthy node.
+/// - A `FatalError` from "RaftLog" is sent through the same channel `RaftLogCore` uses.
+/// - Expected: `run()` returns `Err` with `is_fatal()`, carrying source and error text.
+#[tokio::test]
+async fn test_run_exits_with_fatal_error_when_raft_log_reports_fatal() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let internal_event_tx = raft.internal_event_tx.clone();
+
+    let raft_handle = tokio::spawn(async move { raft.run().await });
+
+    internal_event_tx
+        .send(InternalEvent::FatalError {
+            source: "RaftLog".to_string(),
+            error: "persist_entries failed".to_string(),
+        })
+        .expect("internal event channel must be open while run() is alive");
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), raft_handle)
+        .await
+        .expect("run() must exit after FatalError, not keep looping")
+        .expect("run() task must not panic");
+
+    let err = result.expect_err("run() must return Err on FatalError, not Ok");
+    assert!(err.is_fatal());
+    let msg = err.to_string();
+    assert!(
+        msg.contains("RaftLog") && msg.contains("persist_entries failed"),
+        "error must carry source and cause, got: {msg}"
+    );
+}
+
 /// Test: a node that loses leadership and is elected again must not carry any per-peer
 /// replication state from its previous term. Both the trust state and the in-flight
 /// bookkeeping belong to one leadership; reusing them would let stale in-flight slots gate
