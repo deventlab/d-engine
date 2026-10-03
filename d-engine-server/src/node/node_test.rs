@@ -78,8 +78,12 @@ async fn test_run_sequence_with_mock_peers() {
 
 fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<MockTypeConfig>) {
     // Initialize the mock object
-    let replication_handler = MockReplicationCore::<MockTypeConfig>::new();
+    let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     let mut raft_log = MockRaftLog::new();
+    // The first election now starts at once, so a single-node cluster becomes leader and proposes its noop.
+    replication_handler
+        .expect_prepare_batch_requests()
+        .returning(|_, _, _, _, _, _| Ok(d_engine_core::PrepareResult::default()));
 
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(5));
     raft_log.expect_last_entry_id().return_const(1_u64);

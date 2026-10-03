@@ -79,6 +79,14 @@ impl RaftElectionService for MockRpcService {
             None => Err(tonic::Status::unknown("No mock vote response set")),
         }
     }
+
+    /// Answers PreVote with the same canned response as `request_vote`.
+    async fn pre_vote(
+        &self,
+        request: tonic::Request<VoteRequest>,
+    ) -> std::result::Result<tonic::Response<VoteResponse>, tonic::Status> {
+        self.request_vote(request).await
+    }
 }
 
 #[tonic::async_trait]

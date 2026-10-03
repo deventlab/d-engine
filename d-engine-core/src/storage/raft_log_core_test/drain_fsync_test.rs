@@ -1001,3 +1001,116 @@ async fn test_cold_start_persist_frontier_starts_past_durable_index() {
          re-scan already-durable entry 5. Got: {calls:?}"
     );
 }
+
+/// `save_hard_state()` must make term and vote durable BEFORE it returns.
+///
+/// Raft requires currentTerm and votedFor on stable storage before a node answers a vote
+/// request: a node that grants a vote, crashes and forgets it can vote again in the same term,
+/// and two candidates can each collect a majority (two leaders in one term).
+///
+/// The RocksDB engine opens with `manual_wal_flush`, so a plain `put` stays in the WAL buffer
+/// until someone calls `flush_wal`; the meta store's `flush()` is that barrier. A vote answered
+/// between two log fsyncs, or while the node is idle (no log writes at all), is not durable
+/// without it.
+///
+/// Expected:
+/// - The meta store is flushed after the hard state is saved, before the call returns.
+#[tokio::test]
+async fn test_save_hard_state_flushes_meta_store_before_returning() {
+    let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+
+    let mut log_store = MockLogStore::new();
+    log_store.expect_last_index().returning(|| 0);
+    log_store.expect_persist_entries().returning(|_| Ok(()));
+    log_store.expect_replace_range().returning(|from, entries| {
+        Ok(entries.last().map(|e| e.index).unwrap_or(from.saturating_sub(1)))
+    });
+    log_store.expect_truncate().returning(|_| Ok(()));
+    log_store.expect_entry().returning(|_| Ok(None));
+    log_store.expect_get_entries().returning(|_| Ok(vec![]));
+    log_store.expect_purge().returning(|_| Ok(()));
+    log_store.expect_load_purge_boundary().returning(|| Ok(None));
+    log_store.expect_reset().returning(|| Ok(()));
+    log_store.expect_is_write_durable().returning(|| false);
+    log_store.expect_flush().returning(|| Ok(()));
+    log_store.expect_flush_async().returning(|| Ok(()));
+
+    let mut meta_store = MockMetaStore::new();
+    let saved = Arc::clone(&events);
+    meta_store.expect_save_hard_state().returning(move |_| {
+        saved.lock().unwrap().push("save");
+        Ok(())
+    });
+    let flushed = Arc::clone(&events);
+    meta_store.expect_flush().returning(move || {
+        flushed.lock().unwrap().push("flush");
+        Ok(())
+    });
+    meta_store.expect_flush_async().returning(|| Ok(()));
+    meta_store.expect_load_hard_state().returning(|| Ok(None));
+
+    let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
+    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
+
+    raft_log
+        .save_hard_state(&HardState {
+            current_term: 5,
+            voted_for: Some(d_engine_proto::server::election::VotedFor {
+                voted_for_id: 2,
+                voted_for_term: 5,
+                committed: false,
+            }),
+        })
+        .unwrap();
+
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec!["save", "flush"],
+        "the vote must be flushed to stable storage before save_hard_state returns"
+    );
+}
+
+/// A failed flush of the hard state is fatal, exactly like a failed write of it.
+///
+/// If the fsync that makes a vote durable fails, the node must not answer the vote request as if
+/// it had been recorded: it could crash, forget the vote, and vote again in the same term.
+///
+/// Expected:
+/// - `save_hard_state()` returns an error and the log is poisoned (the Raft loop is told to exit).
+#[tokio::test]
+async fn test_save_hard_state_flush_failure_poisons() {
+    let mut log_store = MockLogStore::new();
+    log_store.expect_last_index().returning(|| 0);
+    log_store.expect_persist_entries().returning(|_| Ok(()));
+    log_store.expect_entry().returning(|_| Ok(None));
+    log_store.expect_get_entries().returning(|_| Ok(vec![]));
+    log_store.expect_load_purge_boundary().returning(|| Ok(None));
+    log_store.expect_is_write_durable().returning(|| false);
+    log_store.expect_flush().returning(|| Ok(()));
+    log_store.expect_flush_async().returning(|| Ok(()));
+
+    let mut meta_store = MockMetaStore::new();
+    meta_store.expect_save_hard_state().returning(|_| Ok(()));
+    meta_store.expect_load_hard_state().returning(|| Ok(None));
+    meta_store
+        .expect_flush()
+        .returning(|| Err(crate::StorageError::DbError("fsync failed".to_string()).into()));
+    meta_store.expect_flush_async().returning(|| Ok(()));
+
+    let storage = Arc::new(MockStorageEngine::from(log_store, meta_store));
+    let raft_log = RaftLogCore::<MockTypeConfig>::new(1, storage, None, 5000);
+
+    let result = raft_log.save_hard_state(&HardState {
+        current_term: 5,
+        voted_for: None,
+    });
+
+    assert!(
+        result.is_err(),
+        "a failed flush of the vote must surface as an error"
+    );
+    assert!(
+        raft_log.is_poisoned(),
+        "a failed flush of the vote must poison the log"
+    );
+}

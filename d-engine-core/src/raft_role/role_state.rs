@@ -16,6 +16,7 @@ use crate::RaftLog;
 use crate::ReplicationCore;
 use crate::Result;
 use crate::SnapshotApplyResult;
+use crate::StateMachine;
 use crate::StateMachineHandler;
 use crate::StateTransitionError;
 use crate::TypeConfig;
@@ -333,23 +334,74 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         Ok(result.is_new_leader_commitment)
     }
 
-    /// Reset counterpart to `commit_hard_state()` — clears voted_for and
-    /// persists. Needed because `commit_hard_state`'s `Option<VotedFor>` can't
-    /// distinguish "don't touch" from "clear to None".
-    fn commit_vote_reset(
-        &mut self,
-        ctx: &RaftContext<Self::T>,
-    ) -> Result<()> {
-        self.shared_state_mut().clear_voted_for();
-        ctx.raft_log().save_hard_state(&self.shared_state().hard_state())?;
-        Ok(())
-    }
-
     //--- Timer related ---
     fn next_deadline(&self) -> Instant;
     fn is_timer_expired(&self) -> bool;
 
     fn reset_timer(&mut self);
+
+    /// True if this node is an active voter in its own membership view. Only an active voter
+    /// may start an election: a removed node (no entry) or a learner (`Promotable`/`ReadOnly`)
+    /// that campaigned would count its own vote as part of a quorum it does not belong to.
+    /// `Membership::voters()` lists the OTHER voters, so this node's own entry is the source.
+    fn is_active_voter(
+        &self,
+        ctx: &RaftContext<Self::T>,
+    ) -> bool {
+        ctx.membership()
+            .retrieve_node_meta(self.node_id())
+            .is_some_and(|meta| meta.status == d_engine_proto::common::NodeStatus::Active as i32)
+    }
+
+    /// True if a membership change is committed but not yet applied. A node that campaigned in
+    /// that window would count votes against a stale voter set (raft-rs refuses to campaign
+    /// here). Only reads the log when something is actually unapplied, so the common case is
+    /// two integer comparisons.
+    ///
+    /// A log read failure is reported as an error: the caller cannot prove that nothing is
+    /// pending and must not campaign.
+    fn has_unapplied_config_change(
+        &self,
+        ctx: &RaftContext<Self::T>,
+    ) -> Result<bool> {
+        let applied = ctx.state_machine().last_applied().index;
+        let committed = self.commit_index();
+        if applied >= committed {
+            return Ok(false);
+        }
+        let entries = ctx.raft_log().get_entries_range(applied + 1..=committed)?;
+        Ok(entries
+            .iter()
+            .any(|entry| entry.payload.as_ref().is_some_and(|p| p.is_config())))
+    }
+
+    /// Record that a legitimate leader was just heard from. No-op for roles
+    /// that do not vote (Learner) or do not follow a leader (Candidate, Leader).
+    fn record_leader_contact(&mut self) {}
+
+    /// Temporary: denies every PreVote with this node's term and last log id.
+    /// Replace per role with the real rules BEFORE `Candidate.tick` starts sending PreVotes,
+    /// otherwise no node can ever pass a PreVote round and no leader can be elected.
+    fn deny_pre_vote(
+        &self,
+        ctx: &RaftContext<Self::T>,
+        sender: MaybeCloneOneshotSender<
+            std::result::Result<d_engine_proto::server::election::VoteResponse, Status>,
+        >,
+    ) -> Result<()> {
+        let last_log_id = ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
+        let response = d_engine_proto::server::election::VoteResponse {
+            term: self.current_term(),
+            vote_granted: false,
+            last_log_index: last_log_id.index,
+            last_log_term: last_log_id.term,
+        };
+        sender.send(Ok(response)).map_err(|e| {
+            error!("Failed to send: {e:?}");
+            NetworkError::SingalSendFailed(format!("{:?}", e))
+        })?;
+        Ok(())
+    }
 
     async fn tick(
         &mut self,
@@ -619,6 +671,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
 
         // Legitimate leader (term >= ours) confirmed — reset now, not earlier.
         self.reset_timer();
+        self.record_leader_contact();
 
         // Important to confirm heartbeat from Leader immediatelly
         let new_leader_id = append_entries_request.leader_id;
@@ -825,6 +878,8 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
 
         // Legitimate leader (term >= ours) confirmed — reset now, matching AppendEntries.
         self.reset_timer();
+        // Recorded once per stream, on its first chunk; a very long transfer outlives the window.
+        self.record_leader_contact();
 
         self.commit_hard_state(
             ctx,
@@ -870,6 +925,11 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
 
         // Sole write path: hand the received snapshot to the Worker, await the result.
         let install_result = ctx.state_machine_commands().install_snapshot(prepared).await;
+
+        // A long transfer outlives the election timer and the guard window. The leader was
+        // alive until just now, so re-arm both before the loop handles the next event.
+        self.reset_timer();
+        self.record_leader_contact();
 
         // Raft §7: reply success only once the Worker has confirmed install (or a safe no-op).
         let _ = sender.send(Ok(SnapshotResponse {

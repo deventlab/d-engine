@@ -176,6 +176,9 @@ async fn test_tick_triggers_new_election_round_on_success() {
     // Mock election_handler to succeed
     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
     election_handler
+        .expect_broadcast_pre_vote_requests()
+        .returning(|_, _, _, _, _| Ok(()));
+    election_handler
         .expect_broadcast_vote_requests()
         .times(1)
         .returning(|_, _, _, _, _| Ok(()));
@@ -251,6 +254,9 @@ async fn test_tick_election_timeout_persists_hard_state_before_broadcasting_vote
 
     let mut election_core = MockElectionCore::<MockTypeConfig>::new();
     election_core
+        .expect_broadcast_pre_vote_requests()
+        .returning(|_, _, _, _, _| Ok(()));
+    election_core
         .expect_broadcast_vote_requests()
         .times(1)
         .in_sequence(&mut seq)
@@ -307,6 +313,9 @@ async fn test_tick_discovers_higher_term_and_steps_down() {
 
     // Mock election_handler to return HigherTerm error
     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_broadcast_pre_vote_requests()
+        .returning(|_, _, _, _, _| Ok(()));
     election_handler
         .expect_broadcast_vote_requests()
         .times(1)
@@ -409,6 +418,9 @@ async fn test_tick_discovers_higher_term_via_election_persists_hard_state() {
     let nc = node_config(_temp_dir.path().to_str().unwrap());
 
     let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    election_core
+        .expect_broadcast_pre_vote_requests()
+        .returning(|_, _, _, _, _| Ok(()));
     election_core.expect_broadcast_vote_requests().returning(|_, _, _, _, _| {
         Err(Error::Consensus(ConsensusError::Election(
             ElectionError::HigherTerm(100),
@@ -1764,4 +1776,760 @@ fn test_candidate_from_follower_preserves_last_purged_index() {
         candidate.last_purged_index,
         Some(LogId { term: 1, index: 9 })
     );
+}
+
+// ============================================================================
+// PreVote in Candidate::tick
+//
+// Before bumping its term, a candidate asks the peers whether they would vote for it at
+// term+1. A node that cannot win (isolated, or a leader is alive) must keep its term, or on
+// reconnect its inflated term would force a healthy leader to step down.
+// ============================================================================
+
+/// Builds a candidate whose election timer has already expired, with the given election mock
+/// and raft log. Returns the state, its context and the internal-event receiver.
+async fn expired_candidate(
+    election_core: MockElectionCore<MockTypeConfig>,
+    raft_log: MockRaftLog,
+) -> (
+    CandidateState<MockTypeConfig>,
+    crate::RaftContext<MockTypeConfig>,
+    mpsc::UnboundedReceiver<InternalEvent>,
+    mpsc::UnboundedSender<InternalEvent>,
+) {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let nc = node_config(temp_dir.path().to_str().unwrap());
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .with_election_handler(election_core)
+        .build_context();
+    let state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+
+    let election_timeout_max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(election_timeout_max + 1)).await;
+    (state, context, internal_event_rx, internal_event_tx)
+}
+
+/// Test: a failed PreVote keeps the term unchanged and starts no real election.
+///
+/// Scenario:
+/// - Candidate (term 1) times out; the PreVote round does not reach a majority
+///   (e.g. the node is isolated).
+///
+/// Expected:
+/// - Term stays 1, nothing is persisted (a MockRaftLog without expectations panics on any
+///   `save_hard_state`), no RequestVote is broadcast, no role-change event is sent.
+/// - The timer was already reset, so the next attempt happens after the next timeout.
+#[tokio::test(start_paused = true)]
+async fn test_tick_pre_vote_failure_keeps_term_and_skips_real_election() {
+    let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    election_core
+        .expect_broadcast_pre_vote_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Election(
+                ElectionError::QuorumFailure {
+                    required: 3,
+                    succeed: 1,
+                },
+            )))
+        });
+    election_core.expect_broadcast_vote_requests().times(0);
+
+    let (mut state, context, mut internal_event_rx, internal_event_tx) =
+        expired_candidate(election_core, MockRaftLog::new()).await;
+    let (event_tx, _event_rx) = mpsc::channel(1);
+
+    assert!(state.tick(&internal_event_tx, &event_tx, &context).await.is_ok());
+
+    assert_eq!(
+        state.current_term(),
+        1,
+        "a failed PreVote must not bump the term"
+    );
+    assert!(
+        internal_event_rx.try_recv().is_err(),
+        "a failed PreVote must not trigger any role change"
+    );
+}
+
+/// Test: PreVote asks about term+1 and runs BEFORE the term is persisted.
+///
+/// Expected:
+/// - `broadcast_pre_vote_requests` receives term 2 (current 1 + 1).
+/// - `save_hard_state` (term 2 + self-vote) happens only after the PreVote returned.
+/// - Then the real election runs for term 2 and the node becomes leader.
+#[tokio::test(start_paused = true)]
+async fn test_tick_pre_vote_runs_for_next_term_before_persisting_it() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let pre_vote_done = Arc::new(AtomicBool::new(false));
+
+    let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    let flag = Arc::clone(&pre_vote_done);
+    election_core
+        .expect_broadcast_pre_vote_requests()
+        .withf(|term, _, _, _, _| *term == 2)
+        .times(1)
+        .returning(move |_, _, _, _, _| {
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+    election_core
+        .expect_broadcast_vote_requests()
+        .withf(|term, _, _, _, _| *term == 2)
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+
+    let mut raft_log = MockRaftLog::new();
+    let flag = Arc::clone(&pre_vote_done);
+    raft_log
+        .expect_save_hard_state()
+        .withf(move |s| {
+            assert!(
+                flag.load(Ordering::SeqCst),
+                "the term must not be persisted before the PreVote round finished"
+            );
+            s.current_term == 2
+        })
+        .times(1)
+        .returning(|_| Ok(()));
+
+    let (mut state, context, mut internal_event_rx, internal_event_tx) =
+        expired_candidate(election_core, raft_log).await;
+    let (event_tx, _event_rx) = mpsc::channel(1);
+
+    assert!(state.tick(&internal_event_tx, &event_tx, &context).await.is_ok());
+
+    assert_eq!(state.current_term(), 2);
+    assert!(matches!(
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeLeader)
+    ));
+}
+
+/// Test: a PreVote that discovers a higher term catches up without starting an election.
+///
+/// Scenario:
+/// - The peers answer the PreVote with term 100 (the cluster moved on while this node was away).
+///
+/// Expected:
+/// - The higher term is persisted BEFORE `BecomeFollower` is sent, the node ends in term 100,
+///   and no RequestVote is broadcast.
+#[tokio::test(start_paused = true)]
+async fn test_tick_pre_vote_higher_term_catches_up_without_real_election() {
+    let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    election_core
+        .expect_broadcast_pre_vote_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| {
+            Err(Error::Consensus(ConsensusError::Election(
+                ElectionError::HigherTerm(100),
+            )))
+        });
+    election_core.expect_broadcast_vote_requests().times(0);
+
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+    let internal_event_rx = Arc::new(std::sync::Mutex::new(internal_event_rx));
+    let rx_for_ordering_check = Arc::clone(&internal_event_rx);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_save_hard_state()
+        .withf(move |s| {
+            assert!(
+                rx_for_ordering_check.lock().unwrap().try_recv().is_err(),
+                "save_hard_state must be called BEFORE BecomeFollower is sent"
+            );
+            s.current_term == 100
+        })
+        .times(1)
+        .returning(|_| Ok(()));
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let nc = node_config(temp_dir.path().to_str().unwrap());
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .with_election_handler(election_core)
+        .build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let election_timeout_max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(election_timeout_max + 1)).await;
+    let (event_tx, _event_rx) = mpsc::channel(1);
+
+    assert!(state.tick(&internal_event_tx, &event_tx, &context).await.is_ok());
+
+    assert_eq!(state.current_term(), 100);
+    assert!(matches!(
+        internal_event_rx.lock().unwrap().try_recv().unwrap(),
+        InternalEvent::BecomeFollower(_)
+    ));
+}
+
+// ============================================================================
+// PreVote requests received by a Candidate
+//
+// A Candidate has no leader (that is why it became one), so it never reports an active leader:
+// the handler decides on term and log alone. Like every role it changes nothing.
+// ============================================================================
+
+/// Test: a Candidate answers a PreVote through the handler with `leader_active == false`,
+/// forwards the answer, and changes nothing (term, persistence, role).
+#[tokio::test]
+async fn test_candidate_pre_vote_reports_no_active_leader_and_changes_nothing() {
+    let seen = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    let seen_in_mock = Arc::clone(&seen);
+    election_handler.expect_handle_pre_vote_request().times(1).returning(
+        move |_, current_term, _, leader_active| {
+            seen_in_mock.store(leader_active, std::sync::atomic::Ordering::SeqCst);
+            d_engine_proto::server::election::VoteResponse {
+                term: current_term,
+                vote_granted: true,
+                last_log_index: 7,
+                last_log_term: 3,
+            }
+        },
+    );
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    // A raft log mock without expectations panics on any `save_hard_state`.
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(MockRaftLog::new())
+        .with_election_handler(election_handler)
+        .build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let term_before = state.current_term();
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .handle_inbound_event(
+            InboundEvent::ReceivePreVoteRequest(
+                VoteRequest {
+                    term: term_before + 1,
+                    candidate_id: 2,
+                    last_log_index: 0,
+                    last_log_term: 0,
+                },
+                resp_tx,
+            ),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    assert!(!seen.load(std::sync::atomic::Ordering::SeqCst));
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(response.vote_granted);
+    assert_eq!(state.current_term(), term_before);
+    assert!(
+        internal_event_rx.try_recv().is_err(),
+        "a PreVote must not change the Candidate's role"
+    );
+}
+
+/// Test: a Candidate that receives a HIGHER-term VoteRequest adopts that term and steps down
+/// even when it cannot grant the vote.
+///
+/// Scenario:
+/// - Candidate (term 1) receives a VoteRequest for term 5 from a node whose log is behind, so
+///   the request is not legal and the vote cannot be granted.
+///
+/// Expected:
+/// - The term becomes 5 (persisted), `BecomeFollower` is sent, and the request is replayed to
+///   the new Follower, which answers it (here: a denial because of the log).
+///
+/// Raft §5.1: "If RPC request or response contains term T > currentTerm: set currentTerm = T,
+/// convert to follower", whatever the RPC and whether or not the vote is granted (raft-rs
+/// `test_vote_from_any_state`). A Candidate that keeps its lower term and stays a Candidate
+/// starts its next election at a term the cluster has already passed.
+#[tokio::test]
+async fn test_candidate_higher_term_vote_request_with_stale_log_adopts_term_and_steps_down() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_candidate_higher_term_stale_log",
+        graceful_rx,
+        None,
+    );
+
+    let mut election_core = mock_election_core();
+    election_core
+        .expect_check_vote_request_is_legal()
+        .returning(|_, _, _, _, _| false);
+    context.handlers.election_handler = election_core;
+
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+
+    state
+        .handle_inbound_event(
+            InboundEvent::ReceiveVoteRequest(
+                VoteRequest {
+                    term: 5,
+                    candidate_id: 2,
+                    last_log_index: 0,
+                    last_log_term: 0,
+                },
+                resp_tx,
+            ),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(state.current_term(), 5, "the higher term must be adopted");
+    assert!(matches!(
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeFollower(_))
+    ));
+    assert!(matches!(
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::ReprocessEvent(_))
+    ));
+}
+
+/// Test: a Candidate that is no longer an active voter (removed, or only a learner) neither sends
+/// PreVote nor bumps its term; it must not keep campaigning with a quorum that counts its own
+/// vote. `Membership::voters()` never contains this node, so the answer comes from its own entry.
+#[tokio::test(start_paused = true)]
+async fn test_candidate_tick_does_not_campaign_when_not_an_active_voter() {
+    for own_status in [None, Some(d_engine_proto::common::NodeStatus::Promotable)] {
+        let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+        election_core.expect_broadcast_pre_vote_requests().times(0);
+        election_core.expect_broadcast_vote_requests().times(0);
+
+        let (mut state, mut context, mut internal_event_rx, internal_event_tx) =
+            expired_candidate(election_core, MockRaftLog::new()).await;
+        let mut membership = crate::MockMembership::<MockTypeConfig>::new();
+        membership.expect_retrieve_node_meta().returning(move |id| {
+            own_status.map(|status| d_engine_proto::server::cluster::NodeMeta {
+                id,
+                address: format!("http://127.0.0.1:{}", 55000 + id),
+                role: d_engine_proto::common::NodeRole::Follower.into(),
+                status: status as i32,
+            })
+        });
+        membership.expect_is_single_node_cluster().returning(|| false);
+        context.membership = Arc::new(membership);
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let term_before = state.current_term();
+
+        state.tick(&internal_event_tx, &event_tx, &context).await.unwrap();
+
+        assert_eq!(
+            state.current_term(),
+            term_before,
+            "own status {own_status:?}"
+        );
+        assert!(
+            internal_event_rx.try_recv().is_err(),
+            "own status {own_status:?}"
+        );
+    }
+}
+
+// ============================================================================
+// No campaign while a committed membership change is still unapplied
+//
+// A node that has committed but not yet applied a membership change would count votes against
+// a stale voter set. raft-rs refuses to campaign in that window
+// (`test_conf_change_check_before_campaign`: "cannot campaign since there are still pending
+// configuration changes to apply").
+// ============================================================================
+
+/// Builds an expired candidate whose log has committed entries up to `commit_index`, of which
+/// everything above `applied` is still unapplied; `unapplied_entries` is what the log returns for
+/// that range.
+async fn candidate_with_unapplied_range(
+    election_core: MockElectionCore<MockTypeConfig>,
+    commit_index: u64,
+    applied: u64,
+    unapplied_entries: Vec<d_engine_proto::common::Entry>,
+) -> (
+    CandidateState<MockTypeConfig>,
+    crate::RaftContext<MockTypeConfig>,
+    mpsc::UnboundedReceiver<InternalEvent>,
+    mpsc::UnboundedSender<InternalEvent>,
+) {
+    let mut raft_log = MockRaftLog::new();
+    let range_start = applied + 1;
+    raft_log
+        .expect_get_entries_range()
+        .withf(move |range| *range.start() == range_start && *range.end() == commit_index)
+        .returning(move |_| Ok(unapplied_entries.clone()));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let nc = node_config(temp_dir.path().to_str().unwrap());
+    let mut state_machine = crate::MockStateMachine::new();
+    state_machine.expect_is_running().returning(|| true);
+    state_machine.expect_last_applied().return_const(d_engine_proto::common::LogId {
+        index: applied,
+        term: 1,
+    });
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .with_state_machine(state_machine)
+        .with_election_handler(election_core)
+        .build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.shared_state_mut().commit_index = commit_index;
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+    let max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(max + 1)).await;
+    (state, context, internal_event_rx, internal_event_tx)
+}
+
+fn config_change_entry(index: u64) -> d_engine_proto::common::Entry {
+    d_engine_proto::common::Entry {
+        index,
+        term: 1,
+        payload: Some(d_engine_proto::common::EntryPayload::config(
+            d_engine_proto::common::membership_change::Change::AddNode(
+                d_engine_proto::common::AddNode {
+                    node_id: 4,
+                    address: "127.0.0.1:5004".to_string(),
+                    status: d_engine_proto::common::NodeStatus::Active as i32,
+                },
+            ),
+        )),
+    }
+}
+
+/// Test: committed-but-unapplied membership change in the log => no PreVote, no term bump.
+#[tokio::test(start_paused = true)]
+async fn test_candidate_tick_does_not_campaign_with_unapplied_config_change() {
+    let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    election_core.expect_broadcast_pre_vote_requests().times(0);
+    election_core.expect_broadcast_vote_requests().times(0);
+    let (mut state, context, mut internal_event_rx, internal_event_tx) =
+        candidate_with_unapplied_range(election_core, 10, 5, vec![config_change_entry(8)]).await;
+    let (event_tx, _event_rx) = mpsc::channel(1);
+    let term_before = state.current_term();
+
+    state.tick(&internal_event_tx, &event_tx, &context).await.unwrap();
+
+    assert_eq!(state.current_term(), term_before);
+    assert!(internal_event_rx.try_recv().is_err());
+}
+
+/// Test: committed-but-unapplied entries that are NOT membership changes do not block an
+/// election (otherwise a busy cluster could never elect a leader).
+#[tokio::test(start_paused = true)]
+async fn test_candidate_tick_campaigns_when_unapplied_entries_are_not_config_changes() {
+    let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    election_core
+        .expect_broadcast_pre_vote_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    election_core
+        .expect_broadcast_vote_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    let command = d_engine_proto::common::Entry {
+        index: 8,
+        term: 1,
+        payload: Some(d_engine_proto::common::EntryPayload::noop()),
+    };
+    let (mut state, context, _internal_event_rx, internal_event_tx) =
+        candidate_with_unapplied_range(election_core, 10, 5, vec![command]).await;
+    let (event_tx, _event_rx) = mpsc::channel(1);
+
+    state.tick(&internal_event_tx, &event_tx, &context).await.unwrap();
+
+    assert_eq!(
+        state.current_term(),
+        2,
+        "an ordinary backlog must not block the election"
+    );
+}
+
+/// Test: with nothing unapplied (applied == commit) there is nothing to check and no log read.
+#[tokio::test(start_paused = true)]
+async fn test_candidate_tick_campaigns_when_everything_committed_is_applied() {
+    let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    election_core
+        .expect_broadcast_pre_vote_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    election_core
+        .expect_broadcast_vote_requests()
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    let (mut state, context, _internal_event_rx, internal_event_tx) =
+        candidate_with_unapplied_range(election_core, 10, 10, vec![]).await;
+    let (event_tx, _event_rx) = mpsc::channel(1);
+
+    state.tick(&internal_event_tx, &event_tx, &context).await.unwrap();
+
+    assert_eq!(state.current_term(), 2);
+}
+
+// ============================================================================
+// Election latency: becoming a Candidate must not cost a second election timeout
+//
+// Follower::tick already waited one full election timeout before sending BecomeCandidate. The
+// new Candidate used to start with a fresh random timer, so the first real election round began
+// only after ANOTHER election timeout: failover took 1-2 timeouts longer than necessary. etcd and
+// raft-rs campaign at the moment the first timeout fires. (Present on main, before PreVote.)
+// ============================================================================
+
+/// Test: a Candidate created from a timed-out Follower is due to campaign immediately.
+#[tokio::test(start_paused = true)]
+async fn test_candidate_from_follower_is_due_to_campaign_immediately() {
+    let follower = FollowerState::<MockTypeConfig>::new(
+        1,
+        Arc::new(node_config("/tmp/test_candidate_from_follower_is_due")),
+        None,
+        None,
+    );
+
+    let candidate = CandidateState::<MockTypeConfig>::from(&follower);
+
+    assert!(
+        candidate.is_timer_expired(),
+        "the first election round must not wait for a second election timeout"
+    );
+}
+
+/// Test: after a round has run (win, loss or PreVote failure) the next attempt is NOT immediate:
+/// the timer is re-armed with a fresh random timeout, otherwise a node that keeps losing would
+/// spin and hammer the cluster.
+#[tokio::test(start_paused = true)]
+async fn test_candidate_tick_rearms_the_timer_after_a_round() {
+    let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    election_core.expect_broadcast_pre_vote_requests().returning(|_, _, _, _, _| {
+        Err(Error::Consensus(ConsensusError::Election(
+            ElectionError::QuorumFailure {
+                required: 3,
+                succeed: 1,
+            },
+        )))
+    });
+    let (mut state, context, _internal_event_rx, internal_event_tx) =
+        expired_candidate(election_core, MockRaftLog::new()).await;
+    let (event_tx, _event_rx) = mpsc::channel(1);
+
+    state.tick(&internal_event_tx, &event_tx, &context).await.unwrap();
+
+    assert!(
+        !state.is_timer_expired(),
+        "the next round must wait for a new election timeout"
+    );
+}
+
+/// Test: a Candidate that has NOT voted in its current term still grants a same-term request.
+///
+/// Scenario:
+/// - The Candidate has not cast its self-vote yet (its first election round has not run), so it
+///   holds no vote in the current term.
+/// - Another candidate asks for a vote in the SAME term, with a good log.
+///
+/// Expected:
+/// - The Candidate steps down and replays the request to the Follower, which can grant it.
+///   Rejecting every same-term request would waste the votes this node still has to give.
+#[tokio::test]
+async fn test_candidate_without_a_vote_in_its_term_steps_down_for_a_legal_same_term_request() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_candidate_same_term_legal", graceful_rx, None);
+    let mut election_core = mock_election_core();
+    election_core
+        .expect_check_vote_request_is_legal()
+        .returning(|_, _, _, _, _| true);
+    context.handlers.election_handler = election_core;
+
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let term = state.current_term();
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+
+    state
+        .handle_inbound_event(
+            InboundEvent::ReceiveVoteRequest(
+                VoteRequest {
+                    term, // same term, not higher
+                    candidate_id: 2,
+                    last_log_index: 0,
+                    last_log_term: 0,
+                },
+                resp_tx,
+            ),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeFollower(_))
+    ));
+    assert!(matches!(
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::ReprocessEvent(_))
+    ));
+}
+
+/// Test: a LOWER-term VoteRequest is rejected with our own term and changes nothing.
+#[tokio::test]
+async fn test_candidate_lower_term_vote_request_is_rejected_without_changes() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context("/tmp/test_candidate_lower_term_vote", graceful_rx, None);
+    let mut election_core = mock_election_core();
+    election_core
+        .expect_check_vote_request_is_legal()
+        .returning(|_, _, _, _, _| false);
+    context.handlers.election_handler = election_core;
+
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.shared_state_mut().update_current_term(5);
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+
+    state
+        .handle_inbound_event(
+            InboundEvent::ReceiveVoteRequest(
+                VoteRequest {
+                    term: 3,
+                    candidate_id: 2,
+                    last_log_index: 0,
+                    last_log_term: 0,
+                },
+                resp_tx,
+            ),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.vote_granted);
+    assert_eq!(
+        response.term, 5,
+        "the reply must carry our own, higher term"
+    );
+    assert_eq!(state.current_term(), 5);
+    assert!(
+        internal_event_rx.try_recv().is_err(),
+        "no role change for a stale request"
+    );
+}
+
+/// Test: the higher term is persisted BEFORE `BecomeFollower` is sent.
+///
+/// A crash between "step down" and "persist" would resurrect the stale term on restart, and the
+/// node could then vote in a term it already gave up on.
+#[tokio::test]
+async fn test_candidate_higher_term_vote_request_persists_term_before_stepping_down() {
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+    let internal_event_rx = Arc::new(std::sync::Mutex::new(internal_event_rx));
+    let rx_for_ordering_check = Arc::clone(&internal_event_rx);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_log_id().returning(|| None);
+    raft_log
+        .expect_save_hard_state()
+        .withf(move |state| {
+            assert!(
+                rx_for_ordering_check.lock().unwrap().try_recv().is_err(),
+                "the term must be persisted BEFORE BecomeFollower is sent"
+            );
+            state.current_term == 5
+        })
+        .times(1)
+        .returning(|_| Ok(()));
+
+    let mut election_core = mock_election_core();
+    election_core
+        .expect_check_vote_request_is_legal()
+        .returning(|_, _, _, _, _| false);
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_election_handler(election_core)
+        .build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+
+    state
+        .handle_inbound_event(
+            InboundEvent::ReceiveVoteRequest(
+                VoteRequest {
+                    term: 5,
+                    candidate_id: 2,
+                    last_log_index: 0,
+                    last_log_term: 0,
+                },
+                resp_tx,
+            ),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(state.current_term(), 5);
+    assert!(matches!(
+        internal_event_rx.lock().unwrap().try_recv().unwrap(),
+        InternalEvent::BecomeFollower(_)
+    ));
+}
+
+/// Test: if the unapplied range cannot be read, the Candidate does not campaign this round.
+///
+/// It cannot prove that no membership change is pending, so the safe choice is to wait for the
+/// next election timeout. Neither an election nor a term bump may happen, and the tick must not
+/// fail (a failing tick would be logged as an error on every round).
+#[tokio::test(start_paused = true)]
+async fn test_candidate_tick_does_not_campaign_when_the_unapplied_range_cannot_be_read() {
+    let mut election_core = MockElectionCore::<MockTypeConfig>::new();
+    election_core.expect_broadcast_pre_vote_requests().times(0);
+    election_core.expect_broadcast_vote_requests().times(0);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log
+        .expect_get_entries_range()
+        .returning(|_| Err(crate::StorageError::DbError("cannot read the log".to_string()).into()));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let nc = node_config(temp_dir.path().to_str().unwrap());
+    let mut state_machine = crate::MockStateMachine::new();
+    state_machine.expect_is_running().returning(|| true);
+    state_machine
+        .expect_last_applied()
+        .return_const(d_engine_proto::common::LogId { index: 5, term: 1 });
+    let context = MockBuilder::new(graceful_rx)
+        .with_raft_log(raft_log)
+        .with_node_config(nc)
+        .with_state_machine(state_machine)
+        .with_election_handler(election_core)
+        .build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.shared_state_mut().commit_index = 10;
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(1);
+    let max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(max + 1)).await;
+    let term_before = state.current_term();
+
+    state
+        .tick(&internal_event_tx, &event_tx, &context)
+        .await
+        .expect("an unreadable range must not make the tick fail");
+
+    assert_eq!(state.current_term(), term_before);
+    assert!(internal_event_rx.try_recv().is_err());
 }

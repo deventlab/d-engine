@@ -82,6 +82,10 @@ async fn setup_single_voter_leader(
         "Setup failed: expected single_voter=true"
     );
 
+    // The lease is only published once this term's noop is committed (Raft §8).
+    // These tests are about refresh-on-flush, not election, so start past that point.
+    state.on_noop_committed(&ctx).unwrap();
+
     (state, ctx, last_entry_id)
 }
 

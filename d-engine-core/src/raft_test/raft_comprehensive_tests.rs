@@ -451,28 +451,48 @@ async fn test_follower_become_without_leader() {
     assert!(is_follower(raft.role.as_i32()));
 }
 
-/// Test: Follower state reset: voted_for should be cleared
+/// Test: stepping down inside the same term keeps this term's vote.
 ///
-/// Verifies that when transitioning to follower, voted_for is reset.
-/// This prevents voting for multiple candidates in same term.
+/// `votedFor` is per term (Raft Figure 2): a node that voted in term T must not vote again in
+/// term T, so a same-term step-down (CheckQuorum, noop timeout, removal) must not clear it.
+/// A term increase already clears it in `set_hard_state`, before `BecomeFollower` is sent.
 /// See A2.3 in test scenarios.
 #[tokio::test]
-async fn test_follower_state_reset_voted_for() {
+async fn test_become_follower_keeps_the_vote_of_the_same_term() {
+    use d_engine_proto::server::election::VotedFor;
+
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    // Follower → Candidate (sets voted_for to self)
     raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    assert!(is_candidate(raft.role.as_i32()));
+    let vote = VotedFor {
+        voted_for_id: raft.ctx.node_id,
+        voted_for_term: raft.role.current_term(),
+        committed: true,
+    };
+    raft.role
+        .state_mut()
+        .commit_hard_state(&raft.ctx, None, Some(vote))
+        .expect("the candidate votes for itself");
+    let term = raft.role.current_term();
 
-    // Candidate → Follower (should clear voted_for)
     raft.handle_internal_event(InternalEvent::BecomeFollower(None))
         .await
         .expect("Should transition to Follower");
+
     assert!(is_follower(raft.role.as_i32()));
-    // State has been reset, voted_for should be cleared
+    assert_eq!(
+        raft.role.current_term(),
+        term,
+        "a same-term step-down keeps the term"
+    );
+    assert_eq!(
+        raft.role.state().voted_for().unwrap(),
+        Some(vote),
+        "the vote of this term must survive the step-down, or the node could vote twice in it"
+    );
 }
 
 // A3. Candidate Role Entry/Exit Tests
@@ -2695,6 +2715,46 @@ async fn test_graceful_shutdown_persists_hardstate() {
     );
 }
 
+/// Test: a FatalError sent through `internal_event_tx` makes `run()` return Err(Fatal).
+///
+/// This is the last hop of the storage-failure path: `RaftLogCore` poisons itself and sends
+/// `InternalEvent::FatalError { source: "RaftLog", .. }`; if `run()` kept looping instead of
+/// returning, the node would keep serving with a log that rejects every write.
+/// `process_internal_events` is already covered on its own; this drives the real select loop.
+///
+/// # Scenario
+/// - `run()` is started on a healthy node.
+/// - A `FatalError` from "RaftLog" is sent through the same channel `RaftLogCore` uses.
+/// - Expected: `run()` returns `Err` with `is_fatal()`, carrying source and error text.
+#[tokio::test]
+async fn test_run_exits_with_fatal_error_when_raft_log_reports_fatal() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).build_raft();
+    let internal_event_tx = raft.internal_event_tx.clone();
+
+    let raft_handle = tokio::spawn(async move { raft.run().await });
+
+    internal_event_tx
+        .send(InternalEvent::FatalError {
+            source: "RaftLog".to_string(),
+            error: "persist_entries failed".to_string(),
+        })
+        .expect("internal event channel must be open while run() is alive");
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), raft_handle)
+        .await
+        .expect("run() must exit after FatalError, not keep looping")
+        .expect("run() task must not panic");
+
+    let err = result.expect_err("run() must return Err on FatalError, not Ok");
+    assert!(err.is_fatal());
+    let msg = err.to_string();
+    assert!(
+        msg.contains("RaftLog") && msg.contains("persist_entries failed"),
+        "error must carry source and cause, got: {msg}"
+    );
+}
+
 /// Test: a node that loses leadership and is elected again must not carry any per-peer
 /// replication state from its previous term. Both the trust state and the in-flight
 /// bookkeeping belong to one leadership; reusing them would let stale in-flight slots gate
@@ -2737,5 +2797,28 @@ async fn test_re_elected_leader_starts_with_fresh_peer_state() {
         leader.peer_replication_state(peer_id),
         crate::role_state::PeerReplicationState::Probe,
         "a new leadership must start every peer from the default Probe, not the previous term's state"
+    );
+}
+
+/// Test: after `BecomeCandidate` is processed, the new Candidate is due at once.
+///
+/// The main loop reads `role.next_deadline()` after every event; a Candidate whose deadline is
+/// already due makes the very next `select!` run `tick`, so the first election round starts
+/// without a second election timeout.
+#[tokio::test(start_paused = true)]
+async fn test_become_candidate_leaves_the_new_candidate_due_to_campaign() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).turn_on_election(false).build_raft();
+    assert!(
+        !raft.role.is_timer_expired(),
+        "precondition: a fresh Follower is not due"
+    );
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+
+    assert!(is_candidate(raft.role.as_i32()));
+    assert!(
+        raft.role.is_timer_expired(),
+        "the new Candidate must be due to start its first round immediately"
     );
 }

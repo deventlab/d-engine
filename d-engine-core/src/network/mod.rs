@@ -158,6 +158,16 @@ where
         membership: std::sync::Arc<crate::alias::MOF<T>>,
     ) -> Result<VoteResponse>;
 
+    /// Sends a PreVote request to a single peer (Raft thesis §9.6). Neither side changes
+    /// any state. Candidate-exclusive; the caller fans this out per-peer and tallies.
+    async fn send_pre_vote_request(
+        &self,
+        peer_id: u32,
+        request: VoteRequest,
+        retry: &RetryPolicies,
+        membership: std::sync::Arc<crate::alias::MOF<T>>,
+    ) -> Result<VoteResponse>;
+
     /// Orchestrates log compaction across cluster peers after snapshot creation.
     ///
     /// # Protocol

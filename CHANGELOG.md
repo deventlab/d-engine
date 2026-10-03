@@ -18,6 +18,10 @@ All notable changes to this project will be documented in this file.
 
 - **`start_with()` accepts `impl AsRef<Path>`** (#415): Callers can now pass `&str`, `String`, `&Path`, or `PathBuf` — backward compatible, no migration needed.
 
+- **PreVote and leader lease guard** (#423): An isolated node no longer inflates its term and forces a healthy leader to step down. Elections run a PreVote round first (reusing `VoteRequest`/`VoteResponse` over a new `PreVote` RPC; no term bump, nothing persisted), and followers and leaders ignore vote/PreVote requests while a leader is alive (Raft dissertation §4.2.3).
+
+- **Write admission and CheckQuorum** (#423): A leader without a recent quorum ACK rejects new client writes with `NotLeader` after `election_timeout_min`, before anything is appended, so clients can retry safely. After `election_timeout_max x write_admission_election_timeout_multiple` (new key in `[raft.backpressure]`, default `2`) without a quorum ACK it steps down. A new leader gets one window for its first ACK; single-voter clusters are exempt.
+
 ### Fixed
 
 - **fix(ttl) #398**: Removed `lease.enabled` flag — TTL expiration is always active. Fixes fatal crash when calling `put_with_ttl` without setting the (now-removed) `lease.enabled = true`.
@@ -44,6 +48,10 @@ All notable changes to this project will be documented in this file.
   replicas — see [Throughput Optimization Guide](./d-engine/src/docs/performance/throughput-optimization-guide.md)
   for tuning `idle_flush_interval_ms`.
 
+- **Vote protocol hardening** (#423): Hard state (term + vote) is now fsynced before replying to a vote request and a flush failure is fatal (a lost vote could allow two leaders in one term). A vote from an older term no longer blocks a request in a newer term, a same-term step-down keeps the term's vote, a candidate adopts a higher term even when it cannot grant the vote (§5.1), only active voters campaign (none while a committed membership change is unapplied), the first election round starts immediately instead of after two election timeouts, and the read lease is published only after the leader's noop is applied (§8). After a long snapshot install the follower re-arms its election timer and leader-contact guard.
+
+- **Quorum confirmation no longer derives from replicated history** (#423): In a 5+ voter cluster, a leader cut off from the majority but still reached by one follower kept renewing its read lease and never stepped down, because the commit median over every peer's stored `match_index` stayed true. A leader is now confirmed only when a quorum of voters acknowledged a newer heartbeat round; unreachable peers stop counting. Applies to lease reads, queued linearizable reads, CheckQuorum, write admission and the vote guard.
+
 ### Changed
 
 - **MSRV raised to Rust 1.89**: The `data_dir` startup lock (prevents two node processes from
@@ -68,6 +76,12 @@ All notable changes to this project will be documented in this file.
 
 - **New `shutdown_timeout_ms` in `[raft.persistence]`** (default `5000`): bounds `close()` wait
   against a stuck fsync task. The task itself continues running in the background.
+
+- **⚠️ Two new startup config checks** (#423). A config that violated them started before and now fails with a config error:
+  - `election.election_timeout_min` must be at least 3 x `replication.rpc_append_entries_clock_in_ms` (defaults 500 / 100). Raise `election_timeout_min` or lower the heartbeat interval.
+  - `backpressure.max_pending_writes` / `max_pending_reads` must be greater than `batching.max_batch_size`, or `0` (unlimited).
+
+- **Writes are at-least-once across a leader failover** (#423): a write already proposed when the leader steps down can still be committed by the new leader although the client received an error (`NotLeader`, `ProposeFailed` or `TermOutdated`). There is no request-id deduplication yet, so retrying a non-idempotent command can apply it twice.
 
 - **`data_dir` removed from `ClusterConfig`** — it is now a required explicit argument to all engine constructors (`EmbeddedEngine::start(data_dir)`, `StandaloneEngine::run(data_dir, shutdown_rx)`, etc.). Remove `[cluster] data_dir` / `[cluster] db_root_dir` from all config files; the constructor argument always wins and the config field is silently ignored.
 

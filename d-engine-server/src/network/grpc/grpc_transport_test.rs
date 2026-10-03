@@ -522,3 +522,219 @@ async fn test_send_vote_request_retry_exhausted_returns_err() {
 
     assert!(result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// send_pre_vote_request (#423): like send_vote_request it is a transparent per-peer primitive,
+// but it MUST use the PreVote RPC. Sending a PreVote as RequestVote would make the peer record a
+// real vote and adopt the term, defeating the whole point of PreVote.
+// ---------------------------------------------------------------------------
+
+/// Sends one PreVote to a mock peer that answers `response`, and returns the result.
+async fn send_pre_vote_to_mock_peer(
+    name: &str,
+    response: VoteResponse,
+) -> d_engine_core::Result<VoteResponse> {
+    let my_id = 1;
+    let peer_id = 2;
+    let node_config = node_config(name);
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let (channel, _port) = MockNode::simulate_send_votes_mock_server(response, rx)
+        .await
+        .expect("mock server should start");
+
+    let mut channels = HashMap::new();
+    channels.insert((peer_id, ConnectionType::Control), channel);
+    let membership = mock_membership(vec![(peer_id, Follower as i32)], channels);
+
+    let request = VoteRequest {
+        term: 2,
+        candidate_id: my_id,
+        last_log_index: 1,
+        last_log_term: 1,
+    };
+    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    client
+        .send_pre_vote_request(peer_id, request, &node_config.retry, membership)
+        .await
+}
+
+// # Case: PreVote granted / denied are both Ok responses (a denial is a protocol answer, not a
+// transport failure).
+#[tokio::test]
+#[traced_test]
+async fn test_send_pre_vote_request_returns_granted_and_denied_responses_as_ok() {
+    let granted = send_pre_vote_to_mock_peer(
+        "/tmp/test_send_pre_vote_granted",
+        VoteResponse {
+            term: 1,
+            vote_granted: true,
+            last_log_index: 1,
+            last_log_term: 1,
+        },
+    )
+    .await
+    .expect("granted must be Ok");
+    assert!(granted.vote_granted);
+
+    let denied = send_pre_vote_to_mock_peer(
+        "/tmp/test_send_pre_vote_denied",
+        VoteResponse {
+            term: 1,
+            vote_granted: false,
+            last_log_index: 1,
+            last_log_term: 1,
+        },
+    )
+    .await
+    .expect("a denial must be Ok, not Err");
+    assert!(!denied.vote_granted);
+}
+
+// # Case: the peer's term and log come back unchanged. The core layer interprets them (higher
+// term -> catch up, newer log -> not enough votes); the transport must not.
+#[tokio::test]
+#[traced_test]
+async fn test_send_pre_vote_request_passes_through_term_and_log_of_the_response() {
+    let res = send_pre_vote_to_mock_peer(
+        "/tmp/test_send_pre_vote_passes_through",
+        VoteResponse {
+            term: 99,
+            vote_granted: false,
+            last_log_index: 42,
+            last_log_term: 5,
+        },
+    )
+    .await
+    .expect("should succeed");
+
+    assert_eq!(res.term, 99);
+    assert_eq!((res.last_log_index, res.last_log_term), (42, 5));
+}
+
+// # Case: PreVote goes out through the PreVote RPC, never through RequestVote.
+//
+// ## Criteria:
+// 1. The peer's RequestVote handler answers with an error; the PreVote handler answers
+//    "granted". Getting "granted" proves the PreVote RPC was used.
+#[tokio::test]
+#[traced_test]
+async fn test_send_pre_vote_request_uses_the_pre_vote_rpc_not_request_vote() {
+    let my_id = 1;
+    let peer_id = 2;
+    let node_config = node_config("/tmp/test_send_pre_vote_uses_pre_vote_rpc");
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let mock_service = MockRpcService {
+        expected_vote_response: Some(Err(Status::internal(
+            "RequestVote must not be called for a PreVote",
+        ))),
+        expected_pre_vote_response: Some(Ok(VoteResponse {
+            term: 1,
+            vote_granted: true,
+            last_log_index: 1,
+            last_log_term: 1,
+        })),
+        ..Default::default()
+    };
+    let (port, _addr) = MockNode::mock_listener(mock_service, rx, true)
+        .await
+        .expect("mock listener should start");
+    let channel = MockNode::mock_channel_with_port(port).await;
+
+    let mut channels = HashMap::new();
+    channels.insert((peer_id, ConnectionType::Control), channel);
+    let membership = mock_membership(vec![(peer_id, Follower as i32)], channels);
+
+    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    let result = client
+        .send_pre_vote_request(
+            peer_id,
+            VoteRequest {
+                term: 2,
+                candidate_id: my_id,
+                last_log_index: 1,
+                last_log_term: 1,
+            },
+            &node_config.retry,
+            membership,
+        )
+        .await;
+
+    assert!(
+        result.expect("PreVote RPC must be used").vote_granted,
+        "got the RequestVote error path instead"
+    );
+}
+
+// # Case: peer channel not found -> PeerConnectionNotFound without attempting any RPC.
+#[tokio::test]
+#[traced_test]
+async fn test_send_pre_vote_request_missing_channel_returns_peer_connection_not_found() {
+    let my_id = 1;
+    let peer_id = 2;
+    let node_config = node_config("/tmp/test_send_pre_vote_missing_channel");
+    let membership = mock_membership(vec![(peer_id, Follower as i32)], HashMap::new());
+
+    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    let result = client
+        .send_pre_vote_request(
+            peer_id,
+            VoteRequest {
+                term: 2,
+                candidate_id: my_id,
+                last_log_index: 0,
+                last_log_term: 0,
+            },
+            &node_config.retry,
+            membership,
+        )
+        .await;
+
+    assert!(matches!(
+        result.unwrap_err(),
+        Error::System(SystemError::Network(NetworkError::PeerConnectionNotFound(id))) if id == peer_id
+    ));
+}
+
+// # Case: peer consistently unreachable -> Err once retries are exhausted (and never an Ok that
+// the core layer could count as a grant).
+#[tokio::test]
+#[traced_test]
+async fn test_send_pre_vote_request_retry_exhausted_returns_err() {
+    let my_id = 1;
+    let peer_id = 2;
+    let mut node_config = node_config("/tmp/test_send_pre_vote_retry_exhausted");
+    node_config.retry.election.max_retries = 1;
+
+    let (_tx, rx) = oneshot::channel::<()>();
+    let mock_service = MockRpcService {
+        expected_pre_vote_response: Some(Err(Status::unavailable("peer unreachable"))),
+        ..Default::default()
+    };
+    let (port, _addr) = MockNode::mock_listener(mock_service, rx, true)
+        .await
+        .expect("mock listener should start");
+    let channel = MockNode::mock_channel_with_port(port).await;
+
+    let mut channels = HashMap::new();
+    channels.insert((peer_id, ConnectionType::Control), channel);
+    let membership = mock_membership(vec![(peer_id, Follower as i32)], channels);
+
+    let client: GrpcTransport<MockTypeConfig> = GrpcTransport::new(my_id);
+    let result = client
+        .send_pre_vote_request(
+            peer_id,
+            VoteRequest {
+                term: 2,
+                candidate_id: my_id,
+                last_log_index: 0,
+                last_log_term: 0,
+            },
+            &node_config.retry,
+            membership,
+        )
+        .await;
+
+    assert!(result.is_err());
+}

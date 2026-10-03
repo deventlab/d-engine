@@ -180,11 +180,21 @@ impl RaftConfig {
         self.replication.validate()?;
         self.batching.validate()?;
         self.election.validate()?;
+        // Write admission rejects after `election_timeout_min` without a quorum ACK, so a few
+        // lost heartbeats must fit inside it or normal jitter rejects client writes.
+        let heartbeat_ms = self.replication.rpc_append_entries_clock_in_ms;
+        if self.election.election_timeout_min < heartbeat_ms.saturating_mul(3) {
+            return Err(Error::Config(ConfigError::Message(format!(
+                "election_timeout_min {}ms must be at least 3 x rpc_append_entries_clock_in_ms {}ms",
+                self.election.election_timeout_min, heartbeat_ms
+            ))));
+        }
         self.membership.validate()?;
         self.state_machine.validate()?;
         self.snapshot.validate()?;
         self.read_consistency.validate(self.election.election_timeout_min)?;
         self.read_actor.validate()?;
+        self.backpressure.validate(self.batching.max_batch_size)?;
         self.watch.validate()?;
         self.persistence.validate()?;
 
@@ -936,6 +946,16 @@ pub struct BackpressureConfig {
     /// **Default**: 50000 (0 = unlimited)
     #[serde(default = "default_max_pending_reads")]
     pub max_pending_reads: usize,
+
+    /// CheckQuorum step-down limit, as a multiple of `election.election_timeout_max`.
+    ///
+    /// A leader that no quorum has answered within this limit steps down (same term). New
+    /// client writes are rejected earlier, after `election_timeout_min` without an ACK, and
+    /// that rejection never changes the role.
+    ///
+    /// **Default**: 2 (2 s with the default 1 s `election_timeout_max`). Must be at least 1.
+    #[serde(default = "default_write_admission_election_timeout_multiple")]
+    pub write_admission_election_timeout_multiple: u64,
 }
 
 impl Default for BackpressureConfig {
@@ -943,6 +963,8 @@ impl Default for BackpressureConfig {
         Self {
             max_pending_writes: default_max_pending_writes(),
             max_pending_reads: default_max_pending_reads(),
+            write_admission_election_timeout_multiple:
+                default_write_admission_election_timeout_multiple(),
         }
     }
 }
@@ -955,7 +977,43 @@ fn default_max_pending_reads() -> usize {
     50_000
 }
 
+fn default_write_admission_election_timeout_multiple() -> u64 {
+    2
+}
+
 impl BackpressureConfig {
+    /// Validates the write admission window and the pending limits.
+    ///
+    /// `max_batch_size` is `batching.max_batch_size`: one Raft loop round pushes up to
+    /// `max_batch_size + 1` commands before the buffer is flushed, so a non-zero limit at or
+    /// below it rejects requests of a perfectly healthy node.
+    pub(crate) fn validate(
+        &self,
+        max_batch_size: usize,
+    ) -> Result<()> {
+        if self.write_admission_election_timeout_multiple == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "write_admission_election_timeout_multiple must be at least 1 \
+                     (0 leaves no window: the leader would reject every write)"
+                    .into(),
+            )));
+        }
+
+        for (name, limit) in [
+            ("max_pending_writes", self.max_pending_writes),
+            ("max_pending_reads", self.max_pending_reads),
+        ] {
+            if limit != 0 && limit <= max_batch_size {
+                return Err(Error::Config(ConfigError::Message(format!(
+                    "{name} {limit} must be greater than batching.max_batch_size \
+                         {max_batch_size} (0 = unlimited): a drained batch alone would trip the limit"
+                ))));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Check if write request should be rejected due to backpressure
     ///
     /// Returns true if the current pending count exceeds the limit.

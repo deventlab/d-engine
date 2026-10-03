@@ -807,6 +807,8 @@ async fn test_expired_lease_single_voter_refreshed_immediately() {
     membership.expect_voters().returning(Vec::new);
     membership.expect_replication_peers().returning(Vec::new);
     state.init_cluster_metadata(&Arc::new(membership)).await.unwrap();
+    // Lease is only published once this term's noop is committed (Raft §8).
+    state.on_noop_committed(&context).unwrap();
 
     assert!(!state.is_lease_valid(), "Precondition: lease expired");
 
@@ -1196,11 +1198,24 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| None);
     raft_log.expect_close().returning(|| ());
 
+    // The noop sits at index 1 (mock `last_entry_id`). The lease is only published once the
+    // state machine has applied the noop (Raft §8), so report applied = 1.
+    // Built from scratch: with the default mock, its `last_applied() == 0` expectation is
+    // registered first and wins over a later one.
+    let mut state_machine = crate::MockStateMachine::new();
+    state_machine.expect_is_running().returning(|| true);
+    state_machine
+        .expect_last_applied()
+        .return_const(d_engine_proto::common::LogId { index: 1, term: 1 });
+    state_machine.expect_update_last_applied().returning(|_| ());
+    state_machine.expect_persist_last_applied().returning(|_| Ok(()));
+
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_lease_reuse")
         .with_node_config(node_config)
         .with_replication_handler(replication)
         .with_raft_log(raft_log)
+        .with_state_machine(state_machine)
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
@@ -1230,7 +1245,16 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
 
     // Verify: Lease is now valid (refreshed by LinearizableRead)
     // After flush in single-voter: lease refreshed via handle_log_flushed
-    // Manually trigger to simulate the async flush event
+    // Manually trigger to simulate the async flush event.
+    // Lease is only published once this term's noop is committed (Raft §8); committed
+    // here, after the read, so the LinearizableRead path above runs exactly as before.
+    state.on_noop_committed(&ctx).unwrap();
+    use crate::StateMachine as _;
+    assert_eq!(
+        (state.noop_log_id, ctx.state_machine().last_applied().index),
+        (Some(1), 1),
+        "precondition: noop applied"
+    );
     state.handle_log_flushed(1, &ctx, &internal_event_tx).await;
 
     assert!(

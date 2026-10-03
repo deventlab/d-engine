@@ -497,9 +497,6 @@ where
                 new_role.restore_pending_acks(withheld_acks);
                 self.role = new_role;
 
-                // Reset vote when stepping down (new term, no vote yet)
-                self.role.state_mut().commit_vote_reset(&self.ctx)?;
-
                 // Notify leader change listeners
                 let current_term = self.role.current_term();
                 self.notify_leader_change(leader_id_option, current_term);
@@ -671,7 +668,8 @@ where
                 self.notify_leader_change(Some(self.node_id), term);
             }
             InternalEvent::FatalError { source, error } => {
-                error!(%self.node_id, %source, %error, "Fatal error from SM worker — shutting down");
+                error!(%self.node_id, %source, %error, "Fatal error from {source} — shutting down");
+
                 return Err(crate::Error::Fatal(format!("{source}: {error}")));
             }
             InternalEvent::ApplyCompleted {
@@ -918,7 +916,7 @@ where
     }
 
     pub fn read_lease(&self) -> Arc<super::ReadLease> {
-        Arc::clone(&self.role.state().shared_state().lease)
+        Arc::clone(&self.role.state().shared_state().read_lease)
     }
 
     pub fn current_term(&self) -> u64 {
