@@ -185,3 +185,26 @@ async fn test_calculate_majority_matched_index_case5() {
             .calculate_majority_matched_index(term, commit, vec![peer1_match, peer2_match])
     );
 }
+
+/// `calculate_majority_matched_index` answers "which index has a majority replicated" (the COMMIT
+/// question). It reads the stored `match_index` of every peer, so after a partition the stale
+/// values of unreachable peers keep producing `Some`.
+///
+/// Not evidence of an error here (the index is already committed); it documents why the result
+/// must not be used to answer "did a majority reply just now" (see
+/// `test_one_reachable_peer_of_four_does_not_confirm_quorum` in the leader tests).
+#[tokio::test]
+async fn test_majority_matched_index_is_some_with_only_stale_peers() {
+    let mut ctx = RaftLogCoreTestContext::new("test_majority_matched_stale_peers");
+
+    // Quiet cluster: the new leader's noop (index 50, term 1) is committed everywhere.
+    ctx.append_entries(1, 50, 1).await;
+    ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
+
+    // 5 voters: leader (durable 50) + one peer that just replied + 3 peers that were last
+    // heard from before the partition (all at 50). Nobody has replied from those three since.
+    let majority = ctx.raft_log.calculate_majority_matched_index(1, 50, vec![50, 50, 50, 50]);
+
+    assert_eq!(majority, Some(50));
+}

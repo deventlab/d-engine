@@ -2638,3 +2638,396 @@ mod test_leader_update_next_index {
         assert_eq!(state.match_index.get(&2), Some(&11));
     }
 }
+
+// ============================================================================
+// A5: "a quorum just answered me" must come from who replied, not from replicated history
+//
+// `calculate_majority_matched_index` answers the COMMIT question from every peer's stored
+// `match_index`. The stored value of an unreachable peer never changes, so after a partition it
+// keeps producing `Some` and an isolated leader would treat each reply of its one reachable
+// follower as a fresh quorum confirmation. These tests pin the behavior from outside: they only
+// look at the contact/lease fields, the write admission and the queued reads.
+// ============================================================================
+
+/// 5 voters (leader + peers 2..=5) in a quiet cluster: every `match_index` equals `commit_index`
+/// (50, the leader's own noop), so the commit median is `Some(50)` no matter who replies.
+async fn five_voter_partition_context(path: &str) -> ProcessRaftRequestTestContext {
+    let mut context = setup_commit_index_test_context(path, false).await;
+
+    context.state.cluster_metadata.replication_targets.extend([
+        NodeMeta {
+            id: 4,
+            address: "".to_string(),
+            status: NodeStatus::Active as i32,
+            role: Follower.into(),
+        },
+        NodeMeta {
+            id: 5,
+            address: "".to_string(),
+            status: NodeStatus::Active as i32,
+            role: Follower.into(),
+        },
+    ]);
+    context.state.cluster_metadata.total_voters = 5;
+    context.state.cluster_metadata.single_voter = false;
+    for peer in [2u32, 3, 4, 5] {
+        context.state.match_index.insert(peer, 50);
+    }
+    context.state.update_commit_index(50).unwrap();
+
+    // Short windows so the tests can wait them out.
+    let mut node_config = (*context.raft_context.node_config).clone();
+    node_config.raft.read_consistency.lease_duration_ms = 10;
+    node_config.raft.election.election_timeout_min = 20;
+    node_config.raft.election.election_timeout_max = 40;
+    context.raft_context.node_config = Arc::new(node_config);
+    context.state.node_config = context.raft_context.node_config.clone();
+
+    // "Never confirmed": distinguishes a refresh from the construction-time value.
+    context.state.last_quorum_contact_ms = 0;
+    context.state.quorum_ack_deadline_ms = 0;
+    // The monotonic clock starts at its first use: let it move past 0 so a refresh is visible.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+    context
+        .raft_context
+        .handlers
+        .replication_handler
+        .expect_handle_success_response()
+        .returning(|_, _, _, _| {
+            Ok(PeerUpdate {
+                match_index: Some(50),
+                next_index: 51,
+                success: true,
+            })
+        });
+
+    // Same arithmetic as RaftLogCore::calculate_majority_matched_index: median of the stored
+    // peer match indexes plus the leader's own durable index (50).
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 50);
+    raft_log
+        .expect_calculate_majority_matched_index()
+        .returning(|_, commit_index, mut matched| {
+            matched.push(50);
+            matched.sort_unstable_by(|a, b| b.cmp(a));
+            let median = matched[matched.len() / 2];
+            if median < commit_index {
+                None
+            } else {
+                Some(median)
+            }
+        });
+    context.raft_context.storage.raft_log = Arc::new(raft_log);
+    let mut sm_handler = crate::MockStateMachineHandler::new();
+    sm_handler.expect_read_from_state_machine().returning(|_| Some(vec![]));
+    context.raft_context.handlers.state_machine_handler = Arc::new(sm_handler);
+
+    context
+}
+
+/// The leader sends a new heartbeat round, then `peer` answers it.
+async fn peer_answers_a_new_round(
+    context: &mut ProcessRaftRequestTestContext,
+    peer: u32,
+) {
+    context.state.last_heartbeat_send_ts = crate::raft_role::read_lease::now_ms();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    context
+        .state
+        .handle_append_result(
+            peer,
+            Ok(success_response(1, 50)),
+            &context.raft_context,
+            &internal_event_tx,
+        )
+        .await
+        .unwrap();
+}
+
+/// Leader and ONE reachable peer are 2 of 5: no quorum.
+///
+/// # Then
+/// - `last_quorum_contact_ms` and the read-lease ACK deadline are not refreshed.
+#[tokio::test]
+#[traced_test]
+async fn test_one_reachable_peer_of_four_does_not_confirm_quorum() {
+    let mut context = five_voter_partition_context("/tmp/test_one_reachable_peer_of_four").await;
+
+    peer_answers_a_new_round(&mut context, 2).await;
+
+    assert_eq!(
+        context.state.last_quorum_contact_ms, 0,
+        "2 of 5 reachable: a stale majority of match_index must not count as a quorum answer"
+    );
+    assert_eq!(context.state.quorum_ack_deadline_ms, 0);
+}
+
+/// Leader and TWO reachable peers are 3 of 5: a quorum.
+///
+/// # Then
+/// - After the first peer nothing is confirmed; after the second one both fields are refreshed.
+#[tokio::test]
+#[traced_test]
+async fn test_two_reachable_peers_of_four_confirm_quorum() {
+    let mut context = five_voter_partition_context("/tmp/test_two_reachable_peers_of_four").await;
+
+    peer_answers_a_new_round(&mut context, 2).await;
+    assert_eq!(
+        context.state.last_quorum_contact_ms, 0,
+        "2 of 5 is not a quorum yet"
+    );
+
+    peer_answers_a_new_round(&mut context, 3).await;
+
+    assert!(
+        context.state.last_quorum_contact_ms > 0,
+        "leader + peers 2 and 3 = 3 of 5 is a quorum"
+    );
+    assert!(context.state.quorum_ack_deadline_ms > 0);
+}
+
+/// The partition lasts: one peer keeps answering every round, three never do.
+///
+/// # Then
+/// - After more than `election_timeout_min` the leader no longer admits writes and the vote
+///   guard no longer claims a recent quorum ACK. The loop below never calls anything but the
+///   normal reply path, so a refresh from stale history would keep both open forever.
+#[tokio::test]
+#[traced_test]
+async fn test_leader_loses_write_admission_when_only_one_peer_keeps_answering() {
+    let mut context = five_voter_partition_context("/tmp/test_only_one_peer_keeps_answering").await;
+
+    for _ in 0..8 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        peer_answers_a_new_round(&mut context, 2).await;
+    }
+
+    assert!(
+        !context.state.is_write_admitted(),
+        "2 of 5 reachable for 80 ms (election_timeout_min is 20 ms): writes must be rejected"
+    );
+    assert!(!context.state.has_recent_quorum_ack());
+}
+
+/// Reads that wait for a quorum confirmation (linearizable reads and lease reads waiting for the
+/// lease) must stay queued while only a minority answers, and be served once a quorum does.
+#[tokio::test]
+#[traced_test]
+async fn test_queued_reads_wait_for_a_real_quorum() {
+    use crate::ReadConsistencyPolicy;
+    use crate::client::ClientReadRequest;
+    use crate::convert::safe_kv_bytes;
+    use crate::raft_role::leader_state::PendingLeaseRead;
+    use tokio::time::{Duration, Instant};
+
+    let mut context = five_voter_partition_context("/tmp/test_queued_reads_wait").await;
+
+    let read = |policy| ClientReadRequest {
+        client_id: 1,
+        consistency_policy: Some(policy),
+        keys: vec![safe_kv_bytes(1)],
+    };
+    let (linearizable_tx, mut linearizable_rx) = MaybeCloneOneshot::new();
+    let mut requests = VecDeque::new();
+    requests.push_back((
+        read(ReadConsistencyPolicy::LinearizableRead),
+        linearizable_tx,
+    ));
+    context.state.pending_reads.insert(
+        0,
+        crate::raft_role::leader_state::PendingReadBatch {
+            deadline: Instant::now() + Duration::from_secs(5),
+            requests,
+        },
+    );
+    let (lease_tx, mut lease_rx) = MaybeCloneOneshot::new();
+    context.state.pending_lease_reads.push_back(PendingLeaseRead {
+        request: read(ReadConsistencyPolicy::LeaseRead),
+        sender: lease_tx,
+        deadline: Instant::now() + Duration::from_secs(5),
+    });
+
+    peer_answers_a_new_round(&mut context, 2).await;
+
+    assert_eq!(
+        context.state.pending_reads.len(),
+        1,
+        "2 of 5: linearizable read must wait"
+    );
+    assert_eq!(
+        context.state.pending_lease_reads.len(),
+        1,
+        "2 of 5: lease read must wait"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), linearizable_rx.recv())
+            .await
+            .is_err()
+    );
+    assert!(tokio::time::timeout(Duration::from_millis(20), lease_rx.recv()).await.is_err());
+
+    peer_answers_a_new_round(&mut context, 3).await;
+
+    assert!(
+        context.state.pending_reads.is_empty(),
+        "3 of 5: linearizable read is served"
+    );
+    assert!(
+        context.state.pending_lease_reads.is_empty(),
+        "3 of 5: lease read is served"
+    );
+    assert!(linearizable_rx.recv().await.unwrap().is_ok());
+    assert!(lease_rx.recv().await.unwrap().is_ok());
+}
+
+/// Learners never count toward the quorum, whatever they reply.
+///
+/// # Given
+/// - 3 voters (leader, 2, 3) and 2 learners (4, 5), nobody confirmed anything yet
+///
+/// # Then
+/// - Both learners answering does not confirm a quorum; one voter answering does.
+#[tokio::test]
+#[traced_test]
+async fn test_learner_replies_do_not_count_toward_quorum() {
+    let mut context = five_voter_partition_context("/tmp/test_learner_replies").await;
+    context.state.cluster_metadata.total_voters = 3;
+    for node in context.state.cluster_metadata.replication_targets.iter_mut() {
+        if node.id == 4 || node.id == 5 {
+            node.role = d_engine_proto::common::NodeRole::Learner.into();
+        }
+    }
+
+    peer_answers_a_new_round(&mut context, 4).await;
+    peer_answers_a_new_round(&mut context, 5).await;
+    assert_eq!(
+        context.state.last_quorum_contact_ms, 0,
+        "learners are not voters"
+    );
+
+    peer_answers_a_new_round(&mut context, 2).await;
+    assert!(
+        context.state.last_quorum_contact_ms > 0,
+        "leader + voter 2 = 2 of 3 voters is a quorum"
+    );
+}
+
+// ============================================================================
+// record_voter_ack: when does the quorum-acknowledged send time move forward?
+// ============================================================================
+
+/// The reply sequence of the design notes. 5 voters (leader + B=2, C=3, D=4, E=5), `need` = 2
+/// peers. A round is a heartbeat sent at time T; "x:T" means peer x acknowledged that round.
+///
+/// ```text
+///   reply   peers' times                quorum time   returned
+///   B:1000  {B:1000}                    none yet      None
+///   C:1000  {B:1000, C:1000}            1000          Some(1000)  first quorum
+///   D:1000  {B,C,D:1000}                1000          None        same round, nothing new
+///   B:1100  {B:1100, C:1000, D:1000}    1000          None        only B reached the new round
+///   C:1100  {B:1100, C:1100, D:1000}    1100          Some(1100)  second peer reached it
+///   D:1100  {B,C,D:1100}                1100          None
+///   --- C, D, E are cut off, only B keeps answering ---
+///   B:1200  {B:1200, C:1100, D:1100}    1100          None        B alone cannot move it
+///   B:1300  {B:1300, C:1100, D:1100}    1100          None
+/// ```
+#[tokio::test]
+#[traced_test]
+async fn test_record_voter_ack_returns_a_time_only_when_the_quorum_time_moves_forward() {
+    let mut context = five_voter_partition_context("/tmp/test_record_voter_ack_sequence").await;
+    let (b, c, d) = (2u32, 3u32, 4u32);
+    let state = &mut context.state;
+
+    let sequence = [
+        (b, 1000, None),
+        (c, 1000, Some(1000)),
+        (d, 1000, None),
+        (b, 1100, None),
+        (c, 1100, Some(1100)),
+        (d, 1100, None),
+        (b, 1200, None),
+        (b, 1300, None),
+    ];
+    for (step, (peer, send_ts, expected)) in sequence.into_iter().enumerate() {
+        assert_eq!(
+            state.record_voter_ack(peer, send_ts),
+            expected,
+            "step {step}: peer {peer} acknowledged the round sent at {send_ts}"
+        );
+    }
+}
+
+/// A recovered peer moves the quorum time forward again.
+#[tokio::test]
+#[traced_test]
+async fn test_record_voter_ack_moves_forward_again_when_a_second_peer_recovers() {
+    let mut context = five_voter_partition_context("/tmp/test_record_voter_ack_recovery").await;
+    let (b, c, d) = (2u32, 3u32, 4u32);
+    let state = &mut context.state;
+    for peer in [b, c, d] {
+        state.record_voter_ack(peer, 1000);
+    }
+    // Partition: only B answers, the quorum time stays at 1000.
+    assert_eq!(state.record_voter_ack(b, 1100), None);
+    assert_eq!(state.record_voter_ack(b, 1200), None);
+
+    // C comes back and answers the round sent at 1300 (B answers it too).
+    assert_eq!(state.record_voter_ack(b, 1300), None);
+    assert_eq!(state.record_voter_ack(c, 1300), Some(1300));
+}
+
+/// A membership change drops the times of peers that left and forgets the old conclusion.
+///
+/// # Given
+/// - 3 voters (leader, B, C): one peer is a quorum, B answered the round sent at 1400
+///
+/// # When
+/// - the cluster grows to 5 voters (D and a new E join, the old E=5 is gone), then C answers
+///   the round sent at 1450
+///
+/// # Then
+/// - the removed peer's time is gone
+/// - the quorum time is recomputed for 5 voters (2 peers needed, B:1400 and C:1450 -> 1400)
+///   and reported once. Without the reset the stale 1400 of the 3-voter conclusion would hide it.
+#[tokio::test]
+#[traced_test]
+async fn test_membership_change_drops_left_peers_and_recomputes_the_quorum_time() {
+    use crate::MockMembership;
+    use d_engine_proto::server::cluster::NodeMeta;
+
+    let mut context = five_voter_partition_context("/tmp/test_membership_change_resets").await;
+    let state = &mut context.state;
+    state.cluster_metadata.total_voters = 3;
+    assert_eq!(
+        state.record_voter_ack(2, 1400),
+        Some(1400),
+        "3 voters: one peer is a quorum"
+    );
+    state.peer_ack_send_ts.insert(5, 1300); // a voter that is about to leave
+
+    let peer = |id: u32| NodeMeta {
+        id,
+        address: "".to_string(),
+        status: NodeStatus::Active as i32,
+        role: Follower.into(),
+    };
+    let mut membership = MockMembership::new();
+    membership
+        .expect_voters()
+        .returning(move || vec![peer(2), peer(3), peer(4), peer(6)]);
+    membership
+        .expect_replication_peers()
+        .returning(move || vec![peer(2), peer(3), peer(4), peer(6)]);
+    state.update_cluster_metadata(&Arc::new(membership)).await.unwrap();
+
+    assert!(
+        !state.peer_ack_send_ts.contains_key(&5),
+        "a peer that is no longer a voter must not keep counting"
+    );
+    assert_eq!(
+        state.record_voter_ack(3, 1450),
+        Some(1400),
+        "5 voters: B:1400 and C:1450 make a quorum at 1400, which the old conclusion would hide"
+    );
+}

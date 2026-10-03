@@ -241,10 +241,24 @@ async fn test_lease_not_published_to_readers_before_noop_applied() {
 // is the CheckQuorum step-down limit, not the write rejection.
 // ============================================================================
 
-const WRITE_ADMISSION_TEST_LEASE_MS: u64 = 10;
-const WRITE_ADMISSION_TEST_ELECTION_MAX_MS: u64 = 40;
+/// Scales every timing in the write-admission tests: a loaded CI host oversleeps and delays
+/// tasks, so the margins between "inside" and "beyond" a window are 4x wider there.
+fn time_scale() -> u64 {
+    if std::env::var("CI").is_ok() { 4 } else { 1 }
+}
+
+fn write_admission_test_lease_ms() -> u64 {
+    10 * time_scale()
+}
+
+fn write_admission_test_election_max_ms() -> u64 {
+    40 * time_scale()
+}
+
 /// Silence long enough to be well past both the lease and the step-down limit (multiple 2).
-const WRITE_ADMISSION_TEST_WINDOW_MS: u64 = WRITE_ADMISSION_TEST_ELECTION_MAX_MS * 2;
+fn write_admission_test_window_ms() -> u64 {
+    write_admission_test_election_max_ms() * 2
+}
 
 async fn write_admission_leader() -> (
     LeaderState<MockTypeConfig>,
@@ -262,9 +276,9 @@ async fn write_admission_leader_with_heartbeat(
 ) {
     let (_shutdown_tx, shutdown_rx) = watch::channel(());
     let mut node_config = RaftNodeConfig::default();
-    node_config.raft.read_consistency.lease_duration_ms = WRITE_ADMISSION_TEST_LEASE_MS;
-    node_config.raft.election.election_timeout_min = WRITE_ADMISSION_TEST_ELECTION_MAX_MS / 2;
-    node_config.raft.election.election_timeout_max = WRITE_ADMISSION_TEST_ELECTION_MAX_MS;
+    node_config.raft.read_consistency.lease_duration_ms = write_admission_test_lease_ms();
+    node_config.raft.election.election_timeout_min = write_admission_test_election_max_ms() / 2;
+    node_config.raft.election.election_timeout_max = write_admission_test_election_max_ms();
     node_config.raft.replication.rpc_append_entries_clock_in_ms = heartbeat_ms;
     let mut ctx = MockBuilder::new(shutdown_rx).with_node_config(node_config).build_context();
 
@@ -289,7 +303,7 @@ async fn write_admission_leader_with_heartbeat(
 fn quorum_acks_now(state: &mut LeaderState<MockTypeConfig>) {
     state.noop_log_id = Some(1);
     state.last_heartbeat_send_ts = now_ms();
-    state.test_renew_lease_from_send_ts(WRITE_ADMISSION_TEST_LEASE_MS, 1);
+    state.test_renew_lease_from_send_ts(write_admission_test_lease_ms(), 1);
 }
 
 fn sleep_ms(ms: u64) {
@@ -344,7 +358,7 @@ async fn test_leader_rejects_new_writes_when_quorum_acks_stop() {
     let (mut state, ctx) = write_admission_leader().await;
     quorum_acks_now(&mut state);
     let term_before = state.current_term();
-    sleep_ms(WRITE_ADMISSION_TEST_WINDOW_MS * 2);
+    sleep_ms(write_admission_test_window_ms() * 2);
 
     let rejection = offer_write(&mut state, &ctx).await;
 
@@ -358,7 +372,7 @@ async fn test_leader_accepts_writes_while_quorum_acks_continue() {
     let (mut state, ctx) = write_admission_leader().await;
     for _ in 0..4 {
         quorum_acks_now(&mut state);
-        sleep_ms(WRITE_ADMISSION_TEST_WINDOW_MS / 4);
+        sleep_ms(write_admission_test_window_ms() / 4);
     }
     quorum_acks_now(&mut state);
 
@@ -370,7 +384,7 @@ async fn test_leader_accepts_writes_while_quorum_acks_continue() {
 async fn test_leader_accepts_writes_again_as_soon_as_a_quorum_acks() {
     let (mut state, ctx) = write_admission_leader().await;
     quorum_acks_now(&mut state);
-    sleep_ms(WRITE_ADMISSION_TEST_WINDOW_MS * 2);
+    sleep_ms(write_admission_test_window_ms() * 2);
     assert_eq!(
         offer_write(&mut state, &ctx).await,
         Some(crate::client::ErrorCode::NotLeader),
@@ -392,7 +406,7 @@ async fn test_single_voter_leader_always_accepts_writes() {
     let (mut state, ctx) = write_admission_leader().await;
     state.cluster_metadata.single_voter = true;
     state.cluster_metadata.total_voters = 1;
-    sleep_ms(WRITE_ADMISSION_TEST_WINDOW_MS * 2);
+    sleep_ms(write_admission_test_window_ms() * 2);
 
     assert_eq!(offer_write(&mut state, &ctx).await, None);
 }
@@ -415,7 +429,7 @@ async fn test_new_leader_accepts_writes_for_one_window_then_needs_a_quorum_ack()
         "a new leader must take writes while its noop is replicating"
     );
 
-    sleep_ms(WRITE_ADMISSION_TEST_WINDOW_MS);
+    sleep_ms(write_admission_test_window_ms());
 
     assert_eq!(
         offer_write(&mut state, &ctx).await,
@@ -461,7 +475,7 @@ fn became_follower(events: &[crate::InternalEvent]) -> bool {
 async fn test_leader_steps_down_when_no_quorum_ack_beyond_the_limit() {
     let (mut state, ctx) = write_admission_leader().await;
     quorum_acks_now(&mut state);
-    sleep_ms(WRITE_ADMISSION_TEST_WINDOW_MS * 2);
+    sleep_ms(write_admission_test_window_ms() * 2);
 
     let events = tick_once(&mut state, &ctx).await;
 
@@ -480,7 +494,7 @@ async fn test_leader_steps_down_when_no_quorum_ack_beyond_the_limit() {
 async fn test_leader_stays_when_silence_is_inside_the_limit() {
     let (mut state, ctx) = write_admission_leader().await;
     quorum_acks_now(&mut state);
-    sleep_ms(WRITE_ADMISSION_TEST_LEASE_MS * 3);
+    sleep_ms(write_admission_test_lease_ms() * 3);
 
     let events = tick_once(&mut state, &ctx).await;
 
@@ -496,7 +510,7 @@ async fn test_leader_stays_when_silence_is_inside_the_limit() {
 /// - Silence of 1.5 x election_timeout_max: tolerated with multiple 2, steps down with multiple 1.
 #[tokio::test]
 async fn test_step_down_limit_follows_the_configured_multiple() {
-    let silence_ms = WRITE_ADMISSION_TEST_ELECTION_MAX_MS * 3 / 2;
+    let silence_ms = write_admission_test_election_max_ms() * 3 / 2;
     let mut stepped_down = vec![];
     for multiple in [2, 1] {
         let (mut state, mut ctx) = write_admission_leader().await;
@@ -522,7 +536,7 @@ async fn test_single_voter_leader_never_steps_down_for_lack_of_acks() {
     let (mut state, ctx) = write_admission_leader().await;
     state.cluster_metadata.single_voter = true;
     state.cluster_metadata.total_voters = 1;
-    sleep_ms(WRITE_ADMISSION_TEST_WINDOW_MS * 2);
+    sleep_ms(write_admission_test_window_ms() * 2);
 
     let events = tick_once(&mut state, &ctx).await;
 
@@ -543,7 +557,7 @@ async fn test_step_down_tick_does_not_leave_the_tick_branch_ready() {
     let (mut state, ctx) = write_admission_leader_with_heartbeat(5).await;
     quorum_acks_now(&mut state);
     // Silent past the step-down limit, and past the replication deadline that fires the tick.
-    sleep_ms(WRITE_ADMISSION_TEST_WINDOW_MS * 2);
+    sleep_ms(write_admission_test_window_ms() * 2);
 
     let events = tick_once(&mut state, &ctx).await;
 
