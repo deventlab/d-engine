@@ -187,24 +187,54 @@ async fn test_calculate_majority_matched_index_case5() {
 }
 
 /// `calculate_majority_matched_index` answers "which index has a majority replicated" (the COMMIT
-/// question). It reads the stored `match_index` of every peer, so after a partition the stale
-/// values of unreachable peers keep producing `Some`.
+/// question). When that index is not beyond `commit_index` there is nothing new to commit, so it
+/// returns `None` before reading the log.
 ///
-/// Not evidence of an error here (the index is already committed); it documents why the result
-/// must not be used to answer "did a majority reply just now" (see
+/// A quiet cluster (every `match_index` equals `commit_index`) is the common case: each heartbeat
+/// reply used to cost one log read whose result the caller threw away
+/// (`new_commit_index` only accepts a strictly larger index).
+///
+/// Whether a quorum just answered is NOT derived from this result (see
 /// `test_one_reachable_peer_of_four_does_not_confirm_quorum` in the leader tests).
 #[tokio::test]
-async fn test_majority_matched_index_is_some_with_only_stale_peers() {
-    let mut ctx = RaftLogCoreTestContext::new("test_majority_matched_stale_peers");
+async fn test_majority_matched_index_is_none_when_it_does_not_pass_the_commit_index() {
+    let mut ctx = RaftLogCoreTestContext::new("test_majority_matched_not_past_commit");
 
     // Quiet cluster: the new leader's noop (index 50, term 1) is committed everywhere.
     ctx.append_entries(1, 50, 1).await;
     ctx.raft_log.flush().await.unwrap();
     ctx.drain_fsync_completions();
 
-    // 5 voters: leader (durable 50) + one peer that just replied + 3 peers that were last
-    // heard from before the partition (all at 50). Nobody has replied from those three since.
-    let majority = ctx.raft_log.calculate_majority_matched_index(1, 50, vec![50, 50, 50, 50]);
+    // 5 voters, every match_index == commit_index == 50 (including peers nobody heard from lately).
+    assert_eq!(
+        ctx.raft_log.calculate_majority_matched_index(1, 50, vec![50, 50, 50, 50]),
+        None,
+        "median == commit_index: nothing new to commit"
+    );
+    // A majority below the commit index (possible after a membership change) is not an advance either.
+    assert_eq!(
+        ctx.raft_log.calculate_majority_matched_index(1, 50, vec![50, 40, 40, 40]),
+        None
+    );
+}
 
-    assert_eq!(majority, Some(50));
+/// The majority index is returned when it passes the commit index and belongs to the current term.
+#[tokio::test]
+async fn test_majority_matched_index_is_some_when_the_majority_passes_the_commit_index() {
+    let mut ctx = RaftLogCoreTestContext::new("test_majority_matched_past_commit");
+
+    ctx.append_entries(1, 50, 1).await;
+    ctx.raft_log.flush().await.unwrap();
+    ctx.drain_fsync_completions();
+
+    // 5 voters (leader durable 50), commit_index 40, median 50, entry 50 is from term 1.
+    assert_eq!(
+        ctx.raft_log.calculate_majority_matched_index(1, 40, vec![50, 50, 50, 50]),
+        Some(50)
+    );
+    // The same median in a later term is not committed by counting replicas (Raft 5.4.2).
+    assert_eq!(
+        ctx.raft_log.calculate_majority_matched_index(2, 40, vec![50, 50, 50, 50]),
+        None
+    );
 }

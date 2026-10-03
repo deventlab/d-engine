@@ -412,7 +412,7 @@ where
         );
 
         // Verify commit conditions
-        if majority_index < commit_index {
+        if majority_index <= commit_index {
             return None;
         }
 

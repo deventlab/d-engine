@@ -1687,40 +1687,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             if let Some(quorum_ts) = self.record_voter_ack(follower_id, self.last_round_send_ts()) {
                 self.on_quorum_confirmed(quorum_ts, ctx);
             }
-
-            //             let send_ts = if self.last_heartbeat_send_ts > 0 {
-            //                 self.last_heartbeat_send_ts
-            //             } else {
-            //                 now_ms()
-            //             };
-            //             self.peer_ack_send_ts.insert(follower_id, send_ts);
-            //
-            //             // The quorum time can only advance when this reply carries a newer send time
-            //             // (send times never decrease): skip the computation for every other reply.
-            //             if self.last_quorum_acked_ts.is_none_or(|last| send_ts > last)
-            //                 && let Some(ts) = self.quorum_acked_send_ts()
-            //                 && self.last_quorum_acked_ts.is_none_or(|last| ts > last)
-            //             {
-            //                 self.last_quorum_acked_ts = Some(ts);
-            //                 self.update_lease_timestamp(
-            //                     ts,
-            //                     ctx.node_config().raft.read_consistency.lease_duration_ms,
-            //                     ctx.state_machine().last_applied().index,
-            //                 );
-            //                 self.drain_pending_lease_reads(ctx);
-            //                 // Path A drain (Bug #381 fix): serve linearizable reads that have been
-            //                 // waiting for quorum confirmation. Pure-read batches never advance
-            //                 // commit_index, so handle_apply_completed (Path B) would never fire for
-            //                 // them. Drain here once leadership is confirmed and SM is ready.
-            //                 let last_applied = ctx.state_machine().last_applied().index;
-            //                 let to_serve: Vec<u64> =
-            //                     self.pending_reads.range(..=last_applied).map(|(k, _)| *k).collect();
-            //                 for idx in to_serve {
-            //                     if let Some(batch) = self.pending_reads.remove(&idx) {
-            //                         self.execute_pending_reads(batch.requests, ctx);
-            //                     }
-            //                 }
-            //             }
         }
 
         Ok(())
