@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tonic::Status;
@@ -100,6 +101,14 @@ pub struct FollowerState<T: TypeConfig> {
     /// - Transition to candidate state when timeout occurs
     pub(super) timer: ElectionTimer,
 
+    /// Last time a legitimate leader was heard from, via AppendEntries or
+    /// InstallSnapshotChunk accepted after the term check.
+    ///
+    /// Unlike `timer`, this is NOT reset when this node grants a vote, so it
+    /// only reflects evidence that a leader is alive. `None` means no leader
+    /// has been heard since this role state was created (e.g. after restart).
+    last_leader_contact: Option<Instant>,
+
     // -- Type System Marker --
     /// Phantom data for type parameterization
     _marker: PhantomData<T>,
@@ -153,6 +162,9 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
     fn reset_timer(&mut self) {
         self.timer.reset()
     }
+    fn record_leader_contact(&mut self) {
+        self.last_leader_contact = Some(Instant::now());
+    }
     fn next_deadline(&self) -> Instant {
         self.timer.next_deadline()
     }
@@ -164,7 +176,7 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         &mut self,
         internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
         _event_tx: &mpsc::Sender<InboundEvent>,
-        _ctx: &RaftContext<T>,
+        ctx: &RaftContext<T>,
     ) -> Result<()> {
         if Instant::now() < self.timer.next_deadline() {
             return Ok(());
@@ -174,6 +186,12 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         self.timer.reset();
 
         debug!("follower::start_election...");
+
+        // Re-armed above so a node that must not campaign does not spin on an expired timer.
+        if !self.is_active_voter(ctx) {
+            debug!("follower: not an active voter, skipping election");
+            return Ok(());
+        }
 
         internal_event_tx.send(InternalEvent::BecomeCandidate).map_err(|e| {
             error!("Failed to send: {:?}", e);
@@ -193,6 +211,21 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
         let my_term = self.current_term();
 
         match inbound_event {
+            InboundEvent::ReceivePreVoteRequest(vote_request, sender) => {
+                let leader_active = self.has_recent_leader_contact(self.leader_contact_window());
+
+                let response = ctx.election_handler().handle_pre_vote_request(
+                    vote_request,
+                    my_term,
+                    ctx.raft_log(),
+                    leader_active,
+                );
+                sender.send(Ok(response)).map_err(|e| {
+                    error!("Failed to send: {:?}", e);
+                    NetworkError::SingalSendFailed(format!("{:?}", e))
+                })?;
+            }
+
             InboundEvent::ReceiveVoteRequest(vote_request, sender) => {
                 let candidate_id = vote_request.candidate_id;
 
@@ -200,6 +233,22 @@ impl<T: TypeConfig> RaftRoleState for FollowerState<T> {
                     index: last_log_index,
                     term: last_log_term,
                 } = ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
+
+                // Heard from a legitimate leader within election_timeout_min: ignore the
+                // request without touching term or vote (Raft dissertation 4.2.3).
+                if self.has_recent_leader_contact(self.leader_contact_window()) {
+                    let response = VoteResponse {
+                        term: my_term,
+                        vote_granted: false,
+                        last_log_index,
+                        last_log_term,
+                    };
+                    sender.send(Ok(response)).map_err(|e| {
+                        error!("Failed to send: {:?}", e);
+                        NetworkError::SingalSendFailed(format!("{:?}", e))
+                    })?;
+                    return Ok(());
+                }
 
                 match ctx
                     .election_handler()
@@ -499,6 +548,7 @@ impl<T: TypeConfig> FollowerState<T> {
             _marker: PhantomData,
             last_purged_index: None,
             pending_purge_upto: None,
+            last_leader_contact: None,
         }
     }
 
@@ -510,6 +560,24 @@ impl<T: TypeConfig> FollowerState<T> {
             voted_for: None,
             commit_index: self.commit_index(),
         }
+    }
+
+    /// Returns true if a legitimate leader was heard from within `window`.
+    /// Callers pass `election_timeout_min` so the guard never outlives the
+    /// shortest time any follower could start its own election.
+    fn has_recent_leader_contact(
+        &self,
+        window: Duration,
+    ) -> bool {
+        self.last_leader_contact.is_some_and(|t| t.elapsed() < window)
+    }
+
+    /// How long recent contact with a leader keeps this follower from helping anyone replace
+    /// it. `election_timeout_min`: no follower can start its own election sooner than that,
+    /// so the protection never outlives the shortest time a leader can be considered lost.
+    /// Read from the same config that builds the election timer.
+    fn leader_contact_window(&self) -> Duration {
+        Duration::from_millis(self.node_config.raft.election.election_timeout_min)
     }
 }
 impl<T: TypeConfig> From<&CandidateState<T>> for FollowerState<T> {
@@ -527,6 +595,7 @@ impl<T: TypeConfig> From<&CandidateState<T>> for FollowerState<T> {
             // scheduled_purge_upto: None,
             _marker: PhantomData,
             pending_purge_upto: None,
+            last_leader_contact: None,
         }
     }
 }
@@ -546,6 +615,7 @@ impl<T: TypeConfig> From<&LeaderState<T>> for FollowerState<T> {
             last_purged_index: leader_state.last_purged_index,
             // scheduled_purge_upto: None,
             pending_purge_upto: leader_state.scheduled_purge_upto,
+            last_leader_contact: None,
             _marker: PhantomData,
         }
     }
@@ -553,7 +623,6 @@ impl<T: TypeConfig> From<&LeaderState<T>> for FollowerState<T> {
 impl<T: TypeConfig> From<&LearnerState<T>> for FollowerState<T> {
     fn from(learner_state: &LearnerState<T>) -> Self {
         Self {
-            //TODO: should we copy or new?
             shared_state: learner_state.shared_state.clone(),
             timer: ElectionTimer::new((
                 learner_state.node_config.raft.election.election_timeout_min,
@@ -564,6 +633,7 @@ impl<T: TypeConfig> From<&LearnerState<T>> for FollowerState<T> {
             pending_append_acks: BTreeMap::new(),
             last_purged_index: learner_state.last_purged_index,
             pending_purge_upto: learner_state.pending_purge_upto,
+            last_leader_contact: None,
             _marker: PhantomData,
         }
     }

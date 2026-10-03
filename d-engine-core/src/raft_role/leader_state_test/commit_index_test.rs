@@ -317,6 +317,10 @@ async fn test_handle_append_result_computes_quorum_once_per_ack() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
     assert!(!state.cluster_metadata.single_voter);
+    // The lease is only published once this term's noop is committed and applied
+    // (Raft §8). This test is about the quorum computation, so start past that point:
+    // noop at index 0 is trivially applied (the mock state machine reports applied = 0).
+    state.noop_log_id = Some(0);
 
     ctx.handlers
         .replication_handler

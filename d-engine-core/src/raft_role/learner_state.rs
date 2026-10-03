@@ -195,6 +195,9 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
         let my_term = self.current_term();
 
         match inbound_event {
+            InboundEvent::ReceivePreVoteRequest(_, sender) => {
+                self.deny_pre_vote(ctx, sender)?;
+            }
             InboundEvent::ReceiveVoteRequest(vote_request, sender) => {
                 info!("handle_inbound_event::ReceiveVoteRequest. Learner cannot vote.");
                 // 1. Update term FIRST if needed

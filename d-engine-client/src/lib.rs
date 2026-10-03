@@ -179,8 +179,10 @@ impl Client {
     /// **What this does NOT do:**
     /// - Does not guarantee that the caller's in-flight requests succeeded;
     ///   requests sent before `refresh()` may have failed and need to be retried
-    /// - Does not implement application-level retry — the caller is responsible
-    ///   for re-issuing any operations that failed during the failover window
+    /// - Writes are at-least-once across a failover: a write that was already proposed when
+    ///   the leader stepped down may still be committed by the new leader even though the
+    ///   caller received an error. Re-issuing a non-idempotent command can apply it twice
+    ///   (the engine has no request-id dedup yet).
     /// - Does not update endpoints permanently; pass `new_endpoints` to change
     ///   the bootstrap list for this and future refreshes
     ///

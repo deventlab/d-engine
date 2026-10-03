@@ -36,6 +36,9 @@ pub struct MockRpcService {
     pub server_port: Option<u16>,
     // Expected responses for each method
     pub expected_vote_response: Option<Result<VoteResponse, tonic::Status>>,
+    /// Canned PreVote answer. When unset, PreVote falls back to `expected_vote_response`.
+    /// Set both to different values to prove which RPC a caller actually used.
+    pub expected_pre_vote_response: Option<Result<VoteResponse, tonic::Status>>,
     pub expected_append_entries_response: Option<Result<AppendEntriesResponse, tonic::Status>>,
     pub expected_update_cluster_conf_response:
         Option<Result<ClusterConfUpdateResponse, tonic::Status>>,
@@ -78,6 +81,19 @@ impl RaftElectionService for MockRpcService {
             Some(Ok(response)) => Ok(tonic::Response::new(*response)),
             Some(Err(status)) => Err(status.clone()),
             None => Err(tonic::Status::unknown("No mock vote response set")),
+        }
+    }
+
+    /// Answers PreVote with `expected_pre_vote_response`, or the `request_vote` canned
+    /// response when no PreVote-specific one is set.
+    async fn pre_vote(
+        &self,
+        request: tonic::Request<VoteRequest>,
+    ) -> std::result::Result<tonic::Response<VoteResponse>, tonic::Status> {
+        match &self.expected_pre_vote_response {
+            Some(Ok(response)) => Ok(tonic::Response::new(*response)),
+            Some(Err(status)) => Err(status.clone()),
+            None => self.request_vote(request).await,
         }
     }
 }

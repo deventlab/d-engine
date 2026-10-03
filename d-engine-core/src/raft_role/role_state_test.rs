@@ -548,38 +548,6 @@ async fn test_commit_hard_state_is_new_leader_commitment_semantics() {
     );
 }
 
-/// commit_vote_reset clears voted_for to None and persists exactly once.
-#[tokio::test]
-async fn test_commit_vote_reset_clears_and_persists() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft_log = MockRaftLog::new();
-    // One persist to seed an initial vote, one more for the reset itself.
-    raft_log.expect_save_hard_state().times(2).returning(|_| Ok(()));
-
-    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
-    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
-
-    let vote = VotedFor {
-        voted_for_id: 2,
-        voted_for_term: 1,
-        committed: true,
-    };
-    state.commit_hard_state(&context, None, Some(vote)).unwrap();
-    assert_eq!(
-        state.voted_for().unwrap(),
-        Some(vote),
-        "precondition: vote is set"
-    );
-
-    state.commit_vote_reset(&context).unwrap();
-
-    assert_eq!(
-        state.voted_for().unwrap(),
-        None,
-        "voted_for must be cleared by commit_vote_reset"
-    );
-}
-
 // ============================================================================
 // handle_create_snapshot Tests (#436)
 // ============================================================================
@@ -768,4 +736,248 @@ async fn test_handle_create_snapshot_failure_emits_error_event() {
         InternalEvent::SnapshotCreated(Err(_)) => {}
         other => panic!("expected SnapshotCreated(Err(..)), got: {other:?}"),
     }
+}
+
+// ============================================================================
+// A vote belongs to the term it was cast in (Raft §5.1: a new term starts with votedFor = null)
+//
+// raft-rs `reset(term)` clears the vote whenever the term changes; openraft replaces the whole
+// (term, node) vote. If an old vote survives a term change, it blocks a legitimate vote request
+// in the new term even though this node has not voted in that term.
+// ============================================================================
+
+fn recording_raft_log() -> (
+    MockRaftLog,
+    std::sync::Arc<std::sync::Mutex<Vec<crate::HardState>>>,
+) {
+    let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = std::sync::Arc::clone(&saved);
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_save_hard_state().returning(move |state| {
+        recorder.lock().unwrap().push(*state);
+        Ok(())
+    });
+    (raft_log, saved)
+}
+
+fn vote_for(
+    id: u32,
+    term: u64,
+) -> VotedFor {
+    VotedFor {
+        voted_for_id: id,
+        voted_for_term: term,
+        committed: false,
+    }
+}
+
+/// Test: adopting a higher term (without a new vote) clears the vote cast in the older term,
+/// in memory and on disk.
+///
+/// Scenario:
+/// - The node voted for node 3 in term 1.
+/// - It adopts term 2 because of a request it did not grant.
+///
+/// Expected:
+/// - `voted_for` is None and the persisted hard state says term 2 with no vote.
+#[tokio::test]
+async fn test_commit_hard_state_clears_older_vote_when_term_increases() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (raft_log, saved) = recording_raft_log();
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.commit_hard_state(&context, None, Some(vote_for(3, 1))).unwrap();
+
+    state.commit_hard_state(&context, Some(2), None).unwrap();
+
+    assert_eq!(state.current_term(), 2);
+    assert_eq!(
+        state.voted_for().unwrap(),
+        None,
+        "the term-1 vote must not survive term 2"
+    );
+    let last_saved = *saved.lock().unwrap().last().unwrap();
+    assert_eq!((last_saved.current_term, last_saved.voted_for), (2, None));
+}
+
+/// Test: confirming the SAME term keeps the vote (e.g. a repeated request at the current term).
+#[tokio::test]
+async fn test_commit_hard_state_keeps_vote_when_term_is_unchanged() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (raft_log, _saved) = recording_raft_log();
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.commit_hard_state(&context, None, Some(vote_for(3, 1))).unwrap();
+    let term = state.current_term();
+
+    state.commit_hard_state(&context, Some(term), None).unwrap();
+
+    assert_eq!(state.voted_for().unwrap(), Some(vote_for(3, 1)));
+}
+
+/// Test: when the term changes together with a new vote, the new vote wins (the clearing must not
+/// swallow a vote supplied by the caller, e.g. a vote granted in the new term).
+#[tokio::test]
+async fn test_commit_hard_state_applies_new_vote_given_with_a_higher_term() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (raft_log, saved) = recording_raft_log();
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.commit_hard_state(&context, None, Some(vote_for(3, 1))).unwrap();
+
+    state.commit_hard_state(&context, Some(2), Some(vote_for(5, 2))).unwrap();
+
+    assert_eq!(state.voted_for().unwrap(), Some(vote_for(5, 2)));
+    let last_saved = *saved.lock().unwrap().last().unwrap();
+    assert_eq!(
+        (last_saved.current_term, last_saved.voted_for),
+        (2, Some(vote_for(5, 2)))
+    );
+}
+
+// ============================================================================
+// Vote protocol, end to end through the real handler and the real hard state
+//
+// The single-step tests above mock the other half. These run the exact two lines a Follower
+// executes for every VoteRequest (`handle_vote_request`, then `commit_hard_state` with its
+// answer) against the real implementations, and "restart" a node by rebuilding it from the hard
+// state it persisted.
+// ============================================================================
+
+/// Applies one VoteRequest the way `FollowerState` does and returns whether it was granted.
+async fn grant_or_deny(
+    state: &mut impl RaftRoleState<T = MockTypeConfig>,
+    context: &crate::RaftContext<MockTypeConfig>,
+    request_term: u64,
+    candidate_id: u32,
+    candidate_log: (u64, u64),
+) -> bool {
+    use crate::ElectionCore as _;
+
+    let update = crate::election::ElectionHandler::<MockTypeConfig>::new(1)
+        .handle_vote_request(
+            d_engine_proto::server::election::VoteRequest {
+                term: request_term,
+                candidate_id,
+                last_log_index: candidate_log.0,
+                last_log_term: candidate_log.1,
+            },
+            state.current_term(),
+            state.voted_for().unwrap(),
+            context.raft_log(),
+        )
+        .await
+        .unwrap();
+    state
+        .commit_hard_state(context, update.term_update, update.new_voted_for)
+        .unwrap();
+    update.new_voted_for.is_some()
+}
+
+fn vote_sequence_context() -> (
+    crate::RaftContext<MockTypeConfig>,
+    std::sync::Arc<std::sync::Mutex<Vec<crate::HardState>>>,
+    watch::Sender<()>,
+) {
+    let (graceful_tx, graceful_rx) = watch::channel(());
+    let (mut raft_log, saved) = recording_raft_log();
+    // The voter's own log: index 5, term 2.
+    raft_log
+        .expect_last_log_id()
+        .returning(|| Some(d_engine_proto::common::LogId { index: 5, term: 2 }));
+    let context = MockBuilder::new(graceful_rx).with_raft_log(raft_log).build_context();
+    (context, saved, graceful_tx)
+}
+
+/// Test: Election Safety. At most one candidate gets this node's vote in a term, also across a
+/// restart.
+///
+/// Scenario:
+/// - Candidate 5 asks for a vote in term 2 (good log) and gets it.
+/// - Candidate 6 asks in the same term: denied.
+/// - The node restarts from the hard state it persisted. Candidate 6 asks again: still denied.
+///   Candidate 5 asking again is granted again (a retry of the same request).
+///
+/// Expected:
+/// - Two different candidates never both hold this node's vote for the same term. If they could,
+///   both can reach a majority and the cluster has two leaders in one term.
+#[tokio::test]
+async fn test_vote_is_granted_to_one_candidate_per_term_also_across_a_restart() {
+    let (context, saved, _graceful_tx) = vote_sequence_context();
+    let mut node = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    node.shared_state_mut().update_current_term(1);
+
+    assert!(
+        grant_or_deny(&mut node, &context, 2, 5, (5, 2)).await,
+        "first candidate"
+    );
+    assert!(
+        !grant_or_deny(&mut node, &context, 2, 6, (5, 2)).await,
+        "second candidate"
+    );
+
+    let persisted = *saved.lock().unwrap().last().expect("the vote must have been persisted");
+    let mut restarted =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), Some(persisted), None);
+
+    assert!(
+        !grant_or_deny(&mut restarted, &context, 2, 6, (5, 2)).await,
+        "after a restart the node must remember its vote and still deny candidate 6"
+    );
+    assert!(
+        grant_or_deny(&mut restarted, &context, 2, 5, (5, 2)).await,
+        "a retry from the candidate that already holds the vote is granted again"
+    );
+}
+
+/// Test: the business timeline of the stale-vote defect, through the real code.
+///
+/// Scenario:
+/// - The node votes for candidate 3 in term 1.
+/// - Candidate 4 asks in term 2 with a log that is behind: the node adopts term 2 and denies.
+/// - Candidate 5 asks in the same term 2 with a good log.
+///
+/// Expected:
+/// - Candidate 5 gets the vote: the node has not voted in term 2. (Before the fix the leftover
+///   term-1 vote blocked it and candidate 5 had to retry in term 3.)
+#[tokio::test]
+async fn test_vote_from_an_older_term_does_not_block_a_good_candidate_in_the_next_term() {
+    let (context, _saved, _graceful_tx) = vote_sequence_context();
+    let mut node = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    node.shared_state_mut().update_current_term(1);
+
+    assert!(
+        grant_or_deny(&mut node, &context, 1, 3, (5, 2)).await,
+        "vote in term 1"
+    );
+    assert!(
+        !grant_or_deny(&mut node, &context, 2, 4, (1, 1)).await,
+        "candidate 4's log is behind"
+    );
+    assert_eq!(node.current_term(), 2, "the higher term is still adopted");
+
+    assert!(
+        grant_or_deny(&mut node, &context, 2, 5, (5, 2)).await,
+        "candidate 5 must get the vote: nothing was cast in term 2"
+    );
+}
+
+/// Test: a higher-term request with a stale log is denied but its term is persisted, so the node
+/// does not fall back to the old term after a restart.
+#[tokio::test]
+async fn test_adopted_term_survives_a_restart_even_when_the_vote_was_denied() {
+    let (context, saved, _graceful_tx) = vote_sequence_context();
+    let mut node = FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    node.shared_state_mut().update_current_term(1);
+
+    assert!(
+        !grant_or_deny(&mut node, &context, 4, 9, (1, 1)).await,
+        "stale log, denied"
+    );
+
+    let persisted = *saved.lock().unwrap().last().expect("the term change must be persisted");
+    assert_eq!((persisted.current_term, persisted.voted_for), (4, None));
+    let restarted =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), Some(persisted), None);
+    assert_eq!(restarted.current_term(), 4);
 }

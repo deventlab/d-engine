@@ -164,6 +164,51 @@ where
         })
     }
 
+    async fn send_pre_vote_request(
+        &self,
+        peer_id: u32,
+        request: VoteRequest,
+        retry: &RetryPolicies,
+        membership: Arc<MOF<T>>,
+    ) -> Result<VoteResponse> {
+        // Real-time connection fetch for control operations (same pattern as join_cluster).
+        let channel = membership
+            .get_peer_channel(peer_id, ConnectionType::Control)
+            .await
+            .ok_or(NetworkError::PeerConnectionNotFound(peer_id))?;
+
+        let req_clone = request;
+        let closure = move || {
+            let channel = channel.clone();
+            let mut client = RaftElectionServiceClient::new(channel)
+                .send_compressed(CompressionEncoding::Gzip)
+                .accept_compressed(CompressionEncoding::Gzip);
+            async move { client.pre_vote(tonic::Request::new(req_clone)).await }
+        };
+        let policy = retry.election;
+        let my_id = self.my_id;
+        match grpc_task_with_timeout_and_exponential_backoff("pre_vote", closure, policy).await {
+            Ok(response) => {
+                let res = response.into_inner();
+                debug!(
+                    "[send_pre_vote_request | {my_id}->{peer_id}] pre_vote response: {:?}",
+                    res
+                );
+                Ok(res)
+            }
+            Err(e) => {
+                // Debug, not error: a single peer RPC failure here is routinely
+                // caused by the peer not being ready yet (e.g. cluster bootstrap
+                // race) and resolves itself on the next election round (#428).
+                debug!(
+                    "[send_pre_vote_request | {my_id}->{peer_id}] Received RPC error: {}",
+                    e
+                );
+                Err(e)
+            }
+        }
+    }
+
     async fn send_vote_request(
         &self,
         peer_id: u32,

@@ -451,28 +451,48 @@ async fn test_follower_become_without_leader() {
     assert!(is_follower(raft.role.as_i32()));
 }
 
-/// Test: Follower state reset: voted_for should be cleared
+/// Test: stepping down inside the same term keeps this term's vote.
 ///
-/// Verifies that when transitioning to follower, voted_for is reset.
-/// This prevents voting for multiple candidates in same term.
+/// `votedFor` is per term (Raft Figure 2): a node that voted in term T must not vote again in
+/// term T, so a same-term step-down (CheckQuorum, noop timeout, removal) must not clear it.
+/// A term increase already clears it in `set_hard_state`, before `BecomeFollower` is sent.
 /// See A2.3 in test scenarios.
 #[tokio::test]
-async fn test_follower_state_reset_voted_for() {
+async fn test_become_follower_keeps_the_vote_of_the_same_term() {
+    use d_engine_proto::server::election::VotedFor;
+
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
-    // Follower → Candidate (sets voted_for to self)
     raft.handle_internal_event(InternalEvent::BecomeCandidate)
         .await
         .expect("Should become Candidate");
-    assert!(is_candidate(raft.role.as_i32()));
+    let vote = VotedFor {
+        voted_for_id: raft.ctx.node_id,
+        voted_for_term: raft.role.current_term(),
+        committed: true,
+    };
+    raft.role
+        .state_mut()
+        .commit_hard_state(&raft.ctx, None, Some(vote))
+        .expect("the candidate votes for itself");
+    let term = raft.role.current_term();
 
-    // Candidate → Follower (should clear voted_for)
     raft.handle_internal_event(InternalEvent::BecomeFollower(None))
         .await
         .expect("Should transition to Follower");
+
     assert!(is_follower(raft.role.as_i32()));
-    // State has been reset, voted_for should be cleared
+    assert_eq!(
+        raft.role.current_term(),
+        term,
+        "a same-term step-down keeps the term"
+    );
+    assert_eq!(
+        raft.role.state().voted_for().unwrap(),
+        Some(vote),
+        "the vote of this term must survive the step-down, or the node could vote twice in it"
+    );
 }
 
 // A3. Candidate Role Entry/Exit Tests
@@ -2777,5 +2797,28 @@ async fn test_re_elected_leader_starts_with_fresh_peer_state() {
         leader.peer_replication_state(peer_id),
         crate::role_state::PeerReplicationState::Probe,
         "a new leadership must start every peer from the default Probe, not the previous term's state"
+    );
+}
+
+/// Test: after `BecomeCandidate` is processed, the new Candidate is due at once.
+///
+/// The main loop reads `role.next_deadline()` after every event; a Candidate whose deadline is
+/// already due makes the very next `select!` run `tick`, so the first election round starts
+/// without a second election timeout.
+#[tokio::test(start_paused = true)]
+async fn test_become_candidate_leaves_the_new_candidate_due_to_campaign() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft = MockBuilder::new(graceful_rx).turn_on_election(false).build_raft();
+    assert!(
+        !raft.role.is_timer_expired(),
+        "precondition: a fresh Follower is not due"
+    );
+
+    raft.handle_internal_event(InternalEvent::BecomeCandidate).await.unwrap();
+
+    assert!(is_candidate(raft.role.as_i32()));
+    assert!(
+        raft.role.is_timer_expired(),
+        "the new Candidate must be due to start its first round immediately"
     );
 }

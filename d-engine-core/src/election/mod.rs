@@ -7,16 +7,12 @@
 mod election_handler;
 pub use election_handler::*;
 
-#[cfg(test)]
-mod election_handler_test;
-
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
+use std::sync::Arc;
 
 use crate::RaftNodeConfig;
 use crate::Result;
@@ -40,6 +36,18 @@ pub trait ElectionCore<T>: Send + Sync + 'static
 where
     T: TypeConfig,
 {
+    /// Sends PreVote requests ("would you vote for me at `term`?") to all voting members.
+    /// Returns Ok() if a majority would grant. Changes no term/vote state on either side.
+    /// `term` is the hypothetical next term (current_term + 1), not yet persisted.
+    async fn broadcast_pre_vote_requests(
+        &self,
+        term: u64,
+        membership: Arc<MOF<T>>,
+        raft_log: &Arc<ROF<T>>,
+        transport: &Arc<TROF<T>>,
+        settings: &Arc<RaftNodeConfig>,
+    ) -> Result<()>;
+
     /// Sends vote requests to all voting members. Returns Ok() if majority
     /// votes are received, otherwise returns Err. Initiates RPC calls via
     /// transport and evaluates collected responses.
@@ -57,6 +65,26 @@ where
         transport: &Arc<TROF<T>>,
         settings: &Arc<RaftNodeConfig>,
     ) -> Result<()>;
+
+    /// Answers a PreVote ("would you vote for me at `request.term`?") without changing any
+    /// state. It returns the response itself, not a `StateUpdate`: nothing is recorded, so
+    /// no term, vote or timer can be touched through this call.
+    ///
+    /// Denies when any of these holds:
+    /// - `leader_active`: the caller still has evidence of a live leader (Follower: recent
+    ///   leader contact; Leader: recent quorum ACK; Candidate: false).
+    /// - `request.term <= current_term`: that term is already taken.
+    /// - The requester's log is not at least as up-to-date as ours (Raft §5.4.1).
+    ///
+    /// The response carries our own `current_term` and last log id, so a requester that is
+    /// behind can catch up from a denial.
+    fn handle_pre_vote_request(
+        &self,
+        request: VoteRequest,
+        current_term: u64,
+        raft_log: &Arc<ROF<T>>,
+        leader_active: bool,
+    ) -> d_engine_proto::server::election::VoteResponse;
 
     /// Processes incoming vote requests: validates request legality via
     /// check_vote_request_is_legal, updates node state if valid, triggers

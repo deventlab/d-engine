@@ -2426,3 +2426,84 @@ fn test_learner_from_candidate_preserves_last_purged_index_resets_scheduled() {
     );
     assert_eq!(learner.pending_purge_upto, None);
 }
+
+/// Test: a Learner cannot vote, so it denies every PreVote itself and never asks the election
+/// handler (which could otherwise grant it).
+///
+/// Expected:
+/// - Denied with the Learner's own term; nothing changes (no events, term unchanged).
+#[tokio::test]
+async fn test_learner_pre_vote_is_denied_without_consulting_the_handler() {
+    let mut election_handler = crate::MockElectionCore::<MockTypeConfig>::new();
+    election_handler.expect_handle_pre_vote_request().times(0);
+
+    let (_graceful_tx, graceful_rx) = tokio::sync::watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_learner_pre_vote_denied")
+        .with_election_handler(election_handler)
+        .build_context();
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let term_before = state.current_term();
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, mut internal_event_rx) = tokio::sync::mpsc::unbounded_channel();
+    state
+        .handle_inbound_event(
+            InboundEvent::ReceivePreVoteRequest(
+                d_engine_proto::server::election::VoteRequest {
+                    term: term_before + 1,
+                    candidate_id: 2,
+                    last_log_index: 9,
+                    last_log_term: 9,
+                },
+                resp_tx,
+            ),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert!(!response.vote_granted);
+    assert_eq!(response.term, term_before);
+    assert_eq!(state.current_term(), term_before);
+    assert!(internal_event_rx.try_recv().is_err());
+}
+
+/// Test: a Learner adopts a higher term from a VoteRequest (it cannot vote, but it must not keep
+/// a term the cluster has passed) and still denies the vote.
+///
+/// Expected:
+/// - Term becomes the request's term (persisted), the response is a denial, and the response
+///   carries the Learner's term as it was when it answered.
+#[tokio::test]
+async fn test_learner_higher_term_vote_request_adopts_term_and_denies() {
+    let (_graceful_tx, graceful_rx) = tokio::sync::watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_learner_higher_term_vote_request")
+        .build_context();
+    let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    state
+        .handle_inbound_event(
+            InboundEvent::ReceiveVoteRequest(
+                d_engine_proto::server::election::VoteRequest {
+                    term: 9,
+                    candidate_id: 2,
+                    last_log_index: 0,
+                    last_log_term: 0,
+                },
+                resp_tx,
+            ),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(state.current_term(), 9);
+    assert!(!resp_rx.recv().await.unwrap().unwrap().vote_granted);
+}

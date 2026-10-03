@@ -355,6 +355,92 @@ async fn test_handle_cluster_conf_update_step_down_on_higher_term() {
     assert!(resp_rx.recv().await.is_err()); // Original sender should not get response
 }
 
+/// ClusterConfUpdate with a higher term revokes the read lease at the detection point.
+///
+/// Same window-period contract as the VoteRequest / AppendEntries step-down paths: the Raft
+/// loop has not processed `BecomeFollower` yet, but a ReadActor reading the shared lease must
+/// already see it invalid.
+#[tokio::test]
+#[traced_test]
+async fn test_cluster_conf_update_higher_term_revokes_lease_before_become_follower() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut context = mock_raft_context(
+        "/tmp/test_cluster_conf_update_revokes_lease_early",
+        graceful_rx,
+        None,
+    );
+    let mut membership = create_mock_membership();
+    membership.expect_can_rejoin().returning(|_, _| Ok(()));
+    membership.expect_get_cluster_conf_version().returning(|| 1);
+    context.membership = Arc::new(membership);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.shared_state_mut().update_current_term(3);
+    let lease = Arc::clone(&state.shared_state.read_lease);
+    state.test_update_lease_timestamp();
+    assert!(
+        lease.is_valid(crate::now_ms()),
+        "precondition: lease must be valid"
+    );
+
+    let request = ClusterConfChangeRequest {
+        id: 2,
+        term: 5,
+        version: 1,
+        change: None,
+    };
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .handle_inbound_event(
+            InboundEvent::ClusterConfUpdate(request, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeFollower(Some(2)))
+    ));
+    // become_follower() is intentionally NOT called: the Raft loop has not run yet.
+    assert!(
+        !lease.is_valid(crate::now_ms()),
+        "lease must be revoked at the detection point, before the Raft loop handles BecomeFollower"
+    );
+}
+
+/// A leader that removes itself from the cluster revokes the read lease when it decides to
+/// step down, not when the Raft loop later processes `BecomeFollower`.
+#[tokio::test]
+async fn test_step_down_self_removed_revokes_lease_before_become_follower() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let raft_context = mock_raft_context("/tmp/test_self_removed_revokes_lease", graceful_rx, None);
+
+    let node_config = raft_context.node_config();
+    let mut leader_state = LeaderState::<MockTypeConfig>::new(1, node_config);
+    let lease = Arc::clone(&leader_state.shared_state.read_lease);
+    leader_state.test_update_lease_timestamp();
+    assert!(
+        lease.is_valid(crate::now_ms()),
+        "precondition: lease must be valid"
+    );
+
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    leader_state.handle_self_removed(&internal_event_tx).unwrap();
+
+    assert!(matches!(
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeFollower(None))
+    ));
+    assert!(
+        !lease.is_valid(crate::now_ms()),
+        "lease must be revoked at the detection point, before the Raft loop handles BecomeFollower"
+    );
+}
+
 // ============================================================================
 // AppendEntries Event Tests
 // ============================================================================
@@ -531,6 +617,12 @@ async fn test_handle_client_propose_success() {
 
     // New state
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    // Client writes are admitted only while a quorum has answered recently.
+    state.last_heartbeat_send_ts = crate::now_ms();
+    state.test_renew_lease_from_send_ts(
+        context.node_config.raft.read_consistency.lease_duration_ms,
+        0,
+    );
 
     // Handle inbound event
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;

@@ -194,6 +194,15 @@ async fn test_handle_rpc_services_successfully() {
     settings.raft.general_raft_timeout_duration_in_ms = 200;
     settings.raft.batching.max_batch_size = 1;
     let mut membership = MockMembership::<MockTypeConfig>::new();
+    // Every node in a test is an active voter: only an active voter may start an election.
+    membership.expect_retrieve_node_meta().returning(|id| {
+        Some(d_engine_proto::server::cluster::NodeMeta {
+            id,
+            address: format!("http://127.0.0.1:{}", 55000 + id),
+            role: d_engine_proto::common::NodeRole::Follower.into(),
+            status: d_engine_proto::common::NodeStatus::Active.into(),
+        })
+    });
 
     membership.expect_voters().returning(Vec::new);
     membership.expect_members().returning(Vec::new);
@@ -247,6 +256,10 @@ async fn test_handle_rpc_services_successfully() {
         },
     );
     let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    // A candidate runs PreVote before the real election; this test is about the RPC services.
+    election_handler
+        .expect_broadcast_pre_vote_requests()
+        .returning(|_, _, _, _, _| Ok(()));
     election_handler
         .expect_broadcast_vote_requests()
         .returning(|_, _, _, _, _| Ok(()));
@@ -680,6 +693,15 @@ async fn test_stream_append_entries_does_not_block_ready_response_behind_pending
     settings.raft.batching.max_batch_size = 1;
 
     let mut membership = MockMembership::<MockTypeConfig>::new();
+    // Every node in a test is an active voter: only an active voter may start an election.
+    membership.expect_retrieve_node_meta().returning(|id| {
+        Some(d_engine_proto::server::cluster::NodeMeta {
+            id,
+            address: format!("http://127.0.0.1:{}", 55000 + id),
+            role: d_engine_proto::common::NodeRole::Follower.into(),
+            status: d_engine_proto::common::NodeStatus::Active.into(),
+        })
+    });
     membership.expect_voters().returning(Vec::new);
     membership.expect_members().returning(Vec::new);
     membership.expect_replication_peers().returning(Vec::new);
@@ -723,6 +745,9 @@ async fn test_stream_append_entries_does_not_block_ready_response_behind_pending
         .with_membership(membership)
         .with_replication_handler(replication_handler)
         .with_node_config(settings)
+        // The test plays a leader at term 1 against a follower; an immediate first election would
+        // make this node a candidate at term 2 and the leader's term-1 requests stale.
+        .turn_on_election(false)
         .build_node();
     node.set_rpc_ready(true);
 
@@ -799,6 +824,15 @@ async fn test_stream_append_entries_closes_response_stream_after_inbound_ends() 
     settings.raft.batching.max_batch_size = 1;
 
     let mut membership = MockMembership::<MockTypeConfig>::new();
+    // Every node in a test is an active voter: only an active voter may start an election.
+    membership.expect_retrieve_node_meta().returning(|id| {
+        Some(d_engine_proto::server::cluster::NodeMeta {
+            id,
+            address: format!("http://127.0.0.1:{}", 55000 + id),
+            role: d_engine_proto::common::NodeRole::Follower.into(),
+            status: d_engine_proto::common::NodeStatus::Active.into(),
+        })
+    });
     membership.expect_voters().returning(Vec::new);
     membership.expect_members().returning(Vec::new);
     membership.expect_replication_peers().returning(Vec::new);
@@ -813,6 +847,10 @@ async fn test_stream_append_entries_closes_response_stream_after_inbound_ends() 
     raft_log.expect_durable_index().returning(|| 5);
 
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
+    // The first election now starts at once, so a single-node cluster becomes leader and proposes its noop.
+    replication_handler
+        .expect_prepare_batch_requests()
+        .returning(|_, _, _, _, _, _| Ok(d_engine_core::PrepareResult::default()));
     replication_handler
         .expect_check_append_entries_request_is_legal()
         .returning(|my_term, _, _| AppendEntriesResponse::success(1, my_term, None));
@@ -871,5 +909,100 @@ async fn test_stream_append_entries_closes_response_stream_after_inbound_ends() 
     assert!(
         end.is_none(),
         "no further items expected after the only response"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// pre_vote (#423): the RPC must reach the Raft loop as a PreVote event, never as a real vote, and
+// answer through the same ready / timeout rules as request_vote.
+// ---------------------------------------------------------------------------
+
+fn pre_vote_request() -> VoteRequest {
+    VoteRequest {
+        term: 7,
+        candidate_id: 3,
+        last_log_index: 11,
+        last_log_term: 5,
+    }
+}
+
+/// Builds a node whose inbound events can be observed, with the RPC layer ready.
+fn node_with_observable_events(
+    path: &str
+) -> (
+    crate::Node<MockTypeConfig>,
+    mpsc::Receiver<d_engine_core::InboundEvent>,
+    watch::Sender<()>,
+) {
+    let (graceful_tx, graceful_rx) = watch::channel(());
+    let (event_tx, event_rx) = mpsc::channel(10);
+    let mut builder = MockBuilder::new(graceful_rx).with_db_path(path);
+    builder.event_tx = Some(event_tx);
+    let node = builder.build_node();
+    node.set_rpc_ready(true);
+    (node, event_rx, graceful_tx)
+}
+
+/// # Case: the server is not ready -> Unavailable, like request_vote
+#[tokio::test]
+#[traced_test]
+async fn test_pre_vote_server_not_ready_returns_unavailable() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let node = mock_node("/tmp/test_pre_vote_not_ready", graceful_rx, None);
+    node.set_rpc_ready(false);
+
+    let result = node.pre_vote(Request::new(pre_vote_request())).await;
+
+    assert_eq!(result.err().unwrap().code(), Code::Unavailable);
+}
+
+/// # Case: the RPC becomes a `ReceivePreVoteRequest` event (not `ReceiveVoteRequest`), carries the
+/// request unchanged, and the reply sent on the event's channel is returned to the caller.
+#[tokio::test]
+#[traced_test]
+async fn test_pre_vote_is_forwarded_as_pre_vote_event_and_reply_is_returned() {
+    let (node, mut event_rx, _graceful_tx) =
+        node_with_observable_events("/tmp/test_pre_vote_forwarded");
+
+    let call = tokio::spawn(async move { node.pre_vote(Request::new(pre_vote_request())).await });
+
+    match event_rx.recv().await.expect("an event must reach the Raft loop") {
+        d_engine_core::InboundEvent::ReceivePreVoteRequest(request, reply) => {
+            assert_eq!(request, pre_vote_request());
+            reply
+                .send(Ok(d_engine_proto::server::election::VoteResponse {
+                    term: 6,
+                    vote_granted: true,
+                    last_log_index: 11,
+                    last_log_term: 5,
+                }))
+                .unwrap();
+        }
+        other => panic!("PreVote must be a ReceivePreVoteRequest event, got: {other:?}"),
+    }
+
+    let response = call.await.unwrap().expect("the reply must come back").into_inner();
+    assert!(response.vote_granted);
+    assert_eq!(response.term, 6);
+}
+
+/// # Case: nobody answers -> the RPC gives up after `election_timeout_min`, it does not hang the
+/// peer's candidate.
+#[tokio::test(start_paused = true)]
+#[traced_test]
+async fn test_pre_vote_unanswered_request_times_out() {
+    let (node, mut event_rx, _graceful_tx) =
+        node_with_observable_events("/tmp/test_pre_vote_timeout");
+    let timeout_ms = node.node_config.raft.election.election_timeout_min;
+
+    let call = tokio::spawn(async move { node.pre_vote(Request::new(pre_vote_request())).await });
+    // Keep the event (and its reply sender) alive so the failure is a timeout, not a closed channel.
+    let _unanswered = event_rx.recv().await.expect("event reaches the loop");
+
+    tokio::time::advance(Duration::from_millis(timeout_ms + 1)).await;
+
+    assert!(
+        call.await.unwrap().is_err(),
+        "an unanswered PreVote must time out"
     );
 }

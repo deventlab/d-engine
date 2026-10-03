@@ -99,6 +99,7 @@ fn test_backpressure_unlimited_when_zero() {
     let config = BackpressureConfig {
         max_pending_writes: 0,
         max_pending_reads: 0,
+        ..Default::default()
     };
 
     // 0 = unlimited, should never reject
@@ -111,6 +112,7 @@ fn test_backpressure_write_limit_enforcement() {
     let config = BackpressureConfig {
         max_pending_writes: 100,
         max_pending_reads: 200,
+        ..Default::default()
     };
 
     // Below limit - allow
@@ -130,6 +132,7 @@ fn test_backpressure_read_limit_enforcement() {
     let config = BackpressureConfig {
         max_pending_writes: 100,
         max_pending_reads: 200,
+        ..Default::default()
     };
 
     // Below limit - allow
@@ -149,6 +152,7 @@ fn test_backpressure_write_and_read_independent() {
     let config = BackpressureConfig {
         max_pending_writes: 100,
         max_pending_reads: 200,
+        ..Default::default()
     };
 
     // Write limit doesn't affect read checks
@@ -167,11 +171,13 @@ fn test_backpressure_zero_vs_nonzero() {
     let config_unlimited_writes = BackpressureConfig {
         max_pending_writes: 0,
         max_pending_reads: 100,
+        ..Default::default()
     };
 
     let config_limited_writes = BackpressureConfig {
         max_pending_writes: 100,
         max_pending_reads: 0,
+        ..Default::default()
     };
 
     // Unlimited writes, limited reads
@@ -527,4 +533,134 @@ fn load_toml(text: &str) -> RaftConfig {
         .expect("toml must parse")
         .try_deserialize()
         .expect("config must deserialize")
+}
+
+// ============================================================================
+// Write admission / step-down config and the cross-field checks around it
+// ============================================================================
+
+#[test]
+fn test_write_admission_multiple_default_is_two() {
+    assert_eq!(
+        BackpressureConfig::default().write_admission_election_timeout_multiple,
+        2
+    );
+}
+
+/// A missing key parses to the default, so existing config files keep working.
+#[test]
+fn test_write_admission_multiple_missing_key_parses_to_default() {
+    let parsed: BackpressureConfig = config::Config::builder()
+        .add_source(config::File::from_str(
+            "max_pending_writes = 500",
+            config::FileFormat::Toml,
+        ))
+        .build()
+        .unwrap()
+        .try_deserialize()
+        .unwrap();
+
+    assert_eq!(parsed.max_pending_writes, 500);
+    assert_eq!(parsed.write_admission_election_timeout_multiple, 2);
+    assert_eq!(parsed.max_pending_reads, 50_000);
+}
+
+#[test]
+fn test_write_admission_multiple_zero_is_rejected() {
+    let mut config = RaftConfig::default();
+    config.backpressure.write_admission_election_timeout_multiple = 0;
+
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn test_write_admission_multiple_one_and_large_values_are_accepted() {
+    for multiple in [1, 2, 10, 1_000] {
+        let mut config = RaftConfig::default();
+        config.backpressure.write_admission_election_timeout_multiple = multiple;
+
+        assert!(
+            config.validate().is_ok(),
+            "multiple {multiple} must be accepted"
+        );
+    }
+}
+
+/// `max_pending_writes` / `max_pending_reads` must exceed `batching.max_batch_size` (one loop
+/// round pushes up to max_batch_size + 1 commands), unless 0 = unlimited.
+#[test]
+fn test_pending_limits_must_exceed_max_batch_size() {
+    let batch = 100;
+    let with = |writes: usize, reads: usize| {
+        let mut config = RaftConfig::default();
+        config.batching.max_batch_size = batch;
+        config.backpressure.max_pending_writes = writes;
+        config.backpressure.max_pending_reads = reads;
+        config.validate().is_ok()
+    };
+
+    assert!(
+        !with(batch, 50_000),
+        "writes limit == max_batch_size must be rejected"
+    );
+    assert!(
+        !with(batch - 1, 50_000),
+        "writes limit below max_batch_size must be rejected"
+    );
+    assert!(
+        with(batch + 1, 50_000),
+        "writes limit == max_batch_size + 1 must be accepted"
+    );
+    assert!(
+        !with(10_000, batch),
+        "reads limit == max_batch_size must be rejected"
+    );
+    assert!(
+        with(10_000, batch + 1),
+        "reads limit == max_batch_size + 1 must be accepted"
+    );
+    assert!(with(0, 0), "0 = unlimited must be accepted for both");
+    assert!(
+        with(0, 50_000) && with(10_000, 0),
+        "each limit is independent"
+    );
+}
+
+/// Write admission rejects after `election_timeout_min` without a quorum ACK, so that window must
+/// hold at least 3 heartbeats (two can be lost).
+#[test]
+fn test_election_timeout_min_must_hold_three_heartbeats() {
+    let validate_with = |election_min: u64, heartbeat: u64| {
+        let mut config = RaftConfig::default();
+        // Keep the read-lease rule out of the way: only the heartbeat ratio is under test.
+        config.read_consistency.lease_duration_ms = 10;
+        config.election.election_timeout_min = election_min;
+        config.election.election_timeout_max = 3_000;
+        config.replication.rpc_append_entries_clock_in_ms = heartbeat;
+        config.validate()
+    };
+
+    let too_small = validate_with(299, 100).expect_err("299 ms holds fewer than 3 heartbeats");
+    assert!(
+        too_small.to_string().contains("rpc_append_entries_clock_in_ms"),
+        "the error must name the heartbeat setting, got: {too_small}"
+    );
+    assert!(
+        validate_with(300, 100).is_ok(),
+        "exactly 3 heartbeats is accepted"
+    );
+    assert!(
+        validate_with(500, 100).is_ok(),
+        "the defaults (500 / 100) are accepted"
+    );
+    assert!(
+        validate_with(30, 10).is_ok(),
+        "the rule is a ratio, not a fixed size"
+    );
+    assert!(validate_with(29, 10).is_err());
+}
+
+#[test]
+fn test_default_config_is_valid() {
+    assert!(RaftConfig::default().validate().is_ok());
 }

@@ -177,6 +177,11 @@ pub enum InboundEvent {
         MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
     ),
 
+    ReceivePreVoteRequest(
+        VoteRequest,
+        MaybeCloneOneshotSender<std::result::Result<VoteResponse, Status>>,
+    ),
+
     ClusterConf(
         MetadataRequest,
         MaybeCloneOneshotSender<std::result::Result<ClusterMembership, Status>>,
@@ -222,6 +227,8 @@ pub enum InboundEvent {
 pub enum TestEvent {
     ReceiveVoteRequest(VoteRequest),
 
+    ReceivePreVoteRequest(VoteRequest),
+
     ClusterConf(MetadataRequest),
 
     ClusterConfUpdate(ClusterConfChangeRequest),
@@ -261,6 +268,8 @@ pub enum TestEvent {
 #[cfg(test)]
 pub(crate) fn inbound_event_to_test_event(event: &InboundEvent) -> TestEvent {
     match event {
+        InboundEvent::ReceivePreVoteRequest(req, _) => TestEvent::ReceivePreVoteRequest(*req),
+
         InboundEvent::ReceiveVoteRequest(req, _) => TestEvent::ReceiveVoteRequest(*req),
         InboundEvent::ClusterConf(req, _) => TestEvent::ClusterConf(*req),
         InboundEvent::ClusterConfUpdate(req, _) => TestEvent::ClusterConfUpdate(req.clone()),

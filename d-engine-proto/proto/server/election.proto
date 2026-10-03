@@ -25,4 +25,7 @@ message VotedFor {
 
 service RaftElectionService {
   rpc RequestVote(VoteRequest) returns (VoteResponse);
+
+  // Asks "would you vote for me at term+1?". Changes no state on the receiver.
+  rpc PreVote(VoteRequest) returns (VoteResponse);
 }

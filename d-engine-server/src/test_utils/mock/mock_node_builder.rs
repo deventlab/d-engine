@@ -569,6 +569,10 @@ pub(crate) fn mock_transport() -> MockTransport<MockTypeConfig> {
 /// Create a mock election handler
 pub(crate) fn mock_election_core() -> MockElectionCore<MockTypeConfig> {
     let mut election_handler = MockElectionCore::new();
+    // A candidate runs PreVote before the real election; tests using this default are not about it.
+    election_handler
+        .expect_broadcast_pre_vote_requests()
+        .returning(|_, _, _, _, _| Ok(()));
     election_handler
         .expect_broadcast_vote_requests()
         .returning(|_, _, _, _, _| Ok(()));
@@ -658,6 +662,15 @@ pub(crate) fn mock_membership() -> MockMembership<MockTypeConfig> {
             current_leader_id: None,
         });
     membership.expect_get_peers_id_with_condition().returning(|_| vec![]);
+    // Every node in a test is an active voter: only an active voter may start an election.
+    membership.expect_retrieve_node_meta().returning(|id| {
+        Some(d_engine_proto::server::cluster::NodeMeta {
+            id,
+            address: format!("http://127.0.0.1:{}", 55000 + id),
+            role: d_engine_proto::common::NodeRole::Follower.into(),
+            status: d_engine_proto::common::NodeStatus::Active.into(),
+        })
+    });
     membership
 }
 

@@ -61,6 +61,32 @@ impl<T> RaftElectionService for Node<T>
 where
     T: TypeConfig,
 {
+    /// Handles PreVote RPCs: answers "would you vote for me?" without changing any state.
+    async fn pre_vote(
+        &self,
+        request: tonic::Request<VoteRequest>,
+    ) -> std::result::Result<Response<VoteResponse>, Status> {
+        if !self.is_rpc_ready() {
+            debug!(
+                "[rpc|pre_vote] My raft setup(Node:{}) is not ready!",
+                self.node_id
+            );
+            return Err(Status::unavailable("Service is not ready"));
+        }
+
+        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
+        self.event_tx
+            .send(InboundEvent::ReceivePreVoteRequest(
+                request.into_inner(),
+                resp_tx,
+            ))
+            .await
+            .map_err(|_| Status::internal("Event channel closed"))?;
+        let timeout_duration =
+            Duration::from_millis(self.node_config.raft.election.election_timeout_min);
+        handle_rpc_timeout(resp_rx, timeout_duration, "pre_vote").await
+    }
+
     /// Handles RequestVote RPC calls from candidate nodes during leader elections
     /// # Raft Protocol Logic
     /// - Part of leader election mechanism (Section 5.2)
