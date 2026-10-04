@@ -82,6 +82,10 @@ async fn test_embedded_leader_failover() -> Result<(), Box<dyn std::error::Error
 
     let leader_idx = (initial_leader.leader_id - 1) as usize;
 
+    // Idle first: no client traffic for 10x election_timeout_min. Write admission depends on
+    // heartbeat ACKs only, so the first write after a quiet period must still be admitted.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
     // Write some data to initial leader
     engines[leader_idx]
         .client()
@@ -461,7 +465,7 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
     info!("Remaining engine count: {}", engines.len());
 
     // The leader (now alone) should reject writes since it can't reach quorum
-    info!("Attempting write on isolated leader (should fail due to no majority)");
+    info!("Attempting write on isolated leader (should be rejected with NotLeader)");
     let write_result = tokio::time::timeout(
         Duration::from_secs(3),
         engines[0].client().put(b"should-fail".to_vec(), b"no-majority".to_vec()),
@@ -470,18 +474,37 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
 
     info!("Write result: {:?}", write_result);
 
-    // Expect timeout or error
+    // 2 s without a quorum ACK is far beyond election_timeout_min (300 ms): write admission must
+    // answer at once with NotLeader instead of queueing the write until the client times out.
     match &write_result {
-        Ok(Ok(_)) => {
-            panic!("Write should not succeed without majority!");
-        }
-        Ok(Err(e)) => {
-            info!("Write correctly rejected with error: {:?}", e);
-        }
-        Err(_) => {
-            info!("Write correctly timed out");
-        }
+        Ok(Err(ClientApiError::Network {
+            code: ErrorCode::NotLeader,
+            ..
+        })) => info!("Write correctly rejected with NotLeader"),
+        other => panic!("expected an immediate NotLeader from write admission, got: {other:?}"),
     }
+
+    // CheckQuorum: after election_timeout_max x multiple (3 s x 2) of silence the leader steps
+    // down, and the client keeps seeing NotLeader (no leader to redirect to).
+    let step_down_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while engines[0].is_leader() {
+        assert!(
+            tokio::time::Instant::now() < step_down_deadline,
+            "leader without a quorum must step down within election_timeout_max x multiple"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let after_step_down = engines[0].client().put(b"after-step-down".to_vec(), b"x".to_vec()).await;
+    assert!(
+        matches!(
+            after_step_down,
+            Err(ClientApiError::Network {
+                code: ErrorCode::NotLeader,
+                ..
+            })
+        ),
+        "a stepped-down node must answer NotLeader, got: {after_step_down:?}"
+    );
 
     info!("Minority failure test passed - cluster correctly refused writes");
 
@@ -489,5 +512,89 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
     let remaining_engine = engines.remove(0);
     let _ = remaining_engine.stop().await;
 
+    Ok(())
+}
+
+/// Test an isolated node does not inflate its term, so it cannot disturb the cluster later (#423)
+///
+/// Scenario:
+/// 1. Start node 3 alone: its peers are not running, so it cannot get a quorum (the repo has no
+///    fault injection; "started before its peers" is the isolation)
+/// 2. Let it time out many times (15 s, at least 5 rounds at election_timeout_max = 3 s)
+/// 3. Start nodes 1 and 2 and wait for a leader
+/// 4. The leader's term must be small: without PreVote node 3 would have raised its term once
+///    per round and the whole cluster would have adopted it (term >= 6)
+#[tokio::test]
+#[traced_test]
+async fn test_isolated_node_does_not_inflate_term() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let db_root = temp_dir.path().join("db");
+    let log_dir = temp_dir.path().join("logs");
+
+    let mut port_guard = get_available_ports(3).await;
+    port_guard.release_listeners();
+    let ports = port_guard.as_slice();
+
+    async fn start_node(
+        node_id: u64,
+        ports: &[u16],
+        db_root: &std::path::Path,
+        log_dir: &std::path::Path,
+    ) -> Result<DefaultEmbeddedEngine, Box<dyn std::error::Error>> {
+        let config_str = create_node_config(
+            node_id,
+            ports[(node_id - 1) as usize],
+            ports,
+            db_root.to_str().unwrap(),
+            log_dir.to_str().unwrap(),
+        )
+        .await;
+        let node_db_root = db_root.join(format!("node{node_id}"));
+        let db_path = node_db_root.join("db");
+        tokio::fs::create_dir_all(&db_path).await?;
+        let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
+        let config_path = format!("/tmp/d-engine-test-isolated-node{node_id}.toml");
+        tokio::fs::write(&config_path, &config_str).await?;
+        Ok(DefaultEmbeddedEngine::start_custom(
+            &node_db_root,
+            Arc::new(storage),
+            Arc::new(state_machine),
+            Some(&config_path),
+        )
+        .await?)
+    }
+
+    info!("Starting node 3 alone");
+    let node3 = start_node(3, ports, &db_root, &log_dir).await?;
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    info!("Starting nodes 1 and 2");
+    let node1 = start_node(1, ports, &db_root, &log_dir).await?;
+    let node2 = start_node(2, ports, &db_root, &log_dir).await?;
+
+    let leader = node1.wait_ready(Duration::from_secs(30)).await?;
+    info!("Leader {} at term {}", leader.leader_id, leader.term);
+    assert!(
+        leader.term <= 4,
+        "an isolated node must not inflate the cluster's term, leader term was {}",
+        leader.term
+    );
+
+    node1
+        .client()
+        .put(b"after-isolation".to_vec(), b"ok".to_vec())
+        .await
+        .or_else(|e| match e {
+            // The write may land on a follower right after election: only the term matters here.
+            ClientApiError::Network {
+                code: ErrorCode::NotLeader,
+                ..
+            } => Ok(()),
+            other => Err(other),
+        })?;
+
+    for engine in [node1, node2, node3] {
+        engine.stop().await?;
+    }
     Ok(())
 }

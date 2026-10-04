@@ -10,6 +10,7 @@ use super::role_state::RaftRoleState;
 use super::role_state::check_and_trigger_snapshot;
 use super::role_state::send_replay_inbound_event;
 use crate::ConsensusError;
+use crate::ElectionCore;
 use crate::Error;
 use crate::InboundEvent;
 use crate::InternalEvent;
@@ -320,6 +321,27 @@ pub struct LeaderState<T: TypeConfig> {
     /// Raft Paper: §5.3 Figure 2 (matchIndex)
     pub(super) match_index: HashMap<u32, u64>,
 
+    /// === Volatile State === (per leadership, reset on every election)
+    /// `now_ms()` deadline until which the latest quorum ACK still counts as "a quorum just
+    /// confirmed this leader". Unlike the read lease it is NOT gated by the noop being
+    /// applied; the VoteRequest guard uses it. 0 = never confirmed.
+    quorum_ack_deadline_ms: u64,
+
+    /// === Volatile State === (per leadership, reset on every election)
+    /// `now_ms()` of the latest quorum ACK, or of the election for a new leader (one election
+    /// timeout of grace to collect the first ACKs). CheckQuorum steps down when it is older than
+    /// `election_timeout_max`, the longest silence any follower tolerates before campaigning
+    /// (etcd's effective tolerance is the same). Unlike `quorum_ack_deadline_ms` (a lease
+    /// window, shorter than the election timeout) a slow reply or brief jitter does not trip it.
+    last_quorum_contact_ms: u64,
+
+    /// Per voter peer: send time of the latest heartbeat round it acknowledged.
+    /// `match_index` records how far a peer replicated; this records who answered lately.
+    peer_ack_send_ts: HashMap<u32, u64>,
+
+    /// Highest quorum-acknowledged send time applied so far (None = never confirmed).
+    last_quorum_acked_ts: Option<u64>,
+
     /// === Volatile State ===
     /// Per-peer replication trust state (#436). A parallel map, same convention
     /// as `next_index`/`match_index` — not merged into a combined struct, to
@@ -334,8 +356,9 @@ pub struct LeaderState<T: TypeConfig> {
     peer_metrics: HashMap<u32, PeerMetrics>,
 
     /// === Volatile State ===
-    /// Temporary storage for no-op entry log ID during leader initialization
-    #[doc(hidden)]
+    /// The last log index when this leader's noop commit was observed; set once per leadership.
+    /// NOT the noop's own index if client writes were appended after it. Gates lease reads
+    /// and linearizable reads until set.
     pub noop_log_id: Option<u64>,
 
     // -- Log Compaction & Purge --
@@ -349,8 +372,9 @@ pub struct LeaderState<T: TypeConfig> {
     /// due to resource constraints or retry mechanisms.
     pub scheduled_purge_upto: Option<LogId>,
 
-    /// === Persistent State (MUST be on disk) ===
-    /// The last log position that has been **physically removed** from stable storage.
+    /// === Volatile copy of Persistent State ===
+    /// In-memory copy of the last physically removed log position. The persisted source of
+    /// truth is the log store's purge boundary.
     ///
     /// This value is atomically updated when:
     /// 1. A new snapshot is persisted (marking logs up to `last_included_index` as purgeable)
@@ -447,7 +471,8 @@ pub struct LeaderState<T: TypeConfig> {
     // -- Client Request Tracking --
     /// Writes committed but awaiting state machine apply before responding.
     /// Key: log index. Value: response sender plus its propose/commit timestamps.
-    /// Populated when `wait_for_apply=true` (e.g. CAS, or any write needing SM result).
+    /// Every client write lands here (`ProposeBatchBuffer::flush` sets
+    /// `wait_for_apply_event = true`), so a client sees success only after apply.
     /// Drained by `handle_apply_completed`; cleared with error on step-down / fatal error.
     pub(super) pending_write_apply: HashMap<u64, PendingApply>,
 
@@ -674,7 +699,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         );
         print_role_transition_line(Leader as i32, Follower as i32, self.current_term());
         // Revoke lease so ReadActor immediately returns LeaseInvalid on the next read.
-        self.shared_state.lease.revoke();
+        self.shared_state.read_lease.revoke();
         Ok(RaftRole::Follower(Box::new(self.into())))
     }
 
@@ -715,7 +740,31 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             error!("Stale learner check failed: {}", e);
         }
 
-        // 2. Heartbeat trigger check
+        // 2. CheckQuorum: a leader no quorum has answered for an ( election_timeout_max × multiple) timeout may be cut off.
+        // Step down (same term) so clients are redirected instead of queueing writes that can
+        // never commit. A single voter is its own quorum.
+        let quorum_silence_limit_ms =
+            self.node_config.raft.election.election_timeout_max.saturating_mul(
+                self.node_config.raft.backpressure.write_admission_election_timeout_multiple,
+            );
+        if !self.cluster_metadata.single_voter
+            && now_ms().saturating_sub(self.last_quorum_contact_ms) > quorum_silence_limit_ms
+        {
+            warn!(
+                "leader: no quorum ACK for an  election_timeout_max × multiple timeout, stepping down"
+            );
+
+            // The loop is a biased select with the tick branch first: leaving the replication
+            // deadline in the past would make this tick fire again at once, forever, and the
+            // BecomeFollower event above would never be polled.
+            self.timer.reset_replication();
+
+            self.drain_pending_writes_with_error(ErrorCode::NotLeader);
+            self.send_become_follower_event(None, internal_event_tx)?;
+            return Ok(());
+        }
+
+        // 3. Heartbeat trigger check
         // Send heartbeat if the replication timer expires
         if now >= self.timer.replication_deadline() {
             debug!(?now, "tick::reset_replication timer");
@@ -726,7 +775,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             self.send_heartbeat_or_batch(request, internal_event_tx, ctx).await?;
         }
 
-        // 3. Drain expired pending client writes.
+        // 4. Drain expired pending client writes.
         // NOTE: expiry checked at tick granularity; actual timeout may be up to one tick late.
         self.pending_client_writes.retain(|_, meta| {
             if now >= meta.deadline {
@@ -739,7 +788,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
         });
 
-        // 4. Drain expired pending linearizable reads.
+        // 5. Drain expired pending linearizable reads.
         self.pending_reads.retain(|_, batch| {
             if now >= batch.deadline {
                 for (_, sender) in batch.requests.drain(..) {
@@ -751,7 +800,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
         });
 
-        // 4b. Drain expired pending lease reads.
+        // 6. Drain expired pending lease reads.
         let mut unexpired_reads = VecDeque::new();
         for entry in self.pending_lease_reads.drain(..) {
             if now >= entry.deadline {
@@ -762,7 +811,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         }
         self.pending_lease_reads = unexpired_reads;
 
-        // 5. Drain expired post-commit actions (e.g. noop/join timed out before quorum).
+        // 7. Drain expired post-commit actions (e.g. noop/join timed out before quorum).
         // A noop timeout means we cannot confirm leadership — step down immediately.
         // A join timeout sends a deadline_exceeded error to the waiting client.
         let expired_keys: Vec<u64> = self
@@ -787,7 +836,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         }
         if noop_timed_out {
             warn!("LeaderNoop commit timed out — stepping down");
-            let _ = internal_event_tx.send(InternalEvent::BecomeFollower(None));
+            self.send_become_follower_event(None, internal_event_tx)?;
         }
 
         Ok(())
@@ -1016,8 +1065,15 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         // Drain-based: unconditionally flush all buffered commands
         // No timeout/size checks - drain from channel already collected the batch
 
-        let has_writes = !self.propose_buffer.is_empty();
+        let mut has_writes = !self.propose_buffer.is_empty();
         let has_reads = !self.linearizable_read_buffer.is_empty();
+
+        // Write admission: reject the whole batch if no quorum answered recently. Judged once per
+        // batch, so the per-write path stays untouched.
+        if has_writes && !self.is_write_admitted() {
+            self.reject_buffered_writes();
+            has_writes = false;
+        }
 
         // Fast path: pure write workload (most common case, ~95%)
         // Preserves original high-performance code path for write-heavy workloads
@@ -1057,12 +1113,29 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         let my_term = self.current_term();
 
         match inbound_event {
+            InboundEvent::ReceivePreVoteRequest(vote_request, sender) => {
+                // A PreVote never makes a leader step down; it only answers.
+                let response = ctx.election_handler().handle_pre_vote_request(
+                    vote_request,
+                    my_term,
+                    ctx.raft_log(),
+                    self.has_recent_quorum_ack(),
+                );
+                sender.send(Ok(response)).map_err(|e| {
+                    error!("Failed to send: {:?}", e);
+                    NetworkError::SingalSendFailed(format!("{:?}", e))
+                })?;
+            }
+
             // Leader receives RequestVote(term=X, candidate=Y)
-            // 1. If X > currentTerm:
+            // Deviates from Raft §5.1 on purpose (dissertation §4.2.3, disruptive servers): a leader
+            // that a quorum confirmed within the lease window ignores a higher term, so an
+            // isolated node that comes back cannot depose a healthy leader.
+            // 1. If X > currentTerm and no quorum ACK within the lease window:
             // - Leader → Follower, currentTerm = X
             // - Replay event
-            // 2. Else:
-            // - Reply with VoteGranted=false, currentTerm=currentTerm
+            // 2. Else (X <= currentTerm, or a quorum recently confirmed this leader):
+            // - Reply with VoteGranted=false, currentTerm=currentTerm, no state change
             InboundEvent::ReceiveVoteRequest(vote_request, sender) => {
                 debug!(
                     "handle_inbound_event::InboundEvent::ReceiveVoteRequest: {:?}",
@@ -1070,12 +1143,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 );
 
                 let my_term = self.current_term();
-                if my_term < vote_request.term {
+                if my_term < vote_request.term && !self.has_recent_quorum_ack() {
                     self.commit_hard_state(ctx, Some(vote_request.term), None)?;
 
-                    // Revoke lease immediately — before the Raft loop processes BecomeFollower,
-                    // a concurrent ReadActor could still see the old valid lease (window-period bug).
-                    self.shared_state.lease.revoke();
                     // Step down as Follower
                     self.send_become_follower_event(None, &internal_event_tx)?;
 
@@ -1179,9 +1249,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                         "my({}) term < request one, now I will step down to Follower",
                         my_id
                     );
-                    //TODO: if there is a bug?  self.update_current_term(vote_request.term);
-                    // Revoke lease immediately — window-period fix (see VoteRequest branch).
-                    self.shared_state.lease.revoke();
+
+                    // The new term is adopted when the Follower handles the replayed request.
                     self.send_become_follower_event(
                         Some(append_entries_request.leader_id),
                         &internal_event_tx,
@@ -1431,6 +1500,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     self.update_lease_timestamp(
                         now_ms(),
                         ctx.node_config().raft.read_consistency.lease_duration_ms,
+                        ctx.state_machine().last_applied().index,
                     );
                     self.drain_pending_lease_reads(ctx);
                 }
@@ -1503,8 +1573,6 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             self.commit_hard_state(ctx, Some(response.term), None)?;
 
             self.drain_pending_writes_with_error(ErrorCode::TermOutdated);
-            // Revoke lease immediately — window-period fix (see VoteRequest branch).
-            self.shared_state.lease.revoke();
             self.send_become_follower_event(None, internal_event_tx)?;
             return Err(ReplicationError::HigherTerm(response.term).into());
         }
@@ -1540,8 +1608,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                     self.commit_hard_state(ctx, Some(term), None)?;
 
                     self.drain_pending_writes_with_error(ErrorCode::TermOutdated);
-                    // Revoke lease immediately — window-period fix (see VoteRequest branch).
-                    self.shared_state.lease.revoke();
+
                     self.send_become_follower_event(None, internal_event_tx)?;
                     return Err(ReplicationError::HigherTerm(term).into());
                 }
@@ -1600,8 +1667,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         // Re-calculate commit index after updating this voter's match_index.
         if peer_update.success && is_voter {
             let (commit_index, majority) = self.majority_matched_index(ctx.raft_log());
-            let quorum_confirmed = majority.is_some();
 
+            // `majority` answers the COMMIT question only.
             if let Some(new_commit) = Self::new_commit_index(commit_index, majority) {
                 self.update_commit_index_with_signal(
                     Leader as i32,
@@ -1613,37 +1680,12 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
                 self.drain_commit_actions(new_commit, ctx, internal_event_tx).await;
             }
 
-            // Lease refresh and pending_lease_reads drain are triggered by quorum ACK,
-            // independent of whether commit_index advanced. When an expired lease fires an
-            // empty AppendEntries heartbeat, commit_index does not change (nothing new to
-            // commit), so new_commit_index yields None and the block above is skipped.
-            // We still reuse the single majority computation (majority.is_some()) to
-            // confirm quorum here.
-            if quorum_confirmed {
-                // Anchor deadline to send time (not ACK time) to eliminate the RTT/2 window.
-                // Falls back to now_ms() only in tests that bypass execute_and_process_raft_rpc.
-                let send_ts = if self.last_heartbeat_send_ts > 0 {
-                    self.last_heartbeat_send_ts
-                } else {
-                    now_ms()
-                };
-                self.update_lease_timestamp(
-                    send_ts,
-                    ctx.node_config().raft.read_consistency.lease_duration_ms,
-                );
-                self.drain_pending_lease_reads(ctx);
-                // Path A drain (Bug #381 fix): serve linearizable reads that have been
-                // waiting for quorum confirmation. Pure-read batches never advance
-                // commit_index, so handle_apply_completed (Path B) would never fire for
-                // them. Drain here once leadership is confirmed and SM is ready.
-                let last_applied = ctx.state_machine().last_applied().index;
-                let to_serve: Vec<u64> =
-                    self.pending_reads.range(..=last_applied).map(|(k, _)| *k).collect();
-                for idx in to_serve {
-                    if let Some(batch) = self.pending_reads.remove(&idx) {
-                        self.execute_pending_reads(batch.requests, ctx);
-                    }
-                }
+            // "A quorum answered" comes from who replied, never from replicated history:
+            // the stored match_index of an unreachable peer keeps the commit median alive.
+            // Anchor to send time (not ACK time) to eliminate the RTT/2 window. Falls back to
+            // now_ms() only in tests that bypass execute_and_process_raft_rpc.
+            if let Some(quorum_ts) = self.record_voter_ack(follower_id, self.last_round_send_ts()) {
+                self.on_quorum_confirmed(quorum_ts, ctx);
             }
         }
 
@@ -1921,14 +1963,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             "[Leader-{}] Removed from cluster membership, stepping down to Follower",
             self.node_id()
         );
-        internal_event_tx.send(InternalEvent::BecomeFollower(None)).map_err(|e| {
-            error!(
-                "[Leader-{}] Failed to send BecomeFollower after self-removal: {:?}",
-                self.node_id(),
-                e
-            );
-            NetworkError::SingalSendFailed(format!("BecomeFollower after self-removal: {e:?}"))
-        })?;
+        self.send_become_follower_event(None, internal_event_tx)?;
 
         Ok(())
     }
@@ -2357,9 +2392,10 @@ impl<T: TypeConfig> LeaderState<T> {
 
     /// Drain pending client write batches whose end_log_index <= new_commit.
     ///
-    /// For `wait_for_apply=false` batches: send write_success immediately.
-    /// For `wait_for_apply=true` batches (e.g. CAS): move senders to `pending_write_apply`
-    /// so they are resolved by the ApplyCompleted handler.
+    /// Client writes always have `wait_for_apply=true`: their senders move to
+    /// `pending_write_apply` and are resolved by the ApplyCompleted handler.
+    /// `wait_for_apply=false` is only used by internal requests (leader noop, join,
+    /// batch promote/remove). They carry no senders, so nothing waits on them.
     fn drain_pending_client_writes(
         &mut self,
         new_commit: u64,
@@ -2399,6 +2435,7 @@ impl<T: TypeConfig> LeaderState<T> {
                     );
                 }
             } else {
+                // Internal requests have no senders, so this loop is a no-op for them.
                 for sender in senders {
                     let _ = sender.send(Ok(ClientResponse::write_success()));
                 }
@@ -2473,6 +2510,8 @@ impl<T: TypeConfig> LeaderState<T> {
         &mut self,
         ctx: &RaftContext<T>,
     ) -> Result<()> {
+        // NOT the noop's own index: the last log entry when the noop commit is observed, which
+        // can be higher if client writes were appended after the noop. Conservative for readers.
         let noop_index = ctx.raft_log().last_entry_id();
         self.noop_log_id = Some(noop_index);
         debug!("Tracked noop_log_id: {}", noop_index);
@@ -2561,6 +2600,10 @@ impl<T: TypeConfig> LeaderState<T> {
 
     /// Drain all pending client writes with an error response.
     /// Called on step-down or HigherTerm detection.
+    ///
+    /// These writes were already proposed, so the new leader may still commit them even though
+    /// the client receives an error here. Writes are therefore at-least-once: a client that
+    /// retries a non-idempotent command can apply it twice. (No request-id dedup exists yet.)
     fn drain_pending_writes_with_error(
         &mut self,
         error_code: ErrorCode,
@@ -2595,6 +2638,14 @@ impl<T: TypeConfig> LeaderState<T> {
             total_voters,
             replication_targets: replication_targets.clone(),
         };
+
+        // Voter set or quorum size may have changed: drop acks of peers that are no longer
+        // voters and recompute the quorum time on the next reply.
+        let learner_role = d_engine_proto::common::NodeRole::Learner as i32;
+        self.peer_ack_send_ts.retain(|id, _| {
+            replication_targets.iter().any(|n| n.id == *id && n.role != learner_role)
+        });
+        self.last_quorum_acked_ts = None;
 
         debug!(
             "Updated cluster metadata: single_voter={}, total_voters={}, replication_targets={}",
@@ -3090,6 +3141,11 @@ impl<T: TypeConfig> LeaderState<T> {
             ?new_leader_id,
             "Leader is going to step down as Follower..."
         );
+
+        // Revoke lease immediately — before the Raft loop processes BecomeFollower,
+        // a concurrent ReadActor could still see the old valid lease (window-period bug).
+        self.shared_state.read_lease.revoke();
+
         internal_event_tx
             .send(InternalEvent::BecomeFollower(new_leader_id))
             .map_err(|e| {
@@ -3262,6 +3318,10 @@ impl<T: TypeConfig> LeaderState<T> {
                 replication_targets: vec![],
             },
             shared_state: SharedState::new(node_id, None, None),
+            quorum_ack_deadline_ms: 0,
+            last_quorum_contact_ms: now_ms(),
+            peer_ack_send_ts: HashMap::new(),
+            last_quorum_acked_ts: None,
             timer: Box::new(ReplicationTimer::new(rpc_append_entries_clock_in_ms)),
             next_index: HashMap::new(),
             match_index: HashMap::new(),
@@ -3756,22 +3816,184 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Returns true iff this leader holds a valid quorum-backed lease.
     /// Uses a single atomic load (~4 ns) — no mutex, no lock contention.
     pub fn is_lease_valid(&self) -> bool {
-        self.shared_state.lease.is_valid_for_leader(self.current_term(), now_ms())
+        self.shared_state.read_lease.is_valid_for_leader(self.current_term(), now_ms())
     }
 
-    /// Renews the lease after every quorum ACK (handle_append_result, handle_log_flushed).
+    /// Latest heartbeat send time that a quorum of voters has acknowledged.
+    ///
+    /// The leader counts as one voter, so `need = total_voters / 2` peers must have
+    /// acknowledged a round for it to count.
+    /// `peer_ack_send_ts` holds voters only, so there is no role filter here.
+    ///
+    /// The result is the `need`-th largest time, found without allocation or sorting:
+    /// the largest candidate T such that at least `need` peers have `ts >= T`.
+    /// `ts >= candidate` also counts the candidate peer itself.
+    ///
+    /// Example, 5 voters (`need = 2`), times are `now_ms()` readings:
+    ///
+    /// ```text
+    ///   B = 1300, C = 900, D = 1000, E = 1000
+    ///
+    ///   candidate 1300: peers with ts >= 1300 are {B}           -> 1 < 2, rejected
+    ///   candidate  900: peers with ts >=  900 are {B, C, D, E}  -> 4 >= 2, accepted
+    ///   candidate 1000: peers with ts >= 1000 are {B, D, E}     -> 3 >= 2, accepted
+    ///
+    ///   best = max(accepted) = 1000
+    /// ```
+    ///
+    /// Same as sorting descending (1300, 1000, 1000, 900) and taking the 2nd value:
+    /// B and D (or E) both reached 1000, plus the leader makes 3 of 5.
+    ///
+    /// A partitioned peer never updates its time, so it caps the result and a single
+    /// reachable follower cannot move it forward.
+    /// `match_index` is not used on purpose: it is replication history and does not
+    /// say who answered lately (see `majority_matched_index`, which is for the commit index).
+    fn quorum_acked_send_ts(&self) -> Option<u64> {
+        let need = self.cluster_metadata.total_voters / 2;
+        if need == 0 {
+            return None; // single voter: handled by its own path
+        }
+        let mut best: Option<u64> = None;
+        for &candidate in self.peer_ack_send_ts.values() {
+            let count = self.peer_ack_send_ts.values().filter(|&&ts| ts >= candidate).count();
+            if count >= need && best.is_none_or(|b| candidate > b) {
+                best = Some(candidate);
+            }
+        }
+        best
+    }
+
+    /// Send time of the heartbeat round a reply received now is credited to.
+    /// Anchored to send time (not ACK time) to eliminate the RTT/2 window.
+    /// Falls back to `now_ms()` only in tests that bypass `execute_and_process_raft_rpc`.
+    fn last_round_send_ts(&self) -> u64 {
+        if self.last_heartbeat_send_ts > 0 {
+            self.last_heartbeat_send_ts
+        } else {
+            now_ms()
+        }
+    }
+
+    /// Records that voter `peer` acknowledged the round sent at `send_ts`.
+    ///
+    /// Returns the new quorum-acknowledged send time only if it moved forward, `None` otherwise.
+    /// So the caller acts once per quorum confirmation, not once per reply.
+    fn record_voter_ack(
+        &mut self,
+        peer: u32,
+        send_ts: u64,
+    ) -> Option<u64> {
+        self.peer_ack_send_ts.insert(peer, send_ts);
+
+        // Cheap exit. Send times never decrease, so a reply that is not newer than the
+        // current quorum time cannot move it forward.
+        if self.last_quorum_acked_ts.is_some_and(|last| send_ts <= last) {
+            return None;
+        }
+
+        // Not enough voters have answered yet.
+        let quorum_ts = self.quorum_acked_send_ts()?;
+
+        // Same or older than what was already applied: nothing new.
+        if self.last_quorum_acked_ts.is_some_and(|last| quorum_ts <= last) {
+            return None;
+        }
+
+        self.last_quorum_acked_ts = Some(quorum_ts);
+        Some(quorum_ts)
+    }
+
+    /// A quorum of voters acknowledged a newer round than before: this leader is confirmed.
+    /// Renews the lease and releases the reads that waited for the confirmation.
+    fn on_quorum_confirmed(
+        &mut self,
+        quorum_ts: u64,
+        ctx: &RaftContext<T>,
+    ) {
+        let last_applied = ctx.state_machine().last_applied().index;
+        self.update_lease_timestamp(
+            quorum_ts,
+            ctx.node_config().raft.read_consistency.lease_duration_ms,
+            last_applied,
+        );
+        self.drain_pending_lease_reads(ctx);
+
+        // Path A drain (Bug #381 fix): serve linearizable reads that have been waiting for
+        // quorum confirmation. Pure-read batches never advance commit_index, so
+        // handle_apply_completed (Path B) would never fire for them. Drain here once
+        // leadership is confirmed and SM is ready.
+        let to_serve: Vec<u64> =
+            self.pending_reads.range(..=last_applied).map(|(k, _)| *k).collect();
+        for idx in to_serve {
+            if let Some(batch) = self.pending_reads.remove(&idx) {
+                self.execute_pending_reads(batch.requests, ctx);
+            }
+        }
+    }
+
+    /// True if a quorum acknowledged this leader recently enough that no other leader can exist.
+    fn has_recent_quorum_ack(&self) -> bool {
+        self.quorum_ack_deadline_ms > now_ms()
+    }
+
+    /// Admit client writes while a quorum answered within `election_timeout_min`, counted from
+    /// the last ACK (or from the election, which gives a new leader one window for its first
+    /// ACK). A rejected write is answered before it is appended, so the client can always retry.
+    /// Deliberately not the read lease: the lease is a read-safety bound, this is liveness only.
+    fn is_write_admitted(&self) -> bool {
+        self.cluster_metadata.single_voter
+            || now_ms().saturating_sub(self.last_quorum_contact_ms)
+                <= self.node_config.raft.election.election_timeout_min
+    }
+
+    /// Answers every buffered client write with `NotLeader`; none of them could commit.
+    fn reject_buffered_writes(&mut self) {
+        if let Some(request) = self.propose_buffer.flush() {
+            metrics::counter!(
+                "core.raft.write_admission.rejections",
+                "node_id" => self.node_id().to_string()
+            )
+            .increment(request.senders.len() as u64);
+            for sender in request.senders {
+                let _ = sender.send(Ok(ClientResponse::client_error(ErrorCode::NotLeader)));
+            }
+        }
+    }
+    /// Publishes the read lease after a quorum ACK (handle_append_result, handle_log_flushed).
+    ///
+    /// Does nothing until this leader's noop is committed AND applied
+    /// (`last_applied >= noop`, Raft §8). Before that the state machine may still miss entries
+    /// committed by previous leaders, so readers keep falling back to the Raft loop. The next
+    /// quorum ACK retries.
     ///
     /// `send_ts` is the timestamp recorded just before the heartbeat was sent.
     /// Using send_ts (not now_ms()) eliminates the RTT/2 window:
     ///   deadline = send_ts + lease_duration_ms  ≤  follower's election timer start + election_timeout
     /// Single-voter callers pass now_ms() directly (no peer RTT to account for).
+    /// `last_applied` is the state machine's applied index at call time.
     fn update_lease_timestamp(
-        &self,
+        &mut self,
         send_ts: u64,
         lease_duration_ms: u64,
+        last_applied: u64,
     ) {
         let deadline = send_ts.saturating_add(lease_duration_ms);
-        self.shared_state.lease.renew(self.current_term(), deadline);
+        // Recorded before the noop/applied gate: it answers "did a quorum just confirm me".
+        self.quorum_ack_deadline_ms = deadline;
+
+        // The send time of the round a quorum acknowledged: write admission and step-down see
+        // the same signal as the lease. A new leader keeps its election time until then.
+        self.last_quorum_contact_ms = send_ts;
+
+        // Raft §8: no lease reads until this term's noop is committed AND applied.
+        // Committed alone proves the commit point is known; applied proves the state
+        // machine already holds every entry committed by previous leaders.
+        match self.noop_log_id {
+            Some(noop) if last_applied >= noop => {}
+            _ => return,
+        }
+
+        self.shared_state.read_lease.renew(self.current_term(), deadline);
     }
 
     /// Unified write + linearizable read: single RPC for both (2*RTT → 1*RTT).
@@ -3858,7 +4080,7 @@ impl<T: TypeConfig> LeaderState<T> {
     pub(crate) fn test_update_lease_timestamp(&mut self) {
         // Renew with a generous 60-second deadline so tests don't flake on slow CI.
         let deadline = now_ms().saturating_add(60_000);
-        self.shared_state.lease.renew(self.current_term(), deadline);
+        self.shared_state.read_lease.renew(self.current_term(), deadline);
     }
 
     /// Test helper: renew lease from an explicit send_ts (RTT/2 fix path).
@@ -3866,8 +4088,9 @@ impl<T: TypeConfig> LeaderState<T> {
     pub(crate) fn test_renew_lease_from_send_ts(
         &mut self,
         lease_duration_ms: u64,
+        last_applied: u64,
     ) {
-        self.update_lease_timestamp(self.last_heartbeat_send_ts, lease_duration_ms);
+        self.update_lease_timestamp(self.last_heartbeat_send_ts, lease_duration_ms, last_applied);
     }
 
     /// Returns the current match_index for `peer_id`, or 0 if not yet tracked.
@@ -3964,6 +4187,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 self.update_lease_timestamp(
                     now_ms(),
                     ctx.node_config().raft.read_consistency.lease_duration_ms,
+                    ctx.state_machine().last_applied().index,
                 );
                 let results = ctx
                     .handlers
@@ -4158,6 +4382,10 @@ impl<T: TypeConfig> From<&CandidateState<T>> for LeaderState<T> {
 
         Self {
             shared_state,
+            quorum_ack_deadline_ms: 0,
+            last_quorum_contact_ms: now_ms(),
+            peer_ack_send_ts: HashMap::new(),
+            last_quorum_acked_ts: None,
             timer: Box::new(ReplicationTimer::new(rpc_append_entries_clock_in_ms)),
             next_index: HashMap::new(),
             match_index: HashMap::new(),

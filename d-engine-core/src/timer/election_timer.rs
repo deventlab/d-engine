@@ -18,6 +18,16 @@ impl ElectionTimer {
         }
     }
 
+    /// A timer that is already due. For a node that must act at once, e.g. a Follower whose
+    /// election timeout just fired and which becomes a Candidate: its first election round must
+    /// not wait for a second timeout.
+    pub fn expired(timeout_range: (u64, u64)) -> Self {
+        Self {
+            next_deadline: Instant::now(),
+            timeout_range,
+        }
+    }
+
     pub fn reset(&mut self) {
         let (min, max) = self.timeout_range;
         self.next_deadline = Instant::now() + Self::random_duration(min, max);

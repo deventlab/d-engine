@@ -153,7 +153,53 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
 
         debug!("candidate::start_election...");
 
-        let new_term = self.current_term() + 1;
+        if !self.is_active_voter(ctx) {
+            debug!("candidate: not an active voter, skipping election");
+            return Ok(());
+        }
+
+        // The timer is already re-armed above, so skipping here waits a full election timeout.
+        match self.has_unapplied_config_change(ctx) {
+            Ok(false) => {}
+            Ok(true) => {
+                debug!(
+                    "candidate: a committed membership change is not applied yet, skipping election"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                warn!("candidate: cannot read the unapplied log range ({e:?}), skipping election");
+                return Ok(());
+            }
+        }
+
+        let pre_vote_term = self.current_term() + 1;
+        match ctx
+            .election_handler()
+            .broadcast_pre_vote_requests(
+                pre_vote_term,
+                ctx.membership(),
+                ctx.raft_log(),
+                ctx.transport(),
+                &ctx.node_config(),
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(Error::Consensus(ConsensusError::Election(ElectionError::HigherTerm(
+                higher_term,
+            )))) => {
+                self.commit_hard_state(ctx, Some(higher_term), None)?;
+                self.send_become_follower_event(internal_event_tx)?;
+                return Ok(());
+            }
+            Err(e) => {
+                info!("candidate broadcast_pre_vote_requests with error: {:?}", e);
+                return Ok(());
+            }
+        }
+
+        let new_term = pre_vote_term;
         self.commit_hard_state(
             ctx,
             Some(new_term),
@@ -223,6 +269,20 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
     ) -> Result<()> {
         let my_term = self.current_term();
         match inbound_event {
+            InboundEvent::ReceivePreVoteRequest(vote_request, sender) => {
+                // A Candidate has no leader, so no leader is ever active here.
+                let response = ctx.election_handler().handle_pre_vote_request(
+                    vote_request,
+                    my_term,
+                    ctx.raft_log(),
+                    false,
+                );
+                sender.send(Ok(response)).map_err(|e| {
+                    error!("Failed to send: {:?}", e);
+                    NetworkError::SingalSendFailed(format!("{:?}", e))
+                })?;
+            }
+
             InboundEvent::ReceiveVoteRequest(vote_request, sender) => {
                 debug!(
                     "handle_inbound_event::InboundEvent::ReceiveVoteRequest: {:?}",
@@ -234,16 +294,19 @@ impl<T: TypeConfig> RaftRoleState for CandidateState<T> {
                     term: last_log_term,
                 } = ctx.raft_log().last_log_id().unwrap_or(LogId { index: 0, term: 0 });
 
-                if ctx.election_handler().check_vote_request_is_legal(
-                    &vote_request,
-                    my_term,
-                    last_log_index,
-                    last_log_term,
-                    self.voted_for().unwrap(),
-                ) {
+                // Step down when the request carries a higher term (Raft §5.1, whether or not
+                // the vote can be granted), or when it is a same-term request this node can
+                // still grant because it has not voted in its current term yet.
+                if vote_request.term > my_term
+                    || ctx.election_handler().check_vote_request_is_legal(
+                        &vote_request,
+                        my_term,
+                        last_log_index,
+                        last_log_term,
+                        self.voted_for().unwrap(),
+                    )
+                {
                     self.commit_hard_state(ctx, Some(vote_request.term), None)?;
-
-                    // Step down as Follower
                     self.send_become_follower_event(&internal_event_tx)?;
 
                     info!(
@@ -524,7 +587,7 @@ impl<T: TypeConfig> From<&FollowerState<T>> for CandidateState<T> {
         trace!(%follower.node_config.raft.election.election_timeout_min, "From<&FollowerState<T>> for CandidateState");
         Self {
             shared_state: follower.shared_state.clone(),
-            timer: ElectionTimer::new((
+            timer: ElectionTimer::expired((
                 follower.node_config.raft.election.election_timeout_min,
                 follower.node_config.raft.election.election_timeout_max,
             )),

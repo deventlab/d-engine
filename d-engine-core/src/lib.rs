@@ -187,3 +187,14 @@ pub(crate) fn is_target_log_more_recent(
     (target_last_log_term > my_last_log_term)
         || (target_last_log_term == my_last_log_term && target_last_log_index >= my_last_log_index)
 }
+
+/// True only if the target's log is strictly more up-to-date than ours:
+/// a higher last term, or the same last term and a higher last index.
+pub(crate) fn is_target_log_strictly_more_recent(
+    my_last_log_index: u64,
+    my_last_log_term: u64,
+    target_last_log_index: u64,
+    target_last_log_term: u64,
+) -> bool {
+    (target_last_log_term, target_last_log_index) > (my_last_log_term, my_last_log_index)
+}

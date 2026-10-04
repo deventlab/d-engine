@@ -279,3 +279,30 @@ async fn test_replication_timer_is_expired() {
 
     assert!(timer.is_expired(), "Timer should be expired after timeout");
 }
+
+/// Test: `ElectionTimer::expired` is due at once and re-arms to a normal future timeout.
+///
+/// Scenario:
+/// - A node that must act immediately (a Follower whose election timeout just fired becomes a
+///   Candidate) starts with an expired timer; after its first round it calls `reset`.
+///
+/// Expected:
+/// - Expired right away; after `reset` not expired, with the deadline inside [min, max) from now.
+#[tokio::test(start_paused = true)]
+async fn test_election_timer_expired_is_due_now_and_reset_rearms_it() {
+    let mut timer = ElectionTimer::expired((100, 200));
+
+    assert!(
+        timer.is_expired(),
+        "an expired timer must be due immediately"
+    );
+
+    timer.reset();
+
+    assert!(!timer.is_expired(), "reset must re-arm the timer");
+    let remaining = timer.next_deadline() - Instant::now();
+    assert!(
+        remaining >= Duration::from_millis(100) && remaining < Duration::from_millis(200),
+        "re-armed deadline must lie in [min, max), got {remaining:?}"
+    );
+}

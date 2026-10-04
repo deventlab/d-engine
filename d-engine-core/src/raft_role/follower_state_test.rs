@@ -3425,6 +3425,106 @@ async fn test_follower_install_snapshot_reports_success_when_apply_succeeds() {
     );
 }
 
+/// A snapshot transfer longer than the election timeout must not leave the follower ready to
+/// campaign the moment it finishes.
+///
+/// The handler runs inside the Raft loop, so no tick fires during the transfer; the timer and
+/// the leader-contact record were last touched at the first chunk. The leader was alive until
+/// the transfer ended, so both must be re-armed when it does.
+///
+/// # Given
+/// - election timeout 30-40 ms, a snapshot install that takes 120 ms
+///
+/// # When
+/// - Leader pushes a snapshot (InstallSnapshotChunk event) and the handler returns
+///
+/// # Then
+/// - the election timer is NOT expired
+/// - the guard still sees recent leader contact (within `election_timeout_min`)
+#[tokio::test]
+async fn test_follower_install_snapshot_rearms_timer_and_guard_after_a_long_transfer() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    let mut node_config = (*context.node_config).clone();
+    node_config.raft.election.election_timeout_min = 30;
+    node_config.raft.election.election_timeout_max = 40;
+    context.node_config = Arc::new(node_config);
+
+    let mut sm_handler = MockStateMachineHandler::new();
+    sm_handler.expect_prepare_snapshot_stream().once().returning(
+        |_first_chunk, _remaining, _ack_tx, _config| {
+            Ok(crate::PreparedSnapshot {
+                metadata: Default::default(),
+                temp_dir: tempfile::tempdir().unwrap(),
+            })
+        },
+    );
+    context.handlers.state_machine_handler = Arc::new(sm_handler);
+    // The Worker needs 120 ms to install: longer than the whole election timeout.
+    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        if let Some(StateMachineCommand::InstallSnapshot { response, .. }) = cmd_rx.recv().await {
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            let _ = response.send(Ok(SnapshotApplyResult::Applied {
+                last_included: LogId { index: 1, term: 1 },
+            }));
+        }
+    });
+    context.handlers.state_machine_commands = StateMachineCommandSender::new(cmd_tx);
+    // A vote request that reaches the election handler would be granted on term alone.
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler.expect_handle_vote_request().times(0);
+    context.handlers.election_handler = election_handler;
+    context.storage.raft_log = Arc::new({
+        let mut raft_log = MockRaftLog::new();
+        raft_log.expect_last_entry_id().returning(|| 0);
+        raft_log.expect_last_log_id().returning(|| None);
+        raft_log.expect_save_hard_state().returning(|_| Ok(()));
+        raft_log
+    });
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(32);
+    tx.send(SnapshotChunk {
+        leader_term: 1,
+        leader_id: 1,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    state
+        .handle_inbound_event(
+            InboundEvent::InstallSnapshotChunk(rx, resp_tx),
+            &context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !state.is_timer_expired(),
+        "the election timer must be re-armed when a long transfer ends"
+    );
+
+    // The guard must also see the leader as alive: a disruptive far-higher-term vote request is
+    // refused without consulting the election handler and without touching the term.
+    let response = send_vote_request(&mut state, &context, GUARD_TEST_INFLATED_TERM, 7).await;
+    assert!(
+        !response.vote_granted,
+        "the leader was alive until the transfer ended, the guard must refuse this vote"
+    );
+    assert_eq!(
+        state.current_term(),
+        1,
+        "a guarded refusal must not adopt the inflated term"
+    );
+}
+
 /// #436-adjacent: InstallSnapshotChunk from a stale leader (leader_term < follower's
 /// own current_term) must be rejected outright — never reach `prepare_snapshot_stream`
 /// — with a response carrying the follower's own (higher) term, mirroring how
@@ -4299,4 +4399,496 @@ fn test_follower_from_learner_preserves_both_purge_fields() {
         follower.pending_purge_upto,
         Some(LogId { term: 1, index: 5 })
     );
+}
+
+// ============================================================================
+// Leader-contact guard on VoteRequest
+//
+// A follower that heard from a legitimate leader within `election_timeout_min`
+// must ignore VoteRequests (Raft dissertation 4.2.3), so a node returning from a
+// partition with an inflated term cannot disrupt a healthy leader.
+// ============================================================================
+
+const GUARD_TEST_LEADER_TERM: u64 = 2;
+const GUARD_TEST_LEADER_ID: u32 = 5;
+const GUARD_TEST_INFLATED_TERM: u64 = 2400;
+
+/// Wires the mocks shared by the guard tests. Returns a counter of
+/// `save_hard_state` calls so tests can prove a rejection has no side effects.
+fn install_guard_test_mocks(
+    context: &mut RaftContext<MockTypeConfig>,
+    election_handler: MockElectionCore<MockTypeConfig>,
+) -> Arc<std::sync::atomic::AtomicUsize> {
+    let hard_state_writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let mut replication_handler = MockReplicationCore::new();
+    replication_handler.expect_handle_append_entries().returning(|_, _, _| {
+        Ok(AppendResponseWithUpdates {
+            response: AppendEntriesResponse::success(1, GUARD_TEST_LEADER_TERM, None),
+            commit_index_update: None,
+        })
+    });
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_last_log_id().returning(|| None);
+    let counter = Arc::clone(&hard_state_writes);
+    raft_log.expect_save_hard_state().returning(move |_| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    });
+
+    context.membership = Arc::new(MockMembership::new());
+    context.handlers.replication_handler = replication_handler;
+    context.handlers.election_handler = election_handler;
+    context.storage.raft_log = Arc::new(raft_log);
+    hard_state_writes
+}
+
+/// Delivers one legitimate AppendEntries (term >= follower term) so the follower
+/// records leader contact. The returned receiver must be kept alive by the caller,
+/// otherwise the `LeaderDiscovered` send fails.
+async fn follower_hears_leader(
+    state: &mut FollowerState<MockTypeConfig>,
+    context: &RaftContext<MockTypeConfig>,
+) -> mpsc::UnboundedReceiver<InternalEvent> {
+    let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+    let request = AppendEntriesRequest {
+        term: GUARD_TEST_LEADER_TERM,
+        leader_id: GUARD_TEST_LEADER_ID,
+        prev_log_index: 0,
+        prev_log_term: 1,
+        entries: vec![],
+        leader_commit_index: 0,
+    };
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    state
+        .handle_inbound_event(
+            InboundEvent::AppendEntries(request, vec![resp_tx]),
+            context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+    internal_event_rx
+}
+
+async fn send_vote_request(
+    state: &mut FollowerState<MockTypeConfig>,
+    context: &RaftContext<MockTypeConfig>,
+    term: u64,
+    candidate_id: u32,
+) -> VoteResponse {
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .handle_inbound_event(
+            create_vote_request_event(term, candidate_id, resp_tx),
+            context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+    resp_rx.recv().await.unwrap().unwrap()
+}
+
+fn grant_update(
+    candidate_id: u32,
+    term: u64,
+) -> StateUpdate {
+    StateUpdate {
+        new_voted_for: Some(VotedFor {
+            voted_for_id: candidate_id,
+            voted_for_term: term,
+            committed: false,
+        }),
+        term_update: Some(term),
+    }
+}
+
+/// Test: a VoteRequest with a far higher term is rejected while the leader is still alive.
+///
+/// Scenario:
+/// - Follower accepted an AppendEntries from the leader (term 2).
+/// - Half an `election_timeout_min` later, an isolated node sends a VoteRequest with term 2400.
+///
+/// Expected:
+/// - Rejected without consulting the election handler (it would grant on term alone).
+/// - Response carries this follower's own term, not the requester's.
+/// - Term unchanged and nothing persisted: adopting 2400 would make this follower reject the
+///   real leader's next heartbeat and force it to step down.
+#[tokio::test(start_paused = true)]
+async fn test_follower_rejects_vote_request_while_leader_contact_is_recent() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler.expect_handle_vote_request().times(0);
+    let hard_state_writes = install_guard_test_mocks(&mut context, election_handler);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state_mut().update_current_term(1);
+    let _keep_alive = follower_hears_leader(&mut state, &context).await;
+    let writes_before = hard_state_writes.load(std::sync::atomic::Ordering::SeqCst);
+
+    let window =
+        tokio::time::Duration::from_millis(context.node_config.raft.election.election_timeout_min);
+    tokio::time::advance(window / 2).await;
+
+    let response = send_vote_request(&mut state, &context, GUARD_TEST_INFLATED_TERM, 7).await;
+
+    assert!(!response.vote_granted);
+    assert_eq!(response.term, GUARD_TEST_LEADER_TERM);
+    assert_eq!(state.current_term(), GUARD_TEST_LEADER_TERM);
+    assert_eq!(
+        hard_state_writes.load(std::sync::atomic::Ordering::SeqCst),
+        writes_before,
+        "a guarded rejection must not persist term or vote"
+    );
+}
+
+/// Test: once `election_timeout_min` has passed without leader contact, VoteRequests are
+/// handled normally.
+///
+/// Expected:
+/// - The guard is a time window, not a permanent block: if the leader really died, an
+///   election must still be able to proceed.
+#[tokio::test(start_paused = true)]
+async fn test_follower_handles_vote_request_after_leader_contact_window_expires() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_handle_vote_request()
+        .times(1)
+        .returning(|_, _, _, _| Ok(grant_update(7, GUARD_TEST_INFLATED_TERM)));
+    install_guard_test_mocks(&mut context, election_handler);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state_mut().update_current_term(1);
+    let _keep_alive = follower_hears_leader(&mut state, &context).await;
+
+    let window =
+        tokio::time::Duration::from_millis(context.node_config.raft.election.election_timeout_min);
+    tokio::time::advance(window + tokio::time::Duration::from_millis(1)).await;
+
+    let response = send_vote_request(&mut state, &context, GUARD_TEST_INFLATED_TERM, 7).await;
+
+    assert!(response.vote_granted);
+}
+
+/// Test: a follower that has never heard from a leader (e.g. just restarted) handles
+/// VoteRequests normally.
+///
+/// Expected:
+/// - No recorded contact means no guard; startup must not wait out a window.
+#[tokio::test(start_paused = true)]
+async fn test_follower_without_leader_contact_handles_vote_request() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_handle_vote_request()
+        .times(1)
+        .returning(|_, _, _, _| Ok(grant_update(7, GUARD_TEST_INFLATED_TERM)));
+    install_guard_test_mocks(&mut context, election_handler);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let response = send_vote_request(&mut state, &context, GUARD_TEST_INFLATED_TERM, 7).await;
+
+    assert!(response.vote_granted);
+}
+
+/// Test: granting a vote does not start a new guard window.
+///
+/// Scenario:
+/// - Leader contact at t0, window expires, follower grants a vote to candidate 7.
+///   (Granting resets the election timer, see the #422 test above.)
+/// - A moment later, candidate 8 asks for a vote at an even higher term.
+///
+/// Expected:
+/// - The second request reaches the election handler. The guard keys on leader contact only;
+///   if it keyed on the election timer, the vote just granted would count as "leader alive"
+///   and block a legitimate election.
+#[tokio::test(start_paused = true)]
+async fn test_follower_granting_vote_does_not_refresh_leader_contact_guard() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler
+        .expect_handle_vote_request()
+        .times(2)
+        .returning(|request, _, _, _| Ok(grant_update(request.candidate_id, request.term)));
+    install_guard_test_mocks(&mut context, election_handler);
+
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state_mut().update_current_term(1);
+    let _keep_alive = follower_hears_leader(&mut state, &context).await;
+
+    let window =
+        tokio::time::Duration::from_millis(context.node_config.raft.election.election_timeout_min);
+    tokio::time::advance(window + tokio::time::Duration::from_millis(1)).await;
+
+    let first = send_vote_request(&mut state, &context, GUARD_TEST_INFLATED_TERM, 7).await;
+    tokio::time::advance(tokio::time::Duration::from_millis(1)).await;
+    let second = send_vote_request(&mut state, &context, GUARD_TEST_INFLATED_TERM + 1, 8).await;
+
+    assert!(first.vote_granted);
+    assert!(second.vote_granted);
+}
+
+// ============================================================================
+// PreVote requests received by a Follower
+//
+// The election handler decides (it is mocked here); the Follower's job is to tell it whether
+// a live leader is still active, to forward the answer unchanged, and to change nothing:
+// no term, no vote, no timer.
+// ============================================================================
+
+async fn send_pre_vote_request(
+    state: &mut FollowerState<MockTypeConfig>,
+    context: &RaftContext<MockTypeConfig>,
+    term: u64,
+    candidate_id: u32,
+) -> VoteResponse {
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .handle_inbound_event(
+            InboundEvent::ReceivePreVoteRequest(
+                VoteRequest {
+                    term,
+                    candidate_id,
+                    last_log_index: 0,
+                    last_log_term: 0,
+                },
+                resp_tx,
+            ),
+            context,
+            internal_event_tx,
+        )
+        .await
+        .unwrap();
+    resp_rx.recv().await.unwrap().unwrap()
+}
+
+/// An election mock that expects exactly one PreVote and records the `leader_active` it got.
+fn pre_vote_election_mock(
+    seen_leader_active: Arc<std::sync::atomic::AtomicBool>
+) -> MockElectionCore<MockTypeConfig> {
+    let mut election_handler = MockElectionCore::<MockTypeConfig>::new();
+    election_handler.expect_handle_pre_vote_request().times(1).returning(
+        move |_, current_term, _, leader_active| {
+            seen_leader_active.store(leader_active, std::sync::atomic::Ordering::SeqCst);
+            VoteResponse {
+                term: current_term,
+                vote_granted: !leader_active,
+                last_log_index: 7,
+                last_log_term: 3,
+            }
+        },
+    );
+    election_handler
+}
+
+/// Test: a Follower that never heard from a leader tells the handler no leader is active.
+///
+/// Expected:
+/// - `leader_active == false` and the handler's response is forwarded unchanged.
+/// - A node that just restarted must be able to take part in an election at once.
+#[tokio::test(start_paused = true)]
+async fn test_follower_pre_vote_without_leader_contact_reports_no_active_leader() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    let seen = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    install_guard_test_mocks(&mut context, pre_vote_election_mock(Arc::clone(&seen)));
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+
+    let response = send_pre_vote_request(&mut state, &context, 2, 7).await;
+
+    assert!(!seen.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(response.vote_granted);
+    assert_eq!((response.last_log_index, response.last_log_term), (7, 3));
+}
+
+/// Test: a Follower that heard from a leader within `election_timeout_min` tells the handler a
+/// leader is active, so the PreVote is denied.
+///
+/// Scenario:
+/// - AppendEntries from the leader, half a window later a PreVote arrives.
+#[tokio::test(start_paused = true)]
+async fn test_follower_pre_vote_within_leader_contact_window_reports_active_leader() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    install_guard_test_mocks(&mut context, pre_vote_election_mock(Arc::clone(&seen)));
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state_mut().update_current_term(1);
+    let _keep_alive = follower_hears_leader(&mut state, &context).await;
+
+    let window =
+        tokio::time::Duration::from_millis(context.node_config.raft.election.election_timeout_min);
+    tokio::time::advance(window / 2).await;
+
+    let response = send_pre_vote_request(&mut state, &context, 9, 7).await;
+
+    assert!(seen.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!response.vote_granted);
+}
+
+/// Test: once the window has passed without leader contact, the Follower no longer reports an
+/// active leader (the guard is a time window, not a permanent block).
+#[tokio::test(start_paused = true)]
+async fn test_follower_pre_vote_after_leader_contact_window_reports_no_active_leader() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    let seen = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    install_guard_test_mocks(&mut context, pre_vote_election_mock(Arc::clone(&seen)));
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state_mut().update_current_term(1);
+    let _keep_alive = follower_hears_leader(&mut state, &context).await;
+
+    let window =
+        tokio::time::Duration::from_millis(context.node_config.raft.election.election_timeout_min);
+    tokio::time::advance(window + tokio::time::Duration::from_millis(1)).await;
+
+    send_pre_vote_request(&mut state, &context, 9, 7).await;
+
+    assert!(!seen.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+/// Test: answering a PreVote changes nothing on the Follower, granted or denied.
+///
+/// Expected:
+/// - Term unchanged, nothing persisted, election timer untouched. A PreVote that reset the
+///   timer would let a node that cannot win keep every other follower from ever timing out.
+#[tokio::test(start_paused = true)]
+async fn test_follower_pre_vote_changes_no_state() {
+    for contact_leader_first in [false, true] {
+        let (_graceful_tx, graceful_rx) = watch::channel(());
+        let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+        let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hard_state_writes =
+            install_guard_test_mocks(&mut context, pre_vote_election_mock(Arc::clone(&seen)));
+        let mut state =
+            FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+        state.shared_state_mut().update_current_term(1);
+        let _keep_alive = if contact_leader_first {
+            Some(follower_hears_leader(&mut state, &context).await)
+        } else {
+            None
+        };
+        let term_before = state.current_term();
+        let deadline_before = state.timer.next_deadline;
+        let writes_before = hard_state_writes.load(std::sync::atomic::Ordering::SeqCst);
+
+        send_pre_vote_request(&mut state, &context, 99, 7).await;
+
+        assert_eq!(state.current_term(), term_before);
+        assert_eq!(state.timer.next_deadline, deadline_before);
+        assert_eq!(
+            hard_state_writes.load(std::sync::atomic::Ordering::SeqCst),
+            writes_before,
+            "contact_leader_first={contact_leader_first}: a PreVote must not persist anything"
+        );
+    }
+}
+
+// ============================================================================
+// A node that is not an active voter must never campaign
+//
+// A removed (or never-promoted) node that keeps timing out would otherwise start elections whose
+// quorum math counts its own vote as part of the cluster: with 4 real voters it needs only
+// "own vote + 2 grants = 3 of 5" although a majority of the 4 voters is 3 grants.
+// openraft skips the election ("not a voter"); raft-rs refuses to campaign when not promotable.
+//
+// `Membership::voters()` lists the OTHER active voters (it never contains this node), so "am I a
+// voter" is answered by this node's own membership entry: present and `Active`.
+// ============================================================================
+
+fn membership_with_own_status(
+    own_status: Option<d_engine_proto::common::NodeStatus>
+) -> Arc<MockMembership<MockTypeConfig>> {
+    let mut membership = MockMembership::new();
+    membership.expect_retrieve_node_meta().returning(move |id| {
+        own_status.map(|status| d_engine_proto::server::cluster::NodeMeta {
+            id,
+            address: format!("http://127.0.0.1:{}", 55000 + id),
+            role: NodeRole::Follower.into(),
+            status: status as i32,
+        })
+    });
+    membership.expect_is_single_node_cluster().returning(|| false);
+    Arc::new(membership)
+}
+
+/// Ticks a Follower whose election timer has expired, with this node's own membership entry as
+/// given, and returns whether it asked to become a Candidate.
+async fn follower_tick_requests_candidacy(
+    own_status: Option<d_engine_proto::common::NodeStatus>
+) -> (bool, bool) {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (mut context, _temp_dir) = mock_raft_context_with_temp(graceful_rx, None);
+    context.membership = membership_with_own_status(own_status);
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::channel(1);
+    let max = context.node_config.raft.election.election_timeout_max;
+    tokio::time::advance(tokio::time::Duration::from_millis(max + 1)).await;
+    assert!(
+        state.is_timer_expired(),
+        "precondition: the election timer expired"
+    );
+
+    state.tick(&internal_event_tx, &event_tx, &context).await.unwrap();
+
+    let requested = matches!(
+        internal_event_rx.try_recv(),
+        Ok(InternalEvent::BecomeCandidate)
+    );
+    (requested, !state.is_timer_expired())
+}
+
+/// Test: a Follower that was removed from the membership (no entry for itself) does not start an
+/// election, and its timer is re-armed so it does not spin.
+#[tokio::test(start_paused = true)]
+async fn test_follower_tick_does_not_start_election_when_removed_from_membership() {
+    let (requested, rearmed) = follower_tick_requests_candidacy(None).await;
+
+    assert!(!requested, "a removed node must not become a candidate");
+    assert!(
+        rearmed,
+        "the timer must be re-armed so the node does not spin"
+    );
+}
+
+/// Test: a node that is only a learner (`Promotable`, not yet `Active`) does not campaign.
+#[tokio::test(start_paused = true)]
+async fn test_follower_tick_does_not_start_election_when_not_yet_active() {
+    let (requested, _) =
+        follower_tick_requests_candidacy(Some(d_engine_proto::common::NodeStatus::Promotable))
+            .await;
+
+    assert!(!requested);
+}
+
+/// Test: an `Active` voter still starts an election on timeout (the other side of the boundary).
+#[tokio::test(start_paused = true)]
+async fn test_follower_tick_starts_election_when_an_active_voter() {
+    let (requested, _) =
+        follower_tick_requests_candidacy(Some(d_engine_proto::common::NodeStatus::Active)).await;
+
+    assert!(requested);
 }

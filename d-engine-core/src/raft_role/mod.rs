@@ -105,9 +105,10 @@ pub struct SharedState {
     /// Performance optimization: avoid RwLock on AppendEntries path
     current_leader_id: AtomicU32,
 
-    /// Shared lease state between Raft loop (writer) and EmbeddedClient (reader).
-    /// Arc ensures the same allocation is shared across role transitions via clone().
-    pub lease: Arc<ReadLease>,
+    /// Read lease published to every node's ReadActor (EmbeddedClient fast path).
+    /// Only `LeaderState` writes it; followers never renew, so their LeaseRead is
+    /// always invalid by design. Shared via clone() across role transitions.
+    pub read_lease: Arc<ReadLease>,
 }
 
 impl Clone for SharedState {
@@ -117,7 +118,7 @@ impl Clone for SharedState {
             hard_state: self.hard_state,
             commit_index: self.commit_index,
             current_leader_id: AtomicU32::new(self.current_leader_id.load(Ordering::Acquire)),
-            lease: Arc::clone(&self.lease),
+            read_lease: Arc::clone(&self.read_lease),
         }
     }
 }
@@ -175,7 +176,7 @@ impl SharedState {
             hard_state,
             commit_index: last_applied_index_option.unwrap_or(0),
             current_leader_id: AtomicU32::new(0),
-            lease: Arc::new(ReadLease::new()),
+            read_lease: Arc::new(ReadLease::new()),
         }
     }
 
@@ -226,6 +227,12 @@ impl SharedState {
         if let Some(t) = term
             && t != self.hard_state.current_term
         {
+            // Raft §5.1: a new term starts with `votedFor = null`. A vote cast in an older
+            // term must not outlive the term change, or it blocks a legitimate vote request
+            // in the new term. A vote supplied by the caller is applied below.
+            if t > self.hard_state.current_term {
+                self.hard_state.voted_for = None;
+            }
             self.hard_state.current_term = t;
             changed = true;
         }
@@ -257,12 +264,6 @@ impl SharedState {
             changed,
             is_new_leader_commitment,
         }
-    }
-
-    /// Clears voted_for to None (e.g. entering a fresh term with no vote cast
-    /// yet). Private — only `commit_vote_reset()` may call this.
-    fn clear_voted_for(&mut self) {
-        self.hard_state.voted_for = None;
     }
 
     fn voted_for(&self) -> Result<Option<VotedFor>> {

@@ -412,7 +412,7 @@ where
         );
 
         // Verify commit conditions
-        if majority_index < commit_index {
+        if majority_index <= commit_index {
             return None;
         }
 
@@ -509,10 +509,13 @@ where
         if self.is_poisoned() {
             return Err(Error::Fatal("raft log storage is poisoned".into()));
         }
-        self.meta_store.save_hard_state(hard_state).inspect_err(|e| {
-            error!(?self.node_id, "save_hard_state failed (fatal): {e:?}");
-            self.mark_poisoned_and_notify(format!("save_hard_state failed: {e:?}"));
-        })
+        self.meta_store
+            .save_hard_state(hard_state)
+            .and_then(|()| self.meta_store.flush())
+            .inspect_err(|e| {
+                error!(?self.node_id, "save_hard_state failed (fatal): {e:?}");
+                self.mark_poisoned_and_notify(format!("save_hard_state failed: {e:?}"));
+            })
     }
 
     async fn close(&self) {

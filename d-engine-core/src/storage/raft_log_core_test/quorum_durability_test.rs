@@ -151,11 +151,13 @@ async fn test_majority_matched_index_requires_actual_majority_of_reports() {
 
     // 1 of 4 followers reports index 10; the other 3 are still at their last-known
     // value, 9.
-    let result = ctx.raft_log.calculate_majority_matched_index(1, 9, vec![10, 9, 9, 9]);
+    // commit_index is 8, so a median of 9 is a real advance (a median equal to the commit
+    // index returns None without reading the log).
+    let result = ctx.raft_log.calculate_majority_matched_index(1, 8, vec![10, 9, 9, 9]);
 
     // peer_matched_ids after leader's own contribution = [10, 9, 9, 9, 10]
     // sorted desc = [10,10,9,9,9], median(len/2=2) = 9 — majority stays at 9, entry(9)
-    // exists with term=1=current_term, so the result is the previously-safe Some(9), not 10.
+    // exists with term=1=current_term, so the result is Some(9), not 10.
     assert_eq!(
         result,
         Some(9),

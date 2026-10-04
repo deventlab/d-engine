@@ -28,6 +28,15 @@ use tokio::sync::watch;
 // Helpers
 // -----------------------------------------------------------------------
 
+/// A follower ignores VoteRequests for `election_timeout_min` after hearing from a leader.
+/// Tests that interleave AEs with VoteRequests only care about how AE runs are merged
+/// around the VoteRequest, not about voting, so they turn that guard off with a zero window.
+fn config_without_leader_contact_guard() -> crate::RaftNodeConfig {
+    let mut node_config = crate::RaftNodeConfig::default();
+    node_config.raft.election.election_timeout_min = 0;
+    node_config
+}
+
 fn make_request(
     term: u64,
     prev_log_index: u64,
@@ -159,6 +168,8 @@ async fn test_ae_runs_on_both_sides_of_non_ae_are_each_merged() {
         .returning(|_, _, _| Ok(ok_append_response()));
 
     let mut raft = MockBuilder::new(graceful_rx)
+        .with_node_config(config_without_leader_contact_guard())
+        .turn_on_election(false)
         .with_election_handler(election_handler)
         .with_replication_handler(replication_handler)
         .build_raft();
@@ -240,6 +251,8 @@ async fn test_isolated_ae_between_non_ae_dispatched_alone() {
         .returning(|_, _, _| Ok(ok_append_response()));
 
     let mut raft = MockBuilder::new(graceful_rx)
+        .with_node_config(config_without_leader_contact_guard())
+        .turn_on_election(false)
         .with_election_handler(election_handler)
         .with_replication_handler(replication_handler)
         .build_raft();
@@ -251,6 +264,7 @@ async fn test_isolated_ae_between_non_ae_dispatched_alone() {
     // isolated AE: entries 15-19
     queue.push_back(make_ae_event(make_request(5, 14, 5, 1)));
     raft.buffered_inbound_event = queue;
+    assert_eq!(raft.ctx.node_config().raft.election.election_timeout_min, 0);
 
     raft.process_inbound_events().await.unwrap();
 }

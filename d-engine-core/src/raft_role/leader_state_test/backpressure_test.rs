@@ -30,6 +30,7 @@ async fn test_backpressure_write_limit_enforcement() {
     config.raft.backpressure = BackpressureConfig {
         max_pending_writes: 2,
         max_pending_reads: 100,
+        ..Default::default()
     };
     ctx.node_config = std::sync::Arc::new(config);
 
@@ -102,6 +103,7 @@ async fn test_backpressure_read_limit_enforcement() {
     config.raft.backpressure = BackpressureConfig {
         max_pending_writes: 100,
         max_pending_reads: 3,
+        ..Default::default()
     };
     ctx.node_config = std::sync::Arc::new(config);
 
@@ -168,7 +170,8 @@ async fn test_backpressure_unlimited_when_zero() {
     let mut config = (*ctx.node_config).clone();
     config.raft.backpressure = BackpressureConfig {
         max_pending_writes: 0, // Unlimited
-        max_pending_reads: 0,  // Unlimited
+        max_pending_reads: 0,  // Unlimited,
+        ..Default::default()
     };
     ctx.node_config = std::sync::Arc::new(config);
 
@@ -213,6 +216,7 @@ async fn test_backpressure_write_and_read_independent() {
     config.raft.backpressure = BackpressureConfig {
         max_pending_writes: 2,
         max_pending_reads: 10,
+        ..Default::default()
     };
     ctx.node_config = std::sync::Arc::new(config);
 
@@ -291,6 +295,7 @@ async fn test_backpressure_all_read_policies() {
     config.raft.backpressure = BackpressureConfig {
         max_pending_writes: 100,
         max_pending_reads: 2,
+        ..Default::default()
     };
     ctx.node_config = std::sync::Arc::new(config);
 

@@ -69,6 +69,15 @@ async fn assert_client_response(
     }
 }
 
+/// Client writes are admitted only while a quorum has answered recently: record one quorum ACK.
+fn admit_client_writes(
+    state: &mut LeaderState<MockTypeConfig>,
+    lease_duration_ms: u64,
+) {
+    state.last_heartbeat_send_ts = crate::raft_role::read_lease::now_ms();
+    state.test_renew_lease_from_send_ts(lease_duration_ms, 0);
+}
+
 /// Initialize the test environment and return the core components
 async fn setup_process_raft_request_test_context(
     test_name: &str,
@@ -83,6 +92,10 @@ async fn setup_process_raft_request_test_context(
 
     let mut state = LeaderState::new(1, raft_context.node_config());
     state.update_commit_index(4).expect("Should succeed to update commit index");
+    admit_client_writes(
+        &mut state,
+        raft_context.node_config().raft.read_consistency.lease_duration_ms,
+    );
 
     // Initialize the mock object
     let mut replication_handler = MockReplicationCore::new();
@@ -564,6 +577,10 @@ async fn test_drain_single_write_no_delay() {
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    admit_client_writes(
+        &mut state,
+        ctx.node_config.raft.read_consistency.lease_duration_ms,
+    );
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
@@ -663,6 +680,10 @@ async fn test_drain_multiple_writes_natural_batch() {
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    admit_client_writes(
+        &mut state,
+        ctx.node_config.raft.read_consistency.lease_duration_ms,
+    );
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
@@ -841,6 +862,10 @@ async fn test_write_batch_single_replication() {
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    admit_client_writes(
+        &mut state,
+        ctx.node_config.raft.read_consistency.lease_duration_ms,
+    );
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
@@ -969,6 +994,10 @@ async fn test_client_write_deferred_until_sm_apply() {
         .build_context();
 
     let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    admit_client_writes(
+        &mut state,
+        ctx.node_config.raft.read_consistency.lease_duration_ms,
+    );
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let req = ClientWriteRequest {
