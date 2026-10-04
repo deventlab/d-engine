@@ -158,7 +158,7 @@ async fn start_metrics_server(port: u16) {
     ];
     const BATCH_BUCKETS: &[f64] = &[1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0];
 
-    metrics_exporter_prometheus::PrometheusBuilder::new()
+    if let Err(e) = metrics_exporter_prometheus::PrometheusBuilder::new()
         .with_http_listener(([0, 0, 0, 0], port))
         .set_buckets_for_metric(
             metrics_exporter_prometheus::Matcher::Suffix("_ms".to_string()),
@@ -171,7 +171,10 @@ async fn start_metrics_server(port: u16) {
         )
         .expect("failed to configure batch_entries buckets")
         .install()
-        .expect("failed to start Prometheus metrics exporter");
+    {
+        // A metrics port that is already taken must not look like a crashed node.
+        tracing::warn!(port, error = %e, "Prometheus metrics exporter not started");
+    }
 }
 
 // Tokio metrics collection function

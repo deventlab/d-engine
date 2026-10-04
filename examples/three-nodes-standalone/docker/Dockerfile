@@ -85,6 +85,11 @@ RUN mkdir -p /app/{logs,db,snapshots} /etc/promtail
 # Promtail config path relative to workspace root
 COPY examples/three-nodes-standalone/docker/monitoring/promtail/config.yml /etc/promtail/config.yml
 
+# Which source this binary was built from; read by the Jepsen log scan.
+ARG GIT_SHA=unknown
+RUN echo "$GIT_SHA" > /etc/d-engine-commit
+
+
 WORKDIR /app
 
 CMD ["sh", "-c", "/usr/sbin/sshd -D & CONFIG_PATH=$CONFIG_PATH LOG_DIR=$LOG_DIR METRICS_PORT=$METRICS_PORT DB_PATH=/app/db/$ID RUST_LOG=demo=$LOG_LEVEL,d_engine=$LOG_LEVEL,hyper=warn,sled=warn demo & promtail --config.file=/etc/promtail/config.yml > /app/logs/promtail.log 2>&1"]
