@@ -21,6 +21,7 @@ pub(crate) use leader_notifier::*;
 
 #[doc(hidden)]
 mod type_config;
+use tracing::error;
 use tracing::info;
 #[doc(hidden)]
 pub use type_config::*;
@@ -208,11 +209,19 @@ where
         // release any exclusive resources it holds.
         let handle = self.sm_worker_handle.lock().unwrap().take();
         if let Some(handle) = handle {
-            tokio::task::spawn_blocking(move || {
+            let timeout = Duration::from_millis(
+                self.node_config.raft.state_machine.shutdown_apply_timeout_ms,
+            );
+            let join = tokio::task::spawn_blocking(move || {
                 let _ = handle.join();
-            })
-            .await
-            .ok();
+            });
+            if tokio::time::timeout(timeout, join).await.is_err() {
+                error!(
+                    "state machine worker did not finish applying within {:?}; \
+                             shutting down anyway, committed entries may be unapplied until restart",
+                    timeout
+                );
+            }
         }
 
         // Abort ReadActor after sm_worker exits so Arc<SM> ref-count reaches zero,

@@ -1076,17 +1076,16 @@ mod process_batch_test {
         let result = harness.process_batch_handler().await;
         assert!(result.is_err(), "Config change should fail");
 
-        // Verify NO event was sent
-        match tokio::time::timeout(Duration::from_millis(50), harness.internal_event_rx.recv())
-            .await
+        // The membership change failed: MembershipApplied must NOT be announced (#209).
+        // A FatalError is allowed and expected (#455: a committed membership change that cannot
+        // be applied cannot self-heal). Every event is checked, not only the first one.
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(50), harness.internal_event_rx.recv()).await
         {
-            Err(_) => {
-                // Timeout is expected - no event sent
-            }
-            Ok(Some(event)) => panic!("Expected no event, but received {event:?}"),
-            Ok(None) => {
-                // Channel closed is also acceptable
-            }
+            assert!(
+                !matches!(event, InternalEvent::MembershipApplied),
+                "MembershipApplied sent although the membership change failed"
+            );
         }
     }
 
@@ -1283,4 +1282,600 @@ mod process_batch_test {
             _ => panic!("Expected StepDownSelfRemoved event"),
         }
     }
+}
+
+// ================================================================================================
+// Exactly-once delivery contract (#455)
+// ================================================================================================
+//
+// CONTRACT: every committed log entry is handed to the state machine worker EXACTLY ONCE, in log
+// order, with no gaps — no matter how the commit notifications arrive (back to back, repeated,
+// stale) or how far behind the state machine is.
+//
+// WHY: today the range to deliver is `applied+1 ..= pending_commit`, and `applied` only advances
+// when the state machine has FINISHED applying. A second notification arriving while the first
+// batch is still queued/being applied therefore re-reads and re-delivers entries that were already
+// delivered. Measured on a 3-node run of 100k writes: the leader handed 147,402 entries to the
+// state machine for 100,001 log entries (47,401 re-applied); followers ~2,900. The RocksDB state
+// machine does not filter them. Re-delivery also replays committed membership changes.
+//
+// HOW THE RIG WORKS: the real `DefaultStateMachineHandler` cannot be plugged into
+// `DefaultCommitHandler<MockTypeConfig>` (its state machine handler type is the mock), and a
+// mock with a canned `pending_range()` can never show the bug. So `Progress` re-implements the two
+// real methods the commit path depends on, and `emulated_progress_matches_real_handler` proves it
+// stays identical to the real one. The test acts as the state machine worker: it records every
+// batch it receives and decides when "apply finished" (`complete_apply`).
+//
+// RETARGETING: when the commit handler is merged into the Raft loop, keep every test body and
+// assertion; only `Rig::start` / `Rig::notify` change (feed `NotifyNewCommitIndex` to the loop
+// instead of the commit channel). The assertions describe the contract, not the implementation.
+mod exactly_once_delivery {
+    use super::*;
+    use crate::StateMachineCommand;
+    use crate::StateMachineHandler;
+    use crate::test_utils::snapshot_config;
+    use d_engine_proto::common::{AddNode, NodeStatus};
+    use std::ops::RangeInclusive;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    const LOG_LEN: usize = 200;
+
+    /// Same arithmetic as `DefaultStateMachineHandler::{pending_range, update_pending}`.
+    struct Progress {
+        /// Highest index the state machine has FINISHED applying.
+        applied: AtomicU64,
+        /// Highest commit index announced so far (only ever raised).
+        pending: AtomicU64,
+    }
+
+    impl Progress {
+        fn new(initial_applied: u64) -> Self {
+            Self {
+                applied: AtomicU64::new(initial_applied),
+                pending: AtomicU64::new(0),
+            }
+        }
+        fn range(&self) -> Option<RangeInclusive<u64>> {
+            let applied = self.applied.load(Ordering::Acquire);
+            let pending = self.pending.load(Ordering::Acquire);
+            (pending > applied).then(|| (applied + 1)..=pending)
+        }
+        fn raise_pending(
+            &self,
+            new_commit: u64,
+        ) {
+            self.pending.fetch_max(new_commit, Ordering::AcqRel);
+        }
+    }
+
+    /// `LOG_LEN` plain commands, optionally with `config_at` replaced by an AddNode change.
+    fn log_entries(config_at: Option<u64>) -> Vec<Entry> {
+        let commands = (1..=LOG_LEN as u64)
+            .map(|i| {
+                if Some(i) == config_at {
+                    CommandType::Configuration(Change::AddNode(AddNode {
+                        node_id: 9,
+                        address: "addr".into(),
+                        status: NodeStatus::Promotable as i32,
+                    }))
+                } else {
+                    CommandType::Command(Bytes::from(format!("cmd{i}")))
+                }
+            })
+            .collect();
+        build_entries(commands, TEST_TERM)
+    }
+
+    struct Rig {
+        progress: Arc<Progress>,
+        commit_tx: mpsc::UnboundedSender<NewCommitData>,
+        /// One element per `ApplyEntries` batch the (fake) state machine worker received.
+        delivered: Arc<Mutex<Vec<Vec<u64>>>>,
+        config_applied: Arc<AtomicUsize>,
+        internal_event_rx: mpsc::UnboundedReceiver<InternalEvent>,
+        handle: JoinHandle<()>,
+        shutdown_tx: watch::Sender<()>,
+    }
+
+    impl Rig {
+        async fn start(
+            entries: Vec<Entry>,
+            initial_applied: u64,
+            first_config_apply_fails: bool,
+        ) -> Self {
+            let progress = Arc::new(Progress::new(initial_applied));
+
+            let mut smh = MockStateMachineHandler::<MockTypeConfig>::new();
+            let p = progress.clone();
+            smh.expect_pending_range().returning(move || p.range());
+            let p = progress.clone();
+            smh.expect_update_pending().returning(move |n| p.raise_pending(n));
+            let p = progress.clone();
+            smh.expect_last_applied().returning(move || p.applied.load(Ordering::Acquire));
+
+            let mut log = MockRaftLog::new();
+            log.expect_get_entries_range().returning(move |range| {
+                Ok(entries.iter().filter(|e| range.contains(&e.index)).cloned().collect())
+            });
+
+            let config_applied = Arc::new(AtomicUsize::new(0));
+            let calls = config_applied.clone();
+            let mut membership = MockMembership::new();
+            membership.expect_notify_config_applied().returning(|_| {});
+            membership.expect_apply_config_change().returning(move |_| {
+                let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                if first_config_apply_fails && n == 1 {
+                    Err(Error::Fatal("config change could not be applied".to_string()))
+                } else {
+                    Ok(())
+                }
+            });
+
+            let (commit_tx, commit_rx) = mpsc::unbounded_channel();
+            let (shutdown_tx, shutdown_rx) = watch::channel(());
+            let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
+            let (sm_tx, mut sm_rx) = mpsc::unbounded_channel::<StateMachineCommand>();
+
+            // The fake state machine worker: records what it is handed; never applies by itself.
+            let delivered = Arc::new(Mutex::new(Vec::new()));
+            let sink = delivered.clone();
+            tokio::spawn(async move {
+                while let Some(cmd) = sm_rx.recv().await {
+                    if let StateMachineCommand::ApplyEntries { entries, .. } = cmd {
+                        sink.lock().unwrap().push(entries.iter().map(|e| e.index).collect());
+                    }
+                }
+            });
+
+            let deps = CommitHandlerDependencies {
+                state_machine_handler: Arc::new(smh),
+                raft_log: Arc::new(log),
+                membership: Arc::new(membership),
+                internal_event_tx,
+                sm_apply_tx: crate::StateMachineCommandSender::new(sm_tx),
+                shutdown_signal: shutdown_rx,
+                max_batch_size: 10,
+            };
+            let mut handler = DefaultCommitHandler::<MockTypeConfig>::new(
+                1,
+                Leader as i32,
+                TEST_TERM,
+                deps,
+                commit_rx,
+            );
+            let handle = tokio::spawn(async move {
+                let _ = handler.run().await;
+            });
+
+            Self {
+                progress,
+                commit_tx,
+                delivered,
+                config_applied,
+                internal_event_rx,
+                handle,
+                shutdown_tx,
+            }
+        }
+
+        /// Announce a new commit index and give the commit path a chance to run.
+        async fn notify(
+            &self,
+            commit_index: u64,
+        ) {
+            self.commit_tx
+                .send(NewCommitData {
+                    new_commit_index: commit_index,
+                    role: Leader as i32,
+                    current_term: TEST_TERM,
+                })
+                .unwrap();
+            for _ in 0..4 {
+                tokio::task::yield_now().await;
+            }
+        }
+
+        /// Wait until nothing more is being delivered.
+        async fn settle(&self) {
+            let mut stable = 0;
+            let mut last = self.delivered_flat().len();
+            for _ in 0..200 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let now = self.delivered_flat().len();
+                stable = if now == last { stable + 1 } else { 0 };
+                last = now;
+                if stable >= 3 {
+                    return;
+                }
+            }
+        }
+
+        /// The state machine finished applying everything up to `index`.
+        fn complete_apply(
+            &self,
+            index: u64,
+        ) {
+            self.progress.applied.fetch_max(index, Ordering::AcqRel);
+        }
+
+        /// A snapshot install moved the state machine to `index` without going through entries.
+        fn jump_applied_to(
+            &self,
+            index: u64,
+        ) {
+            self.progress.applied.store(index, Ordering::Release);
+        }
+
+        fn delivered_flat(&self) -> Vec<u64> {
+            self.delivered.lock().unwrap().iter().flatten().copied().collect()
+        }
+
+        fn assert_delivered(
+            &self,
+            expected: Vec<u64>,
+            why: &str,
+        ) {
+            let batches = self.delivered.lock().unwrap().clone();
+            assert_eq!(
+                self.delivered_flat(),
+                expected,
+                "{why}\n  batches handed to the state machine, in order: {batches:?}"
+            );
+        }
+
+        fn drain_events(&mut self) -> Vec<InternalEvent> {
+            let mut out = Vec::new();
+            while let Ok(ev) = self.internal_event_rx.try_recv() {
+                out.push(ev);
+            }
+            out
+        }
+    }
+
+    fn range(r: RangeInclusive<u64>) -> Vec<u64> {
+        r.collect()
+    }
+
+    // ── the contract ────────────────────────────────────────────────────────────────────────
+
+    /// A second commit notification arrives while the state machine has not applied the first
+    /// batch yet (the normal case under load). Entries 1..=5 must not be delivered again.
+    #[tokio::test]
+    async fn test_commit_notifications_while_apply_is_pending_deliver_each_entry_once() {
+        let rig = Rig::start(log_entries(None), 0, false).await;
+        rig.notify(5).await;
+        rig.settle().await;
+        rig.notify(10).await; // state machine still has not finished anything
+        rig.settle().await;
+        rig.notify(15).await;
+        rig.settle().await;
+        rig.assert_delivered(
+            range(1..=15),
+            "each committed entry must be handed to the state machine exactly once",
+        );
+    }
+
+    /// The same notification repeated (leader re-announces the same commit index, e.g. on every
+    /// ack) must not make the commit path re-read and re-send anything.
+    #[tokio::test]
+    async fn test_repeated_identical_notification_does_not_redeliver() {
+        let rig = Rig::start(log_entries(None), 0, false).await;
+        for _ in 0..3 {
+            rig.notify(8).await;
+            rig.settle().await;
+        }
+        rig.assert_delivered(range(1..=8), "a repeated commit index must deliver nothing new");
+    }
+
+    /// A stale (lower) notification arriving after a higher one must be ignored.
+    #[tokio::test]
+    async fn test_stale_lower_notification_does_not_redeliver() {
+        let rig = Rig::start(log_entries(None), 0, false).await;
+        rig.notify(10).await;
+        rig.settle().await;
+        rig.notify(4).await;
+        rig.settle().await;
+        rig.assert_delivered(range(1..=10), "a lower commit index must deliver nothing");
+    }
+
+    /// 100 single-step notifications in a row while nothing is ever reported as applied: the
+    /// state machine must still see 1..=100 once each, contiguous and ordered.
+    #[tokio::test]
+    async fn test_burst_of_single_step_notifications_delivers_each_entry_once() {
+        let rig = Rig::start(log_entries(None), 0, false).await;
+        for i in 1..=100 {
+            rig.notify(i).await;
+        }
+        rig.settle().await;
+        rig.assert_delivered(
+            range(1..=100),
+            "a burst of notifications must neither duplicate nor skip entries",
+        );
+    }
+
+    /// Guard (green today, must stay green): when the state machine does report progress between
+    /// notifications, only the NEW entries are delivered.
+    #[tokio::test]
+    async fn test_apply_progress_between_notifications_delivers_only_new_entries() {
+        let rig = Rig::start(log_entries(None), 0, false).await;
+        rig.notify(5).await;
+        rig.settle().await;
+        rig.complete_apply(5);
+        rig.notify(9).await;
+        rig.settle().await;
+        rig.assert_delivered(range(1..=9), "entries 1..=5 were applied; only 6..=9 are new");
+    }
+
+    /// Guard: announcing a commit index the state machine already reached delivers nothing.
+    #[tokio::test]
+    async fn test_notification_for_already_applied_index_delivers_nothing() {
+        let rig = Rig::start(log_entries(None), 0, false).await;
+        rig.notify(5).await;
+        rig.settle().await;
+        rig.complete_apply(5);
+        rig.notify(5).await;
+        rig.notify(3).await;
+        rig.settle().await;
+        rig.assert_delivered(range(1..=5), "nothing above index 5 was committed");
+    }
+
+    /// Guard: after a restart the state machine is already at index 20. Entries up to 20 are
+    /// never delivered, whatever commit index is announced first.
+    #[tokio::test]
+    async fn test_entries_at_or_below_initial_applied_index_are_never_delivered() {
+        let rig = Rig::start(log_entries(None), 20, false).await;
+        rig.notify(10).await;
+        rig.settle().await;
+        rig.assert_delivered(vec![], "commit index 10 is below what is already applied (20)");
+        rig.notify(25).await;
+        rig.settle().await;
+        rig.assert_delivered(range(21..=25), "only 21..=25 are new");
+    }
+
+    /// Guard: a snapshot install moves the state machine past entries it never saw. Delivery
+    /// resumes after the snapshot point and never goes back for the covered entries.
+    #[tokio::test]
+    async fn test_snapshot_install_jump_skips_covered_entries() {
+        let rig = Rig::start(log_entries(None), 0, false).await;
+        rig.notify(10).await;
+        rig.settle().await;
+        rig.complete_apply(10);
+        rig.notify(30).await;
+        rig.settle().await; // 11..=30 delivered, not yet reported applied
+        rig.jump_applied_to(50); // snapshot at index 50 installed
+        rig.notify(60).await;
+        rig.settle().await;
+        let mut expected = range(1..=30);
+        expected.extend(range(51..=60));
+        rig.assert_delivered(expected, "after the snapshot at 50 only 51..=60 are new");
+    }
+
+    // ── side effects of delivery ─────────────────────────────────────────────────────────────
+
+    /// A committed membership change is applied to the membership exactly once, even when the
+    /// commit path is notified again before the state machine reports the config entry applied.
+    #[tokio::test]
+    async fn test_config_change_is_applied_exactly_once_when_commits_are_announced_again() {
+        let mut rig = Rig::start(log_entries(Some(3)), 0, false).await;
+        rig.notify(3).await; // contains the AddNode at index 3
+        rig.settle().await;
+        rig.notify(5).await; // state machine has not reported anything applied
+        rig.settle().await;
+        assert_eq!(
+            rig.config_applied.load(Ordering::SeqCst),
+            1,
+            "the AddNode at index 3 must change the membership once"
+        );
+        let applied_events = rig
+            .drain_events()
+            .into_iter()
+            .filter(|e| matches!(e, InternalEvent::MembershipApplied))
+            .count();
+        assert_eq!(applied_events, 1, "one committed change => one MembershipApplied event");
+        rig.assert_delivered(range(1..=5), "entries are still delivered exactly once");
+    }
+
+    /// A committed membership change that cannot be applied is FATAL for the node (owner
+    /// decision, #455): the cluster has already agreed on it, so a node that skips it holds a
+    /// membership view that no longer matches its own log, and nothing can repair that. Today the
+    /// failing entry has already been handed to the state machine, is never read again, and only
+    /// an error log remains.
+    ///
+    /// Also keeps the intent of #209: no `MembershipApplied` is announced for a change that failed.
+    #[tokio::test]
+    async fn test_failed_config_change_raises_fatal_error_and_announces_nothing() {
+        let mut rig = Rig::start(log_entries(Some(3)), 0, true).await;
+        rig.notify(3).await; // the AddNode at index 3 fails to apply
+        rig.settle().await;
+        rig.complete_apply(3); // the state machine has applied entries 1..=3
+        // A later commit may be announced, but the commit path has stopped after the fatal
+        // error, so the channel can already be closed: that is the intended behaviour.
+        let _ = rig.commit_tx.send(NewCommitData {
+            new_commit_index: 5,
+            role: Leader as i32,
+            current_term: TEST_TERM,
+        });
+        rig.settle().await;
+
+        let events = rig.drain_events();
+        assert!(
+            events.iter().any(|e| matches!(e, InternalEvent::FatalError { .. })),
+            "a committed membership change failed to apply but no FatalError was raised \
+             (applied {} time(s)); the node silently diverges from its log",
+            rig.config_applied.load(Ordering::SeqCst)
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, InternalEvent::MembershipApplied)),
+            "MembershipApplied must not be announced for a change that failed"
+        );
+    }
+
+    /// An entry whose payload kind is missing (corrupt / hostile peer) must never panic the
+    /// commit path (ADR-018: no panics in embedded core paths). Either it is skipped/treated as
+    /// a no-op and later entries are still delivered, or a FatalError is raised — but the task
+    /// must stay alive and the node must not silently stop applying.
+    #[tokio::test]
+    async fn test_entry_with_missing_payload_kind_does_not_panic_the_commit_path() {
+        let mut entries = log_entries(None);
+        entries[1].payload = Some(EntryPayload { payload: None }); // index 2: oneof not set
+        let mut rig = Rig::start(entries, 0, false).await;
+        rig.notify(3).await;
+        rig.settle().await;
+
+        assert!(
+            !rig.handle.is_finished(),
+            "the commit path terminated (panicked) on an entry with an empty payload kind"
+        );
+        let fatal = rig
+            .drain_events()
+            .iter()
+            .any(|e| matches!(e, InternalEvent::FatalError { .. }));
+        assert!(
+            fatal || rig.delivered_flat().contains(&3),
+            "after the malformed entry, later entries were not delivered and no FatalError was \
+             raised (delivered: {:?})",
+            rig.delivered_flat()
+        );
+    }
+
+    // ── graceful shutdown ────────────────────────────────────────────────────────────────────
+
+    /// CONTRACT (owner decision, #455): on graceful shutdown, every commit the node has already
+    /// been told about is handed to the state machine worker BEFORE the commit path exits. (The
+    /// worker then drains its queue and `Node::stop` waits for it, so the state machine is
+    /// current when `stop()` returns.) Nothing is lost either way — the log is durable and
+    /// restart re-delivers — this is about the state being current at stop.
+    ///
+    /// Today the commit path picks at random between "shutdown" and "new commit" when both are
+    /// ready, so a single run would be flaky; 30 rounds make the current behaviour fail reliably
+    /// (probability of passing by luck is 2^-30) and the fixed one pass reliably.
+    #[tokio::test]
+    async fn test_graceful_shutdown_hands_all_announced_commits_to_the_state_machine() {
+        for round in 0..30 {
+            let mut rig = Rig::start(log_entries(None), 0, false).await;
+            // Announce the commit and the shutdown before the commit path gets to run at all.
+            rig.commit_tx
+                .send(NewCommitData {
+                    new_commit_index: 10,
+                    role: Leader as i32,
+                    current_term: TEST_TERM,
+                })
+                .unwrap();
+            rig.shutdown_tx.send(()).unwrap();
+
+            tokio::time::timeout(Duration::from_secs(2), &mut rig.handle)
+                .await
+                .expect("the commit path must exit after shutdown")
+                .expect("the commit path must not panic");
+            rig.settle().await;
+            rig.assert_delivered(
+                range(1..=10),
+                &format!("round {round}: shutdown dropped an announced commit"),
+            );
+        }
+    }
+
+    /// Several commit notifications still queued at shutdown are all honoured, and the entries
+    /// are still delivered exactly once.
+    #[tokio::test]
+    async fn test_graceful_shutdown_with_queued_notifications_delivers_everything_once() {
+        for round in 0..30 {
+            let mut rig = Rig::start(log_entries(None), 0, false).await;
+            for commit_index in [2, 4, 6, 8, 10] {
+                rig.commit_tx
+                    .send(NewCommitData {
+                        new_commit_index: commit_index,
+                        role: Leader as i32,
+                        current_term: TEST_TERM,
+                    })
+                    .unwrap();
+            }
+            rig.shutdown_tx.send(()).unwrap();
+
+            tokio::time::timeout(Duration::from_secs(2), &mut rig.handle)
+                .await
+                .expect("the commit path must exit after shutdown")
+                .expect("the commit path must not panic");
+            rig.settle().await;
+            rig.assert_delivered(
+                range(1..=10),
+                &format!("round {round}: queued commits were lost or duplicated at shutdown"),
+            );
+        }
+    }
+
+    /// Guard: shutdown with nothing pending exits promptly and delivers nothing.
+    #[tokio::test]
+    async fn test_graceful_shutdown_with_no_pending_commit_exits_cleanly() {
+        let mut rig = Rig::start(log_entries(None), 0, false).await;
+        rig.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), &mut rig.handle)
+            .await
+            .expect("the commit path must exit after shutdown")
+            .expect("the commit path must not panic");
+        rig.assert_delivered(vec![], "nothing was committed");
+    }
+
+    // ── the rig itself ───────────────────────────────────────────────────────────────────────
+
+    /// The rig's `Progress` must behave exactly like the real handler's, otherwise the tests above
+    /// would prove nothing about production. Same inputs => same `pending_range()`.
+    #[test]
+    fn test_emulated_progress_matches_real_state_machine_handler() {
+        for initial_applied in [0u64, 5, 40] {
+            let dir = PathBuf::from(format!("/tmp/test_emulated_progress_{initial_applied}"));
+            let real = crate::DefaultStateMachineHandler::<MockTypeConfig>::new(
+                1,
+                initial_applied,
+                Arc::new(crate::MockStateMachine::new()),
+                dir.clone(),
+                snapshot_config(dir),
+                crate::MockSnapshotPolicy::new(),
+            );
+            let emulated = Progress::new(initial_applied);
+            assert_eq!(real.pending_range(), emulated.range(), "before any commit");
+            for commit in [3, 7, 7, 2, 12, 12, 50, 49] {
+                real.update_pending(commit);
+                emulated.raise_pending(commit);
+                assert_eq!(
+                    real.pending_range(),
+                    emulated.range(),
+                    "after update_pending({commit}) with last_applied={initial_applied}"
+                );
+            }
+        }
+    }
+
+    /// A failed membership change raises FatalError, which makes the node shut down; the
+    /// shutdown hand-over must not deliver the same entries a second time.
+    #[tokio::test]
+    async fn test_shutdown_after_failed_config_change_does_not_redeliver_entries() {
+        let mut rig = Rig::start(log_entries(Some(3)), 0, true).await;
+        rig.notify(5).await; // AddNode at index 3 fails to apply
+        rig.settle().await;
+        // The commit path may already have stopped after the fatal error: nobody listens then.
+        let _ = rig.shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(2), &mut rig.handle)
+            .await
+            .expect("the commit path must exit after shutdown")
+            .expect("the commit path must not panic");
+        rig.settle().await;
+
+        let flat = rig.delivered_flat();
+        let mut unique = flat.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            flat.len(),
+            unique.len(),
+            "entries delivered twice around fatal shutdown: {:?}",
+            rig.delivered.lock().unwrap().clone()
+        );
+    }
+
+    // Keep the atomics import used even if a test above is edited away.
+    #[allow(dead_code)]
+    fn _unused(_: AtomicBool) {}
 }

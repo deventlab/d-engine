@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::entry_payload::Payload;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tracing::debug;
@@ -56,6 +58,12 @@ where
 
     // Batch size for draining commit notifications
     max_batch_size: usize,
+
+    /// Highest log index already handed to the state machine worker.
+    /// Delivery is driven by this cursor, not by `applied`: `applied` only advances
+    /// after the worker finishes, so two commit notifications closer together than
+    /// one apply would otherwise hand the same entries over twice.
+    delivered_up_to: AtomicU64,
 }
 
 #[async_trait]
@@ -75,6 +83,16 @@ where
                     // P0: shutdown received;
                     _ = shutdown_signal.changed() => {
                         info!("[CommitHandler] shutdown signal received.");
+
+                        // Hand over every commit already announced before exiting, so the
+                        // state machine worker can drain them (graceful-shutdown guarantee).
+                        while let Ok(next_data) = new_commit_rx.try_recv() {
+                            self.state_machine_handler.update_pending(next_data.new_commit_index);
+                        }
+                        if let Err(e) = self.process_batch().await {
+                            error!("Failed to process batch on shutdown: {}", e);
+                        }
+
                         return Ok(());
                     }
 
@@ -104,7 +122,10 @@ where
 
                         trace!("[Node-{}] Processing batch with {} commit notifications", self.my_id, count);
                         if let Err(e) = self.process_batch().await {
-                            error!("Failed to process batch: {}", e);
+                            // Fatal (e.g. a committed membership change could not be applied):
+                            // stop delivering; FatalError was already raised to the Raft loop.
+                            error!("Failed to process batch, commit handler stops: {}", e);
+                            return Err(e);
                         }
                     }
             }
@@ -135,6 +156,7 @@ where
             sm_apply_tx: deps.sm_apply_tx,
             shutdown_signal: deps.shutdown_signal,
             max_batch_size: deps.max_batch_size,
+            delivered_up_to: AtomicU64::new(0),
         }
     }
 
@@ -154,6 +176,13 @@ where
         let Some(range) = pending_range else {
             return Ok(());
         };
+        // Never re-deliver what was already handed over; `applied` lags behind it.
+        let range_end = *range.end();
+        let start = (*range.start()).max(self.delivered_up_to.load(Ordering::Acquire) + 1);
+        if start > range_end {
+            return Ok(());
+        }
+        let range = start..=range_end;
         let entries = self.raft_log.get_entries_range(range)?;
 
         debug!(
@@ -186,7 +215,10 @@ where
 
                         self.send_to_sm_worker(&mut command_batch).await?;
                     }
-                    None => unreachable!(),
+                    None => warn!(
+                        "[Node-{}] entry {} has no payload kind; skipped",
+                        self.my_id, entry.index
+                    ),
                 }
             }
         }
@@ -194,10 +226,17 @@ where
         debug!(?last_error, "flush complete");
         // Finally send remaining commands to SM Worker
         if let Some(e) = last_error {
+            // Membership view and log have diverged; continuing would fail silently.
+            let _ = self.internal_event_tx.send(InternalEvent::FatalError {
+                source: "CommitHandler".into(),
+                error: format!("committed membership change could not be applied: {e:?}"),
+            });
             return Err(e);
         } else {
             self.send_to_sm_worker(&mut command_batch).await?;
         }
+
+        self.delivered_up_to.store(range_end, Ordering::Release);
 
         // Snapshot check moved to ApplyCompleted handler in inbound event loop.
         // SM Worker applies entries asynchronously, so last_applied is stale here.

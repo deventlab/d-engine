@@ -39,7 +39,7 @@ pub struct RaftConfig {
     /// Configuration settings for state machine behavior
     /// Controls state machine operations like lease management, compaction, etc.
     /// For backward compatibility, can also be configured via `storage` in TOML files.
-    #[serde(default, alias = "storage")]
+    #[serde(default)]
     pub state_machine: StateMachineConfig,
 
     /// Configuration settings for snapshot feature
@@ -551,19 +551,43 @@ impl MembershipConfig {
 /// and other data lifecycle features. This configuration affects how the state machine
 /// processes applied log entries and manages data.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[derive(Default)]
 pub struct StateMachineConfig {
     /// Lease (time-based expiration) configuration
     ///
     /// For backward compatibility, can also be configured via `ttl` in TOML files.
     #[serde(alias = "ttl")]
     pub lease: LeaseConfig,
+
+    /// Maximum time to wait, on shutdown, for the state machine worker to finish
+    /// applying the entries already handed to it. On timeout an error is logged and
+    /// shutdown proceeds: entries the node knew as committed may then be unapplied
+    /// until the next start. Raise it for state machines with slow batch applies.
+    #[serde(default = "default_shutdown_apply_timeout_ms")]
+    pub shutdown_apply_timeout_ms: u64,
 }
 
 impl StateMachineConfig {
     pub fn validate(&self) -> Result<()> {
         self.lease.validate()?;
+        if self.shutdown_apply_timeout_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "shutdown_apply_timeout_ms must be greater than 0".into(),
+            )));
+        }
         Ok(())
+    }
+}
+
+fn default_shutdown_apply_timeout_ms() -> u64 {
+    5_000
+}
+
+impl Default for StateMachineConfig {
+    fn default() -> Self {
+        Self {
+            lease: LeaseConfig::default(),
+            shutdown_apply_timeout_ms: default_shutdown_apply_timeout_ms(),
+        }
     }
 }
 

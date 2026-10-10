@@ -922,3 +922,85 @@ mod bootstrap_strategy_tests {
         );
     }
 }
+
+/// Shutdown hands committed entries to the state machine worker and then waits for it to finish
+/// applying them. That wait must be bounded: a wedged state machine may not hang `run()`.
+mod shutdown_apply_wait_tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    use super::*;
+
+    fn node_with_shutdown_timeout(
+        timeout_ms: u64,
+        shutdown_rx: watch::Receiver<()>,
+    ) -> crate::Node<MockTypeConfig> {
+        let mut config = RaftNodeConfig::new().expect("default config").validate().expect("valid");
+        config.raft.state_machine.shutdown_apply_timeout_ms = timeout_ms;
+        MockBuilder::new(shutdown_rx).with_node_config(config).build_node()
+    }
+
+    /// A state machine worker that never finishes (stuck apply) must not hang shutdown:
+    /// `run()` gives up after the configured timeout and says so at ERROR level, because
+    /// entries the node reported as committed may then be unapplied until the next start.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_run_shutdown_with_stuck_state_machine_returns_after_timeout_and_logs_error() {
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let node = node_with_shutdown_timeout(300, shutdown_rx);
+
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        *node.sm_worker_handle.lock().unwrap() = Some(std::thread::spawn(move || {
+            let _ = release_rx.recv(); // blocks until the test releases it
+        }));
+
+        shutdown_tx.send(()).unwrap();
+        let started = Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(5), node.run())
+            .await
+            .expect("run() hung on a stuck state machine worker; the wait must be bounded");
+        let elapsed = started.elapsed();
+        let _ = release_tx.send(());
+
+        assert!(result.is_ok(), "timeout while draining must not turn shutdown into a panic");
+        assert!(
+            elapsed >= Duration::from_millis(250),
+            "returned after {elapsed:?}: gave up before the configured timeout"
+        );
+        logs_assert(|lines: &[&str]| {
+            lines
+                .iter()
+                .any(|l| l.contains("ERROR") && l.to_lowercase().contains("state machine"))
+                .then_some(())
+                .ok_or_else(|| "no ERROR log about the state machine apply timeout".to_string())
+        });
+    }
+
+    /// A healthy worker that needs a moment to finish applying must be waited for
+    /// (that is the whole guarantee), and no error is logged.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_run_shutdown_waits_for_state_machine_that_finishes_within_timeout() {
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let node = node_with_shutdown_timeout(5_000, shutdown_rx);
+
+        let applied = Arc::new(AtomicBool::new(false));
+        let applied_in_worker = applied.clone();
+        *node.sm_worker_handle.lock().unwrap() = Some(std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            applied_in_worker.store(true, Ordering::SeqCst);
+        }));
+
+        shutdown_tx.send(()).unwrap();
+        node.run().await.expect("shutdown ok");
+
+        assert!(applied.load(Ordering::SeqCst), "run() returned before the worker finished applying");
+        logs_assert(|lines: &[&str]| {
+            match lines.iter().find(|l| l.contains("ERROR") && l.to_lowercase().contains("state machine")) {
+                Some(l) => Err(format!("unexpected error log: {l}")),
+                None => Ok(()),
+            }
+        });
+    }
+}
