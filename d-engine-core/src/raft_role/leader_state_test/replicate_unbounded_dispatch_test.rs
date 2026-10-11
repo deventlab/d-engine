@@ -26,6 +26,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use bytes::Bytes;
 use d_engine_proto::common::{Entry, EntryPayload, NodeRole::Follower, NodeStatus};
@@ -125,6 +126,7 @@ async fn test_replicate_peer_dispatch_and_next_index_are_unbounded_without_any_a
         super::ReplicationWorkerHandle {
             task_tx,
             snapshot_failure_count: 0,
+            stream_open: Arc::new(AtomicBool::new(true)),
             snapshot_next_retry_at: None,
         },
     );

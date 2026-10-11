@@ -290,6 +290,9 @@ impl PeerMetrics {
 /// when `task_tx` is dropped, `task_rx.recv()` returns `None` and the worker exits cleanly.
 struct ReplicationWorkerHandle {
     task_tx: mpsc::UnboundedSender<ReplicationTask>,
+    /// `true` while the worker holds an open replication stream to the peer.
+    /// Written only by the worker; the leader reads it to avoid queueing work the peer cannot receive.
+    stream_open: Arc<AtomicBool>,
     /// Consecutive snapshot push failures for this peer since the last success.
     snapshot_failure_count: u32,
     /// Earliest time the next snapshot push attempt is allowed (exponential backoff window).
@@ -955,7 +958,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         let backpressure = &ctx.node_config.raft.backpressure;
 
         match cmd {
-            ClientCmd::Propose(req, sender) => {
+            ClientCmd::Propose(req, issued_at, sender) => {
+                metrics::histogram!("core.raft.client_cmd.issue_to_push_ms")
+                    .record(issued_at.elapsed().as_secs_f64() * 1_000.0);
+
                 let current_pending = self.propose_buffer.len();
 
                 // Check write backpressure limit
@@ -1477,16 +1483,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         };
 
         if let Some(new_commit) = next_commit_index {
-            if let Err(e) = self.update_commit_index_with_signal(
-                Leader as i32,
-                self.current_term(),
-                new_commit,
-                internal_event_tx,
-            ) {
-                error!(
-                    ?e,
-                    "handle_log_flushed: update_commit_index_with_signal failed"
-                );
+            if let Err(e) = self.update_commit_index(new_commit) {
+                error!(?e, "handle_log_flushed: update_commit_index failed");
             } else {
                 // Drain pending writes committed via local flush (single-voter or flush path).
                 self.drain_pending_client_writes(new_commit);
@@ -1670,12 +1668,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             // `majority` answers the COMMIT question only.
             if let Some(new_commit) = Self::new_commit_index(commit_index, majority) {
-                self.update_commit_index_with_signal(
-                    Leader as i32,
-                    self.current_term(),
-                    new_commit,
-                    internal_event_tx,
-                )?;
+                self.update_commit_index(new_commit)?;
                 self.drain_pending_client_writes(new_commit);
                 self.drain_commit_actions(new_commit, ctx, internal_event_tx).await;
             }
@@ -2044,11 +2037,17 @@ impl<T: TypeConfig> LeaderState<T> {
         cfg: ReplicationWorkerConfig<T>,
     ) -> ReplicationWorkerHandle {
         let (task_tx, task_rx) = mpsc::unbounded_channel::<ReplicationTask>();
-        tokio::spawn(async move {
-            Self::run_replication_worker(peer_id, task_rx, cfg).await;
+        // Starts closed: the worker opens the stream and flips it.
+        let stream_open = Arc::new(AtomicBool::new(false));
+        tokio::spawn({
+            let stream_open = Arc::clone(&stream_open);
+            async move {
+                Self::run_replication_worker(peer_id, task_rx, cfg, stream_open).await;
+            }
         });
         ReplicationWorkerHandle {
             task_tx,
+            stream_open,
             snapshot_failure_count: 0,
             snapshot_next_retry_at: None,
         }
@@ -2068,6 +2067,7 @@ impl<T: TypeConfig> LeaderState<T> {
         peer_id: u32,
         mut task_rx: mpsc::UnboundedReceiver<ReplicationTask>,
         cfg: ReplicationWorkerConfig<T>,
+        stream_open: Arc<AtomicBool>,
     ) {
         let ReplicationWorkerConfig {
             transport,
@@ -2102,6 +2102,8 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Open persistent bidi stream with backoff reconnection
         loop {
+            // (Re-)entering the connect phase: no open stream.
+            stream_open.store(false, Ordering::Relaxed);
             let mut backoff_ms = base_delay_ms;
             let stream = loop {
                 if task_rx.is_closed() {
@@ -2124,6 +2126,7 @@ impl<T: TypeConfig> LeaderState<T> {
                             "peer_id" => peer_id.to_string()
                         )
                         .increment(1);
+                        stream_open.store(true, Ordering::Relaxed);
                         break s;
                     }
                     Err(e) => {
@@ -2320,6 +2323,19 @@ impl<T: TypeConfig> LeaderState<T> {
         );
         let _ = handle.task_tx.send(task);
         self.replication_workers.insert(peer_id, handle);
+    }
+
+    /// True if `peer_id` has a live worker but no open stream. Dispatching to it would only
+    /// queue work it cannot send until it reconnects. A dead worker (`task_tx` closed) is not
+    /// "down": the next send rebuilds it. With no worker yet, returns `false` so the dispatch
+    /// that spawns it goes through.
+    fn peer_stream_is_down(
+        &self,
+        peer_id: u32,
+    ) -> bool {
+        self.replication_workers
+            .get(&peer_id)
+            .is_some_and(|w| !w.stream_open.load(Ordering::Relaxed) && !w.task_tx.is_closed())
     }
 
     // ---- Snapshot push backoff + alerting -------------------------------------------------
@@ -3569,6 +3585,11 @@ impl<T: TypeConfig> LeaderState<T> {
             if self.peer_replication_state(peer_id) == PeerReplicationState::Snapshot {
                 continue;
             }
+            // No open stream: skip before any bookkeeping (`next_index`, in-flight) so the first
+            // send after reconnect resumes from the same point. Raft retransmits from `next_index`.
+            if self.peer_stream_is_down(peer_id) {
+                continue;
+            }
 
             let is_heartbeat = request.entries.is_empty();
 
@@ -4128,6 +4149,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 task_tx: dead_tx,
                 snapshot_failure_count: 0,
                 snapshot_next_retry_at: None,
+                stream_open: Arc::new(AtomicBool::new(true)),
             },
         );
     }

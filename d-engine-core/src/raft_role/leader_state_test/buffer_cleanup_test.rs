@@ -99,7 +99,7 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
                 )),
             };
 
-            let cmd = ClientCmd::Propose(write_req, response_tx);
+            let cmd = ClientCmd::propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);
         }
 
@@ -178,7 +178,7 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
             )),
         };
 
-        let cmd = ClientCmd::Propose(write_req, response_tx);
+        let cmd = ClientCmd::propose(write_req, response_tx);
         follower.push_client_cmd(cmd, &raft.ctx);
 
         let result =

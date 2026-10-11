@@ -29,7 +29,6 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 use crate::InternalEvent;
-use crate::NewCommitData;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::MockTypeConfig;
 
@@ -1005,41 +1004,6 @@ async fn test_become_learner_no_leader() {
         .expect("Should become Learner");
     assert!(is_learner(raft.role.as_i32()));
     // Leader notification sent with None (no leader for learners)
-}
-
-// B5. NotifyNewCommitIndex Event Tests
-
-/// Test: NotifyNewCommitIndex broadcasts to all listeners
-///
-/// Verifies that commit index notification reaches all registered listeners.
-/// Multiple listeners should all receive the notification.
-/// See B5.1-B5.3 in test scenarios.
-#[tokio::test]
-async fn test_notify_new_commit_index_broadcasts() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
-
-    // Register commit listeners
-    let (tx1, mut rx1) = mpsc::unbounded_channel();
-    let (tx2, mut rx2) = mpsc::unbounded_channel();
-    raft.register_new_commit_listener(tx1);
-    raft.register_new_commit_listener(tx2);
-
-    // Send NotifyNewCommitIndex event
-    let new_commit_index = 10;
-    raft.handle_internal_event(InternalEvent::NotifyNewCommitIndex(NewCommitData {
-        new_commit_index,
-        role: Follower.into(),
-        current_term: 1,
-    }))
-    .await
-    .expect("Should handle NotifyNewCommitIndex");
-
-    // Both listeners should receive the notification
-    let msg1 = rx1.recv().await.expect("Listener 1 should receive");
-    let msg2 = rx2.recv().await.expect("Listener 2 should receive");
-    assert_eq!(msg1.new_commit_index, new_commit_index);
-    assert_eq!(msg2.new_commit_index, new_commit_index);
 }
 
 // B6. LeaderDiscovered Event Tests (already has good coverage, but documenting here)
@@ -2130,36 +2094,6 @@ async fn test_leader_change_notification_correctness() {
     // Listeners receive notification with correct leader_id and term
 }
 
-// E2. New Commit Notifications
-
-/// Test: New commit notifications with correct index
-///
-/// Verifies commit notifications reach listeners with correct commit_index.
-/// See E2.1-E2.2 in test scenarios.
-#[tokio::test]
-async fn test_new_commit_notification_correctness() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
-
-    // Register commit listener
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    raft.register_new_commit_listener(tx);
-
-    // Send commit notification
-    let new_commit_index = 25;
-    raft.handle_internal_event(InternalEvent::NotifyNewCommitIndex(NewCommitData {
-        new_commit_index,
-        role: Follower.into(),
-        current_term: 5,
-    }))
-    .await
-    .unwrap();
-
-    // Verify notification contains correct index
-    let msg = rx.recv().await.expect("Should receive notification");
-    assert_eq!(msg.new_commit_index, new_commit_index);
-}
-
 // E3. Role Transition Notifications (Test-Only)
 
 /// Test: Role transition listeners receive all transitions
@@ -2461,38 +2395,6 @@ async fn test_single_node_cluster_election() {
     // Single node becomes leader immediately
     raft.handle_internal_event(InternalEvent::BecomeLeader).await.unwrap();
     assert!(is_leader(raft.role.as_i32()));
-}
-
-/// Test: Multiple listeners receiving notifications
-///
-/// Verifies listener system handles concurrent receivers.
-/// See G3.1 in test scenarios.
-#[tokio::test]
-async fn test_multiple_listeners_concurrent() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
-    let mut raft = MockBuilder::new(graceful_rx).build_raft();
-
-    // Register multiple commit listeners
-    let (tx1, mut rx1) = mpsc::unbounded_channel();
-    let (tx2, mut rx2) = mpsc::unbounded_channel();
-    let (tx3, mut rx3) = mpsc::unbounded_channel();
-    raft.register_new_commit_listener(tx1);
-    raft.register_new_commit_listener(tx2);
-    raft.register_new_commit_listener(tx3);
-
-    // Send notification
-    raft.handle_internal_event(InternalEvent::NotifyNewCommitIndex(NewCommitData {
-        new_commit_index: 5,
-        role: Follower.into(),
-        current_term: 1,
-    }))
-    .await
-    .unwrap();
-
-    // All listeners should receive
-    assert!(rx1.recv().await.is_some());
-    assert!(rx2.recv().await.is_some());
-    assert!(rx3.recv().await.is_some());
 }
 
 /// Test: Register listeners after role transitions

@@ -162,7 +162,7 @@ async fn test_join_cluster_precondition_checks() {
 /// Test composition to preserve original intent:
 /// - test_join_cluster_precondition_checks: validates preconditions
 /// - test_join_cluster_creates_correct_config_change: validates AddNode config (this test)
-/// - Integration: When commit applies, membership.add_learner is called by CommitHandler
+/// - Integration: When commit applies, membership.add_learner is called by `dispatch_committed`
 #[tokio::test]
 #[traced_test]
 async fn test_join_cluster_creates_correct_config_change() {

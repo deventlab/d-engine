@@ -29,14 +29,10 @@
 //!   config.
 
 use crate::read_actor::run_read_actor;
-use d_engine_core::CommitHandler;
-use d_engine_core::CommitHandlerDependencies;
-use d_engine_core::DefaultCommitHandler;
 use d_engine_core::DefaultPurgeExecutor;
 use d_engine_core::ElectionHandler;
 use d_engine_core::InternalEvent;
 use d_engine_core::LogSizePolicy;
-use d_engine_core::NewCommitData;
 use d_engine_core::Raft;
 use d_engine_core::RaftCoreHandlers;
 use d_engine_core::RaftLog;
@@ -304,9 +300,6 @@ where
         // snapshots_dir is not configurable — always data_dir/snapshots (see #10).
         let snapshots_dir = data_dir.snapshots_dir()?;
 
-        // Init CommitHandler
-        let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
-
         // Handle state machine initialization
         let state_machine = self.state_machine.take().ok_or_else(|| {
             SystemError::NodeStartFailed(
@@ -495,7 +488,7 @@ where
         // internal_event_tx / internal_event_rx created earlier (before raft_log) to pass log_flush_tx to start().
         let (event_tx, event_rx) = mpsc::channel(10240);
         let (cmd_tx, cmd_rx) = mpsc::channel(node_config.raft.cmd_channel_capacity);
-        let internal_event_tx_clone = internal_event_tx.clone();
+
         let internal_event_tx_for_sm = internal_event_tx.clone(); // used in SM worker (ApplyCompleted → P2)
 
         // Bridge zombie signals from health monitor → internal event loop.
@@ -598,9 +591,6 @@ where
             node_config_arc.clone(),
         );
 
-        // Register commit event listener
-        raft_core.register_new_commit_listener(new_commit_event_tx);
-
         // Create leader notification channel and register with Raft core
         let leader_notifier = LeaderNotifier::new();
         raft_core.register_leader_change_listener(leader_notifier.sender());
@@ -615,29 +605,6 @@ where
             self.shutdown_signal.clone(),
         );
         let sm_worker_handle = Self::spawn_state_machine_worker(sm_worker);
-
-        // Start CommitHandler in a single thread
-        let deps = CommitHandlerDependencies {
-            state_machine_handler,
-            raft_log: raft_core.ctx.storage.raft_log.clone(),
-            membership: membership.clone(),
-            internal_event_tx: internal_event_tx_clone,
-            sm_apply_tx: state_machine_commands,
-            shutdown_signal,
-            max_batch_size: raft_core.ctx.node_config.raft.batching.max_batch_size,
-        };
-
-        let commit_handler = DefaultCommitHandler::<RaftTypeConfig<SE, SM>>::new(
-            node_id,
-            my_role_i32,
-            my_current_term,
-            deps,
-            new_commit_event_rx,
-        );
-        // Spawn commit listener via Builder method
-        // This ensures all tokio::spawn calls are visible in one place (Builder impl)
-        // Following the "one page visible" Builder pattern principle
-        let commit_handler_handle = Self::spawn_state_machine_commit_listener(commit_handler);
 
         let event_tx = raft_core.event_sender();
         let read_lease = raft_core.read_lease();
@@ -673,7 +640,6 @@ where
             sm_worker_handle: std::sync::Mutex::new(Some(sm_worker_handle)),
             read_actor_handle: std::sync::Mutex::new(Some(read_actor_handle)),
             rpc_server_handle: std::sync::Mutex::new(None),
-            _commit_handler_handle: Some(commit_handler_handle),
             _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),
             read_lease,
@@ -683,30 +649,6 @@ where
 
         self.node = Some(Arc::new(node));
         Ok(self)
-    }
-
-    /// Spawn state machine commit listener as background task.
-    ///
-    /// This method is called during node build() to start the commit handler thread.
-    /// All spawn_* methods are centralized in NodeBuilder so developers can see
-    /// all resource consumption (threads/tasks) in one place.
-    ///
-    /// # Returns
-    /// * `JoinHandle` - Task handle for lifecycle management
-    fn spawn_state_machine_commit_listener(
-        mut commit_handler: DefaultCommitHandler<RaftTypeConfig<SE, SM>>
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            match commit_handler.run().await {
-                Ok(_) => {
-                    info!("commit_handler exit program");
-                }
-                Err(e) => {
-                    error!("commit_handler exit program with unexpected error: {:?}", e);
-                    println!("commit_handler exit program");
-                }
-            }
-        })
     }
 
     /// Spawn state machine worker on a dedicated OS thread.
@@ -821,7 +763,7 @@ where
     /// This is the primary method to initialize and start a node. It performs:
     /// 1. State machine initialization (including lease injection if applicable)
     /// 2. Raft core construction
-    /// 3. Background task spawning (commit handler, replication, election)
+    /// 3. Background task spawning (state machine worker, read actor, lease cleanup)
     /// 4. gRPC server startup for cluster communication
     ///
     /// # Returns

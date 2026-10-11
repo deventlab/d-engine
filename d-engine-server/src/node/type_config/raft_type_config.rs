@@ -1,6 +1,3 @@
-use std::fmt::Debug;
-
-use d_engine_core::DefaultCommitHandler;
 use d_engine_core::DefaultPurgeExecutor;
 use d_engine_core::DefaultStateMachineHandler;
 use d_engine_core::DefaultStateMachineWriter;
@@ -18,16 +15,16 @@ use crate::network::grpc::grpc_transport::GrpcTransport;
 #[derive(Debug)]
 pub struct RaftTypeConfig<SE, SM>
 where
-    SE: StorageEngine + Debug,
-    SM: StateMachine + Debug,
+    SE: StorageEngine + std::fmt::Debug,
+    SM: StateMachine + std::fmt::Debug,
 {
     _marker: std::marker::PhantomData<(SE, SM)>,
 }
 
 impl<SE, SM> TypeConfig for RaftTypeConfig<SE, SM>
 where
-    SE: StorageEngine + Debug,
-    SM: StateMachine + Debug,
+    SE: StorageEngine + std::fmt::Debug,
+    SM: StateMachine + std::fmt::Debug,
 {
     type SE = SE;
 
@@ -42,8 +39,6 @@ where
     type REP = ReplicationHandler<Self>;
 
     type E = ElectionHandler<Self>;
-
-    type C = DefaultCommitHandler<Self>;
 
     type SMH = DefaultStateMachineHandler<Self>;
 

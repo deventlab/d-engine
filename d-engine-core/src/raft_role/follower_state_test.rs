@@ -894,10 +894,9 @@ async fn test_tick_triggers_election_on_timeout() {
 ///
 /// Expected:
 /// 1. Sends LeaderDiscovered event (marks new leader)
-/// 2. Sends NotifyNewCommitIndex event
-/// 3. Updates current_term to leader's term (2)
-/// 4. Updates commit_index to new value (2)
-/// 5. Returns AppendEntriesResponse with success=true
+/// 2. Updates current_term to leader's term (2)
+/// 3. Updates commit_index to new value (2)
+/// 4. Returns AppendEntriesResponse with success=true
 /// 6. handle_inbound_event returns Ok(())
 ///
 /// This validates the core Raft rule: Follower accepts entries from
@@ -967,19 +966,6 @@ async fn test_handle_append_entries_success_from_new_leader() {
             InternalEvent::LeaderDiscovered(5, _)
         ),
         "Should send LeaderDiscovered event"
-    );
-
-    // Verify: NotifyNewCommitIndex event sent
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(NewCommitData {
-                new_commit_index: _,
-                role: _,
-                current_term: _
-            })
-        ),
-        "Should send NotifyNewCommitIndex event"
     );
 
     // Verify: Term and commit_index updated
@@ -1676,7 +1662,7 @@ async fn test_handle_client_write_request_redirects_to_leader() {
     state.shared_state().set_current_leader(2);
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let cmd = ClientCmd::Propose(
+    let cmd = ClientCmd::propose(
         ClientWriteRequest {
             client_id: 1,
             command: Some(bytes::Bytes::from(
@@ -4891,4 +4877,32 @@ async fn test_follower_tick_starts_election_when_an_active_voter() {
         follower_tick_requests_candidacy(Some(d_engine_proto::common::NodeStatus::Active)).await;
 
     assert!(requested);
+}
+
+/// Test: a follower rejects a write with NOT_LEADER.
+///
+/// Why: a write that reaches a non-leader must be redirected, never silently dropped or
+/// accepted.
+#[tokio::test]
+async fn test_handle_client_propose_redirects_to_leader() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (context, _temp_dir) = mock_context_with_leader_address(graceful_rx, 2, "127.0.0.1:9082");
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state().set_current_leader(2);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let cmd = ClientCmd::propose(
+        ClientWriteRequest {
+            client_id: 1,
+            command: Some(bytes::Bytes::from(
+                WriteCommand::delete(bytes::Bytes::new()).encode_to_vec(),
+            )),
+        },
+        resp_tx,
+    );
+    state.push_client_cmd(cmd, &context);
+
+    let result = resp_rx.recv().await.expect("channel should not be closed");
+    assert_eq!(result.expect("Ok response").error, ErrorCode::NotLeader);
 }

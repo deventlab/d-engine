@@ -139,6 +139,7 @@ async fn test_apply_success_sends_apply_completed() {
 
     sm_apply_tx
         .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
             entries: vec![create_test_entry(1, 1), create_test_entry(2, 1)],
         })
         .unwrap();
@@ -152,6 +153,7 @@ async fn test_apply_success_sends_apply_completed() {
         Ok(Some(InternalEvent::ApplyCompleted {
             last_index,
             results,
+            ..
         })) => {
             assert_eq!(last_index, 2, "last_index should match last entry");
             assert_eq!(results.len(), 2, "results should contain 2 entries");
@@ -205,6 +207,7 @@ async fn test_apply_failure_sends_fatal_error() {
 
     sm_apply_tx
         .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
             entries: vec![create_test_entry(1, 1)],
         })
         .unwrap();
@@ -270,6 +273,7 @@ async fn test_shutdown_drains_remaining_entries() {
     for i in 1..=3 {
         sm_apply_tx
             .send(StateMachineCommand::ApplyEntries {
+                sent_at: tokio::time::Instant::now(),
                 entries: vec![create_test_entry(i, 1)],
             })
             .unwrap();
@@ -435,16 +439,19 @@ async fn test_multiple_batches_sequential_processing() {
 
     sm_apply_tx
         .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
             entries: vec![create_test_entry(1, 1), create_test_entry(2, 1)],
         })
         .unwrap();
     sm_apply_tx
         .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
             entries: vec![create_test_entry(3, 1), create_test_entry(4, 1)],
         })
         .unwrap();
     sm_apply_tx
         .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
             entries: vec![create_test_entry(5, 1), create_test_entry(6, 1)],
         })
         .unwrap();
@@ -625,6 +632,7 @@ async fn test_install_snapshot_error_forwards_as_err_worker_survives() {
     // Worker must still be alive: a subsequent ApplyEntries command is processed normally.
     sm_apply_tx
         .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
             entries: vec![create_test_entry(1, 1)],
         })
         .unwrap();
@@ -691,6 +699,7 @@ async fn test_apply_and_install_share_single_queue_fifo_order() {
 
     sm_apply_tx
         .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
             entries: vec![create_test_entry(1, 1)],
         })
         .unwrap();
@@ -698,6 +707,7 @@ async fn test_apply_and_install_share_single_queue_fifo_order() {
     sm_apply_tx.send(install_command).unwrap();
     sm_apply_tx
         .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
             entries: vec![create_test_entry(2, 1)],
         })
         .unwrap();
@@ -856,6 +866,7 @@ async fn test_capture_local_snapshot_does_not_block_subsequent_apply_entries() {
     // Now send ApplyEntries — must be processed without waiting for capture to finish.
     sm_apply_tx
         .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
             entries: vec![create_test_entry(1, 1)],
         })
         .unwrap();
@@ -1568,4 +1579,105 @@ async fn test_superseded_capture_directory_gone_by_the_time_response_resolves() 
          since temp_work_path is deterministic per last_included) can observe/reuse \
          this path before cleanup has actually run"
     );
+}
+
+/// Test: the SM Worker records how long a batch sat in its queue before being applied.
+///
+/// Why: commit->apply latency has a hidden part -- time between the Raft loop
+/// enqueueing a batch and the Worker picking it up (it applies one batch at a time).
+/// `sent_at` must carry the real enqueue time, otherwise that wait stays invisible.
+#[tokio::test]
+async fn test_apply_entries_records_sm_worker_queue_wait() {
+    let capture = crate::test_utils::MetricsCapture::new();
+    let _guard = metrics::set_default_local_recorder(&capture);
+
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_apply_chunk().times(1).returning(|entries| {
+        Ok(entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect())
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    sm_apply_tx
+        .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now() - std::time::Duration::from_millis(30),
+            entries: vec![create_test_entry(1, 1)],
+        })
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        internal_event_rx.recv(),
+    )
+    .await
+    .expect("ApplyCompleted not received")
+    .expect("channel closed");
+
+    let waits = capture.histogram("core.raft.sm_worker.queue_wait_ms", &[]);
+    assert_eq!(waits.len(), 1, "one queue-wait sample per batch");
+    assert!(
+        waits[0] >= 30.0,
+        "wait must cover time since enqueue, got {}",
+        waits[0]
+    );
+}
+
+/// Test: `ApplyCompleted` is stamped when the Worker sends it, so the central loop can
+/// measure how long the event waited behind other events before being handled.
+#[tokio::test]
+async fn test_apply_completed_carries_send_timestamp() {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw.expect_apply_chunk().times(1).returning(|entries| {
+        Ok(entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect())
+    });
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+        shutdown_rx,
+    );
+    tokio::spawn(async move {
+        let _ = worker.run().await;
+    });
+
+    let before = tokio::time::Instant::now();
+    sm_apply_tx
+        .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
+            entries: vec![create_test_entry(1, 1)],
+        })
+        .unwrap();
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        internal_event_rx.recv(),
+    )
+    .await
+    {
+        Ok(Some(InternalEvent::ApplyCompleted { sent_at, .. })) => {
+            assert!(
+                sent_at >= before,
+                "sent_at must be taken at send time, not earlier"
+            );
+            assert!(sent_at <= tokio::time::Instant::now());
+        }
+        other => panic!("expected ApplyCompleted, got {other:?}"),
+    }
 }

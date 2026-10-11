@@ -1091,7 +1091,6 @@ mod single_node_election_tests {
         type SM = crate::MockStateMachine;
         type M = MockMembership<Self>;
         type REP = crate::MockReplicationCore<Self>;
-        type C = crate::MockCommitHandler;
         type SMH = crate::MockStateMachineHandler<Self>;
         type SMW = crate::MockStateMachineWriterOps<Self>;
         type SNP = crate::MockSnapshotPolicy;

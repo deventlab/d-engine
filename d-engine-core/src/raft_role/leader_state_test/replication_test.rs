@@ -159,7 +159,6 @@ fn success_response(
 ///
 /// # Then
 /// - Commit index advances to 6
-/// - NotifyNewCommitIndex event is sent
 /// - Both clients receive success responses
 #[tokio::test]
 #[traced_test]
@@ -193,7 +192,7 @@ async fn test_process_batch_quorum_achieved() {
     let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
     let receivers = vec![rx1, rx2];
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let result = context
         .state
         .process_batch(batch, &internal_event_tx, &context.raft_context)
@@ -211,10 +210,6 @@ async fn test_process_batch_quorum_achieved() {
         .await;
 
     assert_eq!(context.state.shared_state().commit_index, 6);
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     // Verify client responses
     for mut rx in receivers {
@@ -700,7 +695,7 @@ async fn test_single_node_cluster_commit_index() {
 
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let result = context
         .state
@@ -721,10 +716,6 @@ async fn test_single_node_cluster_commit_index() {
         7,
         "Single-node: commit_index should advance to last_entry_id after LogFlushed"
     );
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     let mut rx = rx1;
     let response = rx.recv().await.unwrap().unwrap();
@@ -787,7 +778,7 @@ async fn test_multi_node_cluster_empty_peer_updates_commit_index() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "No NotifyNewCommitIndex without commit advancement"
+        "No internal event expected without commit advancement"
     );
 
     // Write is pending — awaiting peer ACKs via handle_append_result
@@ -855,7 +846,7 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let (tx2, rx2) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let result = context
         .state
@@ -876,10 +867,6 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
         .unwrap();
 
     assert_eq!(context.state.shared_state().commit_index, 6);
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     let mut rx = rx1;
     let response = rx.recv().await.unwrap().unwrap();
@@ -913,7 +900,6 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
 ///
 /// # Then
 /// - Commit index advances to 5
-/// - NotifyNewCommitIndex event is sent
 /// - Response channel receives write_success
 #[tokio::test]
 #[traced_test]
@@ -960,7 +946,7 @@ async fn test_verify_internal_quorum_success() {
         wait_for_apply_event: false,
     };
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state
         .execute_request_immediately(req, &raft_context, &internal_event_tx)
         .await
@@ -971,10 +957,6 @@ async fn test_verify_internal_quorum_success() {
     state.handle_log_flushed(5, &raft_context, &internal_event_tx).await;
 
     assert_eq!(state.shared_state().commit_index, 5);
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     // Response received: write_success
     let response = resp_rx.recv().await.unwrap().unwrap();
@@ -1477,7 +1459,7 @@ async fn test_execute_and_process_raft_rpc_multi_node_empty_peer_updates() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "No NotifyNewCommitIndex without commit advancement"
+        "No internal event expected without commit advancement"
     );
 
     // Write request is pending — awaiting peer ACKs
@@ -1562,7 +1544,6 @@ async fn test_merge_batch_to_write_metadata_empty_payload_with_senders() {
 ///
 /// # Then
 /// - Commit advances from 0 to 3 (quorum: leader + peer = 2/2)
-/// - NotifyNewCommitIndex event sent
 #[tokio::test]
 #[traced_test]
 async fn test_handle_append_result_two_node_quorum_achieved() {
@@ -1617,7 +1598,7 @@ async fn test_handle_append_result_two_node_quorum_achieved() {
     state.init_cluster_metadata(&raft_context.membership).await.unwrap();
     // initial commit_index = 0
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state
         .handle_append_result(
             peer2_id,
@@ -1633,10 +1614,6 @@ async fn test_handle_append_result_two_node_quorum_achieved() {
         3,
         "two-node: commit advances to 3 (quorum: leader + peer2 = 2/2)"
     );
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 }
 
 /// B1: Three-node cluster achieves quorum when all peers respond with success.
@@ -1685,7 +1662,7 @@ async fn test_handle_append_result_three_node_quorum_all_peers() {
         );
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Peer 2 responds → quorum (2/3), commit advances
     context
@@ -1704,10 +1681,6 @@ async fn test_handle_append_result_three_node_quorum_all_peers() {
         10,
         "commit advances after peer 2"
     );
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     // Peer 3 responds → already committed, calculate_majority returns None
     context
@@ -1768,7 +1741,7 @@ async fn test_handle_append_result_three_node_quorum_partial_timeout() {
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(10));
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Only peer 2 responds; peer 3 never does
     context
@@ -1787,10 +1760,6 @@ async fn test_handle_append_result_three_node_quorum_partial_timeout() {
         10,
         "quorum achieved with partial timeout (2/3 nodes = majority)"
     );
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 }
 
 /// B1: Five-node cluster achieves quorum when majority (3 of 4 peers) respond.
@@ -1855,7 +1824,7 @@ async fn test_handle_append_result_five_node_quorum_majority() {
         );
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // 3 peers respond → majority of 5 (need ≥3) achieved
     context
@@ -1874,10 +1843,6 @@ async fn test_handle_append_result_five_node_quorum_majority() {
         10,
         "commit advances (4/5 ≥ majority)"
     );
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     // Remaining peers just confirm — no second commit advance
     for peer_id in [3u32, 4u32] {
@@ -1940,7 +1905,7 @@ async fn test_handle_append_result_three_node_no_quorum_all_timeouts() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "no NotifyNewCommitIndex without commit advancement"
+        "no internal event expected without commit advancement"
     );
 }
 
@@ -2004,7 +1969,7 @@ async fn test_handle_append_result_three_node_no_quorum_single_peer_insufficient
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "no NotifyNewCommitIndex without commit advancement"
+        "no internal event expected without commit advancement"
     );
 }
 
@@ -2085,7 +2050,7 @@ async fn test_handle_append_result_five_node_no_quorum_minority() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "no NotifyNewCommitIndex without quorum"
+        "no internal event expected without quorum"
     );
 }
 

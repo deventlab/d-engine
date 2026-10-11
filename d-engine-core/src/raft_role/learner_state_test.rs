@@ -290,7 +290,6 @@ async fn test_learner_handles_cluster_conf_update_success() {
 ///
 /// Expected:
 /// - Sends LeaderDiscovered event
-/// - Sends NotifyNewCommitIndex event
 /// - Updates current_term to leader's term
 /// - Updates commit_index
 /// - Returns AppendEntriesResponse with success=true
@@ -352,12 +351,6 @@ async fn test_learner_handles_append_entries_success() {
     assert!(matches!(
         internal_event_rx.try_recv().unwrap(),
         crate::InternalEvent::LeaderDiscovered(5, _)
-    ));
-
-    // Verify: NotifyNewCommitIndex event
-    assert!(matches!(
-        internal_event_rx.try_recv().unwrap(),
-        crate::InternalEvent::NotifyNewCommitIndex(_)
     ));
 
     assert_eq!(state.current_term(), leader_term);
@@ -519,7 +512,7 @@ async fn test_learner_rejects_client_write_request() {
     let mut state = LearnerState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let cmd = ClientCmd::Propose(
+    let cmd = ClientCmd::propose(
         ClientWriteRequest {
             client_id: 1,
             command: Some(Bytes::from(

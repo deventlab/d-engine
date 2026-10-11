@@ -322,7 +322,7 @@ async fn offer_write(
 
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     state.push_client_cmd(
-        crate::ClientCmd::Propose(
+        crate::ClientCmd::propose(
             ClientWriteRequest {
                 client_id: 1,
                 command: Some(bytes::Bytes::from_static(b"write")),

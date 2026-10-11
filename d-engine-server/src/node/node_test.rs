@@ -963,7 +963,10 @@ mod shutdown_apply_wait_tests {
         let elapsed = started.elapsed();
         let _ = release_tx.send(());
 
-        assert!(result.is_ok(), "timeout while draining must not turn shutdown into a panic");
+        assert!(
+            result.is_ok(),
+            "timeout while draining must not turn shutdown into a panic"
+        );
         assert!(
             elapsed >= Duration::from_millis(250),
             "returned after {elapsed:?}: gave up before the configured timeout"
@@ -995,12 +998,138 @@ mod shutdown_apply_wait_tests {
         shutdown_tx.send(()).unwrap();
         node.run().await.expect("shutdown ok");
 
-        assert!(applied.load(Ordering::SeqCst), "run() returned before the worker finished applying");
+        assert!(
+            applied.load(Ordering::SeqCst),
+            "run() returned before the worker finished applying"
+        );
         logs_assert(|lines: &[&str]| {
-            match lines.iter().find(|l| l.contains("ERROR") && l.to_lowercase().contains("state machine")) {
+            match lines
+                .iter()
+                .find(|l| l.contains("ERROR") && l.to_lowercase().contains("state machine"))
+            {
                 Some(l) => Err(format!("unexpected error log: {l}")),
                 None => Ok(()),
             }
         });
+    }
+}
+
+/// The state machine worker is a dedicated OS thread started when the node is built, before
+/// `run()`. Whatever ends `run()`, that thread must not outlive it: it holds the state machine
+/// (and with it the storage lock), so a leaked thread blocks restarting on the same data dir.
+mod sm_worker_lifecycle_tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::FileStateMachine;
+    use crate::FileStorageEngine;
+    use crate::node::NodeBuilder;
+
+    /// Business scenario: an embedder starts a 3-node cluster member whose peers are down. Start-up
+    /// gives up at `startup_quorum_timeout` and `run()` returns an error, but the embedder still
+    /// holds the engine (so the shutdown signal is NOT sent or dropped) and will retry.
+    ///
+    /// Purpose: after `run()` fails during bootstrap, the sm-apply thread must have stopped.
+    /// Before the fix nobody told it to stop, so it stayed blocked forever, holding the state
+    /// machine.
+    #[tokio::test]
+    async fn test_run_failing_during_bootstrap_stops_sm_apply_thread() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+        let mut config = RaftNodeConfig::new().unwrap().validate().unwrap();
+        config.cluster.node_id = 1;
+        config.cluster.initial_cluster = (1..=3u32)
+            .map(|id| NodeMeta {
+                id,
+                // Nothing listens on these ports: peers 2 and 3 are unreachable.
+                address: format!("127.0.0.1:{}", 1 + id),
+                role: Follower as i32,
+                status: NodeStatus::Active as i32,
+            })
+            .collect();
+        config.raft.membership.startup_quorum_timeout = Duration::from_millis(200);
+
+        let storage =
+            Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
+        let sm = Arc::new(FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"));
+        let node = NodeBuilder::<FileStorageEngine, FileStateMachine>::from_node_config(
+            temp_dir.path(),
+            config,
+            shutdown_rx,
+        )
+        .storage_engine(storage)
+        .state_machine(sm)
+        .build()
+        .await
+        .expect("build")
+        .node
+        .expect("node built");
+
+        let result = tokio::time::timeout(Duration::from_secs(10), node.run())
+            .await
+            .expect("run() must give up at startup_quorum_timeout");
+        assert!(result.is_err(), "bootstrap should fail with unreachable peers");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let stopped = loop {
+            // `None` means run() already took the handle and joined it.
+            let stopped =
+                node.sm_worker_handle.lock().unwrap().as_ref().is_none_or(|h| h.is_finished());
+            if stopped || Instant::now() > deadline {
+                break stopped;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert!(
+            stopped,
+            "the sm-apply thread is still running after run() failed during bootstrap"
+        );
+    }
+
+    /// Business scenario: an embedder drops its `EmbeddedEngine` without calling `stop()`. The
+    /// shutdown sender is dropped with it, which the Raft loop treats as a shutdown request.
+    ///
+    /// Purpose: guard for the safety net that must survive any change to how the worker is
+    /// stopped: a running node whose shutdown sender is dropped must still end `run()` and leave
+    /// no sm-apply thread behind.
+    #[tokio::test]
+    async fn test_run_stops_sm_apply_thread_when_shutdown_sender_is_dropped() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let config = RaftNodeConfig::new().unwrap().validate().unwrap();
+
+        let storage =
+            Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
+        let sm = Arc::new(FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"));
+        let node = NodeBuilder::<FileStorageEngine, FileStateMachine>::from_node_config(
+            temp_dir.path(),
+            config,
+            shutdown_rx,
+        )
+        .storage_engine(storage)
+        .state_machine(sm)
+        .build()
+        .await
+        .expect("build")
+        .node
+        .expect("node built");
+
+        let running = tokio::spawn({
+            let node = node.clone();
+            async move { node.run().await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(shutdown_tx);
+
+        let result = tokio::time::timeout(Duration::from_secs(10), running)
+            .await
+            .expect("run() must end once the shutdown sender is dropped")
+            .expect("run() task must not panic");
+        assert!(result.is_ok(), "shutdown by dropping the sender is a clean stop");
+        assert!(
+            node.sm_worker_handle.lock().unwrap().as_ref().is_none_or(|h| h.is_finished()),
+            "the sm-apply thread is still running after run() ended"
+        );
     }
 }

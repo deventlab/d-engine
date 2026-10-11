@@ -122,7 +122,7 @@ impl<T: TypeConfig> EmbeddedClient<T> {
 
         self.read_handle
             .cmd_tx
-            .send(d_engine_core::ClientCmd::Propose(request, resp_tx))
+            .send(d_engine_core::ClientCmd::propose(request, resp_tx))
             .await
             .map_err(|_| channel_closed_error())?;
 
@@ -291,7 +291,7 @@ impl<T: TypeConfig> EmbeddedClient<T> {
 
         self.read_handle
             .cmd_tx
-            .send(d_engine_core::ClientCmd::Propose(request, resp_tx))
+            .send(d_engine_core::ClientCmd::propose(request, resp_tx))
             .await
             .map_err(|_| channel_closed_error())?;
 
@@ -603,7 +603,7 @@ impl<T: TypeConfig> ClientApi for EmbeddedClient<T> {
 
         self.read_handle
             .cmd_tx
-            .send(d_engine_core::ClientCmd::Propose(request, resp_tx))
+            .send(d_engine_core::ClientCmd::propose(request, resp_tx))
             .await
             .map_err(|_| channel_closed_error())?;
 
@@ -658,7 +658,7 @@ impl<T: TypeConfig> ClientApi for EmbeddedClient<T> {
 
         self.read_handle
             .cmd_tx
-            .send(d_engine_core::ClientCmd::Propose(request, resp_tx))
+            .send(d_engine_core::ClientCmd::propose(request, resp_tx))
             .await
             .map_err(|_| channel_closed_error())?;
 
@@ -723,7 +723,7 @@ impl<T: TypeConfig> ClientApi for EmbeddedClient<T> {
 
         self.read_handle
             .cmd_tx
-            .send(d_engine_core::ClientCmd::Propose(request, resp_tx))
+            .send(d_engine_core::ClientCmd::propose(request, resp_tx))
             .await
             .map_err(|_| channel_closed_error())?;
 

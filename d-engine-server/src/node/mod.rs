@@ -117,9 +117,6 @@ where
     /// long-lived streams (the Raft replication bidi stream never ends on its own)
     pub(crate) rpc_server_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 
-    /// Commit handler task handle (background log application)
-    pub(crate) _commit_handler_handle: Option<tokio::task::JoinHandle<()>>,
-
     /// Lease cleanup task handle (background TTL cleanup)
     pub(crate) _lease_cleanup_handle: Option<tokio::task::JoinHandle<()>>,
 

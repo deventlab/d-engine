@@ -571,7 +571,8 @@ impl<T: TypeConfig> EmbeddedEngine<T> {
     /// (node join, removal, or learner promotion) is committed by a majority.
     ///
     /// All nodes — leader, follower, and learner — fire the notification because
-    /// every node walks the same `CommitHandler::apply_config_change()` path.
+    /// every node applies a committed config change through the same delivery path
+    /// (`dispatch_committed`).
     ///
     /// The first `borrow()` returns the current membership state immediately
     /// without waiting for a change.

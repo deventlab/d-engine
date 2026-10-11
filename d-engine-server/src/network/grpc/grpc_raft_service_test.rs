@@ -19,6 +19,8 @@ use d_engine_proto::client::ReadConsistencyPolicy;
 use d_engine_proto::client::WatchMembershipRequest;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::raft_client_service_server::RaftClientService;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -238,6 +240,17 @@ async fn test_handle_rpc_services_successfully() {
     raft_log.expect_load_hard_state().returning(|| Ok(None));
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
     raft_log.expect_last_log_id().returning(|| None);
+    // The raft loop reads committed entries back from the log to hand them to the state machine
+    // worker, so the mock log must serve them (any payload will do for this test).
+    raft_log.expect_get_entries_range().returning(|range| {
+        Ok(range
+            .map(|index| Entry {
+                index,
+                term: 1,
+                payload: Some(EntryPayload::noop()),
+            })
+            .collect())
+    });
 
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     replication_handler
@@ -340,6 +353,7 @@ async fn test_handle_rpc_services_successfully() {
             }
             // ApplyCompleted is now sent via internal_event_tx (P2) to avoid priority inversion.
             let _ = test_internal_event_tx.send(InternalEvent::ApplyCompleted {
+                sent_at: tokio::time::Instant::now(),
                 last_index: 2,
                 results: vec![ApplyResult {
                     index: 2,

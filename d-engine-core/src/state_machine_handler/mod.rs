@@ -165,7 +165,7 @@ where
 
 /// Destructive state-machine mutation — deliberately a **separate trait** from
 /// `StateMachineHandler`, not two methods on it. `StateMachineHandler` stays importable
-/// and callable from anywhere (role layer, CommitHandler, etc.); this trait is
+/// and callable from anywhere (role layer, Raft loop, etc.); this trait is
 /// module-restricted so only code inside `state_machine_handler` (i.e. `StateMachineWorker`)
 /// can even name it, let alone call it. This is real compile-time enforcement, not convention.
 #[cfg_attr(any(test, feature = "__test_support"), automock)]

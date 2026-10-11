@@ -4,7 +4,6 @@
 //! never `last_entry_id` (in-memory). Covers both the single-voter fast path and
 //! the multi-voter quorum path. Fixed by ticket #329.
 
-use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
@@ -137,7 +136,7 @@ async fn test_single_voter_commit_must_not_advance_before_durable() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "CORRECT: NotifyNewCommitIndex must not fire before durable"
+        "CORRECT: no internal event expected before durable"
     );
 }
 
@@ -167,7 +166,7 @@ async fn test_single_voter_commit_advances_after_durable() {
         .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (req, _rx) = write_request();
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state
         .process_batch(VecDeque::from(vec![req]), &internal_event_tx, &ctx)
         .await
@@ -179,13 +178,6 @@ async fn test_single_voter_commit_advances_after_durable() {
         state.shared_state().commit_index,
         1,
         "single-voter commit must advance to durable_index after flush"
-    );
-    assert!(
-        matches!(
-            internal_event_rx.try_recv(),
-            Ok(InternalEvent::NotifyNewCommitIndex(_))
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 }
 
@@ -268,7 +260,7 @@ async fn test_multi_voter_commit_respects_quorum_result() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "NotifyNewCommitIndex must not fire"
+        "no internal event expected while commit does not advance"
     );
 }
 
@@ -378,7 +370,7 @@ async fn test_leader_single_voter_commit_advances_on_log_flushed() {
     )
     .await;
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: commit_index still at 0 (process_batch saw durable=0)
     assert_eq!(state.commit_index(), 0);
@@ -391,15 +383,6 @@ async fn test_leader_single_voter_commit_advances_on_log_flushed() {
         state.commit_index(),
         1,
         "single-voter commit must advance to durable index after LogFlushed"
-    );
-
-    // Verify: NotifyNewCommitIndex event sent to state machine
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(_)
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 }
 
@@ -430,7 +413,7 @@ async fn test_leader_single_voter_log_flushed_noop_when_already_committed() {
     assert_eq!(state.commit_index(), 1, "commit_index must not change");
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "NotifyNewCommitIndex must NOT fire when durable <= commit_index"
+        "no internal event expected when durable <= commit_index"
     );
 }
 
@@ -631,7 +614,7 @@ async fn test_handle_log_flushed_excludes_learner_from_quorum() {
     state.update_match_index(3, 4).unwrap();
     state.update_commit_index(4).unwrap();
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: leader flushes entry 5 to disk
     state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
@@ -640,13 +623,6 @@ async fn test_handle_log_flushed_excludes_learner_from_quorum() {
         state.commit_index(),
         5,
         "commit must advance when learner is correctly excluded from quorum"
-    );
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(_)
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 }
 
@@ -708,7 +684,7 @@ async fn test_handle_append_result_excludes_learner_from_quorum() {
     state.update_match_index(3, 4).unwrap();
     state.update_commit_index(4).unwrap();
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: voter(2) ACKs entry 5 — triggers quorum re-calculation
     state
@@ -720,13 +696,6 @@ async fn test_handle_append_result_excludes_learner_from_quorum() {
         state.commit_index(),
         5,
         "commit must advance when learner is correctly excluded from quorum after voter ACK"
-    );
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(_)
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 }
 
@@ -814,7 +783,7 @@ async fn test_multi_voter_commit_advances_when_log_flushed_enables_quorum() {
     state.update_match_index(2, 1).unwrap();
     state.update_match_index(3, 1).unwrap();
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: commit still at 0 (durable_index was 0 during process_batch)
     assert_eq!(state.commit_index(), 0);
@@ -827,15 +796,6 @@ async fn test_multi_voter_commit_advances_when_log_flushed_enables_quorum() {
         state.commit_index(),
         1,
         "multi-voter commit must advance when LogFlushed enables quorum"
-    );
-
-    // Verify: NotifyNewCommitIndex event sent to state machine
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(_)
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 }
 
@@ -890,9 +850,9 @@ async fn test_multi_voter_log_flushed_no_commit_when_quorum_insufficient() {
         "multi-voter commit must NOT advance when quorum insufficient despite LogFlushed"
     );
 
-    // Verify: no commit event should be sent
+    // Verify: no event should be sent
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "NotifyNewCommitIndex must NOT fire when quorum not satisfied"
+        "no internal event expected when quorum not satisfied"
     );
 }

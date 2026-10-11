@@ -671,7 +671,8 @@ where
         self.update_term_indexes(entries);
         self.term_segments.on_append(entries);
 
-        let max_index = entries.iter().map(|e| e.index).max().unwrap_or(0);
+        // `entries` are in log order: the last one has the highest index.
+        let max_index = entries.last().map_or(0, |e| e.index);
         let current_next = self.next_id.load(Ordering::Acquire);
         if max_index >= current_next {
             self.next_id.store(max_index + 1, Ordering::Release);
@@ -713,20 +714,22 @@ where
         &self,
         entries: &[Entry],
     ) {
-        for entry in entries {
-            let term = entry.term;
+        // `entries` are in log order, so equal terms are contiguous: one lookup pair per term
+        // run instead of per entry (a batch is almost always a single term).
+        for run in entries.chunk_by(|a, b| a.term == b.term) {
+            let term = run[0].term;
 
             // Update first index
             self.term_first_index
                 .get_or_insert(term, AtomicU64::new(u64::MAX))
                 .value()
-                .fetch_min(entry.index, Ordering::AcqRel);
+                .fetch_min(run[0].index, Ordering::AcqRel);
 
             // Update last index
             self.term_last_index
                 .get_or_insert(term, AtomicU64::new(0))
                 .value()
-                .fetch_max(entry.index, Ordering::AcqRel);
+                .fetch_max(run[run.len() - 1].index, Ordering::AcqRel);
         }
     }
 

@@ -349,7 +349,6 @@ impl MockBuilder {
             sm_worker_handle: std::sync::Mutex::new(None),
             rpc_server_handle: std::sync::Mutex::new(None),
             read_actor_handle: std::sync::Mutex::new(None),
-            _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal,
             read_lease,
@@ -408,7 +407,6 @@ impl MockBuilder {
             sm_worker_handle: std::sync::Mutex::new(None),
             rpc_server_handle: std::sync::Mutex::new(None),
             read_actor_handle: std::sync::Mutex::new(None),
-            _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal: shutdown.clone(),
             read_lease,
@@ -622,18 +620,21 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
 pub(crate) fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().returning(|_| {});
+    // Commit delivery (also run on shutdown) reads the applied position every iteration.
+    state_machine_handler.expect_last_applied().returning(|| 0);
     state_machine_handler.expect_read_from_state_machine().returning(|_| None);
     state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
 }
 
-/// Default `StateMachineCommandSender` for tests that don't care about it. No production
-/// call site sends through this yet (#436), so the receiver is simply
-/// dropped rather than drained by a spawned task — spawning unconditionally here broke
-/// every non-`#[tokio::test]` caller of `MockBuilder::build_context()`/`build_raft()`
-/// with "there is no reactor running" (`tokio::spawn` requires an active runtime).
+/// Default `StateMachineCommandSender` for tests that don't care about it. The raft loop hands
+/// committed entries to it, so the receiver must stay open or delivery fails with
+/// `WorkerUnavailable` and the loop exits. Nothing drains it: a spawned drain task would break
+/// every non-`#[tokio::test]` caller of `MockBuilder::build_context()`/`build_raft()` with
+/// "there is no reactor running", so the receiver is leaked instead (test-only, tiny).
 pub(crate) fn default_state_machine_commands() -> d_engine_core::StateMachineCommandSender {
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::unbounded_channel();
+    std::mem::forget(rx);
     d_engine_core::StateMachineCommandSender::new(tx)
 }
 

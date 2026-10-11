@@ -36,6 +36,7 @@ pub struct NewCommitData {
 pub enum ClientCmd {
     Propose(
         ClientWriteRequest,
+        tokio::time::Instant,
         MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
     ),
     Read(
@@ -47,6 +48,16 @@ pub enum ClientCmd {
         MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
     ),
 }
+impl ClientCmd {
+    /// Stamps `Instant::now()` so every write carries its issue time. One variant, no
+    /// timestamp-less twin to forget handling.
+    pub fn propose(
+        request: ClientWriteRequest,
+        sender: MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>,
+    ) -> Self {
+        Self::Propose(request, tokio::time::Instant::now(), sender)
+    }
+}
 
 #[derive(Debug)]
 pub enum InternalEvent {
@@ -54,8 +65,6 @@ pub enum InternalEvent {
     BecomeCandidate,
     BecomeLeader,
     BecomeLearner,
-
-    NotifyNewCommitIndex(NewCommitData),
 
     /// Notify when follower/learner confirms leader via committed vote
     /// Triggered when committed vote changes from false to true
@@ -123,6 +132,9 @@ pub enum InternalEvent {
     ApplyCompleted {
         last_index: u64,
         results: Vec<ApplyResult>,
+        /// When the SM Worker sent this; the central loop records the queue wait
+        /// (`core.raft.central_loop.apply_completed_queue_wait_ms`) when it handles it.
+        sent_at: tokio::time::Instant,
     },
 
     /// Trigger state machine snapshot creation — routed via P2 (unbounded internal_event_tx) to

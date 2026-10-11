@@ -21,7 +21,7 @@
 //! - `committed_index` is the idempotency key; callers use it to detect replayed
 //!   snapshots after reconnect or restart.
 //! - Notification fires on **every** node (leader / follower / learner) because
-//!   all walk the same `CommitHandler::apply_config_change()` path.
+//!   all apply a committed config change through the same path (`dispatch_committed`).
 //!
 //! ## How conf changes reach the watch channel
 //!
@@ -29,7 +29,7 @@
 //! in these tests are:
 //!
 //! 1. **`JoinCluster` RPC**: New learner node (role=4) calls `join_cluster()` on boot.
-//!    Leader appends `AddNode(Config)` entry → commits → `CommitHandler::apply_config_change`
+//!    Leader appends `AddNode(Config)` entry → commits → `dispatch_committed` → `apply_membership`
 //!    → `notify_config_applied` → watch fires on all nodes.
 //!
 //! 2. **Zombie detection** (warn-only): When a node's connection failure count reaches
@@ -624,7 +624,7 @@ async fn test_watch_membership_fires_on_learner_promote() -> Result<(), Box<dyn 
 /// Test 5: All nodes in a cluster receive the membership change notification —
 /// leader, follower, and learner included.
 ///
-/// The Raft commit path (`CommitHandler::apply_config_change`) is identical on
+/// The Raft commit path (`dispatch_committed` → `apply_membership`) is identical on
 /// every node, so all must fire the watch channel after a ConfChange commits.
 ///
 /// Setup sequence:

@@ -118,8 +118,14 @@ pub struct CapturedLocalSnapshot {
 pub enum StateMachineCommand {
     /// Fire-and-forget by design: completion is reported via
     /// `InternalEvent::ApplyCompleted`, not through this variant, to keep
-    /// `CommitHandler` decoupled from apply I/O (see worker.rs doc comment).
-    ApplyEntries { entries: Vec<Entry> },
+    /// the Raft loop decoupled from apply I/O (see worker.rs doc comment).
+    ///
+    /// `sent_at` is when the Raft loop enqueued the batch; the Worker records the
+    /// queue wait (`core.raft.sm_worker.queue_wait_ms`) when it dequeues it.
+    ApplyEntries {
+        entries: Vec<Entry>,
+        sent_at: tokio::time::Instant,
+    },
 
     /// Carries a response channel because the caller (Raft main loop) must
     /// block until the install genuinely completes before replying to the
@@ -170,7 +176,10 @@ impl StateMachineCommandSender {
         entries: Vec<Entry>,
     ) -> Result<()> {
         self.tx
-            .send(StateMachineCommand::ApplyEntries { entries })
+            .send(StateMachineCommand::ApplyEntries {
+                entries,
+                sent_at: tokio::time::Instant::now(),
+            })
             .map_err(|_| SnapshotError::WorkerUnavailable.into())
     }
 

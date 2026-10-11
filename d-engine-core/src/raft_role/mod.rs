@@ -101,6 +101,12 @@ pub struct SharedState {
     /// increases monotonically)
     pub commit_index: u64,
 
+    /// Highest log index already handed to the state machine worker (initialized to the state
+    /// machine's `last_applied`, increases monotonically). Lives next to `commit_index` and
+    /// survives role transitions. It is NOT `applied`: that only advances once the worker has
+    /// finished, so using it would re-deliver entries still in flight.
+    pub delivered_index: u64,
+
     /// In-memory leader ID for hot-path reads (0 = no leader)
     /// Performance optimization: avoid RwLock on AppendEntries path
     current_leader_id: AtomicU32,
@@ -117,6 +123,7 @@ impl Clone for SharedState {
             node_id: self.node_id,
             hard_state: self.hard_state,
             commit_index: self.commit_index,
+            delivered_index: self.delivered_index,
             current_leader_id: AtomicU32::new(self.current_leader_id.load(Ordering::Acquire)),
             read_lease: Arc::clone(&self.read_lease),
         }
@@ -132,6 +139,7 @@ impl std::fmt::Debug for SharedState {
             .field("node_id", &self.node_id)
             .field("hard_state", &self.hard_state)
             .field("commit_index", &self.commit_index)
+            .field("delivered_index", &self.delivered_index)
             .field("current_leader_id", &self.current_leader())
             .finish()
     }
@@ -175,6 +183,7 @@ impl SharedState {
             node_id,
             hard_state,
             commit_index: last_applied_index_option.unwrap_or(0),
+            delivered_index: last_applied_index_option.unwrap_or(0),
             current_leader_id: AtomicU32::new(0),
             read_lease: Arc::new(ReadLease::new()),
         }
@@ -523,6 +532,18 @@ impl<T: TypeConfig> RaftRole<T> {
         self.state_mut()
             .handle_apply_completed(last_index, results, ctx, internal_event_tx)
             .await
+    }
+
+    /// Hand newly committed entries to the state machine worker (same for every role).
+    pub(crate) async fn dispatch_committed(
+        &mut self,
+        ctx: &RaftContext<T>,
+        internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    ) -> crate::Result<()>
+    where
+        T: TypeConfig,
+    {
+        self.state_mut().dispatch_committed(ctx, internal_event_tx).await
     }
 
     /// Dispatch LogFlushed(durable) to the current role state.

@@ -11,6 +11,7 @@ use crate::MaybeCloneOneshot;
 use crate::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
+use crate::test_utils::MetricsCapture;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
 
@@ -39,7 +40,7 @@ async fn test_backpressure_write_limit_enforcement() {
     // Push first two writes - should succeed
     for i in 1..=2 {
         let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
-        let cmd = ClientCmd::Propose(
+        let cmd = ClientCmd::propose(
             ClientWriteRequest {
                 client_id: i,
                 command: Some({
@@ -60,7 +61,7 @@ async fn test_backpressure_write_limit_enforcement() {
 
     // Push third write - should be rejected
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let cmd = ClientCmd::Propose(
+    let cmd = ClientCmd::propose(
         ClientWriteRequest {
             client_id: 3,
             command: Some({
@@ -180,7 +181,7 @@ async fn test_backpressure_unlimited_when_zero() {
     // Push many writes - all should succeed
     for i in 1..=100 {
         let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
-        let cmd = ClientCmd::Propose(
+        let cmd = ClientCmd::propose(
             ClientWriteRequest {
                 client_id: i,
                 command: Some({
@@ -225,7 +226,7 @@ async fn test_backpressure_write_and_read_independent() {
     // Fill write buffer
     for i in 1..=2 {
         let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
-        let cmd = ClientCmd::Propose(
+        let cmd = ClientCmd::propose(
             ClientWriteRequest {
                 client_id: i,
                 command: Some({
@@ -240,7 +241,7 @@ async fn test_backpressure_write_and_read_independent() {
 
     // Writes should be rejected
     let (write_tx, mut write_rx) = MaybeCloneOneshot::new();
-    let write_cmd = ClientCmd::Propose(
+    let write_cmd = ClientCmd::propose(
         ClientWriteRequest {
             client_id: 99,
             command: Some({
@@ -374,5 +375,44 @@ async fn test_backpressure_all_read_policies() {
         err.code(),
         tonic::Code::ResourceExhausted,
         "Should reject with ResourceExhausted"
+    );
+}
+
+/// Test: `Propose` records the wait since the client issued the request.
+///
+/// Why: `issue_to_push_ms` must reflect the real elapsed time since the client's
+/// `issued_at`, not zero. The variant is constructed directly (not via `ClientCmd::propose`)
+/// so the test can stamp a fixed past timestamp.
+#[tokio::test]
+async fn test_propose_records_issue_wait() {
+    let capture = MetricsCapture::new();
+    let _guard = metrics::set_default_local_recorder(&capture);
+
+    let (_shutdown_tx, shutdown_rx) = watch::channel(());
+    let ctx = mock_raft_context("/tmp/test_propose_records_issue_wait", shutdown_rx, None);
+    let mut leader = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+
+    let issued_at = tokio::time::Instant::now() - std::time::Duration::from_millis(20);
+    let (resp_tx, _resp_rx) = MaybeCloneOneshot::new();
+    let cmd = ClientCmd::Propose(
+        ClientWriteRequest {
+            client_id: 1,
+            command: Some({
+                use prost::Message;
+                Bytes::from(WriteCommand::delete(Bytes::new()).encode_to_vec())
+            }),
+        },
+        issued_at,
+        resp_tx,
+    );
+    leader.push_client_cmd(cmd, &ctx);
+
+    assert_eq!(leader.propose_buffer.len(), 1, "must be buffered");
+    let waits = capture.histogram("core.raft.client_cmd.issue_to_push_ms", &[]);
+    assert_eq!(waits.len(), 1, "exactly one wait sample per request");
+    assert!(
+        waits[0] >= 20.0,
+        "wait must cover the elapsed time since issue, got {}",
+        waits[0]
     );
 }

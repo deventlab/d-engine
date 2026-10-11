@@ -981,3 +981,149 @@ async fn test_adopted_term_survives_a_restart_even_when_the_vote_was_denied() {
         FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), Some(persisted), None);
     assert_eq!(restarted.current_term(), 4);
 }
+
+/// Lightweight unit test verifying `is_self_removal_config()` correctly identifies when a node is
+/// removing itself from the cluster.
+///
+/// Related: Issue #200
+#[test]
+fn test_is_self_removal_config() {
+    use super::role_state::is_self_removal_config;
+    use d_engine_proto::common::AddNode;
+    use d_engine_proto::common::MembershipChange;
+    use d_engine_proto::common::RemoveNode;
+    use d_engine_proto::common::membership_change::Change;
+
+    let self_removal = MembershipChange {
+        change: Some(Change::RemoveNode(RemoveNode { node_id: 1 })),
+    };
+    assert!(
+        is_self_removal_config(1, &self_removal),
+        "Should detect self-removal when my_id == removed node_id"
+    );
+
+    let other_removal = MembershipChange {
+        change: Some(Change::RemoveNode(RemoveNode { node_id: 2 })),
+    };
+    assert!(
+        !is_self_removal_config(1, &other_removal),
+        "Should NOT detect self-removal when removing different node"
+    );
+
+    let add_node = MembershipChange {
+        change: Some(Change::AddNode(AddNode {
+            node_id: 1,
+            address: "127.0.0.1:8080".to_string(),
+            status: 1,
+        })),
+    };
+    assert!(
+        !is_self_removal_config(1, &add_node),
+        "Should NOT detect self-removal for AddNode changes"
+    );
+
+    let no_change = MembershipChange { change: None };
+    assert!(
+        !is_self_removal_config(1, &no_change),
+        "Should NOT detect self-removal when change is None"
+    );
+}
+
+// ── split_into_batches: how committed entries are grouped into worker messages ──────────────
+
+mod split_into_batches_tests {
+    use bytes::Bytes;
+    use d_engine_proto::common::AddNode;
+    use d_engine_proto::common::Entry;
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::NodeStatus;
+    use d_engine_proto::common::membership_change::Change;
+
+    use super::super::role_state::split_into_batches;
+
+    fn command(index: u64) -> Entry {
+        Entry {
+            index,
+            term: 1,
+            payload: Some(EntryPayload::command(Bytes::from(format!("cmd{index}")))),
+        }
+    }
+
+    fn config(index: u64) -> Entry {
+        Entry {
+            index,
+            term: 1,
+            payload: Some(EntryPayload::config(Change::AddNode(AddNode {
+                node_id: 9,
+                address: "addr".into(),
+                status: NodeStatus::Promotable as i32,
+            }))),
+        }
+    }
+
+    fn noop(index: u64) -> Entry {
+        Entry {
+            index,
+            term: 1,
+            payload: Some(EntryPayload::noop()),
+        }
+    }
+
+    fn indices(batches: &[Vec<Entry>]) -> Vec<Vec<u64>> {
+        batches.iter().map(|b| b.iter().map(|e| e.index).collect()).collect()
+    }
+
+    #[test]
+    fn test_split_into_batches_with_only_commands_returns_one_batch() {
+        let batches = split_into_batches(vec![command(1), command(2), command(3)]);
+        assert_eq!(indices(&batches), vec![vec![1, 2, 3]]);
+    }
+
+    /// The config entry is sent with the commands before it, and the commands after it start
+    /// a new batch: membership is applied between the two messages.
+    #[test]
+    fn test_split_into_batches_ends_a_batch_at_a_config_entry() {
+        let batches = split_into_batches(vec![command(1), command(2), config(3), command(4)]);
+        assert_eq!(indices(&batches), vec![vec![1, 2, 3], vec![4]]);
+    }
+
+    #[test]
+    fn test_split_into_batches_gives_consecutive_configs_a_batch_each() {
+        let batches = split_into_batches(vec![config(1), config(2)]);
+        assert_eq!(indices(&batches), vec![vec![1], vec![2]]);
+    }
+
+    #[test]
+    fn test_split_into_batches_with_config_last_has_no_trailing_batch() {
+        let batches = split_into_batches(vec![command(1), config(2)]);
+        assert_eq!(indices(&batches), vec![vec![1, 2]]);
+    }
+
+    #[test]
+    fn test_split_into_batches_ends_a_batch_at_a_noop_entry() {
+        let batches = split_into_batches(vec![command(1), noop(2), command(3)]);
+        assert_eq!(indices(&batches), vec![vec![1, 2], vec![3]]);
+    }
+
+    #[test]
+    fn test_split_into_batches_of_nothing_is_empty() {
+        assert!(split_into_batches(vec![]).is_empty());
+    }
+
+    /// Whatever the grouping, the entries come out in exactly the order they went in.
+    #[test]
+    fn test_split_into_batches_keeps_log_order() {
+        let input = vec![
+            command(1),
+            noop(2),
+            config(3),
+            config(4),
+            command(5),
+            command(6),
+            noop(7),
+        ];
+        let flattened: Vec<u64> =
+            split_into_batches(input.clone()).iter().flatten().map(|e| e.index).collect();
+        assert_eq!(flattened, input.iter().map(|e| e.index).collect::<Vec<_>>());
+    }
+}

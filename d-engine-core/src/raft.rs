@@ -12,13 +12,10 @@ use tracing::warn;
 
 use super::InboundEvent;
 use super::InternalEvent;
-use super::NewCommitData;
 use super::RaftContext;
 use super::RaftCoreHandlers;
 use super::RaftRole;
 use super::RaftStorageHandles;
-#[cfg(test)]
-use super::inbound_event_to_test_event;
 use crate::Membership;
 use crate::NetworkError;
 use crate::RaftLog;
@@ -30,6 +27,9 @@ use crate::alias::TROF;
 use crate::role_state::PeerReplicationState;
 pub use d_engine_proto::common::LeaderInfo;
 use d_engine_proto::server::election::VotedFor;
+
+#[cfg(test)]
+use super::inbound_event_to_test_event;
 
 pub struct Raft<T>
 where
@@ -57,9 +57,6 @@ where
     internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
     internal_event_rx: mpsc::UnboundedReceiver<InternalEvent>,
     buffered_internal_event: VecDeque<InternalEvent>,
-
-    // For business logic to apply logs into state machine
-    new_commit_listener: Vec<mpsc::UnboundedSender<NewCommitData>>,
 
     // Leader change notification
     // Uses watch::Sender for efficient multi-subscriber pattern
@@ -152,8 +149,6 @@ where
             internal_event_tx: signal_params.internal_event_tx,
             internal_event_rx: signal_params.internal_event_rx,
             buffered_internal_event: VecDeque::new(),
-
-            new_commit_listener: Vec::new(),
 
             shutdown_signal: signal_params.shutdown_signal,
 
@@ -296,6 +291,7 @@ where
             self.process_internal_events().await?;
             self.process_client_cmds().await?;
             self.process_inbound_events().await?;
+            self.process_committed().await?;
 
             let new_deadline = self.role.next_deadline();
             if new_deadline != tick.deadline() {
@@ -306,6 +302,12 @@ where
 
     async fn handle_shutdown(&mut self) -> Result<()> {
         info!("[Raft:{}] shutdown signal received.", self.node_id);
+        // Hand over the commits this node already knows about so the state machine worker can
+        // drain them before it stops.
+        if let Err(e) = self.process_committed().await {
+            error!(%self.node_id, ?e, "final commit delivery on shutdown failed");
+        }
+
         // Close the raft log (before runtime shutdown)
         // This ensures RocksDB file lock is released before tokio runtime shuts down
         self.ctx.storage.raft_log.close().await;
@@ -421,6 +423,14 @@ where
             self.notify_inbound_event(test_event);
         }
         Ok(())
+    }
+
+    /// Last stage of an iteration: commit_index may have advanced in any of the stages above
+    /// (leader: flush / AppendResult; follower: AppendEntries; any role: snapshot install), so
+    /// hand the newly committed entries over before waiting for the next event.
+    /// Any error means committed entries can no longer be applied: the loop stops.
+    async fn process_committed(&mut self) -> Result<()> {
+        self.role.dispatch_committed(&self.ctx, &self.internal_event_tx).await
     }
 
     async fn process_client_cmds(&mut self) -> Result<()> {
@@ -586,39 +596,6 @@ where
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            InternalEvent::NotifyNewCommitIndex(mut new_commit_data) => {
-                // Drain all pending NotifyNewCommitIndex events (max_batch_size limit)
-                // This batches multiple committed entries into a single notification
-                let max_batch = self.ctx.node_config.raft.batching.max_batch_size;
-                let mut count = 1;
-
-                while count < max_batch {
-                    match self.internal_event_rx.try_recv() {
-                        Ok(InternalEvent::NotifyNewCommitIndex(next)) => {
-                            // Only keep the largest commit_index
-                            if next.new_commit_index > new_commit_data.new_commit_index {
-                                new_commit_data = next;
-                            }
-                            count += 1;
-                        }
-                        Ok(other) => {
-                            self.internal_event_tx.send(other).map_err(|e| {
-                                error!("Failed to resend internal event: {:?}", e);
-                                crate::Error::Fatal(e.to_string())
-                            })?;
-                            break;
-                        }
-                        Err(_) => break,
-                    }
-                }
-
-                debug!(
-                    "[{}] NotifyNewCommitIndex drained: {} events, max_commit_index={}",
-                    self.node_id, count, new_commit_data.new_commit_index
-                );
-
-                self.notify_new_commit(new_commit_data);
-            }
             InternalEvent::LeaderDiscovered(leader_id, term) => {
                 debug!("LeaderDiscovered: leader_id={}, term={}", leader_id, term);
                 // Notify leader change listeners - no state transition
@@ -675,7 +652,10 @@ where
             InternalEvent::ApplyCompleted {
                 last_index,
                 results,
+                sent_at,
             } => {
+                metrics::histogram!("core.raft.central_loop.apply_completed_queue_wait_ms")
+                    .record(sent_at.elapsed().as_secs_f64() * 1_000.0);
                 // Routed via internal_event_tx (P2) to avoid priority inversion against AppendEntries at P4.
                 if let Err(e) = self
                     .role
@@ -833,26 +813,6 @@ where
         Ok(())
     }
 
-    pub fn register_new_commit_listener(
-        &mut self,
-        tx: mpsc::UnboundedSender<NewCommitData>,
-    ) {
-        self.new_commit_listener.push(tx);
-    }
-
-    pub fn notify_new_commit(
-        &self,
-        new_commit_data: NewCommitData,
-    ) {
-        debug!(?new_commit_data, "notify_new_commit",);
-
-        for tx in &self.new_commit_listener {
-            if let Err(e) = tx.send(new_commit_data.clone()) {
-                error!("notify_new_commit failed: {:?}", e);
-            }
-        }
-    }
-
     #[cfg(test)]
     pub fn register_role_transition_listener(
         &mut self,
@@ -953,6 +913,9 @@ where
     }
 }
 
+#[cfg(test)]
+#[path = "raft_test/commit_path_tests.rs"]
+mod commit_path_tests;
 #[cfg(test)]
 #[path = "raft_test/leader_change_tests.rs"]
 mod leader_change_tests;

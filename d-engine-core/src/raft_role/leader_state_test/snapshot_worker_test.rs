@@ -490,6 +490,11 @@ async fn test_snapshot_completion_success_returns_to_probe_and_allows_append() {
         "a successful snapshot completion must return the peer to Probe"
     );
 
+    // Let the freshly spawned worker open its stream: an Append dispatched while the worker
+    // has no open stream is (by design) not queued, and this test is about the Snapshot ->
+    // Probe transition re-enabling Append, not about dispatch to a disconnected peer.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     // Round 2: an Append for peer 2 must now go through, on the same worker.
     ctx.handlers
         .replication_handler
@@ -694,4 +699,108 @@ async fn test_backoff_window_blocks_redispatch_even_when_classification_still_re
         Some(&PeerReplicationState::Probe),
         "must not re-enter Snapshot state without an actual dispatch happening"
     );
+}
+
+/// Snapshot pushes are state transitions with their own retry/backoff and `Snapshot` peer
+/// state; the "do not feed a disconnected peer" rule applies to Append dispatch only.
+///
+/// # Scenario
+/// - Batch 1 spawns peer 2's worker with an Append request; the worker cannot connect yet.
+/// - Batch 2 asks for a snapshot push to peer 2 (Phase 6) while the worker is disconnected.
+/// - The peer then becomes reachable.
+///
+/// # Guarantees checked
+/// - The snapshot task is still delivered: `send_snapshot` runs exactly once and
+///   `SnapshotPushCompleted { peer_id: 2, success: true }` arrives. A fix that skipped
+///   disconnected peers in Phase 6 too would leave the peer stuck in `Snapshot` state forever.
+///
+/// GREEN before the fix and must stay green after it.
+#[tokio::test]
+#[traced_test]
+async fn test_snapshot_push_still_dispatched_to_disconnected_peer() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let (mut state, mut ctx) =
+        new_leader_and_ctx("/tmp/test_snapshot_push_still_dispatched_to_disconnected_peer");
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    ctx.handlers.replication_handler.expect_prepare_batch_requests().returning(
+        move |_, _, _, _, _, _| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(crate::replication::PrepareResult {
+                    append_requests: vec![(
+                        2,
+                        AppendEntriesRequest {
+                            entries: vec![d_engine_proto::common::Entry {
+                                index: 1,
+                                term: 1,
+                                payload: None,
+                            }],
+                            ..Default::default()
+                        },
+                        1,
+                    )],
+                    snapshot_targets: vec![],
+                })
+            } else {
+                Ok(crate::replication::PrepareResult {
+                    append_requests: vec![],
+                    snapshot_targets: vec![2],
+                })
+            }
+        },
+    );
+
+    let allow_connect = Arc::new(AtomicBool::new(false));
+    let open_attempts = Arc::new(AtomicUsize::new(0));
+    let (allow, attempts) = (allow_connect.clone(), open_attempts.clone());
+    let mut transport = MockTransport::<MockTypeConfig>::new();
+    transport.expect_send_snapshot().times(1).returning(|_, _, _, _, _, _| Ok(()));
+    transport.expect_open_replication_stream().returning(move |_, _, _, _| {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        if !allow.load(Ordering::SeqCst) {
+            return Err(crate::NetworkError::ConnectError("peer unreachable".into()).into());
+        }
+        let (tx, mut rx) = mpsc::channel::<AppendEntriesRequest>(128);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        Ok(crate::ReplicationStream {
+            sender: tx,
+            receiver: futures::stream::pending().boxed(),
+        })
+    });
+    ctx.transport = Arc::new(transport);
+
+    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    for _ in 0..1000 {
+        if open_attempts.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        open_attempts.load(Ordering::SeqCst) >= 1,
+        "precondition: worker is in its reconnect loop"
+    );
+
+    state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    allow_connect.store(true, Ordering::SeqCst);
+
+    for _ in 0..1000 {
+        while let Ok(event) = internal_event_rx.try_recv() {
+            if matches!(
+                event,
+                InternalEvent::SnapshotPushCompleted {
+                    peer_id: 2,
+                    success: true,
+                    ..
+                }
+            ) {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("snapshot push to a disconnected-then-reconnected peer never completed");
 }

@@ -28,8 +28,8 @@ struct HandlerContext<T: TypeConfig> {
 
 /// State Machine Worker
 ///
-/// Decouples state machine apply operations from CommitHandler.
-/// Runs in independent task, allowing apply_chunk I/O to not block commit processing.
+/// Decouples state machine apply operations from the Raft loop.
+/// Runs on its own thread, so apply_chunk I/O never blocks the Raft loop.
 ///
 /// Sole authority for ordering and outcome of state-machine mutations and snapshot
 /// lifecycle decisions (ApplyEntries, InstallSnapshot, CaptureLocalSnapshot — see
@@ -178,7 +178,9 @@ impl<T: TypeConfig> StateMachineWorker<T> {
         command: StateMachineCommand,
     ) -> Result<()> {
         match command {
-            StateMachineCommand::ApplyEntries { entries } => {
+            StateMachineCommand::ApplyEntries { entries, sent_at } => {
+                metrics::histogram!("core.raft.sm_worker.queue_wait_ms")
+                    .record(sent_at.elapsed().as_secs_f64() * 1_000.0);
                 Self::apply_and_notify(
                     &ctx.node_id,
                     &ctx.state_machine_writer,
@@ -320,6 +322,7 @@ impl<T: TypeConfig> StateMachineWorker<T> {
                     if let Err(e) = internal_event_tx.send(InternalEvent::ApplyCompleted {
                         last_index: last.index,
                         results,
+                        sent_at: tokio::time::Instant::now(),
                     }) {
                         error!(
                             "[Node-{}] Failed to send ApplyCompleted event: {:?}",

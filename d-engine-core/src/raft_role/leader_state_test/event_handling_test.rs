@@ -12,7 +12,7 @@ use crate::client::{ClientReadRequest, ClientWriteRequest};
 use crate::config::RaftNodeConfig;
 use crate::config::ReadConsistencyPolicy;
 use crate::event::InboundEvent;
-use crate::event::{InternalEvent, NewCommitData};
+use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
@@ -627,7 +627,7 @@ async fn test_handle_client_propose_success() {
     // Handle inbound event
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let cmd = ClientCmd::Propose(
+    let cmd = ClientCmd::propose(
         ClientWriteRequest {
             client_id: 1,
             command: Some(Bytes::from(
@@ -726,7 +726,6 @@ async fn test_handle_client_read_linearizable_failure() {
 ///
 /// # Then
 /// - Leader's commit_index is updated to 3
-/// - NotifyNewCommitIndex event is sent
 /// - Client receives successful read response
 #[tokio::test]
 #[traced_test]
@@ -789,7 +788,7 @@ async fn test_handle_client_read_linearizable_success() {
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Push to buffer
     state.push_client_cmd(cmd, &context);
@@ -800,7 +799,7 @@ async fn test_handle_client_read_linearizable_success() {
         .await
         .expect("should succeed");
 
-    // Advance commit to 3 via single-voter flush path → fires NotifyNewCommitIndex
+    // Advance commit to 3 via single-voter flush path
     state.cluster_metadata.single_voter = true;
     state
         .handle_log_flushed(expect_new_commit_index, &context, &internal_event_tx)
@@ -808,17 +807,6 @@ async fn test_handle_client_read_linearizable_success() {
 
     // Validation criteria 1: Leader commit should be updated to: 3
     assert_eq!(state.shared_state().commit_index, expect_new_commit_index);
-
-    // Validation criteria 3: event "InternalEvent::NotifyNewCommitIndex" should be received
-    let event = internal_event_rx.try_recv().unwrap();
-    assert!(matches!(
-        event,
-        InternalEvent::NotifyNewCommitIndex(NewCommitData {
-            new_commit_index: _expect_new_commit_index,
-            role: _,
-            current_term: _
-        })
-    ));
 
     // Simulate SM apply: ApplyCompleted fires pending_reads for read_index <= 3
     state

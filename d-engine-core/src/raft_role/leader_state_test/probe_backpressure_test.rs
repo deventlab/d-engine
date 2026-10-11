@@ -17,6 +17,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use bytes::Bytes;
 use d_engine_proto::common::{Entry, EntryPayload, NodeRole::Follower, NodeStatus};
@@ -164,6 +165,7 @@ async fn test_probe_peer_dispatches_next_probe_after_reject() {
             task_tx,
             snapshot_failure_count: 0,
             snapshot_next_retry_at: None,
+            stream_open: Arc::new(AtomicBool::new(true)),
         },
     );
 
@@ -274,6 +276,7 @@ async fn test_probe_peer_with_pending_ack_receives_no_second_dispatch() {
             task_tx,
             snapshot_failure_count: 0,
             snapshot_next_retry_at: None,
+            stream_open: Arc::new(AtomicBool::new(true)),
         },
     );
 
@@ -327,6 +330,7 @@ async fn setup_gate_harness(
             task_tx,
             snapshot_failure_count: 0,
             snapshot_next_retry_at: None,
+            stream_open: Arc::new(AtomicBool::new(true)),
         },
     );
 
@@ -727,6 +731,7 @@ async fn setup_two_worker_harness(
             task_tx: task_tx3,
             snapshot_failure_count: 0,
             snapshot_next_retry_at: None,
+            stream_open: Arc::new(AtomicBool::new(true)),
         },
     );
     (ctx, state, task_rx2, task_rx3, internal_event_tx)

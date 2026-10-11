@@ -482,7 +482,7 @@ where
             let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
             let t0 = std::time::Instant::now();
             cmd_tx
-                .send(d_engine_core::ClientCmd::Propose(core_req, resp_tx))
+                .send(d_engine_core::ClientCmd::propose(core_req, resp_tx))
                 .await
                 .map_err(|_| Status::internal("Command channel closed"))?;
 

@@ -468,7 +468,6 @@ async fn test_linearizable_read_quorum_failure() {
 ///
 /// # Then
 /// - Leader's commit_index updates to 3
-/// - NotifyNewCommitIndex event is sent
 /// - Client receives successful response with data
 ///
 /// # Raft Protocol Context
@@ -564,8 +563,8 @@ async fn test_linearizable_read_quorum_success() {
     // Then: Client receives successful response (released by ApplyCompleted)
     assert!(resp_rx.recv().await.unwrap().is_ok());
 
-    // Note: In new architecture, NotifyNewCommitIndex is sent by handle_append_result,
-    // not by flush_cmd_buffers. This test focuses on the read path completion.
+    // Note: the commit index is advanced by handle_append_result, not by flush_cmd_buffers.
+    // This test focuses on the read path completion.
 }
 
 /// Test linearizable read encountering higher term during verification

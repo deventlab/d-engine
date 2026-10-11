@@ -1251,7 +1251,7 @@ async fn test_handle_client_write_returns_not_leader() {
     let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let cmd = ClientCmd::Propose(
+    let cmd = ClientCmd::propose(
         ClientWriteRequest {
             client_id: 1,
             command: Some(bytes::Bytes::from(
@@ -1679,7 +1679,7 @@ async fn test_new_leader_initializes_empty_buffers() {
             )),
         };
 
-        let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+        let cmd = crate::ClientCmd::propose(write_req, response_tx);
 
         // Push command to buffer (should work on new Leader)
         leader.push_client_cmd(cmd, &raft.ctx);

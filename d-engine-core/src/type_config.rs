@@ -1,6 +1,3 @@
-use std::fmt::Debug;
-
-use crate::CommitHandler;
 use crate::ElectionCore;
 use crate::Membership;
 use crate::PurgeExecutor;
@@ -13,18 +10,18 @@ use crate::StateMachineWriterOps;
 use crate::StorageEngine;
 use crate::Transport;
 
-pub trait TypeConfig: Sync + Send + Sized + Debug + 'static {
+pub trait TypeConfig: Sync + Send + Sized + std::fmt::Debug + 'static {
     // Required type - specified by the application layer
     //
-    type SE: StorageEngine + Debug;
+    type SE: StorageEngine + std::fmt::Debug;
 
-    type SM: StateMachine + Debug;
+    type SM: StateMachine + std::fmt::Debug;
 
     // Optional type - has default implementation
     //
-    type R: RaftLog + Debug;
+    type R: RaftLog + std::fmt::Debug;
 
-    type M: Membership<Self> + Debug;
+    type M: Membership<Self> + std::fmt::Debug;
 
     type TR: Transport<Self>;
 
@@ -32,13 +29,11 @@ pub trait TypeConfig: Sync + Send + Sized + Debug + 'static {
 
     type REP: ReplicationCore<Self>;
 
-    type C: CommitHandler;
+    type SMH: StateMachineHandler<Self> + std::fmt::Debug;
 
-    type SMH: StateMachineHandler<Self> + Debug;
+    type SMW: StateMachineWriterOps<Self> + std::fmt::Debug;
 
-    type SMW: StateMachineWriterOps<Self> + Debug;
-
-    type SNP: SnapshotPolicy + Debug;
+    type SNP: SnapshotPolicy + std::fmt::Debug;
 
     type PE: PurgeExecutor + Send + Sync + 'static;
 }
@@ -59,8 +54,6 @@ pub mod alias {
     pub type EOF<T> = <T as TypeConfig>::E;
 
     pub type REPOF<T> = <T as TypeConfig>::REP;
-
-    pub type COF<T> = <T as TypeConfig>::C;
 
     pub type SMHOF<T> = <T as TypeConfig>::SMH;
 

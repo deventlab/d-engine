@@ -148,3 +148,34 @@ fn test_internal_event_leader_discovered_creation() {
         _ => panic!("Should be LeaderDiscovered variant"),
     }
 }
+
+/// Test: the central loop records how long an `ApplyCompleted` event waited before it was
+/// handled (`core.raft.central_loop.apply_completed_queue_wait_ms`).
+///
+/// Why: the apply result is only turned into a client response when the single-threaded
+/// loop gets to it; if the loop is busy that wait is part of commit->apply latency and is
+/// otherwise invisible.
+#[tokio::test]
+async fn test_apply_completed_records_central_loop_queue_wait() {
+    let capture = crate::test_utils::MetricsCapture::new();
+    let _guard = metrics::set_default_local_recorder(&capture);
+
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut raft: Raft<MockTypeConfig> = MockBuilder::new(graceful_rx).build_raft();
+
+    raft.handle_internal_event(InternalEvent::ApplyCompleted {
+        last_index: 0,
+        results: vec![],
+        sent_at: tokio::time::Instant::now() - std::time::Duration::from_millis(25),
+    })
+    .await
+    .expect("ApplyCompleted must be handled");
+
+    let waits = capture.histogram("core.raft.central_loop.apply_completed_queue_wait_ms", &[]);
+    assert_eq!(waits.len(), 1);
+    assert!(
+        waits[0] >= 25.0,
+        "wait must cover time since send, got {}",
+        waits[0]
+    );
+}

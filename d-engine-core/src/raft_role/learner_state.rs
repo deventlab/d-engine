@@ -291,14 +291,8 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             }
 
             InboundEvent::InstallSnapshotChunk(stream, sender) => {
-                self.handle_install_snapshot_chunk_workflow(
-                    stream,
-                    sender,
-                    ctx,
-                    internal_event_tx,
-                    &state_snapshot,
-                )
-                .await?;
+                self.handle_install_snapshot_chunk_workflow(stream, sender, ctx, internal_event_tx)
+                    .await?;
             }
 
             InboundEvent::JoinCluster(_join_request, sender) => {

@@ -2,7 +2,7 @@
 //!
 //! Pure Raft consensus algorithm - for building custom Raft-based systems
 //!
-//! ## ⚠️ Internal Crate - Not Ready for Standalone Use
+//! ## Internal Crate - Not Ready for Standalone Use
 //!
 //! **Use [`d-engine`](https://crates.io/crates/d-engine) instead.**
 //!
@@ -14,7 +14,7 @@
 //! [dependencies]
 //! d-engine-core = "0.2"
 //!
-//! # ✅ Use this instead
+//! # Use this instead
 //! [dependencies]
 //! d-engine = "0.2"
 //! ```
@@ -55,7 +55,6 @@
 
 pub mod client;
 pub mod command;
-mod commit_handler;
 pub mod config;
 mod election;
 mod errors;
@@ -99,8 +98,6 @@ pub use type_config::TypeConfig;
 // ── Internal implementation details (not part of public API) ───────────────
 // These remain accessible to d-engine-server but are hidden from cargo doc.
 // Do not depend on these from external crates.
-#[doc(hidden)]
-pub use commit_handler::*;
 #[doc(hidden)]
 pub use election::*;
 #[doc(hidden)]

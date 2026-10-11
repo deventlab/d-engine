@@ -213,7 +213,7 @@ async fn test_p0_leader_single_command_drain_immediately() {
 
     // Access leader state to push command
     if let RaftRole::Leader(ref mut leader) = raft.role {
-        let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+        let cmd = crate::ClientCmd::propose(write_req, response_tx);
 
         // **Step 2**: Push command to buffer
         leader.push_client_cmd(cmd, &raft.ctx);
@@ -316,7 +316,7 @@ async fn test_p0_leader_high_load_max_batch_cap() {
                     client_id: 1,
                     command: Some(write_cmd),
                 };
-                let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+                let cmd = crate::ClientCmd::propose(write_req, response_tx);
                 leader.push_client_cmd(cmd, &raft.ctx);
             }
 
@@ -479,7 +479,7 @@ async fn test_p0_follower_write_request_rejection() {
     let start = tokio::time::Instant::now();
 
     if let RaftRole::Follower(ref mut follower) = raft.role {
-        let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+        let cmd = crate::ClientCmd::propose(write_req, response_tx);
 
         // **Step 2**: Push write command (should reject immediately)
         follower.push_client_cmd(cmd, &raft.ctx);
@@ -576,7 +576,7 @@ async fn test_p0_candidate_commands_handling() {
         };
 
         if let RaftRole::Candidate(ref mut candidate) = raft.role {
-            let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+            let cmd = crate::ClientCmd::propose(write_req, response_tx);
             candidate.push_client_cmd(cmd, &raft.ctx);
 
             let result = response_rx.recv().await;
@@ -758,7 +758,7 @@ async fn test_p1_medium_load_natural_batching() {
                 client_id: 1,
                 command: Some(write_cmd),
             };
-            let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+            let cmd = crate::ClientCmd::propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);
         }
 
@@ -865,7 +865,7 @@ async fn test_p1_mixed_workload_read_write_coexistence() {
                 client_id: 1,
                 command: Some(write_cmd),
             };
-            let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+            let cmd = crate::ClientCmd::propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);
         }
 
@@ -973,7 +973,7 @@ async fn test_p1_burst_load_recovery_after_spike() {
                 client_id: 1,
                 command: Some(write_cmd),
             };
-            let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+            let cmd = crate::ClientCmd::propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);
         }
 
@@ -1006,7 +1006,7 @@ async fn test_p1_burst_load_recovery_after_spike() {
                 client_id: 1,
                 command: Some(write_cmd),
             };
-            let cmd = crate::ClientCmd::Propose(write_req, response_tx);
+            let cmd = crate::ClientCmd::propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);
 
             // Flush after each trickle command

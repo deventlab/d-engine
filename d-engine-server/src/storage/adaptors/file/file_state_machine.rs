@@ -1094,7 +1094,7 @@ impl StateMachine for FileStateMachine {
         Ok(data.get(key_buffer).map(|(value, _)| value.clone()))
     }
 
-    /// Thread-safe: called serially by single-task CommitHandler
+    /// Thread-safe: called serially by the state machine worker
     async fn apply_chunk(
         &self,
         chunk: &[ApplyEntry],

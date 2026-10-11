@@ -714,7 +714,7 @@ impl StateMachine for RocksDBStateMachine {
         })
     }
 
-    /// Thread-safe: called serially by single-task CommitHandler
+    /// Thread-safe: called serially by the state machine worker
     #[instrument(skip(self, chunk))]
     async fn apply_chunk(
         &self,
