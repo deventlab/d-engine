@@ -319,16 +319,13 @@ where
 
                     if !entries_are_contiguous_in_range(&legacy_entries, peer_next_id, until_index)
                     {
-                        peer_entries.insert(
-                            id,
-                            PeerEntriesResult::CorruptGap {
-                                start: peer_next_id,
-                                end: until_index,
-                                first_seen: legacy_entries.first().map(|e| e.index),
-                                last_seen: legacy_entries.last().map(|e| e.index),
-                                count: legacy_entries.len(),
-                            },
-                        );
+                        peer_entries.insert(id, PeerEntriesResult::CorruptGap {
+                            start: peer_next_id,
+                            end: until_index,
+                            first_seen: legacy_entries.first().map(|e| e.index),
+                            last_seen: legacy_entries.last().map(|e| e.index),
+                            count: legacy_entries.len(),
+                        });
                         continue;
                     }
 
@@ -617,20 +614,17 @@ where
             entries.len()
         );
 
-        Ok((
-            peer_id,
-            BuildAppendOutcome::Append {
-                request: AppendEntriesRequest {
-                    term: data.current_term,
-                    leader_id: self.my_id,
-                    prev_log_index: prev_index,
-                    prev_log_term,
-                    entries,
-                    leader_commit_index: data.commit_index,
-                },
-                effective_next_index: next_index,
+        Ok((peer_id, BuildAppendOutcome::Append {
+            request: AppendEntriesRequest {
+                term: data.current_term,
+                leader_id: self.my_id,
+                prev_log_index: prev_index,
+                prev_log_term,
+                entries,
+                leader_commit_index: data.commit_index,
             },
-        ))
+            effective_next_index: next_index,
+        }))
     }
 }
 

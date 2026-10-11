@@ -127,15 +127,12 @@ async fn test_replicate_peer_dispatch_and_next_index_are_unbounded_without_any_a
     // Peer 2's worker channel held directly by the test — dispatch is observable synchronously,
     // no real transport/worker task involved (same pattern as probe_backpressure_test.rs).
     let (task_tx, mut task_rx) = mpsc::unbounded_channel();
-    state.replication_workers.insert(
-        2,
-        super::ReplicationWorkerHandle {
-            task_tx,
-            snapshot_failure_count: 0,
-            stream_open: Arc::new(AtomicBool::new(true)),
-            snapshot_next_retry_at: None,
-        },
-    );
+    state.replication_workers.insert(2, super::ReplicationWorkerHandle {
+        task_tx,
+        snapshot_failure_count: 0,
+        stream_open: Arc::new(AtomicBool::new(true)),
+        snapshot_next_retry_at: None,
+    });
 
     // The steady state a peer settles into after its first real ACK — where this bug lives.
     state.set_peer_replication_state(2, PeerReplicationState::Replicate);

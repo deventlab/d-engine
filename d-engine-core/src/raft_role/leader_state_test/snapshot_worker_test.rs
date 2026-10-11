@@ -235,15 +235,12 @@ async fn test_worker_handles_snapshot_task_and_emits_completed_event() {
         .try_recv()
         .expect("SnapshotPushCompleted should arrive after snapshot transfer");
     assert!(
-        matches!(
-            event,
-            InternalEvent::SnapshotPushCompleted {
-                peer_id: 2,
-                success: true,
-                term: _,
-                last_included_index: Some(10)
-            }
-        ),
+        matches!(event, InternalEvent::SnapshotPushCompleted {
+            peer_id: 2,
+            success: true,
+            term: _,
+            last_included_index: Some(10)
+        }),
         "expected SnapshotPushCompleted for peer 2 carrying the snapshot's own boundary \
          (index 10, not the leader's log tip of 15), got {event:?}"
     );
@@ -792,14 +789,11 @@ async fn test_snapshot_push_still_dispatched_to_disconnected_peer() {
 
     for _ in 0..1000 {
         while let Ok(event) = internal_event_rx.try_recv() {
-            if matches!(
-                event,
-                InternalEvent::SnapshotPushCompleted {
-                    peer_id: 2,
-                    success: true,
-                    ..
-                }
-            ) {
+            if matches!(event, InternalEvent::SnapshotPushCompleted {
+                peer_id: 2,
+                success: true,
+                ..
+            }) {
                 return;
             }
         }

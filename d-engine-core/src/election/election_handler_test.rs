@@ -2527,15 +2527,12 @@ mod single_node_election_tests {
     #[tokio::test]
     async fn test_round_five_nodes_two_denials_and_two_grants_wins() {
         for round in BOTH_ROUNDS {
-            let result = run_round(
-                round,
-                vec![
-                    (2, deny_equal_log()),
-                    (3, deny_newer_log()),
-                    (4, Reply::Grant),
-                    (5, Reply::Grant),
-                ],
-            )
+            let result = run_round(round, vec![
+                (2, deny_equal_log()),
+                (3, deny_newer_log()),
+                (4, Reply::Grant),
+                (5, Reply::Grant),
+            ])
             .await;
             assert!(result.is_ok(), "{round:?}: got {result:?}");
         }
@@ -2549,15 +2546,12 @@ mod single_node_election_tests {
     #[tokio::test]
     async fn test_round_five_nodes_three_denials_fail_quorum() {
         for round in BOTH_ROUNDS {
-            let result = run_round(
-                round,
-                vec![
-                    (2, deny_equal_log()),
-                    (3, deny_newer_log()),
-                    (4, deny_older_log()),
-                    (5, Reply::Grant),
-                ],
-            )
+            let result = run_round(round, vec![
+                (2, deny_equal_log()),
+                (3, deny_newer_log()),
+                (4, deny_older_log()),
+                (5, Reply::Grant),
+            ])
             .await;
             assert!(is_quorum_failure(&result), "{round:?}: got {result:?}");
         }
@@ -2594,15 +2588,12 @@ mod single_node_election_tests {
     #[tokio::test]
     async fn test_round_higher_term_denial_ends_round_even_after_a_grant() {
         for round in BOTH_ROUNDS {
-            let result = run_round(
-                round,
-                vec![
-                    (2, Reply::Grant),
-                    (3, Reply::DenyHigherTerm { peer_term: 9 }),
-                    (4, Reply::Grant),
-                    (5, Reply::Grant),
-                ],
-            )
+            let result = run_round(round, vec![
+                (2, Reply::Grant),
+                (3, Reply::DenyHigherTerm { peer_term: 9 }),
+                (4, Reply::Grant),
+                (5, Reply::Grant),
+            ])
             .await;
             assert!(
                 matches!(
@@ -2625,15 +2616,12 @@ mod single_node_election_tests {
     #[tokio::test]
     async fn test_round_unreachable_peer_and_denial_do_not_block_majority() {
         for round in BOTH_ROUNDS {
-            let result = run_round(
-                round,
-                vec![
-                    (2, Reply::Down),
-                    (3, deny_equal_log()),
-                    (4, Reply::Grant),
-                    (5, Reply::Grant),
-                ],
-            )
+            let result = run_round(round, vec![
+                (2, Reply::Down),
+                (3, deny_equal_log()),
+                (4, Reply::Grant),
+                (5, Reply::Grant),
+            ])
             .await;
             assert!(result.is_ok(), "{round:?}: got {result:?}");
         }

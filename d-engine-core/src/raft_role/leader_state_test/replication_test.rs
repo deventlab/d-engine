@@ -2484,14 +2484,11 @@ mod test_leader_update_next_index {
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
         state.update_next_index(2, 100).unwrap();
         state.update_match_index(2, 7).unwrap();
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: Some(11),
-                next_index: 12,
-                success: true,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: Some(11),
+            next_index: 12,
+            success: true,
+        });
         assert_eq!(state.next_index.get(&2), Some(&100));
         assert_eq!(state.match_index.get(&2), Some(&11));
     }
@@ -2507,14 +2504,11 @@ mod test_leader_update_next_index {
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
         state.update_next_index(2, 100).unwrap();
         state.update_match_index(2, 7).unwrap();
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: None,
-                next_index: 12,
-                success: false,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: None,
+            next_index: 12,
+            success: false,
+        });
         assert_eq!(state.next_index.get(&2), Some(&12));
         assert_eq!(state.match_index.get(&2), Some(&7));
     }
@@ -2531,14 +2525,11 @@ mod test_leader_update_next_index {
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
         state.update_next_index(2, 100).unwrap();
         state.update_match_index(2, 50).unwrap();
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: None,
-                next_index: 12,
-                success: false,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: None,
+            next_index: 12,
+            success: false,
+        });
         assert_eq!(state.next_index.get(&2), Some(&(50 + 1)));
         assert_eq!(state.match_index.get(&2), Some(&50));
     }
@@ -2551,14 +2542,11 @@ mod test_leader_update_next_index {
         let context_inner = MockBuilder::new(graceful_rx).build_context();
 
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: Some(11),
-                next_index: 12,
-                success: true,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: Some(11),
+            next_index: 12,
+            success: true,
+        });
         assert_eq!(
             state.peer_replication_state.get(&2),
             Some(&PeerReplicationState::Replicate),
@@ -2574,14 +2562,11 @@ mod test_leader_update_next_index {
         let context_inner = MockBuilder::new(graceful_rx).build_context();
 
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: None,
-                next_index: 12,
-                success: false,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: None,
+            next_index: 12,
+            success: false,
+        });
         assert_eq!(
             state.peer_replication_state.get(&2),
             Some(&PeerReplicationState::Probe),
@@ -2601,14 +2586,11 @@ mod test_leader_update_next_index {
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
         state.update_next_index(2, 1).unwrap();
         state.update_match_index(2, 1).unwrap();
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: Some(11),
-                next_index: 12,
-                success: true,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: Some(11),
+            next_index: 12,
+            success: true,
+        });
         assert_eq!(state.next_index.get(&2), Some(&12));
         assert_eq!(state.match_index.get(&2), Some(&11));
     }
@@ -2811,13 +2793,13 @@ async fn test_queued_reads_wait_for_a_real_quorum() {
         read(ReadConsistencyPolicy::LinearizableRead),
         linearizable_tx,
     ));
-    context.state.pending_reads.insert(
-        0,
-        crate::raft_role::leader_state::PendingReadBatch {
+    context
+        .state
+        .pending_reads
+        .insert(0, crate::raft_role::leader_state::PendingReadBatch {
             deadline: Instant::now() + Duration::from_secs(5),
             requests,
-        },
-    );
+        });
     let (lease_tx, mut lease_rx) = MaybeCloneOneshot::new();
     context.state.pending_lease_reads.push_back(PendingLeaseRead {
         request: read(ReadConsistencyPolicy::LeaseRead),

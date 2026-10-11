@@ -563,28 +563,22 @@ async fn send_pre_vote_to_mock_peer(
 #[tokio::test]
 #[traced_test]
 async fn test_send_pre_vote_request_returns_granted_and_denied_responses_as_ok() {
-    let granted = send_pre_vote_to_mock_peer(
-        "/tmp/test_send_pre_vote_granted",
-        VoteResponse {
-            term: 1,
-            vote_granted: true,
-            last_log_index: 1,
-            last_log_term: 1,
-        },
-    )
+    let granted = send_pre_vote_to_mock_peer("/tmp/test_send_pre_vote_granted", VoteResponse {
+        term: 1,
+        vote_granted: true,
+        last_log_index: 1,
+        last_log_term: 1,
+    })
     .await
     .expect("granted must be Ok");
     assert!(granted.vote_granted);
 
-    let denied = send_pre_vote_to_mock_peer(
-        "/tmp/test_send_pre_vote_denied",
-        VoteResponse {
-            term: 1,
-            vote_granted: false,
-            last_log_index: 1,
-            last_log_term: 1,
-        },
-    )
+    let denied = send_pre_vote_to_mock_peer("/tmp/test_send_pre_vote_denied", VoteResponse {
+        term: 1,
+        vote_granted: false,
+        last_log_index: 1,
+        last_log_term: 1,
+    })
     .await
     .expect("a denial must be Ok, not Err");
     assert!(!denied.vote_granted);
@@ -595,15 +589,12 @@ async fn test_send_pre_vote_request_returns_granted_and_denied_responses_as_ok()
 #[tokio::test]
 #[traced_test]
 async fn test_send_pre_vote_request_passes_through_term_and_log_of_the_response() {
-    let res = send_pre_vote_to_mock_peer(
-        "/tmp/test_send_pre_vote_passes_through",
-        VoteResponse {
-            term: 99,
-            vote_granted: false,
-            last_log_index: 42,
-            last_log_term: 5,
-        },
-    )
+    let res = send_pre_vote_to_mock_peer("/tmp/test_send_pre_vote_passes_through", VoteResponse {
+        term: 99,
+        vote_granted: false,
+        last_log_index: 42,
+        last_log_term: 5,
+    })
     .await
     .expect("should succeed");
 

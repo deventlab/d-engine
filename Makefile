@@ -26,6 +26,8 @@
 
 # Cargo executable
 CARGO ?= cargo
+# rustfmt.toml uses nightly-only options (group_imports, imports_granularity, ...); stable rustfmt ignores them.
+CARGO_FMT ?= cargo +nightly fmt
 
 # On macOS with Homebrew: auto-detect compression lib paths to skip bundled C++
 # compilation of RocksDB dependencies, which fails under macOS 26 + Xcode 26
@@ -127,6 +129,7 @@ check-env:
 install-tools: check-env
 	@echo "$(BLUE)Installing Rust development components...$(NC)"
 	@rustup component add rustfmt clippy rust-src rust-analyzer 2>/dev/null || true
+	@rustup toolchain install nightly --profile minimal --component rustfmt 2>/dev/null || true
 	@if ! command -v cargo-nextest >/dev/null 2>&1; then \
 		echo "$(YELLOW)Installing cargo-nextest for fast parallel testing...$(NC)"; \
 		cargo install cargo-nextest --locked; \
@@ -163,14 +166,14 @@ check-workspace: check-env
 ## fmt-check            Check code formatting without modifying files (dry-run)
 fmt-check: check-workspace
 	@echo "$(BLUE)Checking code formatting...$(NC)"
-	@$(CARGO) fmt --all -- --check || \
+	@$(CARGO_FMT) --all -- --check || \
 		{ echo "$(RED)✗ Formatting issues found. Run 'make fmt-fix' to fix them.$(NC)"; exit 1; }
 	@echo "$(GREEN)✓ Code formatting check passed$(NC)"
 
 ## fmt fmt-fix          Fix all code formatting issues automatically
 fmt fmt-fix: install-tools check-workspace
 	@echo "$(BLUE)Applying code formatting fixes...$(NC)"
-	@$(CARGO) fmt --all
+	@$(CARGO_FMT) --all
 	@echo "$(GREEN)✓ Code formatting fixed in all crates$(NC)"
 
 # ============================================================================
@@ -257,7 +260,7 @@ build-release: check check-workspace
 # ============================================================================
 
 ## test                 Run all tests with nextest (fast, parallel)
-test: install-tools check-workspace check-all-projects
+test: install-tools check-workspace fmt-check check-all-projects
 	@echo "$(BLUE)Running all tests with nextest...$(NC)"
 	@CI=1 RUST_LOG=$(RUST_LOG_LEVEL) RUST_BACKTRACE=$(RUST_BACKTRACE) \
 		$(BREW_ROCKSDB_ENV) $(CARGO) nextest run --all-features --workspace --no-fail-fast
@@ -378,7 +381,7 @@ clean-deps: clean
 # ============================================================================
 
 ## pre-release          Full pre-release validation (comprehensive checks)
-pre-release: install-tools check-workspace check docs-check test audit build-release
+pre-release: install-tools check-workspace check docs-check fmt-check test audit build-release
 	@echo "$(BLUE)Checking version consistency across workspace...$(NC)"
 	@version=$$(grep '^version' d-engine/Cargo.toml | head -n1 | cut -d'"' -f2); \
 	for crate in d-engine-proto d-engine-core d-engine-client d-engine-server d-engine; do \

@@ -386,22 +386,18 @@ async fn test_replace_range_failure_poisons() {
     // A new leader (term 2) overwrites from index 2 onward — a real conflict
     // that must truncate + replace, routing through `replace_range_and_submit`.
     let result = raft_log
-        .filter_out_conflicts_and_append(
-            1,
-            1,
-            vec![
-                Entry {
-                    index: 2,
-                    term: 2,
-                    payload: None,
-                },
-                Entry {
-                    index: 3,
-                    term: 2,
-                    payload: None,
-                },
-            ],
-        )
+        .filter_out_conflicts_and_append(1, 1, vec![
+            Entry {
+                index: 2,
+                term: 2,
+                payload: None,
+            },
+            Entry {
+                index: 3,
+                term: 2,
+                payload: None,
+            },
+        ])
         .await;
     assert!(
         result.is_err(),
@@ -615,22 +611,18 @@ async fn test_poisoned_skips_replace_range() {
     raft_log.poisoned.store(true, Ordering::SeqCst);
 
     let result = raft_log
-        .filter_out_conflicts_and_append(
-            1,
-            1,
-            vec![
-                Entry {
-                    index: 2,
-                    term: 2,
-                    payload: None,
-                },
-                Entry {
-                    index: 3,
-                    term: 2,
-                    payload: None,
-                },
-            ],
-        )
+        .filter_out_conflicts_and_append(1, 1, vec![
+            Entry {
+                index: 2,
+                term: 2,
+                payload: None,
+            },
+            Entry {
+                index: 3,
+                term: 2,
+                payload: None,
+            },
+        ])
         .await;
 
     match result {

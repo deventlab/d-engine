@@ -596,21 +596,18 @@ mod tests {
 
         // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
         log_store
-            .replace_range(
-                3,
-                vec![
-                    Entry {
-                        index: 3,
-                        term: 2,
-                        payload: None,
-                    },
-                    Entry {
-                        index: 4,
-                        term: 2,
-                        payload: None,
-                    },
-                ],
-            )
+            .replace_range(3, vec![
+                Entry {
+                    index: 3,
+                    term: 2,
+                    payload: None,
+                },
+                Entry {
+                    index: 4,
+                    term: 2,
+                    payload: None,
+                },
+            ])
             .await
             .unwrap();
 

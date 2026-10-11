@@ -783,14 +783,11 @@ async fn test_worker_forwards_append_result_on_recv() {
         .try_recv()
         .expect("AppendResult should arrive from the stream ACK");
     assert!(
-        matches!(
-            event,
-            InternalEvent::AppendResult {
-                follower_id: 2,
-                result: Ok(_),
-                ..
-            }
-        ),
+        matches!(event, InternalEvent::AppendResult {
+            follower_id: 2,
+            result: Ok(_),
+            ..
+        }),
         "expected AppendResult for peer 2, got {event:?}"
     );
 }

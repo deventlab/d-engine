@@ -368,13 +368,10 @@ async fn test_pending_reads_slow_path_drained_by_apply_completed() {
         },
         resp_tx,
     ));
-    state.pending_reads.insert(
-        5,
-        PendingReadBatch {
-            deadline: Instant::now() + Duration::from_secs(5),
-            requests,
-        },
-    );
+    state.pending_reads.insert(5, PendingReadBatch {
+        deadline: Instant::now() + Duration::from_secs(5),
+        requests,
+    });
     assert_eq!(state.pending_reads.len(), 1, "precondition: read is queued");
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
@@ -509,13 +506,10 @@ async fn test_pending_reads_cleared_on_stepdown() {
             },
             resp_tx,
         ));
-        state.pending_reads.insert(
-            read_index,
-            PendingReadBatch {
-                deadline: Instant::now() + Duration::from_secs(30),
-                requests,
-            },
-        );
+        state.pending_reads.insert(read_index, PendingReadBatch {
+            deadline: Instant::now() + Duration::from_secs(30),
+            requests,
+        });
         senders.push(resp_rx);
     }
     assert_eq!(state.pending_reads.len(), 2, "precondition: 2 reads queued");

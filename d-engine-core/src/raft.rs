@@ -737,10 +737,11 @@ where
                     // received, silently skipping them forever.
                     match last_included_index {
                         Some(last_included_index) => {
-                            let _ = self.role.init_peers_next_index_and_match_index(
-                                last_included_index,
-                                vec![peer_id],
-                            );
+                            let _ = self
+                                .role
+                                .init_peers_next_index_and_match_index(last_included_index, vec![
+                                    peer_id,
+                                ]);
                         }
                         None => {
                             error!(

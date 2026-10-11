@@ -121,15 +121,11 @@ async fn test_filter_conflicts_performance_during_flush() {
 
     // Measure performance during active flush
     let start = Instant::now();
-    log.filter_out_conflicts_and_append(
-        500,
-        1,
-        vec![Entry {
-            index: 501,
-            term: 1,
-            payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
-        }],
-    )
+    log.filter_out_conflicts_and_append(500, 1, vec![Entry {
+        index: 501,
+        term: 1,
+        payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
+    }])
     .await
     .unwrap();
 

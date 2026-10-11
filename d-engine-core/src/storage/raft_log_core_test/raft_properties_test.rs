@@ -21,15 +21,11 @@ async fn test_log_matching_property() {
     // Conflict resolution: new leader with [1,1] [2,1] [3,2] [4,3]
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(
-            3,
-            2,
-            vec![Entry {
-                index: 4,
-                term: 3,
-                payload: None,
-            }],
-        )
+        .filter_out_conflicts_and_append(3, 2, vec![Entry {
+            index: 4,
+            term: 3,
+            payload: None,
+        }])
         .await
         .unwrap();
 

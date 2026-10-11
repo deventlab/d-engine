@@ -165,15 +165,12 @@ async fn test_probe_peer_dispatches_next_probe_after_reject() {
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
 
     let (task_tx, mut task_rx) = mpsc::unbounded_channel();
-    state.replication_workers.insert(
-        2,
-        super::ReplicationWorkerHandle {
-            task_tx,
-            snapshot_failure_count: 0,
-            snapshot_next_retry_at: None,
-            stream_open: Arc::new(AtomicBool::new(true)),
-        },
-    );
+    state.replication_workers.insert(2, super::ReplicationWorkerHandle {
+        task_tx,
+        snapshot_failure_count: 0,
+        snapshot_next_retry_at: None,
+        stream_open: Arc::new(AtomicBool::new(true)),
+    });
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
@@ -276,15 +273,12 @@ async fn test_probe_peer_with_pending_ack_receives_no_second_dispatch() {
     // because this test module nests under it — same access pattern `inject_dead_worker_for_test`
     // already relies on for the sibling `worker_lifecycle_test.rs` file.
     let (task_tx, mut task_rx) = mpsc::unbounded_channel();
-    state.replication_workers.insert(
-        2,
-        super::ReplicationWorkerHandle {
-            task_tx,
-            snapshot_failure_count: 0,
-            snapshot_next_retry_at: None,
-            stream_open: Arc::new(AtomicBool::new(true)),
-        },
-    );
+    state.replication_workers.insert(2, super::ReplicationWorkerHandle {
+        task_tx,
+        snapshot_failure_count: 0,
+        snapshot_next_retry_at: None,
+        stream_open: Arc::new(AtomicBool::new(true)),
+    });
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
@@ -329,15 +323,12 @@ async fn setup_gate_harness(
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
 
     let (task_tx, task_rx) = mpsc::unbounded_channel();
-    state.replication_workers.insert(
-        2,
-        super::ReplicationWorkerHandle {
-            task_tx,
-            snapshot_failure_count: 0,
-            snapshot_next_retry_at: None,
-            stream_open: Arc::new(AtomicBool::new(true)),
-        },
-    );
+    state.replication_workers.insert(2, super::ReplicationWorkerHandle {
+        task_tx,
+        snapshot_failure_count: 0,
+        snapshot_next_retry_at: None,
+        stream_open: Arc::new(AtomicBool::new(true)),
+    });
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
     (ctx, state, task_rx, internal_event_tx)
@@ -730,15 +721,12 @@ async fn setup_two_worker_harness(
 ) {
     let (ctx, mut state, task_rx2, internal_event_tx) = setup_gate_harness(path).await;
     let (task_tx3, task_rx3) = mpsc::unbounded_channel();
-    state.replication_workers.insert(
-        3,
-        super::ReplicationWorkerHandle {
-            task_tx: task_tx3,
-            snapshot_failure_count: 0,
-            snapshot_next_retry_at: None,
-            stream_open: Arc::new(AtomicBool::new(true)),
-        },
-    );
+    state.replication_workers.insert(3, super::ReplicationWorkerHandle {
+        task_tx: task_tx3,
+        snapshot_failure_count: 0,
+        snapshot_next_retry_at: None,
+        stream_open: Arc::new(AtomicBool::new(true)),
+    });
     (ctx, state, task_rx2, task_rx3, internal_event_tx)
 }
 

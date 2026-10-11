@@ -2149,14 +2149,11 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_insert_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(
-            1,
-            Command::Insert {
-                key: Bytes::from_static(b"key1"),
-                value: Bytes::from_static(b"value1"),
-                ttl_secs: None,
-            },
-        );
+        let entry = apply_entry(1, Command::Insert {
+            key: Bytes::from_static(b"key1"),
+            value: Bytes::from_static(b"value1"),
+            ttl_secs: None,
+        });
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2170,12 +2167,9 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_delete_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(
-            1,
-            Command::Delete {
-                key: Bytes::from_static(b"key1"),
-            },
-        );
+        let entry = apply_entry(1, Command::Delete {
+            key: Bytes::from_static(b"key1"),
+        });
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2190,14 +2184,11 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_cas_success() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(
-            1,
-            Command::CompareAndSwap {
-                key: Bytes::from_static(b"lock"),
-                expected: Some(Bytes::from_static(b"owner1")),
-                value: Bytes::from_static(b"owner2"),
-            },
-        );
+        let entry = apply_entry(1, Command::CompareAndSwap {
+            key: Bytes::from_static(b"lock"),
+            expected: Some(Bytes::from_static(b"owner1")),
+            value: Bytes::from_static(b"owner2"),
+        });
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2212,14 +2203,11 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_cas_failure_no_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(
-            1,
-            Command::CompareAndSwap {
-                key: Bytes::from_static(b"lock"),
-                expected: Some(Bytes::from_static(b"wrong_owner")),
-                value: Bytes::from_static(b"owner2"),
-            },
-        );
+        let entry = apply_entry(1, Command::CompareAndSwap {
+            key: Bytes::from_static(b"lock"),
+            expected: Some(Bytes::from_static(b"wrong_owner")),
+            value: Bytes::from_static(b"owner2"),
+        });
 
         broadcast_watch_events(&[entry], &[failed(1)], &tx, None);
 
@@ -2235,30 +2223,21 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
         let entries = vec![
-            apply_entry(
-                1,
-                Command::CompareAndSwap {
-                    key: Bytes::from_static(b"k1"),
-                    expected: Some(Bytes::from_static(b"v0")),
-                    value: Bytes::from_static(b"v1"),
-                },
-            ),
-            apply_entry(
-                2,
-                Command::CompareAndSwap {
-                    key: Bytes::from_static(b"k2"),
-                    expected: Some(Bytes::from_static(b"wrong")),
-                    value: Bytes::from_static(b"v2"),
-                },
-            ),
-            apply_entry(
-                3,
-                Command::CompareAndSwap {
-                    key: Bytes::from_static(b"k3"),
-                    expected: None,
-                    value: Bytes::from_static(b"v3"),
-                },
-            ),
+            apply_entry(1, Command::CompareAndSwap {
+                key: Bytes::from_static(b"k1"),
+                expected: Some(Bytes::from_static(b"v0")),
+                value: Bytes::from_static(b"v1"),
+            }),
+            apply_entry(2, Command::CompareAndSwap {
+                key: Bytes::from_static(b"k2"),
+                expected: Some(Bytes::from_static(b"wrong")),
+                value: Bytes::from_static(b"v2"),
+            }),
+            apply_entry(3, Command::CompareAndSwap {
+                key: Bytes::from_static(b"k3"),
+                expected: None,
+                value: Bytes::from_static(b"v3"),
+            }),
         ];
         let results = vec![succeeded(1), failed(2), succeeded(3)];
 
@@ -2285,28 +2264,19 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
         let entries = vec![
-            apply_entry(
-                1,
-                Command::Insert {
-                    key: Bytes::from_static(b"k1"),
-                    value: Bytes::from_static(b"v1"),
-                    ttl_secs: None,
-                },
-            ),
-            apply_entry(
-                2,
-                Command::CompareAndSwap {
-                    key: Bytes::from_static(b"k2"),
-                    expected: Some(Bytes::from_static(b"wrong")),
-                    value: Bytes::from_static(b"v2"),
-                },
-            ),
-            apply_entry(
-                3,
-                Command::Delete {
-                    key: Bytes::from_static(b"k3"),
-                },
-            ),
+            apply_entry(1, Command::Insert {
+                key: Bytes::from_static(b"k1"),
+                value: Bytes::from_static(b"v1"),
+                ttl_secs: None,
+            }),
+            apply_entry(2, Command::CompareAndSwap {
+                key: Bytes::from_static(b"k2"),
+                expected: Some(Bytes::from_static(b"wrong")),
+                value: Bytes::from_static(b"v2"),
+            }),
+            apply_entry(3, Command::Delete {
+                key: Bytes::from_static(b"k3"),
+            }),
         ];
         let results = vec![succeeded(1), failed(2), succeeded(3)];
 
@@ -2329,22 +2299,16 @@ mod broadcast_watch_events_tests {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
         let entries = vec![
-            apply_entry(
-                10,
-                Command::CompareAndSwap {
-                    key: Bytes::from_static(b"key-a"),
-                    expected: Some(Bytes::from_static(b"old")),
-                    value: Bytes::from_static(b"new-a"),
-                },
-            ),
-            apply_entry(
-                11,
-                Command::CompareAndSwap {
-                    key: Bytes::from_static(b"key-b"),
-                    expected: Some(Bytes::from_static(b"old")),
-                    value: Bytes::from_static(b"new-b"),
-                },
-            ),
+            apply_entry(10, Command::CompareAndSwap {
+                key: Bytes::from_static(b"key-a"),
+                expected: Some(Bytes::from_static(b"old")),
+                value: Bytes::from_static(b"new-a"),
+            }),
+            apply_entry(11, Command::CompareAndSwap {
+                key: Bytes::from_static(b"key-b"),
+                expected: Some(Bytes::from_static(b"old")),
+                value: Bytes::from_static(b"new-b"),
+            }),
         ];
         let results = vec![failed(10), succeeded(11)];
 
@@ -2389,21 +2353,18 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_batch_insert_ops_each_produce_put_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(
-            1,
-            Command::Batch {
-                ops: vec![
-                    BatchOp::Insert {
-                        key: Bytes::from_static(b"k1"),
-                        value: Bytes::from_static(b"v1"),
-                    },
-                    BatchOp::Insert {
-                        key: Bytes::from_static(b"k2"),
-                        value: Bytes::from_static(b"v2"),
-                    },
-                ],
-            },
-        );
+        let entry = apply_entry(1, Command::Batch {
+            ops: vec![
+                BatchOp::Insert {
+                    key: Bytes::from_static(b"k1"),
+                    value: Bytes::from_static(b"v1"),
+                },
+                BatchOp::Insert {
+                    key: Bytes::from_static(b"k2"),
+                    value: Bytes::from_static(b"v2"),
+                },
+            ],
+        });
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2439,19 +2400,16 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_batch_delete_ops_each_produce_delete_event() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(
-            1,
-            Command::Batch {
-                ops: vec![
-                    BatchOp::Delete {
-                        key: Bytes::from_static(b"k1"),
-                    },
-                    BatchOp::Delete {
-                        key: Bytes::from_static(b"k2"),
-                    },
-                ],
-            },
-        );
+        let entry = apply_entry(1, Command::Batch {
+            ops: vec![
+                BatchOp::Delete {
+                    key: Bytes::from_static(b"k1"),
+                },
+                BatchOp::Delete {
+                    key: Bytes::from_static(b"k2"),
+                },
+            ],
+        });
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 
@@ -2486,24 +2444,21 @@ mod broadcast_watch_events_tests {
     async fn test_broadcast_batch_mixed_ops_events_preserve_order() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(10);
 
-        let entry = apply_entry(
-            1,
-            Command::Batch {
-                ops: vec![
-                    BatchOp::Insert {
-                        key: Bytes::from_static(b"k1"),
-                        value: Bytes::from_static(b"v1"),
-                    },
-                    BatchOp::Delete {
-                        key: Bytes::from_static(b"k2"),
-                    },
-                    BatchOp::Insert {
-                        key: Bytes::from_static(b"k3"),
-                        value: Bytes::from_static(b"v3"),
-                    },
-                ],
-            },
-        );
+        let entry = apply_entry(1, Command::Batch {
+            ops: vec![
+                BatchOp::Insert {
+                    key: Bytes::from_static(b"k1"),
+                    value: Bytes::from_static(b"v1"),
+                },
+                BatchOp::Delete {
+                    key: Bytes::from_static(b"k2"),
+                },
+                BatchOp::Insert {
+                    key: Bytes::from_static(b"k3"),
+                    value: Bytes::from_static(b"v3"),
+                },
+            ],
+        });
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
 

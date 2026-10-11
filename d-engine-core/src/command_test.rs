@@ -176,14 +176,11 @@ fn test_decode_noop_entry_produces_noop_command() {
     let entries = vec![noop_entry(1, 1)];
     let result = decode_entries(entries).unwrap();
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0],
-        ApplyEntry {
-            index: 1,
-            term: 1,
-            command: Command::Noop
-        }
-    );
+    assert_eq!(result[0], ApplyEntry {
+        index: 1,
+        term: 1,
+        command: Command::Noop
+    });
 }
 
 #[test]
@@ -202,28 +199,22 @@ fn test_decode_insert_without_ttl() {
     let entries = vec![insert_entry(2, 1, b"k", b"v", 0)];
     let result = decode_entries(entries).unwrap();
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0].command,
-        Command::Insert {
-            key: Bytes::from_static(b"k"),
-            value: Bytes::from_static(b"v"),
-            ttl_secs: None,
-        }
-    );
+    assert_eq!(result[0].command, Command::Insert {
+        key: Bytes::from_static(b"k"),
+        value: Bytes::from_static(b"v"),
+        ttl_secs: None,
+    });
 }
 
 #[test]
 fn test_decode_insert_with_ttl_converts_to_some() {
     let entries = vec![insert_entry(3, 1, b"key", b"val", 60)];
     let result = decode_entries(entries).unwrap();
-    assert_eq!(
-        result[0].command,
-        Command::Insert {
-            key: Bytes::from_static(b"key"),
-            value: Bytes::from_static(b"val"),
-            ttl_secs: Some(60),
-        }
-    );
+    assert_eq!(result[0].command, Command::Insert {
+        key: Bytes::from_static(b"key"),
+        value: Bytes::from_static(b"val"),
+        ttl_secs: Some(60),
+    });
 }
 
 #[test]
@@ -231,40 +222,31 @@ fn test_decode_delete_entry() {
     let entries = vec![delete_entry(4, 2, b"gone")];
     let result = decode_entries(entries).unwrap();
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0].command,
-        Command::Delete {
-            key: Bytes::from_static(b"gone")
-        }
-    );
+    assert_eq!(result[0].command, Command::Delete {
+        key: Bytes::from_static(b"gone")
+    });
 }
 
 #[test]
 fn test_decode_cas_with_expected_value() {
     let entries = vec![cas_entry(5, 1, b"k", Some(b"old"), b"new")];
     let result = decode_entries(entries).unwrap();
-    assert_eq!(
-        result[0].command,
-        Command::CompareAndSwap {
-            key: Bytes::from_static(b"k"),
-            expected: Some(Bytes::from_static(b"old")),
-            value: Bytes::from_static(b"new"),
-        }
-    );
+    assert_eq!(result[0].command, Command::CompareAndSwap {
+        key: Bytes::from_static(b"k"),
+        expected: Some(Bytes::from_static(b"old")),
+        value: Bytes::from_static(b"new"),
+    });
 }
 
 #[test]
 fn test_decode_cas_with_no_expected_value_means_key_must_not_exist() {
     let entries = vec![cas_entry(6, 1, b"k", None, b"new")];
     let result = decode_entries(entries).unwrap();
-    assert_eq!(
-        result[0].command,
-        Command::CompareAndSwap {
-            key: Bytes::from_static(b"k"),
-            expected: None,
-            value: Bytes::from_static(b"new"),
-        }
-    );
+    assert_eq!(result[0].command, Command::CompareAndSwap {
+        key: Bytes::from_static(b"k"),
+        expected: None,
+        value: Bytes::from_static(b"new"),
+    });
 }
 
 // ── decode: index and term preservation ────────────────────────────────────
@@ -325,21 +307,18 @@ fn test_decode_batch_inserts_only() {
     let entries = vec![batch_entry(7, 2, ops)];
     let result = decode_entries(entries).unwrap();
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0].command,
-        Command::Batch {
-            ops: vec![
-                CommandBatchOp::Insert {
-                    key: Bytes::from_static(b"k1"),
-                    value: Bytes::from_static(b"v1"),
-                },
-                CommandBatchOp::Insert {
-                    key: Bytes::from_static(b"k2"),
-                    value: Bytes::from_static(b"v2"),
-                },
-            ]
-        }
-    );
+    assert_eq!(result[0].command, Command::Batch {
+        ops: vec![
+            CommandBatchOp::Insert {
+                key: Bytes::from_static(b"k1"),
+                value: Bytes::from_static(b"v1"),
+            },
+            CommandBatchOp::Insert {
+                key: Bytes::from_static(b"k2"),
+                value: Bytes::from_static(b"v2"),
+            },
+        ]
+    });
 }
 
 #[test]
@@ -349,19 +328,16 @@ fn test_decode_batch_deletes_only() {
     let entries = vec![batch_entry(8, 2, ops)];
     let result = decode_entries(entries).unwrap();
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0].command,
-        Command::Batch {
-            ops: vec![
-                CommandBatchOp::Delete {
-                    key: Bytes::from_static(b"k1"),
-                },
-                CommandBatchOp::Delete {
-                    key: Bytes::from_static(b"k2"),
-                },
-            ]
-        }
-    );
+    assert_eq!(result[0].command, Command::Batch {
+        ops: vec![
+            CommandBatchOp::Delete {
+                key: Bytes::from_static(b"k1"),
+            },
+            CommandBatchOp::Delete {
+                key: Bytes::from_static(b"k2"),
+            },
+        ]
+    });
 }
 
 #[test]
@@ -375,24 +351,21 @@ fn test_decode_batch_mixed_ops() {
     let entries = vec![batch_entry(9, 2, ops)];
     let result = decode_entries(entries).unwrap();
     assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0].command,
-        Command::Batch {
-            ops: vec![
-                CommandBatchOp::Insert {
-                    key: Bytes::from_static(b"k1"),
-                    value: Bytes::from_static(b"v1"),
-                },
-                CommandBatchOp::Delete {
-                    key: Bytes::from_static(b"k2"),
-                },
-                CommandBatchOp::Insert {
-                    key: Bytes::from_static(b"k3"),
-                    value: Bytes::from_static(b"v3"),
-                },
-            ]
-        }
-    );
+    assert_eq!(result[0].command, Command::Batch {
+        ops: vec![
+            CommandBatchOp::Insert {
+                key: Bytes::from_static(b"k1"),
+                value: Bytes::from_static(b"v1"),
+            },
+            CommandBatchOp::Delete {
+                key: Bytes::from_static(b"k2"),
+            },
+            CommandBatchOp::Insert {
+                key: Bytes::from_static(b"k3"),
+                value: Bytes::from_static(b"v3"),
+            },
+        ]
+    });
 }
 
 #[test]

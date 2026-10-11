@@ -303,17 +303,14 @@ async fn test_tick_drains_expired_node_join_commit_action() {
     let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (tx, mut rx) = MaybeCloneOneshot::new();
-    state.pending_commit_actions.insert(
-        42,
-        PostCommitEntry {
-            deadline: expired(),
-            action: PostCommitAction::NodeJoin {
-                node_id: 2,
-                addr: "127.0.0.1:8080".to_string(),
-                sender: tx,
-            },
+    state.pending_commit_actions.insert(42, PostCommitEntry {
+        deadline: expired(),
+        action: PostCommitAction::NodeJoin {
+            node_id: 2,
+            addr: "127.0.0.1:8080".to_string(),
+            sender: tx,
         },
-    );
+    });
 
     state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
@@ -335,17 +332,14 @@ async fn test_tick_keeps_non_expired_node_join_commit_action() {
     let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (tx, mut rx) = MaybeCloneOneshot::new();
-    state.pending_commit_actions.insert(
-        42,
-        PostCommitEntry {
-            deadline: far_future(),
-            action: PostCommitAction::NodeJoin {
-                node_id: 2,
-                addr: "127.0.0.1:8080".to_string(),
-                sender: tx,
-            },
+    state.pending_commit_actions.insert(42, PostCommitEntry {
+        deadline: far_future(),
+        action: PostCommitAction::NodeJoin {
+            node_id: 2,
+            addr: "127.0.0.1:8080".to_string(),
+            sender: tx,
         },
-    );
+    });
 
     state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
@@ -368,13 +362,10 @@ async fn test_tick_expired_leader_noop_triggers_step_down() {
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let (raft_tx, _raft_rx) = mpsc::channel(1);
 
-    state.pending_commit_actions.insert(
-        1,
-        PostCommitEntry {
-            deadline: expired(),
-            action: PostCommitAction::LeaderNoop { term: 1 },
-        },
-    );
+    state.pending_commit_actions.insert(1, PostCommitEntry {
+        deadline: expired(),
+        action: PostCommitAction::LeaderNoop { term: 1 },
+    });
 
     state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 

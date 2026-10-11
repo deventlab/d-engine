@@ -319,10 +319,9 @@ async fn test_shutdown_drops_pending_events_without_responding() {
     let (tx1, rx1) = MaybeCloneOneshot::new();
     let (tx2, rx2) = MaybeCloneOneshot::new();
     let mut queue = VecDeque::new();
-    queue.push_back(InboundEvent::AppendEntries(
-        make_request(5, 9, 5, 1),
-        vec![tx1],
-    ));
+    queue.push_back(InboundEvent::AppendEntries(make_request(5, 9, 5, 1), vec![
+        tx1,
+    ]));
     queue.push_back(InboundEvent::AppendEntries(
         make_request(5, 14, 5, 1),
         vec![tx2],

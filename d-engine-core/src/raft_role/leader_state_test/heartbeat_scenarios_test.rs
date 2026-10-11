@@ -835,10 +835,9 @@ async fn test_last_ack_timestamp_gauge_emitted_only_on_non_stale_ack() {
             .await
             .unwrap();
         assert_eq!(
-            capture.gauge(
-                "core.raft.peer.last_ack_timestamp_seconds",
-                &[("peer_id", "2")]
-            ),
+            capture.gauge("core.raft.peer.last_ack_timestamp_seconds", &[(
+                "peer_id", "2"
+            )]),
             None,
             "stale-term response must not set the timestamp gauge"
         );
@@ -863,10 +862,9 @@ async fn test_last_ack_timestamp_gauge_emitted_only_on_non_stale_ack() {
             .unwrap();
 
         let ts = capture
-            .gauge(
-                "core.raft.peer.last_ack_timestamp_seconds",
-                &[("peer_id", "2")],
-            )
+            .gauge("core.raft.peer.last_ack_timestamp_seconds", &[(
+                "peer_id", "2",
+            )])
             .expect("timestamp gauge must be set after a real ACK");
         assert!(
             ts > 1_700_000_000.0,

@@ -63,17 +63,13 @@ async fn test_filter_conflicts_zero_prev_on_genuinely_empty_log_appends_all() {
     // Act: the very first AppendEntries this follower ever receives.
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(
-            0,
-            0,
-            vec![
-                entry(1, 1),
-                entry(2, 1),
-                entry(3, 1),
-                entry(4, 1),
-                entry(5, 1),
-            ],
-        )
+        .filter_out_conflicts_and_append(0, 0, vec![
+            entry(1, 1),
+            entry(2, 1),
+            entry(3, 1),
+            entry(4, 1),
+            entry(5, 1),
+        ])
         .await
         .unwrap();
 
@@ -114,17 +110,13 @@ async fn test_filter_conflicts_zero_prev_duplicate_resend_preserves_durable_inde
     // hasn't processed a response yet), not a genuinely new peer.
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(
-            0,
-            0,
-            vec![
-                entry(1, 1),
-                entry(2, 1),
-                entry(3, 1),
-                entry(4, 1),
-                entry(5, 1),
-            ],
-        )
+        .filter_out_conflicts_and_append(0, 0, vec![
+            entry(1, 1),
+            entry(2, 1),
+            entry(3, 1),
+            entry(4, 1),
+            entry(5, 1),
+        ])
         .await
         .unwrap();
 

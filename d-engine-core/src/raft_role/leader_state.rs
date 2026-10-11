@@ -2451,14 +2451,11 @@ impl<T: TypeConfig> LeaderState<T> {
                 for (i, sender) in senders.into_iter().enumerate() {
                     metrics::histogram!("core.raft.write.propose_to_commit_ms")
                         .record(propose_to_commit_ms);
-                    self.pending_write_apply.insert(
-                        start_idx + i as u64,
-                        PendingApply {
-                            sender,
-                            proposed_at,
-                            committed_at: commit_ts,
-                        },
-                    );
+                    self.pending_write_apply.insert(start_idx + i as u64, PendingApply {
+                        sender,
+                        proposed_at,
+                        committed_at: commit_ts,
+                    });
                 }
             } else {
                 // Internal requests have no senders, so this loop is a no-op for them.
@@ -2496,13 +2493,10 @@ impl<T: TypeConfig> LeaderState<T> {
         // synchronous drain_commit_actions call (single-voter path) can find the entry.
         // No concurrent writes: Raft loop is single-threaded.
         let noop_index = ctx.raft_log().last_entry_id() + 1;
-        self.pending_commit_actions.insert(
-            noop_index,
-            PostCommitEntry {
-                deadline,
-                action: PostCommitAction::LeaderNoop { term },
-            },
-        );
+        self.pending_commit_actions.insert(noop_index, PostCommitEntry {
+            deadline,
+            action: PostCommitAction::LeaderNoop { term },
+        });
 
         // Write noop with no sender — purely for commit confirmation.
         if let Err(e) = self
@@ -3247,17 +3241,14 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Record post-commit action: when the config index commits, send JoinResponse.
         let join_index = ctx.raft_log().last_entry_id();
-        self.pending_commit_actions.insert(
-            join_index,
-            PostCommitEntry {
-                deadline,
-                action: PostCommitAction::NodeJoin {
-                    node_id,
-                    addr: address,
-                    sender,
-                },
+        self.pending_commit_actions.insert(join_index, PostCommitEntry {
+            deadline,
+            action: PostCommitAction::NodeJoin {
+                node_id,
+                addr: address,
+                sender,
             },
-        );
+        });
 
         debug!("JoinCluster: awaiting commit at index {}", join_index);
         Ok(())
@@ -3768,10 +3759,10 @@ impl<T: TypeConfig> LeaderState<T> {
                 node_id,
                 "Stale learner detected: pending promotion threshold exceeded"
             );
-            metrics::counter!(
-                "core.membership.stale_learner_removed",
-                &[("node_id", node_id.to_string())]
-            )
+            metrics::counter!("core.membership.stale_learner_removed", &[(
+                "node_id",
+                node_id.to_string()
+            )])
             .increment(1);
             if let Err(e) = self.handle_stale_learner(node_id, internal_event_tx, ctx).await {
                 error!(node_id, ?e, "Failed to handle stale learner");
@@ -4157,15 +4148,12 @@ impl<T: TypeConfig> LeaderState<T> {
     ) {
         let (dead_tx, dead_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationTask>();
         drop(dead_rx); // receiver gone → sends will fail
-        self.replication_workers.insert(
-            peer_id,
-            ReplicationWorkerHandle {
-                task_tx: dead_tx,
-                snapshot_failure_count: 0,
-                snapshot_next_retry_at: None,
-                stream_open: Arc::new(AtomicBool::new(true)),
-            },
-        );
+        self.replication_workers.insert(peer_id, ReplicationWorkerHandle {
+            task_tx: dead_tx,
+            snapshot_failure_count: 0,
+            snapshot_next_retry_at: None,
+            stream_open: Arc::new(AtomicBool::new(true)),
+        });
     }
 
     /// Determine effective read consistency policy based on client request and server config

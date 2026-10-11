@@ -703,12 +703,10 @@ mod stale_learner_tests {
     /// - (Actual replication stop happens after config applies via MembershipApplied event)
     #[tokio::test]
     async fn test_stale_learner_creates_removal_config() {
-        let (mut leader, mut membership) = create_test_leader_state(
-            "test_stale_learner_removal_config",
-            vec![
+        let (mut leader, mut membership) =
+            create_test_leader_state("test_stale_learner_removal_config", vec![
                 (101, Duration::from_secs(31)), // stale: over 30s threshold
-            ],
-        );
+            ]);
         membership.expect_get_node_status().returning(|_| Some(NodeStatus::Active));
 
         // Mock: Capture payloads to validate config change

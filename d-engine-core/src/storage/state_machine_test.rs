@@ -165,22 +165,19 @@ impl StateMachineTestSuite {
 
         sm.start().await?;
 
-        let entry = create_batch_entry(
-            1,
-            vec![
-                BatchOp::Insert {
-                    key: b"k1".to_vec().into(),
-                    value: b"v1".to_vec().into(),
-                },
-                BatchOp::Insert {
-                    key: b"k2".to_vec().into(),
-                    value: b"v2".to_vec().into(),
-                },
-                BatchOp::Delete {
-                    key: b"k1".to_vec().into(),
-                },
-            ],
-        );
+        let entry = create_batch_entry(1, vec![
+            BatchOp::Insert {
+                key: b"k1".to_vec().into(),
+                value: b"v1".to_vec().into(),
+            },
+            BatchOp::Insert {
+                key: b"k2".to_vec().into(),
+                value: b"v2".to_vec().into(),
+            },
+            BatchOp::Delete {
+                key: b"k1".to_vec().into(),
+            },
+        ]);
         sm.apply_chunk(&[entry]).await?;
 
         // k1 was deleted after insert, k2 survived
@@ -916,22 +913,19 @@ impl StateMachineTestSuite {
             let sm = builder.build().await?;
             sm.start().await?;
 
-            let entry = create_batch_entry(
-                1,
-                vec![
-                    BatchOp::Insert {
-                        key: b"bk1".to_vec().into(),
-                        value: b"bv1".to_vec().into(),
-                    },
-                    BatchOp::Insert {
-                        key: b"bk2".to_vec().into(),
-                        value: b"bv2".to_vec().into(),
-                    },
-                    BatchOp::Delete {
-                        key: b"bk1".to_vec().into(),
-                    },
-                ],
-            );
+            let entry = create_batch_entry(1, vec![
+                BatchOp::Insert {
+                    key: b"bk1".to_vec().into(),
+                    value: b"bv1".to_vec().into(),
+                },
+                BatchOp::Insert {
+                    key: b"bk2".to_vec().into(),
+                    value: b"bv2".to_vec().into(),
+                },
+                BatchOp::Delete {
+                    key: b"bk1".to_vec().into(),
+                },
+            ]);
             sm.apply_chunk(&[entry]).await?;
 
             assert_eq!(sm.get(b"bk1")?, None);

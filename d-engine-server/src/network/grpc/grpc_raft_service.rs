@@ -146,10 +146,9 @@ where
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
-            .send(InboundEvent::AppendEntries(
-                request.into_inner(),
-                vec![resp_tx],
-            ))
+            .send(InboundEvent::AppendEntries(request.into_inner(), vec![
+                resp_tx,
+            ]))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 

@@ -286,10 +286,10 @@ fn test_into_scan_results_success() {
 
     let scan = response.into_scan_results().unwrap();
     assert_eq!(scan.revision, 7);
-    assert_eq!(
-        scan.entries,
-        vec![(Bytes::from("/services/node1"), Bytes::from("10.0.0.1"))]
-    );
+    assert_eq!(scan.entries, vec![(
+        Bytes::from("/services/node1"),
+        Bytes::from("10.0.0.1")
+    )]);
 }
 
 #[test]

@@ -224,10 +224,10 @@ pub fn ensure_safe_join(
         Ok(())
     } else {
         // metrics::counter!("core.cluster.unsafe_join_attempts", 1);
-        metrics::counter!(
-            "core.cluster.unsafe_join_attempts",
-            &[("node_id", node_id.to_string())]
-        )
+        metrics::counter!("core.cluster.unsafe_join_attempts", &[(
+            "node_id",
+            node_id.to_string()
+        )])
         .increment(1);
 
         warn!(
