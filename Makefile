@@ -235,7 +235,7 @@ check: fmt-check clippy deny
 quick-check: check-workspace
 	@echo "$(BLUE)Running quick validation...$(NC)"
 	@$(BREW_ROCKSDB_ENV) $(CARGO) check --workspace --lib --tests --all-features
-	@$(CARGO) fmt --all -- --check || exit 1
+	@$(CARGO_FMT) --all -- --check || exit 1
 	@echo "$(GREEN)✓ Quick validation passed$(NC)"
 
 # ============================================================================
