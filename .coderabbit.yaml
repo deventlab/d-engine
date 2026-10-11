@@ -1,0 +1,9 @@
+reviews:
+  path_filters:
+    # Unit tests
+    - "!**/*_test.rs"
+    - "!**/*_tests.rs"
+    - "!**/*_test/**"
+    - "!**/*_tests/**"
+    # Integration tests
+    - "!**/tests/**"
