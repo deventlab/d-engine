@@ -103,8 +103,14 @@ pub trait StateMachine: Send + Sync + 'static {
     /// this must not rely on `Drop`. Must be synchronous and idempotent; afterwards every
     /// operation returns `NotServing`.
     ///
+    /// When it returns, reopening the same storage restores every applied entry and a
+    /// `last_applied` that is not older than the one before the call, and every exclusive
+    /// resource is released. If persisting fails, still release the resources and return the
+    /// first error. A second call returns `Ok(())`.
     /// Default is a no-op, for implementations with nothing to persist or release.
-    fn close(&self) {}
+    fn close(&self) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// Checks if the state machine is currently running.
     /// Sync operation as it just checks an atomic boolean.

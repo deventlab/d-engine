@@ -32,12 +32,16 @@ impl StateMachine for CustomStateMachine {
     // close() has a default no-op implementation.
     // Override it if your backend must persist something at shutdown (e.g. lease state) or
     // holds an exclusive OS resource (a lock file, an open DB handle). d-engine calls it once,
-    // after every committed entry has been applied. It must be synchronous and idempotent.
+    // as the worker's last step: after every committed entry has been applied when the worker
+    // drains cleanly, but shutdown continues without that guarantee if
+    // `shutdown_apply_timeout_ms` expires. It must be synchronous and idempotent, release its
+    // resources even if persisting fails, and return the first error.
     // You may keep your own Arc to the state machine, so do not rely on Drop alone.
     //
-    // fn close(&self) {
-    //     self.backend.flush();
+    // fn close(&self) -> Result<(), Error> {
+    //     let flushed = self.backend.flush();
     //     self.backend.close(); // release lock file / DB handle
+    //     flushed
     // }
 
     fn is_running(&self) -> bool {
@@ -118,7 +122,7 @@ impl StateMachine for CustomStateMachine {
 | Method                             | Purpose                                                                                      | Sync/Async | Criticality |
 | ---------------------------------- | -------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | `start()`                          | Initialize state machine service                                                             | Sync       | High        |
-| `close()`                          | Final step at shutdown: persist what must survive a restart and release exclusive OS resources (e.g. DB lock file). Idempotent. Default no-op. | Sync       | Medium      |
+| `close()`                          | Final step at shutdown: persist what must survive a restart and release exclusive OS resources (e.g. DB lock file), even if persisting fails; returns the first error. Idempotent. Default `Ok(())`. | Sync       | Medium      |
 | `is_running()`                     | Check service status                                                                         | Sync       | Medium      |
 | `get()`                            | Read value by key                                                                            | Sync       | High        |
 | `apply_chunk()`                    | Apply committed entries                                                                      | Async      | Critical    |
@@ -178,7 +182,7 @@ async fn test_custom_state_machine() -> Result<(), Error> {
     let checksum = sm.generate_snapshot_data(temp_dir.path().to_path_buf(), LogId::new(1, 1)).await?;
     assert!(!checksum.is_zero());
 
-    sm.stop()?;
+    sm.close()?;
     Ok(())
 }
 

@@ -203,5 +203,5 @@ where
 
     /// Closes the state machine (see `StateMachine::close`). The worker calls it as its last
     /// act, so nothing is applied after the storage is released. Synchronous and idempotent.
-    fn close(&self);
+    fn close(&self) -> Result<()>;
 }

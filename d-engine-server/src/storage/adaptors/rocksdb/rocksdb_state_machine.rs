@@ -629,30 +629,32 @@ impl StateMachine for RocksDBStateMachine {
 
     /// Sequence: stop serving → persist TTL → flush → save hard state → cancel background
     /// work → drop the DB handle (releasing the LOCK). A second call finds no DB and does nothing.
-    fn close(&self) {
+    fn close(&self) -> Result<(), Error> {
         if self.db.load().is_none() {
-            return;
+            return Ok(());
         }
 
         self.is_serving.store(false, Ordering::SeqCst);
 
-        if let Err(e) = self.persist_ttl_metadata() {
-            error!("close: failed to persist TTL metadata: {e:?}");
-        }
-
-        if let Err(e) = self.flush() {
-            error!("close: failed to flush: {e:?}");
-        }
-
-        if let Err(e) = self.save_hard_state() {
-            error!("close: failed to save hard state: {e:?}");
-        }
+        // Every step runs even if an earlier one failed, so the LOCK is always released;
+        // the first error is returned.
+        let mut first_err: Option<Error> = None;
+        let mut record = |step: &str, result: Result<(), Error>| {
+            if let Err(e) = result {
+                error!("close: {step} failed: {e:?}");
+                first_err.get_or_insert(e);
+            }
+        };
+        record("persist TTL metadata", self.persist_ttl_metadata());
+        record("flush", self.flush());
+        record("save hard state", self.save_hard_state());
         if let Some(db) = self.db.load().as_deref() {
             db.cancel_all_background_work(true);
         }
         // Release Arc<DB>: refcount decrements here, RocksDB LOCK file released.
         self.db.store(None);
         info!("RocksDB state machine: DB closed, LOCK released");
+        first_err.map_or(Ok(()), Err)
     }
 
     fn is_running(&self) -> bool {
@@ -1185,6 +1187,8 @@ impl StateMachine for RocksDBStateMachine {
 impl Drop for RocksDBStateMachine {
     fn drop(&mut self) {
         // Safety net for an owner that never called `close()`; a no-op if it already did.
-        StateMachine::close(self);
+        if let Err(e) = StateMachine::close(self) {
+            error!("RocksDB state machine: close on drop failed: {e:?}");
+        }
     }
 }

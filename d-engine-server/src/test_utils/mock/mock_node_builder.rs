@@ -118,6 +118,9 @@ pub struct MockBuilder {
     pub state_machine_handler: Option<Arc<MockStateMachineHandler<MockTypeConfig>>>,
     /// Optional state machine worker the built `Node` runs (defaults to an idle one)
     pub sm_worker: Option<SmWorkerHandle<MockTypeConfig>>,
+    /// Queue of `sm_worker`: the Raft loop delivers committed entries here, so lifecycle tests
+    /// see them reach the worker's writer instead of a channel nobody reads
+    sm_queue: Option<mpsc::UnboundedSender<StateMachineCommand>>,
     /// Optional node configuration
     pub node_config: Option<RaftNodeConfig>,
     /// Optional election toggle (defaults to true)
@@ -158,6 +161,7 @@ impl MockBuilder {
             replication_handler: None,
             state_machine_handler: None,
             sm_worker: None,
+            sm_queue: None,
             node_config: None,
             turn_on_election: None,
             shutdown_signal,
@@ -250,7 +254,9 @@ impl MockBuilder {
             self.replication_handler.unwrap_or_else(mock_replication_handler),
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
-            default_state_machine_commands(),
+            self.sm_queue
+                .map(d_engine_core::StateMachineCommandSender::new)
+                .unwrap_or_else(default_state_machine_commands),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership_fn())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config.unwrap_or_else(|| {
@@ -326,7 +332,7 @@ impl MockBuilder {
     /// Wraps the Raft instance in a Node container for integration testing.
     pub fn build_node(mut self) -> Node<MockTypeConfig> {
         let shutdown_signal = self.shutdown_signal.clone();
-        let sm_worker = self.sm_worker.take().unwrap_or_else(|| idle_sm_worker().0);
+        let sm_worker = self.take_or_idle_sm_worker();
         let raft = self.build_raft();
         let event_tx = raft.event_sender();
         let cmd_tx = raft.cmd_sender();
@@ -374,7 +380,7 @@ impl MockBuilder {
     pub fn build_node_with_rpc_server(mut self) -> Arc<Node<MockTypeConfig>> {
         let shutdown = self.shutdown_signal.clone();
         let node_config_option = self.node_config.clone();
-        let sm_worker = self.sm_worker.take().unwrap_or_else(|| idle_sm_worker().0);
+        let sm_worker = self.take_or_idle_sm_worker();
 
         let raft = self.build_raft();
         let event_tx = raft.event_sender();
@@ -521,13 +527,28 @@ impl MockBuilder {
         self
     }
 
-    /// Set the state machine worker the built `Node` starts and stops in `run()`
+    /// Set the state machine worker the built `Node` starts and stops in `run()`, together with
+    /// its queue (the second value of `sm_worker_with_writer`), which the Raft loop delivers
+    /// committed entries to.
     pub fn with_sm_worker(
         mut self,
         sm_worker: SmWorkerHandle<MockTypeConfig>,
+        queue: mpsc::UnboundedSender<StateMachineCommand>,
     ) -> Self {
         self.sm_worker = Some(sm_worker);
+        self.sm_queue = Some(queue);
         self
+    }
+
+    /// The worker the node runs: the one supplied, or an idle one whose queue is wired into the
+    /// Raft loop the same way.
+    fn take_or_idle_sm_worker(&mut self) -> SmWorkerHandle<MockTypeConfig> {
+        if let Some(sm_worker) = self.sm_worker.take() {
+            return sm_worker;
+        }
+        let (sm_worker, queue) = idle_sm_worker();
+        self.sm_queue = Some(queue);
+        sm_worker
     }
 
     /// Set custom node configuration
@@ -607,7 +628,7 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
     let mut mock = MockStateMachine::new();
 
     mock.expect_start().returning(|| Ok(()));
-    mock.expect_close().returning(|| ());
+    mock.expect_close().returning(|| Ok(()));
     mock.expect_is_running().returning(|| true);
 
     mock.expect_get().returning(|_| Ok(None));
@@ -668,7 +689,7 @@ pub(crate) fn sm_worker_with_writer(
 ) {
     // The worker (or the handle, if never started) closes the state machine. Added last, so a
     // test's own `expect_close` keeps precedence.
-    writer.expect_close().returning(|| ());
+    writer.expect_close().returning(|| Ok(()));
     let (tx, rx) = mpsc::unbounded_channel();
     let (events_tx, events_rx) = mpsc::unbounded_channel();
     // Apply results must have somewhere to go; leaked like `default_state_machine_commands`.

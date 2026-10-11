@@ -54,9 +54,9 @@ impl StateMachine for SlowApplyProbe {
         result
     }
 
-    fn close(&self) {
+    fn close(&self) -> Result<(), Error> {
         self.storage_closed.store(true, Ordering::SeqCst);
-        self.inner.close();
+        self.inner.close()
     }
 
     // Everything below delegates unchanged.

@@ -359,17 +359,19 @@ fn apply_chunk(&mut self, entries: &[ApplyEntry]) -> Result<(), ...>
 | Before (v0.2.4)                                                  | After (v0.2.5)                                                    |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------- |
 | `fn stop(&self) -> Result<(), Error>` (required)                 | **Removed**                                                       |
-| `fn close_storage(&self)` (default no-op)                        | **Renamed** `fn close(&self)` (default no-op)                     |
+| `fn close_storage(&self)` (default no-op)                        | **Renamed** `fn close(&self) -> Result<(), Error>` (default `Ok`) |
 | `[raft.storage]` accepted as an alias of `[raft.state_machine]`  | Use `[raft.state_machine]`                                        |
 
 `stop()` was never called by d-engine. `close()` is now the one end-of-life hook. d-engine calls it once, as the last step of the
-state machine worker, after every committed entry has been applied. Because you may keep your own `Arc` to the state machine,
-do not rely on `Drop` alone.
+state machine worker. When the worker drains cleanly, every committed entry has been applied by then; if
+`shutdown_apply_timeout_ms` expires first, shutdown continues and committed entries may remain unapplied until the next start.
+Because you may keep your own `Arc` to the state machine, do not rely on `Drop` alone. `close()` returns an error if persisting
+fails: release your resources anyway and return the first error. The node logs it at ERROR level.
 
 ### Migration Steps
 
 1. Delete your `fn stop(...)`.
-2. Rename `fn close_storage(&self)` to `fn close(&self)`.
+2. Rename `fn close_storage(&self)` to `fn close(&self) -> Result<(), Error>`.
 3. If your `stop()` persisted something that must survive a restart (for example lease state), do it in `close()`.
 4. `close()` must be synchronous and idempotent: after it returns, every operation should return a "not serving" error.
 5. In config files, rename `[raft.storage]` to `[raft.state_machine]`.
@@ -380,9 +382,10 @@ fn stop(&self) -> Result<(), Error> { self.persist_ttl()?; Ok(()) }
 fn close_storage(&self) { self.db.flush(); }
 
 // After
-fn close(&self) {
-    let _ = self.persist_ttl();
+fn close(&self) -> Result<(), Error> {
+    let persisted = self.persist_ttl();
     self.db.flush();
+    persisted
 }
 ```
 

@@ -103,7 +103,7 @@ fn state_machine_with_snapshot() -> MockStateMachine {
     use d_engine_proto::common::LogId;
     let mut sm = MockStateMachine::new();
     sm.expect_start().returning(|| Ok(()));
-    sm.expect_close().returning(|| ());
+    sm.expect_close().returning(|| Ok(()));
     sm.expect_is_running().returning(|| true);
     sm.expect_get().returning(|_| Ok(None));
     sm.expect_apply_chunk().returning(|_| Ok(vec![]));

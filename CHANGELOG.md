@@ -58,7 +58,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- **⚠️ `StateMachine::stop()` removed; `StateMachine::close_storage()` renamed to `close()`** (#455): `stop()` had no caller in d-engine. `close()` is now the single, permanent, idempotent end-of-life hook and also persists what must survive a restart (lease state). Custom implementations: delete `stop()`, rename `close_storage()` to `close()`, and move any lease persistence from `stop()` into `close()`. See `MIGRATION_GUIDE.md`.
+- **⚠️ `StateMachine::stop()` removed; `StateMachine::close_storage()` renamed to `close()`** (#455): `stop()` had no caller in d-engine. `close()` is now the single, permanent, idempotent end-of-life hook and also persists what must survive a restart (lease state). It returns `Result<(), Error>`: release your resources even if persisting fails, and return the first error; the node logs it at ERROR level. Custom implementations: delete `stop()`, rename `close_storage()` to `close()`, and move any lease persistence from `stop()` into `close()`. See `MIGRATION_GUIDE.md`.
 
 - **State machine worker lifecycle** (#455): the `NodeBuilder` only assembles the worker; `Node::run()` starts it and stops it. `StateMachineWorker::new` no longer takes a shutdown signal.
 

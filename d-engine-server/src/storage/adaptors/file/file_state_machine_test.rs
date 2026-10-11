@@ -29,7 +29,7 @@ async fn test_file_sm_close_marks_not_running() {
     sm.start().await.unwrap();
     assert!(sm.is_running());
 
-    sm.close();
+    sm.close().unwrap();
 
     assert!(!sm.is_running(), "close must mark SM not running");
 }
@@ -61,7 +61,7 @@ async fn test_file_sm_reads_fail_after_close() {
         "readable while running"
     );
 
-    sm.close();
+    sm.close().unwrap();
 
     let not_serving = |err: d_engine_core::Error| format!("{err:?}").contains("NotServing");
     assert!(not_serving(
@@ -81,8 +81,8 @@ async fn test_file_sm_reads_fail_after_close() {
 async fn test_file_sm_close_twice_is_safe() {
     let dir = TempDir::new().unwrap();
     let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
-    sm.close();
-    sm.close();
+    sm.close().unwrap();
+    sm.close().unwrap();
     assert!(!sm.is_running());
 }
 

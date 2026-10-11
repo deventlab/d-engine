@@ -995,6 +995,21 @@ impl FileStateMachine {
         }
     }
 
+    /// Writes the lease table to `ttl_state.bin`. Once a checkpoint has cleared the WAL this
+    /// file is the only record of key expiry, so it is written to a temp file and renamed: a
+    /// crash mid-write cannot leave a truncated file.
+    fn persist_lease(&self) -> Result<(), Error> {
+        let Some(ref lease) = self.lease else {
+            return Ok(());
+        };
+        let tmp_path = self.data_dir.join("ttl_state.bin.tmp");
+        let file = std::fs::File::create(&tmp_path)?;
+        std::io::Write::write_all(&mut &file, &lease.to_snapshot())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp_path, self.data_dir.join("ttl_state.bin"))?;
+        Ok(())
+    }
+
     /// Batch WAL writes with proper durability guarantees.
     ///
     /// `cas_outcomes[i]` is consulted only when `entries[i].command` is
@@ -1046,9 +1061,9 @@ impl Drop for FileStateMachine {
         let timer = Instant::now();
 
         // Save state into local database including flush operation
-        match self.save_hard_state() {
-            Ok(_) => debug!("StateMachine saved in {:?}", timer.elapsed()),
-            Err(e) => error!("Failed to save StateMachine: {}", e),
+        match StateMachine::close(self) {
+            Ok(()) => debug!("StateMachine closed in {:?}", timer.elapsed()),
+            Err(e) => error!("Failed to close StateMachine: {}", e),
         }
     }
 }
@@ -1068,18 +1083,16 @@ impl StateMachine for FileStateMachine {
         Ok(())
     }
 
-    fn close(&self) {
+    fn close(&self) -> Result<(), Error> {
         if !self.running.swap(false, Ordering::SeqCst) {
-            return; // already closed
+            return Ok(()); // already closed
         }
-        // Persist lease state so it survives a restart. Blocking write: `close` is sync.
-        if let Some(ref lease) = self.lease {
-            let ttl_path = self.data_dir.join("ttl_state.bin");
-            if let Err(e) = std::fs::write(&ttl_path, lease.to_snapshot()) {
-                error!("close: failed to persist TTL state: {e}");
-            }
-        }
-        // No exclusive OS lock file here; `Drop` saves the hard state.
+        // The developer may keep an `Arc` to this state machine, so `Drop` may never run:
+        // persist everything a restart needs here. Both steps run; the first error is returned.
+        // No exclusive OS lock file to release.
+        let saved = self.save_hard_state();
+        let leased = self.persist_lease();
+        saved.and(leased)
     }
 
     fn is_running(&self) -> bool {
@@ -1104,6 +1117,7 @@ impl StateMachine for FileStateMachine {
         &self,
         chunk: &[ApplyEntry],
     ) -> Result<Vec<ApplyResult>, Error> {
+        self.ensure_serving()?;
         let chunk_len = chunk.len();
         let mut results = Vec::with_capacity(chunk_len);
         let mut highest_log_id: Option<LogId> = None;

@@ -40,7 +40,7 @@ fn rig_with(
     let mut writer = MockStateMachineWriterOps::new();
     configure(&mut writer, applied.clone());
     // Added last, so a test's own `expect_close` keeps precedence.
-    writer.expect_close().returning(|| ());
+    writer.expect_close().returning(|| Ok(()));
 
     let (tx, rx) = mpsc::unbounded_channel();
     let (events_tx, events_rx) = mpsc::unbounded_channel();
@@ -237,4 +237,50 @@ async fn test_stop_and_join_reports_a_panicked_worker() {
         rig.handle.stop_and_join(Duration::from_secs(2)).await,
         Err(StopError::Panicked)
     );
+}
+
+/// Business scenario: the node shuts down while the disk is full, so the state machine cannot
+/// persist its final state in `close`. Purpose: the node's shutdown path learns about it
+/// (`Failed`, carrying the reason) instead of believing the stop was clean.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_stop_and_join_reports_a_failed_close() {
+    let rig = rig_with(|writer, _| {
+        writer
+            .expect_close()
+            .times(1)
+            .returning(|| Err(crate::SnapshotError::OperationFailed("disk full".into()).into()));
+    });
+    rig.handle.start().expect("start");
+
+    let result = rig.handle.stop_and_join(Duration::from_secs(2)).await;
+
+    match result {
+        Err(StopError::Failed(reason)) => {
+            assert!(
+                reason.contains("disk full"),
+                "reason lost the cause: {reason}"
+            )
+        }
+        other => panic!("a failed close must be reported as Failed, got {other:?}"),
+    }
+}
+
+/// Same as above for a worker that was never started: its state machine is still closed on stop,
+/// and a failure there must not be swallowed just because no thread ever ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_stop_before_start_reports_a_failed_close() {
+    let rig = rig_with(|writer, _| {
+        writer
+            .expect_close()
+            .times(1)
+            .returning(|| Err(crate::SnapshotError::OperationFailed("disk full".into()).into()));
+    });
+
+    let result = rig.handle.stop_and_join(Duration::from_secs(1)).await;
+
+    assert!(
+        matches!(&result, Err(StopError::Failed(reason)) if reason.contains("disk full")),
+        "got {result:?}"
+    );
+    assert!(state_of(&rig.handle).contains("Stopped"));
 }

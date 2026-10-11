@@ -122,7 +122,7 @@ fn create_test_entry(
 #[tokio::test]
 async fn test_apply_success_sends_apply_completed() {
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_apply_chunk().times(1).returning(|entries| {
         let results: Vec<crate::ApplyResult> =
             entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect();
@@ -191,7 +191,7 @@ async fn test_apply_success_sends_apply_completed() {
 #[tokio::test]
 async fn test_apply_failure_sends_fatal_error() {
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_apply_chunk().times(1).returning(|_| {
         Err(Error::Fatal(
             "Disk failure - cannot write to storage".to_string(),
@@ -255,7 +255,7 @@ async fn test_apply_failure_sends_fatal_error() {
 #[tokio::test]
 async fn test_shutdown_drains_remaining_entries() {
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_apply_chunk().times(3).returning(|entries| {
         let results: Vec<crate::ApplyResult> =
             entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect();
@@ -330,7 +330,7 @@ async fn test_shutdown_command_applies_everything_queued_before_it_then_stops() 
     let applied = Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
     let sink = applied.clone();
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_apply_chunk().returning(move |entries| {
         sink.lock().unwrap().extend(entries.iter().map(|e| e.index));
         Ok(entries.iter().map(|e| ApplyResult::success(e.index)).collect())
@@ -383,7 +383,7 @@ async fn test_shutdown_command_applies_everything_queued_before_it_then_stops() 
 #[tokio::test]
 async fn test_dropping_external_senders_alone_does_not_stop_worker() {
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw
         .expect_apply_chunk()
         .times(1)
@@ -432,7 +432,7 @@ async fn test_dropping_external_senders_alone_does_not_stop_worker() {
 #[tokio::test]
 async fn test_multiple_batches_sequential_processing() {
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_apply_chunk().times(3).returning(|entries| {
         let results: Vec<crate::ApplyResult> =
             entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect();
@@ -511,7 +511,7 @@ async fn test_multiple_batches_sequential_processing() {
 #[tokio::test]
 async fn test_install_snapshot_applied_forwards_result_via_response() {
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_install_prepared_snapshot().times(1).returning(|_, _| {
         Ok(SnapshotApplyResult::Applied {
             last_included: LogId { index: 10, term: 2 },
@@ -559,7 +559,7 @@ async fn test_install_snapshot_applied_forwards_result_via_response() {
 #[tokio::test]
 async fn test_install_snapshot_ignored_stale_forwards_as_ok_not_error() {
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_install_prepared_snapshot().times(1).returning(|_, _| {
         Ok(SnapshotApplyResult::IgnoredStale {
             current: LogId { index: 20, term: 3 },
@@ -609,7 +609,7 @@ async fn test_install_snapshot_ignored_stale_forwards_as_ok_not_error() {
 #[tokio::test]
 async fn test_install_snapshot_error_forwards_as_err_worker_survives() {
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw
         .expect_install_prepared_snapshot()
         .times(1)
@@ -676,7 +676,7 @@ async fn test_apply_and_install_share_single_queue_fifo_order() {
     let order: Arc<std::sync::Mutex<Vec<&'static str>>> = Arc::new(std::sync::Mutex::new(vec![]));
 
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     {
         let order = order.clone();
         mock_smw.expect_apply_chunk().times(2).returning(move |entries| {
@@ -836,7 +836,7 @@ async fn test_capture_local_snapshot_does_not_block_subsequent_apply_entries() {
     let release_rx = std::sync::Mutex::new(Some(release_rx));
 
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
         let rx = release_rx.lock().unwrap().take().expect("called once");
         let _ = rx.recv();
@@ -927,7 +927,7 @@ async fn test_capture_skipped_when_lock_already_held() {
     let (gate_reached_tx, gate_reached_rx) = std::sync::mpsc::channel::<()>();
 
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
         let _ = gate_reached_tx.send(());
         let rx = release_rx.lock().unwrap().take().expect("called once");
@@ -990,7 +990,7 @@ async fn test_install_waits_for_capture_to_release_lock() {
     let release_rx = std::sync::Mutex::new(Some(release_rx));
 
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
         let rx = release_rx.lock().unwrap().take().expect("called once");
         let _ = rx.recv();
@@ -1088,7 +1088,7 @@ async fn test_capture_superseded_by_install_even_when_capture_is_more_advanced()
     let superseded_dir_guard = std::sync::Mutex::new(Some(superseded_dir_guard));
 
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     // Capture's own boundary (index=100) is ahead of what the leader is pushing
     // (index=90) — proves rejection is about "install happened", not "who's newer".
     mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
@@ -1202,7 +1202,7 @@ async fn test_second_capture_at_same_path_waits_for_superseded_cleanup_to_finish
     ));
 
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
         let rx = release_rx.lock().unwrap().take().expect("called once");
         let _ = rx.recv();
@@ -1325,7 +1325,7 @@ async fn test_local_snapshot_ready_reports_operation_failed_when_superseded_clea
     let guard = OwnedSnapshotDir::from_existing(dir_path.clone()).unwrap();
 
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
@@ -1398,7 +1398,7 @@ async fn test_local_snapshot_ready_reports_operation_failed_when_superseded_clea
 #[tokio::test]
 async fn test_local_snapshot_ready_cleans_up_capture_when_response_receiver_dropped() {
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
@@ -1455,7 +1455,7 @@ async fn test_shutdown_waits_for_in_flight_capture_before_returning() {
     let (gate_reached_tx, gate_reached_rx) = std::sync::mpsc::channel::<()>();
 
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_capture_local_snapshot().times(1).returning(move || {
         let _ = gate_reached_tx.send(());
         let rx = release_rx.lock().unwrap().take().expect("called once");
@@ -1534,7 +1534,7 @@ async fn test_superseded_capture_directory_gone_by_the_time_response_resolves() 
     let guard = OwnedSnapshotDir::from_existing(dir_path.clone()).unwrap();
 
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
@@ -1596,7 +1596,7 @@ async fn test_apply_entries_records_sm_worker_queue_wait() {
     let _guard = metrics::set_default_local_recorder(&capture);
 
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_apply_chunk().times(1).returning(|entries| {
         Ok(entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect())
     });
@@ -1642,7 +1642,7 @@ async fn test_apply_entries_records_sm_worker_queue_wait() {
 #[tokio::test]
 async fn test_apply_completed_carries_send_timestamp() {
     let mut mock_smw = MockStateMachineWriterOps::new();
-    mock_smw.expect_close().returning(|| ());
+    mock_smw.expect_close().returning(|| Ok(()));
     mock_smw.expect_apply_chunk().times(1).returning(|entries| {
         Ok(entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect())
     });
@@ -1682,4 +1682,85 @@ async fn test_apply_completed_carries_send_timestamp() {
         }
         other => panic!("expected ApplyCompleted, got {other:?}"),
     }
+}
+
+/// Business scenario: the node is stopped cleanly but the state machine cannot persist its
+/// final state when it is closed (disk full).
+///
+/// Purpose: `run` returns that error instead of reporting a clean exit, and the state machine
+/// was still closed exactly once, so its resources are released.
+#[tokio::test]
+async fn test_run_returns_the_close_error_after_a_clean_drain() {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw
+        .expect_close()
+        .times(1)
+        .returning(|| Err(SnapshotError::OperationFailed("disk full".into()).into()));
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+    );
+    sm_apply_tx.send(StateMachineCommand::Shutdown).unwrap();
+
+    let result = worker.run().await;
+
+    let error = result.expect_err("a failed close must make run() fail");
+    assert!(
+        format!("{error:?}").contains("disk full"),
+        "the close error was lost: {error:?}"
+    );
+}
+
+/// Business scenario: an entry fails to apply, and then closing the state machine fails too.
+///
+/// Purpose: the apply failure stays the reported error (it is the root cause), and the state
+/// machine is still closed once.
+#[tokio::test]
+async fn test_run_keeps_the_apply_error_when_close_also_fails() {
+    let mut mock_smw = MockStateMachineWriterOps::new();
+    mock_smw
+        .expect_apply_chunk()
+        .times(1)
+        .returning(|_| Err(SnapshotError::OperationFailed("apply broke".into()).into()));
+    mock_smw
+        .expect_close()
+        .times(1)
+        .returning(|| Err(SnapshotError::OperationFailed("close broke".into()).into()));
+
+    let (sm_apply_tx, sm_apply_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let worker = StateMachineWorker::<MockTypeConfig>::new(
+        1,
+        Arc::new(mock_smw),
+        sm_apply_tx.clone(),
+        sm_apply_rx,
+        internal_event_tx,
+    );
+    sm_apply_tx
+        .send(StateMachineCommand::ApplyEntries {
+            sent_at: tokio::time::Instant::now(),
+            entries: vec![create_test_entry(1, 1)],
+        })
+        .unwrap();
+
+    let result = worker.run().await;
+
+    let error = format!(
+        "{:?}",
+        result.expect_err("a failed apply must make run() fail")
+    );
+    assert!(
+        error.contains("apply broke"),
+        "the root cause was lost: {error}"
+    );
+    assert!(
+        !error.contains("close broke"),
+        "close error must not replace the apply error: {error}"
+    );
 }

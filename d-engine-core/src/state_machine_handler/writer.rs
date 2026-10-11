@@ -223,7 +223,7 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
         })
     }
 
-    fn close(&self) {
-        self.state_machine.close();
+    fn close(&self) -> Result<()> {
+        self.state_machine.close()
     }
 }

@@ -53,6 +53,8 @@ impl StateMachineTestSuite {
         Self::test_data_survives_reopen(&builder).await?;
         Self::test_batch_survives_reopen(&builder).await?;
         Self::test_ungraceful_shutdown_recovery(&builder).await?;
+        Self::test_close_persists_without_drop(&builder).await?;
+        Self::test_operations_fail_after_close(builder.build().await?).await?;
         Self::test_reset_operation(builder.build().await?).await?;
 
         Self::test_get_multi_returns_values_in_key_order(builder.build().await?).await?;
@@ -86,9 +88,9 @@ impl StateMachineTestSuite {
 
         state_machine.start().await?;
         assert!(state_machine.is_running());
-        state_machine.close();
+        state_machine.close()?;
         assert!(!state_machine.is_running());
-        state_machine.close(); // idempotent
+        state_machine.close()?; // idempotent
         assert!(!state_machine.is_running());
 
         Ok(())
@@ -154,7 +156,7 @@ impl StateMachineTestSuite {
         sm.apply_chunk(&[entry3]).await?;
         assert_eq!(sm.get(b"lock")?, Some(b"owner2".to_vec().into())); // Still owner2
 
-        sm.close();
+        sm.close()?;
         Ok(())
     }
 
@@ -193,7 +195,7 @@ impl StateMachineTestSuite {
         );
         assert_eq!(sm.last_applied().index, 1);
 
-        sm.close();
+        sm.close()?;
         Ok(())
     }
 
@@ -630,7 +632,7 @@ impl StateMachineTestSuite {
         );
 
         // Call close() for graceful shutdown - close() must persist data
-        sm.close();
+        sm.close()?;
 
         // Explicitly drop Arc to release database locks (critical for RocksDB)
         drop(sm);
@@ -867,7 +869,7 @@ impl StateMachineTestSuite {
             assert_eq!(last_applied_before.index, 3);
 
             // Graceful close
-            sm.close();
+            sm.close()?;
         }
 
         // Step 2: Reopen and verify
@@ -951,7 +953,7 @@ impl StateMachineTestSuite {
         );
         assert_eq!(sm2.last_applied().index, 1, "last_applied must be restored");
 
-        sm2.close();
+        sm2.close()?;
         Ok(())
     }
 
@@ -1039,6 +1041,102 @@ impl StateMachineTestSuite {
             2,
             "BUG: last_applied not recovered after crash! \
              Drop must persist last_applied to prevent entry replay."
+        );
+
+        Ok(())
+    }
+
+    /// `close()` alone must persist everything a restart needs, even while the developer still
+    /// holds the state machine.
+    ///
+    /// Business scenario: the node shuts down cleanly, but the application keeps its own `Arc`
+    /// to the state machine, so `Drop` never runs. A restart must still see every applied key
+    /// and the applied position; otherwise Raft replays entries that were already applied.
+    /// Every other reopen test in this suite drops the state machine first, which lets a `Drop`
+    /// impl hide a `close()` that forgot to persist.
+    pub async fn test_close_persists_without_drop<B: StateMachineBuilder>(
+        builder: &B
+    ) -> Result<(), Error> {
+        let sm = builder.build().await?;
+        sm.start().await?;
+        sm.apply_chunk(&[
+            create_insert_entry(
+                1,
+                Bytes::from_static(b"close_key1"),
+                Bytes::from_static(b"v1"),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from_static(b"close_key2"),
+                Bytes::from_static(b"v2"),
+            ),
+            create_insert_entry(
+                3,
+                Bytes::from_static(b"close_key3"),
+                Bytes::from_static(b"v3"),
+            ),
+        ])
+        .await?;
+        assert_eq!(sm.last_applied().index, 3);
+
+        sm.close()?;
+        // `sm` stays alive until the end of the test: Drop must not be what saves the state.
+
+        let sm2 = builder.build().await?;
+        sm2.start().await?;
+
+        assert_eq!(
+            sm2.last_applied().index,
+            3,
+            "close() must persist the applied position without relying on Drop"
+        );
+        assert_eq!(
+            sm2.get(b"close_key1")?,
+            Some(Bytes::from_static(b"v1")),
+            "close() must persist applied data without relying on Drop"
+        );
+        assert_eq!(sm2.get(b"close_key3")?, Some(Bytes::from_static(b"v3")));
+
+        drop(sm);
+        Ok(())
+    }
+
+    /// After `close()` every operation must fail with `NotServing`, including writes.
+    ///
+    /// Business scenario: the application retains the state machine after the node has shut
+    /// down. A late read must not answer from state that is no longer maintained, and a late
+    /// `apply_chunk` must not mutate a state machine that already persisted its final state.
+    pub async fn test_operations_fail_after_close(sm: Arc<dyn StateMachine>) -> Result<(), Error> {
+        sm.start().await?;
+        sm.apply_chunk(&[create_insert_entry(
+            1,
+            Bytes::from_static(b"serving_key"),
+            Bytes::from_static(b"v"),
+        )])
+        .await?;
+
+        sm.close()?;
+
+        let not_serving = |err: Error| format!("{err:?}").contains("NotServing");
+        assert!(
+            not_serving(sm.get(b"serving_key").expect_err("get must fail after close")),
+            "get after close must return NotServing"
+        );
+        assert!(
+            not_serving(sm.scan_prefix(b"serving").expect_err("scan_prefix must fail after close")),
+            "scan_prefix after close must return NotServing"
+        );
+        let late_write = sm
+            .apply_chunk(&[create_insert_entry(
+                2,
+                Bytes::from_static(b"late_key"),
+                Bytes::from_static(b"v"),
+            )])
+            .await
+            .expect_err("apply_chunk must fail after close");
+        assert!(
+            not_serving(late_write),
+            "apply_chunk after close must return NotServing"
         );
 
         Ok(())
@@ -1672,8 +1770,9 @@ mod default_scan_prefix_tests {
             Ok(())
         }
 
-        fn close(&self) {
+        fn close(&self) -> Result<(), Error> {
             self.running.store(false, Ordering::SeqCst);
+            Ok(())
         }
 
         fn is_running(&self) -> bool {

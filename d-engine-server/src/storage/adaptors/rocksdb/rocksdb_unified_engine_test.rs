@@ -206,7 +206,7 @@ async fn test_persist_and_reload_lease_round_trip() {
         // Register a key with a long TTL so it survives the reload.
         lease.register(bytes::Bytes::from("persistent_key"), 3600);
         // close() calls persist_ttl_metadata() → writes TTL_STATE_KEY to RocksDB.
-        sm.close();
+        sm.close().unwrap();
         // Ensure DB is flushed before drop.
     }
     // Wait for RocksDB to release the file lock.

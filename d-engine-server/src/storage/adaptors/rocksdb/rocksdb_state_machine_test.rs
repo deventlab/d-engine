@@ -525,7 +525,7 @@ async fn test_close_prevents_reads() {
     sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
     assert_eq!(sm.get(b"k").unwrap(), Some(Bytes::from_static(b"v")));
 
-    sm.close();
+    sm.close().unwrap();
 
     assert!(!sm.is_running(), "is_running must be false after close");
     let err = sm.get(b"k").expect_err("get must fail after close");
@@ -545,8 +545,8 @@ async fn test_close_prevents_reads() {
 fn test_close_twice_is_safe() {
     let dir = TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
-    sm.close();
-    sm.close();
+    sm.close().unwrap();
+    sm.close().unwrap();
     assert!(!sm.is_running());
 }
 
@@ -560,7 +560,7 @@ async fn test_drop_after_close_does_not_panic() {
         let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
         sm.start().await.unwrap();
         sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
-        sm.close();
+        sm.close().unwrap();
         // sm drops here — Drop must be a no-op
     }
     // reaching here without panic means the test passes

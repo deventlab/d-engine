@@ -21,13 +21,15 @@ use super::StateMachineWorker;
 use crate::TypeConfig;
 
 /// Why [`SmWorkerHandle::stop_and_join`] could not confirm a clean stop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopError {
     /// The worker did not finish within the given time. Its thread keeps running and a later
     /// call may wait for it again.
     TimedOut(Duration),
     /// The worker thread panicked.
     Panicked,
+    /// The worker ended with an error (a failed apply, or a failed `close`).
+    Failed(String),
 }
 
 impl fmt::Display for StopError {
@@ -38,6 +40,7 @@ impl fmt::Display for StopError {
         match self {
             Self::TimedOut(t) => write!(f, "state machine worker did not stop within {t:?}"),
             Self::Panicked => write!(f, "state machine worker thread panicked"),
+            Self::Failed(e) => write!(f, "state machine worker failed: {e}"),
         }
     }
 }
@@ -47,7 +50,7 @@ impl std::error::Error for StopError {}
 enum State<T: TypeConfig> {
     Pending(StateMachineWorker<T>),
     Running {
-        join: std::thread::JoinHandle<()>,
+        join: std::thread::JoinHandle<crate::Result<()>>,
         done: watch::Receiver<()>,
     },
     Stopped,
@@ -105,13 +108,15 @@ impl<T: TypeConfig> SmWorkerHandle<T> {
             std::thread::Builder::new().name(format!("sm-apply-{node_id}")).spawn(move || {
                 let _done = done_tx;
                 runtime.block_on(async move {
-                    match worker.run().await {
+                    let result = worker.run().await;
+                    match &result {
                         Ok(()) => info!("[Node-{node_id}] state machine worker exit"),
                         Err(e) => {
                             error!("[Node-{node_id}] state machine worker exit with error: {e:?}")
                         }
                     }
-                });
+                    result
+                })
             })?;
         *state = State::Running {
             join,
@@ -136,7 +141,8 @@ impl<T: TypeConfig> SmWorkerHandle<T> {
                 State::Running { done, .. } => done.clone(),
                 State::Pending(_) | State::Stopped => {
                     if let State::Pending(worker) = std::mem::replace(&mut *state, State::Stopped) {
-                        worker.close(); // never started: close what it would have closed
+                        // never started: close what it would have closed
+                        return worker.close().map_err(|e| StopError::Failed(format!("{e:?}")));
                     }
                     return Ok(());
                 }
@@ -148,7 +154,10 @@ impl<T: TypeConfig> SmWorkerHandle<T> {
         }
 
         match std::mem::replace(&mut *self.lock(), State::Stopped) {
-            State::Running { join, .. } => join.join().map_err(|_| StopError::Panicked),
+            State::Running { join, .. } => join
+                .join()
+                .map_err(|_| StopError::Panicked)?
+                .map_err(|e| StopError::Failed(format!("{e:?}"))),
             State::Pending(_) | State::Stopped => Ok(()),
         }
     }
@@ -167,8 +176,9 @@ impl<T: TypeConfig> Drop for SmWorkerHandle<T> {
         if let State::Pending(worker) = std::mem::replace(
             self.state.get_mut().unwrap_or_else(PoisonError::into_inner),
             State::Stopped,
-        ) {
-            worker.close();
+        ) && let Err(e) = worker.close()
+        {
+            error!("state machine close failed for a worker that never started: {e:?}");
         }
     }
 }

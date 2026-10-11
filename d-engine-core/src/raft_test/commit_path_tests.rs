@@ -781,7 +781,7 @@ async fn applied_after_shutdown_with_real_worker(worker_first: bool) -> Vec<u64>
         Ok(entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect())
     });
     // The worker closes the state machine as its last act.
-    writer.expect_close().returning(|| ());
+    writer.expect_close().returning(|| Ok(()));
 
     let (sm_tx, sm_rx) = mpsc::unbounded_channel::<StateMachineCommand>();
     // The worker reports apply results here; the receiver must stay open or the worker fails.

@@ -256,7 +256,7 @@ mod file_state_machine_tests {
             assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
 
             // Gracefully close state machine to persist TTL data
-            sm.close();
+            sm.close().unwrap();
             // State machine drops here
         }
 
@@ -414,7 +414,7 @@ mod file_state_machine_tests {
                 "Permanent key should be restored from WAL"
             );
 
-            sm.close();
+            sm.close().unwrap();
         }
     }
 
@@ -1048,7 +1048,7 @@ mod rocksdb_state_machine_tests {
             assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
 
             // Gracefully close state machine to persist TTL data
-            sm.close();
+            sm.close().unwrap();
             // State machine drops here
         }
 

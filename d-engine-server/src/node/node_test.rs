@@ -962,7 +962,7 @@ mod shutdown_apply_wait_tests {
             .unwrap();
         MockBuilder::new(shutdown_rx)
             .with_node_config(config)
-            .with_sm_worker(sm_worker)
+            .with_sm_worker(sm_worker, queue)
             .build_node()
     }
 
@@ -1183,10 +1183,11 @@ mod sm_worker_lifecycle_tests {
         let mut writer = d_engine_core::MockStateMachineWriterOps::new();
         writer.expect_close().returning(move || {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
         });
         let (_shutdown_tx, shutdown_rx) = watch::channel(());
-        let (sm_worker, _queue) = crate::test_utils::sm_worker_with_writer(writer);
-        let node = MockBuilder::new(shutdown_rx).with_sm_worker(sm_worker).build_node();
+        let (sm_worker, queue) = crate::test_utils::sm_worker_with_writer(writer);
+        let node = MockBuilder::new(shutdown_rx).with_sm_worker(sm_worker, queue).build_node();
 
         // No Tokio runtime on this thread: `SmWorkerHandle::start` has nowhere to run the worker.
         let result = futures::executor::block_on(node.run());

@@ -119,9 +119,17 @@ impl<T: TypeConfig> StateMachineWorker<T> {
         let result = Self::drain_until_shutdown(&ctx, &mut sm_apply_rx).await;
 
         // Last act, on every exit path: nothing is applied after this.
-        ctx.state_machine_writer.close();
+        let closed = ctx.state_machine_writer.close();
+        if let Err(e) = &closed {
+            error!(
+                "[Node-{}] SM Worker failed to close the state machine: {:?}",
+                node_id, e
+            );
+        }
         info!("[Node-{}] SM Worker shutdown complete", node_id);
-        result
+        // A drain failure is the root cause; a close failure is reported only when the drain
+        // itself was fine.
+        result.and(closed)
     }
 
     /// Applies queued commands in order until `Shutdown`, then waits for a running capture.
@@ -345,8 +353,8 @@ impl<T: TypeConfig> StateMachineWorker<T> {
     }
 
     /// Closes the state machine of a worker that was never started.
-    pub(super) fn close(self) {
-        self.state_machine_writer.close();
+    pub(super) fn close(self) -> Result<()> {
+        self.state_machine_writer.close()
     }
 }
 
