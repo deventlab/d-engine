@@ -1,7 +1,9 @@
-use super::*;
-use batch_buffer::BatchBuffer;
 use std::time::Duration;
+
+use batch_buffer::BatchBuffer;
 use tokio::time::Instant;
+
+use super::*;
 
 #[derive(Debug, Clone, PartialEq)]
 struct TestRequest;

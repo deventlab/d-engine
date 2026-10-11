@@ -2,8 +2,6 @@
 
 use std::time::Duration;
 
-use crate::common::ClientCommands;
-use crate::common::{self};
 use d_engine_client::Client;
 use d_engine_client::ClientBuilder;
 use d_engine_core::ClientApi;
@@ -17,6 +15,9 @@ use tokio::time::sleep;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+
+use crate::common::ClientCommands;
+use crate::common::{self};
 
 const MAX_RETRIES: u32 = 10;
 const RETRY_DELAY_MS: u64 = 100;

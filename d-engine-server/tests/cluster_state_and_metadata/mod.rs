@@ -4,7 +4,8 @@
 //!
 //! ## Test Coverage
 //!
-//! - `cluster_state_consensus_embedded.rs` - Leader uniqueness verification and all-nodes consensus on leader identity
+//! - `cluster_state_consensus_embedded.rs` - Leader uniqueness verification and all-nodes consensus
+//!   on leader identity
 //! - `metadata_api_standalone.rs` - Metadata API queries via gRPC
 
 mod cluster_state_consensus_embedded;

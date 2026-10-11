@@ -14,14 +14,16 @@
 //! `update_lease_timestamp`, so the lease expires at `send_ts + lease_duration_ms`
 //! rather than `ack_ts + lease_duration_ms`.
 
+use std::time::Duration;
+
+use tokio::sync::watch;
+
 use crate::RaftNodeConfig;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::read_lease::now_ms;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
-use std::time::Duration;
-use tokio::sync::watch;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -149,14 +151,14 @@ fn test_new_impl_preserves_election_timeout_invariant_old_impl_violates_it() {
 /// (Raft §8).
 ///
 /// Scenario:
-/// - Node is elected; the previous leader had committed entry X, but this node's state
-///   machine has not applied X yet (it only learns the commit point once its noop commits).
+/// - Node is elected; the previous leader had committed entry X, but this node's state machine has
+///   not applied X yet (it only learns the commit point once its noop commits).
 /// - A quorum ACK arrives before the noop is committed.
 ///
 /// Expected:
-/// - The lease stays invalid for readers (`ReadActor` only looks at this lease).
-///   Otherwise a LeaseRead right after the election can return a value older than a write
-///   the previous leader already acknowledged to its client.
+/// - The lease stays invalid for readers (`ReadActor` only looks at this lease). Otherwise a
+///   LeaseRead right after the election can return a value older than a write the previous leader
+///   already acknowledged to its client.
 /// - Once the noop is committed, the next quorum ACK makes the lease valid.
 #[tokio::test]
 async fn test_lease_not_published_to_readers_before_noop_committed() {
@@ -192,13 +194,13 @@ async fn test_lease_not_published_to_readers_before_noop_committed() {
 ///
 /// Scenario:
 /// - Noop is at index 101 and already committed (a quorum ACK arrived).
-/// - The state machine has only applied up to 100, so an entry the previous leader committed
-///   (say X=1 at index 100) may or may not be applied yet; the entries before the noop are
-///   not guaranteed to be visible to a local read.
+/// - The state machine has only applied up to 100, so an entry the previous leader committed (say
+///   X=1 at index 100) may or may not be applied yet; the entries before the noop are not
+///   guaranteed to be visible to a local read.
 ///
 /// Expected:
-/// - Quorum ACK with `last_applied = 100`: lease stays invalid for readers (they fall back
-///   to the Raft loop, which waits for `last_applied >= read_index`).
+/// - Quorum ACK with `last_applied = 100`: lease stays invalid for readers (they fall back to the
+///   Raft loop, which waits for `last_applied >= read_index`).
 /// - Quorum ACK with `last_applied = 101`: lease becomes valid.
 #[tokio::test]
 async fn test_lease_not_published_to_readers_before_noop_applied() {
@@ -229,7 +231,7 @@ async fn test_lease_not_published_to_readers_before_noop_applied() {
 //
 // Not required for safety (reads are guarded by the lease and by quorum confirmation), but an
 // isolated leader would otherwise keep queueing writes that can never commit and keep telling
-// clients "I am the leader". openraft's approach: while the leader has no recent quorum
+// clients "I am the leader". The approach: while the leader has no recent quorum
 // acknowledgement it rejects new writes (clients look for another leader); there is no role
 // change, no term change and no election, so brief network jitter costs a few rejected writes
 // instead of a leadership change.
@@ -318,7 +320,8 @@ async fn offer_write(
     ctx: &crate::RaftContext<MockTypeConfig>,
 ) -> Option<crate::client::ErrorCode> {
     use crate::client::ClientWriteRequest;
-    use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+    use crate::maybe_clone_oneshot::RaftOneshot;
 
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     state.push_client_cmd(
@@ -416,9 +419,9 @@ async fn test_single_voter_leader_always_accepts_writes() {
 /// `election_timeout_min` has passed, and the first ACK reopens admission.
 ///
 /// Expected:
-/// - Accepted right after the election, rejected after the window with no ACK, accepted again
-///   after the first quorum ACK. The leader's own noop is an internal write and never goes
-///   through admission.
+/// - Accepted right after the election, rejected after the window with no ACK, accepted again after
+///   the first quorum ACK. The leader's own noop is an internal write and never goes through
+///   admission.
 #[tokio::test]
 async fn test_new_leader_accepts_writes_for_one_window_then_needs_a_quorum_ack() {
     let (mut state, ctx) = write_admission_leader().await;
@@ -488,8 +491,8 @@ async fn test_leader_steps_down_when_no_quorum_ack_beyond_the_limit() {
 /// Test: silence past the read lease but inside the limit does not step the leader down.
 ///
 /// Expected:
-/// - The limit is `multiple x election_timeout_max`, not the (much shorter) lease: jitter must
-///   not cost a leadership change.
+/// - The limit is `multiple x election_timeout_max`, not the (much shorter) lease: jitter must not
+///   cost a leadership change.
 #[tokio::test]
 async fn test_leader_stays_when_silence_is_inside_the_limit() {
     let (mut state, ctx) = write_admission_leader().await;

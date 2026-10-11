@@ -104,8 +104,10 @@ mod file_state_machine_tests {
     use std::time::Duration;
 
     use bytes::Bytes;
+    use d_engine_core::ApplyEntry;
+    use d_engine_core::Command;
+    use d_engine_core::StateMachine;
     use d_engine_core::file_io::compute_checksum_from_folder_path;
-    use d_engine_core::{ApplyEntry, Command, StateMachine};
     use tempfile::TempDir;
     use tokio::time::sleep;
 
@@ -253,8 +255,8 @@ mod file_state_machine_tests {
             );
             assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
 
-            // Gracefully stop state machine to persist TTL data
-            sm.stop().unwrap();
+            // Gracefully close state machine to persist TTL data
+            sm.close();
             // State machine drops here
         }
 
@@ -412,16 +414,16 @@ mod file_state_machine_tests {
                 "Permanent key should be restored from WAL"
             );
 
-            sm.stop().unwrap();
+            sm.close();
         }
     }
 
     /// WAL replay stops at the first truncated entry and discards the tail.
     ///
-    /// A WAL tail truncation is the expected outcome of a crash mid-write. Replay stops at the first incomplete entry rather
-    /// than continuing with garbage bytes or silently loading a partial entry with wrong TTL.
-    /// Complete entries before the truncation point are applied; the truncated entry and
-    /// anything after it are dropped.
+    /// A WAL tail truncation is the expected outcome of a crash mid-write. Replay stops at the
+    /// first incomplete entry rather than continuing with garbage bytes or silently loading a
+    /// partial entry with wrong TTL. Complete entries before the truncation point are applied;
+    /// the truncated entry and anything after it are dropped.
     #[tokio::test]
     async fn test_wal_replay_handles_incomplete_entries() {
         let temp_dir = TempDir::new().unwrap();
@@ -765,7 +767,9 @@ mod rocksdb_state_machine_tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use d_engine_core::{ApplyEntry, Command, StateMachine};
+    use d_engine_core::ApplyEntry;
+    use d_engine_core::Command;
+    use d_engine_core::StateMachine;
     use tempfile::TempDir;
     use tokio::time::sleep;
 
@@ -1043,8 +1047,8 @@ mod rocksdb_state_machine_tests {
             );
             assert_eq!(sm.get(b"no_ttl_key").unwrap(), Some(Bytes::from("value3")));
 
-            // Gracefully stop state machine to persist TTL data
-            sm.stop().unwrap();
+            // Gracefully close state machine to persist TTL data
+            sm.close();
             // State machine drops here
         }
 

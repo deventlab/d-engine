@@ -1,6 +1,3 @@
-use crate::client::ClientReadRequest;
-use crate::client::ClientResponse;
-use crate::client::ClientWriteRequest;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -22,6 +19,9 @@ use tonic::Status;
 use crate::ApplyResult;
 use crate::MaybeCloneOneshotSender;
 use crate::Result;
+use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
+use crate::client::ClientWriteRequest;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewCommitData {
@@ -226,7 +226,8 @@ pub enum InboundEvent {
     ),
 
     /// State machine apply failed - node must shutdown.
-    /// Conservative: treat all SM errors as fatal (future: distinguish fatal vs application errors).
+    /// Conservative: treat all SM errors as fatal (future: distinguish fatal vs application
+    /// errors).
     FatalError {
         source: String, // Error source
         error: String,  // Error message

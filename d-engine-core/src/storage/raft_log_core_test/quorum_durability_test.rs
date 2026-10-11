@@ -31,15 +31,17 @@
 //! runtime), and it was intermittently losing under load — flaky, not broken logic. Do not
 //! reintroduce that pattern here.
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
 use crate::RaftLogCore;
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::RaftLogCoreTestContext;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
-use std::sync::Arc;
-use std::time::Duration;
 
 /// Entries `1..=n`, all at `term`, no payload — the shape these tests need.
 fn entries(

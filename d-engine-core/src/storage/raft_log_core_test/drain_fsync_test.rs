@@ -2,14 +2,26 @@
 //!
 //! These tests verify three core properties:
 //!
-//! 1. **Write/flush separation**: `durable_index` advances only after fsync, not
-//!    after the write-only phase. This ensures crash-safety semantics are preserved.
+//! 1. **Write/flush separation**: `durable_index` advances only after fsync, not after the
+//!    write-only phase. This ensures crash-safety semantics are preserved.
 //!
-//! 2. **Batch efficiency**: rapid concurrent writes are covered by far fewer fsyncs
-//!    than individual writes. The fsync execution time itself acts as the batch window.
+//! 2. **Batch efficiency**: rapid concurrent writes are covered by far fewer fsyncs than individual
+//!    writes. The fsync execution time itself acts as the batch window.
 //!
-//! 3. **Explicit flush barrier**: `flush()` waits until all entries written before
-//!    the call are durable, regardless of how many internal fsyncs occurred.
+//! 3. **Explicit flush barrier**: `flush()` waits until all entries written before the call are
+//!    durable, regardless of how many internal fsyncs occurred.
+
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use tokio::sync::mpsc;
+use tokio::time::Duration;
+use tokio::time::sleep;
+use tokio::time::timeout;
 
 use crate::Error;
 use crate::HardState;
@@ -17,18 +29,8 @@ use crate::MockLogStore;
 use crate::MockMetaStore;
 use crate::MockStorageEngine;
 use crate::MockTypeConfig;
-use crate::RaftLogCore;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
-use tokio::time::{Duration, sleep};
-
 use crate::RaftLog;
+use crate::RaftLogCore;
 use crate::test_utils::RaftLogCoreTestContext;
 
 /// Each `append_entries` persists the new tail and auto-submits it to `FsyncWorker`

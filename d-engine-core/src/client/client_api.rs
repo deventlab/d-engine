@@ -25,11 +25,12 @@
 //! }
 //! ```
 
+use bytes::Bytes;
+
 use crate::BatchOp;
 use crate::client::client_api_error::ClientApiResult;
 use crate::config::ReadConsistencyPolicy;
 use crate::types::ScanResults;
-use bytes::Bytes;
 
 /// Unified key-value store interface implemented by `EmbeddedClient` and `GrpcClient`.
 ///
@@ -57,8 +58,8 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down, timeout
-    ///   occurs, or the node is not leader (carries `leader_hint` for redirect)
+    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down,
+    ///   timeout occurs, or the node is not leader (carries `leader_hint` for redirect)
     /// - [`crate::client::client_api_error::ClientApiError::Business`] for other server-side errors
     ///
     /// # Example
@@ -147,7 +148,8 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down or timeout occurs
+    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down or
+    ///   timeout occurs
     /// - [`crate::client::client_api_error::ClientApiError::Business`] for server-side errors
     ///
     /// # Example
@@ -206,7 +208,8 @@ pub trait ClientApi: Send + Sync {
     ///
     /// # Errors
     ///
-    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down or timeout occurs
+    /// - [`crate::client::client_api_error::ClientApiError::Network`] if node is shutting down or
+    ///   timeout occurs
     /// - [`crate::client::client_api_error::ClientApiError::Business`] for server-side errors
     ///
     /// # Example

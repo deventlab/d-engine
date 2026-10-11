@@ -9,15 +9,16 @@
 //!
 //! 1. **LeaderState Creation**: Measures instantiation overhead
 //! 2. **Pending Promotion Processing**: Measures learner-to-voter promotion latency
-//! 3. **Batch Promotion Scaling**: Validates performance characteristics across different batch sizes
+//! 3. **Batch Promotion Scaling**: Validates performance characteristics across different batch
+//!    sizes
 //!
 //! ## Performance Acceptance Criteria
 //!
 //! ### Benchmark 1: LeaderState Creation
 //! - **Target**: < 500 ns per operation
 //! - **Failure Criteria**: > 1000 ns indicates memory allocation issues or lock contention
-//! - **Why It Matters**: Leader election happens during network partitions; slow creation
-//!   delays cluster recovery
+//! - **Why It Matters**: Leader election happens during network partitions; slow creation delays
+//!   cluster recovery
 //!
 //! ### Benchmark 2: Process Pending Promotions (2 nodes)
 //! - **Target**: < 20 ms per operation
@@ -32,8 +33,8 @@
 //!   - batch_2: ~20 ms (2x baseline)
 //!   - batch_5: ~50 ms (5x baseline)
 //!   - batch_10: ~100 ms (10x baseline)
-//! - **Why It Matters**: Non-linear scaling would cause cluster instability during
-//!   large-scale node additions
+//! - **Why It Matters**: Non-linear scaling would cause cluster instability during large-scale node
+//!   additions
 //!
 //! ## How to Identify Failures
 //!
@@ -104,14 +105,18 @@
 //! ## Historical Context
 //!
 //! - **v0.1.0**: Initial benchmark suite
-//! - **v0.2.0** (#236): Added after ReadIndex batching refactor to ensure no regression
-//!   in promotion path
+//! - **v0.2.0** (#236): Added after ReadIndex batching refactor to ensure no regression in
+//!   promotion path
 
 use std::sync::Arc;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::Criterion;
+use criterion::black_box;
+use criterion::criterion_group;
+use criterion::criterion_main;
+use d_engine_core::MockTypeConfig;
+use d_engine_core::RaftNodeConfig;
 use d_engine_core::leader_state::LeaderState;
-use d_engine_core::{MockTypeConfig, RaftNodeConfig};
 
 /// Benchmark 1: LeaderState Creation Performance
 ///

@@ -1,9 +1,19 @@
-use metrics::{
-    Counter, CounterFn, Gauge, GaugeFn, Histogram, HistogramFn, Key, KeyName, Metadata, Recorder,
-    SharedString, Unit,
-};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
+
+use metrics::Counter;
+use metrics::CounterFn;
+use metrics::Gauge;
+use metrics::GaugeFn;
+use metrics::Histogram;
+use metrics::HistogramFn;
+use metrics::Key;
+use metrics::KeyName;
+use metrics::Metadata;
+use metrics::Recorder;
+use metrics::SharedString;
+use metrics::Unit;
 
 #[derive(Default)]
 struct Store {

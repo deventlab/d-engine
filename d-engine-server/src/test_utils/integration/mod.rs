@@ -43,6 +43,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use d_engine_core::ApplyEntry;
+use d_engine_core::Command;
 use d_engine_core::DefaultStateMachineHandler;
 use d_engine_core::ElectionHandler;
 use d_engine_core::LogSizePolicy;
@@ -60,7 +62,6 @@ use d_engine_core::alias::SMOF;
 use d_engine_core::alias::TROF;
 use d_engine_core::generate_delete_commands;
 use d_engine_core::generate_insert_commands;
-use d_engine_core::{ApplyEntry, Command};
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::NodeRole::Follower;

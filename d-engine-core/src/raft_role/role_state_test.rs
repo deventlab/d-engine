@@ -1,8 +1,19 @@
 //! Tests for role_state free functions
 //!
 //! Covers:
-//! - schedule_and_execute_purge: two-phase log purge orchestration (Phase 1 = schedule, Phase 2 = execute)
+//! - schedule_and_execute_purge: two-phase log purge orchestration (Phase 1 = schedule, Phase 2 =
+//!   execute)
 
+use std::time::Duration;
+
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+
+use super::role_state::RaftRoleState;
+use super::role_state::schedule_and_execute_purge;
 use crate::CapturedLocalSnapshot;
 use crate::ConsensusError;
 use crate::Error;
@@ -16,16 +27,10 @@ use crate::StateMachineCommand;
 use crate::StateMachineCommandSender;
 use crate::raft_role::candidate_state::CandidateState;
 use crate::raft_role::follower_state::FollowerState;
-use crate::test_utils::mock::{MockBuilder, MockTypeConfig, mock_raft_log};
+use crate::test_utils::mock::MockBuilder;
+use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::mock::mock_raft_log;
 use crate::test_utils::node_config;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use std::time::Duration;
-use tokio::sync::{mpsc, watch};
-
-use super::role_state::RaftRoleState;
-use super::role_state::schedule_and_execute_purge;
 
 // ============================================================================
 // schedule_and_execute_purge Tests
@@ -741,9 +746,6 @@ async fn test_handle_create_snapshot_failure_emits_error_event() {
 // ============================================================================
 // A vote belongs to the term it was cast in (Raft §5.1: a new term starts with votedFor = null)
 //
-// raft-rs `reset(term)` clears the vote whenever the term changes; openraft replaces the whole
-// (term, node) vote. If an old vote survives a term change, it blocks a legitimate vote request
-// in the new term even though this node has not voted in that term.
 // ============================================================================
 
 fn recording_raft_log() -> (
@@ -988,11 +990,12 @@ async fn test_adopted_term_survives_a_restart_even_when_the_vote_was_denied() {
 /// Related: Issue #200
 #[test]
 fn test_is_self_removal_config() {
-    use super::role_state::is_self_removal_config;
     use d_engine_proto::common::AddNode;
     use d_engine_proto::common::MembershipChange;
     use d_engine_proto::common::RemoveNode;
     use d_engine_proto::common::membership_change::Change;
+
+    use super::role_state::is_self_removal_config;
 
     let self_removal = MembershipChange {
         change: Some(Change::RemoveNode(RemoveNode { node_id: 1 })),

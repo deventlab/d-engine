@@ -5,14 +5,17 @@
 //!
 //! Uses embedded mode with DefaultEmbeddedEngine for production-ready testing.
 
-use crate::common::{create_node_config, get_available_ports};
-use d_engine_server::DefaultEmbeddedEngine;
-use d_engine_server::RocksDBUnifiedEngine;
 use std::sync::Arc;
 use std::time::Duration;
+
+use d_engine_server::DefaultEmbeddedEngine;
+use d_engine_server::RocksDBUnifiedEngine;
 use tempfile::TempDir;
 use tokio::time::Instant;
 use tracing_test::traced_test;
+
+use crate::common::create_node_config;
+use crate::common::get_available_ports;
 
 /// Helper to create a test EmbeddedEngine
 async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {

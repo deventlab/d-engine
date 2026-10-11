@@ -3,6 +3,14 @@
 //! These tests verify that when Leader receives FatalError events,
 //! it properly notifies all pending client requests before shutdown.
 
+use std::sync::Arc;
+
+use bytes::Bytes;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tracing_test::traced_test;
+
 use super::super::LeaderState;
 use crate::ClientCmd;
 use crate::InboundEvent;
@@ -15,11 +23,6 @@ use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
-use bytes::Bytes;
-use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
-use tonic::Code;
-use tracing_test::traced_test;
 
 /// Test: Leader handles FatalError and propagates error
 ///

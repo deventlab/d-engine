@@ -2,11 +2,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
 
+use crate::MockLogStore;
+use crate::MockMetaStore;
+use crate::MockStorageEngine;
+use crate::MockTypeConfig;
+use crate::RaftLogCore;
 use crate::storage::raft_log::RaftLog;
-use crate::test_utils::{RaftLogCoreTestContext, drain_and_apply_fsync_completions};
-use crate::{MockLogStore, MockMetaStore, MockStorageEngine, MockTypeConfig, RaftLogCore};
-use d_engine_proto::common::{Entry, EntryPayload};
+use crate::test_utils::RaftLogCoreTestContext;
+use crate::test_utils::drain_and_apply_fsync_completions;
 
 fn entry(
     index: u64,
@@ -155,8 +161,8 @@ async fn test_close_flushes_multiple_batches() {
 
 /// Verifies that a fatal `replace_range` failure:
 /// 1. Propagates the error synchronously to the caller.
-/// 2. Poisons the log — writes after the failure are rejected outright, not
-///    silently accepted into memory with nothing left to ever persist them.
+/// 2. Poisons the log — writes after the failure are rejected outright, not silently accepted into
+///    memory with nothing left to ever persist them.
 #[tokio::test]
 async fn test_replace_range_failure_poisons_log_and_rejects_future_writes() {
     let mut log_store = MockLogStore::new();

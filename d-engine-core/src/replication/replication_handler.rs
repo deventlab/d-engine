@@ -1,3 +1,10 @@
+use std::cmp;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::BytesMut;
 use d_engine_proto::client::WriteCommand;
@@ -10,12 +17,6 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
 use prost::Message;
-use std::cmp;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
 use tracing::debug;
 use tracing::error;
 use tracing::trace;
@@ -127,7 +128,8 @@ where
                     count,
                 } => {
                     // #436/#439: isolate to this one peer, don't fall back to snapshot —
-                    // that would hide a storage-layer bug. Structured event reporting upgrades this from a bare log later.
+                    // that would hide a storage-layer bug. Structured event reporting upgrades this
+                    // from a bare log later.
                     error!(
                         peer_id,
                         start,

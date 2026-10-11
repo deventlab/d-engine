@@ -1172,6 +1172,57 @@ mod add_learner_test {
     }
 }
 
+/// Business scenario: a new node (3) joins a running cluster. Its `initial_cluster` already lists
+/// node 2 as a voter, because node 2 was promoted before node 3 started. Node 3 then catches up by
+/// replaying the leader's committed log, which still contains the `AddNode(2, learner)` entry from
+/// when node 2 first joined.
+///
+/// Purpose: applying a committed `AddNode` for a node the local view already has is a no-op. It
+/// must not fail (a failed committed membership change is fatal and kills the node's Raft loop)
+/// and must not demote the voter back to a learner.
+#[tokio::test]
+async fn test_apply_committed_add_node_for_existing_voter_is_idempotent() {
+    let (membership, _) =
+        RaftMembership::<RaftTypeConfig<MockStorageEngine, MockStateMachine>>::new(
+            3,
+            vec![
+                NodeMeta {
+                    id: 2,
+                    address: "127.0.0.1:1002".to_string(),
+                    role: Follower as i32,
+                    status: NodeStatus::Active.into(),
+                },
+                NodeMeta {
+                    id: 3,
+                    address: "127.0.0.1:1003".to_string(),
+                    role: Learner as i32,
+                    status: NodeStatus::Promotable.into(),
+                },
+            ],
+            RaftNodeConfig::default(),
+        );
+
+    let replayed = MembershipChange {
+        change: Some(Change::AddNode(AddNode {
+            node_id: 2,
+            address: "127.0.0.1:1002".to_string(),
+            status: NodeStatus::Promotable as i32,
+        })),
+    };
+    let result = membership.apply_config_change(replayed).await;
+
+    assert!(
+        result.is_ok(),
+        "replaying AddNode for a node already in the local view must not fail: {result:?}"
+    );
+    let node2 = membership.retrieve_node_meta(2).expect("node 2 stays in the membership");
+    assert_eq!(
+        node2.role, Follower as i32,
+        "the voter must not be demoted to a learner"
+    );
+    assert_eq!(node2.status, NodeStatus::Active as i32);
+}
+
 #[tokio::test]
 #[traced_test]
 async fn test_ensure_safe_join() {
@@ -1232,7 +1283,8 @@ async fn test_health_monitoring_integration() {
 
     // Test 3: get_peer_channel success does NOT reset failure counts.
     // tonic Endpoint::connect() is lazy — channel creation succeeds even for a stopped peer.
-    // Health state must be driven by RPC results (on_peer_stream_failed), not by channel acquisition.
+    // Health state must be driven by RPC results (on_peer_stream_failed), not by channel
+    // acquisition.
     let (_tx, rx) = oneshot::channel::<()>();
     let service = MockRpcService::default();
     let (port, _addr) = MockNode::mock_listener(service, rx, true).await.unwrap();

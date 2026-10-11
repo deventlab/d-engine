@@ -5,19 +5,24 @@
 //! - tick() step 5: deadline scan for expired `pending_commit_actions`
 //!
 //! Three key behaviors:
-//! 1. `drain_commit_actions` fires `InternalEvent::NoopCommitted` when a `LeaderNoop` entry commits.
-//! 2. `drain_commit_actions` delivers `NodeJoin` completion directly to the join response sender //!     (no `InternalEvent` is emitted for NodeJoin).
+//! 1. `drain_commit_actions` fires `InternalEvent::NoopCommitted` when a `LeaderNoop` entry
+//!    commits.
+//! 2. `drain_commit_actions` delivers `NodeJoin` completion directly to the join response sender
+//!    //!     (no `InternalEvent` is emitted for NodeJoin).
 //! 3. tick() sends `InternalEvent::BecomeFollower` for expired noop entries (leadership lost).
 
 use std::time::Duration;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::MaybeCloneOneshot;
 use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::RaftOneshot;
-use crate::raft_role::leader_state::{LeaderState, PostCommitAction, PostCommitEntry};
+use crate::raft_role::leader_state::LeaderState;
+use crate::raft_role::leader_state::PostCommitAction;
+use crate::raft_role::leader_state::PostCommitEntry;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;

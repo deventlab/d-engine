@@ -6,12 +6,18 @@
 //! - Partial overlap with real term conflict (truncate only from conflict point)
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use d_engine_proto::common::Entry;
 
+use crate::MockLogStore;
+use crate::MockMetaStore;
+use crate::MockStorageEngine;
+use crate::MockTypeConfig;
+use crate::RaftLog;
+use crate::RaftLogCore;
 use crate::test_utils::RaftLogCoreTestContext;
-use crate::{MockLogStore, MockMetaStore, MockStorageEngine, MockTypeConfig, RaftLog, RaftLogCore};
 
 fn ctx(name: &str) -> RaftLogCoreTestContext {
     RaftLogCoreTestContext::new(name)
@@ -300,7 +306,8 @@ async fn test_filter_conflicts_bench_pattern_no_truncation() {
 /// After recovery: [1,2,3(t1), 4(t2), 5(t2)] — index=4 must be term=2
 #[tokio::test]
 async fn test_replace_range_conflict_persists_correctly_after_crash() {
-    use tokio::time::{Duration, sleep};
+    use tokio::time::Duration;
+    use tokio::time::sleep;
 
     let ctx = ctx("replace_range_crash_recovery");
 
@@ -361,11 +368,12 @@ async fn test_replace_range_conflict_persists_correctly_after_crash() {
 ///
 /// # Scenario
 /// Follower: [1,2,3,4,5] all term=1 (flushed)
-/// Leader sends: prev_index=2, prev_term=1, entries=[3(t2), 4(t2)] — conflict at index=3, no entry 5
-/// After: log must be [1,2,3(t2),4(t2)] — entry 5 must not exist
+/// Leader sends: prev_index=2, prev_term=1, entries=[3(t2), 4(t2)] — conflict at index=3, no entry
+/// 5 After: log must be [1,2,3(t2),4(t2)] — entry 5 must not exist
 #[tokio::test]
 async fn test_replace_range_removes_entries_beyond_new_tail() {
-    use tokio::time::{Duration, sleep};
+    use tokio::time::Duration;
+    use tokio::time::sleep;
 
     let ctx = ctx("replace_range_removes_trailing");
 

@@ -4,10 +4,34 @@
 //! `execute_request_immediately` methods which handle log replication,
 //! commit index calculation, and client response delivery.
 
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use bytes::Bytes;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::ClusterMembership;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::ConflictResult;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
+use rand::distr::SampleString;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Status;
+use tracing_test::traced_test;
+
 use crate::Error;
+use crate::MaybeCloneOneshot;
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
+use crate::PeerUpdate;
 use crate::RaftContext;
 use crate::RaftRequestWithSignal;
 use crate::client::ClientResponse;
@@ -19,21 +43,6 @@ use crate::role_state::RaftRoleState;
 use crate::test_utils::mock::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
-use crate::{MaybeCloneOneshot, PeerUpdate};
-use bytes::Bytes;
-use d_engine_proto::common::{EntryPayload, LogId, NodeRole::Follower, NodeStatus};
-use d_engine_proto::server::cluster::{ClusterMembership, NodeMeta};
-use d_engine_proto::server::replication::ConflictResult;
-use d_engine_proto::server::replication::append_entries_response;
-use d_engine_proto::server::replication::{AppendEntriesResponse, SuccessResult};
-use rand::distr::SampleString;
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Status;
-use tracing_test::traced_test;
 
 // ============================================================================
 // Test Helper Structures and Functions
@@ -2511,8 +2520,9 @@ mod test_leader_update_next_index {
     }
 
     // On a conflict response, if the computed retry point (PeerUpdate::next_index)
-    // is below the confirmed match_index + 1, the floor guard must clamp next_index to match_index + 1.
-    // Retreating below already-confirmed entries would violate Raft's Log Matching Property.
+    // is below the confirmed match_index + 1, the floor guard must clamp next_index to match_index
+    // + 1. Retreating below already-confirmed entries would violate Raft's Log Matching
+    // Property.
     #[tokio::test]
     async fn test_update_peer_index_conflict_floor_guard_prevents_retreat_below_match_index() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2755,9 +2765,9 @@ async fn test_two_reachable_peers_of_four_confirm_quorum() {
 /// The partition lasts: one peer keeps answering every round, three never do.
 ///
 /// # Then
-/// - After more than `election_timeout_min` the leader no longer admits writes and the vote
-///   guard no longer claims a recent quorum ACK. The loop below never calls anything but the
-///   normal reply path, so a refresh from stale history would keep both open forever.
+/// - After more than `election_timeout_min` the leader no longer admits writes and the vote guard
+///   no longer claims a recent quorum ACK. The loop below never calls anything but the normal reply
+///   path, so a refresh from stale history would keep both open forever.
 #[tokio::test]
 #[traced_test]
 async fn test_leader_loses_write_admission_when_only_one_peer_keeps_answering() {
@@ -2780,11 +2790,13 @@ async fn test_leader_loses_write_admission_when_only_one_peer_keeps_answering() 
 #[tokio::test]
 #[traced_test]
 async fn test_queued_reads_wait_for_a_real_quorum() {
+    use tokio::time::Duration;
+    use tokio::time::Instant;
+
     use crate::ReadConsistencyPolicy;
     use crate::client::ClientReadRequest;
     use crate::convert::safe_kv_bytes;
     use crate::raft_role::leader_state::PendingLeaseRead;
-    use tokio::time::{Duration, Instant};
 
     let mut context = five_voter_partition_context("/tmp/test_queued_reads_wait").await;
 
@@ -2948,18 +2960,19 @@ async fn test_record_voter_ack_moves_forward_again_when_a_second_peer_recovers()
 /// - 3 voters (leader, B, C): one peer is a quorum, B answered the round sent at 1400
 ///
 /// # When
-/// - the cluster grows to 5 voters (D and a new E join, the old E=5 is gone), then C answers
-///   the round sent at 1450
+/// - the cluster grows to 5 voters (D and a new E join, the old E=5 is gone), then C answers the
+///   round sent at 1450
 ///
 /// # Then
 /// - the removed peer's time is gone
-/// - the quorum time is recomputed for 5 voters (2 peers needed, B:1400 and C:1450 -> 1400)
-///   and reported once. Without the reset the stale 1400 of the 3-voter conclusion would hide it.
+/// - the quorum time is recomputed for 5 voters (2 peers needed, B:1400 and C:1450 -> 1400) and
+///   reported once. Without the reset the stale 1400 of the 3-voter conclusion would hide it.
 #[tokio::test]
 #[traced_test]
 async fn test_membership_change_drops_left_peers_and_recomputes_the_quorum_time() {
-    use crate::MockMembership;
     use d_engine_proto::server::cluster::NodeMeta;
+
+    use crate::MockMembership;
 
     let mut context = five_voter_partition_context("/tmp/test_membership_change_resets").await;
     let state = &mut context.state;

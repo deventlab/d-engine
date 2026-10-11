@@ -7,6 +7,12 @@
 //! - Case 4: Multiple scenarios with different peer positions
 //! - Case 5: Edge cases in log retrieval
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+
 use crate::MockTypeConfig;
 use crate::ReplicationCore;
 use crate::ReplicationHandler;
@@ -14,10 +20,6 @@ use crate::mock_insert_log_entries;
 use crate::mock_log_entries_exist;
 use crate::test_utils::generate_insert_commands;
 use crate::test_utils::setup_mock_replication_test_context;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 /// Peer at end of old log should receive only new entries.
 ///
@@ -328,7 +330,8 @@ async fn test_leader_id_excluded_from_replication_targets() {
 
     // Arrange: Peer map includes BOTH leader and peer3
     // peer3's next_index is strictly past the leader's last old entry, so the
-    // legacy-fetch branch is skipped entirely (see test_retrieve_only_new_entries_when_peer_caught_up).
+    // legacy-fetch branch is skipped entirely (see
+    // test_retrieve_only_new_entries_when_peer_caught_up).
     let peer_next_indices = HashMap::from([
         (my_id, 1_u64),                                                 // Leader itself
         (peer3_id, leader_last_index_before_inserting_new_entries + 1), // Peer3

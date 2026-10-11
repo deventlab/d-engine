@@ -21,6 +21,7 @@
 //! as any other shutdown scenario.
 
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -29,15 +30,18 @@ use d_engine_core::RaftOneshot;
 use d_engine_core::ReadLease;
 use d_engine_core::StateMachine;
 use d_engine_core::TypeConfig;
-use d_engine_core::client::{ClientApiResult, ClientReadRequest, ErrorCode};
+use d_engine_core::client::ClientApiResult;
+use d_engine_core::client::ClientReadRequest;
+use d_engine_core::client::ErrorCode;
 use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_core::now_ms;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use super::standalone_read_handle::{
-    channel_closed_error, extract_read_payload, map_error_response, server_error, timeout_error,
-};
+use super::standalone_read_handle::channel_closed_error;
+use super::standalone_read_handle::extract_read_payload;
+use super::standalone_read_handle::map_error_response;
+use super::standalone_read_handle::server_error;
+use super::standalone_read_handle::timeout_error;
 
 // ── EmbeddedReadHandle ────────────────────────────────────────────────────────
 

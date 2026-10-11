@@ -2,7 +2,8 @@
 
 #[cfg(test)]
 mod client_api_error_tests {
-    use crate::client::client_api_error::{ClientApiError, ClientApiResult};
+    use crate::client::client_api_error::ClientApiError;
+    use crate::client::client_api_error::ClientApiResult;
     use crate::client::types::ErrorCode;
 
     /// Test: NotLeader error construction and code mapping

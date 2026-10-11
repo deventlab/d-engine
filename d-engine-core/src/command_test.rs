@@ -1,16 +1,22 @@
 use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::Batch;
+use d_engine_proto::client::write_command::BatchOp;
+use d_engine_proto::client::write_command::CompareAndSwap;
+use d_engine_proto::client::write_command::Delete;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::Operation;
 use d_engine_proto::client::write_command::batch_op;
-use d_engine_proto::client::write_command::{
-    Batch, BatchOp, CompareAndSwap, Delete, Insert, Operation,
-};
 use d_engine_proto::common::AddNode;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::membership_change::Change;
 use prost::Message;
 
-use crate::command::{ApplyEntry, BatchOp as CommandBatchOp, Command, decode_entries};
+use crate::command::ApplyEntry;
+use crate::command::BatchOp as CommandBatchOp;
+use crate::command::Command;
+use crate::command::decode_entries;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 

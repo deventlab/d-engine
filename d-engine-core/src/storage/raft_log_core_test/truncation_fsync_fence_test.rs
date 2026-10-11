@@ -21,8 +21,10 @@ use std::time::Duration;
 
 use d_engine_proto::common::Entry;
 
+use crate::MockStorageEngine;
+use crate::MockTypeConfig;
+use crate::RaftLogCore;
 use crate::storage::raft_log::RaftLog;
-use crate::{MockStorageEngine, MockTypeConfig, RaftLogCore};
 
 fn entry(
     index: u64,

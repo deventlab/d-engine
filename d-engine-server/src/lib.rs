@@ -99,7 +99,8 @@ mod proto_convert;
 mod proto_convert_test;
 
 /// ReadActor — fast-path read task for Eventual and LeaseRead.
-/// Kept in server (not core) because it is a performance optimization, not a Raft protocol component.
+/// Kept in server (not core) because it is a performance optimization, not a Raft protocol
+/// component.
 pub(crate) mod read_actor;
 #[cfg(test)]
 mod read_actor_test;
@@ -128,16 +129,34 @@ pub mod storage;
 pub use api::DefaultEmbeddedClient;
 #[cfg(feature = "rocksdb")]
 pub use api::DefaultEmbeddedEngine;
+// -------------------- Client API --------------------
+pub use api::EmbeddedClient;
 pub use api::EmbeddedEngine;
 pub use api::StandaloneEngine;
-pub use membership::MembershipSnapshot;
+pub use d_engine_core::ApplyEntry;
+// Re-export core types needed by applications
+pub use d_engine_core::ApplyResult;
+// Batch operation variants (Insert, Delete) used in [`Command::Batch`].
+pub use d_engine_core::BatchOp;
+pub use d_engine_core::Command;
 // -------------------- Error Types --------------------
 /// Unified error type for all d-engine operations
 pub use d_engine_core::Error;
+// Internal types required by storage implementations — not part of user API
+/// Persisted Raft hard state (current term + voted-for). Required by
+/// [`MetaStore::save_hard_state`]/[`MetaStore::load_hard_state`] — implement these if
+/// you're building a custom storage engine.
+pub use d_engine_core::HardState;
 /// Log storage trait
 pub use d_engine_core::LogStore;
 /// Metadata storage trait
 pub use d_engine_core::MetaStore;
+// Purely internal — only reachable via `?`/`From` conversions inside `Error`.
+// No public trait method requires implementors to construct this directly.
+#[doc(hidden)]
+pub use d_engine_core::ProstError;
+// Raft Node Config
+pub use d_engine_core::RaftNodeConfig;
 /// Unified result type (equivalent to Result<T, Error>)
 pub use d_engine_core::Result;
 /// Prefix scan result: matching entries + revision anchor for watch deduplication
@@ -147,25 +166,6 @@ pub use d_engine_core::Result;
 pub use d_engine_core::ScanResult;
 /// Client-facing prefix scan result, returned by `EmbeddedClient::scan_prefix()`.
 pub use d_engine_core::ScanResults;
-/// Storage-specific error type
-pub use d_engine_core::StorageError;
-// Raft Node Config
-pub use d_engine_core::RaftNodeConfig;
-// Batch operation variants (Insert, Delete) used in [`Command::Batch`].
-pub use d_engine_core::BatchOp;
-
-// Internal types required by storage implementations — not part of user API
-
-/// Persisted Raft hard state (current term + voted-for). Required by
-/// [`MetaStore::save_hard_state`]/[`MetaStore::load_hard_state`] — implement these if
-/// you're building a custom storage engine.
-pub use d_engine_core::HardState;
-
-// Purely internal — only reachable via `?`/`From` conversions inside `Error`.
-// No public trait method requires implementors to construct this directly.
-#[doc(hidden)]
-pub use d_engine_core::ProstError;
-
 /// Outcome of installing a snapshot via [`StateMachine::apply_snapshot_from_file`].
 ///
 /// Distinguishes "the install actually ran" (`Applied`) from two no-op cases that are not
@@ -174,14 +174,30 @@ pub use d_engine_core::ProstError;
 /// (checksum mismatch, corrupted data, conflicting boundary) should be returned as `Err`, not
 /// encoded as a variant here.
 pub use d_engine_core::SnapshotApplyResult;
-
 /// Snapshot-specific error type. Construct these in
 /// [`StateMachine::apply_snapshot_from_file`] (e.g. `SnapshotError::ChecksumMismatch`) to
 /// report a genuine install failure — the no-op cases are already covered by
 /// [`SnapshotApplyResult`], not this type.
 pub use d_engine_core::SnapshotError;
-// -------------------- Client API --------------------
-pub use api::EmbeddedClient;
+/// Storage trait for implementing custom storage backends
+///
+/// Implement this trait to create your own storage engine.
+pub use d_engine_core::StateMachine;
+/// Storage trait for implementing custom storage backends
+///
+/// Implement this trait to create your own storage engine.
+pub use d_engine_core::StorageEngine;
+/// Storage-specific error type
+pub use d_engine_core::StorageError;
+/// Unified client operations trait (put/get/delete/CAS/watch).
+/// Re-exported here so embedded-mode users don't need a separate d-engine-client dependency.
+pub use d_engine_core::client::ClientApi;
+/// Unified client operations trait (put/get/delete/CAS/watch).
+/// Re-exported here so embedded-mode users don't need a separate d-engine-client dependency.
+pub use d_engine_core::client::ClientApiError;
+/// Unified client operations trait (put/get/delete/CAS/watch).
+/// Re-exported here so embedded-mode users don't need a separate d-engine-client dependency.
+pub use d_engine_core::client::ClientApiResult;
 /// Error code discriminator returned by [`ClientApiError::code()`].
 /// Use this to pattern-match error categories without inspecting message strings:
 /// `e.code() == ErrorCode::NotLeader`
@@ -189,23 +205,6 @@ pub use d_engine_core::client::ErrorCode;
 /// Optional leader location hint on `ErrorCode::NotLeader`, so a client can
 /// retry against the right node without a blind broadcast.
 pub use d_engine_core::client::LeaderHint;
-/// Unified client operations trait (put/get/delete/CAS/watch).
-/// Re-exported here so embedded-mode users don't need a separate d-engine-client dependency.
-pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
-/// Storage trait for implementing custom storage backends
-///
-/// Implement this trait to create your own storage engine.
-pub use d_engine_core::{StateMachine, StorageEngine};
-pub use node::Node;
-// Re-export storage implementations
-pub use storage::{FileStateMachine, FileStorageEngine};
-// Re-export core types needed by applications
-pub use d_engine_core::ApplyResult;
-pub use d_engine_core::{ApplyEntry, Command};
-// Conditional RocksDB exports
-#[cfg(feature = "rocksdb")]
-pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, RocksDBUnifiedEngine};
-
 // -------------------- Watch API Types --------------------
 /// Watch event types and handles — available when the `watch` feature is enabled.
 ///
@@ -215,6 +214,13 @@ pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, RocksDBUnifiedEngin
 /// ```
 #[cfg(feature = "watch")]
 pub use d_engine_core::{WatchError, WatchEvent, WatchEventType, WatcherHandle};
+pub use membership::MembershipSnapshot;
+pub use node::Node;
+// Re-export storage implementations
+pub use storage::{FileStateMachine, FileStorageEngine};
+// Conditional RocksDB exports
+#[cfg(feature = "rocksdb")]
+pub use storage::{RocksDBStateMachine, RocksDBStorageEngine, RocksDBUnifiedEngine};
 
 // -------------------- Data Types --------------------
 
@@ -247,26 +253,6 @@ mod utils;
 
 // ==================== Test Utilities ====================
 
-/// Standardized test suite for custom [`StateMachine`] implementations.
-///
-/// Enable the `__test_support` feature in your `[dev-dependencies]` to access this module:
-/// ```toml
-/// [dev-dependencies]
-/// d-engine = { version = "...", features = ["server", "__test_support"] }
-/// ```
-#[cfg(feature = "__test_support")]
-pub use d_engine_core::state_machine_test;
-
-/// Standardized test suite for custom [`StorageEngine`] implementations.
-///
-/// Enable the `__test_support` feature in your `[dev-dependencies]` to access this module:
-/// ```toml
-/// [dev-dependencies]
-/// d-engine = { version = "...", features = ["server", "__test_support"] }
-/// ```
-#[cfg(feature = "__test_support")]
-pub use d_engine_core::storage_engine_test;
-
 /// Deterministically freezes an outbound snapshot push transfer to a given
 /// peer right before its first chunk is sent, for tests that need to observe
 /// a "transfer started but not completed" window without racing wall-clock
@@ -283,6 +269,24 @@ pub use d_engine_core::SnapshotTransferGate;
 pub use d_engine_core::SnapshotTransferGateGuard;
 #[cfg(feature = "__test_support")]
 pub use d_engine_core::install_snapshot_transfer_gate;
+/// Standardized test suite for custom [`StateMachine`] implementations.
+///
+/// Enable the `__test_support` feature in your `[dev-dependencies]` to access this module:
+/// ```toml
+/// [dev-dependencies]
+/// d-engine = { version = "...", features = ["server", "__test_support"] }
+/// ```
+#[cfg(feature = "__test_support")]
+pub use d_engine_core::state_machine_test;
+/// Standardized test suite for custom [`StorageEngine`] implementations.
+///
+/// Enable the `__test_support` feature in your `[dev-dependencies]` to access this module:
+/// ```toml
+/// [dev-dependencies]
+/// d-engine = { version = "...", features = ["server", "__test_support"] }
+/// ```
+#[cfg(feature = "__test_support")]
+pub use d_engine_core::storage_engine_test;
 
 /// Test utilities for d-engine-server
 ///

@@ -47,6 +47,7 @@ use d_engine_core::Raft;
 use d_engine_core::RaftNodeConfig;
 use d_engine_core::ReadLease;
 use d_engine_core::Result;
+use d_engine_core::SmWorkerHandle;
 use d_engine_core::TypeConfig;
 use d_engine_core::alias::MOF;
 #[cfg(feature = "watch")]
@@ -103,10 +104,9 @@ where
     #[cfg(feature = "watch")]
     pub(crate) _watch_dispatcher_handle: Option<tokio::task::JoinHandle<()>>,
 
-    /// State machine worker thread handle (dedicated OS thread, not a tokio task).
-    /// Wrapped in Mutex so run(&self) can take it for joining after Raft loop exits,
-    /// ensuring `Arc<SM>` is released before run() returns.
-    pub(crate) sm_worker_handle: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// State machine worker (dedicated OS thread). Started by `run()` and stopped there, so
+    /// its `Arc<SM>` is released before `run()` returns.
+    pub(crate) sm_worker: SmWorkerHandle<T>,
 
     /// ReadActor task handle. Aborted in run() after sm_worker exits so that the
     /// `Arc<SM>` (and any exclusive resources the storage backend holds) is
@@ -164,7 +164,9 @@ where
     /// Both paths converge to the inbound event processing loop.
     ///
     /// # Errors
-    /// Returns `Err` if any bootstrap step or Raft execution fails.
+    /// Returns `Err` if the state machine worker cannot be started (no Tokio runtime, or the OS
+    /// refuses a thread), a bootstrap step fails, or Raft execution fails. The components `run()`
+    /// owns are stopped before it returns in every one of these cases.
     ///
     /// # Example
     /// ```ignore
@@ -174,6 +176,14 @@ where
     /// });
     /// ```
     pub async fn run(&self) -> Result<()> {
+        let result = self.serve().await;
+        self.stop_components().await;
+        result
+    }
+
+    /// Starts the state machine worker, bootstraps, then runs the Raft loop until it ends.
+    async fn serve(&self) -> Result<()> {
+        self.sm_worker.start()?;
         let mut shutdown_signal = self.shutdown_signal.clone();
         shutdown_signal.borrow_and_update();
 
@@ -186,8 +196,12 @@ where
 
         // Start Raft main loop.
         // Note: IO thread is closed inside Raft::run() on shutdown before returning.
-        self.start_raft_loop().await?;
+        self.start_raft_loop().await
+    }
 
+    /// Stops what `run()` owns, in reverse startup order. Runs on every exit path of `serve()`,
+    /// so it must not fail: problems are logged and shutdown continues.
+    async fn stop_components(&self) {
         // Bounded wait for graceful shutdown, then force-abort — the replication
         // bidi stream never ends on its own (#438).
         let rpc_handle = self.rpc_server_handle.lock().unwrap().take();
@@ -201,36 +215,25 @@ where
             }
         }
 
-        // Shutdown in reverse startup order: join sm-worker thread first so its
-        // Arc<SM> clone is dropped before we return, letting the storage backend
-        // release any exclusive resources it holds.
-        let handle = self.sm_worker_handle.lock().unwrap().take();
-        if let Some(handle) = handle {
-            let timeout = Duration::from_millis(
-                self.node_config.raft.state_machine.shutdown_apply_timeout_ms,
+        // Shutdown in reverse startup order: stop the sm worker first so its Arc<SM> clone is
+        // dropped before we return, letting the storage backend release any exclusive
+        // resources it holds.
+        let timeout =
+            Duration::from_millis(self.node_config.raft.state_machine.shutdown_apply_timeout_ms);
+        if let Err(e) = self.sm_worker.stop_and_join(timeout).await {
+            error!(
+                "state machine worker did not stop cleanly: {e}; shutting down anyway, \
+                 committed entries may be unapplied until restart"
             );
-            let join = tokio::task::spawn_blocking(move || {
-                let _ = handle.join();
-            });
-            if tokio::time::timeout(timeout, join).await.is_err() {
-                error!(
-                    "state machine worker did not finish applying within {:?}; \
-                             shutting down anyway, committed entries may be unapplied until restart",
-                    timeout
-                );
-            }
         }
 
-        // Abort ReadActor after sm_worker exits so Arc<SM> ref-count reaches zero,
-        // letting the storage backend release any exclusive resources (e.g. an
-        // on-disk lock file) before run() returns.
+        // Abort the ReadActor last. The worker has already closed the state machine, and the
+        // ReadActor only serves reads, so there is nothing left to wait for.
         let ra_handle = self.read_actor_handle.lock().unwrap().take();
         if let Some(ra_handle) = ra_handle {
             ra_handle.abort();
             let _ = ra_handle.await;
         }
-
-        Ok(())
     }
 
     /// Learner bootstrap: skip cluster ready check, join after warmup.

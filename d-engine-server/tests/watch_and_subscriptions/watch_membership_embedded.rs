@@ -16,30 +16,30 @@
 //!
 //! ## Design notes
 //!
-//! - `watch::Receiver` semantics: lossy (latest value only), no diff carried.
-//!   Callers compute diff from their own previous snapshot.
-//! - `committed_index` is the idempotency key; callers use it to detect replayed
-//!   snapshots after reconnect or restart.
-//! - Notification fires on **every** node (leader / follower / learner) because
-//!   all apply a committed config change through the same path (`dispatch_committed`).
+//! - `watch::Receiver` semantics: lossy (latest value only), no diff carried. Callers compute diff
+//!   from their own previous snapshot.
+//! - `committed_index` is the idempotency key; callers use it to detect replayed snapshots after
+//!   reconnect or restart.
+//! - Notification fires on **every** node (leader / follower / learner) because all apply a
+//!   committed config change through the same path (`dispatch_committed`).
 //!
 //! ## How conf changes reach the watch channel
 //!
 //! Only Raft-consensus-backed conf changes trigger the watch.  The three paths used
 //! in these tests are:
 //!
-//! 1. **`JoinCluster` RPC**: New learner node (role=4) calls `join_cluster()` on boot.
-//!    Leader appends `AddNode(Config)` entry → commits → `dispatch_committed` → `apply_membership`
-//!    → `notify_config_applied` → watch fires on all nodes.
+//! 1. **`JoinCluster` RPC**: New learner node (role=4) calls `join_cluster()` on boot. Leader
+//!    appends `AddNode(Config)` entry → commits → `dispatch_committed` → `apply_membership` →
+//!    `notify_config_applied` → watch fires on all nodes.
 //!
 //! 2. **Zombie detection** (warn-only): When a node's connection failure count reaches
 //!    `zombie.threshold`, the leader emits a `warn` log — no `BatchRemove` is proposed.
-//!    Auto-removal is intentionally absent; see zombie_detection_decision.md.
-//!    Test 3 uses `threshold=1` to trigger the warning quickly and verify no watch fires.
+//!    Auto-removal is intentionally absent; see zombie_detection_decision.md. Test 3 uses
+//!    `threshold=1` to trigger the warning quickly and verify no watch fires.
 //!
-//! 3. **Auto-promotion** (`BatchPromote`): When a learner with `status=Promotable(2)` catches
-//!    up to the leader's commit index (within `learner_check_throttle_ms = 100 ms`), the
-//!    leader proposes `BatchPromote(Config)` → commits → watch fires.
+//! 3. **Auto-promotion** (`BatchPromote`): When a learner with `status=Promotable(2)` catches up to
+//!    the leader's commit index (within `learner_check_throttle_ms = 100 ms`), the leader proposes
+//!    `BatchPromote(Config)` → commits → watch fires.
 //!
 //! `ClusterManagementService::update_cluster_conf` is NOT used here; it bypasses the Raft
 //! log and modifies follower membership state directly without calling `notify_config_applied`.
@@ -49,7 +49,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_server::{DefaultEmbeddedEngine, RocksDBUnifiedEngine};
+use d_engine_server::DefaultEmbeddedEngine;
+use d_engine_server::RocksDBUnifiedEngine;
 use tempfile::TempDir;
 use tokio::time::timeout;
 use tracing_test::traced_test;
@@ -366,12 +367,11 @@ async fn test_watch_membership_fires_on_node_join() -> Result<(), Box<dyn std::e
 /// attempts may simply be restarting, and an incorrect removal would permanently eject
 /// it from the cluster (requiring manual re-add).  Instead, d-engine emits a `warn`
 /// log so that upper-layer tooling or operators can decide whether removal is warranted.
-/// See decision doc: `d-engine-product-design/…/20260418/zombie_detection_decision.md`.
 ///
 /// ## What this test verifies
 ///
-/// 1. The `watch_membership()` channel does **not** fire after node 3 becomes
-///    unreachable — confirming no `BatchRemove` was submitted to Raft consensus.
+/// 1. The `watch_membership()` channel does **not** fire after node 3 becomes unreachable —
+///    confirming no `BatchRemove` was submitted to Raft consensus.
 /// 2. Node 3 is still present in the membership snapshot (not auto-removed).
 /// 3. The surviving 2-node cluster remains healthy (leader still accepts requests).
 ///
@@ -382,8 +382,8 @@ async fn test_watch_membership_fires_on_node_join() -> Result<(), Box<dyn std::e
 /// ## Setup
 ///
 /// - 3-node cluster (nodes 1, 2, 3).
-/// - `zombie.threshold = 1`: first AppendEntries failure to node 3 fires the zombie
-///   signal immediately.
+/// - `zombie.threshold = 1`: first AppendEntries failure to node 3 fires the zombie signal
+///   immediately.
 /// - Subscribe watch on node 1 before stopping node 3.
 ///
 /// ## Invariant protected
@@ -503,11 +503,11 @@ async fn test_watch_membership_zombie_warns_without_removal()
 ///
 /// Promotion happens automatically via the `BatchPromote` Raft path:
 /// 1. Learner starts with `status = Promotable (1)` and `role = Learner (4)`.
-/// 2. On boot the learner sends `JoinCluster` RPC → leader commits `AddNode`;
-///    watch fires with node 3 in `learners` (change 1).
-/// 3. The learner replicates the log.  Within `learner_check_throttle_ms = 100 ms`
-///    the leader detects it has caught up and proposes `BatchPromote`; watch fires
-///    with node 3 moved from `learners` to `members` (change 2).
+/// 2. On boot the learner sends `JoinCluster` RPC → leader commits `AddNode`; watch fires with node
+///    3 in `learners` (change 1).
+/// 3. The learner replicates the log.  Within `learner_check_throttle_ms = 100 ms` the leader
+///    detects it has caught up and proposes `BatchPromote`; watch fires with node 3 moved from
+///    `learners` to `members` (change 2).
 ///
 /// Setup:  2-node voter cluster (nodes 1, 2).  Subscribe on node 1.
 /// Action: start node 3 as Promotable Learner (role=4, status=1).

@@ -20,11 +20,13 @@
 //! - tokio::time::pause() for deterministic timing
 //! - Mock membership and log storage
 //! - Listener notification verification
-//!
-
-use d_engine_proto::common::NodeRole::{Candidate, Follower, Leader, Learner};
 
 use std::sync::Arc;
+
+use d_engine_proto::common::NodeRole::Candidate;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Leader;
+use d_engine_proto::common::NodeRole::Learner;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
@@ -55,7 +57,8 @@ fn prepare_succeed_majority_confirmation() -> (
     crate::MockReplicationCore<MockTypeConfig>,
 ) {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
 
     // Dynamic counter: starts at 11 (pre-noop state).
     // prepare_batch_requests increments it by the number of payloads written,
@@ -953,7 +956,8 @@ async fn test_leader_ready_notification_suppressed_when_noop_fails() {
     raft_log.expect_save_hard_state().returning(|_| Ok(()));
 
     // prepare_batch_requests returning Err simulates noop failure:
-    // verify_internal_quorum returns Err → BecomeFollower queued → notify_leader_change(Some) never sent.
+    // verify_internal_quorum returns Err → BecomeFollower queued → notify_leader_change(Some) never
+    // sent.
     let mut replication_handler = crate::MockReplicationCore::new();
     replication_handler
         .expect_prepare_batch_requests()
@@ -1404,8 +1408,8 @@ async fn test_leader_init_three_peers() {
 ///
 /// # Scenario
 /// - Leader's log tip (`raft_log.last_entry_id()`) is at 12.
-/// - The just-completed snapshot's own boundary is index 5 (simulates the snapshot
-///   having been captured well before the leader's tip advanced to 12).
+/// - The just-completed snapshot's own boundary is index 5 (simulates the snapshot having been
+///   captured well before the leader's tip advanced to 12).
 /// - Expected: `next_index(peer) == 6` (5 + 1), NOT `13` (12 + 1).
 #[tokio::test]
 async fn test_snapshot_push_completed_uses_snapshot_boundary_not_leader_tip() {
@@ -1524,8 +1528,8 @@ async fn test_snapshot_push_completed_missing_boundary_does_not_fall_back_to_lea
 ///
 /// # Scenario
 /// - Leader elected at term `T`.
-/// - A `SnapshotPushCompleted` arrives carrying `term = T - 1` (a straggler from
-///   the previous leadership period).
+/// - A `SnapshotPushCompleted` arrives carrying `term = T - 1` (a straggler from the previous
+///   leadership period).
 /// - Expected: `next_index` is left exactly as it was — not seeded.
 #[tokio::test]
 async fn test_stale_term_snapshot_push_completed_does_not_seed_next_index() {
@@ -1630,11 +1634,10 @@ async fn test_snapshot_push_completed_for_peer_not_in_snapshot_does_not_seed_nex
 /// attempt.
 ///
 /// # Scenario
-/// - Peer 42 is in `Snapshot` state, with `next_index` at some value the leader
-///   recorded when the transfer started.
+/// - Peer 42 is in `Snapshot` state, with `next_index` at some value the leader recorded when the
+///   transfer started.
 /// - A `PeerStreamError` for peer 42 arrives (the bidi stream broke).
-/// - Expected: `peer_replication_state(42)` is still `Snapshot`, and `next_index`
-///   is unchanged.
+/// - Expected: `peer_replication_state(42)` is still `Snapshot`, and `next_index` is unchanged.
 #[tokio::test]
 async fn test_peer_stream_error_does_not_touch_peer_in_snapshot_state() {
     let (_graceful_tx, graceful_rx) = watch::channel(());

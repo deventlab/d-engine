@@ -81,49 +81,49 @@ pub mod watch;
 pub use client::*;
 pub use command::*;
 pub use config::*;
-pub use errors::*;
-pub use storage::*;
-#[cfg(feature = "watch")]
-pub use watch::*;
-
-// Stable extension points — types developers need when implementing custom
-// storage engines, state machines, or transport layers.
-pub use membership::Membership;
-pub use network::Transport;
-pub use purge::PurgeExecutor;
-pub use raft::{LeaderInfo, Raft, SignalParams};
-pub use state_machine_handler::{SnapshotPolicy, StateMachineHandler};
-pub use type_config::TypeConfig;
-
 // ── Internal implementation details (not part of public API) ───────────────
 // These remain accessible to d-engine-server but are hidden from cargo doc.
 // Do not depend on these from external crates.
 #[doc(hidden)]
 pub use election::*;
+pub use errors::*;
 #[doc(hidden)]
 pub use event::*;
 #[doc(hidden)]
 pub use maybe_clone_oneshot::*;
+// Stable extension points — types developers need when implementing custom
+// storage engines, state machines, or transport layers.
+pub use membership::Membership;
 #[doc(hidden)]
 pub use membership::*;
+pub use network::Transport;
 #[doc(hidden)]
 pub use network::*;
+pub use purge::PurgeExecutor;
 #[doc(hidden)]
 pub use purge::*;
+pub use raft::LeaderInfo;
+pub use raft::Raft;
+pub use raft::SignalParams;
 #[doc(hidden)]
 pub use raft_context::*;
 #[doc(hidden)]
 pub use raft_role::*;
 #[doc(hidden)]
 pub use replication::*;
+pub use state_machine_handler::SnapshotPolicy;
+pub use state_machine_handler::StateMachineHandler;
 #[doc(hidden)]
 pub use state_machine_handler::*;
+pub use storage::*;
+pub(crate) use timer::*;
+pub use type_config::TypeConfig;
 #[doc(hidden)]
 pub use type_config::*;
 #[doc(hidden)]
 pub use utils::*;
-
-pub(crate) use timer::*;
+#[cfg(feature = "watch")]
+pub use watch::*;
 
 #[cfg(test)]
 mod maybe_clone_oneshot_test;

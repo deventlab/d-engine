@@ -2,8 +2,10 @@
 //! and client requests. Implements core Raft protocol logic for leader election,
 //! log replication, and cluster configuration management.
 
-use crate::Node;
-use crate::proto_convert;
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
+
 use d_engine_core::InboundEvent;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftOneshot;
@@ -40,9 +42,6 @@ use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
 use futures::Stream;
 use futures::StreamExt;
-use std::future::Future;
-use std::pin::Pin;
-use std::time::Duration;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -55,6 +54,9 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+
+use crate::Node;
+use crate::proto_convert;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>

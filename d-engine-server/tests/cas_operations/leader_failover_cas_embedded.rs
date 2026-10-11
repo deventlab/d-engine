@@ -1,11 +1,11 @@
 #![cfg(feature = "rocksdb")]
-use d_engine_server::RocksDBUnifiedEngine;
-
-use d_engine_core::ClientApi;
-use d_engine_server::api::DefaultEmbeddedEngine;
-use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
+
+use d_engine_core::ClientApi;
+use d_engine_server::RocksDBUnifiedEngine;
+use d_engine_server::api::DefaultEmbeddedEngine;
+use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -14,9 +14,6 @@ use crate::common::get_available_ports;
 use crate::common::wait_for_new_leader;
 
 /// Test CAS operation behavior during leader failover (Embedded mode)
-///
-/// Based on etcd's TestTxnWriteFail pattern:
-/// https://github.com/etcd-io/etcd/blob/main/tests/integration/clientv3/txn_test.go
 ///
 /// Scenario:
 /// 1. Start 3-node cluster, elect leader

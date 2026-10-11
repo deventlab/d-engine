@@ -4,10 +4,9 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tracing_test::traced_test;
 
+use super::*;
 use crate::test_utils::MockNode;
 use crate::test_utils::MockRpcService;
-
-use super::*;
 
 /// Case 1: server is not ready
 #[tokio::test]

@@ -1,3 +1,10 @@
+use std::sync::Arc;
+
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
+use prost::Message;
+use tokio::sync::watch;
+
 use crate::ClientCmd;
 use crate::InternalEvent;
 use crate::MaybeCloneOneshot;
@@ -9,11 +16,6 @@ use crate::client::ClientWriteRequest;
 use crate::client::ErrorCode;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::mock::mock_membership;
-use bytes::Bytes;
-use d_engine_proto::client::WriteCommand;
-use prost::Message;
-use std::sync::Arc;
-use tokio::sync::watch;
 
 // ============================================================================
 // Role-Specific Behavior Tests

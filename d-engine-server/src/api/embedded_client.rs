@@ -15,13 +15,10 @@
 //! client.put(b"key", b"value").await?;
 //! ```
 
-use super::embedded_read_handle::EmbeddedReadHandle;
-pub(crate) use super::standalone_read_handle::channel_closed_error;
-pub(crate) use super::standalone_read_handle::map_error_response;
-pub(crate) use super::standalone_read_handle::server_error;
-pub(crate) use super::standalone_read_handle::timeout_error;
-use crate::api::types::WriteOperation;
-use crate::proto_convert;
+#[cfg(feature = "watch")]
+use std::sync::Arc;
+use std::time::Duration;
+
 use bytes::Bytes;
 use d_engine_core::BatchOp;
 use d_engine_core::InboundEvent;
@@ -38,10 +35,15 @@ use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_core::types::ScanResults;
 #[cfg(feature = "watch")]
 use d_engine_core::watch::WatchRegistry;
-#[cfg(feature = "watch")]
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
+
+use super::embedded_read_handle::EmbeddedReadHandle;
+pub(crate) use super::standalone_read_handle::channel_closed_error;
+pub(crate) use super::standalone_read_handle::map_error_response;
+pub(crate) use super::standalone_read_handle::server_error;
+pub(crate) use super::standalone_read_handle::timeout_error;
+use crate::api::types::WriteOperation;
+use crate::proto_convert;
 
 /// Zero-overhead KV client for embedded mode. Obtained via `EmbeddedEngine::client()`.
 ///
@@ -367,10 +369,9 @@ impl<T: TypeConfig> EmbeddedClient<T> {
     /// # Arguments
     ///
     /// * `key`     - The exact key to watch.
-    /// * `prev_kv` - When `true`, every `Put` and `Delete` event carries the value the
-    ///   key held **before** the mutation in `event.prev_value`. When
-    ///   `false` (the default via [`watch`](Self::watch)), `prev_value` is
-    ///   always empty.
+    /// * `prev_kv` - When `true`, every `Put` and `Delete` event carries the value the key held
+    ///   **before** the mutation in `event.prev_value`. When `false` (the default via
+    ///   [`watch`](Self::watch)), `prev_value` is always empty.
     ///
     /// # Performance note
     ///

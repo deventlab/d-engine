@@ -9,20 +9,26 @@
 //! The drain loop empties the buffer, so buffer length is not meaningful here.
 //! Dispatch counts are asserted via mock `times(N)`:
 //! - `handle_append_entries.times(1)` proves two consecutive AEs were merged.
-//! - `handle_append_entries.times(2)` would prove they were dispatched separately.
-//!   Mock expectations are verified on drop at the end of each test.
+//! - `handle_append_entries.times(2)` would prove they were dispatched separately. Mock
+//!   expectations are verified on drop at the end of each test.
+
+use std::collections::VecDeque;
+
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use tokio::sync::watch;
 
 use crate::AppendResponseWithUpdates;
+use crate::InboundEvent;
 use crate::InternalEvent;
+use crate::MockElectionCore;
+use crate::MockReplicationCore;
 use crate::StateUpdate;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
+use crate::mock_entries;
 use crate::test_utils::MockBuilder;
-use crate::{InboundEvent, MockElectionCore, MockReplicationCore, mock_entries};
-use d_engine_proto::server::election::VoteRequest;
-use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
-use std::collections::VecDeque;
-use tokio::sync::watch;
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -299,15 +305,15 @@ async fn test_process_internal_events_propagates_fatal_error() {
 }
 
 // -----------------------------------------------------------------------
-// handle_shutdown (#438)
+// shutdown (#438)
 // -----------------------------------------------------------------------
 
 /// Events still queued when shutdown fires are dropped, not answered — their
-/// resp_tx senders are never called. Drives the real `handle_shutdown` path,
-/// not a re-implementation of it.
+/// resp_tx senders are never called. Drives the real `run()` path (shutdown signalled
+/// before it starts, so its first step is the shutdown branch), not a re-implementation.
 #[tokio::test]
-async fn test_handle_shutdown_drops_pending_events_without_responding() {
-    let (_graceful_tx, graceful_rx) = watch::channel(());
+async fn test_shutdown_drops_pending_events_without_responding() {
+    let (graceful_tx, graceful_rx) = watch::channel(());
     let mut raft = MockBuilder::new(graceful_rx).build_raft();
 
     let (tx1, rx1) = MaybeCloneOneshot::new();
@@ -323,7 +329,8 @@ async fn test_handle_shutdown_drops_pending_events_without_responding() {
     ));
     raft.buffered_inbound_event = queue;
 
-    raft.handle_shutdown().await.unwrap();
+    graceful_tx.send(()).unwrap();
+    raft.run().await.unwrap();
     drop(raft); // matches production: Raft is dropped shortly after run() returns
 
     assert!(

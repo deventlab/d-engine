@@ -2,7 +2,8 @@ use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 
-use super::{ReadLease, now_ms};
+use super::ReadLease;
+use super::now_ms;
 
 // ── now_ms ────────────────────────────────────────────────────────────────────
 

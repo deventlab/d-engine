@@ -15,7 +15,6 @@ pub mod replication_handler_test;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::client::ClientResponse;
 use async_trait::async_trait;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
@@ -33,6 +32,7 @@ use crate::MaybeCloneOneshotSender;
 use crate::Result;
 use crate::TypeConfig;
 use crate::alias::ROF;
+use crate::client::ClientResponse;
 
 /// Request with response channel that can handle all Raft payload types
 #[derive(Debug)]
@@ -116,9 +116,9 @@ where
     ///
     /// Performs two operations that MUST remain in the Raft loop (serial, single-threaded):
     ///   1. Write new log entries to the local raft log (`generate_new_entries`)
-    ///   2. Build per-peer request payloads (`retrieve_to_be_synced_logs_for_peers` + `build_append_request`)
-    ///      Peers whose `next_index < first_entry_id` (below purge boundary) are routed to
-    ///      `PrepareResult.snapshot_targets` instead of `append_requests`.
+    ///   2. Build per-peer request payloads (`retrieve_to_be_synced_logs_for_peers` +
+    ///      `build_append_request`) Peers whose `next_index < first_entry_id` (below purge
+    ///      boundary) are routed to `PrepareResult.snapshot_targets` instead of `append_requests`.
     ///
     /// The caller (leader Raft loop) then fires each request to a per-follower
     /// `ReplicationWorker` task and returns immediately — no blocking `.await`.
@@ -131,8 +131,8 @@ where
     /// but not at dispatch (or vice versa) would block that peer's heartbeat.
     ///
     /// # Returns
-    /// - `Ok(PrepareResult)` — append requests per in-range peer + snapshot targets.
-    ///   Empty `append_requests` when there are no replication targets or all need snapshots.
+    /// - `Ok(PrepareResult)` — append requests per in-range peer + snapshot targets. Empty
+    ///   `append_requests` when there are no replication targets or all need snapshots.
     /// - `Err` for log write failures or ID allocation errors
     async fn prepare_batch_requests(
         &self,
@@ -182,9 +182,8 @@ where
     ///
     /// For each peer behind the leader's latest index:
     /// - `next_index < first_index` (purged prefix) → `NeedSnapshot`
-    /// - Fetched range is short or has a gap despite being in-range → `CorruptGap`
-    ///   (storage-layer inconsistency, not a purge — caller must not silently
-    ///   fall back to snapshot)
+    /// - Fetched range is short or has a gap despite being in-range → `CorruptGap` (storage-layer
+    ///   inconsistency, not a purge — caller must not silently fall back to snapshot)
     /// - Otherwise → `Ready(entries)`, contiguous from `next_index` onward
     ///
     /// `first_index` is the leader's retained-log boundary (`raft_log.first_entry_id()`),

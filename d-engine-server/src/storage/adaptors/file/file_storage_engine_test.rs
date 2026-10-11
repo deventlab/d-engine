@@ -472,9 +472,8 @@ mod tests {
 
     use async_trait::async_trait;
     use d_engine_core::Error;
-    use d_engine_core::storage::storage_engine_test::{
-        StorageEngineBuilder, StorageEngineTestSuite,
-    };
+    use d_engine_core::storage::storage_engine_test::StorageEngineBuilder;
+    use d_engine_core::storage::storage_engine_test::StorageEngineTestSuite;
 
     /// Builder for FileStorageEngine test instances
     struct FileStorageEngineBuilder {

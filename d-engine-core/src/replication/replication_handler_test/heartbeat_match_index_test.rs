@@ -12,7 +12,8 @@
 use std::sync::Arc;
 
 use d_engine_proto::common::Entry;
-use d_engine_proto::server::replication::{AppendEntriesRequest, append_entries_response};
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::append_entries_response;
 
 use crate::MockRaftLog;
 use crate::MockTypeConfig;
@@ -20,7 +21,8 @@ use crate::RaftLog;
 use crate::ReplicationCore;
 use crate::ReplicationHandler;
 use crate::StateSnapshot;
-use crate::test_utils::{RaftLogCoreTestContext, mock_entries};
+use crate::test_utils::RaftLogCoreTestContext;
+use crate::test_utils::mock_entries;
 
 const OLD_TERM: u64 = 1;
 const NEW_TERM: u64 = 2;

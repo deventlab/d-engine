@@ -13,15 +13,18 @@
 //!   state-machine apply channel without the loop consuming those events first.
 //! - `ShutdownRig` spawns `Raft::run()` to exercise the real shutdown hand-over.
 
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
 use bytes::Bytes;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
 use d_engine_proto::common::membership_change::Change;
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -137,6 +140,8 @@ struct Parts {
     membership: MockMembership<MockTypeConfig>,
     progress: Arc<Progress>,
     config_applied: Arc<AtomicUsize>,
+    /// How many times `RaftLog::close` was called.
+    log_closed: Arc<AtomicUsize>,
 }
 
 fn build_parts(
@@ -160,8 +165,12 @@ fn build_parts(
     log.expect_get_entries_range().returning(move |range| {
         Ok(entries.iter().filter(|e| range.contains(&e.index)).cloned().collect())
     });
-    // `close` is only reached via the shutdown path; the direct-drive rig never calls it.
-    log.expect_close().returning(|| ());
+    // `close` is only reached when `Raft::run()` ends; the direct-drive rig never calls it.
+    let log_closed = Arc::new(AtomicUsize::new(0));
+    let closes = log_closed.clone();
+    log.expect_close().returning(move || {
+        closes.fetch_add(1, Ordering::SeqCst);
+    });
 
     let config_applied = Arc::new(AtomicUsize::new(0));
     let calls = config_applied.clone();
@@ -184,6 +193,7 @@ fn build_parts(
         membership,
         progress,
         config_applied,
+        log_closed,
     }
 }
 
@@ -345,6 +355,11 @@ struct ShutdownRig {
     delivered: Arc<std::sync::Mutex<Vec<Vec<u64>>>>,
     handle: Option<JoinHandle<Result<()>>>,
     shutdown_tx: watch::Sender<()>,
+    log_closed: Arc<AtomicUsize>,
+    /// Sender side of the inbound event channel, as gRPC stream handlers hold it.
+    event_tx: mpsc::Sender<crate::InboundEvent>,
+    /// Set by `spawn_loop_keeping_raft`: the loop's result together with the `Raft` itself.
+    kept: Option<JoinHandle<(Result<()>, Raft<MockTypeConfig>)>>,
 }
 
 impl ShutdownRig {
@@ -376,6 +391,7 @@ impl ShutdownRig {
             .turn_on_election(false)
             .build_raft();
         let internal_event_tx = raft.internal_event_tx.clone();
+        let event_tx = raft.event_sender();
 
         Self {
             raft: Some(raft),
@@ -383,6 +399,9 @@ impl ShutdownRig {
             delivered,
             handle: None,
             shutdown_tx,
+            log_closed: parts.log_closed,
+            event_tx,
+            kept: None,
         }
     }
 
@@ -408,6 +427,26 @@ impl ShutdownRig {
             .process_committed()
             .await
             .unwrap();
+    }
+
+    /// Like `spawn_loop`, but hands the `Raft` back when `run()` ends. In a real node the `Raft`
+    /// outlives `run()` (it sits in the `Node`), so its state after `run()` is what matters.
+    fn spawn_loop_keeping_raft(&mut self) {
+        let mut raft = self.raft.take().expect("the loop has already started");
+        self.kept = Some(tokio::spawn(async move {
+            let result = raft.run().await;
+            (result, raft)
+        }));
+    }
+
+    async fn end_of_loop_keeping_raft(&mut self) -> (Result<()>, Raft<MockTypeConfig>) {
+        time::timeout(
+            Duration::from_secs(2),
+            self.kept.as_mut().expect("loop not started"),
+        )
+        .await
+        .expect("run() must end")
+        .expect("the commit path must not panic")
     }
 
     fn spawn_loop(&mut self) {
@@ -656,7 +695,7 @@ async fn test_failed_config_change_raises_fatal_error_and_announces_nothing() {
 }
 
 /// An entry whose payload kind is missing (corrupt / hostile peer) must never panic the commit
-/// path (ADR-018: no panics in embedded core paths). Later entries are still delivered.
+/// path (no panics in embedded core paths). Later entries are still delivered.
 #[tokio::test]
 async fn test_entry_with_missing_payload_kind_does_not_panic_the_commit_path() {
     let mut entries = log_entries(None);
@@ -722,12 +761,15 @@ async fn test_graceful_shutdown_hands_all_announced_commits_to_the_state_machine
     }
 }
 
-/// Runs the real `Raft::run()` and the real `StateMachineWorker` on the same shutdown signal, with
-/// commit 10 announced before the loop starts, and returns the indices the state machine applied.
+/// Runs the real `Raft::run()` and the real `StateMachineWorker`, with commit 10 announced before
+/// the loop starts, and returns the indices the state machine applied.
 ///
-/// Why this exists: the tests above stand in a fake worker that never stops, so they cannot see a
-/// worker that has already exited when the loop makes its last hand-over. The runtime is
-/// single-threaded, so spawn order is poll order and each interleaving is reproduced exactly.
+/// It shuts down the way `Node::run` does: signal the Raft loop, wait until it has ended, and only
+/// then put `Shutdown` into the worker's queue. The runtime is single-threaded, so spawn order is
+/// poll order and both starting orders are reproduced exactly.
+///
+/// Why this exists: the tests above stand in a fake worker, so they cannot see whether the loop's
+/// final hand-over really reaches a worker and is applied before it stops.
 async fn applied_after_shutdown_with_real_worker(worker_first: bool) -> Vec<u64> {
     let parts = build_parts(log_entries(None), 0, false);
 
@@ -738,6 +780,8 @@ async fn applied_after_shutdown_with_real_worker(worker_first: bool) -> Vec<u64>
         sink.lock().unwrap().extend(entries.iter().map(|e| e.index));
         Ok(entries.iter().map(|e| crate::ApplyResult::success(e.index)).collect())
     });
+    // The worker closes the state machine as its last act.
+    writer.expect_close().returning(|| ());
 
     let (sm_tx, sm_rx) = mpsc::unbounded_channel::<StateMachineCommand>();
     // The worker reports apply results here; the receiver must stay open or the worker fails.
@@ -749,8 +793,8 @@ async fn applied_after_shutdown_with_real_worker(worker_first: bool) -> Vec<u64>
         sm_tx.clone(),
         sm_rx,
         worker_events_tx,
-        shutdown_tx.subscribe(),
     );
+    let owner_tx = sm_tx.clone();
     let mut raft = MockBuilder::new(shutdown_rx)
         .with_state_machine_handler(parts.smh)
         .with_raft_log(parts.log)
@@ -774,34 +818,35 @@ async fn applied_after_shutdown_with_real_worker(worker_first: bool) -> Vec<u64>
         .await
         .expect("the raft loop must exit after shutdown")
         .expect("the raft loop must not panic");
+    // The loop has ended, so everything it will ever hand over is already queued.
+    owner_tx.send(StateMachineCommand::Shutdown).unwrap();
     let _ = time::timeout(Duration::from_secs(2), worker_handle)
         .await
         .expect("the state machine worker must exit after shutdown")
         .expect("the state machine worker must not panic");
-    let applied = applied.lock().unwrap().clone();
-    applied
+    applied.lock().unwrap().clone()
 }
 
 /// CONTRACT (owner decision, #455): graceful shutdown must not finish with a commit the node
-/// already knew about still unapplied in the state machine. Here the worker hears the shutdown
-/// before the loop makes its last hand-over, so the hand-over lands on a worker that has gone.
+/// already knew about still unapplied in the state machine. Here the worker is spawned first and
+/// is already waiting on its queue when the loop makes its final hand-over.
 #[tokio::test]
-async fn test_graceful_shutdown_applies_announced_commits_when_worker_stops_first() {
+async fn test_graceful_shutdown_applies_announced_commits_when_worker_is_spawned_first() {
     assert_eq!(
         applied_after_shutdown_with_real_worker(true).await,
         range(1..=10),
-        "the worker exited before the final hand-over, so announced commits were never applied"
+        "announced commits were not applied after a graceful shutdown"
     );
 }
 
-/// Same contract, other interleaving: the loop hands over first. Guards that a fix for the case
-/// above does not break the order that already worked.
+/// Same contract, other starting order: the loop is spawned first, so its final hand-over is
+/// queued before the worker has run at all.
 #[tokio::test]
-async fn test_graceful_shutdown_applies_announced_commits_when_loop_stops_first() {
+async fn test_graceful_shutdown_applies_announced_commits_when_loop_is_spawned_first() {
     assert_eq!(
         applied_after_shutdown_with_real_worker(false).await,
         range(1..=10),
-        "announced commits were not applied although the loop handed them over first"
+        "announced commits were not applied after a graceful shutdown"
     );
 }
 
@@ -860,6 +905,87 @@ async fn test_shutdown_after_failed_config_change_does_not_redeliver_entries() {
         unique.len(),
         "entries delivered twice around fatal shutdown: {:?}",
         rig.delivered.lock().unwrap().clone()
+    );
+}
+
+/// Business scenario: the operator stops a node. `Raft` is the only writer of its log, so before
+/// `run()` returns it must have waited for in-flight log writes (`RaftLog::close`), exactly once.
+#[tokio::test]
+async fn test_raft_log_is_closed_once_when_run_ends_by_shutdown() {
+    let mut rig = ShutdownRig::start(log_entries(None), 0, false);
+    rig.spawn_loop();
+    rig.shutdown_tx.send(()).unwrap();
+    rig.join_and_settle().await;
+
+    assert_eq!(
+        rig.log_closed.load(Ordering::SeqCst),
+        1,
+        "the log must be closed exactly once when run() ends by shutdown"
+    );
+}
+
+/// Business scenario: a committed membership change cannot be applied, which is fatal and ends
+/// `run()` with an error; nobody sent a shutdown. The log's in-flight writes must still be waited
+/// for before `run()` returns: closing is not something only a clean shutdown gets to do.
+#[tokio::test]
+async fn test_raft_log_is_closed_when_run_ends_by_fatal_error() {
+    let mut rig = ShutdownRig::start(log_entries(Some(3)), 0, true);
+    rig.announce_commit(5); // AddNode at index 3 fails to apply
+    rig.spawn_loop();
+    // Wake the loop so its delivery stage runs and hits the failing config change.
+    rig.internal_event_tx.send(InternalEvent::LeaderDiscovered(1, 1)).unwrap();
+
+    let result = time::timeout(Duration::from_secs(2), rig.handle.as_mut().unwrap())
+        .await
+        .expect("the fatal error must end run()")
+        .expect("the commit path must not panic");
+    assert!(
+        result.is_err(),
+        "the failed config change must end run() with an error"
+    );
+
+    assert_eq!(
+        rig.log_closed.load(Ordering::SeqCst),
+        1,
+        "the log must be closed even though run() ended by error, not by shutdown"
+    );
+}
+
+/// Business scenario: the operator stops a node while gRPC stream handlers are feeding it events.
+/// Once `run()` has ended nobody consumes events, so the channel must be closed: a handler that
+/// is blocked sending, or sends later, then gets an error instead of waiting forever (which would
+/// keep `serve_with_shutdown`, and with it the whole node, from ever finishing).
+#[tokio::test]
+async fn test_event_channel_is_closed_when_run_ends_by_shutdown() {
+    let mut rig = ShutdownRig::start(log_entries(None), 0, false);
+    rig.spawn_loop_keeping_raft();
+    rig.shutdown_tx.send(()).unwrap();
+    let (result, _raft) = rig.end_of_loop_keeping_raft().await;
+
+    assert!(result.is_ok());
+    assert!(
+        rig.event_tx.is_closed(),
+        "the event channel must be closed once run() ended"
+    );
+}
+
+/// Business scenario: same, but `run()` ends because a committed membership change could not be
+/// applied (fatal). The stream handlers need the same release; nobody sent a shutdown.
+#[tokio::test]
+async fn test_event_channel_is_closed_when_run_ends_by_fatal_error() {
+    let mut rig = ShutdownRig::start(log_entries(Some(3)), 0, true);
+    rig.announce_commit(5); // AddNode at index 3 fails to apply
+    rig.spawn_loop_keeping_raft();
+    rig.internal_event_tx.send(InternalEvent::LeaderDiscovered(1, 1)).unwrap();
+    let (result, _raft) = rig.end_of_loop_keeping_raft().await;
+
+    assert!(
+        result.is_err(),
+        "the failed config change must end run() with an error"
+    );
+    assert!(
+        rig.event_tx.is_closed(),
+        "the event channel must be closed even though run() ended by error, not by shutdown"
     );
 }
 
@@ -1393,13 +1519,14 @@ async fn step_down_send_fails_gracefully_when_receiver_dropped() {
 /// test times out.
 #[tokio::test]
 async fn test_commit_advanced_by_inbound_append_entries_is_delivered_in_the_same_iteration() {
+    use d_engine_proto::server::replication::AppendEntriesRequest;
+    use d_engine_proto::server::replication::AppendEntriesResponse;
+
     use crate::AppendResponseWithUpdates;
     use crate::InboundEvent;
     use crate::MockReplicationCore;
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     use crate::maybe_clone_oneshot::RaftOneshot;
-    use d_engine_proto::server::replication::AppendEntriesRequest;
-    use d_engine_proto::server::replication::AppendEntriesResponse;
 
     let new_commit = 5;
     let mut parts = build_parts(log_entries(None), 0, false);

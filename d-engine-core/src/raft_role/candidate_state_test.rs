@@ -1,12 +1,6 @@
 use std::sync::Arc;
 
-use crate::MockRaftLog;
-use crate::client::ClientReadRequest;
-use crate::client::ClientResponse;
-use crate::client::ClientWriteRequest;
-use crate::client::ErrorCode;
-use crate::config::ReadConsistencyPolicy;
-
+use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
 use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
@@ -18,6 +12,9 @@ use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::replication::AppendEntriesResponse;
+use prost::Message;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tonic::Code;
 
 use crate::ClientCmd;
@@ -30,9 +27,15 @@ use crate::MaybeCloneOneshot;
 use crate::MockBuilder;
 use crate::MockElectionCore;
 use crate::MockMembership;
+use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
 use crate::RaftOneshot;
+use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
+use crate::client::ClientWriteRequest;
+use crate::client::ErrorCode;
+use crate::config::ReadConsistencyPolicy;
 use crate::raft_role::candidate_state::CandidateState;
 use crate::raft_role::follower_state::FollowerState;
 use crate::raft_role::role_state::RaftRoleState;
@@ -41,9 +44,6 @@ use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_election_core;
 use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::node_config;
-use d_engine_proto::client::WriteCommand;
-use prost::Message;
-use tokio::sync::{mpsc, watch};
 
 /// Test: CandidateState can_vote_myself returns true for new candidate
 ///
@@ -218,14 +218,14 @@ async fn test_tick_triggers_new_election_round_on_success() {
 ///
 /// Scenario:
 /// - Candidate ticks (election timeout): term increments (1 → 2), votes for itself.
-/// - `RaftLog::save_hard_state` is documented (raft_log.rs "When to Call") as required
-///   "When becoming candidate (incrementing term)".
+/// - `RaftLog::save_hard_state` is documented (raft_log.rs "When to Call") as required "When
+///   becoming candidate (incrementing term)".
 ///
 /// Expected:
-/// - `save_hard_state` is called exactly once, with the new term (2) and the
-///   self-vote (`voted_for_id: 1, voted_for_term: 2`).
-/// - The call happens BEFORE `broadcast_vote_requests` is invoked — a candidate must
-///   not ask other nodes to vote for a term it hasn't durably committed to itself
+/// - `save_hard_state` is called exactly once, with the new term (2) and the self-vote
+///   (`voted_for_id: 1, voted_for_term: 2`).
+/// - The call happens BEFORE `broadcast_vote_requests` is invoked — a candidate must not ask other
+///   nodes to vote for a term it hasn't durably committed to itself
 #[tokio::test(start_paused = true)]
 async fn test_tick_election_timeout_persists_hard_state_before_broadcasting_votes() {
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
@@ -362,13 +362,12 @@ async fn test_tick_discovers_higher_term_and_steps_down() {
 /// - `RaftLog::save_hard_state` is documented as required "When discovering higher term".
 ///
 /// Expected:
-/// - `save_hard_state` is called exactly once with term=100 (the discovered higher term,
-///   not the candidate's own pre-election term).
-/// - The call happens BEFORE `InternalEvent::BecomeFollower` is sent — per the Raft
-///   safety invariant, a node must not act on (or announce) a term change until it is
-///   durable, otherwise a crash between "step down" and "persist" resurrects the stale
-///   term on restart (this is exactly the class of bug the sm_wal_disabled_crash_recovery
-///   integration test surfaced).
+/// - `save_hard_state` is called exactly once with term=100 (the discovered higher term, not the
+///   candidate's own pre-election term).
+/// - The call happens BEFORE `InternalEvent::BecomeFollower` is sent — per the Raft safety
+///   invariant, a node must not act on (or announce) a term change until it is durable, otherwise a
+///   crash between "step down" and "persist" resurrects the stale term on restart (this is exactly
+///   the class of bug the sm_wal_disabled_crash_recovery integration test surfaced).
 #[tokio::test(start_paused = true)]
 async fn test_tick_discovers_higher_term_via_election_persists_hard_state() {
     let (internal_event_tx, internal_event_rx) = mpsc::unbounded_channel();
@@ -467,7 +466,8 @@ async fn test_tick_discovers_higher_term_via_election_persists_hard_state() {
 /// - Term remains unchanged
 ///
 /// Original test location:
-/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_inbound_event_case1_1`
+/// `d-engine-server/tests/components/raft_role/candidate_state_test.
+/// rs::test_handle_inbound_event_case1_1`
 #[tokio::test]
 async fn test_handle_vote_request_rejects_illegal_request() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -537,7 +537,8 @@ async fn test_handle_vote_request_rejects_illegal_request() {
 /// step down and let the new role process it.
 ///
 /// Original test location:
-/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_inbound_event_case1_2`
+/// `d-engine-server/tests/components/raft_role/candidate_state_test.
+/// rs::test_handle_inbound_event_case1_2`
 #[tokio::test]
 async fn test_handle_vote_request_grants_and_steps_down_when_legal() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -620,7 +621,8 @@ async fn test_handle_vote_request_grants_and_steps_down_when_legal() {
 /// This validates that Candidate can serve read-only cluster metadata queries.
 ///
 /// Original test location:
-/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_inbound_event_case2`
+/// `d-engine-server/tests/components/raft_role/candidate_state_test.
+/// rs::test_handle_inbound_event_case2`
 #[tokio::test]
 async fn test_handle_cluster_conf_metadata_request() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -675,7 +677,8 @@ async fn test_handle_cluster_conf_metadata_request() {
 /// This validates that Candidate can apply configuration changes from leader.
 ///
 /// Original test location:
-/// `d-engine-server/tests/components/raft_role/candidate_state_test.rs::test_handle_inbound_event_case3`
+/// `d-engine-server/tests/components/raft_role/candidate_state_test.
+/// rs::test_handle_inbound_event_case3`
 #[tokio::test]
 async fn test_handle_cluster_conf_update_success() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -980,8 +983,8 @@ async fn test_handle_append_entries_rejects_stale_term_does_not_reset_timer() {
 ///
 /// Scenario:
 /// - Candidate is in term 3
-/// - Receives AppendEntries with term=3 (legitimate leader, same term) where prev_log_index
-///   exceeds the candidate's log length — a log conflict would occur
+/// - Receives AppendEntries with term=3 (legitimate leader, same term) where prev_log_index exceeds
+///   the candidate's log length — a log conflict would occur
 ///
 /// Expected (Raft §5.2):
 /// - Candidate must step down immediately (BecomeFollower + ReprocessEvent)
@@ -1062,8 +1065,8 @@ async fn test_handle_append_entries_same_term_log_conflict_steps_down() {
 ///
 /// Scenario:
 /// - Candidate is in term 2
-/// - Receives AppendEntries with term=3 (new leader, higher term) where prev_log_index
-///   exceeds the candidate's log — log conflict would occur
+/// - Receives AppendEntries with term=3 (new leader, higher term) where prev_log_index exceeds the
+///   candidate's log — log conflict would occur
 ///
 /// Expected (Raft §5.2):
 /// - Candidate must step down immediately (BecomeFollower + ReprocessEvent)
@@ -1148,14 +1151,14 @@ async fn test_handle_append_entries_higher_term_log_conflict_steps_down_and_upda
 ///
 /// Scenario:
 /// - Candidate is in term 2, receives AppendEntries with term=3 (new leader).
-/// - `RaftLog::save_hard_state` is documented as required "When discovering higher term"
-///   — this is a distinct code path from the election-response case above (candidate_state.rs
-///   handles AppendEntries and VoteRequest term-updates separately), so it needs its own test.
+/// - `RaftLog::save_hard_state` is documented as required "When discovering higher term" — this is
+///   a distinct code path from the election-response case above (candidate_state.rs handles
+///   AppendEntries and VoteRequest term-updates separately), so it needs its own test.
 ///
 /// Expected:
 /// - `save_hard_state` is called exactly once with term=3.
-/// - The call happens BEFORE `InternalEvent::BecomeFollower` is sent, for the same
-///   crash-safety reason as the election-response case.
+/// - The call happens BEFORE `InternalEvent::BecomeFollower` is sent, for the same crash-safety
+///   reason as the election-response case.
 #[tokio::test]
 async fn test_handle_append_entries_higher_term_persists_hard_state_before_stepping_down() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -1455,7 +1458,8 @@ mod snapshot_tests {
         );
 
         // VERIFY 2: No CreateSnapshotEvent is sent (channel should be empty).
-        // internal_event_tx is kept alive so that Disconnected cannot be confused with "no event sent".
+        // internal_event_tx is kept alive so that Disconnected cannot be confused with "no event
+        // sent".
         match internal_event_rx.try_recv() {
             Err(mpsc::error::TryRecvError::Empty) => {
                 // Expected: no event sent — correct behavior
@@ -1472,7 +1476,8 @@ mod snapshot_tests {
         drop(internal_event_tx);
 
         // VERIFY 3: Candidate state remains unchanged (no snapshot in progress)
-        // Note: CandidateState doesn't have snapshot_in_progress field because it doesn't handle snapshots
+        // Note: CandidateState doesn't have snapshot_in_progress field because it doesn't handle
+        // snapshots
     }
 }
 
@@ -1547,8 +1552,8 @@ mod handle_client_read_request {
 /// it returns Error::Fatal and stops further processing.
 ///
 /// # Test Scenario
-/// Candidate receives FatalError event from state machine while in candidate role (during election).
-/// Candidate should recognize the fatal error and return Error::Fatal.
+/// Candidate receives FatalError event from state machine while in candidate role (during
+/// election). Candidate should recognize the fatal error and return Error::Fatal.
 ///
 /// # Given
 /// - Candidate in normal state (in election)
@@ -1816,8 +1821,8 @@ async fn expired_candidate(
 /// Test: a failed PreVote keeps the term unchanged and starts no real election.
 ///
 /// Scenario:
-/// - Candidate (term 1) times out; the PreVote round does not reach a majority
-///   (e.g. the node is isolated).
+/// - Candidate (term 1) times out; the PreVote round does not reach a majority (e.g. the node is
+///   isolated).
 ///
 /// Expected:
 /// - Term stays 1, nothing is persisted (a MockRaftLog without expectations panics on any
@@ -1864,7 +1869,8 @@ async fn test_tick_pre_vote_failure_keeps_term_and_skips_real_election() {
 /// - Then the real election runs for term 2 and the node becomes leader.
 #[tokio::test(start_paused = true)]
 async fn test_tick_pre_vote_runs_for_next_term_before_persisting_it() {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     let pre_vote_done = Arc::new(AtomicBool::new(false));
 
     let mut election_core = MockElectionCore::<MockTypeConfig>::new();
@@ -1916,8 +1922,8 @@ async fn test_tick_pre_vote_runs_for_next_term_before_persisting_it() {
 /// - The peers answer the PreVote with term 100 (the cluster moved on while this node was away).
 ///
 /// Expected:
-/// - The higher term is persisted BEFORE `BecomeFollower` is sent, the node ends in term 100,
-///   and no RequestVote is broadcast.
+/// - The higher term is persisted BEFORE `BecomeFollower` is sent, the node ends in term 100, and
+///   no RequestVote is broadcast.
 #[tokio::test(start_paused = true)]
 async fn test_tick_pre_vote_higher_term_catches_up_without_real_election() {
     let mut election_core = MockElectionCore::<MockTypeConfig>::new();
@@ -2038,17 +2044,17 @@ async fn test_candidate_pre_vote_reports_no_active_leader_and_changes_nothing() 
 /// even when it cannot grant the vote.
 ///
 /// Scenario:
-/// - Candidate (term 1) receives a VoteRequest for term 5 from a node whose log is behind, so
-///   the request is not legal and the vote cannot be granted.
+/// - Candidate (term 1) receives a VoteRequest for term 5 from a node whose log is behind, so the
+///   request is not legal and the vote cannot be granted.
 ///
 /// Expected:
-/// - The term becomes 5 (persisted), `BecomeFollower` is sent, and the request is replayed to
-///   the new Follower, which answers it (here: a denial because of the log).
+/// - The term becomes 5 (persisted), `BecomeFollower` is sent, and the request is replayed to the
+///   new Follower, which answers it (here: a denial because of the log).
 ///
 /// Raft §5.1: "If RPC request or response contains term T > currentTerm: set currentTerm = T,
-/// convert to follower", whatever the RPC and whether or not the vote is granted (raft-rs
-/// `test_vote_from_any_state`). A Candidate that keeps its lower term and stays a Candidate
-/// starts its next election at a term the cluster has already passed.
+/// convert to follower", whatever the RPC and whether or not the vote is granted. A Candidate that
+/// keeps its lower term and stays a Candidate starts its next election at a term the cluster has
+/// already passed.
 #[tokio::test]
 async fn test_candidate_higher_term_vote_request_with_stale_log_adopts_term_and_steps_down() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2140,9 +2146,8 @@ async fn test_candidate_tick_does_not_campaign_when_not_an_active_voter() {
 // No campaign while a committed membership change is still unapplied
 //
 // A node that has committed but not yet applied a membership change would count votes against
-// a stale voter set. raft-rs refuses to campaign in that window
-// (`test_conf_change_check_before_campaign`: "cannot campaign since there are still pending
-// configuration changes to apply").
+// a stale voter set, so it must not campaign in that window: it still has pending
+// configuration changes to apply.
 // ============================================================================
 
 /// Builds an expired candidate whose log has committed entries up to `commit_index`, of which
@@ -2280,9 +2285,9 @@ async fn test_candidate_tick_campaigns_when_everything_committed_is_applied() {
 //
 // Follower::tick already waited one full election timeout before sending BecomeCandidate. The
 // new Candidate used to start with a fresh random timer, so the first real election round began
-// only after ANOTHER election timeout: failover took 1-2 timeouts longer than necessary. etcd and
-// raft-rs campaign at the moment the first timeout fires. (Present on main, before PreVote.)
-// ============================================================================
+// only after ANOTHER election timeout: failover took 1-2 timeouts longer than necessary. The first
+// election round must start at the moment the first timeout fires. (Present on main, before
+// PreVote.) ============================================================================
 
 /// Test: a Candidate created from a timed-out Follower is due to campaign immediately.
 #[tokio::test(start_paused = true)]

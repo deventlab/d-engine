@@ -8,7 +8,8 @@
 //! - TTL registration: < 100ns per entry
 //! - Expired check: < 50ns per key
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -17,7 +18,10 @@ use criterion::Criterion;
 use criterion::black_box;
 use criterion::criterion_group;
 use criterion::criterion_main;
-use d_engine_core::{ApplyEntry, Command, Lease, StateMachine};
+use d_engine_core::ApplyEntry;
+use d_engine_core::Command;
+use d_engine_core::Lease;
+use d_engine_core::StateMachine;
 use d_engine_server::storage::FileStateMachine;
 use tempfile::TempDir;
 

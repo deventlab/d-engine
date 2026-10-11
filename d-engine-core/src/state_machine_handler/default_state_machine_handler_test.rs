@@ -1,3 +1,38 @@
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::time::Duration;
+
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::Batch;
+use d_engine_proto::client::write_command::BatchOp as ProtoBatchOp;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::Operation;
+use d_engine_proto::client::write_command::batch_op::Op;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
+use futures::StreamExt;
+use mockall::Sequence;
+use prost::Message;
+use tempfile::TempDir;
+use tempfile::tempdir;
+use tokio::fs::File;
+use tokio::fs::create_dir_all;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+use tracing::debug;
+use tracing_test::traced_test;
+
 use super::DefaultStateMachineHandler;
 use super::DefaultStateMachineWriter;
 use super::StateMachineHandler;
@@ -12,36 +47,6 @@ use crate::MockTypeConfig;
 use crate::SnapshotError;
 use crate::test_utils::create_test_compressed_snapshot;
 use crate::test_utils::snapshot_config;
-use bytes::Bytes;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::batch_op::Op;
-use d_engine_proto::client::write_command::{Batch, BatchOp as ProtoBatchOp, Insert, Operation};
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::entry_payload::Payload;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
-use futures::StreamExt;
-use mockall::Sequence;
-use prost::Message;
-use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::time::Duration;
-use tempfile::TempDir;
-use tempfile::tempdir;
-use tokio::fs::File;
-use tokio::fs::create_dir_all;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
-use tracing::debug;
-use tracing_test::traced_test;
 
 fn batch_entry(
     index: u64,
@@ -430,7 +435,8 @@ mod apply_chunk_wakes_wait_applied_test {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use d_engine_proto::common::{Entry, EntryPayload};
+    use d_engine_proto::common::Entry;
+    use d_engine_proto::common::EntryPayload;
 
     use super::StateMachineHandler;
     use super::StateMachineWriterOps;
@@ -492,16 +498,20 @@ mod apply_chunk_wakes_wait_applied_test {
 mod decode_boundary_tests {
     use bytes::Bytes;
     use d_engine_proto::client::WriteCommand;
-    use d_engine_proto::client::write_command::{Insert, Operation};
+    use d_engine_proto::client::write_command::Insert;
+    use d_engine_proto::client::write_command::Operation;
     use d_engine_proto::common::EntryPayload;
     use d_engine_proto::common::entry_payload::Payload;
     use prost::Message;
 
     use super::*;
+    use crate::ApplyResult;
+    use crate::BatchOp;
+    use crate::Command;
+    use crate::MockSnapshotPolicy;
+    use crate::MockStateMachine;
+    use crate::MockTypeConfig;
     use crate::test_utils::snapshot_config;
-    use crate::{
-        ApplyResult, BatchOp, Command, MockSnapshotPolicy, MockStateMachine, MockTypeConfig,
-    };
 
     fn noop_entry(index: u64) -> Entry {
         Entry {
@@ -954,8 +964,8 @@ mod create_snapshot_tests {
     /// # Scenario
     /// - `generate_snapshot_data` exports state and returns a checksum (no publish).
     /// - `build_local_snapshot` produces the archive, then publishes metadata.
-    /// - Expected: `persist_last_snapshot_metadata` is called exactly once, and only
-    ///   after `generate_snapshot_data` (i.e. after the archive is built).
+    /// - Expected: `persist_last_snapshot_metadata` is called exactly once, and only after
+    ///   `generate_snapshot_data` (i.e. after the archive is built).
     #[tokio::test]
     async fn test_create_snapshot_publishes_metadata_only_after_archive_built() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1405,7 +1415,8 @@ mod create_snapshot_tests {
         );
     }
 
-    /// create_snapshot when last_applied.index is zero must not panic or produce an invalid snapshot.
+    /// create_snapshot when last_applied.index is zero must not panic or produce an invalid
+    /// snapshot.
     ///
     /// # Purpose
     /// Boundary: snapshot triggered before any entry has been applied.
@@ -1457,7 +1468,8 @@ mod create_snapshot_tests {
         assert_eq!(metadata.last_included, Some(LogId { term: 0, index: 0 }));
     }
 
-    /// A crash mid-checkpoint must not leave the temp dir behind after create_snapshot() returns Err.
+    /// A crash mid-checkpoint must not leave the temp dir behind after create_snapshot() returns
+    /// Err.
     #[tokio::test]
     async fn test_create_snapshot_removes_temp_dir_on_generate_failure() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1490,7 +1502,8 @@ mod create_snapshot_tests {
         );
     }
 
-    /// A stale temp dir left by a previous crash must not block the next snapshot at the same index.
+    /// A stale temp dir left by a previous crash must not block the next snapshot at the same
+    /// index.
     #[tokio::test]
     async fn test_create_snapshot_succeeds_despite_stale_temp_dir() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -2017,16 +2030,16 @@ async fn test_snapshot_compression() {
 /// write" window the bug leaves open.
 ///
 /// # Scenario
-/// - `temp_dir` (captured snapshot) contains one normal file and one file
-///   with all read permissions stripped
+/// - `temp_dir` (captured snapshot) contains one normal file and one file with all read permissions
+///   stripped
 /// - `build_local_snapshot` is called on this capture
 ///
 /// # Then
 /// - `build_local_snapshot` returns `Err`
-/// - the partial `.tar.gz` at the standard `final_path` must NOT be left on
-///   disk (this is the assertion that fails before the fix)
-/// - `temp_dir` must still be cleaned up too (pre-existing behavior, must
-///   not regress alongside the new cleanup)
+/// - the partial `.tar.gz` at the standard `final_path` must NOT be left on disk (this is the
+///   assertion that fails before the fix)
+/// - `temp_dir` must still be cleaned up too (pre-existing behavior, must not regress alongside the
+///   new cleanup)
 #[tokio::test]
 #[cfg(unix)]
 async fn test_build_local_snapshot_removes_partial_archive_on_compression_failure() {
@@ -2100,7 +2113,10 @@ mod broadcast_watch_events_tests {
     use d_engine_proto::client::WatchEventType;
 
     use super::*;
-    use crate::{ApplyEntry, ApplyResult, BatchOp, Command};
+    use crate::ApplyEntry;
+    use crate::ApplyResult;
+    use crate::BatchOp;
+    use crate::Command;
 
     /// Build an `ApplyEntry` directly from a `Command` — no proto encoding needed.
     /// `broadcast_watch_events` receives already-decoded entries; tests mirror that reality.
@@ -2464,8 +2480,7 @@ mod broadcast_watch_events_tests {
     /// - apply succeeds for the batch entry
     ///
     /// # Expected
-    /// - broadcast channel receives exactly 3 events in order:
-    ///   Put(k1=v1), Delete(k2), Put(k3=v3)
+    /// - broadcast channel receives exactly 3 events in order: Put(k1=v1), Delete(k2), Put(k3=v3)
     /// - no reordering, no missing events
     #[tokio::test]
     async fn test_broadcast_batch_mixed_ops_events_preserve_order() {
@@ -2518,19 +2533,24 @@ mod broadcast_watch_events_tests {
 #[cfg(feature = "watch")]
 mod prev_kv_apply_tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     use bytes::Bytes;
-    use d_engine_proto::client::{
-        WriteCommand,
-        write_command::{Insert, Operation},
-    };
-    use d_engine_proto::common::{Entry, EntryPayload, entry_payload::Payload};
+    use d_engine_proto::client::WriteCommand;
+    use d_engine_proto::client::write_command::Insert;
+    use d_engine_proto::client::write_command::Operation;
+    use d_engine_proto::common::Entry;
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::entry_payload::Payload;
     use prost::Message;
 
     use super::*;
+    use crate::ApplyResult;
+    use crate::MockSnapshotPolicy;
+    use crate::MockStateMachine;
+    use crate::MockTypeConfig;
     use crate::test_utils::snapshot_config;
-    use crate::{ApplyResult, MockSnapshotPolicy, MockStateMachine, MockTypeConfig};
 
     fn insert_entry(
         index: u64,
@@ -2687,8 +2707,10 @@ mod prev_kv_apply_tests {
 
 mod wait_applied_tests {
     use super::*;
+    use crate::MockSnapshotPolicy;
+    use crate::MockStateMachine;
+    use crate::MockTypeConfig;
     use crate::test_utils::snapshot_config;
-    use crate::{MockSnapshotPolicy, MockStateMachine, MockTypeConfig};
 
     /// wait_applied returns immediately when last_applied is already >= target index.
     ///
@@ -2746,7 +2768,8 @@ mod wait_applied_tests {
     /// - does not unblock at index 4 or earlier
     #[tokio::test]
     async fn test_wait_applied_blocks_until_target_index_reached() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
 
         let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
             1,
@@ -2800,7 +2823,8 @@ mod wait_applied_tests {
     /// - all 3 return Ok(())
     #[tokio::test]
     async fn test_wait_applied_multiple_waiters_all_wake_correctly() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
 
         let handler = Arc::new(DefaultStateMachineHandler::<MockTypeConfig>::new(
             1,

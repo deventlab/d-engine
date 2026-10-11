@@ -13,7 +13,6 @@
 //! - Multiple listeners receiving the same notification
 //! - Watch channel behavior on closure
 //! - Deduplication of identical notifications
-//!
 
 use tokio::sync::mpsc;
 

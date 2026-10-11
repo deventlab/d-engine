@@ -13,7 +13,6 @@ use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::raft_election_service_server::RaftElectionServiceServer;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::raft_replication_service_server::RaftReplicationServiceServer;
-
 use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotServiceServer;
 use tokio::net::TcpListener;
@@ -25,10 +24,9 @@ use tonic_health::server::health_reporter;
 use tracing::debug;
 use tracing::info;
 
+use super::mock_rpc::MockRpcService;
 use crate::Result;
 use crate::StorageError;
-
-use super::mock_rpc::MockRpcService;
 
 pub struct MockNode;
 

@@ -812,9 +812,9 @@ mod single_node_election_tests {
     /// - Peer denies the vote and reports last_log_term=4 (higher than candidate's)
     ///
     /// Expected:
-    /// - Returns ElectionError::QuorumFailure with only the candidate's own vote: a peer with
-    ///   a more recent log term denies, so the candidate must not win this election.
-    ///   (A denial is just a missing vote; there is no separate log-conflict outcome.)
+    /// - Returns ElectionError::QuorumFailure with only the candidate's own vote: a peer with a
+    ///   more recent log term denies, so the candidate must not win this election. (A denial is
+    ///   just a missing vote; there is no separate log-conflict outcome.)
     #[tokio::test]
     async fn test_broadcast_vote_requests_rejects_on_peer_log_higher_term() {
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
@@ -901,7 +901,8 @@ mod single_node_election_tests {
     /// successfully obtains majority votes and can transition to Leader role.
     ///
     /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_broadcast_vote_requests_case3`
+    /// `d-engine-server/tests/components/election/election_handler_test.
+    /// rs::test_broadcast_vote_requests_case3`
     #[tokio::test]
     async fn test_broadcast_vote_requests_wins_election_with_majority_votes() {
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
@@ -1170,10 +1171,10 @@ mod single_node_election_tests {
     /// - Own vote + peer 3 is at most 2 of 5, so the round is already lost.
     ///
     /// Expected:
-    /// - QuorumFailure right after the third denial, without waiting for peer 3. The caller
-    ///   awaits this inside the Raft loop; waiting for a dead peer keeps the node from
-    ///   handling the heartbeat of whoever won, and (with PreVote) delays the next attempt.
-    ///   raft-rs reports `Lost` as soon as the rejections make a majority impossible.
+    /// - QuorumFailure right after the third denial, without waiting for peer 3. The caller awaits
+    ///   this inside the Raft loop; waiting for a dead peer keeps the node from handling the
+    ///   heartbeat of whoever won, and (with PreVote) delays the next attempt. The round must
+    ///   report `Lost` as soon as the rejections make a majority impossible.
     #[tokio::test(start_paused = true)]
     async fn test_round_returns_quorum_failure_once_majority_is_impossible() {
         for pre_vote in [false, true] {
@@ -1252,8 +1253,8 @@ mod single_node_election_tests {
     /// - Peer denies the vote and reports term=2 (higher than the candidate's)
     ///
     /// Expected:
-    /// - Returns ElectionError::HigherTerm(2), signaling the candidate must
-    ///   step down rather than continue the election (Raft §5.1)
+    /// - Returns ElectionError::HigherTerm(2), signaling the candidate must step down rather than
+    ///   continue the election (Raft §5.1)
     #[tokio::test]
     async fn test_broadcast_vote_requests_steps_down_on_peer_higher_term() {
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
@@ -1405,12 +1406,12 @@ mod single_node_election_tests {
     ///
     /// Scenario:
     /// - Two-node cluster (candidate + 1 peer)
-    /// - Peer denies the vote with the same term and a strictly older log —
-    ///   neither HigherTerm nor LogConflict applies
+    /// - Peer denies the vote with the same term and a strictly older log — neither HigherTerm nor
+    ///   LogConflict applies
     ///
     /// Expected:
-    /// - Returns ElectionError::QuorumFailure { required: 2, succeed: 1 } —
-    ///   only the candidate's own vote counts, 1/2 is not a majority
+    /// - Returns ElectionError::QuorumFailure { required: 2, succeed: 1 } — only the candidate's
+    ///   own vote counts, 1/2 is not a majority
     #[tokio::test]
     async fn test_broadcast_vote_requests_fails_quorum_on_plain_denial() {
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
@@ -1503,7 +1504,8 @@ mod single_node_election_tests {
     /// with higher term and at-least-as-up-to-date log.
     ///
     /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_handle_vote_request_case1`
+    /// `d-engine-server/tests/components/election/election_handler_test.
+    /// rs::test_handle_vote_request_case1`
     #[tokio::test]
     async fn test_handle_vote_request_grants_vote_for_valid_higher_term() {
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
@@ -1572,7 +1574,8 @@ mod single_node_election_tests {
     /// preventing stale candidates from disrupting the cluster.
     ///
     /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_handle_vote_request_case2`
+    /// `d-engine-server/tests/components/election/election_handler_test.
+    /// rs::test_handle_vote_request_case2`
     #[tokio::test]
     async fn test_handle_vote_request_rejects_vote_for_lower_term() {
         let election_handler = ElectionHandler::<MockTypeConfig>::new(1);
@@ -1645,10 +1648,12 @@ mod single_node_election_tests {
     /// - Reason: Current term is not less than request term
     ///
     /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_1_1`
+    /// `d-engine-server/tests/components/election/election_handler_test.
+    /// rs::test_check_vote_request_is_legal_case_1_1`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_rejects_when_current_term_not_lower() {
-        // TODO: Simplify to just `let election_handler = ElectionHandler::<MockTypeConfig>::new(1);`
+        // TODO: Simplify to just `let election_handler =
+        // ElectionHandler::<MockTypeConfig>::new(1);`
         let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let node_config = RaftNodeConfig::new().expect("Should create default config");
         let _node_config = node_config.validate().expect("Should validate config");
@@ -1715,7 +1720,8 @@ mod single_node_election_tests {
     /// - Reason: Request log term is not more recent than local
     ///
     /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_1_2`
+    /// `d-engine-server/tests/components/election/election_handler_test.
+    /// rs::test_check_vote_request_is_legal_case_1_2`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_rejects_when_request_log_not_more_recent() {
         let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1784,7 +1790,8 @@ mod single_node_election_tests {
     /// - Reason: Request has same term but higher index (more up-to-date)
     ///
     /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_1_3`
+    /// `d-engine-server/tests/components/election/election_handler_test.
+    /// rs::test_check_vote_request_is_legal_case_1_3`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_accepts_when_request_log_more_recent() {
         let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1830,7 +1837,8 @@ mod single_node_election_tests {
     /// - Reason: Local log has more entries (higher index) in same term
     ///
     /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_1_4`
+    /// `d-engine-server/tests/components/election/election_handler_test.
+    /// rs::test_check_vote_request_is_legal_case_1_4`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_rejects_when_local_log_more_recent() {
         let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1883,7 +1891,8 @@ mod single_node_election_tests {
     /// This validates the Raft rule: at most one vote per term.
     ///
     /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_2_1`
+    /// `d-engine-server/tests/components/election/election_handler_test.
+    /// rs::test_check_vote_request_is_legal_case_2_1`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_rejects_when_already_voted_for_different_candidate() {
         let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1935,7 +1944,8 @@ mod single_node_election_tests {
     /// - Reason: Already voted in a higher term (should not happen in normal operation)
     ///
     /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_2_2`
+    /// `d-engine-server/tests/components/election/election_handler_test.
+    /// rs::test_check_vote_request_is_legal_case_2_2`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_rejects_when_voted_in_higher_term() {
         let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1990,7 +2000,8 @@ mod single_node_election_tests {
     /// again in a new term.
     ///
     /// Original test location:
-    /// `d-engine-server/tests/components/election/election_handler_test.rs::test_check_vote_request_is_legal_case_2_3`
+    /// `d-engine-server/tests/components/election/election_handler_test.
+    /// rs::test_check_vote_request_is_legal_case_2_3`
     #[tokio::test]
     async fn test_check_vote_request_is_legal_accepts_revote_for_same_candidate_new_term() {
         let _temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -2149,8 +2160,8 @@ mod single_node_election_tests {
     /// - Three nodes, both peers unreachable (the node is isolated).
     ///
     /// Expected:
-    /// - QuorumFailure. If errors counted as grants, an isolated node would pass PreVote on
-    ///   its own, bump its term every round, and PreVote would protect nothing.
+    /// - QuorumFailure. If errors counted as grants, an isolated node would pass PreVote on its
+    ///   own, bump its term every round, and PreVote would protect nothing.
     #[tokio::test]
     async fn test_broadcast_pre_vote_requests_does_not_count_unreachable_peers_as_grants() {
         let mut transport = MockTransport::new();
@@ -2232,14 +2243,14 @@ mod single_node_election_tests {
     ///
     /// Scenario:
     /// - The node's real term is 1, so the PreVote asks about term 2.
-    /// - The peer is already at term 2 (an election happened while this node was away) and
-    ///   denies, reporting term 2.
+    /// - The peer is already at term 2 (an election happened while this node was away) and denies,
+    ///   reporting term 2.
     ///
     /// Expected:
-    /// - HigherTerm(2). Comparing the peer's term with the hypothetical term (2) using a strict
-    ///   `>` would call this a plain denial: the node would never learn it is behind and would
-    ///   keep retrying PreVote at a term the cluster has already passed. The peer's term must
-    ///   be compared with the node's real term (the PreVote term minus 1).
+    /// - HigherTerm(2). Comparing the peer's term with the hypothetical term (2) using a strict `>`
+    ///   would call this a plain denial: the node would never learn it is behind and would keep
+    ///   retrying PreVote at a term the cluster has already passed. The peer's term must be
+    ///   compared with the node's real term (the PreVote term minus 1).
     #[tokio::test]
     async fn test_broadcast_pre_vote_requests_reports_peer_at_pre_vote_term_as_higher() {
         let mut transport = MockTransport::new();
@@ -2262,8 +2273,8 @@ mod single_node_election_tests {
     /// Test: a peer at the node's real term is a plain denial, not a reason to step down.
     ///
     /// Scenario:
-    /// - The node's real term is 1 (PreVote term 2); the peer is also at term 1 and denies
-    ///   because it still hears from a leader.
+    /// - The node's real term is 1 (PreVote term 2); the peer is also at term 1 and denies because
+    ///   it still hears from a leader.
     ///
     /// Expected:
     /// - QuorumFailure, so the node keeps its term and simply retries after the next timeout.
@@ -2294,8 +2305,6 @@ mod single_node_election_tests {
     // Both rounds use the same counting loop, so every scenario runs against both. A denial is
     // just a missing vote: the round only ends when a majority is reached, when a peer reveals
     // a higher term (the node must catch up at once), or when every peer has answered.
-    // Reference scenarios: raft-rs `test_dueling_candidates`, `test_prevote_with_split_vote`;
-    // openraft `handle_vote_resp_test` / `handle_pre_vote_resp_test` ("reject keeps waiting").
     // ========================================================================
 
     #[derive(Clone, Copy, Debug)]
@@ -2462,12 +2471,12 @@ mod single_node_election_tests {
     /// Test: a denial from a peer whose log equals ours is just a missing vote.
     ///
     /// Scenario (3 nodes, steady state, all logs equal):
-    /// - Peer 2 denies (it already voted for someone else in this term, or still hears a
-    ///   leader); peer 3 grants.
+    /// - Peer 2 denies (it already voted for someone else in this term, or still hears a leader);
+    ///   peer 3 grants.
     ///
     /// Expected:
-    /// - Ok(()): own vote + peer 3 is a majority. An equal log is not a "more recent" log, so
-    ///   the denial must not end the round and discard peer 3's grant.
+    /// - Ok(()): own vote + peer 3 is a majority. An equal log is not a "more recent" log, so the
+    ///   denial must not end the round and discard peer 3's grant.
     #[tokio::test]
     async fn test_round_denial_with_equal_log_is_just_a_missing_vote() {
         for round in BOTH_ROUNDS {
@@ -2479,9 +2488,8 @@ mod single_node_election_tests {
     /// Test: a denial from a peer whose log is strictly newer is also just a missing vote.
     ///
     /// Expected:
-    /// - Ok(()) when another peer grants. A peer's newer log does not stop a majority of
-    ///   other peers (each already checked our log against theirs) from electing us. openraft
-    ///   and raft-rs never end the round on a log comparison.
+    /// - Ok(()) when another peer grants. A peer's newer log does not stop a majority of other
+    ///   peers (each already checked our log against theirs) from electing us.
     #[tokio::test]
     async fn test_round_denial_with_newer_log_is_just_a_missing_vote() {
         for round in BOTH_ROUNDS {
@@ -2514,7 +2522,7 @@ mod single_node_election_tests {
 
     /// Test: five nodes, two denials (equal and newer log) and two grants still win.
     ///
-    /// Scenario (raft-rs `test_dueling_candidates`: "a rejection is not the end of the round"):
+    /// Scenario ("a rejection is not the end of the round"):
     /// - Own vote + 2 grants = 3 of 5.
     #[tokio::test]
     async fn test_round_five_nodes_two_denials_and_two_grants_wins() {
@@ -2561,8 +2569,8 @@ mod single_node_election_tests {
     /// - The peer's log is equal, newer, or older than ours.
     ///
     /// Expected:
-    /// - QuorumFailure in all three cases. The node could not win, which is all the caller
-    ///   needs to know; there is no separate "log conflict" outcome.
+    /// - QuorumFailure in all three cases. The node could not win, which is all the caller needs to
+    ///   know; there is no separate "log conflict" outcome.
     #[tokio::test]
     async fn test_round_single_peer_denial_is_quorum_failure_for_any_log() {
         for round in BOTH_ROUNDS {
@@ -2579,12 +2587,10 @@ mod single_node_election_tests {
     /// Test: a peer revealing a higher term ends the round at once, even after a grant.
     ///
     /// Scenario (5 nodes, so one grant is not yet a majority):
-    /// - Peer 2 grants, peer 3 denies and reports a term far above ours, peers 4 and 5 would
-    ///   grant.
+    /// - Peer 2 grants, peer 3 denies and reports a term far above ours, peers 4 and 5 would grant.
     ///
     /// Expected:
-    /// - HigherTerm(peer's term): the node must catch up immediately (raft-rs and openraft both
-    ///   adopt a higher term as soon as they see it), not carry on counting.
+    /// - HigherTerm(peer's term): the node must catch up immediately, not carry on counting.
     #[tokio::test]
     async fn test_round_higher_term_denial_ends_round_even_after_a_grant() {
         for round in BOTH_ROUNDS {
@@ -2648,8 +2654,8 @@ mod single_node_election_tests {
     /// `>=` for PreVote.
     ///
     /// - Real vote: asked_term is this node's own term; a peer must be strictly above it.
-    /// - PreVote: asked_term is the term this node WANTS; a peer already at it means that
-    ///   term is taken.
+    /// - PreVote: asked_term is the term this node WANTS; a peer already at it means that term is
+    ///   taken.
     #[test]
     fn test_vote_rpc_peer_term_shows_behind_boundaries() {
         use crate::election::election_handler::VoteRpc;
@@ -2666,8 +2672,8 @@ mod single_node_election_tests {
     /// Test: a peer whose log is more recent than the candidate's fails the PreVote.
     ///
     /// Expected:
-    /// - ElectionError::QuorumFailure with only the candidate's own vote, same as the real
-    ///   vote: the candidate could not win, so it must not start a real election.
+    /// - ElectionError::QuorumFailure with only the candidate's own vote, same as the real vote:
+    ///   the candidate could not win, so it must not start a real election.
     #[tokio::test]
     async fn test_broadcast_pre_vote_requests_rejects_when_peer_log_is_more_recent() {
         let mut transport = MockTransport::new();
@@ -2774,8 +2780,7 @@ mod single_node_election_tests {
     /// - A node returning from a partition asks about a free term with a perfectly good log.
     ///
     /// Expected:
-    /// - Denied. This is what stops it from becoming a candidate and disrupting a healthy
-    ///   leader.
+    /// - Denied. This is what stops it from becoming a candidate and disrupting a healthy leader.
     #[test]
     fn test_handle_pre_vote_request_denies_while_leader_is_active() {
         let response = ask(RECEIVER_TERM + 1, (9, 9), true);
@@ -2836,8 +2841,6 @@ mod single_node_election_tests {
     // ========================================================================
     // test_handle_vote_request_stale_vote_* - a vote cast in an OLDER term must not block
     // a vote in the current term (Raft: on a new term, votedFor is null).
-    // raft-rs `reset(term)` clears the vote whenever the term changes; openraft replaces the
-    // whole (term, node) vote.
     // ========================================================================
 
     /// Test: a stale vote from an older term does not block a legitimate candidate in the
@@ -2919,8 +2922,8 @@ mod single_node_election_tests {
     ///
     /// - A PreVote that grants what the real vote denies sends the node into a real election it
     ///   cannot win, bumping terms for nothing (the thing PreVote exists to prevent).
-    /// - A PreVote that denies what the real vote would grant makes a node that could win
-    ///   unable to start an election: a liveness hole after a leader failure.
+    /// - A PreVote that denies what the real vote would grant makes a node that could win unable to
+    ///   start an election: a liveness hole after a leader failure.
     #[tokio::test]
     async fn test_pre_vote_grants_exactly_when_the_real_vote_would() {
         let handler = ElectionHandler::<MockTypeConfig>::new(1);
@@ -2962,7 +2965,7 @@ mod single_node_election_tests {
     }
 
     // ========================================================================
-    // vote_from_any_state (raft-rs): a request with a higher term is adopted whether or not the
+    // A request with a higher term is adopted whether or not the
     // vote can be granted; a request with the same or a lower term is never adopted.
     // ========================================================================
 

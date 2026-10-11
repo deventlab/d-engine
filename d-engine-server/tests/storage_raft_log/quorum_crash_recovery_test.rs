@@ -38,8 +38,9 @@
 //! already found to be a poor fit for this class of bug (see mempalace notes on the
 //! Jepsen/lazyfs work for #444).
 
-use super::TestContext;
 use d_engine_core::RaftLog;
+
+use super::TestContext;
 
 #[tokio::test]
 async fn test_quorum_acknowledged_index_survives_real_crash_and_reopen() {

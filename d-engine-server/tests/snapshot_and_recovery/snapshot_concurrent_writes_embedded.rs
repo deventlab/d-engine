@@ -16,12 +16,11 @@
 //!    - Ensures no data loss during concurrent AppendEntries
 
 #![cfg(feature = "rocksdb")]
-use d_engine_server::RocksDBUnifiedEngine;
-
 use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
+use d_engine_server::RocksDBUnifiedEngine;
 use tracing::info;
 use tracing_test::traced_test;
 

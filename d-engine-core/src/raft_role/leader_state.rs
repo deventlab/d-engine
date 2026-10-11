@@ -1,3 +1,47 @@
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use d_engine_proto::common::AddNode;
+use d_engine_proto::common::BatchPromote;
+use d_engine_proto::common::BatchRemove;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Leader;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_proto::common::membership_change::Change;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::JoinRequest;
+use d_engine_proto::server::cluster::JoinResponse;
+use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::append_entries_response;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use futures::StreamExt;
+use parking_lot::Mutex;
+use rand::distr::SampleString;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
+
 use super::LeaderStateSnapshot;
 use super::RaftRole;
 use super::SharedState;
@@ -40,54 +84,14 @@ use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::TROF;
-use crate::client::{ClientReadRequest, ClientResponse, ErrorCode};
+use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
+use crate::client::ErrorCode;
 use crate::event::ClientCmd;
 use crate::network::Transport;
 use crate::role_state::PeerReplicationState;
 use crate::role_state::schedule_and_execute_purge;
 use crate::utils::cluster_printer::print_role_transition_line;
-use async_trait::async_trait;
-use d_engine_proto::common::AddNode;
-use d_engine_proto::common::BatchPromote;
-use d_engine_proto::common::BatchRemove;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeRole::Leader;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::common::entry_payload::Payload;
-use d_engine_proto::common::membership_change::Change;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::JoinRequest;
-use d_engine_proto::server::cluster::JoinResponse;
-use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::replication::append_entries_response;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use futures::StreamExt;
-use parking_lot::Mutex;
-use rand::distr::SampleString;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
 
 // Type aliases for improved readability
 type LinearizableReadRequest = (
@@ -291,7 +295,8 @@ impl PeerMetrics {
 struct ReplicationWorkerHandle {
     task_tx: mpsc::UnboundedSender<ReplicationTask>,
     /// `true` while the worker holds an open replication stream to the peer.
-    /// Written only by the worker; the leader reads it to avoid queueing work the peer cannot receive.
+    /// Written only by the worker; the leader reads it to avoid queueing work the peer cannot
+    /// receive.
     stream_open: Arc<AtomicBool>,
     /// Consecutive snapshot push failures for this peer since the last success.
     snapshot_failure_count: u32,
@@ -334,7 +339,7 @@ pub struct LeaderState<T: TypeConfig> {
     /// `now_ms()` of the latest quorum ACK, or of the election for a new leader (one election
     /// timeout of grace to collect the first ACKs). CheckQuorum steps down when it is older than
     /// `election_timeout_max`, the longest silence any follower tolerates before campaigning
-    /// (etcd's effective tolerance is the same). Unlike `quorum_ack_deadline_ms` (a lease
+    /// (the same tolerance a follower effectively has). Unlike `quorum_ack_deadline_ms` (a lease
     /// window, shorter than the election timeout) a slow reply or brief jitter does not trip it.
     last_quorum_contact_ms: u64,
 
@@ -396,9 +401,9 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// Accumulates requests until either:
     /// 1. Batch reaches configured size limit
-    /// 2. Explicit flush is triggered
-    ///    SoA layout: payloads and senders stored in separate contiguous Vecs.
-    ///    flush() builds one RaftRequestWithSignal via mem::take — true O(1), no unzip scan.
+    /// 2. Explicit flush is triggered SoA layout: payloads and senders stored in separate
+    ///    contiguous Vecs. flush() builds one RaftRequestWithSignal via mem::take — true O(1), no
+    ///    unzip scan.
     pub(super) propose_buffer: Box<ProposeBatchBuffer>,
 
     // -- Timing & Scheduling --
@@ -492,8 +497,8 @@ pub struct LeaderState<T: TypeConfig> {
 
     /// Pending client write batches indexed by end_log_index.
     /// Key: end_log_index of this write batch. Value: WriteMetadata (senders + deadline).
-    /// Drained when commit_index advances past end_log_index (quorum achieved or single-voter flush).
-    /// Drained with error on step-down / HigherTerm / deadline exceeded.
+    /// Drained when commit_index advances past end_log_index (quorum achieved or single-voter
+    /// flush). Drained with error on step-down / HigherTerm / deadline exceeded.
     pub(super) pending_client_writes: BTreeMap<u64, WriteMetadata>,
 
     /// Post-commit action queue for Raft protocol internal operations (noop, join).
@@ -517,8 +522,9 @@ pub struct LeaderState<T: TypeConfig> {
     pub(super) pending_commit_actions: BTreeMap<u64, PostCommitEntry>,
 
     /// Per-follower replication worker handles. Key = follower node_id.
-    /// Workers send AppendEntries via transport and relay results back as InternalEvent::AppendResult.
-    /// Dropped on role change (LeaderState drop) → workers exit via channel close.
+    /// Workers send AppendEntries via transport and relay results back as
+    /// InternalEvent::AppendResult. Dropped on role change (LeaderState drop) → workers exit
+    /// via channel close.
     replication_workers: HashMap<u32, ReplicationWorkerHandle>,
 
     // -- Type System Marker --
@@ -743,7 +749,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             error!("Stale learner check failed: {}", e);
         }
 
-        // 2. CheckQuorum: a leader no quorum has answered for an ( election_timeout_max × multiple) timeout may be cut off.
+        // 2. CheckQuorum: a leader no quorum has answered for an ( election_timeout_max × multiple)
+        //    timeout may be cut off.
         // Step down (same term) so clients are redirected instead of queueing writes that can
         // never commit. A single voter is its own quorum.
         let quorum_silence_limit_ms =
@@ -1134,9 +1141,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             // Leader receives RequestVote(term=X, candidate=Y)
-            // Deviates from Raft §5.1 on purpose (dissertation §4.2.3, disruptive servers): a leader
-            // that a quorum confirmed within the lease window ignores a higher term, so an
-            // isolated node that comes back cannot depose a healthy leader.
+            // Deviates from Raft §5.1 on purpose (dissertation §4.2.3, disruptive servers): a
+            // leader that a quorum confirmed within the lease window ignores a higher
+            // term, so an isolated node that comes back cannot depose a healthy leader.
             // 1. If X > currentTerm and no quorum ACK within the lease window:
             // - Leader → Follower, currentTerm = X
             // - Replay event
@@ -1455,7 +1462,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(())
     }
 
-    /// Handle LogFlushed(durable): re-calculate commit_index after local log entries are crash-safe.
+    /// Handle LogFlushed(durable): re-calculate commit_index after local log entries are
+    /// crash-safe.
     ///
     /// Leader also writes to the local raft log. process_batch reads durable_index() synchronously,
     /// which may be 0 (flush not yet complete) — so commit never advances without this handler.
@@ -2355,7 +2363,9 @@ impl<T: TypeConfig> LeaderState<T> {
         policy: &crate::InstallSnapshotBackoffPolicy,
         node_id: u32,
     ) {
-        // Symmetric guard: only act if this peer is still actually in Snapshot state. A stale/duplicate completion event (e.g. left over from an earlier failed attempt) arriving after the state has already moved on is a no-op — no need for a separate session id.
+        // Symmetric guard: only act if this peer is still actually in Snapshot state. A
+        // stale/duplicate completion event (e.g. left over from an earlier failed attempt) arriving
+        // after the state has already moved on is a no-op — no need for a separate session id.
         if self.peer_replication_state(peer_id) != PeerReplicationState::Snapshot {
             return;
         }
@@ -2399,8 +2409,8 @@ impl<T: TypeConfig> LeaderState<T> {
         )
         .set(0.0);
         // #436: push resolved either way — stop blocking AppendEntries, but don't
-        // trust the peer yet either. Wait for a real ACK (etcd: MsgSnapStatus,
-        // success or reject, both -> BecomeProbe, never straight to Replicate).
+        //  trust the peer yet either. Wait for a real ACK (success or reject both go to Probe,
+        // never straight to Replicate).
         self.set_peer_replication_state(peer_id, PeerReplicationState::Probe);
     }
 
@@ -2807,8 +2817,8 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Two distinct update strategies based on response type:
     /// - Success: `next_index = max(current, peer_match + 1)` — never regress a speculative
     ///   advance; the ACK is a lower-bound confirmation, not a correction.
-    /// - Conflict: `next_index = conflict_hint` (floor-guarded by `match_index + 1`) —
-    ///   the follower explicitly corrects the leader's assumption; retreat is required.
+    /// - Conflict: `next_index = conflict_hint` (floor-guarded by `match_index + 1`) — the follower
+    ///   explicitly corrects the leader's assumption; retreat is required.
     pub(super) fn update_peer_index(
         &mut self,
         follower_id: u32,
@@ -2841,7 +2851,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 error!("Failed to update next index: {:?}", e);
             }
             // #436: an explicit reject means our ledger was wrong — stop trusting
-            // speculative advance until the next real ACK (etcd: BecomeProbe on reject).
+            // speculative advance until the next real ACK.
             self.set_peer_replication_state(follower_id, PeerReplicationState::Probe);
         }
 
@@ -3435,7 +3445,8 @@ impl<T: TypeConfig> LeaderState<T> {
     ///
     /// Commit and client responses are deferred:
     /// - Multi-voter: driven by handle_append_result (InternalEvent::AppendResult from workers)
-    /// - Single-voter: driven by handle_log_flushed (InternalEvent::LogFlushed from batch_processor)
+    /// - Single-voter: driven by handle_log_flushed (InternalEvent::LogFlushed from
+    ///   batch_processor)
     async fn execute_and_process_raft_rpc(
         &mut self,
         payloads: Vec<EntryPayload>,
@@ -3451,7 +3462,8 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Phase 0: Record send timestamp before any AppendEntries RPC goes out.
         // handle_append_result uses this to anchor deadline to send time (not ACK time),
-        // ensuring lease expires at send_ts + lease_duration_ms rather than ack_ts + lease_duration_ms.
+        // ensuring lease expires at send_ts + lease_duration_ms rather than ack_ts +
+        // lease_duration_ms.
         self.last_heartbeat_send_ts = now_ms();
 
         // Pre-compute in-flight gating decisions for all replication targets. Single
@@ -3594,8 +3606,9 @@ impl<T: TypeConfig> LeaderState<T> {
             let is_heartbeat = request.entries.is_empty();
 
             // Phase 1: lightweight in-flight gate (Probe state only, window=1).
-            // For Replicate state, window check happens in Phase 2 (retrieve_to_be_synced_logs_for_peers).
-            // Gated peers get no data; heartbeats bypass the gate and never occupy a slot.
+            // For Replicate state, window check happens in Phase 2
+            // (retrieve_to_be_synced_logs_for_peers). Gated peers get no data;
+            // heartbeats bypass the gate and never occupy a slot.
             if !is_heartbeat && peer_gating_decisions.get(&peer_id).copied().unwrap_or(false) {
                 self.peer_metrics(peer_id).dispatch_gated_total.increment(1);
                 continue;
@@ -3989,9 +4002,9 @@ impl<T: TypeConfig> LeaderState<T> {
     ///
     /// `send_ts` is the timestamp recorded just before the heartbeat was sent.
     /// Using send_ts (not now_ms()) eliminates the RTT/2 window:
-    ///   deadline = send_ts + lease_duration_ms  ≤  follower's election timer start + election_timeout
-    /// Single-voter callers pass now_ms() directly (no peer RTT to account for).
-    /// `last_applied` is the state machine's applied index at call time.
+    ///   deadline = send_ts + lease_duration_ms  ≤  follower's election timer start +
+    /// election_timeout Single-voter callers pass now_ms() directly (no peer RTT to account
+    /// for). `last_applied` is the state machine's applied index at call time.
     fn update_lease_timestamp(
         &mut self,
         send_ts: u64,
@@ -4036,7 +4049,8 @@ impl<T: TypeConfig> LeaderState<T> {
                         senders: req.senders,
                         wait_for_apply: req.wait_for_apply_event,
                         deadline: Instant::now(), // placeholder; overwritten in Phase 2
-                        proposed_at: std::time::Instant::now(), // placeholder; overwritten in Phase 2
+                        proposed_at: std::time::Instant::now(), /* placeholder; overwritten in
+                                                   * Phase 2 */
                     }),
                 )
             } else {

@@ -35,12 +35,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use d_engine_proto::common::{EntryPayload, NodeRole::Follower, NodeStatus};
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use futures::StreamExt;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing_test::traced_test;
 
 use crate::MockMembership;
@@ -50,11 +53,13 @@ use crate::MockTransport;
 use crate::RaftRequestWithSignal;
 use crate::SnapshotApplyResult;
 use crate::event::InternalEvent;
-use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::PeerReplicationState;
 use crate::raft_role::role_state::RaftRoleState;
-use crate::test_utils::mock::{MockTypeConfig, mock_raft_context};
+use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::mock::mock_raft_context;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -98,7 +103,7 @@ fn state_machine_with_snapshot() -> MockStateMachine {
     use d_engine_proto::common::LogId;
     let mut sm = MockStateMachine::new();
     sm.expect_start().returning(|| Ok(()));
-    sm.expect_stop().returning(|| Ok(()));
+    sm.expect_close().returning(|| ());
     sm.expect_is_running().returning(|| true);
     sm.expect_get().returning(|_| Ok(None));
     sm.expect_apply_chunk().returning(|_| Ok(vec![]));
@@ -185,10 +190,9 @@ fn open_stream_capturing_appends() -> (
 ///
 /// # Scenario
 /// - `prepare_batch_requests` returns snapshot_targets = [2], append_requests = []
-/// - The snapshot metadata's own boundary is index 10 (`stub_snapshot_metadata`), while
-///   the leader's log tip (`raft_log.last_entry_id`) is 15 — deliberately different, so
-///   the assertion below proves the event carries the snapshot's own boundary and not
-///   the leader's current tip.
+/// - The snapshot metadata's own boundary is index 10 (`stub_snapshot_metadata`), while the
+///   leader's log tip (`raft_log.last_entry_id`) is 15 — deliberately different, so the assertion
+///   below proves the event carries the snapshot's own boundary and not the leader's current tip.
 /// - Expected: `InternalEvent::SnapshotPushCompleted { peer_id: 2, success: true,
 ///   last_included_index: Some(10) }` arrives
 #[tokio::test]
@@ -250,8 +254,8 @@ async fn test_worker_handles_snapshot_task_and_emits_completed_event() {
 /// separate worker-side flag is consulted.
 ///
 /// # Scenario
-/// - Peer 2's replication state is preset to `Snapshot` (simulating an attempt
-///   already in flight), with no real transfer running.
+/// - Peer 2's replication state is preset to `Snapshot` (simulating an attempt already in flight),
+///   with no real transfer running.
 /// - `process_batch` runs with peer 2 in `snapshot_targets`.
 /// - Expected: `transport.send_snapshot` is never called.
 #[tokio::test]
@@ -303,8 +307,8 @@ async fn test_phase6_skips_redispatch_when_snapshot_already_in_flight() {
 /// - Peer 2 starts as `Replicate` (it was healthy before suddenly falling behind).
 /// - `process_batch` routes peer 2 to `snapshot_targets`.
 /// - Expected: `peer_replication_state(2)` is `Snapshot` immediately after dispatch —
-///   synchronously, with no polling/sleep needed, because the state write and the
-///   task dispatch happen in the same function call.
+///   synchronously, with no polling/sleep needed, because the state write and the task dispatch
+///   happen in the same function call.
 #[tokio::test]
 async fn test_phase6_snapshot_dispatch_sets_snapshot_state() {
     let (mut state, mut ctx) =
@@ -354,11 +358,10 @@ async fn test_phase6_snapshot_dispatch_sets_snapshot_state() {
 ///
 /// # Scenario
 /// - Peer 2 is preset to `Snapshot` (a transfer is in flight).
-/// - `process_batch` runs with an Append request for peer 2 in `append_requests`
-///   (simulating a heartbeat that computed fresh data to send, unaware the peer
-///   is mid-transfer).
-/// - Expected: nothing reaches the worker's bidi stream, and `next_index` for
-///   peer 2 is unchanged from its preset value.
+/// - `process_batch` runs with an Append request for peer 2 in `append_requests` (simulating a
+///   heartbeat that computed fresh data to send, unaware the peer is mid-transfer).
+/// - Expected: nothing reaches the worker's bidi stream, and `next_index` for peer 2 is unchanged
+///   from its preset value.
 #[tokio::test]
 async fn test_phase5_skips_append_and_leaves_next_index_untouched_while_peer_in_snapshot_state() {
     let (mut state, mut ctx) = new_leader_and_ctx(
@@ -411,8 +414,8 @@ async fn test_phase5_skips_append_and_leaves_next_index_untouched_while_peer_in_
 /// independently of whatever Phase 5 does or doesn't do.
 ///
 /// # Scenario
-/// - Peer 2 is set to `Snapshot` (irrelevant to the worker, relevant only to
-///   prove this test isn't accidentally exercising Phase 5's gate).
+/// - Peer 2 is set to `Snapshot` (irrelevant to the worker, relevant only to prove this test isn't
+///   accidentally exercising Phase 5's gate).
 /// - An `Append` task is handed directly to `send_to_worker_or_spawn`.
 /// - Expected: the request reaches the worker's bidi stream unmodified.
 #[tokio::test]
@@ -448,8 +451,8 @@ async fn test_worker_forwards_any_append_task_it_is_given_without_inspecting_sta
 /// # Scenario
 /// - Peer 2 is dispatched to Snapshot (via a real `process_batch` round).
 /// - The completion handler is invoked directly with `success = true`.
-/// - Expected: state is `Probe`, and a subsequent round with an Append request
-///   for peer 2 is no longer blocked.
+/// - Expected: state is `Probe`, and a subsequent round with an Append request for peer 2 is no
+///   longer blocked.
 #[tokio::test]
 async fn test_snapshot_completion_success_returns_to_probe_and_allows_append() {
     let (mut state, mut ctx) = new_leader_and_ctx(
@@ -521,9 +524,9 @@ async fn test_snapshot_completion_success_returns_to_probe_and_allows_append() {
 /// # Scenario
 /// - Peer 2 is in Snapshot state (an attempt in flight).
 /// - The completion handler is invoked directly with `success = false`.
-/// - Expected: state is `Probe`, and the worker handle's retry-backoff timestamp
-///   is set to a point in the future (so an immediate re-dispatch attempt would
-///   be skipped — covered by the backoff-window test below).
+/// - Expected: state is `Probe`, and the worker handle's retry-backoff timestamp is set to a point
+///   in the future (so an immediate re-dispatch attempt would be skipped — covered by the
+///   backoff-window test below).
 #[tokio::test]
 async fn test_snapshot_completion_failure_returns_to_probe_with_backoff() {
     let (mut state, mut ctx) =
@@ -579,12 +582,12 @@ async fn test_snapshot_completion_failure_returns_to_probe_with_backoff() {
 /// corrupting bookkeeping for whatever the peer is doing now.
 ///
 /// # Scenario
-/// - Peer 2 is left in `Probe` (no snapshot currently in flight — e.g. the peer
-///   caught up normally through ordinary replication after an earlier attempt).
-/// - A `SnapshotPushCompleted` for peer 2 is delivered anyway (simulating a
-///   straggler event from a past attempt).
-/// - Expected: state stays exactly `Probe` (not perturbed), proving the handler
-///   checked "am I actually in Snapshot right now" before acting.
+/// - Peer 2 is left in `Probe` (no snapshot currently in flight — e.g. the peer caught up normally
+///   through ordinary replication after an earlier attempt).
+/// - A `SnapshotPushCompleted` for peer 2 is delivered anyway (simulating a straggler event from a
+///   past attempt).
+/// - Expected: state stays exactly `Probe` (not perturbed), proving the handler checked "am I
+///   actually in Snapshot right now" before acting.
 #[tokio::test]
 async fn test_stale_snapshot_completion_is_ignored_once_state_has_moved_on() {
     let (mut state, ctx) = new_leader_and_ctx(
@@ -616,12 +619,10 @@ async fn test_stale_snapshot_completion_is_ignored_once_state_has_moved_on() {
 ///
 /// # Scenario
 /// - Peer 2 fails a snapshot attempt (state returns to `Probe`, backoff starts).
-/// - The very next round classifies peer 2 as still needing a snapshot
-///   (`snapshot_targets = [2]`) — simulating that nothing about its position
-///   has changed since the failure.
-/// - Expected: no second `send_snapshot` call happens (backoff not yet expired),
-///   and the peer's state stays `Probe` (it does not incorrectly re-enter
-///   `Snapshot` without a real dispatch).
+/// - The very next round classifies peer 2 as still needing a snapshot (`snapshot_targets = [2]`) —
+///   simulating that nothing about its position has changed since the failure.
+/// - Expected: no second `send_snapshot` call happens (backoff not yet expired), and the peer's
+///   state stays `Probe` (it does not incorrectly re-enter `Snapshot` without a real dispatch).
 #[tokio::test]
 async fn test_backoff_window_blocks_redispatch_even_when_classification_still_requests_snapshot() {
     let (mut state, mut ctx) = new_leader_and_ctx(
@@ -711,14 +712,16 @@ async fn test_backoff_window_blocks_redispatch_even_when_classification_still_re
 ///
 /// # Guarantees checked
 /// - The snapshot task is still delivered: `send_snapshot` runs exactly once and
-///   `SnapshotPushCompleted { peer_id: 2, success: true }` arrives. A fix that skipped
-///   disconnected peers in Phase 6 too would leave the peer stuck in `Snapshot` state forever.
+///   `SnapshotPushCompleted { peer_id: 2, success: true }` arrives. A fix that skipped disconnected
+///   peers in Phase 6 too would leave the peer stuck in `Snapshot` state forever.
 ///
 /// GREEN before the fix and must stay green after it.
 #[tokio::test]
 #[traced_test]
 async fn test_snapshot_push_still_dispatched_to_disconnected_peer() {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     let (mut state, mut ctx) =
         new_leader_and_ctx("/tmp/test_snapshot_push_still_dispatched_to_disconnected_peer");

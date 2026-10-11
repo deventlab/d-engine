@@ -187,7 +187,8 @@ impl MockNode {
     ///
     /// # Parameters
     /// - `rx`: Shutdown signal receiver
-    /// - `cas_should_succeed`: true = CAS succeeds (comparison matched), false = CAS fails (mismatch)
+    /// - `cas_should_succeed`: true = CAS succeeds (comparison matched), false = CAS fails
+    ///   (mismatch)
     ///
     /// # Returns
     /// - Channel and port for the mock server

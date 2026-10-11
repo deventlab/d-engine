@@ -1,7 +1,9 @@
+use std::time::Duration;
+
 use d_engine_client::Client;
 use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
-use std::time::Duration;
+use tempfile::TempDir;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -15,7 +17,6 @@ use crate::common::get_available_ports;
 use crate::common::node_config;
 use crate::common::start_node;
 use crate::common::wait_for_stable_leader;
-use tempfile::TempDir;
 
 /// Test CAS state survives snapshot and recovery (standalone mode)
 ///

@@ -1,6 +1,10 @@
 //! Centerialized all RPC client operations will make unit test eaiser.
 //! We also want to refactor all the APIs based its similar parttern.
 
+use std::collections::HashSet;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use d_engine_core::BackgroundSnapshotTransfer;
 use d_engine_core::BackoffPolicy;
@@ -32,9 +36,6 @@ use d_engine_proto::server::replication::raft_replication_service_client::RaftRe
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use std::collections::HashSet;
-use std::marker::PhantomData;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio_stream::wrappers::ReceiverStream;

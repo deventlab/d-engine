@@ -11,7 +11,6 @@ use bytes::Bytes;
 use d_engine_server::DefaultEmbeddedEngine;
 use tempfile::TempDir;
 use tokio::time::Instant;
-
 use tracing_test::traced_test;
 
 use crate::common::get_available_ports;

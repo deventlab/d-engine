@@ -10,14 +10,19 @@
 //! actually executes `send_to_worker_or_spawn`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
-use d_engine_proto::common::{EntryPayload, NodeRole::Follower, NodeStatus};
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
 use futures::StreamExt;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing_test::traced_test;
 
@@ -26,10 +31,12 @@ use crate::MockRaftLog;
 use crate::MockTransport;
 use crate::RaftRequestWithSignal;
 use crate::event::InternalEvent;
-use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
-use crate::test_utils::mock::{MockTypeConfig, mock_raft_context};
+use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::mock::mock_raft_context;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -276,7 +283,8 @@ async fn test_worker_reused_on_subsequent_requests() {
 ///
 /// # Guarantees checked
 /// - `worker_count_for_test() == 1` after the rebuild (old dead handle replaced).
-/// - `InternalEvent::AppendResult` arrives on `internal_event_rx`, confirming the request was delivered.
+/// - `InternalEvent::AppendResult` arrives on `internal_event_rx`, confirming the request was
+///   delivered.
 #[tokio::test]
 #[traced_test]
 async fn test_worker_rebuilt_after_death() {
@@ -365,14 +373,14 @@ async fn test_worker_rebuilt_after_death() {
 /// - Transport always fails `open_replication_stream` (peer unreachable).
 /// - Worker is spawned via `process_batch`; it enters the inner reconnect loop.
 /// - The `LeaderState` is dropped, which drops `ReplicationWorkerHandle` and closes `task_rx`.
-/// - On the next iteration the worker checks `task_rx.is_closed()` and must exit cleanly
-///   without making further connection attempts.
+/// - On the next iteration the worker checks `task_rx.is_closed()` and must exit cleanly without
+///   making further connection attempts.
 ///
 /// # Guarantees checked
-/// - After the handle is dropped, `open_replication_stream` call count stops increasing.
-///   This proves the `if task_rx.is_closed() { return; }` guard fires correctly,
-///   preventing an infinite reconnect loop that would flood the inbound event loop with
-///   zombie signals and block heartbeats (regression: zombie detection + dead peer).
+/// - After the handle is dropped, `open_replication_stream` call count stops increasing. This
+///   proves the `if task_rx.is_closed() { return; }` guard fires correctly, preventing an infinite
+///   reconnect loop that would flood the inbound event loop with zombie signals and block
+///   heartbeats (regression: zombie detection + dead peer).
 #[tokio::test]
 #[traced_test]
 async fn test_replication_worker_exits_when_handle_dropped() {
@@ -455,12 +463,12 @@ async fn test_replication_worker_exits_when_handle_dropped() {
 ///
 /// # Scenario
 /// - `open_replication_stream` succeeds, but its receiver immediately yields `Err(status)`.
-/// - The worker's recv task detects the error; the main loop emits `PeerStreamError`
-///   and reconnects (calls `open_replication_stream` again).
+/// - The worker's recv task detects the error; the main loop emits `PeerStreamError` and reconnects
+///   (calls `open_replication_stream` again).
 ///
 /// # Why
-/// - This is the "peer went away mid-stream" recovery path: without it, a broken
-///   stream would silently stop replication for that peer.
+/// - This is the "peer went away mid-stream" recovery path: without it, a broken stream would
+///   silently stop replication for that peer.
 #[tokio::test]
 #[traced_test]
 async fn test_worker_reconnects_on_stream_recv_error() {
@@ -791,8 +799,8 @@ async fn test_worker_forwards_append_result_on_recv() {
 /// permanently stops for the rest of this worker's lifetime (#446).
 ///
 /// # Scenario
-/// - 16 sends land on the sampling boundary exactly once (the 16th), starting
-///   an RTT sample that never resolves — the mock stream stays pending, no ACK.
+/// - 16 sends land on the sampling boundary exactly once (the 16th), starting an RTT sample that
+///   never resolves — the mock stream stays pending, no ACK.
 /// - The stream then errors, forcing `recv_handle.abort()` + reconnect.
 ///
 /// # Guarantee checked
@@ -1131,8 +1139,8 @@ async fn wait_until(
 /// - The peer then becomes reachable.
 ///
 /// # Guarantees checked
-/// - The re-established stream receives exactly 1 request (the spawn task), not 6: the 5 sent
-///   while the peer was down were never enqueued. (Before the fix all 6 are replayed.)
+/// - The re-established stream receives exactly 1 request (the spawn task), not 6: the 5 sent while
+///   the peer was down were never enqueued. (Before the fix all 6 are replayed.)
 /// - In-flight accounting holds only the 1 data request that really was dispatched; the skipped
 ///   ones left no trace (before the fix: one slot per data request, 4 in total).
 /// - Dispatch resumes once the stream is back: an unreachable peer is not skipped forever.
@@ -1245,8 +1253,8 @@ async fn test_unreachable_peer_heartbeats_are_not_queued() {
 /// - 4 batches are dispatched during that window; then the peer becomes reachable.
 ///
 /// # Guarantees checked
-/// - The second stream receives nothing from the 4 batches sent while reconnecting.
-///   (Before the fix: 4.)
+/// - The second stream receives nothing from the 4 batches sent while reconnecting. (Before the
+///   fix: 4.)
 /// - Dispatch resumes on the second stream afterwards.
 #[tokio::test]
 #[traced_test]

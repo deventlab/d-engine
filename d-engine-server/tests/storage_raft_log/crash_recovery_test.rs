@@ -8,9 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::{RaftLog, RaftLogCore};
-use d_engine_proto::common::{Entry, EntryPayload};
-use d_engine_server::{FileStateMachine, FileStorageEngine, node::RaftTypeConfig};
+use d_engine_core::RaftLog;
+use d_engine_core::RaftLogCore;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_server::FileStateMachine;
+use d_engine_server::FileStorageEngine;
+use d_engine_server::node::RaftTypeConfig;
 use tokio::time::sleep;
 
 use super::TestContext;
@@ -157,8 +161,8 @@ async fn test_partial_flush_with_graceful_shutdown() {
 /// True crash (kill -9 / power loss) means data MAY survive if the fsync had time
 /// to complete before the crash. This test verifies:
 /// - Entries flushed before the crash (first batch, waited 150ms) always survive.
-/// - Entries written immediately before crash (second batch, no wait) may or may not
-///   survive depending on IO thread scheduling at crash time.
+/// - Entries written immediately before crash (second batch, no wait) may or may not survive
+///   depending on IO thread scheduling at crash time.
 /// - `mem::forget` simulates a hard crash: no graceful shutdown, no final flush.
 #[tokio::test]
 async fn test_partial_flush_after_crash() {

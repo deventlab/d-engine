@@ -247,13 +247,12 @@ mod start_node_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use serial_test::serial;
-    use tokio::sync::watch;
-
     use d_engine_core::config::ClusterConfig;
     use d_engine_proto::common::NodeRole;
     use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
+    use serial_test::serial;
+    use tokio::sync::watch;
 
     use crate::RocksDBStateMachine;
     use crate::RocksDBStorageEngine;

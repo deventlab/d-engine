@@ -16,10 +16,12 @@
 //! progress. These tests are RED until `prev_log_index == 0` is folded into the same
 //! overlap/conflict comparison used for `prev_log_index > 0`.
 
+use std::time::Duration;
+
+use d_engine_proto::common::Entry;
+
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::RaftLogCoreTestContext;
-use d_engine_proto::common::Entry;
-use std::time::Duration;
 
 fn ctx(name: &str) -> RaftLogCoreTestContext {
     RaftLogCoreTestContext::new(name)

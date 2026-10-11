@@ -17,6 +17,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::NodeRole::Leader;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::NodeMeta;
+use tokio::sync::watch;
+
 use crate::ClusterMetadata;
 use crate::LeaderStateSnapshot;
 use crate::MockRaftLog;
@@ -25,13 +33,6 @@ use crate::ReplicationCore;
 use crate::ReplicationHandler;
 use crate::StateSnapshot;
 use crate::test_utils::mock_raft_context;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::NodeRole;
-use d_engine_proto::common::NodeRole::Leader;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::server::cluster::NodeMeta;
-use tokio::sync::watch;
 
 /// Both tests below mock a log window covering indices 11..=15 (`first_entry_id`=11,
 /// `last_entry_id`=15). `retrieve_to_be_synced_logs_for_peers` now enforces that any
@@ -63,8 +64,8 @@ fn voter(id: u32) -> NodeMeta {
 /// # Scenario
 /// - Leader log: entries 1-10 purged (first_entry_id = 11, last_entry_id = 15)
 /// - Peer 2 next_index = 4  → prev_log_index = 3, which is purged (non-boundary)
-/// - Expected: PrepareResult.snapshot_targets = [2]
-///             PrepareResult.append_requests does NOT contain peer 2
+/// - Expected: PrepareResult.snapshot_targets = [2] PrepareResult.append_requests does NOT contain
+///   peer 2
 ///
 /// # Before fix (will FAIL)
 /// `prepare_batch_requests` returns an AppendEntriesRequest for peer 2 with
@@ -296,8 +297,7 @@ async fn test_prepare_batch_requests_splits_snapshot_and_append_peers() {
 /// # Scenario
 /// - Leader: first_entry_id = 1 (nothing ever purged), last_entry_id = 5
 /// - Peer 2: next_index = 1 (never replicated to before) -> prev_log_index = 0
-/// - Expected: peer 2 in append_requests (prev_log_term = 0), NOT in
-///   snapshot_targets
+/// - Expected: peer 2 in append_requests (prev_log_term = 0), NOT in snapshot_targets
 ///
 /// # Regression this guards (PR #442 review)
 /// The purge-boundary fix in `build_append_request` must distinguish
@@ -375,10 +375,10 @@ async fn test_prepare_batch_requests_routes_fresh_peer_to_append_when_log_never_
 ///
 /// # Scenario
 /// - Leader: first_entry_id = 11 (indices 1-10 purged), last_entry_id = 15
-/// - Peer 2: next_index = 1 -> prev_log_index = 0, and everything from index
-///   1 no longer exists on this leader
-/// - Expected: peer 2 appears in snapshot_targets exactly once, and does
-///   NOT appear in append_requests
+/// - Peer 2: next_index = 1 -> prev_log_index = 0, and everything from index 1 no longer exists on
+///   this leader
+/// - Expected: peer 2 appears in snapshot_targets exactly once, and does NOT appear in
+///   append_requests
 #[tokio::test]
 async fn test_prepare_batch_requests_routes_never_replicated_peer_to_snapshot_exactly_once() {
     let (_graceful_tx, graceful_rx) = watch::channel(());

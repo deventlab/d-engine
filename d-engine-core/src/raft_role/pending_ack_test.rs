@@ -1,8 +1,8 @@
 //! Tests for #446's withheld-AppendEntries-ACK primitives:
 //!
 //!   - `RaftRoleState::resolve_pending_acks` — the release / reject decision;
-//!   - `RaftRole::{take,restore}_pending_acks` — carrying the queue across a role
-//!     transition instead of dropping it.
+//!   - `RaftRole::{take,restore}_pending_acks` — carrying the queue across a role transition
+//!     instead of dropping it.
 //!
 //! These drive bare role structs (no `RaftContext`, no mocks, no fs), so they
 //! stay cheap to run and cheap to change.

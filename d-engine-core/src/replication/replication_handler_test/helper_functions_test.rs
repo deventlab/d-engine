@@ -4,17 +4,9 @@
 //! - generate_new_entries: Convert commands to log entries
 //! - build_append_request: Build AppendEntriesRequest for peers
 
-use crate::ConsensusError;
-use crate::Error;
-use crate::MockRaftLog;
-use crate::MockTypeConfig;
-use crate::ReplicationCore;
-use crate::ReplicationData;
-use crate::ReplicationError;
-use crate::ReplicationHandler;
-use crate::client_command_to_entry_payloads;
-use crate::test_utils::mock_insert_log_entries;
-use crate::test_utils::setup_mock_replication_test_context;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::client::write_command::Insert;
@@ -27,8 +19,18 @@ use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
 use d_engine_proto::server::replication::append_entries_response;
 use prost::Message;
-use std::collections::HashMap;
-use std::sync::Arc;
+
+use crate::ConsensusError;
+use crate::Error;
+use crate::MockRaftLog;
+use crate::MockTypeConfig;
+use crate::ReplicationCore;
+use crate::ReplicationData;
+use crate::ReplicationError;
+use crate::ReplicationHandler;
+use crate::client_command_to_entry_payloads;
+use crate::test_utils::mock_insert_log_entries;
+use crate::test_utils::setup_mock_replication_test_context;
 
 /// Generate new entries with empty commands should return empty vector.
 ///
@@ -833,11 +835,10 @@ async fn test_build_append_request_rejects_inconsistent_prev_log_term() {
 // `entry_term(0)` is always `None` (index 0 is the Raft "before the log"
 // sentinel, never a real entry), so this always falls into the `None if ...`
 // guard chain below. Two cases must be told apart:
-//   - first_index == 1 (log never purged): prev_index == 0 is the ordinary
-//     "peer starting from scratch" case -> normal Append with prev_log_term=0.
-//   - first_index > 1 (leader purged its prefix): prev_index == 0 means the
-//     peer needs everything from the very start, which no longer exists on
-//     this leader -> NeedSnapshot.
+//   - first_index == 1 (log never purged): prev_index == 0 is the ordinary "peer starting from
+//     scratch" case -> normal Append with prev_log_term=0.
+//   - first_index > 1 (leader purged its prefix): prev_index == 0 means the peer needs everything
+//     from the very start, which no longer exists on this leader -> NeedSnapshot.
 // A naive "just swap the match arms" fix breaks the first case (every fresh
 // peer / cluster bootstrap would wrongly get routed to snapshot instead of
 // a normal AppendEntries) — these three tests pin down all three branches

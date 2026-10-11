@@ -1,3 +1,25 @@
+use std::sync::Arc;
+
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::ClusterConfChangeRequest;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::MetadataRequest;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::cluster::cluster_conf_update_response;
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
+use mockall::predicate::eq;
+use prost::Message;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+
 use crate::ClientCmd;
 use crate::Error;
 use crate::InboundEvent;
@@ -28,25 +50,6 @@ use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::mock_raft_context_with_temp;
 use crate::test_utils::mock::mock_raft_log;
 use crate::test_utils::node_config;
-use bytes::Bytes;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::server::cluster::ClusterConfChangeRequest;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::MetadataRequest;
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::cluster::cluster_conf_update_response;
-use d_engine_proto::server::election::VoteRequest;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
-use mockall::predicate::eq;
-use prost::Message;
-use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
-use tonic::Code;
 
 /// Test: LearnerState drain_read_buffer returns NotLeader error
 ///
@@ -1236,8 +1239,9 @@ async fn test_learner_node_not_found_on_membership_applied() {
 // ============================================================================
 
 mod snapshot_tests {
-    use super::*;
     use std::sync::atomic::Ordering;
+
+    use super::*;
 
     /// Test: Learner gracefully ignores stale leader-only internal events
     ///
@@ -1630,7 +1634,8 @@ async fn test_apply_completed_triggers_snapshot_when_condition_met() {
 
 /// Test: Learner ApplyCompleted does NOT trigger snapshot when condition is not met
 ///
-/// Purpose: Verify that learners respect snapshot conditions and don't create unnecessary snapshots.
+/// Purpose: Verify that learners respect snapshot conditions and don't create unnecessary
+/// snapshots.
 ///
 /// Scenario:
 /// - Learner receives ApplyCompleted event
@@ -2043,8 +2048,8 @@ async fn test_learner_install_snapshot_advances_commit_index_to_boundary() {
 ///
 /// # Then
 /// - Response MUST be success: false
-/// - The Worker (`state_machine_commands`) must NOT be invoked — no fake sink is wired up,
-///   so a call there would panic on the closed channel / never resolve.
+/// - The Worker (`state_machine_commands`) must NOT be invoked — no fake sink is wired up, so a
+///   call there would panic on the closed channel / never resolve.
 #[tokio::test]
 async fn test_learner_install_snapshot_does_not_report_success_on_mid_chunk_failure() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2115,8 +2120,8 @@ async fn test_learner_install_snapshot_does_not_report_success_on_mid_chunk_fail
 /// match_index and stop retrying, leaving the learner permanently behind.
 ///
 /// # Given
-/// - prepare_snapshot_stream: sends Accepted ACKs (transfer succeeded),
-///   then returns Err (apply_snapshot_from_file failed)
+/// - prepare_snapshot_stream: sends Accepted ACKs (transfer succeeded), then returns Err
+///   (apply_snapshot_from_file failed)
 ///
 /// # When
 /// - Leader pushes a snapshot (InstallSnapshotChunk event)

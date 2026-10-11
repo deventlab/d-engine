@@ -1,17 +1,19 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use tempfile::TempDir;
+
 use crate::ApplyEntry;
 use crate::Command;
 use crate::Error;
 use crate::SnapshotApplyResult;
 use crate::storage::StateMachine;
-use async_trait::async_trait;
-use bytes::Bytes;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
-use tempfile::TempDir;
 
 /// Test suite for StateMachine implementations
 ///
@@ -34,7 +36,7 @@ pub trait StateMachineBuilder: Send + Sync {
 impl StateMachineTestSuite {
     /// Run all state machine tests
     pub async fn run_all_tests<B: StateMachineBuilder>(builder: B) -> Result<(), Error> {
-        Self::test_start_stop(builder.build().await?).await?;
+        Self::test_start_close(builder.build().await?).await?;
         Self::test_basic_kv_operations(builder.build().await?).await?;
         Self::test_apply_chunk_functionality(builder.build().await?).await?;
         Self::test_cas_operations(builder.build().await?).await?;
@@ -76,18 +78,18 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
-    /// Test start/stop functionality
-    pub async fn test_start_stop(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
+    /// Test start/close lifecycle: a state machine is running after `start`, and not running
+    /// once `close`d. `close` is permanent and idempotent (#455), so there is no restart.
+    pub async fn test_start_close(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
         // Test default state
         assert!(state_machine.is_running());
 
-        // Test explicit start/stop
         state_machine.start().await?;
         assert!(state_machine.is_running());
-        state_machine.stop()?;
+        state_machine.close();
         assert!(!state_machine.is_running());
-        state_machine.start().await?;
-        assert!(state_machine.is_running());
+        state_machine.close(); // idempotent
+        assert!(!state_machine.is_running());
 
         Ok(())
     }
@@ -152,7 +154,7 @@ impl StateMachineTestSuite {
         sm.apply_chunk(&[entry3]).await?;
         assert_eq!(sm.get(b"lock")?, Some(b"owner2".to_vec().into())); // Still owner2
 
-        sm.stop()?;
+        sm.close();
         Ok(())
     }
 
@@ -194,7 +196,7 @@ impl StateMachineTestSuite {
         );
         assert_eq!(sm.last_applied().index, 1);
 
-        sm.stop()?;
+        sm.close();
         Ok(())
     }
 
@@ -630,8 +632,8 @@ impl StateMachineTestSuite {
             "Data should exist before stop"
         );
 
-        // Call stop() for graceful shutdown - stop() must persist data
-        sm.stop()?;
+        // Call close() for graceful shutdown - close() must persist data
+        sm.close();
 
         // Explicitly drop Arc to release database locks (critical for RocksDB)
         drop(sm);
@@ -648,12 +650,12 @@ impl StateMachineTestSuite {
         assert_eq!(
             value1,
             Some(Bytes::from(b"drop_test_value1".to_vec())),
-            "BUG: Data lost after stop! StateMachine.stop() must persist data."
+            "BUG: Data lost after close! StateMachine.close() must persist data."
         );
         assert_eq!(
             value2,
             Some(Bytes::from(b"drop_test_value2".to_vec())),
-            "BUG: Data lost after stop! StateMachine.stop() must persist data."
+            "BUG: Data lost after close! StateMachine.close() must persist data."
         );
 
         Ok(())
@@ -867,8 +869,8 @@ impl StateMachineTestSuite {
             last_applied_before = sm.last_applied();
             assert_eq!(last_applied_before.index, 3);
 
-            // Graceful stop
-            sm.stop()?;
+            // Graceful close
+            sm.close();
         }
 
         // Step 2: Reopen and verify
@@ -955,7 +957,7 @@ impl StateMachineTestSuite {
         );
         assert_eq!(sm2.last_applied().index, 1, "last_applied must be restored");
 
-        sm2.stop()?;
+        sm2.close();
         Ok(())
     }
 
@@ -1651,15 +1653,19 @@ fn create_batch_entry(
 // scan_prefix, ensuring the default arm is reachable and exercised.
 #[cfg(test)]
 mod default_scan_prefix_tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
 
     use async_trait::async_trait;
     use bytes::Bytes;
     use d_engine_proto::common::LogId;
     use d_engine_proto::server::storage::SnapshotMetadata;
 
-    use crate::storage::state_machine::{ApplyResult, StateMachine};
-    use crate::{ApplyEntry, Error, SnapshotApplyResult};
+    use crate::ApplyEntry;
+    use crate::Error;
+    use crate::SnapshotApplyResult;
+    use crate::storage::state_machine::ApplyResult;
+    use crate::storage::state_machine::StateMachine;
 
     struct MinimalSm {
         running: AtomicBool,
@@ -1672,9 +1678,8 @@ mod default_scan_prefix_tests {
             Ok(())
         }
 
-        fn stop(&self) -> Result<(), Error> {
+        fn close(&self) {
             self.running.store(false, Ordering::SeqCst);
-            Ok(())
         }
 
         fn is_running(&self) -> bool {

@@ -9,8 +9,11 @@ mod embedded_read_handle_tests {
     use std::time::Duration;
 
     use bytes::Bytes;
+    use d_engine_core::MockStateMachine;
+    use d_engine_core::MockTypeConfig;
+    use d_engine_core::ReadLease;
     use d_engine_core::config::ReadConsistencyPolicy;
-    use d_engine_core::{MockStateMachine, MockTypeConfig, ReadLease, now_ms};
+    use d_engine_core::now_ms;
     use tokio::sync::mpsc;
 
     use super::super::EmbeddedReadHandle;

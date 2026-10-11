@@ -1,8 +1,9 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use d_engine_proto::common::Entry;
 use d_engine_proto::server::storage::SnapshotMetadata;
-use std::path::PathBuf;
-use std::sync::Arc;
 use tracing::trace;
 
 use super::StateMachineWriterOps;
@@ -223,5 +224,9 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
             },
             temp_dir: OwnedSnapshotDir::from_existing(temp_path)?,
         })
+    }
+
+    fn close(&self) {
+        self.state_machine.close();
     }
 }

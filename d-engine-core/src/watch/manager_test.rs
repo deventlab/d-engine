@@ -15,11 +15,10 @@ use d_engine_proto::client::WatchResponse;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
-
-use crate::watch::manager::prefix_segments;
 use tokio::time::timeout;
 
 use super::*;
+use crate::watch::manager::prefix_segments;
 
 /// Helper to create test watch system components.
 /// `heartbeat_interval_ms` = 0 disables heartbeat (avoids Progress noise in most tests).

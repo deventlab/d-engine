@@ -494,7 +494,8 @@ pub struct MembershipConfig {
     #[serde(default)]
     pub promotion: PromotionConfig,
 
-    /// Bound on how long a voter waits at startup for quorum to become reachable before failing fast; independent of retry.membership.
+    /// Bound on how long a voter waits at startup for quorum to become reachable before failing
+    /// fast; independent of retry.membership.
     #[serde(default = "default_startup_quorum_timeout")]
     pub startup_quorum_timeout: Duration,
 }
@@ -523,7 +524,8 @@ fn default_verify_leadership_persistent_timeout() -> Duration {
     Duration::from_secs(3600)
 }
 
-/// Default 30s — enough for peers to finish their own bootstrap race, short enough to fail fast if truly unreachable.
+/// Default 30s — enough for peers to finish their own bootstrap race, short enough to fail fast if
+/// truly unreachable.
 fn default_startup_quorum_timeout() -> Duration {
     Duration::from_secs(30)
 }
@@ -1115,8 +1117,8 @@ pub struct ReadConsistencyConfig {
     /// The lease deadline is anchored to heartbeat *send* time, but the follower's
     /// election timer resets at *receive* time (~rtt/2 later). Without accounting for
     /// rtt/2 the safety invariant is violated under network latency — confirmed by
-    /// Jepsen set workload (19 elements lost). etcd absorbs this via `electionTimeout × 2/3`;
-    /// d-engine makes it explicit via `network_rtt_p99_ms`.
+    /// Jepsen set workload (19 elements lost). The follower timer already tolerates part of that
+    /// delay; this setting makes the allowance explicit via `network_rtt_p99_ms`.
     #[serde(default = "default_lease_duration_ms")]
     pub lease_duration_ms: u64,
 

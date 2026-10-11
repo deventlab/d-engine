@@ -1,10 +1,12 @@
-use crate::client::types::ErrorCode;
+use std::error::Error;
+
 use serde::Deserialize;
 use serde::Serialize;
-use std::error::Error;
 use tokio::task::JoinError;
 use tonic::Code;
 use tonic::Status;
+
+use crate::client::types::ErrorCode;
 
 /// Result type for KV operations
 pub type ClientApiResult<T> = std::result::Result<T, ClientApiError>;
@@ -272,7 +274,8 @@ impl From<ErrorCode> for ClientApiError {
                 code,
                 message: "Not leader".to_string(),
                 retry_after_ms: Some(100), // suggest quick retry
-                leader_hint: None, // populated by ClientResponseExt::validate_error() when ErrorMetadata is available
+                leader_hint: None,         /* populated by ClientResponseExt::validate_error()
+                                            * when ErrorMetadata is available */
             },
             ErrorCode::StaleOperation => ClientApiError::Business {
                 code,

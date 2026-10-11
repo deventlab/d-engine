@@ -1,13 +1,12 @@
-use super::ClientInner;
-use crate::ClientApiError;
-use crate::ClientResponseExt;
-use crate::scoped_timer::ScopedTimer;
+use std::sync::Arc;
+
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use d_engine_core::BatchOp;
+use d_engine_core::client::ClientApi;
+use d_engine_core::client::ClientApiResult;
 use d_engine_core::client::ErrorCode;
 use d_engine_core::client::KvEntry;
-use d_engine_core::client::{ClientApi, ClientApiResult};
 use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_core::types::ScanResults;
 use d_engine_proto::client::ClientReadRequest;
@@ -26,12 +25,16 @@ use d_engine_proto::client::write_command::batch_op;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
+
+use super::ClientInner;
+use crate::ClientApiError;
+use crate::ClientResponseExt;
+use crate::scoped_timer::ScopedTimer;
 
 /// gRPC-based KV client for standalone mode. Obtained via [`crate::ClientBuilder`].
 ///

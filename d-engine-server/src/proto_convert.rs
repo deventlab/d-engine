@@ -12,22 +12,31 @@
 //!
 //! - All functions are `#[inline]`
 //! - `Bytes` fields are moved (refcount unchanged, zero allocation)
-//! - `ErrorCode` conversion uses exhaustive match — LLVM optimises to identity;
-//!   a missing variant is a compile error (correctness guarantee)
-use crate::api::types::WriteOperation;
+//! - `ErrorCode` conversion uses exhaustive match — LLVM optimises to identity; a missing variant
+//!   is a compile error (correctness guarantee)
 use bytes::Bytes;
-use d_engine_core::client::{
-    ClientReadRequest, ClientResponse, ClientResponsePayload, ClientWriteRequest, ErrorCode,
-    KvEntry, LeaderHint, ReadResults, WriteResult,
-};
+use d_engine_core::client::ClientReadRequest;
+use d_engine_core::client::ClientResponse;
+use d_engine_core::client::ClientResponsePayload;
+use d_engine_core::client::ClientWriteRequest;
+use d_engine_core::client::ErrorCode;
+use d_engine_core::client::KvEntry;
+use d_engine_core::client::LeaderHint;
+use d_engine_core::client::ReadResults;
+use d_engine_core::client::WriteResult;
 use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_core::types::ScanResults;
-use d_engine_proto::client::{
-    self as proto_client, ClientResult, ReadResults as ProtoReadResults,
-    ScanResults as ProtoScanResults, WriteCommand, WriteResult as ProtoWriteResult,
-};
-use d_engine_proto::error::{ErrorCode as ProtoErrorCode, ErrorMetadata};
+use d_engine_proto::client::ClientResult;
+use d_engine_proto::client::ReadResults as ProtoReadResults;
+use d_engine_proto::client::ScanResults as ProtoScanResults;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::WriteResult as ProtoWriteResult;
+use d_engine_proto::client::{self as proto_client};
+use d_engine_proto::error::ErrorCode as ProtoErrorCode;
+use d_engine_proto::error::ErrorMetadata;
 use prost::Message;
+
+use crate::api::types::WriteOperation;
 
 #[inline]
 pub(crate) fn write_op_to_bytes(op: WriteOperation) -> Bytes {

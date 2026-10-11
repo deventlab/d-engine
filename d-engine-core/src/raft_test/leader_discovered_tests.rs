@@ -12,7 +12,6 @@
 //! - Multiple listeners receive the event
 //! - Event deduplication and watch channel behavior
 //! - InternalEvent::LeaderDiscovered creation and serialization
-//!
 
 use tokio::sync::watch;
 

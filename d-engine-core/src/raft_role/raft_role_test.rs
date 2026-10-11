@@ -1,7 +1,9 @@
-use std::{sync::Arc, thread};
+use std::sync::Arc;
+use std::thread;
 
 use d_engine_proto::server::election::VotedFor;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use super::super::*;
 use super::candidate_state::CandidateState;

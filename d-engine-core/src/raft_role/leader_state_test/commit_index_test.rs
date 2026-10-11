@@ -4,23 +4,34 @@
 //! never `last_entry_id` (in-memory). Covers both the single-voter fast path and
 //! the multi-voter quorum path. Fixed by ticket #329.
 
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use bytes::Bytes;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
+use rand::distr::SampleString;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+
+use crate::MockMembership;
+use crate::MockRaftLog;
+use crate::PeerUpdate;
+use crate::RaftRequestWithSignal;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
-use crate::test_utils::mock::{MockTypeConfig, mock_raft_context};
-use crate::{MockMembership, MockRaftLog, PeerUpdate, RaftRequestWithSignal};
-use bytes::Bytes;
-use d_engine_proto::common::{EntryPayload, LogId};
-use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::replication::append_entries_response;
-use d_engine_proto::server::replication::{AppendEntriesResponse, SuccessResult};
-use rand::distr::SampleString;
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{mpsc, watch};
+use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::mock::mock_raft_context;
 
 fn success_response(
     term: u64,
@@ -438,7 +449,8 @@ async fn test_update_match_index_only_advances() {
     let mut membership = crate::MockMembership::<MockTypeConfig>::new();
     membership.expect_is_single_node_cluster().returning(|| false);
     membership.expect_voters().returning(|| {
-        use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
+        use d_engine_proto::common::NodeRole::Follower;
+        use d_engine_proto::common::NodeStatus;
         use d_engine_proto::server::cluster::NodeMeta;
         vec![NodeMeta {
             id: 2,
@@ -524,7 +536,8 @@ async fn setup_voter_with_learner(
     LeaderState<MockTypeConfig>,
     crate::raft_context::RaftContext<MockTypeConfig>,
 ) {
-    use d_engine_proto::common::{NodeRole, NodeStatus};
+    use d_engine_proto::common::NodeRole;
+    use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
 
     let mut ctx = mock_raft_context(path, graceful_rx, None);
@@ -711,7 +724,8 @@ async fn setup_multi_voter(
     LeaderState<MockTypeConfig>,
     crate::raft_context::RaftContext<MockTypeConfig>,
 ) {
-    use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
+    use d_engine_proto::common::NodeRole::Follower;
+    use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
 
     let mut ctx = mock_raft_context(path, graceful_rx, None);
@@ -760,7 +774,8 @@ async fn setup_multi_voter(
 /// **Scenario**:
 /// - 3-node cluster (leader + 2 peers)
 /// - Leader appends entry 1, peers ACK immediately (match_index=[1,1])
-/// - Leader's durable_index=0 → quorum blocked (need 2/3, have only 2/3 peers but leader not durable)
+/// - Leader's durable_index=0 → quorum blocked (need 2/3, have only 2/3 peers but leader not
+///   durable)
 /// - LogFlushed(1) arrives → leader durable=1 → quorum satisfied ([1,1,1]) → commit advances to 1
 #[tokio::test]
 async fn test_multi_voter_commit_advances_when_log_flushed_enables_quorum() {

@@ -66,11 +66,14 @@ impl MockRpcService {
 /// Convert core `ClientResponse` to the proto wire type for test mock gRPC handlers.
 /// Both `ErrorCode` enums are `#[repr(i32)]` with identical discriminants.
 fn core_to_proto_response(r: CoreClientResponse) -> ClientResponse {
-    use d_engine_core::client::{ClientResponsePayload, WriteResult};
-    use d_engine_proto::client::{
-        ClientResult, KvEntry, ReadResults as ProtoReadResults, ScanResults as ProtoScanResults,
-        WriteResult as ProtoWriteResult, client_response::SuccessResult,
-    };
+    use d_engine_core::client::ClientResponsePayload;
+    use d_engine_core::client::WriteResult;
+    use d_engine_proto::client::ClientResult;
+    use d_engine_proto::client::KvEntry;
+    use d_engine_proto::client::ReadResults as ProtoReadResults;
+    use d_engine_proto::client::ScanResults as ProtoScanResults;
+    use d_engine_proto::client::WriteResult as ProtoWriteResult;
+    use d_engine_proto::client::client_response::SuccessResult;
     use d_engine_proto::error::ErrorMetadata;
 
     let error_code = r.error as i32;

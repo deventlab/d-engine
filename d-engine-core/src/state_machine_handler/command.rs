@@ -2,17 +2,19 @@
 //! all state-machine mutations.
 //! one serial writer.
 
-use crate::Result;
-use crate::SnapshotApplyResult;
-use crate::SnapshotError;
-use d_engine_proto::common::Entry;
-use d_engine_proto::server::storage::SnapshotMetadata;
 use std::path::Path;
 use std::path::PathBuf;
+
+use d_engine_proto::common::Entry;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::warn;
+
+use crate::Result;
+use crate::SnapshotApplyResult;
+use crate::SnapshotError;
 
 /// A snapshot stream already fully received and decompressed to a local temp
 /// directory. Owns the directory's lifetime: dropping it (e.g. once the
@@ -154,6 +156,11 @@ pub enum StateMachineCommand {
         response: oneshot::Sender<Result<CapturedLocalSnapshot>>,
         guard: tokio::sync::OwnedMutexGuard<()>,
     },
+
+    /// Last command the Raft node's owner puts in the queue. The Worker applies everything
+    /// queued before it, then stops. Queue order is what makes "everything" include the
+    /// last `ApplyEntries`.
+    Shutdown,
 }
 
 /// The only way role code (follower/learner) may reach `StateMachineWorker` — hides the

@@ -1,11 +1,17 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use d_engine_core::Error;
+use d_engine_core::MockStateMachine;
+use d_engine_core::ReadLease;
 use d_engine_core::config::ReadConsistencyPolicy;
-use d_engine_core::{Error, MockStateMachine, ReadLease, now_ms};
-use tokio::sync::{mpsc, oneshot};
+use d_engine_core::now_ms;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
-use crate::read_actor::{ReadActorError, ReadCmd, run_read_actor};
+use crate::read_actor::ReadActorError;
+use crate::read_actor::ReadCmd;
+use crate::read_actor::run_read_actor;
 
 fn make_sm_running() -> MockStateMachine {
     let mut sm = MockStateMachine::new();

@@ -384,7 +384,7 @@ pub fn mock_state_machine() -> MockStateMachine {
     let mut mock = MockStateMachine::new();
 
     mock.expect_start().returning(|| Ok(()));
-    mock.expect_stop().returning(|| Ok(()));
+    mock.expect_close().returning(|| ());
     mock.expect_is_running().returning(|| true);
 
     mock.expect_get().returning(|_| Ok(None));

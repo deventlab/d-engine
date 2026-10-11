@@ -230,8 +230,8 @@ where
     /// # Parameters
     /// - `peer_id`: Target follower node ID
     /// - `metadata`: Snapshot metadata (term, index, size)
-    /// - `leader_term`: Sender's own current term, not `metadata`'s (the snapshotted
-    ///   data's boundary term can be stale after a leader change — #436)
+    /// - `leader_term`: Sender's own current term, not `metadata`'s (the snapshotted data's
+    ///   boundary term can be stale after a leader change — #436)
     /// - `state_machine_handler`: Used to load the snapshot data stream
     /// - `membership`: Cluster membership for bulk-channel resolution
     /// - `config`: Snapshot transfer configuration (chunk size, timeout, etc.)

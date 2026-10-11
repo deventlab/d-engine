@@ -54,17 +54,14 @@ impl StateMachine for SlowApplyProbe {
         result
     }
 
-    fn close_storage(&self) {
+    fn close(&self) {
         self.storage_closed.store(true, Ordering::SeqCst);
-        self.inner.close_storage();
+        self.inner.close();
     }
 
     // Everything below delegates unchanged.
     async fn start(&self) -> Result<(), Error> {
         self.inner.start().await
-    }
-    fn stop(&self) -> Result<(), Error> {
-        self.inner.stop()
     }
     fn is_running(&self) -> bool {
         self.inner.is_running()
@@ -155,7 +152,8 @@ async fn test_stop_closes_state_machine_storage_only_after_in_flight_applies_fin
         std::env::remove_var("CONFIG_PATH");
     }
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let storage = Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
+    let storage =
+        Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
     let probe = Arc::new(SlowApplyProbe {
         inner: FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"),
         apply_delay: Duration::from_millis(300),

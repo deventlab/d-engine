@@ -1,10 +1,12 @@
-#[cfg(feature = "watch")]
-use crate::BatchOp;
+use std::ops::RangeInclusive;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
-use crate::CapturedLocalSnapshot;
-use crate::PreparedSnapshot;
-use crate::client::KvEntry;
-use crate::state_machine_handler::applied_state::AppliedState;
 use async_compression::tokio::bufread::GzipDecoder;
 use async_compression::tokio::write::GzipEncoder;
 use async_stream::try_stream;
@@ -18,14 +20,6 @@ use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
 use futures::stream::BoxStream;
 use memmap2::Mmap;
 use memmap2::MmapOptions;
-use std::ops::RangeInclusive;
-use std::path::Path;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::fs::remove_dir_all;
@@ -50,8 +44,12 @@ use crate::ApplyEntry;
 #[cfg(feature = "watch")]
 use crate::ApplyResult;
 #[cfg(feature = "watch")]
+use crate::BatchOp;
+use crate::CapturedLocalSnapshot;
+#[cfg(feature = "watch")]
 use crate::Command;
 use crate::NewCommitData;
+use crate::PreparedSnapshot;
 use crate::Result;
 use crate::SnapshotConfig;
 use crate::SnapshotError;
@@ -61,9 +59,11 @@ use crate::StorageError;
 use crate::TypeConfig;
 use crate::alias::SMOF;
 use crate::alias::SNP;
+use crate::client::KvEntry;
 use crate::file_io::validate_checksum;
 use crate::file_io::validate_compressed_format;
 use crate::scoped_timer::ScopedTimer;
+use crate::state_machine_handler::applied_state::AppliedState;
 
 /// Unified snapshot metadata with precomputed values
 #[derive(Debug, Clone)]

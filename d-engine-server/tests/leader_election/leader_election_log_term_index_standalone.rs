@@ -9,8 +9,8 @@
 //! 2. Node A appends 10 log entries with Term=2.
 //! 3. Node B appends 8 log entries with Term=3 (higher term).
 //! 4. Node C is a new node with no logs.
-//! 5. Trigger a leader election (all three nodes use the same default randomized timeout —
-//!    the rejection is no longer sourced from this race; see below).
+//! 5. Trigger a leader election (all three nodes use the same default randomized timeout — the
+//!    rejection is no longer sourced from this race; see below).
 //!
 //! Expected Result:
 //!
@@ -26,9 +26,9 @@
 //! rejection organically: whichever of A/C's randomized timers fired first would ask node B for
 //! a vote and (having a worse log) get rejected. Two problems with that:
 //!
-//! 1. It's not guaranteed. If node B's own timer happens to fire first, it becomes candidate
-//!    itself and never receives a vote request to reject — the assertion would then have nothing
-//!    to observe, purely due to timer luck (observed in CI: ~1/9 runs).
+//! 1. It's not guaranteed. If node B's own timer happens to fire first, it becomes candidate itself
+//!    and never receives a vote request to reject — the assertion would then have nothing to
+//!    observe, purely due to timer luck (observed in CI: ~1/9 runs).
 //! 2. An earlier attempt to fix (1) by giving node B a much longer timeout than A/C — forcing A/C
 //!    to go first — backfired: A and C's logs disagree with each other too (A has no entries in
 //!    common with C's empty log, different terms), and they ended up in a prolonged split-vote
@@ -46,6 +46,13 @@
 //! The natural election (who the cluster actually elects) is untouched and still runs exactly as
 //! before.
 
+use std::time::Duration;
+
+use d_engine_core::ClientApiError;
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::election::raft_election_service_client::RaftElectionServiceClient;
+use tracing::debug;
+
 use crate::client_manager::ClientManager;
 use crate::common::TestContext;
 use crate::common::WAIT_FOR_NODE_READY_IN_SEC;
@@ -59,11 +66,6 @@ use crate::common::node_config;
 use crate::common::prepare_storage_engine;
 use crate::common::reset;
 use crate::common::start_node;
-use d_engine_core::ClientApiError;
-use d_engine_proto::server::election::VoteRequest;
-use d_engine_proto::server::election::raft_election_service_client::RaftElectionServiceClient;
-use std::time::Duration;
-use tracing::debug;
 
 // Constants for test configuration
 const ELECTION_CASE1_DIR: &str = "election/case1";
@@ -138,10 +140,11 @@ async fn test_leader_election_based_on_log_term_and_index() -> Result<(), Client
                 .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
             client
                 .request_vote(tonic::Request::new(VoteRequest {
-                    term: 10,           // comfortably above any term the natural election reaches here
-                    candidate_id: 99,   // synthetic candidate — not a real cluster member
+                    term: 10,           /* comfortably above any term the natural election
+                                         * reaches here */
+                    candidate_id: 99, // synthetic candidate — not a real cluster member
                     last_log_index: 10, // node A's real log profile: more entries...
-                    last_log_term: 2,   // ...but a lower term than node 2's (3)
+                    last_log_term: 2, // ...but a lower term than node 2's (3)
                 }))
                 .await
         }

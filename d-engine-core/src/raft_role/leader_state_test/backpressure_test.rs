@@ -1,6 +1,3 @@
-use crate::client::ClientReadRequest;
-use crate::client::ClientWriteRequest;
-use crate::config::ReadConsistencyPolicy;
 use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
 use tokio::sync::watch;
@@ -9,6 +6,9 @@ use crate::BackpressureConfig;
 use crate::ClientCmd;
 use crate::MaybeCloneOneshot;
 use crate::RaftOneshot;
+use crate::client::ClientReadRequest;
+use crate::client::ClientWriteRequest;
+use crate::config::ReadConsistencyPolicy;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::MetricsCapture;

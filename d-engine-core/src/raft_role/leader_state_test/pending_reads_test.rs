@@ -26,7 +26,6 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::client::ClientReadRequest;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeStatus;
@@ -34,7 +33,8 @@ use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::SuccessResult;
 use d_engine_proto::server::replication::append_entries_response;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tonic::Code;
 use tracing_test::traced_test;
@@ -47,10 +47,13 @@ use crate::MockStateMachine;
 use crate::PeerUpdate;
 use crate::RaftNodeConfig;
 use crate::ReadConsistencyPolicy;
+use crate::client::ClientReadRequest;
 use crate::convert::safe_kv_bytes;
 use crate::event::InboundEvent;
-use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
-use crate::raft_role::leader_state::{LeaderState, PendingReadBatch};
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
+use crate::raft_role::leader_state::LeaderState;
+use crate::raft_role::leader_state::PendingReadBatch;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
@@ -701,8 +704,8 @@ async fn test_linearizable_read_queued_when_sm_behind_despite_valid_lease() {
 ///
 /// ## Setup
 /// - 3-voter cluster, lease never refreshed (default: expired / None)
-/// - `last_applied=0 >= read_index=0` — the fast-path condition for `last_applied`
-///   is satisfied, but `is_lease_valid()` is false
+/// - `last_applied=0 >= read_index=0` — the fast-path condition for `last_applied` is satisfied,
+///   but `is_lease_valid()` is false
 ///
 /// ## Expected behavior
 /// The lease fast path is NOT taken.  The read is queued in `pending_reads` and

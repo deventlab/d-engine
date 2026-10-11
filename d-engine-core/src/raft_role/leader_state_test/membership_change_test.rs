@@ -11,7 +11,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use tokio::sync::{mpsc, watch};
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Learner;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::ClusterMembership;
+use d_engine_proto::server::cluster::JoinRequest;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tonic::Code;
 use tracing_test::traced_test;
 
@@ -28,13 +37,6 @@ use crate::raft_role::role_state::RaftRoleState;
 use crate::state_machine_handler::StateMachineHandler;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
-use d_engine_proto::common::{
-    LogId,
-    NodeRole::{Follower, Learner},
-    NodeStatus,
-};
-use d_engine_proto::server::cluster::{ClusterMembership, JoinRequest, NodeMeta};
-use d_engine_proto::server::storage::SnapshotMetadata;
 
 // ============================================================================
 // Test Helper Functions
@@ -649,16 +651,18 @@ mod stale_learner_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use tokio::sync::{mpsc, watch};
+    use d_engine_proto::common::NodeStatus;
+    use tokio::sync::mpsc;
+    use tokio::sync::watch;
     use tokio::time::Instant;
 
     use crate::MockMembership;
     use crate::MockRaftLog;
-    use crate::raft_role::leader_state::{LeaderState, PendingPromotion};
+    use crate::raft_role::leader_state::LeaderState;
+    use crate::raft_role::leader_state::PendingPromotion;
     use crate::test_utils::mock::MockTypeConfig;
     use crate::test_utils::mock::mock_raft_context;
     use crate::test_utils::node_config;
-    use d_engine_proto::common::NodeStatus;
 
     /// Setup helper for creating test leader state with pending promotions
     fn create_test_leader_state(
@@ -781,18 +785,20 @@ mod check_learner_progress_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use tokio::sync::{mpsc, watch};
+    use d_engine_proto::common::NodeStatus;
+    use tokio::sync::mpsc;
+    use tokio::sync::watch;
     use tokio::time::Instant;
 
     use crate::MockMembership;
     use crate::RaftContext;
     use crate::event::InternalEvent;
-    use crate::raft_role::leader_state::{LeaderState, PendingPromotion};
+    use crate::raft_role::leader_state::LeaderState;
+    use crate::raft_role::leader_state::PendingPromotion;
     use crate::raft_role::role_state::RaftRoleState;
     use crate::test_utils::mock::MockTypeConfig;
     use crate::test_utils::mock::mock_raft_context;
     use crate::test_utils::node_config;
-    use d_engine_proto::common::NodeStatus;
 
     /// Helper: Create mock context with configurable threshold
     fn create_mock_context_with_threshold(
@@ -1124,9 +1130,14 @@ mod pending_promotion_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::NodeRole::Follower;
+    use d_engine_proto::common::NodeStatus;
+    use d_engine_proto::server::cluster::NodeMeta;
     use futures::future;
     use parking_lot::Mutex;
-    use tokio::sync::{mpsc, watch};
+    use tokio::sync::mpsc;
+    use tokio::sync::watch;
     use tokio::time::Instant;
 
     use crate::MockMembership;
@@ -1134,16 +1145,13 @@ mod pending_promotion_tests {
     use crate::MockReplicationCore;
     use crate::RaftContext;
     use crate::event::InternalEvent;
-    use crate::raft_role::leader_state::{
-        LeaderState, PendingPromotion, calculate_safe_batch_size,
-    };
+    use crate::raft_role::leader_state::LeaderState;
+    use crate::raft_role::leader_state::PendingPromotion;
+    use crate::raft_role::leader_state::calculate_safe_batch_size;
     use crate::raft_role::role_state::RaftRoleState;
     use crate::test_utils::mock::MockTypeConfig;
     use crate::test_utils::mock::mock_raft_context;
     use crate::test_utils::node_config;
-    use d_engine_proto::common::EntryPayload;
-    use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
-    use d_engine_proto::server::cluster::NodeMeta;
 
     // Test fixture: simple setup without pre-running verify_internal_quorum.
     // Quorum completion requires a running Raft loop; unit tests validate up to submission.
@@ -1572,16 +1580,18 @@ mod pending_promotion_tests {
 mod zombie_purge_tests {
     use std::sync::Arc;
 
+    use d_engine_proto::common::EntryPayload;
+    use d_engine_proto::common::NodeStatus;
     use parking_lot::Mutex;
-    use tokio::sync::{mpsc, watch};
+    use tokio::sync::mpsc;
+    use tokio::sync::watch;
 
     use crate::MockMembership;
     use crate::MockRaftLog;
     use crate::raft_role::leader_state::LeaderState;
-    use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
+    use crate::test_utils::mock::MockBuilder;
+    use crate::test_utils::mock::MockTypeConfig;
     use crate::test_utils::node_config;
-    use d_engine_proto::common::EntryPayload;
-    use d_engine_proto::common::NodeStatus;
 
     // =========================================================================
     // handle_zombie_node — warn-only, no auto-removal
@@ -1596,8 +1606,8 @@ mod zombie_purge_tests {
     /// - handle_zombie_node(5) is called
     ///
     /// # Then
-    /// - Returns Ok, no membership change is proposed
-    ///   (auto-removal is intentionally not performed; operators decide)
+    /// - Returns Ok, no membership change is proposed (auto-removal is intentionally not performed;
+    ///   operators decide)
     #[tokio::test]
     async fn test_handle_zombie_node_warns_without_removal() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -1675,7 +1685,8 @@ mod zombie_purge_tests {
     /// - handle_zombie_node(5) is called (e.g. stale signal arrived after BatchRemove committed)
     ///
     /// # Then
-    /// - No config change is proposed (node is gone; re-proposing BatchRemove would flood the Raft log)
+    /// - No config change is proposed (node is gone; re-proposing BatchRemove would flood the Raft
+    ///   log)
     #[tokio::test]
     async fn test_handle_zombie_node_absent_node_is_ignored() {
         let (_graceful_tx, graceful_rx) = watch::channel(());

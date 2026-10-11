@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use crate::ApplyResult;
 use d_engine_core::AppendResponseWithUpdates;
 use d_engine_core::InternalEvent;
 use d_engine_core::MaybeCloneOneshot;
@@ -39,6 +38,7 @@ use tonic::Code;
 use tonic::Request;
 use tracing_test::traced_test;
 
+use crate::ApplyResult;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock_node;
 
@@ -225,7 +225,8 @@ async fn test_handle_rpc_services_successfully() {
     // Dynamic log index: starts at 0, incremented by prepare_batch_requests per payload written.
     // Used so the test can read the correct log index when sending LogFlushed to trigger commit.
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
     let log_index = Arc::new(AtomicU64::new(0));
     let li_last = log_index.clone();
     let li_flush = log_index.clone();
@@ -324,7 +325,8 @@ async fn test_handle_rpc_services_successfully() {
             .is_ok()
         );
 
-        // Wait for raft loop to complete BecomeLeader (tick → broadcast_vote_requests → verify noop).
+        // Wait for raft loop to complete BecomeLeader (tick → broadcast_vote_requests → verify
+        // noop).
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         // handle_client_write and handle_client_read must be sent while node is leader.
@@ -545,12 +547,13 @@ async fn test_handle_client_scan_timeout() {
 #[tokio::test]
 #[traced_test]
 async fn test_handle_client_scan_success_returns_entries_and_revision() {
+    use std::sync::atomic::Ordering;
+
     use bytes::Bytes;
     use d_engine_core::ClientCmd;
     use d_engine_core::client::ClientResponse;
     use d_engine_proto::client::ScanRequest;
     use d_engine_proto::client::client_response::SuccessResult;
-    use std::sync::atomic::Ordering;
     use tokio::sync::mpsc;
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -595,12 +598,13 @@ async fn test_handle_client_scan_success_returns_entries_and_revision() {
 #[tokio::test]
 #[traced_test]
 async fn test_handle_client_scan_not_leader_carries_leader_hint_in_metadata() {
+    use std::sync::atomic::Ordering;
+
     use d_engine_core::ClientCmd;
     use d_engine_core::client::ClientResponse;
     use d_engine_core::client::LeaderHint;
     use d_engine_proto::client::ScanRequest;
     use d_engine_proto::error::ErrorCode as ProtoErrorCode;
-    use std::sync::atomic::Ordering;
     use tokio::sync::mpsc;
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -861,7 +865,8 @@ async fn test_stream_append_entries_closes_response_stream_after_inbound_ends() 
     raft_log.expect_durable_index().returning(|| 5);
 
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
-    // The first election now starts at once, so a single-node cluster becomes leader and proposes its noop.
+    // The first election now starts at once, so a single-node cluster becomes leader and proposes
+    // its noop.
     replication_handler
         .expect_prepare_batch_requests()
         .returning(|_, _, _, _, _, _| Ok(d_engine_core::PrepareResult::default()));
@@ -1010,7 +1015,8 @@ async fn test_pre_vote_unanswered_request_times_out() {
     let timeout_ms = node.node_config.raft.election.election_timeout_min;
 
     let call = tokio::spawn(async move { node.pre_vote(Request::new(pre_vote_request())).await });
-    // Keep the event (and its reply sender) alive so the failure is a timeout, not a closed channel.
+    // Keep the event (and its reply sender) alive so the failure is a timeout, not a closed
+    // channel.
     let _unanswered = event_rx.recv().await.expect("event reaches the loop");
 
     tokio::time::advance(Duration::from_millis(timeout_ms + 1)).await;

@@ -1,8 +1,10 @@
 use bytes::Bytes;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
 
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::RaftLogCoreTestContext;
-use d_engine_proto::common::{Entry, EntryPayload, LogId};
 
 #[tokio::test]
 async fn test_empty_log_operations() {

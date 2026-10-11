@@ -1,4 +1,10 @@
-use crate::storage::TtlLease;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::SystemTime;
+
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -31,12 +37,6 @@ use rocksdb::WriteBatchWithIndex;
 use rocksdb::WriteOptions;
 use serde::Deserialize;
 use serde::Serialize;
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::SystemTime;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -45,6 +45,7 @@ use tracing::warn;
 
 use super::STATE_MACHINE_CF;
 use super::STATE_MACHINE_META_CF;
+use crate::storage::TtlLease;
 
 const LAST_APPLIED_INDEX_KEY: &[u8] = b"last_applied_index";
 const LAST_APPLIED_TERM_KEY: &[u8] = b"last_applied_term";
@@ -587,41 +588,6 @@ impl RocksDBStateMachine {
         Ok(ScanResult { entries, revision })
     }
 
-    /// Permanently close the RocksDB handle and release the LOCK file.
-    ///
-    /// Unlike `stop()`, this is not reversible with `start()`.
-    /// Called by `EmbeddedEngine::stop()` before the Raft loop exits so the LOCK
-    /// is released without waiting for `Arc<SM>` reference counts to reach zero.
-    ///
-    /// Sequence: flush → save hard state → cancel background work → store None.
-    /// After this, `load_db()` returns `NotServing`; `stop()` afterwards is safe.
-    pub(crate) fn close_db(&self) {
-        self.is_serving.store(false, Ordering::SeqCst);
-
-        if let Err(e) = self.persist_ttl_metadata() {
-            error!("close_db: failed to persist TTL metadata: {e:?}");
-        }
-
-        if let Err(e) = self.flush() {
-            error!("close_db: failed to flush: {e:?}");
-        }
-
-        if let Err(e) = self.save_hard_state() {
-            error!("close_db: failed to save hard state: {e:?}");
-        }
-
-        {
-            let guard = self.db.load();
-            if let Some(db) = guard.as_deref() {
-                db.cancel_all_background_work(true);
-            }
-        }
-
-        // Release Arc<DB>: refcount decrements here, RocksDB LOCK file released.
-        self.db.store(None);
-        info!("RocksDB state machine: DB closed, LOCK released");
-    }
-
     /// Test-only: quiesce RocksDB's background compaction/flush WITHOUT flushing
     /// MemTable, saving hard state, or persisting TTL metadata — simulates what a
     /// real `kill -9` leaves behind on disk (no "dying gasp" persistence a real
@@ -661,26 +627,32 @@ impl StateMachine for RocksDBStateMachine {
         Ok(())
     }
 
-    fn close_storage(&self) {
-        self.close_db();
-    }
-
-    fn stop(&self) -> Result<(), Error> {
-        self.is_serving.store(false, Ordering::SeqCst);
-
-        // Skip TTL persist if close_db() was already called (DB is None).
-        // Node::stop() calls sm.stop() after EmbeddedEngine has already called close_db(),
-        // so this path must be safe to call on a closed DB.
-        // Skip TTL persist if close_db() has already set DB to None.
-        if self.db.load().is_some()
-            && let Err(e) = self.persist_ttl_metadata()
-        {
-            error!("Failed to persist TTL metadata on shutdown: {:?}", e);
-            return Err(e);
+    /// Sequence: stop serving → persist TTL → flush → save hard state → cancel background
+    /// work → drop the DB handle (releasing the LOCK). A second call finds no DB and does nothing.
+    fn close(&self) {
+        if self.db.load().is_none() {
+            return;
         }
 
-        info!("RocksDB state machine stopped");
-        Ok(())
+        self.is_serving.store(false, Ordering::SeqCst);
+
+        if let Err(e) = self.persist_ttl_metadata() {
+            error!("close: failed to persist TTL metadata: {e:?}");
+        }
+
+        if let Err(e) = self.flush() {
+            error!("close: failed to flush: {e:?}");
+        }
+
+        if let Err(e) = self.save_hard_state() {
+            error!("close: failed to save hard state: {e:?}");
+        }
+        if let Some(db) = self.db.load().as_deref() {
+            db.cancel_all_background_work(true);
+        }
+        // Release Arc<DB>: refcount decrements here, RocksDB LOCK file released.
+        self.db.store(None);
+        info!("RocksDB state machine: DB closed, LOCK released");
     }
 
     fn is_running(&self) -> bool {
@@ -1212,32 +1184,7 @@ impl StateMachine for RocksDBStateMachine {
 }
 impl Drop for RocksDBStateMachine {
     fn drop(&mut self) {
-        // If close_db() was already called, DB is None — nothing to flush or cancel.
-        if self.db.load().is_none() {
-            return;
-        }
-
-        // last_applied durability no longer depends on ordering here — it is
-        // already atomic with the SM data as of apply_chunk(). flush() persists
-        // both the SM data and snapshot_metadata (via save_hard_state) to SST.
-        if let Err(e) = self.flush() {
-            error!("Failed to flush on drop: {}", e);
-        } else {
-            debug!("RocksDBStateMachine flushed successfully on drop");
-        }
-
-        // save_hard_state() only persists snapshot_metadata now — last_applied is
-        // already durable as of apply_chunk(), so there is no ordering hazard
-        // between this call and the flush() above.
-        if let Err(e) = self.save_hard_state() {
-            error!("Failed to save hard state on drop: {}", e);
-        }
-
-        // Ensure flush operations are truly finished (no Arc clone needed — just &DB)
-        let guard = self.db.load();
-        if let Some(db) = guard.as_deref() {
-            db.cancel_all_background_work(true);
-            debug!("RocksDB background work cancelled on drop");
-        }
+        // Safety net for an owner that never called `close()`; a no-op if it already did.
+        StateMachine::close(self);
     }
 }

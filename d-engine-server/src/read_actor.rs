@@ -18,13 +18,15 @@
 //! `read_rx` is drained and closed, at which point `Arc<SM>` is dropped and the
 //! RocksDB LOCK file is released — before `stop()` signals the Raft loop.
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use d_engine_core::ReadLease;
 use d_engine_core::StateMachine;
 use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_core::now_ms;
-use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 // ── ReadCmd ────────────────────────────────────────────────────────────────────
 

@@ -11,8 +11,8 @@
 //! - A *true* heartbeat (entries built by `prepare_batch_requests` are absent, so
 //!   `build_append_request` produces empty entries) must always be sendable.
 //! - A *substitute* heartbeat (entries were withheld because the window is full, so
-//!   `prepare_batch_requests` did not populate `peer_entries` for this peer) is also safe
-//!   to send as empty entries, from the follower's point of view.
+//!   `prepare_batch_requests` did not populate `peer_entries` for this peer) is also safe to send
+//!   as empty entries, from the follower's point of view.
 //!
 //! The distinction matters for observability and correctness reasoning: we must verify
 //! that even when a Replicate-state peer's window is at its limit (N un-acked requests),
@@ -28,21 +28,25 @@
 
 use std::sync::Arc;
 
-use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::replication::{
-    AppendEntriesResponse, ConflictResult, append_entries_response,
-};
-use tokio::sync::{mpsc, watch};
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::ConflictResult;
+use d_engine_proto::server::replication::append_entries_response;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing_test::traced_test;
 
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::event::InternalEvent;
 use crate::raft_role::leader_state::LeaderState;
-use crate::raft_role::role_state::{PeerReplicationState, RaftRoleState};
+use crate::raft_role::role_state::PeerReplicationState;
+use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MetricsCapture;
-use crate::test_utils::mock::{MockTypeConfig, mock_raft_context};
+use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::mock::mock_raft_context;
 
 fn two_peer_membership() -> MockMembership<MockTypeConfig> {
     let peers = vec![
@@ -348,11 +352,11 @@ async fn test_release_on_empty_window_is_a_noop() {
 /// # Scenario
 /// - Peer 2 in `Replicate` state, 3 un-acknowledged requests ending at indexes 3, 6 and 9
 ///   (in_flight = 3).
-/// - A stale-term response arrives (term 0 < leader_term 1) — must release nothing (in_flight
-///   stays 3).
-/// - A real, term-matching success response for index 3 arrives — must release exactly the
-///   request ending at 3 (in_flight becomes 2), proving the earlier stale response didn't
-///   already consume it.
+/// - A stale-term response arrives (term 0 < leader_term 1) — must release nothing (in_flight stays
+///   3).
+/// - A real, term-matching success response for index 3 arrives — must release exactly the request
+///   ending at 3 (in_flight becomes 2), proving the earlier stale response didn't already consume
+///   it.
 #[tokio::test]
 #[traced_test]
 async fn test_replicate_stale_response_releases_nothing_real_ack_releases_covered_requests() {
@@ -444,10 +448,11 @@ async fn test_replicate_stale_response_releases_nothing_real_ack_releases_covere
 /// `ConflictResult` differs from `SuccessResult` here: both are term-matching resolutions (so
 /// neither is stale-ignored), but conflict additionally transitions the peer to `Probe`
 /// (`update_peer_index`'s conflict branch → `set_peer_replication_state(Probe)`), and that
-/// transition unconditionally resets the whole in-flight window to 0 — not a partial release. This is intentional: a conflict means the leader's whole speculative pipeline
-/// for this peer was built on a wrong assumption, so every other request still in flight is
-/// also suspect, not just the one this response answers. Documented here so this isn't
-/// mistaken for a bug symmetrical to the success case.
+/// transition unconditionally resets the whole in-flight window to 0 — not a partial release. This
+/// is intentional: a conflict means the leader's whole speculative pipeline for this peer was built
+/// on a wrong assumption, so every other request still in flight is also suspect, not just the one
+/// this response answers. Documented here so this isn't mistaken for a bug symmetrical to the
+/// success case.
 #[tokio::test]
 #[traced_test]
 async fn test_replicate_conflict_response_resets_all_inflight_via_probe_transition() {
@@ -1114,7 +1119,8 @@ fn success_at(index: u64) -> Option<append_entries_response::Result> {
 #[tokio::test]
 #[traced_test]
 async fn test_every_response_shape_has_a_defined_window_effect() {
-    use PeerReplicationState::{Probe, Replicate};
+    use PeerReplicationState::Probe;
+    use PeerReplicationState::Replicate;
     let conflict = Some(append_entries_response::Result::Conflict(ConflictResult {
         conflict_term: None,
         conflict_index: Some(1),

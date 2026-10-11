@@ -151,9 +151,9 @@ impl TryFrom<WriteCommand> for Command {
 
 /// Decode a batch of raw Raft `Entry` values into `ApplyEntry` values.
 ///
-/// - `Config` entries become `Command::Noop` — membership is handled by the Raft layer, but
-///   the index must still reach SM so `last_applied` stays contiguous; dropping them would
-///   leave `last_applied` stuck below the config index, breaking ReadIndex drain.
+/// - `Config` entries become `Command::Noop` — membership is handled by the Raft layer, but the
+///   index must still reach SM so `last_applied` stays contiguous; dropping them would leave
+///   `last_applied` stuck below the config index, breaking ReadIndex drain.
 /// - `Noop` entries become `Command::Noop`.
 /// - `Command` bytes are decoded via `TryFrom<WriteCommand>`.
 /// - Any decode failure returns `Err` immediately.

@@ -1,8 +1,9 @@
+use std::time::Duration;
+
 use d_engine_client::Client;
 use d_engine_core::ClientApi;
 use d_engine_core::ClientApiError;
 use d_engine_core::client::ErrorCode;
-use std::time::Duration;
 use tempfile::TempDir;
 use tracing::info;
 use tracing_test::traced_test;
@@ -18,10 +19,6 @@ use crate::common::start_node;
 use crate::common::wait_for_stable_leader;
 
 /// Test CAS operation behavior during leader failover (Standalone/gRPC mode)
-///
-/// Based on etcd's TestTxnWriteFail and TestFailover patterns:
-/// - https://github.com/etcd-io/etcd/blob/main/tests/integration/clientv3/txn_test.go
-/// - https://github.com/etcd-io/etcd/blob/main/tests/integration/v3_failover_test.go
 ///
 /// Scenario:
 /// 1. Start 3-node cluster via gRPC, elect leader

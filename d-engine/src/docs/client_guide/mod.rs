@@ -4,8 +4,7 @@
 //!
 //! ## Available Guides
 //!
-//! - [Read Consistency](read_consistency) - Understanding and configuring read consistency
-//!   policies
+//! - [Read Consistency](read_consistency) - Understanding and configuring read consistency policies
 //! - [Error Handling](error_handling) - Error categories and retry strategies
 
 pub mod read_consistency {

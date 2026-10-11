@@ -4,7 +4,6 @@
 //! - Lease Read with valid lease (local read, no quorum)
 //! - Lease Read consistency across sequential writes
 //! - Lease Read vs Linearizable Read comparison
-//!
 
 use std::time::Duration;
 

@@ -1,3 +1,30 @@
+use std::collections::BTreeMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+
+use async_trait::async_trait;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::MembershipChange;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_proto::server::storage::SnapshotResponse;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
+
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
@@ -28,29 +55,6 @@ use crate::client::LeaderHint;
 use crate::event::ClientCmd;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::error;
-use async_trait::async_trait;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::MembershipChange;
-use d_engine_proto::common::entry_payload::Payload;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::replication::SuccessResult;
-use d_engine_proto::server::replication::append_entries_response;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use d_engine_proto::server::storage::SnapshotResponse;
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::Status;
-use tracing::error;
-use tracing::trace;
-use tracing::warn;
-use tracing::{debug, info};
 
 /// Per-peer replication trust state (#436): gates optimistic `next_index` advance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,8 +302,8 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
     ///
     /// # Errors
     /// - `Error::Fatal` if a committed membership change cannot be applied: the membership view
-    ///   would no longer match the log and nothing can repair that. Later entries are withheld
-    ///   and replayed from the state machine's `last_applied` on restart.
+    ///   would no longer match the log and nothing can repair that. Later entries are withheld and
+    ///   replayed from the state machine's `last_applied` on restart.
     /// - Any other error (log read failed, worker unavailable) means committed entries cannot be
     ///   applied; the caller must stop the node.
     async fn dispatch_committed(
@@ -381,8 +385,8 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
     }
 
     /// True if a membership change is committed but not yet applied. A node that campaigned in
-    /// that window would count votes against a stale voter set (raft-rs refuses to campaign
-    /// here). Only reads the log when something is actually unapplied, so the common case is
+    /// that window would count votes against a stale voter set, so it must not campaign here.
+    /// Only reads the log when something is actually unapplied, so the common case is
     /// two integer comparisons.
     ///
     /// A log read failure is reported as an error: the caller cannot prove that nothing is
@@ -556,10 +560,10 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
     /// Release withheld AppendEntries ACKs now that the log is durable through
     /// `durable`. For each withheld ACK:
     ///
-    /// - withheld under a term this node has since left → fail it with a conflict.
-    ///   A higher-term leader may have overwritten the log at that index; within a
-    ///   single term a follower's entries are never replaced, so the term check
-    ///   alone is a sufficient content guard and no log lookup is needed.
+    /// - withheld under a term this node has since left → fail it with a conflict. A higher-term
+    ///   leader may have overwritten the log at that index; within a single term a follower's
+    ///   entries are never replaced, so the term check alone is a sufficient content guard and no
+    ///   log lookup is needed.
     /// - claimed index now `<= durable` → rebuild and send the success.
     /// - otherwise → keep waiting.
     ///
@@ -1068,7 +1072,8 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Returns the snapshot deduplication flag for roles that support independent snapshot creation.
+    /// Returns the snapshot deduplication flag for roles that support independent snapshot
+    /// creation.
     ///
     /// Returns `None` for roles without snapshot capability (Candidate). The default
     /// `handle_create_snapshot` uses this to short-circuit with `RoleViolation` instead of
@@ -1372,10 +1377,10 @@ pub(super) async fn schedule_and_execute_purge<T: TypeConfig>(
 }
 
 /// Cleanup after an InstallSnapshotChunk install (or a confirmed no-op at/beyond
-/// `target`). Shares `pending_purge_upto` with `schedule_and_execute_purge`'s watermark — failure isn't cleared,
-/// retried by whichever purge trigger runs next. No `retained_log_entries` subtraction:
-/// entries below `target` are redundant with a snapshot we already have, not held back for
-/// a lagging peer.
+/// `target`). Shares `pending_purge_upto` with `schedule_and_execute_purge`'s watermark — failure
+/// isn't cleared, retried by whichever purge trigger runs next. No `retained_log_entries`
+/// subtraction: entries below `target` are redundant with a snapshot we already have, not held back
+/// for a lagging peer.
 pub(super) async fn schedule_installed_snapshot_purge<T: TypeConfig>(
     target: LogId,
     ctx: &RaftContext<T>,

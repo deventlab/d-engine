@@ -81,22 +81,8 @@
 //! - **Background Cleanup**: Periodic async worker scans and deletes expired keys
 //! - **Zero Overhead**: When TTL feature is disabled, no lease components are initialized
 
-use crate::storage::TtlLease;
-use async_trait::async_trait;
-use bytes::Bytes;
-use d_engine_core::Command;
-use d_engine_core::Error;
-use d_engine_core::Lease;
-use d_engine_core::ScanResult;
-use d_engine_core::StateMachine;
-use d_engine_core::StorageError;
-use d_engine_core::file_io::compute_checksum_from_folder_path;
-use d_engine_core::{ApplyEntry, SnapshotApplyResult};
-use d_engine_core::{ApplyResult, SnapshotError};
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -105,6 +91,23 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use d_engine_core::ApplyEntry;
+use d_engine_core::ApplyResult;
+use d_engine_core::Command;
+use d_engine_core::Error;
+use d_engine_core::Lease;
+use d_engine_core::ScanResult;
+use d_engine_core::SnapshotApplyResult;
+use d_engine_core::SnapshotError;
+use d_engine_core::StateMachine;
+use d_engine_core::StorageError;
+use d_engine_core::file_io::compute_checksum_from_folder_path;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use parking_lot::RwLock;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::fs::OpenOptions;
@@ -115,6 +118,8 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+
+use crate::storage::TtlLease;
 
 type FileStateMachineDataType = RwLock<HashMap<Bytes, (Bytes, u64)>>;
 
@@ -980,6 +985,16 @@ impl FileStateMachine {
         Ok(())
     }
 
+    /// Reads are served only while running. After `close()` the developer may still hold a clone
+    /// of the state machine, and it must not answer from state that is no longer maintained.
+    fn ensure_serving(&self) -> Result<(), Error> {
+        if self.running.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(StorageError::NotServing("state machine stopped".into()).into())
+        }
+    }
+
     /// Batch WAL writes with proper durability guarantees.
     ///
     /// `cas_outcomes[i]` is consulted only when `entries[i].command` is
@@ -1053,29 +1068,18 @@ impl StateMachine for FileStateMachine {
         Ok(())
     }
 
-    fn close_storage(&self) {
-        self.running.store(false, Ordering::SeqCst);
-        // FileStateMachine has no exclusive OS lock file.
-        // Marking not-running is sufficient; Drop handles final flush.
-    }
-
-    fn stop(&self) -> Result<(), Error> {
-        // Ensure all data is flushed to disk before stopping
-        self.running.store(false, Ordering::SeqCst);
-
-        // Graceful shutdown: persist TTL state to disk
-        // This ensures lease data survives across restarts
-        if let Some(ref lease) = self.lease {
-            let ttl_snapshot = lease.to_snapshot();
-            let ttl_path = self.data_dir.join("ttl_state.bin");
-            // Use blocking write since stop() is sync
-            std::fs::write(&ttl_path, ttl_snapshot)
-                .map_err(d_engine_core::StorageError::IoError)?;
-            debug!("Persisted TTL state on shutdown");
+    fn close(&self) {
+        if !self.running.swap(false, Ordering::SeqCst) {
+            return; // already closed
         }
-
-        info!("File state machine stopped");
-        Ok(())
+        // Persist lease state so it survives a restart. Blocking write: `close` is sync.
+        if let Some(ref lease) = self.lease {
+            let ttl_path = self.data_dir.join("ttl_state.bin");
+            if let Err(e) = std::fs::write(&ttl_path, lease.to_snapshot()) {
+                error!("close: failed to persist TTL state: {e}");
+            }
+        }
+        // No exclusive OS lock file here; `Drop` saves the hard state.
     }
 
     fn is_running(&self) -> bool {
@@ -1086,6 +1090,7 @@ impl StateMachine for FileStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
+        self.ensure_serving()?;
         // Lazy cleanup: only check expiration in Lazy strategy
         // Background strategy handles cleanup in dedicated async task
         // Background cleanup strategy: expired keys are cleaned by background worker
@@ -1661,6 +1666,7 @@ impl StateMachine for FileStateMachine {
         &self,
         prefix: &[u8],
     ) -> Result<ScanResult, Error> {
+        self.ensure_serving()?;
         let data = self.data.read();
         let entries: Vec<(Bytes, Bytes)> = data
             .iter()
@@ -1675,6 +1681,7 @@ impl StateMachine for FileStateMachine {
         &self,
         keys: &[Bytes],
     ) -> d_engine_core::Result<Vec<Option<Bytes>>> {
+        self.ensure_serving()?;
         // Hold read lock for the full batch so all keys come from the same consistent view.
         // apply_chunk holds the write lock; parking_lot RwLock ensures they don't interleave.
         let data = self.data.read();

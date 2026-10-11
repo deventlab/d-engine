@@ -6,19 +6,21 @@
 //! 1. **Trigger correctness**: Follower triggers snapshot at the configured
 //!    `max_log_entries_before_snapshot` threshold, not before or never.
 //!
-//! 2. **Replication safety**: While a Follower is generating its own snapshot
-//!    (background async task), it continues to receive and apply AppendEntries
-//!    from the Leader without data loss or stall.
+//! 2. **Replication safety**: While a Follower is generating its own snapshot (background async
+//!    task), it continues to receive and apply AppendEntries from the Leader without data loss or
+//!    stall.
 
 #![cfg(feature = "rocksdb")]
-use d_engine_server::{DefaultEmbeddedEngine, RocksDBUnifiedEngine};
-
 use std::sync::Arc;
 use std::time::Duration;
+
+use d_engine_server::DefaultEmbeddedEngine;
+use d_engine_server::RocksDBUnifiedEngine;
 use tracing::info;
 use tracing_test::traced_test;
 
-use crate::common::{get_available_ports, wait_for_snapshot};
+use crate::common::get_available_ports;
+use crate::common::wait_for_snapshot;
 
 /// Test: Follower generates snapshot at the correct threshold and continues replication
 ///
@@ -48,8 +50,8 @@ use crate::common::{get_available_ports, wait_for_snapshot};
 ///    - Entry #100 triggers automatic snapshot on Leader AND Followers (Raft §7).
 /// 3. Poll until the Follower snapshot file appears (max 15s).
 ///    - Fails fast if the trigger is broken (never fires).
-/// 4. While the Follower snapshot background task may still be running,
-///    write 50 additional concurrent entries to the Leader.
+/// 4. While the Follower snapshot background task may still be running, write 50 additional
+///    concurrent entries to the Leader.
 /// 5. Wait for all Followers to replicate all 200 entries.
 /// 6. Verify: Follower has all 200 entries with correct values (no data loss).
 /// 7. Verify: cluster term did not increase (no unintended re-election during snapshot).

@@ -4,16 +4,22 @@
 //! Most tests are marked with #[ignore] and can be run explicitly or
 //! skipped in CI environments.
 
-use super::TestContext;
-use bytes::Bytes;
-use d_engine_core::{RaftLog, RaftLogCore};
-use d_engine_proto::common::{Entry, EntryPayload};
-use d_engine_server::{FileStateMachine, FileStorageEngine, node::RaftTypeConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+
+use bytes::Bytes;
+use d_engine_core::RaftLog;
+use d_engine_core::RaftLogCore;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_server::FileStateMachine;
+use d_engine_server::FileStorageEngine;
+use d_engine_server::node::RaftTypeConfig;
 use tempfile::tempdir;
 use tokio::time::Instant;
+
+use super::TestContext;
 
 mod filter_out_conflicts_and_append_performance_tests {
     use super::*;
@@ -75,7 +81,6 @@ mod filter_out_conflicts_and_append_performance_tests {
 
             // Verify correctness: index=501 term=1 already exists (populated above), so this
             // prev_log_index=0 resend is a pure duplicate — must be a no-op, not a reset.
-            // See 446-expert-q-probe-backpressure-fix-8020.md.
             assert_eq!(
                 log.last_entry_id(),
                 1000,

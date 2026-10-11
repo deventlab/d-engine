@@ -3,12 +3,31 @@
 //! This module tests the `handle_inbound_event` method for various inbound events
 //! including vote requests, append entries, client operations, and more.
 
+use std::sync::Arc;
+
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::server::cluster::ClusterConfChangeRequest;
+use d_engine_proto::server::cluster::ClusterMembership;
+use d_engine_proto::server::cluster::MetadataRequest;
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use prost::Message;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+use tracing_test::traced_test;
+
 use crate::ClientCmd;
 use crate::Error;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
-use crate::client::{ClientReadRequest, ClientWriteRequest};
+use crate::client::ClientReadRequest;
+use crate::client::ClientWriteRequest;
 use crate::config::RaftNodeConfig;
 use crate::config::ReadConsistencyPolicy;
 use crate::event::InboundEvent;
@@ -17,22 +36,10 @@ use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::create_test_chunk;
+use crate::test_utils::mock::MockBuilder;
+use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
-use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
 use crate::utils::convert::safe_kv_bytes;
-use bytes::Bytes;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::server::cluster::{
-    ClusterConfChangeRequest, ClusterMembership, MetadataRequest,
-};
-use d_engine_proto::server::election::{VoteRequest, VoteResponse};
-use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
-use prost::Message;
-use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
-use tonic::Code;
-use tonic::Status;
-use tracing_test::traced_test;
 
 // ============================================================================
 // Test Helper Functions
@@ -774,7 +781,8 @@ async fn test_handle_client_read_linearizable_success() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
     // noop committed — leader is ready to serve linearizable reads.
     state.noop_log_id = Some(1);
-    // Pre-set commit_index = 1 so read_index=max(1,1)=1 > last_applied=0 → read deferred to pending_reads.
+    // Pre-set commit_index = 1 so read_index=max(1,1)=1 > last_applied=0 → read deferred to
+    // pending_reads.
     state.update_commit_index(1).expect("should succeed");
 
     // Prepare request
@@ -1009,7 +1017,8 @@ async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
     // noop committed — leader is ready to serve linearizable reads.
     state.noop_log_id = Some(1);
-    // Pre-set commit_index = 3 so read_index=max(3,1)=3 > last_applied=0 → read deferred to pending_reads
+    // Pre-set commit_index = 3 so read_index=max(3,1)=3 > last_applied=0 → read deferred to
+    // pending_reads
     state.update_commit_index(3).expect("should succeed");
 
     // Push a linearizable read and flush: quorum succeeds, last_applied(0) < read_index(3)
@@ -1314,8 +1323,9 @@ async fn test_cluster_conf_leader_id_transitions_after_noop_commits() {
 /// - handle_inbound_event propagates the non-fatal error (swallowed at dispatch layer)
 #[tokio::test]
 async fn test_leader_join_cluster_dispatched_via_handle_inbound_event() {
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     use d_engine_proto::server::cluster::JoinRequest;
+
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context =

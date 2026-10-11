@@ -6,9 +6,9 @@
 //!
 //! ## Design decisions under test
 //! - Only the leading run of contiguous same-term AppendEntries is merged.
-//! - Heartbeats (empty entries, same term and prev_log_index as the next slot) are absorbed
-//!   into the merge group: their sender is collected and their `leader_commit_index` is folded
-//!   in via `max()`, advancing the commit index without a separate dispatch.
+//! - Heartbeats (empty entries, same term and prev_log_index as the next slot) are absorbed into
+//!   the merge group: their sender is collected and their `leader_commit_index` is folded in via
+//!   `max()`, advancing the commit index without a separate dispatch.
 //! - Non-AppendEntries events stop the merge and remain in FIFO order.
 //! - All senders from merged events are collected into a Vec for broadcast.
 //!
@@ -17,14 +17,22 @@
 //! directly into `raft.buffered_inbound_event`, calls `raft.merge_append_entries()`,
 //! then inspects the resulting buffer.
 
-use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-use crate::test_utils::MockBuilder;
-use crate::{InboundEvent, MaybeCloneOneshotReceiver, RaftNodeConfig, RaftOneshot, mock_entries};
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::election::{VoteRequest, VoteResponse};
-use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
 use std::collections::VecDeque;
+
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
 use tokio::sync::watch;
+
+use crate::InboundEvent;
+use crate::MaybeCloneOneshotReceiver;
+use crate::RaftNodeConfig;
+use crate::RaftOneshot;
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::mock_entries;
+use crate::test_utils::MockBuilder;
 
 // -----------------------------------------------------------------------
 // Helpers

@@ -5,17 +5,18 @@
 //!
 //! ## Business Scenarios Covered
 //!
-//! 1. **Leader Failover (Embedded)**: Kill the leader node in a 3-node cluster and verify
-//!    automatic re-election of a new leader, data consistency, and cluster operational status
+//! 1. **Leader Failover (Embedded)**: Kill the leader node in a 3-node cluster and verify automatic
+//!    re-election of a new leader, data consistency, and cluster operational status
 //! 2. **Leader Failover (Standalone)**: Same scenario via gRPC for remote nodes
-//! 3. **Node Rejoin (Embedded)**: Kill a follower, verify cluster still works with 2/3 nodes,
-//!    then restart the follower and confirm it syncs all missing data
+//! 3. **Node Rejoin (Embedded)**: Kill a follower, verify cluster still works with 2/3 nodes, then
+//!    restart the follower and confirm it syncs all missing data
 //! 4. **Minority Failure Blocks Writes (Both Modes)**: Kill 2 out of 3 nodes to lose majority,
 //!    verify that remaining node cannot serve writes (Raft safety property)
 //!
 //! ## Raft Protocol Robustness
 //!
-//! - **Quorum-Based Consensus**: Leader requires majority (2/3) of nodes to confirm before committing
+//! - **Quorum-Based Consensus**: Leader requires majority (2/3) of nodes to confirm before
+//!   committing
 //! - **Election Timeout**: Followers detect leader failure and trigger new election
 //! - **New Leader Confirmation**: Verify new leader's committed entries match previous leader
 //! - **No Data Loss on Failover**: All committed entries survive leader failure
@@ -52,7 +53,8 @@
 //! ## Test Files (Current Structure)
 //!
 //! **Phase 1 (Current)**:
-//! - `leader_failover_embedded.rs` - COMBINED: test_embedded_leader_failover() + test_embedded_node_rejoin() + test_minority_failure_blocks_writes()
+//! - `leader_failover_embedded.rs` - COMBINED: test_embedded_leader_failover() +
+//!   test_embedded_node_rejoin() + test_minority_failure_blocks_writes()
 //! - `leader_failover_standalone.rs` - COMBINED: test_3_node_failover() + test_minority_failure()
 //!
 //! **Phase 2 (Planned Refactor)**:

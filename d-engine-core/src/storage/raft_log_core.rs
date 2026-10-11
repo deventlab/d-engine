@@ -3,25 +3,39 @@
 //! no dedicated OS thread, no command channel. Only the physical fsync is
 //! handed off, to `FsyncWorker`'s own execution context (see fsync_worker.rs).
 
-use crate::{
-    Error, HardState, InternalEvent, LogStore, MetaStore, NetworkError, RaftLog, Result,
-    StorageEngine, TypeConfig, alias::SOF, fsync_worker::FsyncWorker, scoped_timer::ScopedTimer,
-};
+use std::collections::HashMap;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
 use crossbeam_skiplist::SkipMap;
-use d_engine_proto::common::{Entry, LogId};
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
 use parking_lot::RwLock;
-use std::{
-    collections::HashMap,
-    ops::RangeInclusive,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tonic::async_trait;
-use tracing::{debug, error, warn};
+use tracing::debug;
+use tracing::error;
+use tracing::warn;
+
+use crate::Error;
+use crate::HardState;
+use crate::InternalEvent;
+use crate::LogStore;
+use crate::MetaStore;
+use crate::NetworkError;
+use crate::RaftLog;
+use crate::Result;
+use crate::StorageEngine;
+use crate::TypeConfig;
+use crate::alias::SOF;
+use crate::fsync_worker::FsyncWorker;
+use crate::scoped_timer::ScopedTimer;
 
 pub struct RaftLogCore<T>
 where
@@ -60,8 +74,9 @@ where
     // --- In-memory index ---
     // O(1) answer to "is this index currently held in memory" — lets callers
     // (e.g. entry_term()) reject an out-of-range index without touching `entries`.
-    min_index: AtomicU64,        // Smallest log index (0 if empty)
-    memory_max_index: AtomicU64, // Largest log index held in memory (0 if empty) — may be ahead of what's persisted/durable
+    min_index: AtomicU64, // Smallest log index (0 if empty)
+    memory_max_index: AtomicU64, /* Largest log index held in memory (0 if empty) — may be ahead
+                           * of what's persisted/durable */
 
     // The term of the last entry ever purged (compacted away after a snapshot).
     // Raft's AppendEntries consistency check needs the term at prev_log_index
@@ -312,9 +327,10 @@ where
         // Overlap is safe to skip entirely when all three conditions hold:
         //   (a) The entire overlap range falls within follower's current term segment
         //       (first.index >= last_term_start) — no older-term entries below overlap start.
-        //   (b) Incoming overlap entries all carry follower's current term (first.term == last_term).
-        //   (c) No term change within incoming overlap (last.term == last_term); guaranteed by
-        //       Raft non-decreasing term property when combined with (b).
+        //   (b) Incoming overlap entries all carry follower's current term (first.term ==
+        // last_term).   (c) No term change within incoming overlap (last.term ==
+        // last_term); guaranteed by       Raft non-decreasing term property when combined
+        // with (b).
         //
         // Covers the steady-state pipeline path (99%+ of calls). Election recovery (new leader,
         // term conflict in overlap) is caught by condition (b) failing → slow path.

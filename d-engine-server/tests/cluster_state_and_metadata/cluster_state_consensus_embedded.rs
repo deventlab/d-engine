@@ -5,14 +5,15 @@
 //! - Leader failover
 //! - Cluster view consistency
 
-use crate::common::get_available_ports;
-use d_engine_server::DefaultEmbeddedEngine;
 use std::sync::Arc;
 use std::time::Duration;
+
+use d_engine_server::DefaultEmbeddedEngine;
+use d_engine_server::RocksDBUnifiedEngine;
 use tracing::info;
 use tracing_test::traced_test;
 
-use d_engine_server::RocksDBUnifiedEngine;
+use crate::common::get_available_ports;
 
 /// Test: 3-node cluster should elect exactly one leader
 ///

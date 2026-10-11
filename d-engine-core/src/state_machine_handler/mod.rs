@@ -37,6 +37,7 @@ mod default_state_machine_handler;
 mod snapshot_assembler;
 mod snapshot_policy;
 mod worker;
+mod worker_handle;
 mod writer;
 
 pub use command::*;
@@ -44,6 +45,7 @@ pub use default_state_machine_handler::*;
 pub(crate) use snapshot_assembler::*;
 pub use snapshot_policy::*;
 pub use worker::*;
+pub use worker_handle::*;
 pub use writer::*;
 
 #[cfg(test)]
@@ -55,9 +57,10 @@ mod snapshot_assembler_test;
 #[cfg(test)]
 mod wait_applied_test;
 #[cfg(test)]
+mod worker_handle_test;
+#[cfg(test)]
 mod worker_test;
 
-use crate::client::KvEntry;
 use async_trait::async_trait;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -69,6 +72,7 @@ use super::NewCommitData;
 use crate::ApplyResult;
 use crate::Result;
 use crate::TypeConfig;
+use crate::client::KvEntry;
 
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
@@ -196,4 +200,8 @@ where
     /// `StateMachineCommand::CaptureLocalSnapshot`) so this read is ordered against
     /// concurrent `apply_chunk`/`apply_snapshot_from_file` calls.
     async fn capture_local_snapshot(&self) -> Result<crate::CapturedLocalSnapshot>;
+
+    /// Closes the state machine (see `StateMachine::close`). The worker calls it as its last
+    /// act, so nothing is applied after the storage is released. Synchronous and idempotent.
+    fn close(&self);
 }

@@ -12,9 +12,13 @@ use std::time::Duration;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::LogId;
 
+use crate::MockLogStore;
+use crate::MockMetaStore;
+use crate::MockStorageEngine;
+use crate::MockTypeConfig;
+use crate::RaftLogCore;
 use crate::storage::raft_log::RaftLog;
 use crate::test_utils::RaftLogCoreTestContext;
-use crate::{MockLogStore, MockMetaStore, MockStorageEngine, MockTypeConfig, RaftLogCore};
 
 fn entry(
     index: u64,
@@ -81,19 +85,16 @@ async fn test_durable_index_lands_on_new_tail_after_truncate_and_resync() {
 /// `durable_index` into the range the truncation discarded.
 ///
 /// Timeline (deterministic via the persist gate):
-/// 1. Old leader (term 1) replicates 1..=10 — on its own task, since the
-///    inline persist path now blocks the calling task on the gate (unlike
-///    the old dedicated-IO-thread design, where `append_entries` returned
-///    immediately and the gated persist ran elsewhere).
-/// 2. New leader (term 2): index 2 conflicts, on a second task, concurrent
-///    with the still-gated persist from step 1. In-memory truncation
-///    (`remove_range`) is synchronous, so it's visible immediately; the
-///    `replace_range_and_submit` await behind it does not depend on step 1's
-///    gate at all — the two tasks touch independent code paths, only
-///    `entries`'s `RwLock` briefly serializes them.
-/// 3. Release the gate: the stale persist (step 1) completes and reports a
-///    stale fsync-completion for index 10; a flush() drives one legitimate
-///    fsync-completion for index 2.
+/// 1. Old leader (term 1) replicates 1..=10 — on its own task, since the inline persist path now
+///    blocks the calling task on the gate (unlike the old dedicated-IO-thread design, where
+///    `append_entries` returned immediately and the gated persist ran elsewhere).
+/// 2. New leader (term 2): index 2 conflicts, on a second task, concurrent with the still-gated
+///    persist from step 1. In-memory truncation (`remove_range`) is synchronous, so it's visible
+///    immediately; the `replace_range_and_submit` await behind it does not depend on step 1's gate
+///    at all — the two tasks touch independent code paths, only `entries`'s `RwLock` briefly
+///    serializes them.
+/// 3. Release the gate: the stale persist (step 1) completes and reports a stale fsync-completion
+///    for index 10; a flush() drives one legitimate fsync-completion for index 2.
 ///
 /// Expected: draining the fsync completions advances `durable_index` to 2 and
 /// rejects the stale report for index 10.

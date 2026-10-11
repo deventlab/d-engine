@@ -10,7 +10,10 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::{MockStorageEngine, MockTypeConfig, RaftLog, RaftLogCore};
+use crate::MockStorageEngine;
+use crate::MockTypeConfig;
+use crate::RaftLog;
+use crate::RaftLogCore;
 
 fn setup_memory() -> Arc<RaftLogCore<MockTypeConfig>> {
     let storage = Arc::new(MockStorageEngine::new());

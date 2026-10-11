@@ -7,12 +7,14 @@
 //! - Log purging
 //! - Metadata updates
 
-use d_engine_proto::common::{Entry, LogId};
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
 
 use crate::RaftLog;
-use crate::test_utils::{
-    RaftLogCoreTestContext, mock_empty_entries, simulate_delete_command, simulate_insert_command,
-};
+use crate::test_utils::RaftLogCoreTestContext;
+use crate::test_utils::mock_empty_entries;
+use crate::test_utils::simulate_delete_command;
+use crate::test_utils::simulate_insert_command;
 
 /// Test get_entries_range returns correct subset
 ///
@@ -544,8 +546,8 @@ async fn test_last_log_id_after_appends() {
 ///
 /// # Scenario
 /// - Insert entry and explicitly drop context
-/// - Expected: No panic (RaftLogCore has no custom Drop — this just guards
-///   against a panic during normal field teardown)
+/// - Expected: No panic (RaftLogCore has no custom Drop — this just guards against a panic during
+///   normal field teardown)
 #[tokio::test]
 async fn test_drop_with_pending_writes_does_not_panic() {
     let ctx = RaftLogCoreTestContext::new("test_drop_with_pending_writes_does_not_panic");

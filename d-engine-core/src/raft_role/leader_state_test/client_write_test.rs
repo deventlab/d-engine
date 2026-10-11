@@ -3,6 +3,26 @@
 //! This module tests the `process_raft_request` method and related client write
 //! operations in the leader state.
 
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::common::AddNode;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::common::membership_change::Change;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use rand::distr::SampleString;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::Instant;
+
 use crate::ApplyResult;
 use crate::ClientCmd;
 use crate::MockRaftLog;
@@ -21,23 +41,6 @@ use crate::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::node_config;
-use bytes::Bytes;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::common::AddNode;
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::common::membership_change::Change;
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::replication::AppendEntriesRequest;
-use rand::distr::SampleString;
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use tokio::sync::{mpsc, watch};
-use tokio::time::Instant;
 
 // ============================================================================
 // Test Helper Structures and Functions
@@ -904,17 +907,15 @@ async fn test_write_batch_single_replication() {
 //
 // These tests enforce the invariant that governs when a client response is sent:
 //
-//   - Client write (propose_buffer path): wait_for_apply_event = true
-//     → Response MUST be deferred until StateMachine apply (ApplyCompleted event).
-//     → This guarantees the client only sees "success" after the entry is durable
-//       and applied. Changing this to false would break linearizability.
+//   - Client write (propose_buffer path): wait_for_apply_event = true → Response MUST be deferred
+//     until StateMachine apply (ApplyCompleted event). → This guarantees the client only sees
+//     "success" after the entry is durable and applied. Changing this to false would break
+//     linearizability.
 //
-//   - Noop / quorum-check / config-change (verify_internal_quorum path):
-//     wait_for_apply_event = false
-//     → Response is sent immediately after quorum is achieved.
-//     → These operations do not produce a state-machine result that clients
-//       need to observe, so waiting for apply would deadlock (no ApplyCompleted
-//       is ever sent for internal-only entries in this path).
+//   - Noop / quorum-check / config-change (verify_internal_quorum path): wait_for_apply_event =
+//     false → Response is sent immediately after quorum is achieved. → These operations do not
+//     produce a state-machine result that clients need to observe, so waiting for apply would
+//     deadlock (no ApplyCompleted is ever sent for internal-only entries in this path).
 //
 // If a future developer accidentally swaps these values, one of the following
 // tests will catch the regression:
@@ -990,8 +991,8 @@ async fn test_client_write_deferred_until_sm_apply() {
     // Flush: fires prepare_batch_requests, write stored in pending_client_writes
     state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
-    // Advance commit via single-voter path: moves write to pending_write_apply (wait_for_apply=true).
-    // MemFirst: set last_entry_id=5 before flush.
+    // Advance commit via single-voter path: moves write to pending_write_apply
+    // (wait_for_apply=true). MemFirst: set last_entry_id=5 before flush.
     last_entry_id.store(5, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
     state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
@@ -1085,13 +1086,15 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
 
     // Advance commit via single-voter flush path → drain_pending_client_writes.
     // MemFirst: set last_entry_id=5 before flush.
-    // Since wait_for_apply_event=false, response is sent immediately upon commit (no ApplyCompleted needed)
+    // Since wait_for_apply_event=false, response is sent immediately upon commit (no ApplyCompleted
+    // needed)
     last_entry_id.store(5, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
     state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
 
     // CRITICAL: response must be available WITHOUT ApplyCompleted
-    // If wait_for_apply_event were true, it would still be in pending_write_apply (awaiting SM apply)
+    // If wait_for_apply_event were true, it would still be in pending_write_apply (awaiting SM
+    // apply)
     let response = rx
         .try_recv()
         .expect("Noop MUST respond immediately after commit, without ApplyCompleted");
@@ -1101,7 +1104,8 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
     );
 }
 
-/// Verify that a config-change quorum-check responds immediately after quorum, without waiting for SM apply.
+/// Verify that a config-change quorum-check responds immediately after quorum, without waiting for
+/// SM apply.
 ///
 /// # Purpose
 /// Enforces `wait_for_apply_event = false` for the verify_internal_quorum (config change) path.
@@ -1147,7 +1151,8 @@ async fn test_config_change_quorum_check_responds_immediately_without_sm_apply()
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
-    // Config change payload — used for membership change quorum verification (wait_for_apply_event = false)
+    // Config change payload — used for membership change quorum verification (wait_for_apply_event
+    // = false)
     let change = Change::AddNode(AddNode {
         node_id: 4,
         address: "127.0.0.1:9004".to_string(),
@@ -1171,7 +1176,8 @@ async fn test_config_change_quorum_check_responds_immediately_without_sm_apply()
 
     // Advance commit via single-voter flush path → drain_pending_client_writes.
     // MemFirst: set last_entry_id=5 before flush.
-    // Since wait_for_apply_event=false, response is sent immediately upon commit (no ApplyCompleted needed)
+    // Since wait_for_apply_event=false, response is sent immediately upon commit (no ApplyCompleted
+    // needed)
     last_entry_id.store(5, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
     state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
