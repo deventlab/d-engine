@@ -8,7 +8,8 @@
 //! Test plan: 001_todo_raft_test_plan_2215.md P3-2
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;

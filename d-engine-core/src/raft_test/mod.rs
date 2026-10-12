@@ -85,10 +85,9 @@
 //! - **B4.1**: Valid transition from Follower to Learner
 //! - **B4.2**: leader_change notification sent with None
 //!
-//! #### B5. NotifyNewCommitIndex Event
-//! - **B5.1**: Notification broadcast to all registered listeners
-//! - **B5.2**: Correct new_commit_index passed to listeners
-//! - **B5.3**: Multiple commit listeners receive notification
+//! #### B5. (removed in #455)
+//! Commit notifications no longer exist: committed entries are delivered by `process_committed()`
+//! at the end of each loop iteration, driven by `commit_index`. See `commit_path_tests.rs`.
 //!
 //! #### B6. LeaderDiscovered Event
 //! - **B6.1**: Notification sent to leader_change listeners
@@ -174,9 +173,8 @@
 //! - **E1.3**: Multiple listeners receive all notifications
 //! - **E1.4**: Watch channel deduplication (identical notifications)
 //!
-//! #### E2. New Commit Notifications
-//! - **E2.1**: Notification sent with correct commit index
-//! - **E2.2**: Multiple listeners receive notification
+//! #### E2. (removed in #455)
+//! Commit notifications no longer exist; see B5.
 //!
 //! #### E3. Role Transition Notifications (Test-Only)
 //! - **E3.1**: Role transition listener triggered on every role change
@@ -263,7 +261,7 @@
 //! - **G2.3**: No peer replication needed
 //!
 //! #### G3. Concurrent Event Handling
-//! - **G3.1**: Multiple listeners receiving notifications simultaneously
+//! - **G3.1**: (removed in #455) commit listeners no longer exist
 //! - **G3.2**: InternalEvents arriving while processing previous event
 //!
 //! #### G4. Listener Registration Edge Cases

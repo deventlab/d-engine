@@ -5,11 +5,10 @@ mod raft_log_core;
 mod snapshot_path_manager;
 mod state_machine;
 mod storage_engine;
-pub use raft_log_core::*;
-
 pub use lease::*;
 #[doc(hidden)]
 pub use raft_log::*;
+pub use raft_log_core::*;
 pub(crate) use snapshot_path_manager::*;
 pub use state_machine::*;
 pub use storage_engine::*;

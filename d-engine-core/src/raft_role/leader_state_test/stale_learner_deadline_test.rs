@@ -17,17 +17,20 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use d_engine_proto::common::EntryPayload;
 use parking_lot::Mutex;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::MockMembership;
 use crate::MockRaftLog;
-use crate::raft_role::leader_state::{LeaderState, PendingPromotion};
+use crate::raft_role::leader_state::LeaderState;
+use crate::raft_role::leader_state::PendingPromotion;
 use crate::role_state::RaftRoleState;
-use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
+use crate::test_utils::mock::MockBuilder;
+use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::node_config;
-use d_engine_proto::common::EntryPayload;
 
 // ============================================================================
 // Helpers
@@ -136,7 +139,8 @@ async fn test_tick_skips_stale_check_before_deadline() {
     // Call tick() — deadline is far in the future, stale check must be skipped
     let result = leader.tick(&internal_event_tx, &raft_tx, &ctx).await;
     assert!(result.is_ok());
-    // If MockMembership::get_node_status were called, mockall would panic — test passes by not panicking
+    // If MockMembership::get_node_status were called, mockall would panic — test passes by not
+    // panicking
 }
 
 // ============================================================================
@@ -145,7 +149,8 @@ async fn test_tick_skips_stale_check_before_deadline() {
 
 #[tokio::test]
 async fn test_tick_removes_stale_learner_when_deadline_fires() {
-    use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
+    use d_engine_proto::common::NodeRole::Follower;
+    use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
 
     let threshold = Duration::from_millis(1); // Expires almost immediately

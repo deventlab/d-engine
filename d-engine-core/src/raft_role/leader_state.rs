@@ -1,3 +1,47 @@
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use d_engine_proto::common::AddNode;
+use d_engine_proto::common::BatchPromote;
+use d_engine_proto::common::BatchRemove;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Leader;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_proto::common::membership_change::Change;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::JoinRequest;
+use d_engine_proto::server::cluster::JoinResponse;
+use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::append_entries_response;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use futures::StreamExt;
+use parking_lot::Mutex;
+use rand::distr::SampleString;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
+
 use super::LeaderStateSnapshot;
 use super::RaftRole;
 use super::SharedState;
@@ -40,54 +84,14 @@ use crate::alias::MOF;
 use crate::alias::ROF;
 use crate::alias::SMHOF;
 use crate::alias::TROF;
-use crate::client::{ClientReadRequest, ClientResponse, ErrorCode};
+use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
+use crate::client::ErrorCode;
 use crate::event::ClientCmd;
 use crate::network::Transport;
 use crate::role_state::PeerReplicationState;
 use crate::role_state::schedule_and_execute_purge;
 use crate::utils::cluster_printer::print_role_transition_line;
-use async_trait::async_trait;
-use d_engine_proto::common::AddNode;
-use d_engine_proto::common::BatchPromote;
-use d_engine_proto::common::BatchRemove;
-use d_engine_proto::common::EntryPayload;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeRole::Leader;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::common::entry_payload::Payload;
-use d_engine_proto::common::membership_change::Change;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::JoinRequest;
-use d_engine_proto::server::cluster::JoinResponse;
-use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::replication::append_entries_response;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use futures::StreamExt;
-use parking_lot::Mutex;
-use rand::distr::SampleString;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
 
 // Type aliases for improved readability
 type LinearizableReadRequest = (
@@ -290,6 +294,10 @@ impl PeerMetrics {
 /// when `task_tx` is dropped, `task_rx.recv()` returns `None` and the worker exits cleanly.
 struct ReplicationWorkerHandle {
     task_tx: mpsc::UnboundedSender<ReplicationTask>,
+    /// `true` while the worker holds an open replication stream to the peer.
+    /// Written only by the worker; the leader reads it to avoid queueing work the peer cannot
+    /// receive.
+    stream_open: Arc<AtomicBool>,
     /// Consecutive snapshot push failures for this peer since the last success.
     snapshot_failure_count: u32,
     /// Earliest time the next snapshot push attempt is allowed (exponential backoff window).
@@ -331,7 +339,7 @@ pub struct LeaderState<T: TypeConfig> {
     /// `now_ms()` of the latest quorum ACK, or of the election for a new leader (one election
     /// timeout of grace to collect the first ACKs). CheckQuorum steps down when it is older than
     /// `election_timeout_max`, the longest silence any follower tolerates before campaigning
-    /// (etcd's effective tolerance is the same). Unlike `quorum_ack_deadline_ms` (a lease
+    /// (the same tolerance a follower effectively has). Unlike `quorum_ack_deadline_ms` (a lease
     /// window, shorter than the election timeout) a slow reply or brief jitter does not trip it.
     last_quorum_contact_ms: u64,
 
@@ -393,9 +401,9 @@ pub struct LeaderState<T: TypeConfig> {
     ///
     /// Accumulates requests until either:
     /// 1. Batch reaches configured size limit
-    /// 2. Explicit flush is triggered
-    ///    SoA layout: payloads and senders stored in separate contiguous Vecs.
-    ///    flush() builds one RaftRequestWithSignal via mem::take — true O(1), no unzip scan.
+    /// 2. Explicit flush is triggered SoA layout: payloads and senders stored in separate
+    ///    contiguous Vecs. flush() builds one RaftRequestWithSignal via mem::take — true O(1), no
+    ///    unzip scan.
     pub(super) propose_buffer: Box<ProposeBatchBuffer>,
 
     // -- Timing & Scheduling --
@@ -489,8 +497,8 @@ pub struct LeaderState<T: TypeConfig> {
 
     /// Pending client write batches indexed by end_log_index.
     /// Key: end_log_index of this write batch. Value: WriteMetadata (senders + deadline).
-    /// Drained when commit_index advances past end_log_index (quorum achieved or single-voter flush).
-    /// Drained with error on step-down / HigherTerm / deadline exceeded.
+    /// Drained when commit_index advances past end_log_index (quorum achieved or single-voter
+    /// flush). Drained with error on step-down / HigherTerm / deadline exceeded.
     pub(super) pending_client_writes: BTreeMap<u64, WriteMetadata>,
 
     /// Post-commit action queue for Raft protocol internal operations (noop, join).
@@ -514,8 +522,9 @@ pub struct LeaderState<T: TypeConfig> {
     pub(super) pending_commit_actions: BTreeMap<u64, PostCommitEntry>,
 
     /// Per-follower replication worker handles. Key = follower node_id.
-    /// Workers send AppendEntries via transport and relay results back as InternalEvent::AppendResult.
-    /// Dropped on role change (LeaderState drop) → workers exit via channel close.
+    /// Workers send AppendEntries via transport and relay results back as
+    /// InternalEvent::AppendResult. Dropped on role change (LeaderState drop) → workers exit
+    /// via channel close.
     replication_workers: HashMap<u32, ReplicationWorkerHandle>,
 
     // -- Type System Marker --
@@ -740,7 +749,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             error!("Stale learner check failed: {}", e);
         }
 
-        // 2. CheckQuorum: a leader no quorum has answered for an ( election_timeout_max × multiple) timeout may be cut off.
+        // 2. CheckQuorum: a leader no quorum has answered for an ( election_timeout_max × multiple)
+        //    timeout may be cut off.
         // Step down (same term) so clients are redirected instead of queueing writes that can
         // never commit. A single voter is its own quorum.
         let quorum_silence_limit_ms =
@@ -955,7 +965,10 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         let backpressure = &ctx.node_config.raft.backpressure;
 
         match cmd {
-            ClientCmd::Propose(req, sender) => {
+            ClientCmd::Propose(req, issued_at, sender) => {
+                metrics::histogram!("core.raft.client_cmd.issue_to_push_ms")
+                    .record(issued_at.elapsed().as_secs_f64() * 1_000.0);
+
                 let current_pending = self.propose_buffer.len();
 
                 // Check write backpressure limit
@@ -1128,9 +1141,9 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
             }
 
             // Leader receives RequestVote(term=X, candidate=Y)
-            // Deviates from Raft §5.1 on purpose (dissertation §4.2.3, disruptive servers): a leader
-            // that a quorum confirmed within the lease window ignores a higher term, so an
-            // isolated node that comes back cannot depose a healthy leader.
+            // Deviates from Raft §5.1 on purpose (dissertation §4.2.3, disruptive servers): a
+            // leader that a quorum confirmed within the lease window ignores a higher
+            // term, so an isolated node that comes back cannot depose a healthy leader.
             // 1. If X > currentTerm and no quorum ACK within the lease window:
             // - Leader → Follower, currentTerm = X
             // - Replay event
@@ -1449,7 +1462,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         Ok(())
     }
 
-    /// Handle LogFlushed(durable): re-calculate commit_index after local log entries are crash-safe.
+    /// Handle LogFlushed(durable): re-calculate commit_index after local log entries are
+    /// crash-safe.
     ///
     /// Leader also writes to the local raft log. process_batch reads durable_index() synchronously,
     /// which may be 0 (flush not yet complete) — so commit never advances without this handler.
@@ -1477,16 +1491,8 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
         };
 
         if let Some(new_commit) = next_commit_index {
-            if let Err(e) = self.update_commit_index_with_signal(
-                Leader as i32,
-                self.current_term(),
-                new_commit,
-                internal_event_tx,
-            ) {
-                error!(
-                    ?e,
-                    "handle_log_flushed: update_commit_index_with_signal failed"
-                );
+            if let Err(e) = self.update_commit_index(new_commit) {
+                error!(?e, "handle_log_flushed: update_commit_index failed");
             } else {
                 // Drain pending writes committed via local flush (single-voter or flush path).
                 self.drain_pending_client_writes(new_commit);
@@ -1670,12 +1676,7 @@ impl<T: TypeConfig> RaftRoleState for LeaderState<T> {
 
             // `majority` answers the COMMIT question only.
             if let Some(new_commit) = Self::new_commit_index(commit_index, majority) {
-                self.update_commit_index_with_signal(
-                    Leader as i32,
-                    self.current_term(),
-                    new_commit,
-                    internal_event_tx,
-                )?;
+                self.update_commit_index(new_commit)?;
                 self.drain_pending_client_writes(new_commit);
                 self.drain_commit_actions(new_commit, ctx, internal_event_tx).await;
             }
@@ -2044,11 +2045,17 @@ impl<T: TypeConfig> LeaderState<T> {
         cfg: ReplicationWorkerConfig<T>,
     ) -> ReplicationWorkerHandle {
         let (task_tx, task_rx) = mpsc::unbounded_channel::<ReplicationTask>();
-        tokio::spawn(async move {
-            Self::run_replication_worker(peer_id, task_rx, cfg).await;
+        // Starts closed: the worker opens the stream and flips it.
+        let stream_open = Arc::new(AtomicBool::new(false));
+        tokio::spawn({
+            let stream_open = Arc::clone(&stream_open);
+            async move {
+                Self::run_replication_worker(peer_id, task_rx, cfg, stream_open).await;
+            }
         });
         ReplicationWorkerHandle {
             task_tx,
+            stream_open,
             snapshot_failure_count: 0,
             snapshot_next_retry_at: None,
         }
@@ -2068,6 +2075,7 @@ impl<T: TypeConfig> LeaderState<T> {
         peer_id: u32,
         mut task_rx: mpsc::UnboundedReceiver<ReplicationTask>,
         cfg: ReplicationWorkerConfig<T>,
+        stream_open: Arc<AtomicBool>,
     ) {
         let ReplicationWorkerConfig {
             transport,
@@ -2102,6 +2110,8 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Open persistent bidi stream with backoff reconnection
         loop {
+            // (Re-)entering the connect phase: no open stream.
+            stream_open.store(false, Ordering::Relaxed);
             let mut backoff_ms = base_delay_ms;
             let stream = loop {
                 if task_rx.is_closed() {
@@ -2124,6 +2134,7 @@ impl<T: TypeConfig> LeaderState<T> {
                             "peer_id" => peer_id.to_string()
                         )
                         .increment(1);
+                        stream_open.store(true, Ordering::Relaxed);
                         break s;
                     }
                     Err(e) => {
@@ -2322,6 +2333,19 @@ impl<T: TypeConfig> LeaderState<T> {
         self.replication_workers.insert(peer_id, handle);
     }
 
+    /// True if `peer_id` has a live worker but no open stream. Dispatching to it would only
+    /// queue work it cannot send until it reconnects. A dead worker (`task_tx` closed) is not
+    /// "down": the next send rebuilds it. With no worker yet, returns `false` so the dispatch
+    /// that spawns it goes through.
+    fn peer_stream_is_down(
+        &self,
+        peer_id: u32,
+    ) -> bool {
+        self.replication_workers
+            .get(&peer_id)
+            .is_some_and(|w| !w.stream_open.load(Ordering::Relaxed) && !w.task_tx.is_closed())
+    }
+
     // ---- Snapshot push backoff + alerting -------------------------------------------------
 
     /// Update per-peer snapshot push state after a completed (success or failure) attempt.
@@ -2339,7 +2363,9 @@ impl<T: TypeConfig> LeaderState<T> {
         policy: &crate::InstallSnapshotBackoffPolicy,
         node_id: u32,
     ) {
-        // Symmetric guard: only act if this peer is still actually in Snapshot state. A stale/duplicate completion event (e.g. left over from an earlier failed attempt) arriving after the state has already moved on is a no-op — no need for a separate session id.
+        // Symmetric guard: only act if this peer is still actually in Snapshot state. A
+        // stale/duplicate completion event (e.g. left over from an earlier failed attempt) arriving
+        // after the state has already moved on is a no-op — no need for a separate session id.
         if self.peer_replication_state(peer_id) != PeerReplicationState::Snapshot {
             return;
         }
@@ -2383,8 +2409,8 @@ impl<T: TypeConfig> LeaderState<T> {
         )
         .set(0.0);
         // #436: push resolved either way — stop blocking AppendEntries, but don't
-        // trust the peer yet either. Wait for a real ACK (etcd: MsgSnapStatus,
-        // success or reject, both -> BecomeProbe, never straight to Replicate).
+        //  trust the peer yet either. Wait for a real ACK (success or reject both go to Probe,
+        // never straight to Replicate).
         self.set_peer_replication_state(peer_id, PeerReplicationState::Probe);
     }
 
@@ -2425,14 +2451,11 @@ impl<T: TypeConfig> LeaderState<T> {
                 for (i, sender) in senders.into_iter().enumerate() {
                     metrics::histogram!("core.raft.write.propose_to_commit_ms")
                         .record(propose_to_commit_ms);
-                    self.pending_write_apply.insert(
-                        start_idx + i as u64,
-                        PendingApply {
-                            sender,
-                            proposed_at,
-                            committed_at: commit_ts,
-                        },
-                    );
+                    self.pending_write_apply.insert(start_idx + i as u64, PendingApply {
+                        sender,
+                        proposed_at,
+                        committed_at: commit_ts,
+                    });
                 }
             } else {
                 // Internal requests have no senders, so this loop is a no-op for them.
@@ -2470,13 +2493,10 @@ impl<T: TypeConfig> LeaderState<T> {
         // synchronous drain_commit_actions call (single-voter path) can find the entry.
         // No concurrent writes: Raft loop is single-threaded.
         let noop_index = ctx.raft_log().last_entry_id() + 1;
-        self.pending_commit_actions.insert(
-            noop_index,
-            PostCommitEntry {
-                deadline,
-                action: PostCommitAction::LeaderNoop { term },
-            },
-        );
+        self.pending_commit_actions.insert(noop_index, PostCommitEntry {
+            deadline,
+            action: PostCommitAction::LeaderNoop { term },
+        });
 
         // Write noop with no sender — purely for commit confirmation.
         if let Err(e) = self
@@ -2791,8 +2811,8 @@ impl<T: TypeConfig> LeaderState<T> {
     /// Two distinct update strategies based on response type:
     /// - Success: `next_index = max(current, peer_match + 1)` — never regress a speculative
     ///   advance; the ACK is a lower-bound confirmation, not a correction.
-    /// - Conflict: `next_index = conflict_hint` (floor-guarded by `match_index + 1`) —
-    ///   the follower explicitly corrects the leader's assumption; retreat is required.
+    /// - Conflict: `next_index = conflict_hint` (floor-guarded by `match_index + 1`) — the follower
+    ///   explicitly corrects the leader's assumption; retreat is required.
     pub(super) fn update_peer_index(
         &mut self,
         follower_id: u32,
@@ -2825,7 +2845,7 @@ impl<T: TypeConfig> LeaderState<T> {
                 error!("Failed to update next index: {:?}", e);
             }
             // #436: an explicit reject means our ledger was wrong — stop trusting
-            // speculative advance until the next real ACK (etcd: BecomeProbe on reject).
+            // speculative advance until the next real ACK.
             self.set_peer_replication_state(follower_id, PeerReplicationState::Probe);
         }
 
@@ -3221,17 +3241,14 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Record post-commit action: when the config index commits, send JoinResponse.
         let join_index = ctx.raft_log().last_entry_id();
-        self.pending_commit_actions.insert(
-            join_index,
-            PostCommitEntry {
-                deadline,
-                action: PostCommitAction::NodeJoin {
-                    node_id,
-                    addr: address,
-                    sender,
-                },
+        self.pending_commit_actions.insert(join_index, PostCommitEntry {
+            deadline,
+            action: PostCommitAction::NodeJoin {
+                node_id,
+                addr: address,
+                sender,
             },
-        );
+        });
 
         debug!("JoinCluster: awaiting commit at index {}", join_index);
         Ok(())
@@ -3419,7 +3436,8 @@ impl<T: TypeConfig> LeaderState<T> {
     ///
     /// Commit and client responses are deferred:
     /// - Multi-voter: driven by handle_append_result (InternalEvent::AppendResult from workers)
-    /// - Single-voter: driven by handle_log_flushed (InternalEvent::LogFlushed from batch_processor)
+    /// - Single-voter: driven by handle_log_flushed (InternalEvent::LogFlushed from
+    ///   batch_processor)
     async fn execute_and_process_raft_rpc(
         &mut self,
         payloads: Vec<EntryPayload>,
@@ -3435,7 +3453,8 @@ impl<T: TypeConfig> LeaderState<T> {
 
         // Phase 0: Record send timestamp before any AppendEntries RPC goes out.
         // handle_append_result uses this to anchor deadline to send time (not ACK time),
-        // ensuring lease expires at send_ts + lease_duration_ms rather than ack_ts + lease_duration_ms.
+        // ensuring lease expires at send_ts + lease_duration_ms rather than ack_ts +
+        // lease_duration_ms.
         self.last_heartbeat_send_ts = now_ms();
 
         // Pre-compute in-flight gating decisions for all replication targets. Single
@@ -3569,12 +3588,18 @@ impl<T: TypeConfig> LeaderState<T> {
             if self.peer_replication_state(peer_id) == PeerReplicationState::Snapshot {
                 continue;
             }
+            // No open stream: skip before any bookkeeping (`next_index`, in-flight) so the first
+            // send after reconnect resumes from the same point. Raft retransmits from `next_index`.
+            if self.peer_stream_is_down(peer_id) {
+                continue;
+            }
 
             let is_heartbeat = request.entries.is_empty();
 
             // Phase 1: lightweight in-flight gate (Probe state only, window=1).
-            // For Replicate state, window check happens in Phase 2 (retrieve_to_be_synced_logs_for_peers).
-            // Gated peers get no data; heartbeats bypass the gate and never occupy a slot.
+            // For Replicate state, window check happens in Phase 2
+            // (retrieve_to_be_synced_logs_for_peers). Gated peers get no data;
+            // heartbeats bypass the gate and never occupy a slot.
             if !is_heartbeat && peer_gating_decisions.get(&peer_id).copied().unwrap_or(false) {
                 self.peer_metrics(peer_id).dispatch_gated_total.increment(1);
                 continue;
@@ -3734,10 +3759,10 @@ impl<T: TypeConfig> LeaderState<T> {
                 node_id,
                 "Stale learner detected: pending promotion threshold exceeded"
             );
-            metrics::counter!(
-                "core.membership.stale_learner_removed",
-                &[("node_id", node_id.to_string())]
-            )
+            metrics::counter!("core.membership.stale_learner_removed", &[(
+                "node_id",
+                node_id.to_string()
+            )])
             .increment(1);
             if let Err(e) = self.handle_stale_learner(node_id, internal_event_tx, ctx).await {
                 error!(node_id, ?e, "Failed to handle stale learner");
@@ -3968,9 +3993,9 @@ impl<T: TypeConfig> LeaderState<T> {
     ///
     /// `send_ts` is the timestamp recorded just before the heartbeat was sent.
     /// Using send_ts (not now_ms()) eliminates the RTT/2 window:
-    ///   deadline = send_ts + lease_duration_ms  ≤  follower's election timer start + election_timeout
-    /// Single-voter callers pass now_ms() directly (no peer RTT to account for).
-    /// `last_applied` is the state machine's applied index at call time.
+    ///   deadline = send_ts + lease_duration_ms  ≤  follower's election timer start +
+    /// election_timeout Single-voter callers pass now_ms() directly (no peer RTT to account
+    /// for). `last_applied` is the state machine's applied index at call time.
     fn update_lease_timestamp(
         &mut self,
         send_ts: u64,
@@ -4015,7 +4040,8 @@ impl<T: TypeConfig> LeaderState<T> {
                         senders: req.senders,
                         wait_for_apply: req.wait_for_apply_event,
                         deadline: Instant::now(), // placeholder; overwritten in Phase 2
-                        proposed_at: std::time::Instant::now(), // placeholder; overwritten in Phase 2
+                        proposed_at: std::time::Instant::now(), /* placeholder; overwritten in
+                                                   * Phase 2 */
                     }),
                 )
             } else {
@@ -4122,14 +4148,12 @@ impl<T: TypeConfig> LeaderState<T> {
     ) {
         let (dead_tx, dead_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationTask>();
         drop(dead_rx); // receiver gone → sends will fail
-        self.replication_workers.insert(
-            peer_id,
-            ReplicationWorkerHandle {
-                task_tx: dead_tx,
-                snapshot_failure_count: 0,
-                snapshot_next_retry_at: None,
-            },
-        );
+        self.replication_workers.insert(peer_id, ReplicationWorkerHandle {
+            task_tx: dead_tx,
+            snapshot_failure_count: 0,
+            snapshot_next_retry_at: None,
+            stream_open: Arc::new(AtomicBool::new(true)),
+        });
     }
 
     /// Determine effective read consistency policy based on client request and server config

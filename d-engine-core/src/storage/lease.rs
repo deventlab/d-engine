@@ -20,7 +20,7 @@
 //!
 //! Implementations should follow these guidelines:
 //! - **Read path (hot)**: Lock-free, supports high concurrency
-//! - **Write path (cold)**: Single-threaded (CommitHandler), Mutex acceptable
+//! - **Write path (cold)**: Single-threaded (state machine worker), Mutex acceptable
 //! - **Read-write**: Concurrent safe, reads don't block on cleanup
 
 use std::time::SystemTime;

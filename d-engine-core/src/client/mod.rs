@@ -8,11 +8,19 @@ pub mod client_api_error;
 pub mod types;
 
 pub use client_api::ClientApi;
-pub use client_api_error::{ClientApiError, ClientApiResult};
-pub use types::{
-    ClientReadRequest, ClientResponse, ClientResponsePayload, ClientWriteRequest, ErrorCode,
-    KvEntry, LeaderHint, ReadResults, ScanResults, WriteResult,
-};
+pub use client_api_error::ClientApiError;
+pub use client_api_error::ClientApiResult;
+pub use types::ClientReadRequest;
+pub use types::ClientResponse;
+pub use types::ClientResponsePayload;
+pub use types::ClientWriteRequest;
+pub use types::ErrorCode;
+pub use types::KvEntry;
+pub use types::LeaderHint;
+pub use types::ReadResults;
+pub use types::ScanResults;
+pub use types::WriteResult;
+
 // ReadConsistencyPolicy lives in config but is part of the public client API surface.
 pub use crate::config::ReadConsistencyPolicy;
 

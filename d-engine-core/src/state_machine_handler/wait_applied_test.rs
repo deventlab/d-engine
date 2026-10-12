@@ -1,5 +1,6 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 use super::DefaultStateMachineHandler;
 use super::StateMachineHandler;

@@ -1,8 +1,8 @@
 //! Tests for #446's withheld-AppendEntries-ACK primitives:
 //!
 //!   - `RaftRoleState::resolve_pending_acks` — the release / reject decision;
-//!   - `RaftRole::{take,restore}_pending_acks` — carrying the queue across a role
-//!     transition instead of dropping it.
+//!   - `RaftRole::{take,restore}_pending_acks` — carrying the queue across a role transition
+//!     instead of dropping it.
 //!
 //! These drive bare role structs (no `RaftContext`, no mocks, no fs), so they
 //! stay cheap to run and cheap to change.
@@ -66,14 +66,11 @@ fn withhold(
     role.state_mut()
         .pending_append_acks_mut()
         .expect("role keeps a pending-ack queue")
-        .insert(
-            (term_when_withheld, index),
-            PendingAck {
-                claimed_term,
-                withheld_at: std::time::Instant::now(),
-                senders: vec![tx],
-            },
-        );
+        .insert((term_when_withheld, index), PendingAck {
+            claimed_term,
+            withheld_at: std::time::Instant::now(),
+            senders: vec![tx],
+        });
     rx
 }
 
@@ -139,14 +136,11 @@ fn test_resolve_answers_every_sender_on_an_index() {
     let mut role = follower(5);
     let (tx1, mut rx1) = MaybeCloneOneshot::new();
     let (tx2, mut rx2) = MaybeCloneOneshot::new();
-    role.state_mut().pending_append_acks_mut().unwrap().insert(
-        (5, 8),
-        PendingAck {
-            claimed_term: 5,
-            withheld_at: std::time::Instant::now(),
-            senders: vec![tx1, tx2],
-        },
-    );
+    role.state_mut().pending_append_acks_mut().unwrap().insert((5, 8), PendingAck {
+        claimed_term: 5,
+        withheld_at: std::time::Instant::now(),
+        senders: vec![tx1, tx2],
+    });
 
     role.state_mut().resolve_pending_acks(8);
 

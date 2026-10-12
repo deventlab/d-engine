@@ -10,14 +10,19 @@
 //! actually executes `send_to_worker_or_spawn`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
-use d_engine_proto::common::{EntryPayload, NodeRole::Follower, NodeStatus};
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
 use futures::StreamExt;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing_test::traced_test;
 
@@ -26,10 +31,12 @@ use crate::MockRaftLog;
 use crate::MockTransport;
 use crate::RaftRequestWithSignal;
 use crate::event::InternalEvent;
-use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
-use crate::test_utils::mock::{MockTypeConfig, mock_raft_context};
+use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::mock::mock_raft_context;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -276,7 +283,8 @@ async fn test_worker_reused_on_subsequent_requests() {
 ///
 /// # Guarantees checked
 /// - `worker_count_for_test() == 1` after the rebuild (old dead handle replaced).
-/// - `InternalEvent::AppendResult` arrives on `internal_event_rx`, confirming the request was delivered.
+/// - `InternalEvent::AppendResult` arrives on `internal_event_rx`, confirming the request was
+///   delivered.
 #[tokio::test]
 #[traced_test]
 async fn test_worker_rebuilt_after_death() {
@@ -365,14 +373,14 @@ async fn test_worker_rebuilt_after_death() {
 /// - Transport always fails `open_replication_stream` (peer unreachable).
 /// - Worker is spawned via `process_batch`; it enters the inner reconnect loop.
 /// - The `LeaderState` is dropped, which drops `ReplicationWorkerHandle` and closes `task_rx`.
-/// - On the next iteration the worker checks `task_rx.is_closed()` and must exit cleanly
-///   without making further connection attempts.
+/// - On the next iteration the worker checks `task_rx.is_closed()` and must exit cleanly without
+///   making further connection attempts.
 ///
 /// # Guarantees checked
-/// - After the handle is dropped, `open_replication_stream` call count stops increasing.
-///   This proves the `if task_rx.is_closed() { return; }` guard fires correctly,
-///   preventing an infinite reconnect loop that would flood the inbound event loop with
-///   zombie signals and block heartbeats (regression: zombie detection + dead peer).
+/// - After the handle is dropped, `open_replication_stream` call count stops increasing. This
+///   proves the `if task_rx.is_closed() { return; }` guard fires correctly, preventing an infinite
+///   reconnect loop that would flood the inbound event loop with zombie signals and block
+///   heartbeats (regression: zombie detection + dead peer).
 #[tokio::test]
 #[traced_test]
 async fn test_replication_worker_exits_when_handle_dropped() {
@@ -455,12 +463,12 @@ async fn test_replication_worker_exits_when_handle_dropped() {
 ///
 /// # Scenario
 /// - `open_replication_stream` succeeds, but its receiver immediately yields `Err(status)`.
-/// - The worker's recv task detects the error; the main loop emits `PeerStreamError`
-///   and reconnects (calls `open_replication_stream` again).
+/// - The worker's recv task detects the error; the main loop emits `PeerStreamError` and reconnects
+///   (calls `open_replication_stream` again).
 ///
 /// # Why
-/// - This is the "peer went away mid-stream" recovery path: without it, a broken
-///   stream would silently stop replication for that peer.
+/// - This is the "peer went away mid-stream" recovery path: without it, a broken stream would
+///   silently stop replication for that peer.
 #[tokio::test]
 #[traced_test]
 async fn test_worker_reconnects_on_stream_recv_error() {
@@ -775,14 +783,11 @@ async fn test_worker_forwards_append_result_on_recv() {
         .try_recv()
         .expect("AppendResult should arrive from the stream ACK");
     assert!(
-        matches!(
-            event,
-            InternalEvent::AppendResult {
-                follower_id: 2,
-                result: Ok(_),
-                ..
-            }
-        ),
+        matches!(event, InternalEvent::AppendResult {
+            follower_id: 2,
+            result: Ok(_),
+            ..
+        }),
         "expected AppendResult for peer 2, got {event:?}"
     );
 }
@@ -791,8 +796,8 @@ async fn test_worker_forwards_append_result_on_recv() {
 /// permanently stops for the rest of this worker's lifetime (#446).
 ///
 /// # Scenario
-/// - 16 sends land on the sampling boundary exactly once (the 16th), starting
-///   an RTT sample that never resolves — the mock stream stays pending, no ACK.
+/// - 16 sends land on the sampling boundary exactly once (the 16th), starting an RTT sample that
+///   never resolves — the mock stream stays pending, no ACK.
 /// - The stream then errors, forcing `recv_handle.abort()` + reconnect.
 ///
 /// # Guarantee checked
@@ -876,9 +881,21 @@ async fn test_rtt_sample_reset_on_reconnect_after_interrupted_sample() {
     // time (leader_state.rs:3384) — since this test never sends a real ACK,
     // that flag would never clear naturally, so it's reset by hand here to
     // let all 16 attempts actually reach the worker.
-    for _ in 0..16 {
+    for i in 0..16 {
         state.reset_in_flight(2);
         state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+        if i == 0 {
+            // The first dispatch spawns the worker. A dispatch made while the worker has no
+            // open stream is (by design) not queued, so wait for the stream before sending the
+            // rest — otherwise the 16th send, which starts the RTT sample, would never happen.
+            for _ in 0..1000 {
+                if open_count.load(Ordering::SeqCst) >= 1 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     // Give the worker time to process all 16 sends before breaking the stream.
@@ -964,4 +981,353 @@ async fn test_worker_opens_stream_with_configured_send_queue_capacity() {
         777,
         "the worker must pass replication_send_queue_capacity to open_replication_stream"
     );
+}
+
+// ── disconnected-peer dispatch (R3) ───────────────────────────────────────────
+//
+// Background: while a peer's replication worker has no open stream (it sits in its reconnect
+// loop) it does not dequeue tasks, but the leader keeps enqueuing one per write batch into the
+// worker's UNBOUNDED task queue. Measured: 37k-66k tasks piled up in ~40 s and were drained in
+// one burst after reconnect, each having waited ~20 s.
+//
+// Contract these tests pin (the fix: a worker-owned `connected` flag read by Phase 5 BEFORE any
+// bookkeeping): while the worker has no open stream the leader must dispatch NOTHING to it —
+// data and heartbeats alike — and must leave no accounting behind (`next_index`, in-flight), so
+// the first send after reconnect starts from the same place. Dropping is safe for Raft: the
+// leader only advances on ACKs and retransmits from `next_index`.
+//
+// The tests observe behaviour only (what the stream receives, what the leader accounted), so
+// they compile against the current code and are RED for the right reason until the fix lands.
+
+use crate::raft_role::role_state::PeerReplicationState;
+
+/// Scripted peer: `open_replication_stream` fails until `allow_connect` is set, then succeeds.
+/// Counts how many requests each established stream receives.
+#[derive(Clone, Default)]
+struct PeerProbe {
+    allow_connect: Arc<std::sync::atomic::AtomicBool>,
+    open_attempts: Arc<AtomicUsize>,
+    established: Arc<AtomicUsize>,
+    /// Requests delivered to the first established stream.
+    received_first: Arc<AtomicUsize>,
+    /// Requests delivered to any later (re-established) stream.
+    received_later: Arc<AtomicUsize>,
+}
+
+/// `break_first_stream`: the first open succeeds immediately but its receiver errors at once
+/// (a stream that was up and then broke); every other open needs `allow_connect`.
+fn scripted_peer(break_first_stream: bool) -> (MockTransport<MockTypeConfig>, PeerProbe) {
+    let probe = PeerProbe::default();
+    let p = probe.clone();
+    let mut transport = MockTransport::<MockTypeConfig>::new();
+    transport.expect_open_replication_stream().returning(move |_, _, _, _| {
+        let attempt = p.open_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        let immediate = break_first_stream && attempt == 1;
+        if !immediate && !p.allow_connect.load(Ordering::SeqCst) {
+            return Err(crate::NetworkError::ConnectError("peer unreachable".into()).into());
+        }
+        let n = p.established.fetch_add(1, Ordering::SeqCst) + 1;
+        let counter = if n == 1 {
+            p.received_first.clone()
+        } else {
+            p.received_later.clone()
+        };
+        let (req_tx, mut req_rx) = mpsc::channel::<AppendEntriesRequest>(128);
+        let receiver = if immediate {
+            tokio::spawn(async move {
+                while req_rx.recv().await.is_some() {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            futures::stream::iter(vec![Err::<AppendEntriesResponse, tonic::Status>(
+                tonic::Status::unavailable("peer gone"),
+            )])
+            .boxed()
+        } else {
+            // Keep the response side open (never answers) so the stream stays healthy.
+            let (resp_tx, resp_rx) =
+                mpsc::channel::<Result<AppendEntriesResponse, tonic::Status>>(1);
+            tokio::spawn(async move {
+                while req_rx.recv().await.is_some() {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+                drop(resp_tx);
+            });
+            tokio_stream::wrappers::ReceiverStream::new(resp_rx).boxed()
+        };
+        Ok(crate::ReplicationStream {
+            sender: req_tx,
+            receiver,
+        })
+    });
+    (transport, probe)
+}
+
+/// Leader wired to the scripted peer. `is_heartbeat(k)` decides whether the k-th
+/// `prepare_batch_requests` call (1-based) yields an empty request (heartbeat) or a data request.
+/// Peer 2 is put in `Replicate` state so the in-flight window (256) does not gate data requests —
+/// the situation in which the leader really does enqueue one task per batch.
+async fn leader_with_scripted_peer(
+    tmp: &str,
+    transport: MockTransport<MockTypeConfig>,
+    is_heartbeat: fn(usize) -> bool,
+) -> (
+    LeaderState<MockTypeConfig>,
+    crate::RaftContext<MockTypeConfig>,
+    mpsc::UnboundedSender<InternalEvent>,
+    mpsc::UnboundedReceiver<InternalEvent>,
+) {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let mut ctx = mock_raft_context(tmp, graceful_rx, None);
+    ctx.membership = Arc::new(two_peer_membership());
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    ctx.handlers.replication_handler.expect_prepare_batch_requests().returning(
+        move |_, _, _, _, _, _| {
+            let k = calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let req = if is_heartbeat(k) {
+                stub_request()
+            } else {
+                stub_request_with_entry(k as u64)
+            };
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, req, k as u64)],
+                snapshot_targets: vec![],
+            })
+        },
+    );
+    ctx.transport = Arc::new(transport);
+
+    let mut raft_log = MockRaftLog::new();
+    raft_log.expect_last_entry_id().returning(|| 0);
+    raft_log.expect_flush().returning(|| Ok(()));
+    raft_log.expect_save_hard_state().returning(|_| Ok(()));
+    ctx.storage.raft_log = Arc::new(raft_log);
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, ctx.node_config.clone());
+    state.init_cluster_metadata(&ctx.membership).await.unwrap();
+    state.set_peer_replication_state(2, PeerReplicationState::Replicate);
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    (state, ctx, tx, rx)
+}
+
+/// Polls `cond` every 5 ms for up to 5 s; panics with `what` on timeout.
+async fn wait_until(
+    what: &str,
+    cond: impl Fn() -> bool,
+) {
+    for _ in 0..1000 {
+        if cond() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("timed out waiting for: {what}");
+}
+
+/// Peer unreachable from the start: nothing dispatched while it is down may be replayed after it
+/// comes back, and the leader must not have accounted for it.
+///
+/// # Scenario
+/// - Batch 1 spawns the worker (no handle exists yet, so nothing can be skipped).
+/// - The worker is in its reconnect loop (every open fails). Batches 2-6 are dispatched: data
+///   requests and heartbeats mixed.
+/// - The peer then becomes reachable.
+///
+/// # Guarantees checked
+/// - The re-established stream receives exactly 1 request (the spawn task), not 6: the 5 sent while
+///   the peer was down were never enqueued. (Before the fix all 6 are replayed.)
+/// - In-flight accounting holds only the 1 data request that really was dispatched; the skipped
+///   ones left no trace (before the fix: one slot per data request, 4 in total).
+/// - Dispatch resumes once the stream is back: an unreachable peer is not skipped forever.
+#[tokio::test]
+#[traced_test]
+async fn test_unreachable_peer_does_not_accumulate_replication_tasks() {
+    let (transport, probe) = scripted_peer(false);
+    // k = 3 and 5 are heartbeats, the rest carry an entry.
+    let (mut state, ctx, tx, _rx) = leader_with_scripted_peer(
+        "/tmp/test_unreachable_peer_does_not_accumulate_replication_tasks",
+        transport,
+        |k| k == 3 || k == 5,
+    )
+    .await;
+
+    state.process_batch(one_entry_batch(), &tx, &ctx).await.unwrap();
+    wait_until("worker enters its reconnect loop", || {
+        probe.open_attempts.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    // After the spawning dispatch (k=1, one entry): next_index = effective(1) + 1 entry.
+    let next_index_after_spawn = state.next_index(2);
+
+    for _ in 0..5 {
+        state.process_batch(one_entry_batch(), &tx, &ctx).await.unwrap();
+    }
+    assert_eq!(
+        state.next_index(2),
+        next_index_after_spawn,
+        "skipped dispatches must not advance next_index (the first send after reconnect must \
+         start from the same place)"
+    );
+
+    probe.allow_connect.store(true, Ordering::SeqCst);
+    wait_until("stream re-established", || {
+        probe.established.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // let the worker drain its queue
+
+    assert_eq!(
+        probe.received_first.load(Ordering::SeqCst),
+        1,
+        "requests dispatched while the stream was down must not be queued and replayed on reconnect"
+    );
+    assert_eq!(
+        state.in_flight_count(2),
+        1,
+        "skipped dispatches must leave no in-flight accounting behind"
+    );
+
+    // Control: once the stream is back the peer is served again.
+    let before = probe.received_first.load(Ordering::SeqCst);
+    for _ in 0..100 {
+        state.process_batch(one_entry_batch(), &tx, &ctx).await.unwrap();
+        if probe.received_first.load(Ordering::SeqCst) > before {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("dispatch to the peer never resumed after the stream was re-established");
+}
+
+/// Heartbeats alone must not pile up either (they are empty, bypass the in-flight window, and
+/// were the one request kind still enqueued for a gated peer).
+///
+/// # Guarantees checked
+/// - 5 heartbeats sent while the stream is down are not replayed after reconnect: only the
+///   worker-spawning request is delivered. (Before the fix: 6.)
+#[tokio::test]
+#[traced_test]
+async fn test_unreachable_peer_heartbeats_are_not_queued() {
+    let (transport, probe) = scripted_peer(false);
+    let (mut state, ctx, tx, _rx) = leader_with_scripted_peer(
+        "/tmp/test_unreachable_peer_heartbeats_are_not_queued",
+        transport,
+        |_| true,
+    )
+    .await;
+
+    state.process_batch(one_entry_batch(), &tx, &ctx).await.unwrap();
+    wait_until("worker enters its reconnect loop", || {
+        probe.open_attempts.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    for _ in 0..5 {
+        state.process_batch(one_entry_batch(), &tx, &ctx).await.unwrap();
+    }
+
+    probe.allow_connect.store(true, Ordering::SeqCst);
+    wait_until("stream re-established", || {
+        probe.established.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    assert_eq!(
+        probe.received_first.load(Ordering::SeqCst),
+        1,
+        "heartbeats dispatched while the stream was down must not be queued and replayed"
+    );
+}
+
+/// A stream that was up and then broke: while the worker reconnects it counts as disconnected
+/// exactly like a peer that never connected.
+///
+/// # Scenario
+/// - First stream opens, then its receiver errors at once -> the worker leaves the main loop and
+///   reconnects; the reconnect attempts fail.
+/// - 4 batches are dispatched during that window; then the peer becomes reachable.
+///
+/// # Guarantees checked
+/// - The second stream receives nothing from the 4 batches sent while reconnecting. (Before the
+///   fix: 4.)
+/// - Dispatch resumes on the second stream afterwards.
+#[tokio::test]
+#[traced_test]
+async fn test_broken_stream_peer_is_not_fed_while_reconnecting() {
+    let (transport, probe) = scripted_peer(true);
+    let (mut state, ctx, tx, _rx) = leader_with_scripted_peer(
+        "/tmp/test_broken_stream_peer_is_not_fed_while_reconnecting",
+        transport,
+        |k| k % 2 == 0,
+    )
+    .await;
+
+    state.process_batch(one_entry_batch(), &tx, &ctx).await.unwrap();
+    // attempt 1 = the stream that breaks; attempt >= 2 = the worker is reconnecting.
+    wait_until("worker is reconnecting after the broken stream", || {
+        probe.open_attempts.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+
+    for _ in 0..4 {
+        state.process_batch(one_entry_batch(), &tx, &ctx).await.unwrap();
+    }
+
+    probe.allow_connect.store(true, Ordering::SeqCst);
+    wait_until("second stream established", || {
+        probe.established.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    assert_eq!(
+        probe.received_later.load(Ordering::SeqCst),
+        0,
+        "requests dispatched while reconnecting after a broken stream must not reach the new stream"
+    );
+
+    for _ in 0..100 {
+        state.process_batch(one_entry_batch(), &tx, &ctx).await.unwrap();
+        if probe.received_later.load(Ordering::SeqCst) > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("dispatch never resumed on the re-established stream");
+}
+
+/// Control: a healthy, connected peer receives every dispatch. Guards against a fix that skips
+/// too much (e.g. a flag that never turns true, or turns true too late).
+///
+/// This test is GREEN before the fix and must stay green after it.
+#[tokio::test]
+#[traced_test]
+async fn test_connected_peer_receives_every_dispatch() {
+    let (transport, probe) = scripted_peer(false);
+    probe.allow_connect.store(true, Ordering::SeqCst);
+    let (mut state, ctx, tx, _rx) = leader_with_scripted_peer(
+        "/tmp/test_connected_peer_receives_every_dispatch",
+        transport,
+        |k| k % 3 == 0,
+    )
+    .await;
+
+    state.process_batch(one_entry_batch(), &tx, &ctx).await.unwrap();
+    wait_until("stream established", || {
+        probe.established.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    for _ in 0..5 {
+        state.process_batch(one_entry_batch(), &tx, &ctx).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    wait_until("all 6 dispatches delivered to the connected peer", || {
+        probe.received_first.load(Ordering::SeqCst) == 6
+    })
+    .await;
 }

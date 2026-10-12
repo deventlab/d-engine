@@ -1,11 +1,9 @@
 //! Mock node builder for fluent configuration of test Raft instances
 
-use super::MockTypeConfig;
-use crate::Node;
-use crate::membership::MembershipSnapshot;
-use crate::network::grpc;
-use crate::node::DataDirLock;
-use crate::node::LeaderNotifier;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use bytes::Bytes;
 use d_engine_core::ElectionConfig;
 use d_engine_core::InboundEvent;
@@ -17,6 +15,7 @@ use d_engine_core::MockRaftLog;
 use d_engine_core::MockReplicationCore;
 use d_engine_core::MockStateMachine;
 use d_engine_core::MockStateMachineHandler;
+use d_engine_core::MockStateMachineWriterOps;
 use d_engine_core::MockTransport;
 use d_engine_core::Raft;
 use d_engine_core::RaftConfig;
@@ -27,20 +26,27 @@ use d_engine_core::RaftNodeConfig;
 use d_engine_core::RaftRole;
 use d_engine_core::RaftStorageHandles;
 use d_engine_core::SignalParams;
+use d_engine_core::SmWorkerHandle;
 use d_engine_core::SnapshotApplyResult;
 use d_engine_core::StateMachine;
+use d_engine_core::StateMachineCommand;
+use d_engine_core::StateMachineWorker;
 use d_engine_core::follower_state::FollowerState;
 use d_engine_core::mock_membership as mock_membership_fn;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterMembership;
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tracing::error;
 use tracing::trace;
+
+use super::MockTypeConfig;
+use crate::Node;
+use crate::membership::MembershipSnapshot;
+use crate::network::grpc;
+use crate::node::DataDirLock;
+use crate::node::LeaderNotifier;
 
 /// Builder for constructing mock Raft components with customizable defaults
 ///
@@ -110,6 +116,11 @@ pub struct MockBuilder {
     pub replication_handler: Option<MockReplicationCore<MockTypeConfig>>,
     /// Optional state machine handler
     pub state_machine_handler: Option<Arc<MockStateMachineHandler<MockTypeConfig>>>,
+    /// Optional state machine worker the built `Node` runs (defaults to an idle one)
+    pub sm_worker: Option<SmWorkerHandle<MockTypeConfig>>,
+    /// Queue of `sm_worker`: the Raft loop delivers committed entries here, so lifecycle tests
+    /// see them reach the worker's writer instead of a channel nobody reads
+    sm_queue: Option<mpsc::UnboundedSender<StateMachineCommand>>,
     /// Optional node configuration
     pub node_config: Option<RaftNodeConfig>,
     /// Optional election toggle (defaults to true)
@@ -149,6 +160,8 @@ impl MockBuilder {
             election_handler: None,
             replication_handler: None,
             state_machine_handler: None,
+            sm_worker: None,
+            sm_queue: None,
             node_config: None,
             turn_on_election: None,
             shutdown_signal,
@@ -241,7 +254,9 @@ impl MockBuilder {
             self.replication_handler.unwrap_or_else(mock_replication_handler),
             self.state_machine_handler
                 .unwrap_or_else(|| Arc::new(mock_state_machine_handler())),
-            default_state_machine_commands(),
+            self.sm_queue
+                .map(d_engine_core::StateMachineCommandSender::new)
+                .unwrap_or_else(default_state_machine_commands),
             self.membership.unwrap_or_else(|| Arc::new(mock_membership_fn())),
             self.purge_executor.unwrap_or_else(mock_purge_exewcutor),
             self.node_config.unwrap_or_else(|| {
@@ -315,8 +330,9 @@ impl MockBuilder {
     /// Build a Node instance (without RPC server)
     ///
     /// Wraps the Raft instance in a Node container for integration testing.
-    pub fn build_node(self) -> Node<MockTypeConfig> {
+    pub fn build_node(mut self) -> Node<MockTypeConfig> {
         let shutdown_signal = self.shutdown_signal.clone();
+        let sm_worker = self.take_or_idle_sm_worker();
         let raft = self.build_raft();
         let event_tx = raft.event_sender();
         let cmd_tx = raft.cmd_sender();
@@ -346,10 +362,9 @@ impl MockBuilder {
             watch_registry: None,
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
-            sm_worker_handle: std::sync::Mutex::new(None),
+            sm_worker,
             rpc_server_handle: std::sync::Mutex::new(None),
             read_actor_handle: std::sync::Mutex::new(None),
-            _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal,
             read_lease,
@@ -362,9 +377,10 @@ impl MockBuilder {
     ///
     /// This variant starts the RPC server in a background task,
     /// useful for end-to-end testing with network communication.
-    pub fn build_node_with_rpc_server(self) -> Arc<Node<MockTypeConfig>> {
+    pub fn build_node_with_rpc_server(mut self) -> Arc<Node<MockTypeConfig>> {
         let shutdown = self.shutdown_signal.clone();
         let node_config_option = self.node_config.clone();
+        let sm_worker = self.take_or_idle_sm_worker();
 
         let raft = self.build_raft();
         let event_tx = raft.event_sender();
@@ -405,10 +421,9 @@ impl MockBuilder {
             watch_registry: None,
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: None,
-            sm_worker_handle: std::sync::Mutex::new(None),
+            sm_worker,
             rpc_server_handle: std::sync::Mutex::new(None),
             read_actor_handle: std::sync::Mutex::new(None),
-            _commit_handler_handle: None,
             _lease_cleanup_handle: None,
             shutdown_signal: shutdown.clone(),
             read_lease,
@@ -512,6 +527,30 @@ impl MockBuilder {
         self
     }
 
+    /// Set the state machine worker the built `Node` starts and stops in `run()`, together with
+    /// its queue (the second value of `sm_worker_with_writer`), which the Raft loop delivers
+    /// committed entries to.
+    pub fn with_sm_worker(
+        mut self,
+        sm_worker: SmWorkerHandle<MockTypeConfig>,
+        queue: mpsc::UnboundedSender<StateMachineCommand>,
+    ) -> Self {
+        self.sm_worker = Some(sm_worker);
+        self.sm_queue = Some(queue);
+        self
+    }
+
+    /// The worker the node runs: the one supplied, or an idle one whose queue is wired into the
+    /// Raft loop the same way.
+    fn take_or_idle_sm_worker(&mut self) -> SmWorkerHandle<MockTypeConfig> {
+        if let Some(sm_worker) = self.sm_worker.take() {
+            return sm_worker;
+        }
+        let (sm_worker, queue) = idle_sm_worker();
+        self.sm_queue = Some(queue);
+        sm_worker
+    }
+
     /// Set custom node configuration
     pub fn with_node_config(
         mut self,
@@ -589,7 +628,7 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
     let mut mock = MockStateMachine::new();
 
     mock.expect_start().returning(|| Ok(()));
-    mock.expect_stop().returning(|| Ok(()));
+    mock.expect_close().returning(|| Ok(()));
     mock.expect_is_running().returning(|| true);
 
     mock.expect_get().returning(|_| Ok(None));
@@ -622,19 +661,49 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
 pub(crate) fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().returning(|_| {});
+    // Commit delivery (also run on shutdown) reads the applied position every iteration.
+    state_machine_handler.expect_last_applied().returning(|| 0);
     state_machine_handler.expect_read_from_state_machine().returning(|_| None);
     state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
 }
 
-/// Default `StateMachineCommandSender` for tests that don't care about it. No production
-/// call site sends through this yet (#436), so the receiver is simply
-/// dropped rather than drained by a spawned task — spawning unconditionally here broke
-/// every non-`#[tokio::test]` caller of `MockBuilder::build_context()`/`build_raft()`
-/// with "there is no reactor running" (`tokio::spawn` requires an active runtime).
+/// Default `StateMachineCommandSender` for tests that don't care about it. The raft loop hands
+/// committed entries to it, so the receiver must stay open or delivery fails with
+/// `WorkerUnavailable` and the loop exits. Nothing drains it: a spawned drain task would break
+/// every non-`#[tokio::test]` caller of `MockBuilder::build_context()`/`build_raft()` with
+/// "there is no reactor running", so the receiver is leaked instead (test-only, tiny).
 pub(crate) fn default_state_machine_commands() -> d_engine_core::StateMachineCommandSender {
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::unbounded_channel();
+    std::mem::forget(rx);
     d_engine_core::StateMachineCommandSender::new(tx)
+}
+
+/// A real state machine worker around `writer`, not started yet. The second value is a sender of
+/// its queue, for tests to feed it the way the Raft loop would.
+pub(crate) fn sm_worker_with_writer(
+    mut writer: MockStateMachineWriterOps<MockTypeConfig>
+) -> (
+    SmWorkerHandle<MockTypeConfig>,
+    mpsc::UnboundedSender<StateMachineCommand>,
+) {
+    // The worker (or the handle, if never started) closes the state machine. Added last, so a
+    // test's own `expect_close` keeps precedence.
+    writer.expect_close().returning(|| Ok(()));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (events_tx, events_rx) = mpsc::unbounded_channel();
+    // Apply results must have somewhere to go; leaked like `default_state_machine_commands`.
+    std::mem::forget(events_rx);
+    let worker = StateMachineWorker::new(1, Arc::new(writer), tx.clone(), rx, events_tx);
+    (SmWorkerHandle::new(worker, tx.clone()), tx)
+}
+
+/// The worker mock nodes get unless a test supplies one: its writer expects no apply at all.
+pub(crate) fn idle_sm_worker() -> (
+    SmWorkerHandle<MockTypeConfig>,
+    mpsc::UnboundedSender<StateMachineCommand>,
+) {
+    sm_worker_with_writer(MockStateMachineWriterOps::new())
 }
 
 /// Create a mock purge executor

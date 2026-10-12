@@ -56,10 +56,10 @@ const MEMBERSHIP_CHANGE_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// 1. Start a 2-voter standalone cluster (nodes 1 and 2).
 /// 2. Wait for leader election (8 s).
-/// 3. Open a `watch_membership()` gRPC stream — server delivers the current snapshot
-///    immediately due to `mark_changed()`.
-/// 4. Start node 3 as Learner (role=4, status=Active): it calls `JoinCluster` on boot,
-///    causing the leader to commit an `AddNode` ConfChange via Raft consensus.
+/// 3. Open a `watch_membership()` gRPC stream — server delivers the current snapshot immediately
+///    due to `mark_changed()`.
+/// 4. Start node 3 as Learner (role=4, status=Active): it calls `JoinCluster` on boot, causing the
+///    leader to commit an `AddNode` ConfChange via Raft consensus.
 /// 5. Wait for the next snapshot on the stream.
 ///
 /// ## Assertions

@@ -1,8 +1,36 @@
+use std::collections::BTreeMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+
+use async_trait::async_trait;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::MembershipChange;
+use d_engine_proto::common::entry_payload::Payload;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
+use d_engine_proto::server::storage::SnapshotAck;
+use d_engine_proto::server::storage::SnapshotChunk;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use d_engine_proto::server::storage::SnapshotResponse;
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
+
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
 use crate::AppendResponseWithUpdates;
 use crate::ConsensusError;
+use crate::Error;
 use crate::InboundEvent;
 use crate::InternalEvent;
 use crate::MaybeCloneOneshotSender;
@@ -27,25 +55,6 @@ use crate::client::LeaderHint;
 use crate::event::ClientCmd;
 use crate::scoped_timer::ScopedTimer;
 use crate::utils::cluster::error;
-use async_trait::async_trait;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::replication::AppendEntriesRequest;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::replication::SuccessResult;
-use d_engine_proto::server::replication::append_entries_response;
-use d_engine_proto::server::storage::SnapshotAck;
-use d_engine_proto::server::storage::SnapshotChunk;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use d_engine_proto::server::storage::SnapshotResponse;
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tonic::Status;
-use tracing::error;
-use tracing::warn;
-use tracing::{debug, info};
 
 /// Per-peer replication trust state (#436): gates optimistic `next_index` advance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,34 +290,56 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         Ok(())
     }
 
-    fn update_commit_index_with_signal(
+    /// Hand every committed entry not yet delivered to the state machine worker, in log order,
+    /// each exactly once, without waiting for it to apply them. Called once per loop iteration:
+    /// how `commit_index` advanced differs per role, delivering what it covers does not.
+    ///
+    /// Entries are handed over in batches: commands accumulate, and a config or noop entry ends
+    /// the batch it belongs to. A config entry's membership change is applied right after its
+    /// batch is sent, before the next batch.
+    /// Apply a committed membership change. Per Raft protocol the leader can remove itself; after
+    /// applying the removal it must step down immediately.
+    ///
+    /// # Errors
+    /// - `Error::Fatal` if a committed membership change cannot be applied: the membership view
+    ///   would no longer match the log and nothing can repair that. Later entries are withheld and
+    ///   replayed from the state machine's `last_applied` on restart.
+    /// - Any other error (log read failed, worker unavailable) means committed entries cannot be
+    ///   applied; the caller must stop the node.
+    async fn dispatch_committed(
         &mut self,
-        role: i32,
-        current_term: u64,
-        new_commit_index: u64,
+        ctx: &RaftContext<Self::T>,
         internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
     ) -> Result<()> {
-        if let Err(e) = self.update_commit_index(new_commit_index) {
-            error!("Follower::update_commit_index: {:?}", e);
-            return Err(e);
+        // `applied` is ahead of `delivered_index` after a snapshot install: those entries are
+        // already covered.
+        let floor = ctx
+            .state_machine_handler()
+            .last_applied()
+            .max(self.shared_state().delivered_index);
+        let commit_index = self.commit_index();
+
+        if commit_index <= floor {
+            return Ok(());
         }
+
+        let _timer = ScopedTimer::new("dispatch_committed");
+
+        let entries = ctx.raft_log().get_entries_range(floor + 1..=commit_index)?;
         debug!(
-            "[Node-{}] update_commit_index_with_signal, new_commit_index: {:?}",
+            "[Node-{}] delivering committed entries {}..={commit_index}",
             self.node_id(),
-            new_commit_index
+            floor + 1
         );
 
-        internal_event_tx
-            .send(InternalEvent::NotifyNewCommitIndex(NewCommitData {
-                new_commit_index,
-                role,
-                current_term,
-            }))
-            .map_err(|e| {
-                error!("Failed to send NotifyNewCommitIndex: {e:?}");
-                NetworkError::SingalSendFailed(format!("{:?}", e))
-            })?;
-
+        for batch in split_into_batches(entries_with_payload(entries)) {
+            let membership_change = config_change_at_end(&batch);
+            send_to_sm_worker(ctx, batch)?;
+            if let Some((index, change)) = membership_change {
+                apply_membership(self.node_id(), ctx, internal_event_tx, index, change).await?;
+            }
+        }
+        self.shared_state_mut().delivered_index = commit_index;
         Ok(())
     }
 
@@ -354,8 +385,8 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
     }
 
     /// True if a membership change is committed but not yet applied. A node that campaigned in
-    /// that window would count votes against a stale voter set (raft-rs refuses to campaign
-    /// here). Only reads the log when something is actually unapplied, so the common case is
+    /// that window would count votes against a stale voter set, so it must not campaign here.
+    /// Only reads the log when something is actually unapplied, so the common case is
     /// two integer comparisons.
     ///
     /// A log read failure is reported as an error: the caller cannot prove that nothing is
@@ -433,7 +464,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         use crate::config::ReadConsistencyPolicy as ClientReadConsistencyPolicy;
 
         match cmd {
-            ClientCmd::Propose(_, sender) => {
+            ClientCmd::Propose(_, _, sender) => {
                 // Writes always require leader - reject immediately
                 let _ = sender.send(Ok(self.create_not_leader_response(ctx)));
             }
@@ -529,10 +560,10 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
     /// Release withheld AppendEntries ACKs now that the log is durable through
     /// `durable`. For each withheld ACK:
     ///
-    /// - withheld under a term this node has since left → fail it with a conflict.
-    ///   A higher-term leader may have overwritten the log at that index; within a
-    ///   single term a follower's entries are never replaced, so the term check
-    ///   alone is a sufficient content guard and no log lookup is needed.
+    /// - withheld under a term this node has since left → fail it with a conflict. A higher-term
+    ///   leader may have overwritten the log at that index; within a single term a follower's
+    ///   entries are never replaced, so the term check alone is a sufficient content guard and no
+    ///   log lookup is needed.
     /// - claimed index now `<= durable` → rebuild and send the success.
     /// - otherwise → keep waiting.
     ///
@@ -727,17 +758,9 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 commit_index_update,
             }) => {
                 if let Some(commit) = commit_index_update
-                    && let Err(e) = self.update_commit_index_with_signal(
-                        state_snapshot.role,
-                        state_snapshot.current_term,
-                        commit,
-                        &internal_event_tx,
-                    )
+                    && let Err(e) = self.update_commit_index(commit)
                 {
-                    error!(
-                        "update_commit_index_with_signal,commit={}, error: {:?}",
-                        commit, e
-                    );
+                    error!("update_commit_index,commit={}, error: {:?}", commit, e);
                     return Err(e);
                 }
                 debug!("AppendEntriesResponse: {:?}", response);
@@ -838,7 +861,6 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         sender: MaybeCloneOneshotSender<std::result::Result<SnapshotResponse, Status>>,
         ctx: &RaftContext<Self::T>,
         internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
-        state_snapshot: &StateSnapshot,
     ) -> Result<()> {
         let my_term = self.current_term();
 
@@ -951,12 +973,7 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
                 let boundary = match result {
                     SnapshotApplyResult::Applied { last_included } => {
                         if last_included.index > self.commit_index()
-                            && let Err(e) = self.update_commit_index_with_signal(
-                                state_snapshot.role,
-                                my_term,
-                                last_included.index,
-                                &internal_event_tx,
-                            )
+                            && let Err(e) = self.update_commit_index(last_included.index)
                         {
                             error!(?e, "Failed to advance commit_index after snapshot install");
                         }
@@ -1055,7 +1072,8 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Returns the snapshot deduplication flag for roles that support independent snapshot creation.
+    /// Returns the snapshot deduplication flag for roles that support independent snapshot
+    /// creation.
     ///
     /// Returns `None` for roles without snapshot capability (Candidate). The default
     /// `handle_create_snapshot` uses this to short-circuit with `RoleViolation` instead of
@@ -1163,6 +1181,121 @@ pub(crate) trait RaftRoleState: Send + Sync + 'static {
     }
 }
 
+/// True if `change` removes `my_id` itself.
+pub(super) fn is_self_removal_config(
+    my_id: u32,
+    change: &MembershipChange,
+) -> bool {
+    matches!(
+        &change.change,
+        Some(d_engine_proto::common::membership_change::Change::RemoveNode(remove))
+        if remove.node_id == my_id
+    )
+}
+
+fn payload_of(entry: &Entry) -> Option<&Payload> {
+    entry.payload.as_ref()?.payload.as_ref()
+}
+
+/// Drops entries that carry no payload kind (corrupt entry or hostile peer), with a warning.
+fn entries_with_payload(entries: Vec<Entry>) -> Vec<Entry> {
+    entries
+        .into_iter()
+        .filter(|entry| {
+            let has_payload = payload_of(entry).is_some();
+            if !has_payload {
+                warn!("entry {} has no payload kind; skipped", entry.index);
+            }
+            has_payload
+        })
+        .collect()
+}
+
+/// Splits committed entries, in log order, into the messages handed to the state machine
+/// worker. A config or noop entry ends its batch, so it is sent together with the commands
+/// before it and nothing after it.
+pub(super) fn split_into_batches(entries: Vec<Entry>) -> Vec<Vec<Entry>> {
+    let mut batches = vec![];
+    let mut batch = vec![];
+    for entry in entries {
+        let ends_batch = matches!(
+            payload_of(&entry),
+            Some(Payload::Config(_) | Payload::Noop(_))
+        );
+        batch.push(entry);
+        if ends_batch {
+            batches.push(std::mem::take(&mut batch));
+        }
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    batches
+}
+
+/// The membership change a batch ends with, if its last entry is a config entry.
+fn config_change_at_end(batch: &[Entry]) -> Option<(u64, MembershipChange)> {
+    let last = batch.last()?;
+    match payload_of(last)? {
+        Payload::Config(change) => Some((last.index, change.clone())),
+        _ => None,
+    }
+}
+
+/// Hand a batch of entries to the state machine worker without waiting for it to apply.
+fn send_to_sm_worker<T: TypeConfig>(
+    ctx: &RaftContext<T>,
+    entries: Vec<Entry>,
+) -> Result<()> {
+    trace!("Sending batch to SM Worker: {} entries", entries.len());
+    ctx.state_machine_commands().apply_entries(entries).inspect_err(|e| {
+        error!("SM Worker channel closed: {:?}", e);
+    })
+}
+
+/// # Errors
+/// `Error::Fatal` if the change cannot be applied: the membership view would no longer match
+/// the log, and nothing can repair that.
+async fn apply_membership<T: TypeConfig>(
+    my_id: u32,
+    ctx: &RaftContext<T>,
+    internal_event_tx: &mpsc::UnboundedSender<InternalEvent>,
+    index: u64,
+    change: MembershipChange,
+) -> Result<()> {
+    // Timer name kept from the commit handler so existing dashboards keep working.
+    let _timer = ScopedTimer::new("apply_config_change");
+
+    debug!("Received config change at index {index}: {change:?}");
+
+    // Check before applying: afterwards the node may no longer be a member.
+    let is_self_removal = is_self_removal_config(my_id, &change);
+
+    if let Err(e) = ctx.membership_ref().apply_config_change(change).await {
+        error!("[{my_id}] Failed to apply config change at index {index}: {e:?}");
+        return Err(Error::Fatal(format!(
+            "committed membership change at index {index} could not be applied: {e:?}"
+        )));
+    }
+    ctx.membership_ref().notify_config_applied(index);
+    // Must come AFTER the membership is applied: the leader refreshes its cluster metadata.
+    if let Err(e) = internal_event_tx.send(InternalEvent::MembershipApplied) {
+        warn!("Failed to send MembershipApplied event: {e:?}");
+    }
+
+    if is_self_removal {
+        warn!(
+            "[{my_id}] Node removed from cluster membership, triggering step down (index {index})"
+        );
+        // Not fatal: the removal is already committed.
+        if let Err(e) = internal_event_tx.send(InternalEvent::StepDownSelfRemoved) {
+            error!("[{my_id}] Failed to send StepDownSelfRemoved event: {e:?}");
+        }
+    }
+
+    Ok(())
+}
+
 /// Attempts to execute whatever purge target is currently pending, if any. Shared by both
 /// purge paths (local snapshot creation and installed-snapshot cleanup) — on success sends
 /// `LogPurgeCompleted` (cleared by the role's `handle_log_purge_completed`); on failure the
@@ -1244,10 +1377,10 @@ pub(super) async fn schedule_and_execute_purge<T: TypeConfig>(
 }
 
 /// Cleanup after an InstallSnapshotChunk install (or a confirmed no-op at/beyond
-/// `target`). Shares `pending_purge_upto` with `schedule_and_execute_purge`'s watermark — failure isn't cleared,
-/// retried by whichever purge trigger runs next. No `retained_log_entries` subtraction:
-/// entries below `target` are redundant with a snapshot we already have, not held back for
-/// a lagging peer.
+/// `target`). Shares `pending_purge_upto` with `schedule_and_execute_purge`'s watermark — failure
+/// isn't cleared, retried by whichever purge trigger runs next. No `retained_log_entries`
+/// subtraction: entries below `target` are redundant with a snapshot we already have, not held back
+/// for a lagging peer.
 pub(super) async fn schedule_installed_snapshot_purge<T: TypeConfig>(
     target: LogId,
     ctx: &RaftContext<T>,

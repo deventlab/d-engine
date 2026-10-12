@@ -10,6 +10,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::NodeRole::Leader;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::NodeMeta;
+use tokio::sync::watch;
+
 use crate::ClusterMetadata;
 use crate::LeaderStateSnapshot;
 use crate::MockRaftLog;
@@ -18,11 +24,6 @@ use crate::ReplicationCore;
 use crate::ReplicationHandler;
 use crate::StateSnapshot;
 use crate::test_utils::mock_raft_context;
-use d_engine_proto::common::NodeRole;
-use d_engine_proto::common::NodeRole::Leader;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::server::cluster::NodeMeta;
-use tokio::sync::watch;
 
 /// Single-node cluster builds no replication requests (no peers to replicate to).
 ///

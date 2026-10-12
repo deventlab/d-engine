@@ -10,16 +10,20 @@
 //! Scope: protocol/logic correctness of `FsyncWorker`'s own state machine.
 //! Not performance — see `benches/` for throughput regression guards.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+
+use d_engine_proto::common::LogId;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+
 use super::*;
 use crate::InternalEvent;
 use crate::MockLogStore;
 use crate::MockStorageEngine;
 use crate::Result;
 use crate::StorageEngine;
-use d_engine_proto::common::LogId;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::{mpsc, oneshot};
 
 /// Build a bare `FsyncWorker` over a mock log store — no tokio runtime, no
 /// `RaftLogCore`. `internal_event_tx` is `None`, so the worker never sends
@@ -38,8 +42,7 @@ fn minimal_worker(log_store: Arc<MockLogStore>) -> Arc<FsyncWorker<MockLogStore>
 /// `FsyncWorker::new()` starts with no work pending and no fence armed.
 ///
 /// Expected:
-///   - `inflight == false`, `pending_max == 0`, `pending_replies` empty,
-///     `generation == 0`.
+///   - `inflight == false`, `pending_max == 0`, `pending_replies` empty, `generation == 0`.
 #[test]
 fn test_new_initializes_empty_state() {
     let worker = minimal_worker(Arc::new(MockLogStore::new()));

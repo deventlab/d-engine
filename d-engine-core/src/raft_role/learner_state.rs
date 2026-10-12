@@ -1,3 +1,32 @@
+use std::collections::BTreeMap;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeRole::Learner;
+use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
+use d_engine_proto::server::cluster::JoinRequest;
+use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
+use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::election::VotedFor;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use tokio::sync::mpsc::{self};
+use tokio::time::Instant;
+use tonic::Status;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::trace;
+use tracing::warn;
+
 use super::RaftRole;
 use super::SharedState;
 use super::StateSnapshot;
@@ -24,32 +53,6 @@ use crate::cluster_printer::print_learner_promoted_to_voter;
 use crate::cluster_printer::print_role_transition_line;
 use crate::role_state::PendingAcks;
 use crate::role_state::schedule_and_execute_purge;
-use async_trait::async_trait;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeRole::Learner;
-use d_engine_proto::server::cluster::ClusterConfUpdateResponse;
-use d_engine_proto::server::cluster::JoinRequest;
-use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
-use d_engine_proto::server::cluster::LeaderDiscoveryResponse;
-use d_engine_proto::server::election::VoteResponse;
-use d_engine_proto::server::election::VotedFor;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use std::collections::BTreeMap;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-use tokio::sync::mpsc::{self};
-use tokio::time::Instant;
-use tonic::Status;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::trace;
-use tracing::warn;
 
 /// Learner node's state in Raft cluster.
 ///
@@ -291,14 +294,8 @@ impl<T: TypeConfig> RaftRoleState for LearnerState<T> {
             }
 
             InboundEvent::InstallSnapshotChunk(stream, sender) => {
-                self.handle_install_snapshot_chunk_workflow(
-                    stream,
-                    sender,
-                    ctx,
-                    internal_event_tx,
-                    &state_snapshot,
-                )
-                .await?;
+                self.handle_install_snapshot_chunk_workflow(stream, sender, ctx, internal_event_tx)
+                    .await?;
             }
 
             InboundEvent::JoinCluster(_join_request, sender) => {

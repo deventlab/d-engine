@@ -98,10 +98,9 @@ fn test_classify_error() {
 fn test_u64_to_bytes() {
     // Test basic conversion
     let result = u64_to_bytes(0x1234_5678_9ABC_DEF0);
-    assert_eq!(
-        result.as_ref(),
-        &[0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]
-    );
+    assert_eq!(result.as_ref(), &[
+        0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0
+    ]);
 
     // Test zero
     let result = u64_to_bytes(0);
@@ -109,10 +108,9 @@ fn test_u64_to_bytes() {
 
     // Test max value
     let result = u64_to_bytes(u64::MAX);
-    assert_eq!(
-        result.as_ref(),
-        &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
-    );
+    assert_eq!(result.as_ref(), &[
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+    ]);
 }
 
 #[test]

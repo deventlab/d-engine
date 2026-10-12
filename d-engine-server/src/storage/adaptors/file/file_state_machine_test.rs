@@ -1,41 +1,89 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use bytes::Bytes;
+use d_engine_core::ApplyEntry;
+use d_engine_core::Command;
+use d_engine_core::Error;
+use d_engine_core::SnapshotApplyResult;
+use d_engine_core::StateMachine;
 use d_engine_core::file_io::compute_checksum_from_folder_path;
-use d_engine_core::{ApplyEntry, Command, SnapshotApplyResult, StateMachine};
+use d_engine_core::storage::state_machine_test::StateMachineBuilder;
+use d_engine_core::storage::state_machine_test::StateMachineTestSuite;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
-use std::sync::Arc;
+use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 
 use crate::storage::adaptors::file::FileStateMachine;
-use async_trait::async_trait;
-use d_engine_core::Error;
-use d_engine_core::storage::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
-use tempfile::TempDir;
 
-// ── close_storage() tests ─────────────────────────────────────────────────────
+// ── close() tests ─────────────────────────────────────────────────────────────
 
-/// close_storage() must mark the SM as not running.
-/// FileStateMachine has no exclusive OS lock, so close_storage() is a lifecycle
-/// signal — subsequent reads must fail with NotServing.
+/// close() must mark the SM as not running.
+/// FileStateMachine has no exclusive OS lock, so close() is a lifecycle
+/// signal and persists lease state.
 #[tokio::test]
-async fn test_file_sm_close_storage_marks_not_running() {
+async fn test_file_sm_close_marks_not_running() {
     let dir = TempDir::new().unwrap();
     let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
     sm.start().await.unwrap();
     assert!(sm.is_running());
 
-    sm.close_storage();
+    sm.close().unwrap();
 
-    assert!(!sm.is_running(), "close_storage must mark SM not running");
+    assert!(!sm.is_running(), "close must mark SM not running");
 }
 
-/// stop() after close_storage() must not panic (idempotent shutdown).
+/// Business scenario: the node shuts down while the developer still holds a clone of the state
+/// machine (for example an embedded client reading directly from it).
+///
+/// Purpose: once closed, every read fails with NotServing instead of answering from state that is
+/// no longer maintained. Same contract as the RocksDB state machine.
 #[tokio::test]
-async fn test_file_sm_stop_after_close_storage_is_safe() {
+async fn test_file_sm_reads_fail_after_close() {
     let dir = TempDir::new().unwrap();
     let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
-    sm.close_storage();
-    assert!(sm.stop().is_ok(), "stop after close_storage must not error");
+    sm.start().await.unwrap();
+    sm.apply_chunk(&[ApplyEntry {
+        index: 1,
+        term: 1,
+        command: Command::Insert {
+            key: Bytes::from_static(b"k"),
+            value: Bytes::from_static(b"v"),
+            ttl_secs: None,
+        },
+    }])
+    .await
+    .unwrap();
+    assert_eq!(
+        sm.get(b"k").unwrap(),
+        Some(Bytes::from_static(b"v")),
+        "readable while running"
+    );
+
+    sm.close().unwrap();
+
+    let not_serving = |err: d_engine_core::Error| format!("{err:?}").contains("NotServing");
+    assert!(not_serving(
+        sm.get(b"k").expect_err("get must fail after close")
+    ));
+    assert!(not_serving(
+        sm.get_multi(&[Bytes::from_static(b"k")])
+            .expect_err("get_multi must fail after close")
+    ));
+    assert!(not_serving(
+        sm.scan_prefix(b"k").expect_err("scan_prefix must fail after close")
+    ));
+}
+
+/// close() is idempotent (the worker and the `Drop` safety net may both close).
+#[tokio::test]
+async fn test_file_sm_close_twice_is_safe() {
+    let dir = TempDir::new().unwrap();
+    let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
+    sm.close().unwrap();
+    sm.close().unwrap();
+    assert!(!sm.is_running());
 }
 
 /// Builder for FileStateMachine test instances

@@ -73,9 +73,11 @@ mod utils;
 
 pub use builder::*;
 pub use config::*;
+pub use d_engine_core::client::ClientApi;
+pub use d_engine_core::client::ClientApiError;
+pub use d_engine_core::client::ClientApiResult;
 pub use d_engine_core::client::ErrorCode;
 pub use d_engine_core::client::ScanResults;
-pub use d_engine_core::client::{ClientApi, ClientApiError, ClientApiResult};
 pub use grpc_client::*;
 pub(crate) use pool::*;
 
@@ -170,21 +172,21 @@ impl Client {
     /// or `ClientConfig::cluster_ready_timeout` elapses.
     ///
     /// **What this does:**
-    /// - Probes all endpoints in round-robin until one reports a ready leader
-    ///   (`current_leader_id` is `Some` and present in the member list)
+    /// - Probes all endpoints in round-robin until one reports a ready leader (`current_leader_id`
+    ///   is `Some` and present in the member list)
     /// - Atomically replaces the cached leader/follower connections
-    /// - After `Ok(())`, `get_leader_id()` returns the new leader and all
-    ///   write/read operations are routed to the correct node
+    /// - After `Ok(())`, `get_leader_id()` returns the new leader and all write/read operations are
+    ///   routed to the correct node
     ///
     /// **What this does NOT do:**
-    /// - Does not guarantee that the caller's in-flight requests succeeded;
-    ///   requests sent before `refresh()` may have failed and need to be retried
-    /// - Writes are at-least-once across a failover: a write that was already proposed when
-    ///   the leader stepped down may still be committed by the new leader even though the
-    ///   caller received an error. Re-issuing a non-idempotent command can apply it twice
-    ///   (the engine has no request-id dedup yet).
-    /// - Does not update endpoints permanently; pass `new_endpoints` to change
-    ///   the bootstrap list for this and future refreshes
+    /// - Does not guarantee that the caller's in-flight requests succeeded; requests sent before
+    ///   `refresh()` may have failed and need to be retried
+    /// - Writes are at-least-once across a failover: a write that was already proposed when the
+    ///   leader stepped down may still be committed by the new leader even though the caller
+    ///   received an error. Re-issuing a non-idempotent command can apply it twice (the engine has
+    ///   no request-id dedup yet).
+    /// - Does not update endpoints permanently; pass `new_endpoints` to change the bootstrap list
+    ///   for this and future refreshes
     ///
     /// **Typical usage after leader failover:**
     /// ```ignore

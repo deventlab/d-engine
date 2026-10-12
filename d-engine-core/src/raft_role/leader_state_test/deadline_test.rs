@@ -4,21 +4,26 @@
 //! `pending_client_writes`, `pending_reads`, `pending_lease_reads`, and
 //! `pending_commit_actions`, and leaves live entries intact.
 
+use std::collections::VecDeque;
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::Instant;
+use tonic::Code;
+
 use crate::MaybeCloneOneshot;
 use crate::client::ClientReadRequest;
 use crate::maybe_clone_oneshot::RaftOneshot;
-use crate::raft_role::leader_state::{
-    LeaderState, PendingLeaseRead, PendingReadBatch, PostCommitAction, PostCommitEntry,
-    WriteMetadata,
-};
+use crate::raft_role::leader_state::LeaderState;
+use crate::raft_role::leader_state::PendingLeaseRead;
+use crate::raft_role::leader_state::PendingReadBatch;
+use crate::raft_role::leader_state::PostCommitAction;
+use crate::raft_role::leader_state::PostCommitEntry;
+use crate::raft_role::leader_state::WriteMetadata;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
-use std::collections::VecDeque;
-use std::time::Duration;
-use tokio::sync::{mpsc, watch};
-use tokio::time::Instant;
-use tonic::Code;
 
 // ============================================================================
 // Helpers
@@ -298,17 +303,14 @@ async fn test_tick_drains_expired_node_join_commit_action() {
     let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (tx, mut rx) = MaybeCloneOneshot::new();
-    state.pending_commit_actions.insert(
-        42,
-        PostCommitEntry {
-            deadline: expired(),
-            action: PostCommitAction::NodeJoin {
-                node_id: 2,
-                addr: "127.0.0.1:8080".to_string(),
-                sender: tx,
-            },
+    state.pending_commit_actions.insert(42, PostCommitEntry {
+        deadline: expired(),
+        action: PostCommitAction::NodeJoin {
+            node_id: 2,
+            addr: "127.0.0.1:8080".to_string(),
+            sender: tx,
         },
-    );
+    });
 
     state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
@@ -330,17 +332,14 @@ async fn test_tick_keeps_non_expired_node_join_commit_action() {
     let (mut state, ctx, internal_event_tx, raft_tx) = setup().await;
 
     let (tx, mut rx) = MaybeCloneOneshot::new();
-    state.pending_commit_actions.insert(
-        42,
-        PostCommitEntry {
-            deadline: far_future(),
-            action: PostCommitAction::NodeJoin {
-                node_id: 2,
-                addr: "127.0.0.1:8080".to_string(),
-                sender: tx,
-            },
+    state.pending_commit_actions.insert(42, PostCommitEntry {
+        deadline: far_future(),
+        action: PostCommitAction::NodeJoin {
+            node_id: 2,
+            addr: "127.0.0.1:8080".to_string(),
+            sender: tx,
         },
-    );
+    });
 
     state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 
@@ -363,13 +362,10 @@ async fn test_tick_expired_leader_noop_triggers_step_down() {
     let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
     let (raft_tx, _raft_rx) = mpsc::channel(1);
 
-    state.pending_commit_actions.insert(
-        1,
-        PostCommitEntry {
-            deadline: expired(),
-            action: PostCommitAction::LeaderNoop { term: 1 },
-        },
-    );
+    state.pending_commit_actions.insert(1, PostCommitEntry {
+        deadline: expired(),
+        action: PostCommitAction::LeaderNoop { term: 1 },
+    });
 
     state.tick(&internal_event_tx, &raft_tx, &ctx).await.unwrap();
 

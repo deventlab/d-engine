@@ -5,14 +5,19 @@
 //! - **Logic**: `FsyncWorker` (submit / run_until_caught_up) / try_advance_durable_index contract
 //! - **Concurrency**: Reset races, out-of-order completion, crash recovery
 
-use crate::test_utils::drain_and_apply_fsync_completions;
-use crate::test_utils::wait_for_durable_index;
-use crate::{MockStorageEngine, MockTypeConfig, RaftLog, RaftLogCore};
-use d_engine_proto::common::Entry;
-use d_engine_proto::common::LogId;
 use std::sync::Arc;
 use std::time::Duration;
+
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
 use tokio::sync::mpsc;
+
+use crate::MockStorageEngine;
+use crate::MockTypeConfig;
+use crate::RaftLog;
+use crate::RaftLogCore;
+use crate::test_utils::drain_and_apply_fsync_completions;
+use crate::test_utils::wait_for_durable_index;
 
 // ── Protocol correctness ──────────────────────────────────────────────────────
 
@@ -519,13 +524,11 @@ async fn test_shutdown_with_pending_flush_caller_still_receives_err_reply() {
 /// caller waiting on that stale round.
 ///
 /// Scenario:
-///   1. Write an entry, gate the physical `flush()` call so the round stays
-///      in flight.
-///   2. While gated, call `reset()` — bumps `FsyncWorker`'s fence generation,
-///      then clears `durable_index`/`memory_max_index`/entries to 0.
-///   3. Release the gate — the stale round's `flush()` returns, but its
-///      generation no longer matches; it must discard its result instead of
-///      resolving durable_index or the queued reply.
+///   1. Write an entry, gate the physical `flush()` call so the round stays in flight.
+///   2. While gated, call `reset()` — bumps `FsyncWorker`'s fence generation, then clears
+///      `durable_index`/`memory_max_index`/entries to 0.
+///   3. Release the gate — the stale round's `flush()` returns, but its generation no longer
+///      matches; it must discard its result instead of resolving durable_index or the queued reply.
 #[tokio::test]
 async fn test_reset_during_inflight_fsync_does_not_resurrect_stale_durable_index() {
     let (storage, flush_gate) = MockStorageEngine::not_durable_gated_flush(

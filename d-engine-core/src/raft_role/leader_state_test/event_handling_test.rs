@@ -3,36 +3,43 @@
 //! This module tests the `handle_inbound_event` method for various inbound events
 //! including vote requests, append entries, client operations, and more.
 
+use std::sync::Arc;
+
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::server::cluster::ClusterConfChangeRequest;
+use d_engine_proto::server::cluster::ClusterMembership;
+use d_engine_proto::server::cluster::MetadataRequest;
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::election::VoteResponse;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use prost::Message;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Code;
+use tonic::Status;
+use tracing_test::traced_test;
+
 use crate::ClientCmd;
 use crate::Error;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
-use crate::client::{ClientReadRequest, ClientWriteRequest};
+use crate::client::ClientReadRequest;
+use crate::client::ClientWriteRequest;
 use crate::config::RaftNodeConfig;
 use crate::config::ReadConsistencyPolicy;
 use crate::event::InboundEvent;
-use crate::event::{InternalEvent, NewCommitData};
+use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::create_test_chunk;
+use crate::test_utils::mock::MockBuilder;
+use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
-use crate::test_utils::mock::{MockBuilder, MockTypeConfig};
 use crate::utils::convert::safe_kv_bytes;
-use bytes::Bytes;
-use d_engine_proto::client::WriteCommand;
-use d_engine_proto::server::cluster::{
-    ClusterConfChangeRequest, ClusterMembership, MetadataRequest,
-};
-use d_engine_proto::server::election::{VoteRequest, VoteResponse};
-use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
-use prost::Message;
-use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
-use tonic::Code;
-use tonic::Status;
-use tracing_test::traced_test;
 
 // ============================================================================
 // Test Helper Functions
@@ -627,7 +634,7 @@ async fn test_handle_client_propose_success() {
     // Handle inbound event
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (resp_tx, _resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let cmd = ClientCmd::Propose(
+    let cmd = ClientCmd::propose(
         ClientWriteRequest {
             client_id: 1,
             command: Some(Bytes::from(
@@ -726,7 +733,6 @@ async fn test_handle_client_read_linearizable_failure() {
 ///
 /// # Then
 /// - Leader's commit_index is updated to 3
-/// - NotifyNewCommitIndex event is sent
 /// - Client receives successful read response
 #[tokio::test]
 #[traced_test]
@@ -775,7 +781,8 @@ async fn test_handle_client_read_linearizable_success() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
     // noop committed — leader is ready to serve linearizable reads.
     state.noop_log_id = Some(1);
-    // Pre-set commit_index = 1 so read_index=max(1,1)=1 > last_applied=0 → read deferred to pending_reads.
+    // Pre-set commit_index = 1 so read_index=max(1,1)=1 > last_applied=0 → read deferred to
+    // pending_reads.
     state.update_commit_index(1).expect("should succeed");
 
     // Prepare request
@@ -789,7 +796,7 @@ async fn test_handle_client_read_linearizable_success() {
     let (resp_tx, mut resp_rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let cmd = ClientCmd::Read(client_read_request, resp_tx);
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Push to buffer
     state.push_client_cmd(cmd, &context);
@@ -800,7 +807,7 @@ async fn test_handle_client_read_linearizable_success() {
         .await
         .expect("should succeed");
 
-    // Advance commit to 3 via single-voter flush path → fires NotifyNewCommitIndex
+    // Advance commit to 3 via single-voter flush path
     state.cluster_metadata.single_voter = true;
     state
         .handle_log_flushed(expect_new_commit_index, &context, &internal_event_tx)
@@ -808,17 +815,6 @@ async fn test_handle_client_read_linearizable_success() {
 
     // Validation criteria 1: Leader commit should be updated to: 3
     assert_eq!(state.shared_state().commit_index, expect_new_commit_index);
-
-    // Validation criteria 3: event "InternalEvent::NotifyNewCommitIndex" should be received
-    let event = internal_event_rx.try_recv().unwrap();
-    assert!(matches!(
-        event,
-        InternalEvent::NotifyNewCommitIndex(NewCommitData {
-            new_commit_index: _expect_new_commit_index,
-            role: _,
-            current_term: _
-        })
-    ));
 
     // Simulate SM apply: ApplyCompleted fires pending_reads for read_index <= 3
     state
@@ -1021,7 +1017,8 @@ async fn test_drain_read_buffer_clears_pending_reads_on_stepdown() {
     let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
     // noop committed — leader is ready to serve linearizable reads.
     state.noop_log_id = Some(1);
-    // Pre-set commit_index = 3 so read_index=max(3,1)=3 > last_applied=0 → read deferred to pending_reads
+    // Pre-set commit_index = 3 so read_index=max(3,1)=3 > last_applied=0 → read deferred to
+    // pending_reads
     state.update_commit_index(3).expect("should succeed");
 
     // Push a linearizable read and flush: quorum succeeds, last_applied(0) < read_index(3)
@@ -1326,8 +1323,9 @@ async fn test_cluster_conf_leader_id_transitions_after_noop_commits() {
 /// - handle_inbound_event propagates the non-fatal error (swallowed at dispatch layer)
 #[tokio::test]
 async fn test_leader_join_cluster_dispatched_via_handle_inbound_event() {
-    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     use d_engine_proto::server::cluster::JoinRequest;
+
+    use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
     let mut context =

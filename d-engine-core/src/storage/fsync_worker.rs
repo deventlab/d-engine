@@ -1,15 +1,19 @@
-use crate::Error;
-use crate::InternalEvent;
-use crate::LogStore;
-use crate::Result;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
 use d_engine_proto::common::LogId;
 use parking_lot::Mutex;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::error;
+
+use crate::Error;
+use crate::InternalEvent;
+use crate::LogStore;
+use crate::Result;
 
 /// Schedules physical fsync calls — batches concurrent requests into one
 /// flush() at a time. The final content check is `RaftLogCore::

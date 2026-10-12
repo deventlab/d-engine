@@ -4,24 +4,34 @@
 //! never `last_entry_id` (in-memory). Covers both the single-voter fast path and
 //! the multi-voter quorum path. Fixed by ticket #329.
 
-use crate::event::InternalEvent;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use bytes::Bytes;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
+use rand::distr::SampleString;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+
+use crate::MockMembership;
+use crate::MockRaftLog;
+use crate::PeerUpdate;
+use crate::RaftRequestWithSignal;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
-use crate::test_utils::mock::{MockTypeConfig, mock_raft_context};
-use crate::{MockMembership, MockRaftLog, PeerUpdate, RaftRequestWithSignal};
-use bytes::Bytes;
-use d_engine_proto::common::{EntryPayload, LogId};
-use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::replication::append_entries_response;
-use d_engine_proto::server::replication::{AppendEntriesResponse, SuccessResult};
-use rand::distr::SampleString;
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{mpsc, watch};
+use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::mock::mock_raft_context;
 
 fn success_response(
     term: u64,
@@ -137,7 +147,7 @@ async fn test_single_voter_commit_must_not_advance_before_durable() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "CORRECT: NotifyNewCommitIndex must not fire before durable"
+        "CORRECT: no internal event expected before durable"
     );
 }
 
@@ -167,7 +177,7 @@ async fn test_single_voter_commit_advances_after_durable() {
         .returning(|_, _, _, _, _, _| Ok(crate::PrepareResult::default()));
 
     let (req, _rx) = write_request();
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state
         .process_batch(VecDeque::from(vec![req]), &internal_event_tx, &ctx)
         .await
@@ -179,13 +189,6 @@ async fn test_single_voter_commit_advances_after_durable() {
         state.shared_state().commit_index,
         1,
         "single-voter commit must advance to durable_index after flush"
-    );
-    assert!(
-        matches!(
-            internal_event_rx.try_recv(),
-            Ok(InternalEvent::NotifyNewCommitIndex(_))
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 }
 
@@ -268,7 +271,7 @@ async fn test_multi_voter_commit_respects_quorum_result() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "NotifyNewCommitIndex must not fire"
+        "no internal event expected while commit does not advance"
     );
 }
 
@@ -378,7 +381,7 @@ async fn test_leader_single_voter_commit_advances_on_log_flushed() {
     )
     .await;
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: commit_index still at 0 (process_batch saw durable=0)
     assert_eq!(state.commit_index(), 0);
@@ -391,15 +394,6 @@ async fn test_leader_single_voter_commit_advances_on_log_flushed() {
         state.commit_index(),
         1,
         "single-voter commit must advance to durable index after LogFlushed"
-    );
-
-    // Verify: NotifyNewCommitIndex event sent to state machine
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(_)
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 }
 
@@ -430,7 +424,7 @@ async fn test_leader_single_voter_log_flushed_noop_when_already_committed() {
     assert_eq!(state.commit_index(), 1, "commit_index must not change");
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "NotifyNewCommitIndex must NOT fire when durable <= commit_index"
+        "no internal event expected when durable <= commit_index"
     );
 }
 
@@ -455,7 +449,8 @@ async fn test_update_match_index_only_advances() {
     let mut membership = crate::MockMembership::<MockTypeConfig>::new();
     membership.expect_is_single_node_cluster().returning(|| false);
     membership.expect_voters().returning(|| {
-        use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
+        use d_engine_proto::common::NodeRole::Follower;
+        use d_engine_proto::common::NodeStatus;
         use d_engine_proto::server::cluster::NodeMeta;
         vec![NodeMeta {
             id: 2,
@@ -541,7 +536,8 @@ async fn setup_voter_with_learner(
     LeaderState<MockTypeConfig>,
     crate::raft_context::RaftContext<MockTypeConfig>,
 ) {
-    use d_engine_proto::common::{NodeRole, NodeStatus};
+    use d_engine_proto::common::NodeRole;
+    use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
 
     let mut ctx = mock_raft_context(path, graceful_rx, None);
@@ -631,7 +627,7 @@ async fn test_handle_log_flushed_excludes_learner_from_quorum() {
     state.update_match_index(3, 4).unwrap();
     state.update_commit_index(4).unwrap();
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: leader flushes entry 5 to disk
     state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
@@ -640,13 +636,6 @@ async fn test_handle_log_flushed_excludes_learner_from_quorum() {
         state.commit_index(),
         5,
         "commit must advance when learner is correctly excluded from quorum"
-    );
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(_)
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 }
 
@@ -708,7 +697,7 @@ async fn test_handle_append_result_excludes_learner_from_quorum() {
     state.update_match_index(3, 4).unwrap();
     state.update_commit_index(4).unwrap();
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Action: voter(2) ACKs entry 5 — triggers quorum re-calculation
     state
@@ -720,13 +709,6 @@ async fn test_handle_append_result_excludes_learner_from_quorum() {
         state.commit_index(),
         5,
         "commit must advance when learner is correctly excluded from quorum after voter ACK"
-    );
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(_)
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 }
 
@@ -742,7 +724,8 @@ async fn setup_multi_voter(
     LeaderState<MockTypeConfig>,
     crate::raft_context::RaftContext<MockTypeConfig>,
 ) {
-    use d_engine_proto::common::{NodeRole::Follower, NodeStatus};
+    use d_engine_proto::common::NodeRole::Follower;
+    use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
 
     let mut ctx = mock_raft_context(path, graceful_rx, None);
@@ -791,7 +774,8 @@ async fn setup_multi_voter(
 /// **Scenario**:
 /// - 3-node cluster (leader + 2 peers)
 /// - Leader appends entry 1, peers ACK immediately (match_index=[1,1])
-/// - Leader's durable_index=0 → quorum blocked (need 2/3, have only 2/3 peers but leader not durable)
+/// - Leader's durable_index=0 → quorum blocked (need 2/3, have only 2/3 peers but leader not
+///   durable)
 /// - LogFlushed(1) arrives → leader durable=1 → quorum satisfied ([1,1,1]) → commit advances to 1
 #[tokio::test]
 async fn test_multi_voter_commit_advances_when_log_flushed_enables_quorum() {
@@ -814,7 +798,7 @@ async fn test_multi_voter_commit_advances_when_log_flushed_enables_quorum() {
     state.update_match_index(2, 1).unwrap();
     state.update_match_index(3, 1).unwrap();
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Precondition: commit still at 0 (durable_index was 0 during process_batch)
     assert_eq!(state.commit_index(), 0);
@@ -827,15 +811,6 @@ async fn test_multi_voter_commit_advances_when_log_flushed_enables_quorum() {
         state.commit_index(),
         1,
         "multi-voter commit must advance when LogFlushed enables quorum"
-    );
-
-    // Verify: NotifyNewCommitIndex event sent to state machine
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(_)
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 }
 
@@ -890,9 +865,9 @@ async fn test_multi_voter_log_flushed_no_commit_when_quorum_insufficient() {
         "multi-voter commit must NOT advance when quorum insufficient despite LogFlushed"
     );
 
-    // Verify: no commit event should be sent
+    // Verify: no event should be sent
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "NotifyNewCommitIndex must NOT fire when quorum not satisfied"
+        "no internal event expected when quorum not satisfied"
     );
 }

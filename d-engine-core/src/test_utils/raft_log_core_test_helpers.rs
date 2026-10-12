@@ -9,9 +9,13 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use bytes::Bytes;
-use d_engine_proto::common::{Entry, EntryPayload};
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
 
-use crate::{MockStorageEngine, MockTypeConfig, RaftLog, RaftLogCore};
+use crate::MockStorageEngine;
+use crate::MockTypeConfig;
+use crate::RaftLog;
+use crate::RaftLogCore;
 
 /// Test context for RaftLogCore tests
 pub struct RaftLogCoreTestContext {

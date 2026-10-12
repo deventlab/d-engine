@@ -40,7 +40,8 @@ use crate::common::test_put_get;
 /// **Standalone (RPC)**: Nodes communicate via gRPC, client accesses via ClientManager
 ///
 /// ## Test Purpose
-/// Verify that a Learner node with READ_ONLY status (permanent Analytics node) works in Standalone/RPC mode:
+/// Verify that a Learner node with READ_ONLY status (permanent Analytics node) works in
+/// Standalone/RPC mode:
 /// 1. **Data Sync**: Node 4 syncs all data from the primary cluster (read-only capability)
 /// 2. **Non-Voting**: Node 4 does NOT participate in voting/quorum
 /// 3. **Permanent Learner**: Node 4 remains as Learner forever (never auto-promotes to Voter)
@@ -49,7 +50,8 @@ use crate::common::test_put_get;
 /// ## Test Scenario
 /// - **Phase 1**: Bootstrap 3-node primary cluster (nodes 1,2,3 = Voter+ACTIVE via RPC)
 /// - **Phase 2**: Write test data through RPC client
-/// - **Phase 3**: Start node 4 as standalone Learner with READ_ONLY status, joins via JoinCluster RPC
+/// - **Phase 3**: Start node 4 as standalone Learner with READ_ONLY status, joins via JoinCluster
+///   RPC
 /// - **Phase 4**: Verify node 4 can read all replicated data via RPC
 /// - **Phase 5**: Verify new writes propagate to node 4, quorum unchanged
 /// - **Phase 6**: Verify node 4 status remains READ_ONLY (cannot be promoted to Voter)

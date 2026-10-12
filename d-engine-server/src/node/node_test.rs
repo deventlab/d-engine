@@ -80,7 +80,8 @@ fn prepare_succeed_majority_confirmation() -> (MockRaftLog, MockReplicationCore<
     // Initialize the mock object
     let mut replication_handler = MockReplicationCore::<MockTypeConfig>::new();
     let mut raft_log = MockRaftLog::new();
-    // The first election now starts at once, so a single-node cluster becomes leader and proposes its noop.
+    // The first election now starts at once, so a single-node cluster becomes leader and proposes
+    // its noop.
     replication_handler
         .expect_prepare_batch_requests()
         .returning(|_, _, _, _, _, _| Ok(d_engine_core::PrepareResult::default()));
@@ -919,6 +920,286 @@ mod bootstrap_strategy_tests {
         assert!(
             logs_contain("Learner joining cluster"),
             "Should log join attempt"
+        );
+    }
+}
+
+/// Shutdown hands committed entries to the state machine worker and then waits for it to finish
+/// applying them. That wait must be bounded: a wedged state machine may not hang `run()`.
+mod shutdown_apply_wait_tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    use d_engine_core::ApplyResult;
+    use d_engine_core::MockStateMachineWriterOps;
+    use d_engine_core::StateMachineCommand;
+    use d_engine_proto::common::Entry;
+    use d_engine_proto::common::EntryPayload;
+
+    use super::*;
+    use crate::test_utils::sm_worker_with_writer;
+
+    /// A node whose state machine worker is real and whose writer is `writer`, with one entry
+    /// already queued for it to apply when `run()` starts it.
+    fn node_applying(
+        writer: MockStateMachineWriterOps<MockTypeConfig>,
+        timeout_ms: u64,
+        shutdown_rx: watch::Receiver<()>,
+    ) -> crate::Node<MockTypeConfig> {
+        let mut config = RaftNodeConfig::new().expect("default config").validate().expect("valid");
+        config.raft.state_machine.shutdown_apply_timeout_ms = timeout_ms;
+        let (sm_worker, queue) = sm_worker_with_writer(writer);
+        queue
+            .send(StateMachineCommand::ApplyEntries {
+                sent_at: tokio::time::Instant::now(),
+                entries: vec![Entry {
+                    index: 1,
+                    term: 1,
+                    payload: Some(EntryPayload::command(bytes::Bytes::from("data"))),
+                }],
+            })
+            .unwrap();
+        MockBuilder::new(shutdown_rx)
+            .with_node_config(config)
+            .with_sm_worker(sm_worker, queue)
+            .build_node()
+    }
+
+    /// A state machine worker that never finishes (stuck apply) must not hang shutdown:
+    /// `run()` gives up after the configured timeout and says so at ERROR level, because
+    /// entries the node reported as committed may then be unapplied until the next start.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_run_shutdown_with_stuck_state_machine_returns_after_timeout_and_logs_error() {
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let mut writer = MockStateMachineWriterOps::new();
+        writer.expect_apply_chunk().returning(move |entries| {
+            let _ = release_rx.lock().unwrap().recv(); // blocks until the test releases it
+            Ok(entries.iter().map(|e| ApplyResult::success(e.index)).collect())
+        });
+        let node = node_applying(writer, 300, shutdown_rx);
+
+        shutdown_tx.send(()).unwrap();
+        let started = Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(5), node.run())
+            .await
+            .expect("run() hung on a stuck state machine worker; the wait must be bounded");
+        let elapsed = started.elapsed();
+        let _ = release_tx.send(());
+
+        assert!(
+            result.is_ok(),
+            "timeout while draining must not turn shutdown into a panic"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(250),
+            "returned after {elapsed:?}: gave up before the configured timeout"
+        );
+        logs_assert(|lines: &[&str]| {
+            lines
+                .iter()
+                .any(|l| l.contains("ERROR") && l.to_lowercase().contains("state machine"))
+                .then_some(())
+                .ok_or_else(|| "no ERROR log about the state machine apply timeout".to_string())
+        });
+    }
+
+    /// A healthy worker that needs a moment to finish applying must be waited for
+    /// (that is the whole guarantee), and no error is logged.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_run_shutdown_waits_for_state_machine_that_finishes_within_timeout() {
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let applied = Arc::new(AtomicBool::new(false));
+        let applied_in_worker = applied.clone();
+        let mut writer = MockStateMachineWriterOps::new();
+        writer.expect_apply_chunk().returning(move |entries| {
+            std::thread::sleep(Duration::from_millis(300));
+            applied_in_worker.store(true, Ordering::SeqCst);
+            Ok(entries.iter().map(|e| ApplyResult::success(e.index)).collect())
+        });
+        let node = node_applying(writer, 5_000, shutdown_rx);
+
+        shutdown_tx.send(()).unwrap();
+        node.run().await.expect("shutdown ok");
+
+        assert!(
+            applied.load(Ordering::SeqCst),
+            "run() returned before the worker finished applying"
+        );
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .find(|l| l.contains("ERROR") && l.to_lowercase().contains("state machine"))
+            {
+                Some(l) => Err(format!("unexpected error log: {l}")),
+                None => Ok(()),
+            }
+        });
+    }
+}
+
+/// The state machine worker is a dedicated OS thread started by `run()`. Whatever ends
+/// `run()`, that thread must not outlive it: it holds the state machine
+/// (and with it the storage lock), so a leaked thread blocks restarting on the same data dir.
+mod sm_worker_lifecycle_tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::FileStateMachine;
+    use crate::FileStorageEngine;
+    use crate::node::NodeBuilder;
+
+    /// `true` once the node's worker has been stopped and joined.
+    fn sm_worker_stopped(node: &crate::Node<impl d_engine_core::TypeConfig>) -> bool {
+        format!("{:?}", node.sm_worker).contains("Stopped")
+    }
+
+    /// Business scenario: an embedder starts a 3-node cluster member whose peers are down. Start-up
+    /// gives up at `startup_quorum_timeout` and `run()` returns an error, but the embedder still
+    /// holds the engine (so the shutdown signal is NOT sent or dropped) and will retry.
+    ///
+    /// Purpose: after `run()` fails during bootstrap, the sm-apply thread must have stopped.
+    /// Before the fix nobody told it to stop, so it stayed blocked forever, holding the state
+    /// machine.
+    #[tokio::test]
+    async fn test_run_failing_during_bootstrap_stops_sm_apply_thread() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(());
+
+        let mut config = RaftNodeConfig::new().unwrap().validate().unwrap();
+        config.cluster.node_id = 1;
+        config.cluster.initial_cluster = (1..=3u32)
+            .map(|id| NodeMeta {
+                id,
+                // Nothing listens on these ports: peers 2 and 3 are unreachable.
+                address: format!("127.0.0.1:{}", 1 + id),
+                role: Follower as i32,
+                status: NodeStatus::Active as i32,
+            })
+            .collect();
+        config.raft.membership.startup_quorum_timeout = Duration::from_millis(200);
+
+        let storage =
+            Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
+        let sm = Arc::new(FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"));
+        let node = NodeBuilder::<FileStorageEngine, FileStateMachine>::from_node_config(
+            temp_dir.path(),
+            config,
+            shutdown_rx,
+        )
+        .storage_engine(storage)
+        .state_machine(sm)
+        .build()
+        .await
+        .expect("build")
+        .node
+        .expect("node built");
+
+        let result = tokio::time::timeout(Duration::from_secs(10), node.run())
+            .await
+            .expect("run() must give up at startup_quorum_timeout");
+        assert!(
+            result.is_err(),
+            "bootstrap should fail with unreachable peers"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let stopped = loop {
+            let stopped = sm_worker_stopped(&node);
+            if stopped || Instant::now() > deadline {
+                break stopped;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert!(
+            stopped,
+            "the sm-apply thread is still running after run() failed during bootstrap"
+        );
+    }
+
+    /// Business scenario: an embedder drops its `EmbeddedEngine` without calling `stop()`. The
+    /// shutdown sender is dropped with it, which the Raft loop treats as a shutdown request.
+    ///
+    /// Purpose: guard for the safety net that must survive any change to how the worker is
+    /// stopped: a running node whose shutdown sender is dropped must still end `run()` and leave
+    /// no sm-apply thread behind.
+    #[tokio::test]
+    async fn test_run_stops_sm_apply_thread_when_shutdown_sender_is_dropped() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let config = RaftNodeConfig::new().unwrap().validate().unwrap();
+
+        let storage =
+            Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
+        let sm = Arc::new(FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"));
+        let node = NodeBuilder::<FileStorageEngine, FileStateMachine>::from_node_config(
+            temp_dir.path(),
+            config,
+            shutdown_rx,
+        )
+        .storage_engine(storage)
+        .state_machine(sm)
+        .build()
+        .await
+        .expect("build")
+        .node
+        .expect("node built");
+
+        let running = tokio::spawn({
+            let node = node.clone();
+            async move { node.run().await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(shutdown_tx);
+
+        let result = tokio::time::timeout(Duration::from_secs(10), running)
+            .await
+            .expect("run() must end once the shutdown sender is dropped")
+            .expect("run() task must not panic");
+        assert!(
+            result.is_ok(),
+            "shutdown by dropping the sender is a clean stop"
+        );
+        assert!(
+            sm_worker_stopped(&node),
+            "the sm-apply thread is still running after run() ended"
+        );
+    }
+
+    /// Business scenario: the worker thread cannot be started (here: `run()` is driven by an
+    /// executor that is not a Tokio runtime, so the worker has no runtime to run on). `run()`
+    /// fails at its first step, before anything else was started.
+    ///
+    /// Purpose: the unconditional tail still runs and hands the state machine back closed even
+    /// though the worker never ran, because the developer may keep their own `Arc` to it.
+    #[test]
+    fn test_run_failing_to_start_the_worker_still_closes_the_state_machine() {
+        let closed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = closed.clone();
+        let mut writer = d_engine_core::MockStateMachineWriterOps::new();
+        writer.expect_close().returning(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+        let (_shutdown_tx, shutdown_rx) = watch::channel(());
+        let (sm_worker, queue) = crate::test_utils::sm_worker_with_writer(writer);
+        let node = MockBuilder::new(shutdown_rx).with_sm_worker(sm_worker, queue).build_node();
+
+        // No Tokio runtime on this thread: `SmWorkerHandle::start` has nowhere to run the worker.
+        let result = futures::executor::block_on(node.run());
+
+        assert!(
+            result.is_err(),
+            "starting the worker without a runtime must fail run()"
+        );
+        assert_eq!(
+            closed.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the never-started worker's state machine must be closed by run()'s tail"
         );
     }
 }

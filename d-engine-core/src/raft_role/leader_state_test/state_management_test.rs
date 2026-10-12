@@ -4,6 +4,18 @@
 //! - Leader discovery event handling
 //! - State size tracking
 
+use std::mem::size_of;
+use std::sync::Arc;
+
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Leader;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::LeaderDiscoveryRequest;
+use d_engine_proto::server::cluster::NodeMeta;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tracing_test::traced_test;
+
 use crate::candidate_state::CandidateState;
 use crate::event::InboundEvent;
 use crate::maybe_clone_oneshot::RaftOneshot;
@@ -12,13 +24,6 @@ use crate::raft_role::leader_state::LeaderState;
 use crate::role_state::RaftRoleState;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::{NodeRole::Leader, NodeStatus};
-use d_engine_proto::server::cluster::{LeaderDiscoveryRequest, NodeMeta};
-use std::mem::size_of;
-use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
-use tracing_test::traced_test;
 
 // ============================================================================
 // Test Helper Functions

@@ -1,6 +1,8 @@
-use crate::storage::raft_log::RaftLog;
-use crate::test_utils::{RaftLogCoreTestContext, simulate_insert_command};
 use d_engine_proto::common::Entry;
+
+use crate::storage::raft_log::RaftLog;
+use crate::test_utils::RaftLogCoreTestContext;
+use crate::test_utils::simulate_insert_command;
 
 #[tokio::test]
 async fn test_log_matching_property() {
@@ -19,15 +21,11 @@ async fn test_log_matching_property() {
     // Conflict resolution: new leader with [1,1] [2,1] [3,2] [4,3]
     let result = ctx
         .raft_log
-        .filter_out_conflicts_and_append(
-            3,
-            2,
-            vec![Entry {
-                index: 4,
-                term: 3,
-                payload: None,
-            }],
-        )
+        .filter_out_conflicts_and_append(3, 2, vec![Entry {
+            index: 4,
+            term: 3,
+            payload: None,
+        }])
         .await
         .unwrap();
 
@@ -211,7 +209,8 @@ async fn test_majority_matched_index_is_none_when_it_does_not_pass_the_commit_in
         None,
         "median == commit_index: nothing new to commit"
     );
-    // A majority below the commit index (possible after a membership change) is not an advance either.
+    // A majority below the commit index (possible after a membership change) is not an advance
+    // either.
     assert_eq!(
         ctx.raft_log.calculate_majority_matched_index(1, 50, vec![50, 40, 40, 40]),
         None

@@ -4,10 +4,34 @@
 //! `execute_request_immediately` methods which handle log replication,
 //! commit index calculation, and client response delivery.
 
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use bytes::Bytes;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::ClusterMembership;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::ConflictResult;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
+use rand::distr::SampleString;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tonic::Status;
+use tracing_test::traced_test;
+
 use crate::Error;
+use crate::MaybeCloneOneshot;
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
+use crate::PeerUpdate;
 use crate::RaftContext;
 use crate::RaftRequestWithSignal;
 use crate::client::ClientResponse;
@@ -19,21 +43,6 @@ use crate::role_state::RaftRoleState;
 use crate::test_utils::mock::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::mock::mock_raft_context;
-use crate::{MaybeCloneOneshot, PeerUpdate};
-use bytes::Bytes;
-use d_engine_proto::common::{EntryPayload, LogId, NodeRole::Follower, NodeStatus};
-use d_engine_proto::server::cluster::{ClusterMembership, NodeMeta};
-use d_engine_proto::server::replication::ConflictResult;
-use d_engine_proto::server::replication::append_entries_response;
-use d_engine_proto::server::replication::{AppendEntriesResponse, SuccessResult};
-use rand::distr::SampleString;
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tonic::Status;
-use tracing_test::traced_test;
 
 // ============================================================================
 // Test Helper Structures and Functions
@@ -159,7 +168,6 @@ fn success_response(
 ///
 /// # Then
 /// - Commit index advances to 6
-/// - NotifyNewCommitIndex event is sent
 /// - Both clients receive success responses
 #[tokio::test]
 #[traced_test]
@@ -193,7 +201,7 @@ async fn test_process_batch_quorum_achieved() {
     let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
     let receivers = vec![rx1, rx2];
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     let result = context
         .state
         .process_batch(batch, &internal_event_tx, &context.raft_context)
@@ -211,10 +219,6 @@ async fn test_process_batch_quorum_achieved() {
         .await;
 
     assert_eq!(context.state.shared_state().commit_index, 6);
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     // Verify client responses
     for mut rx in receivers {
@@ -700,7 +704,7 @@ async fn test_single_node_cluster_commit_index() {
 
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let batch = VecDeque::from(vec![mock_request(tx1)]);
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let result = context
         .state
@@ -721,10 +725,6 @@ async fn test_single_node_cluster_commit_index() {
         7,
         "Single-node: commit_index should advance to last_entry_id after LogFlushed"
     );
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     let mut rx = rx1;
     let response = rx.recv().await.unwrap().unwrap();
@@ -787,7 +787,7 @@ async fn test_multi_node_cluster_empty_peer_updates_commit_index() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "No NotifyNewCommitIndex without commit advancement"
+        "No internal event expected without commit advancement"
     );
 
     // Write is pending — awaiting peer ACKs via handle_append_result
@@ -855,7 +855,7 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let (tx2, rx2) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let batch = VecDeque::from(vec![mock_request(tx1), mock_request(tx2)]);
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     let result = context
         .state
@@ -876,10 +876,6 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
         .unwrap();
 
     assert_eq!(context.state.shared_state().commit_index, 6);
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     let mut rx = rx1;
     let response = rx.recv().await.unwrap().unwrap();
@@ -913,7 +909,6 @@ async fn test_multi_node_cluster_with_peer_updates_commit_index() {
 ///
 /// # Then
 /// - Commit index advances to 5
-/// - NotifyNewCommitIndex event is sent
 /// - Response channel receives write_success
 #[tokio::test]
 #[traced_test]
@@ -960,7 +955,7 @@ async fn test_verify_internal_quorum_success() {
         wait_for_apply_event: false,
     };
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state
         .execute_request_immediately(req, &raft_context, &internal_event_tx)
         .await
@@ -971,10 +966,6 @@ async fn test_verify_internal_quorum_success() {
     state.handle_log_flushed(5, &raft_context, &internal_event_tx).await;
 
     assert_eq!(state.shared_state().commit_index, 5);
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     // Response received: write_success
     let response = resp_rx.recv().await.unwrap().unwrap();
@@ -1477,7 +1468,7 @@ async fn test_execute_and_process_raft_rpc_multi_node_empty_peer_updates() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "No NotifyNewCommitIndex without commit advancement"
+        "No internal event expected without commit advancement"
     );
 
     // Write request is pending — awaiting peer ACKs
@@ -1562,7 +1553,6 @@ async fn test_merge_batch_to_write_metadata_empty_payload_with_senders() {
 ///
 /// # Then
 /// - Commit advances from 0 to 3 (quorum: leader + peer = 2/2)
-/// - NotifyNewCommitIndex event sent
 #[tokio::test]
 #[traced_test]
 async fn test_handle_append_result_two_node_quorum_achieved() {
@@ -1617,7 +1607,7 @@ async fn test_handle_append_result_two_node_quorum_achieved() {
     state.init_cluster_metadata(&raft_context.membership).await.unwrap();
     // initial commit_index = 0
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
     state
         .handle_append_result(
             peer2_id,
@@ -1633,10 +1623,6 @@ async fn test_handle_append_result_two_node_quorum_achieved() {
         3,
         "two-node: commit advances to 3 (quorum: leader + peer2 = 2/2)"
     );
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 }
 
 /// B1: Three-node cluster achieves quorum when all peers respond with success.
@@ -1685,7 +1671,7 @@ async fn test_handle_append_result_three_node_quorum_all_peers() {
         );
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Peer 2 responds → quorum (2/3), commit advances
     context
@@ -1704,10 +1690,6 @@ async fn test_handle_append_result_three_node_quorum_all_peers() {
         10,
         "commit advances after peer 2"
     );
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     // Peer 3 responds → already committed, calculate_majority returns None
     context
@@ -1768,7 +1750,7 @@ async fn test_handle_append_result_three_node_quorum_partial_timeout() {
     raft_log.expect_calculate_majority_matched_index().returning(|_, _, _| Some(10));
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Only peer 2 responds; peer 3 never does
     context
@@ -1787,10 +1769,6 @@ async fn test_handle_append_result_three_node_quorum_partial_timeout() {
         10,
         "quorum achieved with partial timeout (2/3 nodes = majority)"
     );
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 }
 
 /// B1: Five-node cluster achieves quorum when majority (3 of 4 peers) respond.
@@ -1855,7 +1833,7 @@ async fn test_handle_append_result_five_node_quorum_majority() {
         );
     context.raft_context.storage.raft_log = Arc::new(raft_log);
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // 3 peers respond → majority of 5 (need ≥3) achieved
     context
@@ -1874,10 +1852,6 @@ async fn test_handle_append_result_five_node_quorum_majority() {
         10,
         "commit advances (4/5 ≥ majority)"
     );
-    assert!(matches!(
-        internal_event_rx.try_recv(),
-        Ok(InternalEvent::NotifyNewCommitIndex(_))
-    ));
 
     // Remaining peers just confirm — no second commit advance
     for peer_id in [3u32, 4u32] {
@@ -1940,7 +1914,7 @@ async fn test_handle_append_result_three_node_no_quorum_all_timeouts() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "no NotifyNewCommitIndex without commit advancement"
+        "no internal event expected without commit advancement"
     );
 }
 
@@ -2004,7 +1978,7 @@ async fn test_handle_append_result_three_node_no_quorum_single_peer_insufficient
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "no NotifyNewCommitIndex without commit advancement"
+        "no internal event expected without commit advancement"
     );
 }
 
@@ -2085,7 +2059,7 @@ async fn test_handle_append_result_five_node_no_quorum_minority() {
     );
     assert!(
         internal_event_rx.try_recv().is_err(),
-        "no NotifyNewCommitIndex without quorum"
+        "no internal event expected without quorum"
     );
 }
 
@@ -2510,14 +2484,11 @@ mod test_leader_update_next_index {
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
         state.update_next_index(2, 100).unwrap();
         state.update_match_index(2, 7).unwrap();
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: Some(11),
-                next_index: 12,
-                success: true,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: Some(11),
+            next_index: 12,
+            success: true,
+        });
         assert_eq!(state.next_index.get(&2), Some(&100));
         assert_eq!(state.match_index.get(&2), Some(&11));
     }
@@ -2533,21 +2504,19 @@ mod test_leader_update_next_index {
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
         state.update_next_index(2, 100).unwrap();
         state.update_match_index(2, 7).unwrap();
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: None,
-                next_index: 12,
-                success: false,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: None,
+            next_index: 12,
+            success: false,
+        });
         assert_eq!(state.next_index.get(&2), Some(&12));
         assert_eq!(state.match_index.get(&2), Some(&7));
     }
 
     // On a conflict response, if the computed retry point (PeerUpdate::next_index)
-    // is below the confirmed match_index + 1, the floor guard must clamp next_index to match_index + 1.
-    // Retreating below already-confirmed entries would violate Raft's Log Matching Property.
+    // is below the confirmed match_index + 1, the floor guard must clamp next_index to match_index
+    // + 1. Retreating below already-confirmed entries would violate Raft's Log Matching
+    // Property.
     #[tokio::test]
     async fn test_update_peer_index_conflict_floor_guard_prevents_retreat_below_match_index() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2556,14 +2525,11 @@ mod test_leader_update_next_index {
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
         state.update_next_index(2, 100).unwrap();
         state.update_match_index(2, 50).unwrap();
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: None,
-                next_index: 12,
-                success: false,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: None,
+            next_index: 12,
+            success: false,
+        });
         assert_eq!(state.next_index.get(&2), Some(&(50 + 1)));
         assert_eq!(state.match_index.get(&2), Some(&50));
     }
@@ -2576,14 +2542,11 @@ mod test_leader_update_next_index {
         let context_inner = MockBuilder::new(graceful_rx).build_context();
 
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: Some(11),
-                next_index: 12,
-                success: true,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: Some(11),
+            next_index: 12,
+            success: true,
+        });
         assert_eq!(
             state.peer_replication_state.get(&2),
             Some(&PeerReplicationState::Replicate),
@@ -2599,14 +2562,11 @@ mod test_leader_update_next_index {
         let context_inner = MockBuilder::new(graceful_rx).build_context();
 
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: None,
-                next_index: 12,
-                success: false,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: None,
+            next_index: 12,
+            success: false,
+        });
         assert_eq!(
             state.peer_replication_state.get(&2),
             Some(&PeerReplicationState::Probe),
@@ -2626,14 +2586,11 @@ mod test_leader_update_next_index {
         let mut state = LeaderState::<MockTypeConfig>::new(1, context_inner.node_config.clone());
         state.update_next_index(2, 1).unwrap();
         state.update_match_index(2, 1).unwrap();
-        state.update_peer_index(
-            2,
-            &PeerUpdate {
-                match_index: Some(11),
-                next_index: 12,
-                success: true,
-            },
-        );
+        state.update_peer_index(2, &PeerUpdate {
+            match_index: Some(11),
+            next_index: 12,
+            success: true,
+        });
         assert_eq!(state.next_index.get(&2), Some(&12));
         assert_eq!(state.match_index.get(&2), Some(&11));
     }
@@ -2790,9 +2747,9 @@ async fn test_two_reachable_peers_of_four_confirm_quorum() {
 /// The partition lasts: one peer keeps answering every round, three never do.
 ///
 /// # Then
-/// - After more than `election_timeout_min` the leader no longer admits writes and the vote
-///   guard no longer claims a recent quorum ACK. The loop below never calls anything but the
-///   normal reply path, so a refresh from stale history would keep both open forever.
+/// - After more than `election_timeout_min` the leader no longer admits writes and the vote guard
+///   no longer claims a recent quorum ACK. The loop below never calls anything but the normal reply
+///   path, so a refresh from stale history would keep both open forever.
 #[tokio::test]
 #[traced_test]
 async fn test_leader_loses_write_admission_when_only_one_peer_keeps_answering() {
@@ -2815,11 +2772,13 @@ async fn test_leader_loses_write_admission_when_only_one_peer_keeps_answering() 
 #[tokio::test]
 #[traced_test]
 async fn test_queued_reads_wait_for_a_real_quorum() {
+    use tokio::time::Duration;
+    use tokio::time::Instant;
+
     use crate::ReadConsistencyPolicy;
     use crate::client::ClientReadRequest;
     use crate::convert::safe_kv_bytes;
     use crate::raft_role::leader_state::PendingLeaseRead;
-    use tokio::time::{Duration, Instant};
 
     let mut context = five_voter_partition_context("/tmp/test_queued_reads_wait").await;
 
@@ -2834,13 +2793,13 @@ async fn test_queued_reads_wait_for_a_real_quorum() {
         read(ReadConsistencyPolicy::LinearizableRead),
         linearizable_tx,
     ));
-    context.state.pending_reads.insert(
-        0,
-        crate::raft_role::leader_state::PendingReadBatch {
+    context
+        .state
+        .pending_reads
+        .insert(0, crate::raft_role::leader_state::PendingReadBatch {
             deadline: Instant::now() + Duration::from_secs(5),
             requests,
-        },
-    );
+        });
     let (lease_tx, mut lease_rx) = MaybeCloneOneshot::new();
     context.state.pending_lease_reads.push_back(PendingLeaseRead {
         request: read(ReadConsistencyPolicy::LeaseRead),
@@ -2983,18 +2942,19 @@ async fn test_record_voter_ack_moves_forward_again_when_a_second_peer_recovers()
 /// - 3 voters (leader, B, C): one peer is a quorum, B answered the round sent at 1400
 ///
 /// # When
-/// - the cluster grows to 5 voters (D and a new E join, the old E=5 is gone), then C answers
-///   the round sent at 1450
+/// - the cluster grows to 5 voters (D and a new E join, the old E=5 is gone), then C answers the
+///   round sent at 1450
 ///
 /// # Then
 /// - the removed peer's time is gone
-/// - the quorum time is recomputed for 5 voters (2 peers needed, B:1400 and C:1450 -> 1400)
-///   and reported once. Without the reset the stale 1400 of the 3-voter conclusion would hide it.
+/// - the quorum time is recomputed for 5 voters (2 peers needed, B:1400 and C:1450 -> 1400) and
+///   reported once. Without the reset the stale 1400 of the 3-voter conclusion would hide it.
 #[tokio::test]
 #[traced_test]
 async fn test_membership_change_drops_left_peers_and_recomputes_the_quorum_time() {
-    use crate::MockMembership;
     use d_engine_proto::server::cluster::NodeMeta;
+
+    use crate::MockMembership;
 
     let mut context = five_voter_partition_context("/tmp/test_membership_change_resets").await;
     let state = &mut context.state;

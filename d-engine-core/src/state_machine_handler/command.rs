@@ -2,17 +2,19 @@
 //! all state-machine mutations.
 //! one serial writer.
 
-use crate::Result;
-use crate::SnapshotApplyResult;
-use crate::SnapshotError;
-use d_engine_proto::common::Entry;
-use d_engine_proto::server::storage::SnapshotMetadata;
 use std::path::Path;
 use std::path::PathBuf;
+
+use d_engine_proto::common::Entry;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::warn;
+
+use crate::Result;
+use crate::SnapshotApplyResult;
+use crate::SnapshotError;
 
 /// A snapshot stream already fully received and decompressed to a local temp
 /// directory. Owns the directory's lifetime: dropping it (e.g. once the
@@ -118,8 +120,14 @@ pub struct CapturedLocalSnapshot {
 pub enum StateMachineCommand {
     /// Fire-and-forget by design: completion is reported via
     /// `InternalEvent::ApplyCompleted`, not through this variant, to keep
-    /// `CommitHandler` decoupled from apply I/O (see worker.rs doc comment).
-    ApplyEntries { entries: Vec<Entry> },
+    /// the Raft loop decoupled from apply I/O (see worker.rs doc comment).
+    ///
+    /// `sent_at` is when the Raft loop enqueued the batch; the Worker records the
+    /// queue wait (`core.raft.sm_worker.queue_wait_ms`) when it dequeues it.
+    ApplyEntries {
+        entries: Vec<Entry>,
+        sent_at: tokio::time::Instant,
+    },
 
     /// Carries a response channel because the caller (Raft main loop) must
     /// block until the install genuinely completes before replying to the
@@ -148,6 +156,11 @@ pub enum StateMachineCommand {
         response: oneshot::Sender<Result<CapturedLocalSnapshot>>,
         guard: tokio::sync::OwnedMutexGuard<()>,
     },
+
+    /// Last command the Raft node's owner puts in the queue. The Worker applies everything
+    /// queued before it, then stops. Queue order is what makes "everything" include the
+    /// last `ApplyEntries`.
+    Shutdown,
 }
 
 /// The only way role code (follower/learner) may reach `StateMachineWorker` — hides the
@@ -170,7 +183,10 @@ impl StateMachineCommandSender {
         entries: Vec<Entry>,
     ) -> Result<()> {
         self.tx
-            .send(StateMachineCommand::ApplyEntries { entries })
+            .send(StateMachineCommand::ApplyEntries {
+                entries,
+                sent_at: tokio::time::Instant::now(),
+            })
             .map_err(|_| SnapshotError::WorkerUnavailable.into())
     }
 

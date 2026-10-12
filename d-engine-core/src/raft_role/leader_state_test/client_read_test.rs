@@ -1,9 +1,28 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use bytes::Bytes;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::NodeMeta;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::Instant;
+use tonic::Code;
+use tracing_test::traced_test;
+
 use crate::ClientCmd;
+use crate::Error;
 use crate::MockMembership;
+use crate::MockRaftLog;
+use crate::MockReplicationCore;
 use crate::MockStateMachineHandler;
+use crate::RaftNodeConfig;
 use crate::ReadConsistencyPolicy;
 use crate::ScanResult;
-use crate::client::{ClientReadRequest, ClientResponsePayload, ErrorCode};
+use crate::client::ClientReadRequest;
+use crate::client::ClientResponsePayload;
+use crate::client::ErrorCode;
 use crate::convert::safe_kv_bytes;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
@@ -13,18 +32,6 @@ use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
 use crate::test_utils::node_config;
-use crate::{Error, MockRaftLog, MockReplicationCore, RaftNodeConfig};
-use bytes::Bytes;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::server::cluster::NodeMeta;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time::Instant;
-use tonic::Code;
-use tracing_test::traced_test;
 
 // ============================================================================
 // Unit Tests for LinearizableRead Core Functions
@@ -468,7 +475,6 @@ async fn test_linearizable_read_quorum_failure() {
 ///
 /// # Then
 /// - Leader's commit_index updates to 3
-/// - NotifyNewCommitIndex event is sent
 /// - Client receives successful response with data
 ///
 /// # Raft Protocol Context
@@ -564,8 +570,8 @@ async fn test_linearizable_read_quorum_success() {
     // Then: Client receives successful response (released by ApplyCompleted)
     assert!(resp_rx.recv().await.unwrap().is_ok());
 
-    // Note: In new architecture, NotifyNewCommitIndex is sent by handle_append_result,
-    // not by flush_cmd_buffers. This test focuses on the read path completion.
+    // Note: the commit index is advanced by handle_append_result, not by flush_cmd_buffers.
+    // This test focuses on the read path completion.
 }
 
 /// Test linearizable read encountering higher term during verification
@@ -1377,8 +1383,7 @@ async fn test_eventual_consistency_ignores_stale_lease() {
 ///
 /// **Design Decision**:
 /// Developer-friendly: d-engine trusts applications to understand their
-/// consistency requirements. This mirrors etcd's consistency model where
-/// clients control read semantics.
+/// consistency requirements: clients control read semantics.
 #[tokio::test]
 #[traced_test]
 async fn test_client_policy_override_allowed() {
@@ -2001,8 +2006,8 @@ async fn test_linearizable_read_rejected_when_noop_not_committed() {
 /// The fix: `process_lease_read` no longer calls `verify_internal_quorum`. Instead it:
 /// 1. Pushes the request into `pending_lease_reads`
 /// 2. Fires an empty AppendEntries heartbeat (fire-and-forget)
-/// 3. Returns immediately — `drain_pending_lease_reads` is called from `handle_append_result`
-///    when quorum ACK arrives
+/// 3. Returns immediately — `drain_pending_lease_reads` is called from `handle_append_result` when
+///    quorum ACK arrives
 ///
 /// # Expected (Fixed)
 /// - `process_lease_read` returns in <1ms (no blocking)
@@ -2300,8 +2305,9 @@ async fn test_scan_cmd_leader_delivers_result() {
 #[tokio::test]
 #[traced_test]
 async fn test_scan_cmd_leader_propagates_sm_error() {
+    use crate::Error;
+    use crate::StorageError;
     use crate::test_utils::mock_state_machine;
-    use crate::{Error, StorageError};
 
     let mut sm = mock_state_machine();
     sm.expect_scan_prefix().returning(|_prefix| {

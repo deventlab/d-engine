@@ -12,18 +12,22 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, watch};
+use d_engine_proto::server::election::VoteRequest;
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use crate::RaftNodeConfig;
-use crate::event::{InboundEvent, InternalEvent};
-use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
+use crate::event::InboundEvent;
+use crate::event::InternalEvent;
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::now_ms;
 use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
-use d_engine_proto::server::election::VoteRequest;
-use d_engine_proto::server::replication::{AppendEntriesRequest, AppendEntriesResponse};
 
 /// Simulates a quorum ACK of a heartbeat sent just now, with the noop already applied.
 /// Goes through the real `update_lease_timestamp`, so whatever it records (read lease,
@@ -75,8 +79,8 @@ async fn test_become_follower_revokes_read_lease() {
 /// - A node returning from a partition asks for a vote with an inflated term (999).
 ///
 /// Expected:
-/// - No `BecomeFollower` event: the cluster is healthy, so the returning node must not
-///   force a re-election.
+/// - No `BecomeFollower` event: the cluster is healthy, so the returning node must not force a
+///   re-election.
 /// - Response is a rejection carrying the leader's own term.
 #[tokio::test]
 async fn test_receive_higher_term_vote_request_with_valid_lease_is_rejected() {
@@ -169,10 +173,10 @@ async fn test_receive_higher_term_append_entries_revokes_lease() {
 /// Rejecting a higher-term VoteRequest has no side effects on a leader with a valid lease.
 ///
 /// Expected:
-/// - Leader term unchanged: adopting 999 would make the leader reject its own followers'
-///   term-1 traffic and break a healthy cluster.
-/// - The read lease is untouched, so LeaseRead keeps being served; revoking it here would
-///   punish readers for a vote request the leader ignored.
+/// - Leader term unchanged: adopting 999 would make the leader reject its own followers' term-1
+///   traffic and break a healthy cluster.
+/// - The read lease is untouched, so LeaseRead keeps being served; revoking it here would punish
+///   readers for a vote request the leader ignored.
 #[tokio::test]
 async fn test_vote_request_higher_term_with_valid_lease_leaves_term_and_lease_untouched() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -209,8 +213,8 @@ async fn test_vote_request_higher_term_with_valid_lease_leaves_term_and_lease_un
 /// A leader without a valid lease still steps down on a higher-term VoteRequest.
 ///
 /// Expected:
-/// - The guard is bounded by the lease: with no quorum acknowledgement in the window the
-///   leader may really have lost leadership, so Raft's usual "higher term wins" applies.
+/// - The guard is bounded by the lease: with no quorum acknowledgement in the window the leader may
+///   really have lost leadership, so Raft's usual "higher term wins" applies.
 /// - After the Raft loop runs `become_follower()`, the lease stays invalid.
 #[tokio::test]
 async fn test_receive_higher_term_vote_request_without_valid_lease_steps_down() {
@@ -292,8 +296,9 @@ async fn test_vote_request_higher_term_without_valid_lease_adopts_term_and_repla
 
 /// Higher-term AppendEntries → lease revoked BEFORE Raft loop calls become_follower().
 ///
-/// Same window-period contract as test_vote_request_higher_term_lease_revoked_before_become_follower,
-/// for the AppendEntries detection path.
+/// Same window-period contract as
+/// test_vote_request_higher_term_lease_revoked_before_become_follower, for the AppendEntries
+/// detection path.
 #[tokio::test]
 async fn test_append_entries_higher_term_lease_revoked_before_become_follower() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -392,10 +397,10 @@ async fn test_append_result_higher_term_lease_revoked_before_become_follower() {
 /// higher term, BEFORE stepping down to Follower.
 ///
 /// Scenario:
-/// - Leader is at term=1, receives an AppendEntries response from a follower
-///   carrying a higher term (999) — this is the response-side term check
-///   (distinct from the request-side ones already covered in candidate/follower
-///   tests), flagged during review as previously uncovered by any test.
+/// - Leader is at term=1, receives an AppendEntries response from a follower carrying a higher term
+///   (999) — this is the response-side term check (distinct from the request-side ones already
+///   covered in candidate/follower tests), flagged during review as previously uncovered by any
+///   test.
 ///
 /// Expected:
 /// - `save_hard_state` is called exactly once with term=999.
@@ -502,13 +507,13 @@ async fn test_append_result_higher_term_revokes_lease() {
 ///
 /// Scenario:
 /// - Leader just elected: noop at index 101, state machine applied only up to 100.
-/// - A quorum ACK arrives. The read lease stays withheld (readers fall back to the Raft loop),
-///   but a quorum has just confirmed this leader.
+/// - A quorum ACK arrives. The read lease stays withheld (readers fall back to the Raft loop), but
+///   a quorum has just confirmed this leader.
 /// - A node returning from a partition asks for a vote with term 999.
 ///
 /// Expected:
-/// - The vote request is rejected and the leader stays leader. "A quorum recently confirmed me"
-///   is what makes a step-down pointless; it must not depend on the state machine catching up.
+/// - The vote request is rejected and the leader stays leader. "A quorum recently confirmed me" is
+///   what makes a step-down pointless; it must not depend on the state machine catching up.
 #[tokio::test]
 async fn test_leader_before_noop_applied_still_rejects_higher_term_vote_request() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -554,8 +559,8 @@ async fn test_leader_before_noop_applied_still_rejects_higher_term_vote_request(
 /// VoteRequest makes the leader step down again.
 ///
 /// Expected:
-/// - The protection is time-bounded: a leader nobody has confirmed recently may really have
-///   lost leadership, so "higher term wins" applies.
+/// - The protection is time-bounded: a leader nobody has confirmed recently may really have lost
+///   leadership, so "higher term wins" applies.
 #[tokio::test]
 async fn test_leader_with_expired_quorum_ack_steps_down_on_higher_term_vote_request() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -649,8 +654,8 @@ async fn leader_pre_vote(
 /// but still does not step down.
 ///
 /// Expected:
-/// - `leader_active == false`, the handler's answer is forwarded, no event is emitted, the
-///   term is unchanged.
+/// - `leader_active == false`, the handler's answer is forwarded, no event is emitted, the term is
+///   unchanged.
 #[tokio::test]
 async fn test_leader_pre_vote_without_quorum_ack_reports_inactive_and_does_not_step_down() {
     let (_graceful_tx, graceful_rx) = watch::channel(());

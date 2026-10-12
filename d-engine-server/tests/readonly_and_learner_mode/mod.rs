@@ -4,7 +4,8 @@
 //!
 //! ## Test Coverage
 //!
-//! - `learner_readonly_sync_embedded.rs` - Learner data synchronization and eventual consistency reads (embedded mode)
+//! - `learner_readonly_sync_embedded.rs` - Learner data synchronization and eventual consistency
+//!   reads (embedded mode)
 //! - `learner_readonly_sync_standalone.rs` - Learner operations via gRPC (standalone mode)
 
 mod learner_readonly_sync_embedded;

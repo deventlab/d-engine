@@ -519,9 +519,6 @@ listen_addr = "127.0.0.1:0"
     mod start_node_tests {
         use std::net::SocketAddr;
 
-        use super::*;
-        use serial_test::serial;
-
         use bytes::Bytes;
         use d_engine_core::ClientApi;
         use d_engine_core::StateMachine;
@@ -529,6 +526,9 @@ listen_addr = "127.0.0.1:0"
         use d_engine_proto::common::NodeRole;
         use d_engine_proto::common::NodeStatus;
         use d_engine_proto::server::cluster::NodeMeta;
+        use serial_test::serial;
+
+        use super::*;
 
         /// Build a minimal valid `RaftNodeConfig` backed by a temp directory.
         /// Uses a fixed high port; tests are serialized to avoid conflicts.

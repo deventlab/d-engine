@@ -1,7 +1,9 @@
-use d_engine_proto::common::{Entry, LogId};
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
 
 use crate::storage::raft_log::RaftLog;
-use crate::test_utils::{RaftLogCoreTestContext, simulate_insert_command};
+use crate::test_utils::RaftLogCoreTestContext;
+use crate::test_utils::simulate_insert_command;
 
 fn entry(
     index: u64,
@@ -247,8 +249,8 @@ async fn test_purge_prefix_removes_entries_and_records_boundary_together() {
 /// # Expected
 /// - term1's index is fully gone: `first/last_index_for_term(1) == None`.
 /// - term2's surviving range starts at 46: `first_index_for_term(2) == Some(46)`.
-/// - The purge boundary itself resolves to term 2 (the cutoff's own term), and
-///   the surviving term3 range is untouched.
+/// - The purge boundary itself resolves to term 2 (the cutoff's own term), and the surviving term3
+///   range is untouched.
 #[tokio::test]
 async fn test_purge_prefix_multi_term_cutoff_updates_term_indexes_and_boundary() {
     let ctx = RaftLogCoreTestContext::new("test_purge_prefix_multi_term_cutoff");

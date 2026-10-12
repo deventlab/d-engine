@@ -1,8 +1,8 @@
-use d_engine_server::RocksDBUnifiedEngine;
 use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_server::DefaultEmbeddedEngine;
+use d_engine_server::RocksDBUnifiedEngine;
 use tracing::info;
 use tracing_test::traced_test;
 
@@ -14,7 +14,8 @@ use crate::common::retry_until;
 ///
 /// Scenario:
 /// 1. Start single node, write data
-/// 2. Start another two nodes and join node 1 as cluster. Node 1 should remain as Leader, no data lost
+/// 2. Start another two nodes and join node 1 as cluster. Node 1 should remain as Leader, no data
+///    lost
 /// 3. Verify cluster healthy and data preserved
 #[tokio::test]
 #[traced_test]

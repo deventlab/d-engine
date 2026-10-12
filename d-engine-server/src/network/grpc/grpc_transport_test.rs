@@ -331,8 +331,8 @@ async fn test_send_vote_request_returns_granted_response() {
 // # Case: vote denied but RPC itself succeeds
 //
 // ## Criteria:
-// 1. Must be Ok(VoteResponse), NOT Err — a denial is a valid protocol
-//    response, not a transport failure
+// 1. Must be Ok(VoteResponse), NOT Err — a denial is a valid protocol response, not a transport
+//    failure
 #[tokio::test]
 #[traced_test]
 async fn test_send_vote_request_returns_denied_response_as_ok() {
@@ -371,8 +371,8 @@ async fn test_send_vote_request_returns_denied_response_as_ok() {
 // # Case: peer response carries a higher term than the candidate's
 //
 // ## Criteria:
-// 1. send_vote_request passes the response through unchanged — it must not
-//    interpret the higher term itself; that's broadcast_vote_requests' job
+// 1. send_vote_request passes the response through unchanged — it must not interpret the higher
+//    term itself; that's broadcast_vote_requests' job
 #[tokio::test]
 #[traced_test]
 async fn test_send_vote_request_passes_through_higher_term_response() {
@@ -413,8 +413,8 @@ async fn test_send_vote_request_passes_through_higher_term_response() {
 // # Case: peer response carries a more up-to-date log than the candidate's
 //
 // ## Criteria:
-// 1. send_vote_request passes the response through unchanged — log-conflict
-//    detection happens in broadcast_vote_requests, not here
+// 1. send_vote_request passes the response through unchanged — log-conflict detection happens in
+//    broadcast_vote_requests, not here
 #[tokio::test]
 #[traced_test]
 async fn test_send_vote_request_passes_through_more_recent_log_response() {
@@ -455,8 +455,7 @@ async fn test_send_vote_request_passes_through_more_recent_log_response() {
 // # Case: peer channel not found in membership
 //
 // ## Criteria:
-// 1. Err(NetworkError::PeerConnectionNotFound(peer_id)) without attempting
-//    any RPC
+// 1. Err(NetworkError::PeerConnectionNotFound(peer_id)) without attempting any RPC
 #[tokio::test]
 #[traced_test]
 async fn test_send_vote_request_missing_channel_returns_peer_connection_not_found() {
@@ -564,28 +563,22 @@ async fn send_pre_vote_to_mock_peer(
 #[tokio::test]
 #[traced_test]
 async fn test_send_pre_vote_request_returns_granted_and_denied_responses_as_ok() {
-    let granted = send_pre_vote_to_mock_peer(
-        "/tmp/test_send_pre_vote_granted",
-        VoteResponse {
-            term: 1,
-            vote_granted: true,
-            last_log_index: 1,
-            last_log_term: 1,
-        },
-    )
+    let granted = send_pre_vote_to_mock_peer("/tmp/test_send_pre_vote_granted", VoteResponse {
+        term: 1,
+        vote_granted: true,
+        last_log_index: 1,
+        last_log_term: 1,
+    })
     .await
     .expect("granted must be Ok");
     assert!(granted.vote_granted);
 
-    let denied = send_pre_vote_to_mock_peer(
-        "/tmp/test_send_pre_vote_denied",
-        VoteResponse {
-            term: 1,
-            vote_granted: false,
-            last_log_index: 1,
-            last_log_term: 1,
-        },
-    )
+    let denied = send_pre_vote_to_mock_peer("/tmp/test_send_pre_vote_denied", VoteResponse {
+        term: 1,
+        vote_granted: false,
+        last_log_index: 1,
+        last_log_term: 1,
+    })
     .await
     .expect("a denial must be Ok, not Err");
     assert!(!denied.vote_granted);
@@ -596,15 +589,12 @@ async fn test_send_pre_vote_request_returns_granted_and_denied_responses_as_ok()
 #[tokio::test]
 #[traced_test]
 async fn test_send_pre_vote_request_passes_through_term_and_log_of_the_response() {
-    let res = send_pre_vote_to_mock_peer(
-        "/tmp/test_send_pre_vote_passes_through",
-        VoteResponse {
-            term: 99,
-            vote_granted: false,
-            last_log_index: 42,
-            last_log_term: 5,
-        },
-    )
+    let res = send_pre_vote_to_mock_peer("/tmp/test_send_pre_vote_passes_through", VoteResponse {
+        term: 99,
+        vote_granted: false,
+        last_log_index: 42,
+        last_log_term: 5,
+    })
     .await
     .expect("should succeed");
 
@@ -615,8 +605,8 @@ async fn test_send_pre_vote_request_passes_through_term_and_log_of_the_response(
 // # Case: PreVote goes out through the PreVote RPC, never through RequestVote.
 //
 // ## Criteria:
-// 1. The peer's RequestVote handler answers with an error; the PreVote handler answers
-//    "granted". Getting "granted" proves the PreVote RPC was used.
+// 1. The peer's RequestVote handler answers with an error; the PreVote handler answers "granted".
+//    Getting "granted" proves the PreVote RPC was used.
 #[tokio::test]
 #[traced_test]
 async fn test_send_pre_vote_request_uses_the_pre_vote_rpc_not_request_vote() {

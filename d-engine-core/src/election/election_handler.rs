@@ -1,12 +1,13 @@
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VoteResponse;
 use d_engine_proto::server::election::VotedFor;
-use std::collections::HashSet;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
 use tokio::task::JoinSet;
 use tracing::debug;
 use tracing::error;
@@ -433,8 +434,7 @@ where
                         }
 
                         // A denial is just a missing vote: keep counting. A peer with a
-                        // strictly newer log is only worth noting (openraft records it to
-                        // delay the next election; raft-rs ignores it).
+                        // strictly newer log is only worth noting.
                         if is_target_log_strictly_more_recent(
                             last_log_index,
                             last_log_term,
@@ -457,7 +457,7 @@ where
 
             // Even if every peer still outstanding granted, could a majority be reached?
             // If not the round is lost: return now instead of waiting for silent peers
-            // (raft-rs reports `Lost` at this point).
+            // (the round is reported as `Lost` at this point).
             if !is_majority(succeed + pending, required) {
                 return Err(ElectionError::QuorumFailure { required, succeed }.into());
             }

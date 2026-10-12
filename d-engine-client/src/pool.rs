@@ -85,8 +85,8 @@ impl ConnectionPool {
         config: &ClientConfig,
     ) -> std::result::Result<(Channel, Vec<Channel>, Vec<NodeMeta>, Option<u32>), ClientApiError>
     {
-        // 1. Load cluster metadata + establish verified leader channel atomically.
-        //    Returns only when a ready leader is confirmed AND its channel is connectable.
+        // 1. Load cluster metadata + establish verified leader channel atomically. Returns only
+        //    when a ready leader is confirmed AND its channel is connectable.
         let (membership, leader_conn) = Self::load_cluster_metadata(endpoints, config).await?;
         info!("Cluster members discovered: {:?}", membership.nodes);
 
@@ -151,8 +151,8 @@ impl ConnectionPool {
     ///
     /// Returns:
     /// - `Some(Ok(membership))` — leader is known and present in member list (ready)
-    /// - `Some(Err(()))`        — node responded but cluster not yet ready (election in progress
-    ///   or stale leader ID); caller should try next node
+    /// - `Some(Err(()))`        — node responded but cluster not yet ready (election in progress or
+    ///   stale leader ID); caller should try next node
     /// - `None`                 — node unreachable; caller should try next node
     pub(super) async fn probe_endpoint(
         addr: &str,

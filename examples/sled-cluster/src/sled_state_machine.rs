@@ -2,7 +2,7 @@
 
 use crate::compute_checksum_from_folder_path;
 use crate::{safe_kv, safe_vk_ivec};
-use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use bincode::config;
 use bytes::Bytes;
@@ -46,7 +46,7 @@ pub struct SledStateMachine {
     /// *here*, not in the caller's temporary decompression directory (#442 review).
     path: PathBuf,
 
-    db: ArcSwap<sled::Db>,
+    db: ArcSwapOption<sled::Db>,
 
     is_serving: Arc<AtomicBool>,
 
@@ -69,7 +69,7 @@ impl std::fmt::Debug for SledStateMachine {
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
         f.debug_struct("SledStateMachine")
-            .field("tree_len", &self.current_tree().len())
+            .field("tree_len", &self.current_tree().map(|t| t.len()).ok())
             .finish()
     }
 }
@@ -79,9 +79,9 @@ impl Drop for SledStateMachine {
         let timer = Instant::now();
 
         // Save state into local database including flush operation
-        match self.save_hard_state() {
-            Ok(_) => debug!("StateMachine saved in {:?}", timer.elapsed()),
-            Err(e) => error!("Failed to save StateMachine: {}", e),
+        match StateMachine::close(self) {
+            Ok(()) => debug!("StateMachine closed in {:?}", timer.elapsed()),
+            Err(e) => error!("Failed to close StateMachine: {}", e),
         }
     }
 }
@@ -94,16 +94,16 @@ impl StateMachine for SledStateMachine {
         Ok(())
     }
 
-    fn close_storage(&self) {
+    fn close(&self) -> Result<()> {
+        if self.db.load().is_none() {
+            return Ok(());
+        }
         self.is_serving.store(false, Ordering::Release);
-        // Flush pending sled writes. The sled::Db is released when SledStateMachine drops.
-        let _ = self.db.load().flush();
-    }
-
-    fn stop(&self) -> Result<()> {
-        debug!("stop state machine");
-        self.is_serving.store(false, Ordering::Release);
-        Ok(())
+        // Persist, then release the db handle so sled's file lock is freed even if persisting
+        // failed. The lock is released once no other handle to the db is alive.
+        let saved = self.save_hard_state();
+        self.db.store(None);
+        saved
     }
 
     fn is_running(&self) -> bool {
@@ -165,7 +165,7 @@ impl StateMachine for SledStateMachine {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>> {
-        match self.current_tree().get(key_buffer) {
+        match self.current_tree()?.get(key_buffer) {
             Ok(Some(v)) => Ok(Some(Bytes::copy_from_slice(&v))),
             Ok(None) => Ok(None),
             Err(e) => {
@@ -180,6 +180,7 @@ impl StateMachine for SledStateMachine {
         chunk: &[ApplyEntry],
     ) -> Result<Vec<ApplyResult>> {
         trace!("Applying chunk: {} entries", chunk.len());
+        self.db()?;
 
         let mut highest_log_id: Option<LogId> = None;
         let mut batch = Batch::default();
@@ -221,7 +222,7 @@ impl StateMachine for SledStateMachine {
                     self.apply_batch(std::mem::take(&mut batch))?;
 
                     // Perform native Sled CAS
-                    let tree = self.current_tree();
+                    let tree = self.current_tree()?;
                     let old = expected.as_ref().map(|v| v.as_ref());
 
                     let cas_success =
@@ -288,7 +289,7 @@ impl StateMachine for SledStateMachine {
         last_applied: LogId,
     ) -> Result<()> {
         debug!(%self.node_id, ?last_applied, "persist_last_applied");
-        let db = self.db.load();
+        let db = self.db()?;
         let tree = db
             .open_tree(STATE_MACHINE_META_NAMESPACE)
             .map_err(|e| StorageError::DbError(e.to_string()))?;
@@ -312,7 +313,7 @@ impl StateMachine for SledStateMachine {
         last_snapshot_metadata: &SnapshotMetadata,
     ) -> Result<()> {
         debug!(%self.node_id, ?last_snapshot_metadata, "persist_last_snapshot_metadata");
-        let db = self.db.load();
+        let db = self.db()?;
         let tree = db
             .open_tree(STATE_SNAPSHOT_METADATA_TREE)
             .map_err(|e| StorageError::DbError(e.to_string()))?;
@@ -322,20 +323,12 @@ impl StateMachine for SledStateMachine {
     }
 
     fn flush(&self) -> Result<()> {
-        let db = self.db.load();
-        match db.flush() {
-            Ok(bytes) => {
-                info!(
-                    "Successfully flushed State Machine, bytes flushed: {}",
-                    bytes
-                );
-                println!("Successfully flushed State Machine, bytes flushed: {bytes}");
-            }
-            Err(e) => {
-                error!("Failed to flush State Machine: {}", e);
-                eprintln!("Failed to flush State Machine: {e}");
-            }
-        }
+        let db = self.db()?;
+        let bytes = db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        info!(
+            "Successfully flushed State Machine, bytes flushed: {}",
+            bytes
+        );
         Ok(())
     }
 
@@ -357,7 +350,7 @@ impl StateMachine for SledStateMachine {
         let new_db = init_sled_state_machine_db(&new_snapshot_dir)
             .map_err(|e| StorageError::DbError(e.to_string()))?;
 
-        let exist_db_tree = self.current_tree();
+        let exist_db_tree = self.current_tree()?;
         let new_state_machine_tree = new_tree(&new_db, STATE_MACHINE_TREE)?;
 
         let mut batch = sled::Batch::default();
@@ -510,7 +503,7 @@ impl StateMachine for SledStateMachine {
         debug!("Reopening state machine database at its permanent path");
         let db = init_sled_state_machine_db(&self.path)
             .map_err(|e| StorageError::DbError(e.to_string()))?;
-        self.db.store(Arc::new(db));
+        self.db.store(Some(Arc::new(db)));
 
         // Best-effort: a leftover `*.pre-install-backup` is harmless (just disk space)
         // if this fails or the process dies here — it's never read again once
@@ -533,11 +526,11 @@ impl StateMachine for SledStateMachine {
     }
 
     fn len(&self) -> usize {
-        self.current_tree().len()
+        self.current_tree().map(|t| t.len()).unwrap_or(0)
     }
 
     async fn reset(&self) -> Result<()> {
-        let db = self.db.load();
+        let db = self.db()?;
         for tree_name in &[
             STATE_MACHINE_TREE,
             STATE_MACHINE_META_NAMESPACE,
@@ -566,7 +559,7 @@ impl StateMachine for SledStateMachine {
         &self,
         prefix: &[u8],
     ) -> Result<ScanResult> {
-        let tree = self.current_tree();
+        let tree = self.current_tree()?;
         let mut entries = Vec::new();
         for result in tree.scan_prefix(prefix) {
             let (k, v) = result.map_err(|e| StorageError::DbError(e.to_string()))?;
@@ -615,7 +608,7 @@ impl SledStateMachine {
             .map_err(|e| StorageError::DbError(e.to_string()))?;
 
         let sm = SledStateMachine {
-            db: ArcSwap::from(db),
+            db: ArcSwapOption::from(Some(db)),
             path,
             is_serving: Arc::new(AtomicBool::new(true)),
             node_id,
@@ -696,7 +689,7 @@ impl SledStateMachine {
         &self,
         batch: Batch,
     ) -> Result<()> {
-        if let Err(e) = self.current_tree().apply_batch(batch) {
+        if let Err(e) = self.current_tree()?.apply_batch(batch) {
             error!("state_machine apply_batch failed: {}", e);
             return Err(StorageError::DbError(e.to_string()).into());
         }
@@ -705,9 +698,17 @@ impl SledStateMachine {
 
     // Dynamically obtain the current Tree (lock-free cache optimization)
     #[inline]
-    fn current_tree(&self) -> sled::Tree {
-        // Each Db instance only needs to get the Tree once
-        self.db.load().open_tree(STATE_MACHINE_TREE).unwrap()
+    fn current_tree(&self) -> Result<sled::Tree> {
+        self.db()?
+            .open_tree(STATE_MACHINE_TREE)
+            .map_err(|e| StorageError::DbError(e.to_string()).into())
+    }
+
+    /// The live db, or `NotServing` once `close()` has released it.
+    fn db(&self) -> Result<Arc<sled::Db>> {
+        self.db
+            .load_full()
+            .ok_or_else(|| StorageError::NotServing("state machine stopped".into()).into())
     }
 
     pub(super) fn persist_last_snapshot_metadata_with_tree(

@@ -472,9 +472,8 @@ mod tests {
 
     use async_trait::async_trait;
     use d_engine_core::Error;
-    use d_engine_core::storage::storage_engine_test::{
-        StorageEngineBuilder, StorageEngineTestSuite,
-    };
+    use d_engine_core::storage::storage_engine_test::StorageEngineBuilder;
+    use d_engine_core::storage::storage_engine_test::StorageEngineTestSuite;
 
     /// Builder for FileStorageEngine test instances
     struct FileStorageEngineBuilder {
@@ -597,21 +596,18 @@ mod tests {
 
         // Act: conflict at index=3, new suffix [3(t2), 4(t2)] — entry 5 must vanish
         log_store
-            .replace_range(
-                3,
-                vec![
-                    Entry {
-                        index: 3,
-                        term: 2,
-                        payload: None,
-                    },
-                    Entry {
-                        index: 4,
-                        term: 2,
-                        payload: None,
-                    },
-                ],
-            )
+            .replace_range(3, vec![
+                Entry {
+                    index: 3,
+                    term: 2,
+                    payload: None,
+                },
+                Entry {
+                    index: 4,
+                    term: 2,
+                    payload: None,
+                },
+            ])
             .await
             .unwrap();
 

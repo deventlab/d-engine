@@ -3,24 +3,11 @@
 //! This module tests the `process_raft_request` method and related client write
 //! operations in the leader state.
 
-use crate::ApplyResult;
-use crate::ClientCmd;
-use crate::MockRaftLog;
-use crate::MockReplicationCore;
-use crate::PrepareResult;
-use crate::RaftRequestWithSignal;
-use crate::client::ClientWriteRequest;
-use crate::event::{InternalEvent, NewCommitData};
-use crate::maybe_clone_oneshot::MaybeCloneOneshot;
-use crate::maybe_clone_oneshot::RaftOneshot;
-use crate::mock_raft_context;
-use crate::raft_context::RaftContext;
-use crate::raft_role::leader_state::LeaderState;
-use crate::role_state::PeerReplicationState;
-use crate::role_state::RaftRoleState;
-use crate::test_utils::MockBuilder;
-use crate::test_utils::mock::MockTypeConfig;
-use crate::test_utils::node_config;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
 use bytes::Bytes;
 use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::AddNode;
@@ -32,12 +19,28 @@ use d_engine_proto::common::membership_change::Change;
 use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::replication::AppendEntriesRequest;
 use rand::distr::SampleString;
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::time::Instant;
+
+use crate::ApplyResult;
+use crate::ClientCmd;
+use crate::MockRaftLog;
+use crate::MockReplicationCore;
+use crate::PrepareResult;
+use crate::RaftRequestWithSignal;
+use crate::client::ClientWriteRequest;
+use crate::event::InternalEvent;
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
+use crate::mock_raft_context;
+use crate::raft_context::RaftContext;
+use crate::raft_role::leader_state::LeaderState;
+use crate::role_state::PeerReplicationState;
+use crate::role_state::RaftRoleState;
+use crate::test_utils::MockBuilder;
+use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::node_config;
 
 // ============================================================================
 // Test Helper Structures and Functions
@@ -145,7 +148,6 @@ async fn setup_process_raft_request_test_context(
 /// - Request is handled immediately (not batched)
 /// - Commit index advances to 5
 /// - Peer next_index values are updated (2 -> 6, 3 -> 6)
-/// - NotifyNewCommitIndex event is sent
 /// - Client receives success response
 #[tokio::test]
 async fn test_process_raft_request_immediate_execution() {
@@ -170,7 +172,7 @@ async fn test_process_raft_request_immediate_execution() {
     };
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx, rx) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // When: Execute the write request (fire-and-forget replication in new arch)
     let result = test_context
@@ -190,7 +192,7 @@ async fn test_process_raft_request_immediate_execution() {
     // Then: Verify operation succeeded
     assert!(result.is_ok(), "Operation should succeed");
 
-    // Advance commit via single-voter flush path → fires NotifyNewCommitIndex, drains write.
+    // Advance commit via single-voter flush path, drains write.
     // MemFirst: set last_entry_id=5 before flush so commit uses last_entry_id(), not durable.
     test_context.last_entry_id.store(5, Ordering::Relaxed);
     test_context.state.cluster_metadata.single_voter = true;
@@ -204,18 +206,6 @@ async fn test_process_raft_request_immediate_execution() {
         test_context.state.shared_state().commit_index,
         5,
         "Commit index should be updated to 5"
-    );
-
-    // Then: Verify NotifyNewCommitIndex was sent
-    assert!(
-        matches!(
-            internal_event_rx.try_recv(),
-            Ok(InternalEvent::NotifyNewCommitIndex(NewCommitData {
-                new_commit_index: 5,
-                ..
-            }))
-        ),
-        "Expected NotifyNewCommitIndex(5)"
     );
 
     // Simulate SM apply to resolve pending_write_apply
@@ -345,7 +335,6 @@ async fn test_client_write_waits_for_sm_apply_not_just_commit() {
 /// - Both requests are handled immediately (not batched)
 /// - Commit index advances to 5
 /// - Peer next_index values are updated (2 -> 6, 3 -> 6)
-/// - NotifyNewCommitIndex event is sent
 /// - Both clients receive success responses
 #[tokio::test]
 async fn test_process_raft_request_two_consecutive_forced_sends() {
@@ -398,7 +387,7 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
     use crate::maybe_clone_oneshot::MaybeCloneOneshot;
     let (tx1, rx1) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
     let (tx2, rx2) = <MaybeCloneOneshot as RaftOneshot<_>>::new();
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // When: Execute first write request (immediate execution) → pending_client_writes[5]
     let result1 = test_context
@@ -446,15 +435,6 @@ async fn test_process_raft_request_two_consecutive_forced_sends() {
         test_context.state.shared_state().commit_index,
         6,
         "Commit index should be updated to 6"
-    );
-
-    // Then: Verify NotifyNewCommitIndex was sent
-    assert!(
-        matches!(
-            internal_event_rx.try_recv(),
-            Ok(InternalEvent::NotifyNewCommitIndex(_))
-        ),
-        "Expected NotifyNewCommitIndex"
     );
 
     // Simulate SM apply for both requests
@@ -526,7 +506,7 @@ async fn test_process_raft_request_batching_enabled() {
     // When: Push request into buffer (batching — not immediately sent)
     test_context
         .state
-        .push_client_cmd(ClientCmd::Propose(request, tx), &test_context.raft_context);
+        .push_client_cmd(ClientCmd::propose(request, tx), &test_context.raft_context);
 
     // Then: replication handler NOT called (verified by mockall times(0) on drop)
 }
@@ -595,7 +575,7 @@ async fn test_drain_single_write_no_delay() {
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();
 
-    state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
+    state.push_client_cmd(ClientCmd::propose(req, tx), &ctx);
 
     // Verify: Buffer has 1 request
     assert_eq!(
@@ -698,7 +678,7 @@ async fn test_drain_multiple_writes_natural_batch() {
             }),
         };
         let (tx, rx) = MaybeCloneOneshot::new();
-        state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
+        state.push_client_cmd(ClientCmd::propose(req, tx), &ctx);
         receivers.push(rx);
     }
 
@@ -787,7 +767,7 @@ async fn test_drain_max_batch_size_limit() {
             }),
         };
         let (tx, _rx) = MaybeCloneOneshot::new();
-        state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
+        state.push_client_cmd(ClientCmd::propose(req, tx), &ctx);
     }
 
     // Verify: All 10 requests in buffer
@@ -880,7 +860,7 @@ async fn test_write_batch_single_replication() {
             }),
         };
         let (tx, rx) = MaybeCloneOneshot::new();
-        state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
+        state.push_client_cmd(ClientCmd::propose(req, tx), &ctx);
         receivers.push(rx);
     }
 
@@ -927,17 +907,15 @@ async fn test_write_batch_single_replication() {
 //
 // These tests enforce the invariant that governs when a client response is sent:
 //
-//   - Client write (propose_buffer path): wait_for_apply_event = true
-//     → Response MUST be deferred until StateMachine apply (ApplyCompleted event).
-//     → This guarantees the client only sees "success" after the entry is durable
-//       and applied. Changing this to false would break linearizability.
+//   - Client write (propose_buffer path): wait_for_apply_event = true → Response MUST be deferred
+//     until StateMachine apply (ApplyCompleted event). → This guarantees the client only sees
+//     "success" after the entry is durable and applied. Changing this to false would break
+//     linearizability.
 //
-//   - Noop / quorum-check / config-change (verify_internal_quorum path):
-//     wait_for_apply_event = false
-//     → Response is sent immediately after quorum is achieved.
-//     → These operations do not produce a state-machine result that clients
-//       need to observe, so waiting for apply would deadlock (no ApplyCompleted
-//       is ever sent for internal-only entries in this path).
+//   - Noop / quorum-check / config-change (verify_internal_quorum path): wait_for_apply_event =
+//     false → Response is sent immediately after quorum is achieved. → These operations do not
+//     produce a state-machine result that clients need to observe, so waiting for apply would
+//     deadlock (no ApplyCompleted is ever sent for internal-only entries in this path).
 //
 // If a future developer accidentally swaps these values, one of the following
 // tests will catch the regression:
@@ -1008,13 +986,13 @@ async fn test_client_write_deferred_until_sm_apply() {
         }),
     };
     let (tx, mut rx) = MaybeCloneOneshot::new();
-    state.push_client_cmd(ClientCmd::Propose(req, tx), &ctx);
+    state.push_client_cmd(ClientCmd::propose(req, tx), &ctx);
 
     // Flush: fires prepare_batch_requests, write stored in pending_client_writes
     state.flush_cmd_buffers(&ctx, &internal_event_tx).await.unwrap();
 
-    // Advance commit via single-voter path: moves write to pending_write_apply (wait_for_apply=true).
-    // MemFirst: set last_entry_id=5 before flush.
+    // Advance commit via single-voter path: moves write to pending_write_apply
+    // (wait_for_apply=true). MemFirst: set last_entry_id=5 before flush.
     last_entry_id.store(5, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
     state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
@@ -1108,13 +1086,15 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
 
     // Advance commit via single-voter flush path → drain_pending_client_writes.
     // MemFirst: set last_entry_id=5 before flush.
-    // Since wait_for_apply_event=false, response is sent immediately upon commit (no ApplyCompleted needed)
+    // Since wait_for_apply_event=false, response is sent immediately upon commit (no ApplyCompleted
+    // needed)
     last_entry_id.store(5, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
     state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
 
     // CRITICAL: response must be available WITHOUT ApplyCompleted
-    // If wait_for_apply_event were true, it would still be in pending_write_apply (awaiting SM apply)
+    // If wait_for_apply_event were true, it would still be in pending_write_apply (awaiting SM
+    // apply)
     let response = rx
         .try_recv()
         .expect("Noop MUST respond immediately after commit, without ApplyCompleted");
@@ -1124,7 +1104,8 @@ async fn test_noop_quorum_check_responds_immediately_without_sm_apply() {
     );
 }
 
-/// Verify that a config-change quorum-check responds immediately after quorum, without waiting for SM apply.
+/// Verify that a config-change quorum-check responds immediately after quorum, without waiting for
+/// SM apply.
 ///
 /// # Purpose
 /// Enforces `wait_for_apply_event = false` for the verify_internal_quorum (config change) path.
@@ -1170,7 +1151,8 @@ async fn test_config_change_quorum_check_responds_immediately_without_sm_apply()
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
-    // Config change payload — used for membership change quorum verification (wait_for_apply_event = false)
+    // Config change payload — used for membership change quorum verification (wait_for_apply_event
+    // = false)
     let change = Change::AddNode(AddNode {
         node_id: 4,
         address: "127.0.0.1:9004".to_string(),
@@ -1194,7 +1176,8 @@ async fn test_config_change_quorum_check_responds_immediately_without_sm_apply()
 
     // Advance commit via single-voter flush path → drain_pending_client_writes.
     // MemFirst: set last_entry_id=5 before flush.
-    // Since wait_for_apply_event=false, response is sent immediately upon commit (no ApplyCompleted needed)
+    // Since wait_for_apply_event=false, response is sent immediately upon commit (no ApplyCompleted
+    // needed)
     last_entry_id.store(5, Ordering::Relaxed);
     state.cluster_metadata.single_voter = true;
     state.handle_log_flushed(5, &ctx, &internal_event_tx).await;
@@ -1287,7 +1270,7 @@ async fn test_single_voter_client_write_completes_after_log_flushed() {
         "must be single_voter for this test"
     );
 
-    let (internal_event_tx, mut internal_event_rx) = mpsc::unbounded_channel();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
 
     // Step 1: Client sends write request
     let (req, mut client_rx) = write_request();
@@ -1324,15 +1307,6 @@ async fn test_single_voter_client_write_completes_after_log_flushed() {
         state.commit_index(),
         1,
         "commit must advance to last_entry_id after LogFlushed"
-    );
-
-    // Step 6: Verify NotifyNewCommitIndex was sent
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(_)
-        ),
-        "NotifyNewCommitIndex must fire after commit advances"
     );
 
     // Step 7: Verify pending_client_writes was drained

@@ -1,7 +1,6 @@
 //! Test for the missing per-peer in-flight gate during `PeerReplicationState::Probe`.
 //!
-//! Background (see `446-expert-q-probe-backpressure-fix-8020.md` in the product-design repo):
-//! every reference Raft implementation limits a `Probe`-state
+//! Background: a Raft leader must limit a `Probe`-state
 //! peer to at most one outstanding (unacknowledged) `AppendEntries` request. d-engine's
 //! `PeerReplicationState::Probe`/`Replicate` only controls whether `next_index` is optimistically
 //! advanced before sending — it never checks whether the peer already has a request in flight.
@@ -17,26 +16,35 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use bytes::Bytes;
-use d_engine_proto::common::{Entry, EntryPayload, NodeRole::Follower, NodeStatus};
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::replication::{
-    AppendEntriesRequest, AppendEntriesResponse, ConflictResult, append_entries_response,
-};
-use tokio::sync::{mpsc, watch};
+use d_engine_proto::server::replication::AppendEntriesRequest;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::ConflictResult;
+use d_engine_proto::server::replication::append_entries_response;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing_test::traced_test;
 
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::RaftRequestWithSignal;
 use crate::event::InternalEvent;
-use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::network::PeerUpdate;
 use crate::raft_role::leader_state::LeaderState;
-use crate::raft_role::role_state::{PeerReplicationState, RaftRoleState};
+use crate::raft_role::role_state::PeerReplicationState;
+use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MetricsCapture;
-use crate::test_utils::mock::{MockTypeConfig, mock_raft_context};
+use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::mock::mock_raft_context;
 
 /// Two-voter membership (peers 2 & 3) so the cluster is multi-voter — a single-voter leader
 /// short-circuits Phase 5 entirely (no peer work to gate), which would make this test vacuous.
@@ -98,17 +106,16 @@ fn one_entry_batch() -> VecDeque<RaftRequestWithSignal> {
 /// - Batch 1 is dispatched to peer 2: its first `Probe`, correctly limited to one outstanding
 ///   request.
 /// - The follower answers that probe with a CONFLICT (reject), not a success. A reject is not
-///   evidence the peer is caught up, so `update_peer_index`'s conflict branch retreats
-///   `next_index` to the conflict hint and leaves peer 2 in `Probe`.
+///   evidence the peer is caught up, so `update_peer_index`'s conflict branch retreats `next_index`
+///   to the conflict hint and leaves peer 2 in `Probe`.
 /// - Batch 2 is processed afterwards. The response to batch 1 has *arrived*, so peer 2 no longer
-///   has an outstanding request and the gate must release: the corrected probe must be
-///   dispatched.
+///   has an outstanding request and the gate must release: the corrected probe must be dispatched.
 ///
 /// # Expected
-/// `Probe` means "at most one unacknowledged `AppendEntries` at a time", not "at most one ever". A response must
-/// re-arm the gate, never latch it shut: a latched `Probe` peer receives nothing further — not
-/// even heartbeats, since they share this dispatch path — while the frozen follower times out
-/// into candidacy and the leader cannot reach quorum.
+/// `Probe` means "at most one unacknowledged `AppendEntries` at a time", not "at most one ever". A
+/// response must re-arm the gate, never latch it shut: a latched `Probe` peer receives nothing
+/// further — not even heartbeats, since they share this dispatch path — while the frozen follower
+/// times out into candidacy and the leader cannot reach quorum.
 ///
 /// # Current behavior (why this test is RED)
 /// The gate is set on dispatch and only cleared by `handle_peer_stream_error` (a bidi stream
@@ -158,14 +165,12 @@ async fn test_probe_peer_dispatches_next_probe_after_reject() {
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
 
     let (task_tx, mut task_rx) = mpsc::unbounded_channel();
-    state.replication_workers.insert(
-        2,
-        super::ReplicationWorkerHandle {
-            task_tx,
-            snapshot_failure_count: 0,
-            snapshot_next_retry_at: None,
-        },
-    );
+    state.replication_workers.insert(2, super::ReplicationWorkerHandle {
+        task_tx,
+        snapshot_failure_count: 0,
+        snapshot_next_retry_at: None,
+        stream_open: Arc::new(AtomicBool::new(true)),
+    });
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
@@ -268,14 +273,12 @@ async fn test_probe_peer_with_pending_ack_receives_no_second_dispatch() {
     // because this test module nests under it — same access pattern `inject_dead_worker_for_test`
     // already relies on for the sibling `worker_lifecycle_test.rs` file.
     let (task_tx, mut task_rx) = mpsc::unbounded_channel();
-    state.replication_workers.insert(
-        2,
-        super::ReplicationWorkerHandle {
-            task_tx,
-            snapshot_failure_count: 0,
-            snapshot_next_retry_at: None,
-        },
-    );
+    state.replication_workers.insert(2, super::ReplicationWorkerHandle {
+        task_tx,
+        snapshot_failure_count: 0,
+        snapshot_next_retry_at: None,
+        stream_open: Arc::new(AtomicBool::new(true)),
+    });
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
 
@@ -292,8 +295,7 @@ async fn test_probe_peer_with_pending_ack_receives_no_second_dispatch() {
     assert!(
         task_rx.try_recv().is_err(),
         "peer 2 already has an unacknowledged request in flight — a Probe-state peer must not \
-         receive a second AppendEntries until the first is acked. See \
-         446-expert-q-probe-backpressure-fix-8020.md for the etcd/raft and openraft references."
+         receive a second AppendEntries until the first is acked."
     );
 }
 
@@ -321,14 +323,12 @@ async fn setup_gate_harness(
     state.init_cluster_metadata(&ctx.membership).await.unwrap();
 
     let (task_tx, task_rx) = mpsc::unbounded_channel();
-    state.replication_workers.insert(
-        2,
-        super::ReplicationWorkerHandle {
-            task_tx,
-            snapshot_failure_count: 0,
-            snapshot_next_retry_at: None,
-        },
-    );
+    state.replication_workers.insert(2, super::ReplicationWorkerHandle {
+        task_tx,
+        snapshot_failure_count: 0,
+        snapshot_next_retry_at: None,
+        stream_open: Arc::new(AtomicBool::new(true)),
+    });
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel::<InternalEvent>();
     (ctx, state, task_rx, internal_event_tx)
@@ -457,8 +457,8 @@ async fn test_heartbeat_bypasses_gate_while_probe_in_flight() {
 }
 
 /// A stale-term response belongs to an older request, not the outstanding probe, so it must NOT
-/// reopen the gate. Liveness is instead recovered by the heartbeat backstop (see the bypass test),
-/// mirroring etcd's `MaybeUpdate(n <= Match)` early-return-without-resume.
+/// reopen the gate. Liveness is instead recovered by the heartbeat backstop (see the bypass test):
+/// the response is ignored without resuming the probe.
 #[tokio::test]
 #[traced_test]
 async fn test_stale_term_response_keeps_gate_latched() {
@@ -508,12 +508,12 @@ async fn test_stale_term_response_keeps_gate_latched() {
 ///
 /// # Scenario
 /// - Batch 1 dispatched to peer 2 — gate latches (Probe, window=1).
-/// - A stale-term response arrives (term 0 < leader_term 1) — ignored, gate stays latched
-///   (same setup as the sibling test above).
+/// - A stale-term response arrives (term 0 < leader_term 1) — ignored, gate stays latched (same
+///   setup as the sibling test above).
 /// - The *real* response for that outstanding probe arrives (term 1, a reject) — this is the
 ///   response Phase 5 actually sent the probe to elicit, so it must release the slot.
-/// - Batch 2 must now dispatch — proves the slot was released by the real response, not
-///   permanently stuck after the stale one was ignored.
+/// - Batch 2 must now dispatch — proves the slot was released by the real response, not permanently
+///   stuck after the stale one was ignored.
 #[tokio::test]
 #[traced_test]
 async fn test_real_response_after_stale_still_releases_the_gate() {
@@ -721,14 +721,12 @@ async fn setup_two_worker_harness(
 ) {
     let (ctx, mut state, task_rx2, internal_event_tx) = setup_gate_harness(path).await;
     let (task_tx3, task_rx3) = mpsc::unbounded_channel();
-    state.replication_workers.insert(
-        3,
-        super::ReplicationWorkerHandle {
-            task_tx: task_tx3,
-            snapshot_failure_count: 0,
-            snapshot_next_retry_at: None,
-        },
-    );
+    state.replication_workers.insert(3, super::ReplicationWorkerHandle {
+        task_tx: task_tx3,
+        snapshot_failure_count: 0,
+        snapshot_next_retry_at: None,
+        stream_open: Arc::new(AtomicBool::new(true)),
+    });
     (ctx, state, task_rx2, task_rx3, internal_event_tx)
 }
 

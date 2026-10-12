@@ -73,12 +73,12 @@ fn deterministic_value(
 ///
 /// 1. Start a 3-node cluster; write enough large entries to trigger snapshot + purge.
 /// 2. Record the Leader's applied index.
-/// 3. Register a transfer gate for the Learner's node id, then start the Learner (behind
-///    the purge boundary → needs a snapshot).
+/// 3. Register a transfer gate for the Learner's node id, then start the Learner (behind the purge
+///    boundary → needs a snapshot).
 /// 4. Wait for the gate to report the transfer has started (deterministic handshake).
 /// 5. Write `CONCURRENT_ENTRIES` small entries to the Leader.
-/// 6. Assert the Leader's applied index advances past the concurrent writes **while the
-///    transfer gate confirms the snapshot transfer has still not completed**.
+/// 6. Assert the Leader's applied index advances past the concurrent writes **while the transfer
+///    gate confirms the snapshot transfer has still not completed**.
 /// 7. Release the gate, assert the Learner eventually catches up, then stop all engines.
 #[tokio::test]
 #[serial]

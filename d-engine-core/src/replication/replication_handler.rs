@@ -1,3 +1,10 @@
+use std::cmp;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::BytesMut;
 use d_engine_proto::client::WriteCommand;
@@ -10,12 +17,6 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
 use prost::Message;
-use std::cmp;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::sync::Arc;
 use tracing::debug;
 use tracing::error;
 use tracing::trace;
@@ -127,7 +128,8 @@ where
                     count,
                 } => {
                     // #436/#439: isolate to this one peer, don't fall back to snapshot —
-                    // that would hide a storage-layer bug. Structured event reporting upgrades this from a bare log later.
+                    // that would hide a storage-layer bug. Structured event reporting upgrades this
+                    // from a bare log later.
                     error!(
                         peer_id,
                         start,
@@ -317,16 +319,13 @@ where
 
                     if !entries_are_contiguous_in_range(&legacy_entries, peer_next_id, until_index)
                     {
-                        peer_entries.insert(
-                            id,
-                            PeerEntriesResult::CorruptGap {
-                                start: peer_next_id,
-                                end: until_index,
-                                first_seen: legacy_entries.first().map(|e| e.index),
-                                last_seen: legacy_entries.last().map(|e| e.index),
-                                count: legacy_entries.len(),
-                            },
-                        );
+                        peer_entries.insert(id, PeerEntriesResult::CorruptGap {
+                            start: peer_next_id,
+                            end: until_index,
+                            first_seen: legacy_entries.first().map(|e| e.index),
+                            last_seen: legacy_entries.last().map(|e| e.index),
+                            count: legacy_entries.len(),
+                        });
                         continue;
                     }
 
@@ -615,20 +614,17 @@ where
             entries.len()
         );
 
-        Ok((
-            peer_id,
-            BuildAppendOutcome::Append {
-                request: AppendEntriesRequest {
-                    term: data.current_term,
-                    leader_id: self.my_id,
-                    prev_log_index: prev_index,
-                    prev_log_term,
-                    entries,
-                    leader_commit_index: data.commit_index,
-                },
-                effective_next_index: next_index,
+        Ok((peer_id, BuildAppendOutcome::Append {
+            request: AppendEntriesRequest {
+                term: data.current_term,
+                leader_id: self.my_id,
+                prev_log_index: prev_index,
+                prev_log_term,
+                entries,
+                leader_commit_index: data.commit_index,
             },
-        ))
+            effective_next_index: next_index,
+        }))
     }
 }
 

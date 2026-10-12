@@ -102,12 +102,25 @@
 //!
 //! **Why doesn't EmbeddedEngine auto-forward writes?**
 //!
-//! 1. **Preserves zero-overhead guarantee** - Auto-forwarding requires gRPC client (adds network/serialization)
+//! 1. **Preserves zero-overhead guarantee** - Auto-forwarding requires gRPC client (adds
+//!    network/serialization)
 //! 2. **Maintains simplicity** - No hidden network calls in "embedded" mode
-//! 3. **Flexible deployment** - Applications choose load balancer health checks, HTTP redirect, or other strategies
+//! 3. **Flexible deployment** - Applications choose load balancer health checks, HTTP redirect, or
+//!    other strategies
 //! 4. **Performance transparency** - Developers know exactly when network calls occur
 //!
 //! For auto-forwarding with gRPC overhead, use standalone mode with `GrpcClient`.
+
+use std::fmt::Debug;
+use std::sync::Arc;
+use std::time::Duration;
+
+use d_engine_core::TypeConfig;
+use tokio::sync::Mutex;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tracing::error;
+use tracing::info;
 
 use super::embedded_client::EmbeddedClient;
 use super::embedded_read_handle::EmbeddedReadHandle;
@@ -122,20 +135,8 @@ use crate::StateMachine;
 use crate::StorageEngine;
 use crate::node::NodeBuilder;
 use crate::node::RaftTypeConfig;
-use d_engine_core::TypeConfig;
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Mutex;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tracing::error;
-use tracing::info;
 
 struct Inner<T: TypeConfig> {
-    /// SM reference for shutdown: close_storage() releases OS resources (e.g. RocksDB LOCK)
-    /// before the Raft loop exits, without waiting for all Arc<SM> clones to drop.
-    sm: Arc<T::SM>,
     node_handle: Mutex<Option<JoinHandle<Result<()>>>>,
     shutdown_tx: watch::Sender<()>,
     client: Arc<EmbeddedClient<T>>,
@@ -398,7 +399,6 @@ where
         // for the direct-SM fast path. LOCK release is decoupled from Arc<SM> counting
         // (via close_db()), so holding multiple Arc<SM> clones is safe.
         let sm_for_client = Arc::clone(&state_machine);
-        let sm_for_engine = Arc::clone(&state_machine);
 
         let mut builder = NodeBuilder::init(data_dir, node_config.validate()?, shutdown_rx)
             .storage_engine(storage_engine)
@@ -454,7 +454,6 @@ where
 
         Ok(Self {
             inner: Arc::new(Inner {
-                sm: sm_for_engine,
                 node_handle: Mutex::new(Some(node_handle)),
                 shutdown_tx,
                 client,
@@ -571,15 +570,18 @@ impl<T: TypeConfig> EmbeddedEngine<T> {
     /// (node join, removal, or learner promotion) is committed by a majority.
     ///
     /// All nodes — leader, follower, and learner — fire the notification because
-    /// every node walks the same `CommitHandler::apply_config_change()` path.
+    /// every node applies a committed config change through the same delivery path
+    /// (`dispatch_committed`).
     ///
     /// The first `borrow()` returns the current membership state immediately
     /// without waiting for a change.
     ///
     /// ## Distinguishing this from other notifiers
     ///
-    /// - [`Self::leader_change_notifier`]: fires on leader election changes, **not** membership changes
-    /// - [`Self::wait_ready`]: resolves when a leader is elected and the cluster is ready, **not** membership changes
+    /// - [`Self::leader_change_notifier`]: fires on leader election changes, **not** membership
+    ///   changes
+    /// - [`Self::wait_ready`]: resolves when a leader is elected and the cluster is ready, **not**
+    ///   membership changes
     ///
     /// ## Usage
     /// ```ignore
@@ -697,11 +699,6 @@ impl<T: TypeConfig> EmbeddedEngine<T> {
         }
 
         info!("Stopping embedded d-engine");
-
-        // Close SM storage resources first (releases RocksDB LOCK immediately).
-        // Must happen before the Raft loop exits so the LOCK is freed before any
-        // subsequent engine restart on the same data directory.
-        self.inner.sm.close_storage();
 
         // Send shutdown signal to Raft node
         let _ = self.inner.shutdown_tx.send(());

@@ -15,11 +15,10 @@ use d_engine_proto::client::WatchResponse;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
-
-use crate::watch::manager::prefix_segments;
 use tokio::time::timeout;
 
 use super::*;
+use crate::watch::manager::prefix_segments;
 
 /// Helper to create test watch system components.
 /// `heartbeat_interval_ms` = 0 disables heartbeat (avoids Progress noise in most tests).
@@ -735,14 +734,11 @@ fn setup_watch_system_with_max(
 fn test_prefix_segments_decomposes_path_correctly() {
     let key = Bytes::from("/config/db/host");
     let segments = prefix_segments(&key);
-    assert_eq!(
-        segments,
-        vec![
-            Bytes::from("/"),
-            Bytes::from("/config/"),
-            Bytes::from("/config/db/"),
-        ]
-    );
+    assert_eq!(segments, vec![
+        Bytes::from("/"),
+        Bytes::from("/config/"),
+        Bytes::from("/config/db/"),
+    ]);
 }
 
 #[test]

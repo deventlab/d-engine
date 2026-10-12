@@ -1,17 +1,23 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
-use tracing::warn;
-use tracing::{debug, error, info};
 
+use tokio::sync::mpsc;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
+
+use crate::InternalEvent;
+use crate::PreparedSnapshot;
 use crate::Result;
+use crate::SnapshotApplyResult;
+use crate::SnapshotError;
 use crate::StateMachineCommand;
 use crate::StateMachineWriterOps;
 use crate::TypeConfig;
 use crate::alias::SMWOF;
-use crate::{InternalEvent, SnapshotApplyResult};
-use crate::{PreparedSnapshot, SnapshotError};
 
 /// Shared, read-only-after-construction context `handle_command` needs — split out
 /// from `sm_apply_rx` (which needs `&mut` exclusive access in the loop) purely to
@@ -28,8 +34,8 @@ struct HandlerContext<T: TypeConfig> {
 
 /// State Machine Worker
 ///
-/// Decouples state machine apply operations from CommitHandler.
-/// Runs in independent task, allowing apply_chunk I/O to not block commit processing.
+/// Decouples state machine apply operations from the Raft loop.
+/// Runs on its own thread, so apply_chunk I/O never blocks the Raft loop.
 ///
 /// Sole authority for ordering and outcome of state-machine mutations and snapshot
 /// lifecycle decisions (ApplyEntries, InstallSnapshot, CaptureLocalSnapshot — see
@@ -41,16 +47,15 @@ struct HandlerContext<T: TypeConfig> {
 ///
 /// Holds its own clone of `sm_apply_tx` for that self-report, so the channel never
 /// closes on its own — dropping every external `StateMachineCommandSender` does NOT
-/// stop this Worker. Shutdown must go through `shutdown_signal`.
+/// stop this Worker. Shutdown goes through `StateMachineCommand::Shutdown`.
 ///
 /// InstallSnapshot always waits for the capture/install lock inline — while it
 /// waits, subsequent queued commands (including ApplyEntries) wait behind it too.
 /// Only CaptureLocalSnapshot is guaranteed not to block the queue.
 ///
-/// On shutdown:
-/// - Drains whatever's currently queued in sm_apply_rx (non-blocking) before exiting
-/// - Completes all pending work before shutdown
-/// - This ensures no data loss and all results are propagated to Leader
+/// On `Shutdown`:
+/// - everything queued before it has already been applied (the queue is FIFO);
+/// - commands queued after it are ignored; a still-running capture is waited for.
 pub struct StateMachineWorker<T: TypeConfig> {
     /// Executes the actual mutations.
     state_machine_writer: Arc<SMWOF<T>>,
@@ -68,8 +73,6 @@ pub struct StateMachineWorker<T: TypeConfig> {
     capture_cleanup_lock: Arc<tokio::sync::Mutex<()>>,
     /// Bumped on each successful install; lets a capture detect it was superseded.
     install_epoch: Arc<AtomicU64>,
-    /// Signals graceful shutdown.
-    shutdown_signal: watch::Receiver<()>,
     /// For log lines only.
     node_id: u32,
 }
@@ -81,7 +84,6 @@ impl<T: TypeConfig> StateMachineWorker<T> {
         sm_apply_tx: mpsc::UnboundedSender<StateMachineCommand>,
         sm_apply_rx: mpsc::UnboundedReceiver<StateMachineCommand>,
         internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
-        shutdown_signal: watch::Receiver<()>,
     ) -> Self {
         Self {
             state_machine_writer,
@@ -91,7 +93,6 @@ impl<T: TypeConfig> StateMachineWorker<T> {
             capture_install_lock: Arc::new(tokio::sync::Mutex::new(())),
             capture_cleanup_lock: Arc::new(tokio::sync::Mutex::new(())),
             install_epoch: Arc::new(AtomicU64::new(0)),
-            shutdown_signal,
             node_id,
         }
     }
@@ -102,11 +103,9 @@ impl<T: TypeConfig> StateMachineWorker<T> {
 
     pub async fn run(self) -> Result<()> {
         debug!("[Node-{}] SM Worker started", self.node_id);
-        let mut sm_apply_rx = self.sm_apply_rx;
-        let mut shutdown_signal = self.shutdown_signal.clone();
-        let mut shutdown = false;
 
         let node_id = self.node_id;
+        let mut sm_apply_rx = self.sm_apply_rx;
         let ctx = HandlerContext {
             node_id,
             state_machine_writer: self.state_machine_writer,
@@ -117,41 +116,36 @@ impl<T: TypeConfig> StateMachineWorker<T> {
             install_epoch: self.install_epoch,
         };
 
+        let result = Self::drain_until_shutdown(&ctx, &mut sm_apply_rx).await;
+
+        // Last act, on every exit path: nothing is applied after this.
+        let closed = ctx.state_machine_writer.close();
+        if let Err(e) = &closed {
+            error!(
+                "[Node-{}] SM Worker failed to close the state machine: {:?}",
+                node_id, e
+            );
+        }
+        info!("[Node-{}] SM Worker shutdown complete", node_id);
+        // A drain failure is the root cause; a close failure is reported only when the drain
+        // itself was fine.
+        result.and(closed)
+    }
+
+    /// Applies queued commands in order until `Shutdown`, then waits for a running capture.
+    async fn drain_until_shutdown(
+        ctx: &HandlerContext<T>,
+        sm_apply_rx: &mut mpsc::UnboundedReceiver<StateMachineCommand>,
+    ) -> Result<()> {
         // Tracks the in-flight capture task so shutdown can wait for it (#436).
         let mut in_flight_capture: Option<tokio::task::JoinHandle<()>> = None;
 
-        loop {
-            tokio::select! {
-                // Shutdown signal received: drain remaining entries before exit
-                _ = shutdown_signal.changed() => {
-                    info!("[Node-{}] SM Worker shutdown signal received", node_id);
-                    shutdown = true;
-                }
-
-                // Normal apply processing
-                command = sm_apply_rx.recv() => {
-                    match command {
-                        Some(command) => {
-                            Self::handle_command(&ctx, &mut in_flight_capture, command).await?;
-                                                   }
-                        None => {
-                            debug!("[Node-{}] SM Worker: apply channel closed", node_id);
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-
-            // Exit loop after shutdown signal to start graceful drain
-            if shutdown {
+        while let Some(command) = sm_apply_rx.recv().await {
+            if matches!(command, StateMachineCommand::Shutdown) {
+                info!("[Node-{}] SM Worker shutdown command received", ctx.node_id);
                 break;
             }
-        }
-
-        // Graceful drain: process remaining entries after shutdown signal
-        debug!("[Node-{}] SM Worker draining pending applies", node_id);
-        while let Ok(command) = sm_apply_rx.try_recv() {
-            Self::handle_command(&ctx, &mut in_flight_capture, command).await?;
+            Self::handle_command(ctx, &mut in_flight_capture, command).await?;
         }
 
         // Wait for a still-running capture rather than leaving it orphaned — see
@@ -162,11 +156,10 @@ impl<T: TypeConfig> StateMachineWorker<T> {
         {
             error!(
                 "[Node-{}] in-flight capture task panicked during shutdown: {:?}",
-                node_id, e
+                ctx.node_id, e
             );
         }
 
-        info!("[Node-{}] SM Worker shutdown complete", node_id);
         Ok(())
     }
 
@@ -178,7 +171,13 @@ impl<T: TypeConfig> StateMachineWorker<T> {
         command: StateMachineCommand,
     ) -> Result<()> {
         match command {
-            StateMachineCommand::ApplyEntries { entries } => {
+            StateMachineCommand::Shutdown => {
+                // Acted on by `run()`; nothing to do here.
+                Ok(())
+            }
+            StateMachineCommand::ApplyEntries { entries, sent_at } => {
+                metrics::histogram!("core.raft.sm_worker.queue_wait_ms")
+                    .record(sent_at.elapsed().as_secs_f64() * 1_000.0);
                 Self::apply_and_notify(
                     &ctx.node_id,
                     &ctx.state_machine_writer,
@@ -320,6 +319,7 @@ impl<T: TypeConfig> StateMachineWorker<T> {
                     if let Err(e) = internal_event_tx.send(InternalEvent::ApplyCompleted {
                         last_index: last.index,
                         results,
+                        sent_at: tokio::time::Instant::now(),
                     }) {
                         error!(
                             "[Node-{}] Failed to send ApplyCompleted event: {:?}",
@@ -350,6 +350,11 @@ impl<T: TypeConfig> StateMachineWorker<T> {
                 Err(e)
             }
         }
+    }
+
+    /// Closes the state machine of a worker that was never started.
+    pub(super) fn close(self) -> Result<()> {
+        self.state_machine_writer.close()
     }
 }
 

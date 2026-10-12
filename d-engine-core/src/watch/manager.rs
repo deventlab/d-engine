@@ -21,15 +21,18 @@
 //! - **No hidden resource allocation**: All tokio::spawn calls are explicit in Builder
 //! - **Minimal abstraction**: Only essential data structures, no unnecessary wrappers
 //! - **Composable**: Registry and Dispatcher are independent, composed in Builder
-//! - **O(depth) prefix dispatch**: Decompose event key into slash-terminated path segments,
-//!   O(1) DashMap lookup per segment — dispatch cost is independent of prefix watcher count
+//! - **O(depth) prefix dispatch**: Decompose event key into slash-terminated path segments, O(1)
+//!   DashMap lookup per segment — dispatch cost is independent of prefix watcher count
 //! - **Proto boundary**: WatchResponse (proto) lives only in the broadcast channel and handler;
 //!   WatchEvent (opaque) is what callers see — no proto import required.
 
 use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -57,10 +60,10 @@ pub enum WatchEventType {
 /// All fields use standard Rust types — callers never need to import proto types.
 ///
 /// `prev_value` semantics:
-/// - `None` — watcher was registered with `prev_kv = false`, or the event is
-///   `Progress` / `Canceled` (not a data mutation).
-/// - `Some(Bytes::new())` — watcher has `prev_kv = true` and the key did not exist
-///   before this write (fresh insert).
+/// - `None` — watcher was registered with `prev_kv = false`, or the event is `Progress` /
+///   `Canceled` (not a data mutation).
+/// - `Some(Bytes::new())` — watcher has `prev_kv = true` and the key did not exist before this
+///   write (fresh insert).
 /// - `Some(v)` — watcher has `prev_kv = true` and `v` is the previous value.
 #[derive(Debug, Clone)]
 pub struct WatchEvent {

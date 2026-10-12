@@ -1,4 +1,3 @@
-use crate::MockCommitHandler;
 use crate::MockElectionCore;
 use crate::MockMembership;
 use crate::MockPurgeExecutor;
@@ -29,8 +28,6 @@ impl TypeConfig for MockTypeConfig {
     type M = MockMembership<Self>;
 
     type REP = MockReplicationCore<Self>;
-
-    type C = MockCommitHandler;
 
     type SMH = MockStateMachineHandler<Self>;
 

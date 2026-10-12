@@ -1,8 +1,9 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use d_engine_proto::common::Entry;
 use d_engine_proto::server::storage::SnapshotMetadata;
-use std::path::PathBuf;
-use std::sync::Arc;
 use tracing::trace;
 
 use super::StateMachineWriterOps;
@@ -81,10 +82,10 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
         let start = std::time::Instant::now();
         let chunk_size = chunk.len();
 
-        metrics::counter!(
-            "core.state_machine.apply_chunk.count",
-            &[("node_id", self.node_id.to_string())]
-        )
+        metrics::counter!("core.state_machine.apply_chunk.count", &[(
+            "node_id",
+            self.node_id.to_string()
+        )])
         .increment(1);
 
         let last_index = chunk.last().map(|entry| entry.index);
@@ -111,10 +112,10 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
         let apply_t0 = std::time::Instant::now();
         let apply_result = sm.apply_chunk(&apply_entries).await;
         let apply_elapsed = apply_t0.elapsed();
-        metrics::counter!(
-            "core.state_machine.apply.busy_nanos_total",
-            &[("node_id", self.node_id.to_string())]
-        )
+        metrics::counter!("core.state_machine.apply.busy_nanos_total", &[(
+            "node_id",
+            self.node_id.to_string()
+        )])
         .increment(apply_elapsed.as_nanos() as u64);
 
         #[cfg(feature = "watch")]
@@ -130,42 +131,39 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
         }
 
         let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-        metrics::histogram!(
-            "core.state_machine.apply_chunk.duration_ms",
-            &[("node_id", self.node_id.to_string())]
-        )
+        metrics::histogram!("core.state_machine.apply_chunk.duration_ms", &[(
+            "node_id",
+            self.node_id.to_string()
+        )])
         .record(duration_ms);
-        metrics::histogram!(
-            "core.state_machine.apply_chunk.batch_size",
-            &[("node_id", self.node_id.to_string())]
-        )
+        metrics::histogram!("core.state_machine.apply_chunk.batch_size", &[(
+            "node_id",
+            self.node_id.to_string()
+        )])
         .record(chunk_size as f64);
 
         match &apply_result {
             Ok(_) => {
                 if let Some(idx) = last_index {
                     self.applied.advance(idx);
-                    metrics::gauge!(
-                        "core.raft.apply_index",
-                        &[("node_id", self.node_id.to_string())]
-                    )
+                    metrics::gauge!("core.raft.apply_index", &[(
+                        "node_id",
+                        self.node_id.to_string()
+                    )])
                     .set(idx as f64);
                 }
-                metrics::counter!(
-                    "core.state_machine.apply_chunk.success",
-                    &[("node_id", self.node_id.to_string())]
-                )
+                metrics::counter!("core.state_machine.apply_chunk.success", &[(
+                    "node_id",
+                    self.node_id.to_string()
+                )])
                 .increment(1);
             }
             Err(e) => {
                 let error_type = classify_error(e);
-                metrics::counter!(
-                    "core.state_machine.apply_chunk.error",
-                    &[
-                        ("node_id", self.node_id.to_string()),
-                        ("error_type", error_type)
-                    ]
-                )
+                metrics::counter!("core.state_machine.apply_chunk.error", &[
+                    ("node_id", self.node_id.to_string()),
+                    ("error_type", error_type)
+                ])
                 .increment(1);
             }
         }
@@ -223,5 +221,9 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
             },
             temp_dir: OwnedSnapshotDir::from_existing(temp_path)?,
         })
+    }
+
+    fn close(&self) -> Result<()> {
+        self.state_machine.close()
     }
 }

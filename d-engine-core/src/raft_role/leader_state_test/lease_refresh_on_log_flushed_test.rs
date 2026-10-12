@@ -10,6 +10,16 @@
 //! After fix: log flush in single-voter confirms leadership (leader is entire quorum),
 //! so lease timestamp is updated to enable fast local reads.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::sleep;
+use tracing_test::traced_test;
+
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
@@ -18,13 +28,6 @@ use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
-use tokio::time::sleep;
-use tracing_test::traced_test;
 
 // ============================================================================
 // Test Utilities

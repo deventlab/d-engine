@@ -1,9 +1,6 @@
-use crate::client::ClientReadRequest;
-use crate::client::ClientResponse;
-use crate::client::ClientWriteRequest;
-use crate::client::ErrorCode;
-use crate::client::LeaderHint;
-use crate::config::ReadConsistencyPolicy;
+use std::sync::Arc;
+
+use d_engine_proto::client::WriteCommand;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole;
 use d_engine_proto::server::cluster::ClusterConfChangeRequest;
@@ -21,7 +18,10 @@ use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::storage::SnapshotAck;
 use d_engine_proto::server::storage::SnapshotChunk;
 use d_engine_proto::server::storage::snapshot_ack::ChunkStatus;
-use std::sync::Arc;
+use mockall::predicate::eq;
+use prost::Message;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tonic::Code;
 use tonic::Status;
 
@@ -49,6 +49,12 @@ use crate::StateMachineCommand;
 use crate::StateMachineCommandSender;
 use crate::StateUpdate;
 use crate::SystemError;
+use crate::client::ClientReadRequest;
+use crate::client::ClientResponse;
+use crate::client::ClientWriteRequest;
+use crate::client::ErrorCode;
+use crate::client::LeaderHint;
+use crate::config::ReadConsistencyPolicy;
 use crate::raft_role::candidate_state::CandidateState;
 use crate::raft_role::follower_state::FollowerState;
 use crate::raft_role::leader_state::LeaderState;
@@ -61,10 +67,6 @@ use crate::test_utils::mock::mock_raft_context;
 use crate::test_utils::mock::mock_raft_context_with_temp;
 use crate::test_utils::mock::mock_raft_log;
 use crate::test_utils::node_config;
-use d_engine_proto::client::WriteCommand;
-use mockall::predicate::eq;
-use prost::Message;
-use tokio::sync::{mpsc, watch};
 
 // ============================================================================
 // Helper Functions
@@ -325,7 +327,8 @@ async fn test_handle_vote_request_rejects_when_handler_returns_none() {
 ///
 /// Scenario:
 /// - Follower receives VoteRequest with higher term
-/// - handle_vote_request returns Ok(StateUpdate { new_voted_for: Some(...), term_update: Some(100) })
+/// - handle_vote_request returns Ok(StateUpdate { new_voted_for: Some(...), term_update: Some(100)
+///   })
 /// - Vote is granted
 ///
 /// Expected:
@@ -383,14 +386,13 @@ async fn test_handle_vote_request_grants_and_updates_term() {
 /// to the caller.
 ///
 /// Scenario:
-/// - Same setup as test_handle_vote_request_grants_and_updates_term above: Follower
-///   grants a vote, term updates to 100.
+/// - Same setup as test_handle_vote_request_grants_and_updates_term above: Follower grants a vote,
+///   term updates to 100.
 /// - `RaftLog::save_hard_state` is documented as required "Before voting for a candidate"
 ///   (raft_log.rs "When to Call") — this is the Raft paper's core safety requirement:
-///   currentTerm/votedFor must be durable before the RPC response is sent, otherwise a
-///   crash right after responding "yes" can make the node forget it already voted this
-///   term and grant a second, conflicting vote after restart (double-voting, breaks
-///   election safety).
+///   currentTerm/votedFor must be durable before the RPC response is sent, otherwise a crash right
+///   after responding "yes" can make the node forget it already voted this term and grant a second,
+///   conflicting vote after restart (double-voting, breaks election safety).
 ///
 /// Expected:
 /// - `save_hard_state` is called exactly once with term=100 and the granted `voted_for`.
@@ -478,17 +480,16 @@ async fn test_handle_vote_request_grants_vote_persists_hard_state_before_respond
 /// Test: Granting a vote resets the election timer.
 ///
 /// Scenario:
-/// - Follower's timer is set to an already-expired deadline before the request
-///   arrives (simulates "haven't heard from anyone in a while").
+/// - Follower's timer is set to an already-expired deadline before the request arrives (simulates
+///   "haven't heard from anyone in a while").
 /// - `VoteRequest` arrives and is legitimately granted.
 ///
 /// Expected:
-/// - After processing, `state.is_timer_expired()` is false — the timer was
-///   reset to a fresh future deadline as part of granting the vote, giving the
-///   new candidate a fair window to complete its election before this node
-///   also times out and starts a competing campaign (see decision doc for
-///   ticket #422: this exact gap caused a real election-storm regression,
-///   confirmed pre-existing via `git diff` before this test was added).
+/// - After processing, `state.is_timer_expired()` is false — the timer was reset to a fresh future
+///   deadline as part of granting the vote, giving the new candidate a fair window to complete its
+///   election before this node also times out and starts a competing campaign (see decision doc for
+///   ticket #422: this exact gap caused a real election-storm regression, confirmed pre-existing
+///   via `git diff` before this test was added).
 ///
 /// Known bug (fixed as of 2026-07-18, ticket #422 follow-up): the vote-granting
 /// branch in `handle_inbound_event`'s `ReceiveVoteRequest` arm previously never
@@ -548,15 +549,14 @@ async fn test_handle_vote_request_grants_vote_resets_election_timer() {
 /// Test: A VoteRequest rejected for an illegitimate term does NOT reset the timer.
 ///
 /// Scenario:
-/// - VoteRequest carries a term that is not >= this follower's own term (stale
-///   candidate), so the request is illegitimate and must be rejected outright.
+/// - VoteRequest carries a term that is not >= this follower's own term (stale candidate), so the
+///   request is illegitimate and must be rejected outright.
 ///
 /// Expected:
-/// - The timer is untouched. If every incoming VoteRequest reset the timer
-///   regardless of legitimacy, a stale/misbehaving peer could keep this node
-///   from ever timing out and starting its own election — an availability bug
-///   distinct from (but as real as) the missing-reset one above. This is the
-///   negative case that proves the fix is scoped correctly, not blanket-applied.
+/// - The timer is untouched. If every incoming VoteRequest reset the timer regardless of
+///   legitimacy, a stale/misbehaving peer could keep this node from ever timing out and starting
+///   its own election — an availability bug distinct from (but as real as) the missing-reset one
+///   above. This is the negative case that proves the fix is scoped correctly, not blanket-applied.
 #[tokio::test]
 async fn test_handle_vote_request_rejected_does_not_reset_timer() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -605,9 +605,9 @@ async fn test_handle_vote_request_rejected_does_not_reset_timer() {
 ///
 /// Expected:
 /// - `save_hard_state` is called with the leader's committed vote.
-/// - The call happens BEFORE `InternalEvent::LeaderDiscovered` is sent — mirrors
-///   the BecomeFollower ordering tests in candidate_state_test.rs, applied here
-///   to the notification this codebase uses for `wait_ready()`.
+/// - The call happens BEFORE `InternalEvent::LeaderDiscovered` is sent — mirrors the BecomeFollower
+///   ordering tests in candidate_state_test.rs, applied here to the notification this codebase uses
+///   for `wait_ready()`.
 ///
 /// Known bug (fixed as of 2026-07-18, ticket #422 follow-up): this handler used
 /// to send `LeaderDiscovered` before the single consolidated `commit_hard_state`
@@ -894,10 +894,9 @@ async fn test_tick_triggers_election_on_timeout() {
 ///
 /// Expected:
 /// 1. Sends LeaderDiscovered event (marks new leader)
-/// 2. Sends NotifyNewCommitIndex event
-/// 3. Updates current_term to leader's term (2)
-/// 4. Updates commit_index to new value (2)
-/// 5. Returns AppendEntriesResponse with success=true
+/// 2. Updates current_term to leader's term (2)
+/// 3. Updates commit_index to new value (2)
+/// 4. Returns AppendEntriesResponse with success=true
 /// 6. handle_inbound_event returns Ok(())
 ///
 /// This validates the core Raft rule: Follower accepts entries from
@@ -967,19 +966,6 @@ async fn test_handle_append_entries_success_from_new_leader() {
             InternalEvent::LeaderDiscovered(5, _)
         ),
         "Should send LeaderDiscovered event"
-    );
-
-    // Verify: NotifyNewCommitIndex event sent
-    assert!(
-        matches!(
-            internal_event_rx.try_recv().unwrap(),
-            InternalEvent::NotifyNewCommitIndex(NewCommitData {
-                new_commit_index: _,
-                role: _,
-                current_term: _
-            })
-        ),
-        "Should send NotifyNewCommitIndex event"
     );
 
     // Verify: Term and commit_index updated
@@ -1169,18 +1155,17 @@ async fn test_handle_append_entries_rejects_stale_term() {
 /// Test: AppendEntries rejected for a stale term does NOT reset the election timer.
 ///
 /// Scenario:
-/// - Follower (term=2) receives AppendEntries from a stale leader (term=1) — the
-///   same illegitimate-sender case as `test_handle_append_entries_rejects_stale_term`.
+/// - Follower (term=2) receives AppendEntries from a stale leader (term=1) — the same
+///   illegitimate-sender case as `test_handle_append_entries_rejects_stale_term`.
 ///
 /// Expected:
-/// - The timer is untouched. `handle_append_entries_request_workflow`
-///   (role_state.rs) currently calls `self.reset_timer()` unconditionally before
-///   checking whether the sender's term is stale — so today this test is RED: a
-///   rejected, stale-term AppendEntries still resets the timer. If a stale leader
-///   keeps sending (each one rejected), this follower's timer never expires and it
-///   never starts its own election, even though the real current leader may be
-///   unreachable. Same class of bug as `test_handle_vote_request_rejected_does_not_reset_timer`
-///   (ticket #422), for AppendEntries instead of VoteRequest.
+/// - The timer is untouched. `handle_append_entries_request_workflow` (role_state.rs) currently
+///   calls `self.reset_timer()` unconditionally before checking whether the sender's term is stale
+///   — so today this test is RED: a rejected, stale-term AppendEntries still resets the timer. If a
+///   stale leader keeps sending (each one rejected), this follower's timer never expires and it
+///   never starts its own election, even though the real current leader may be unreachable. Same
+///   class of bug as `test_handle_vote_request_rejected_does_not_reset_timer` (ticket #422), for
+///   AppendEntries instead of VoteRequest.
 #[tokio::test]
 async fn test_handle_append_entries_rejects_stale_term_does_not_reset_timer() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -1659,8 +1644,8 @@ async fn test_handle_cluster_conf_update_when_leader_unknown() {
 ///
 /// Expected:
 /// - Returns Ok(ClientResponse) with error = NotLeader
-/// - `leader_hint` is populated so the caller can actually redirect, not just
-///   told "not leader" with nowhere to go
+/// - `leader_hint` is populated so the caller can actually redirect, not just told "not leader"
+///   with nowhere to go
 /// - No state changes
 ///
 /// This validates the core Raft rule: Only leader can process writes.
@@ -1676,7 +1661,7 @@ async fn test_handle_client_write_request_redirects_to_leader() {
     state.shared_state().set_current_leader(2);
 
     let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
-    let cmd = ClientCmd::Propose(
+    let cmd = ClientCmd::propose(
         ClientWriteRequest {
             client_id: 1,
             command: Some(bytes::Bytes::from(
@@ -1995,7 +1980,8 @@ async fn test_discover_leader_returns_unavailable_when_leader_unknown() {
 /// The term returned alongside helps the client detect staleness.
 #[tokio::test]
 async fn test_discover_leader_returns_known_leader_address() {
-    use d_engine_proto::common::{NodeRole::Leader, NodeStatus};
+    use d_engine_proto::common::NodeRole::Leader;
+    use d_engine_proto::common::NodeStatus;
     use d_engine_proto::server::cluster::NodeMeta;
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2048,8 +2034,8 @@ async fn test_discover_leader_returns_known_leader_address() {
 /// Test: Follower knows a leader ID but cannot find its metadata — returns NotFound.
 ///
 /// Scenario:
-/// - Follower has current_leader=3 but membership has no metadata for node 3
-///   (e.g. membership config not yet propagated after cluster reconfiguration)
+/// - Follower has current_leader=3 but membership has no metadata for node 3 (e.g. membership
+///   config not yet propagated after cluster reconfiguration)
 ///
 /// Expected:
 /// - Response carries Status::NotFound
@@ -2095,8 +2081,9 @@ async fn test_discover_leader_returns_not_found_when_metadata_missing() {
 // ============================================================================
 
 mod snapshot_tests {
-    use super::*;
     use std::sync::atomic::Ordering;
+
+    use super::*;
 
     /// Test: Follower gracefully ignores stale leader-only internal events
     ///
@@ -2296,8 +2283,9 @@ mod snapshot_tests {
 
     /// Test: Complete snapshot lifecycle — create, complete, create again
     ///
-    /// Validates the full flag cycle: false → true (create) → false (created ok) → true (create again).
-    /// Ensures the follower can take multiple snapshots over its lifetime without getting stuck.
+    /// Validates the full flag cycle: false → true (create) → false (created ok) → true (create
+    /// again). Ensures the follower can take multiple snapshots over its lifetime without
+    /// getting stuck.
     #[tokio::test]
     async fn test_follower_snapshot_lifecycle() {
         let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -2762,7 +2750,8 @@ async fn test_apply_completed_triggers_snapshot_when_condition_met() {
 
 /// Test: Follower ApplyCompleted does NOT trigger snapshot when condition is not met
 ///
-/// Purpose: Verify that followers respect snapshot conditions and don't create unnecessary snapshots.
+/// Purpose: Verify that followers respect snapshot conditions and don't create unnecessary
+/// snapshots.
 ///
 /// Scenario:
 /// - Follower receives ApplyCompleted event
@@ -3749,8 +3738,8 @@ async fn test_follower_install_snapshot_advances_commit_index_to_boundary() {
 /// to advance match_index and stop retrying, leaving the follower permanently behind.
 ///
 /// # Given
-/// - prepare_snapshot_stream: sends Accepted ACK (transfer succeeded),
-///   then returns Err (apply_snapshot_from_file failed)
+/// - prepare_snapshot_stream: sends Accepted ACK (transfer succeeded), then returns Err
+///   (apply_snapshot_from_file failed)
 ///
 /// # When
 /// - Leader pushes a snapshot (InstallSnapshotChunk event)
@@ -4515,8 +4504,8 @@ fn grant_update(
 /// Expected:
 /// - Rejected without consulting the election handler (it would grant on term alone).
 /// - Response carries this follower's own term, not the requester's.
-/// - Term unchanged and nothing persisted: adopting 2400 would make this follower reject the
-///   real leader's next heartbeat and force it to step down.
+/// - Term unchanged and nothing persisted: adopting 2400 would make this follower reject the real
+///   leader's next heartbeat and force it to step down.
 #[tokio::test(start_paused = true)]
 async fn test_follower_rejects_vote_request_while_leader_contact_is_recent() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -4552,8 +4541,8 @@ async fn test_follower_rejects_vote_request_while_leader_contact_is_recent() {
 /// handled normally.
 ///
 /// Expected:
-/// - The guard is a time window, not a permanent block: if the leader really died, an
-///   election must still be able to proceed.
+/// - The guard is a time window, not a permanent block: if the leader really died, an election must
+///   still be able to proceed.
 #[tokio::test(start_paused = true)]
 async fn test_follower_handles_vote_request_after_leader_contact_window_expires() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -4608,14 +4597,14 @@ async fn test_follower_without_leader_contact_handles_vote_request() {
 /// Test: granting a vote does not start a new guard window.
 ///
 /// Scenario:
-/// - Leader contact at t0, window expires, follower grants a vote to candidate 7.
-///   (Granting resets the election timer, see the #422 test above.)
+/// - Leader contact at t0, window expires, follower grants a vote to candidate 7. (Granting resets
+///   the election timer, see the #422 test above.)
 /// - A moment later, candidate 8 asks for a vote at an even higher term.
 ///
 /// Expected:
-/// - The second request reaches the election handler. The guard keys on leader contact only;
-///   if it keyed on the election timer, the vote just granted would count as "leader alive"
-///   and block a legitimate election.
+/// - The second request reaches the election handler. The guard keys on leader contact only; if it
+///   keyed on the election timer, the vote just granted would count as "leader alive" and block a
+///   legitimate election.
 #[tokio::test(start_paused = true)]
 async fn test_follower_granting_vote_does_not_refresh_leader_contact_guard() {
     let (_graceful_tx, graceful_rx) = watch::channel(());
@@ -4771,8 +4760,8 @@ async fn test_follower_pre_vote_after_leader_contact_window_reports_no_active_le
 /// Test: answering a PreVote changes nothing on the Follower, granted or denied.
 ///
 /// Expected:
-/// - Term unchanged, nothing persisted, election timer untouched. A PreVote that reset the
-///   timer would let a node that cannot win keep every other follower from ever timing out.
+/// - Term unchanged, nothing persisted, election timer untouched. A PreVote that reset the timer
+///   would let a node that cannot win keep every other follower from ever timing out.
 #[tokio::test(start_paused = true)]
 async fn test_follower_pre_vote_changes_no_state() {
     for contact_leader_first in [false, true] {
@@ -4811,7 +4800,6 @@ async fn test_follower_pre_vote_changes_no_state() {
 // A removed (or never-promoted) node that keeps timing out would otherwise start elections whose
 // quorum math counts its own vote as part of the cluster: with 4 real voters it needs only
 // "own vote + 2 grants = 3 of 5" although a majority of the 4 voters is 3 grants.
-// openraft skips the election ("not a voter"); raft-rs refuses to campaign when not promotable.
 //
 // `Membership::voters()` lists the OTHER active voters (it never contains this node), so "am I a
 // voter" is answered by this node's own membership entry: present and `Active`.
@@ -4891,4 +4879,32 @@ async fn test_follower_tick_starts_election_when_an_active_voter() {
         follower_tick_requests_candidacy(Some(d_engine_proto::common::NodeStatus::Active)).await;
 
     assert!(requested);
+}
+
+/// Test: a follower rejects a write with NOT_LEADER.
+///
+/// Why: a write that reaches a non-leader must be redirected, never silently dropped or
+/// accepted.
+#[tokio::test]
+async fn test_handle_client_propose_redirects_to_leader() {
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let (context, _temp_dir) = mock_context_with_leader_address(graceful_rx, 2, "127.0.0.1:9082");
+    let mut state =
+        FollowerState::<MockTypeConfig>::new(1, context.node_config.clone(), None, None);
+    state.shared_state().set_current_leader(2);
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let cmd = ClientCmd::propose(
+        ClientWriteRequest {
+            client_id: 1,
+            command: Some(bytes::Bytes::from(
+                WriteCommand::delete(bytes::Bytes::new()).encode_to_vec(),
+            )),
+        },
+        resp_tx,
+    );
+    state.push_client_cmd(cmd, &context);
+
+    let result = resp_rx.recv().await.expect("channel should not be closed");
+    assert_eq!(result.expect("Ok response").error, ErrorCode::NotLeader);
 }

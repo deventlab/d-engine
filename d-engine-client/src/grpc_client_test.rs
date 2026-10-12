@@ -18,7 +18,6 @@ use tracing_test::traced_test;
 use crate::Client;
 use crate::ClientConfig;
 use crate::ClientInner;
-
 use crate::ConnectionPool;
 use crate::GrpcClient;
 use crate::mock_rpc_service::MockNode;
@@ -1435,9 +1434,10 @@ mod cas_operations {
 // =============================================================================
 
 mod watch_membership_tests {
-    use super::*;
     use d_engine_proto::client::MembershipSnapshot;
     use tokio_stream::StreamExt;
+
+    use super::*;
 
     async fn make_client(port: u16) -> GrpcClient {
         let endpoints = vec![format!("http://localhost:{}", port)];
@@ -1547,8 +1547,9 @@ mod watch_membership_tests {
 // =============================================================================
 
 mod watch_tests {
-    use super::*;
     use tokio_stream::StreamExt;
+
+    use super::*;
 
     async fn make_client(port: u16) -> GrpcClient {
         let endpoints = vec![format!("http://localhost:{}", port)];
@@ -1664,8 +1665,11 @@ mod scan_tests {
     use tokio::sync::oneshot;
     use tracing_test::traced_test;
 
+    use crate::ClientConfig;
+    use crate::ClientInner;
+    use crate::ConnectionPool;
+    use crate::GrpcClient;
     use crate::mock_rpc_service::MockNode;
-    use crate::{ClientConfig, ClientInner, ConnectionPool, GrpcClient};
 
     async fn make_client(port: u16) -> GrpcClient {
         let endpoints = vec![format!("http://localhost:{port}")];

@@ -2,8 +2,10 @@
 //! and client requests. Implements core Raft protocol logic for leader election,
 //! log replication, and cluster configuration management.
 
-use crate::Node;
-use crate::proto_convert;
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
+
 use d_engine_core::InboundEvent;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftOneshot;
@@ -40,9 +42,6 @@ use d_engine_proto::server::storage::SnapshotResponse;
 use d_engine_proto::server::storage::snapshot_service_server::SnapshotService;
 use futures::Stream;
 use futures::StreamExt;
-use std::future::Future;
-use std::pin::Pin;
-use std::time::Duration;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -55,6 +54,9 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+
+use crate::Node;
+use crate::proto_convert;
 
 #[tonic::async_trait]
 impl<T> RaftElectionService for Node<T>
@@ -144,10 +146,9 @@ where
 
         let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
         self.event_tx
-            .send(InboundEvent::AppendEntries(
-                request.into_inner(),
-                vec![resp_tx],
-            ))
+            .send(InboundEvent::AppendEntries(request.into_inner(), vec![
+                resp_tx,
+            ]))
             .await
             .map_err(|_| Status::internal("Event channel closed"))?;
 
@@ -482,7 +483,7 @@ where
             let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
             let t0 = std::time::Instant::now();
             cmd_tx
-                .send(d_engine_core::ClientCmd::Propose(core_req, resp_tx))
+                .send(d_engine_core::ClientCmd::propose(core_req, resp_tx))
                 .await
                 .map_err(|_| Status::internal("Command channel closed"))?;
 

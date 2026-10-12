@@ -7,8 +7,10 @@ use d_engine_core::Lease;
 use d_engine_core::LogStore;
 use d_engine_core::StorageEngine;
 use d_engine_core::config::LeaseConfig;
-use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
-use d_engine_core::storage_engine_test::{StorageEngineBuilder, StorageEngineTestSuite};
+use d_engine_core::state_machine_test::StateMachineBuilder;
+use d_engine_core::state_machine_test::StateMachineTestSuite;
+use d_engine_core::storage_engine_test::StorageEngineBuilder;
+use d_engine_core::storage_engine_test::StorageEngineTestSuite;
 use tempfile::TempDir;
 
 use super::RocksDBStateMachine;
@@ -20,8 +22,8 @@ use crate::storage::TtlLease;
 // Both test suites call build() twice within a single persistence test (write data → drop →
 // build() again → verify data survived). Both builders therefore:
 //   1. Use a fixed path (`self.temp_dir`) so data persists across build() calls.
-//   2. Drop the "partner" handle inside build() before reopening, to release the shared
-//      Arc<DB> and allow RocksDB to close before the next open.
+//   2. Drop the "partner" handle inside build() before reopening, to release the shared Arc<DB> and
+//      allow RocksDB to close before the next open.
 
 // ── Storage engine suite via unified open ────────────────────────────────────
 
@@ -203,8 +205,8 @@ async fn test_persist_and_reload_lease_round_trip() {
         sm.set_lease(Arc::clone(&lease));
         // Register a key with a long TTL so it survives the reload.
         lease.register(bytes::Bytes::from("persistent_key"), 3600);
-        // stop() calls persist_ttl_metadata() → writes TTL_STATE_KEY to RocksDB.
-        sm.stop().expect("stop");
+        // close() calls persist_ttl_metadata() → writes TTL_STATE_KEY to RocksDB.
+        sm.close().unwrap();
         // Ensure DB is flushed before drop.
     }
     // Wait for RocksDB to release the file lock.

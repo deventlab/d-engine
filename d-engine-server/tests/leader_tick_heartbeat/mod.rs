@@ -9,7 +9,8 @@
 //! ## Architecture Context
 //!
 //! In drain-based architecture:
-//! - **Primary flush path**: Drain via recv() blocking on command channel, then try_recv() draining pending
+//! - **Primary flush path**: Drain via recv() blocking on command channel, then try_recv() draining
+//!   pending
 //! - **Secondary flush path**: Heartbeat timer (safety net for buffered commands)
 //! - **Heartbeat interval**: Configurable (default 100ms), must be < election timeout (300ms)
 //!

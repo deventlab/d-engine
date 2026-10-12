@@ -28,15 +28,14 @@
 //! - **Configuration Loading**: Supports loading cluster configuration from file or in-memory
 //!   config.
 
-use crate::read_actor::run_read_actor;
-use d_engine_core::CommitHandler;
-use d_engine_core::CommitHandlerDependencies;
-use d_engine_core::DefaultCommitHandler;
+use std::fmt::Debug;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use d_engine_core::DefaultPurgeExecutor;
 use d_engine_core::ElectionHandler;
 use d_engine_core::InternalEvent;
 use d_engine_core::LogSizePolicy;
-use d_engine_core::NewCommitData;
 use d_engine_core::Raft;
 use d_engine_core::RaftCoreHandlers;
 use d_engine_core::RaftLog;
@@ -47,6 +46,7 @@ use d_engine_core::RaftStorageHandles;
 use d_engine_core::ReplicationHandler;
 use d_engine_core::Result;
 use d_engine_core::SignalParams;
+use d_engine_core::SmWorkerHandle;
 use d_engine_core::StateMachine;
 use d_engine_core::StateMachineCommand;
 use d_engine_core::StateMachineWorker;
@@ -63,9 +63,6 @@ use d_engine_core::learner_state::LearnerState;
 use d_engine_core::watch::WatchDispatcher;
 #[cfg(feature = "watch")]
 use d_engine_core::watch::WatchRegistry;
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -79,6 +76,7 @@ use crate::Node;
 use crate::membership::RaftMembership;
 use crate::network::grpc;
 use crate::network::grpc::grpc_transport::GrpcTransport;
+use crate::read_actor::run_read_actor;
 
 type StateMachineHandler<SE, SM> = (
     Arc<SMHOF<RaftTypeConfig<SE, SM>>>,
@@ -304,9 +302,6 @@ where
         // snapshots_dir is not configurable — always data_dir/snapshots (see #10).
         let snapshots_dir = data_dir.snapshots_dir()?;
 
-        // Init CommitHandler
-        let (new_commit_event_tx, new_commit_event_rx) = mpsc::unbounded_channel::<NewCommitData>();
-
         // Handle state machine initialization
         let state_machine = self.state_machine.take().ok_or_else(|| {
             SystemError::NodeStartFailed(
@@ -416,7 +411,8 @@ where
                 unregister_tx,
             ));
 
-            // Shared last_applied for Progress event revision; written by handler, read by dispatcher.
+            // Shared last_applied for Progress event revision; written by handler, read by
+            // dispatcher.
             let last_applied_ref = Arc::new(std::sync::atomic::AtomicU64::new(last_applied_index));
 
             // Create dispatcher
@@ -441,7 +437,8 @@ where
                 #[cfg(feature = "watch")]
                 let watch_event_tx = watch_system.as_ref().map(|(tx, _, _, _)| tx.clone());
 
-                // Share the registry's live prev_kv counter Arc so the handler sees real-time updates.
+                // Share the registry's live prev_kv counter Arc so the handler sees real-time
+                // updates.
                 #[cfg(feature = "watch")]
                 let prev_kv_count = watch_system
                     .as_ref()
@@ -492,10 +489,11 @@ where
 
         let purge_executor = DefaultPurgeExecutor::new(raft_log.clone());
 
-        // internal_event_tx / internal_event_rx created earlier (before raft_log) to pass log_flush_tx to start().
+        // internal_event_tx / internal_event_rx created earlier (before raft_log) to pass
+        // log_flush_tx to start().
         let (event_tx, event_rx) = mpsc::channel(10240);
         let (cmd_tx, cmd_rx) = mpsc::channel(node_config.raft.cmd_channel_capacity);
-        let internal_event_tx_clone = internal_event_tx.clone();
+
         let internal_event_tx_for_sm = internal_event_tx.clone(); // used in SM worker (ApplyCompleted → P2)
 
         // Bridge zombie signals from health monitor → internal event loop.
@@ -516,7 +514,8 @@ where
         });
 
         // Bridge peer stream failures from transport → health monitor.
-        // Exits naturally when transport (and its peer_failure_tx) drops (channel closed → recv None).
+        // Exits naturally when transport (and its peer_failure_tx) drops (channel closed → recv
+        // None).
         let membership_for_peer_failure = Arc::clone(&membership);
         tokio::spawn(async move {
             let mut peer_failure_rx = peer_failure_rx;
@@ -526,7 +525,8 @@ where
         });
 
         // Bridge peer stream successes from transport → health monitor.
-        // Resets failure counter so transient errors during failover don't accumulate into false zombies.
+        // Resets failure counter so transient errors during failover don't accumulate into false
+        // zombies.
         let membership_for_peer_success = Arc::clone(&membership);
         tokio::spawn(async move {
             let mut peer_success_rx = peer_success_rx;
@@ -598,46 +598,21 @@ where
             node_config_arc.clone(),
         );
 
-        // Register commit event listener
-        raft_core.register_new_commit_listener(new_commit_event_tx);
-
         // Create leader notification channel and register with Raft core
         let leader_notifier = LeaderNotifier::new();
         raft_core.register_leader_change_listener(leader_notifier.sender());
 
-        // Spawn SM Worker task
-        let sm_worker = StateMachineWorker::new(
-            node_id,
-            state_machine_writer.clone(),
+        // Assemble the SM Worker; `Node::run` starts it.
+        let sm_worker = SmWorkerHandle::new(
+            StateMachineWorker::new(
+                node_id,
+                state_machine_writer.clone(),
+                sm_apply_tx.clone(),
+                sm_apply_rx,
+                internal_event_tx_for_sm,
+            ),
             sm_apply_tx.clone(),
-            sm_apply_rx,
-            internal_event_tx_for_sm,
-            self.shutdown_signal.clone(),
         );
-        let sm_worker_handle = Self::spawn_state_machine_worker(sm_worker);
-
-        // Start CommitHandler in a single thread
-        let deps = CommitHandlerDependencies {
-            state_machine_handler,
-            raft_log: raft_core.ctx.storage.raft_log.clone(),
-            membership: membership.clone(),
-            internal_event_tx: internal_event_tx_clone,
-            sm_apply_tx: state_machine_commands,
-            shutdown_signal,
-            max_batch_size: raft_core.ctx.node_config.raft.batching.max_batch_size,
-        };
-
-        let commit_handler = DefaultCommitHandler::<RaftTypeConfig<SE, SM>>::new(
-            node_id,
-            my_role_i32,
-            my_current_term,
-            deps,
-            new_commit_event_rx,
-        );
-        // Spawn commit listener via Builder method
-        // This ensures all tokio::spawn calls are visible in one place (Builder impl)
-        // Following the "one page visible" Builder pattern principle
-        let commit_handler_handle = Self::spawn_state_machine_commit_listener(commit_handler);
 
         let event_tx = raft_core.event_sender();
         let read_lease = raft_core.read_lease();
@@ -670,10 +645,9 @@ where
             watch_registry: watch_system.as_ref().map(|(_, reg, _, _)| Arc::clone(reg)),
             #[cfg(feature = "watch")]
             _watch_dispatcher_handle: watch_system.map(|(_, _, handle, _)| handle),
-            sm_worker_handle: std::sync::Mutex::new(Some(sm_worker_handle)),
+            sm_worker,
             read_actor_handle: std::sync::Mutex::new(Some(read_actor_handle)),
             rpc_server_handle: std::sync::Mutex::new(None),
-            _commit_handler_handle: Some(commit_handler_handle),
             _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),
             read_lease,
@@ -683,56 +657,6 @@ where
 
         self.node = Some(Arc::new(node));
         Ok(self)
-    }
-
-    /// Spawn state machine commit listener as background task.
-    ///
-    /// This method is called during node build() to start the commit handler thread.
-    /// All spawn_* methods are centralized in NodeBuilder so developers can see
-    /// all resource consumption (threads/tasks) in one place.
-    ///
-    /// # Returns
-    /// * `JoinHandle` - Task handle for lifecycle management
-    fn spawn_state_machine_commit_listener(
-        mut commit_handler: DefaultCommitHandler<RaftTypeConfig<SE, SM>>
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            match commit_handler.run().await {
-                Ok(_) => {
-                    info!("commit_handler exit program");
-                }
-                Err(e) => {
-                    error!("commit_handler exit program with unexpected error: {:?}", e);
-                    println!("commit_handler exit program");
-                }
-            }
-        })
-    }
-
-    /// Spawn state machine worker on a dedicated OS thread.
-    ///
-    /// Runs on `sm-apply-{node_id}` OS thread (not a tokio worker) so that
-    /// synchronous RocksDB writes inside `apply_chunk` never block the async runtime
-    /// or compete with tokio's blocking thread pool.
-    ///
-    /// # Returns
-    /// * `JoinHandle` - Thread handle for lifecycle management
-    fn spawn_state_machine_worker(
-        sm_worker: StateMachineWorker<RaftTypeConfig<SE, SM>>
-    ) -> std::thread::JoinHandle<()> {
-        let node_id = sm_worker.node_id();
-        let handle = tokio::runtime::Handle::current();
-        std::thread::Builder::new()
-            .name(format!("sm-apply-{}", node_id))
-            .spawn(move || {
-                handle.block_on(async move {
-                    match sm_worker.run().await {
-                        Ok(_) => info!("state_machine_worker exit"),
-                        Err(e) => error!("state_machine_worker exit with error: {:?}", e),
-                    }
-                });
-            })
-            .expect("failed to spawn sm-apply thread")
     }
 
     /// Spawn lease background cleanup task (if enabled).
@@ -821,7 +745,7 @@ where
     /// This is the primary method to initialize and start a node. It performs:
     /// 1. State machine initialization (including lease injection if applicable)
     /// 2. Raft core construction
-    /// 3. Background task spawning (commit handler, replication, election)
+    /// 3. Background task spawning (state machine worker, read actor, lease cleanup)
     /// 4. gRPC server startup for cluster communication
     ///
     /// # Returns

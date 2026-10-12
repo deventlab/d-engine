@@ -14,9 +14,11 @@ mod grpc_fast_path_tests {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    use crate::read_actor::run_read_actor;
     use bytes::Bytes;
-    use d_engine_core::{MockStateMachine, ReadLease, now_ms};
+    use d_engine_core::MockStateMachine;
+    use d_engine_core::MockTypeConfig;
+    use d_engine_core::ReadLease;
+    use d_engine_core::now_ms;
     use d_engine_proto::client::ClientReadRequest;
     use d_engine_proto::client::ReadConsistencyPolicy as ProtoPolicy;
     use d_engine_proto::client::client_response::SuccessResult;
@@ -27,8 +29,8 @@ mod grpc_fast_path_tests {
 
     use crate::Node;
     use crate::api::StandaloneReadHandle;
+    use crate::read_actor::run_read_actor;
     use crate::test_utils::mock_node;
-    use d_engine_core::MockTypeConfig;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

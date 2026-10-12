@@ -522,8 +522,8 @@ async fn test_minority_failure_blocks_writes() -> Result<(), Box<dyn std::error:
 ///    fault injection; "started before its peers" is the isolation)
 /// 2. Let it time out many times (15 s, at least 5 rounds at election_timeout_max = 3 s)
 /// 3. Start nodes 1 and 2 and wait for a leader
-/// 4. The leader's term must be small: without PreVote node 3 would have raised its term once
-///    per round and the whole cluster would have adopted it (term >= 6)
+/// 4. The leader's term must be small: without PreVote node 3 would have raised its term once per
+///    round and the whole cluster would have adopted it (term >= 6)
 #[tokio::test]
 #[traced_test]
 async fn test_isolated_node_does_not_inflate_term() -> Result<(), Box<dyn std::error::Error>> {

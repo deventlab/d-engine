@@ -2,9 +2,10 @@
 //!
 //! Verifies the bug fix for start_with() failing when CONFIG_PATH env is not set.
 
-use d_engine_server::DefaultEmbeddedEngine;
 use std::io::Write;
 use std::time::Duration;
+
+use d_engine_server::DefaultEmbeddedEngine;
 
 #[tokio::test]
 async fn test_start_with_no_config_path_env() {

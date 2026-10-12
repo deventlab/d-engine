@@ -227,7 +227,9 @@ impl MockStorageEngine {
         });
     }
 
-    /// Default `replace_range()`: always succeeds, atomically deletes entries >= `from_index` then inserts `new_entries`. Extracted out of `configure_mocks` for the same reason as `configure_persist_entries_success`.
+    /// Default `replace_range()`: always succeeds, atomically deletes entries >= `from_index` then
+    /// inserts `new_entries`. Extracted out of `configure_mocks` for the same reason as
+    /// `configure_persist_entries_success`.
     fn configure_replace_range_success(
         log_store: &mut MockLogStore,
         instance_id: &str,

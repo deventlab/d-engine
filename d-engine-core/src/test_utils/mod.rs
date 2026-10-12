@@ -22,11 +22,10 @@ pub use log_capture::*;
 #[cfg(any(test, feature = "__test_support"))]
 mod metrics_capture;
 
-#[cfg(any(test, feature = "__test_support"))]
-pub use metrics_capture::MetricsCapture;
-
 pub use common::*;
 pub use entry_builder::*;
+#[cfg(any(test, feature = "__test_support"))]
+pub use metrics_capture::MetricsCapture;
 pub use mock::*;
 pub use raft_log_core_test_helpers::*;
 pub use replication_test_helpers::*;

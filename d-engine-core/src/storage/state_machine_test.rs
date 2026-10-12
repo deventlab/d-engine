@@ -1,17 +1,19 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::SnapshotMetadata;
+use tempfile::TempDir;
+
 use crate::ApplyEntry;
 use crate::Command;
 use crate::Error;
 use crate::SnapshotApplyResult;
 use crate::storage::StateMachine;
-use async_trait::async_trait;
-use bytes::Bytes;
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::SnapshotMetadata;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
-use tempfile::TempDir;
 
 /// Test suite for StateMachine implementations
 ///
@@ -34,7 +36,7 @@ pub trait StateMachineBuilder: Send + Sync {
 impl StateMachineTestSuite {
     /// Run all state machine tests
     pub async fn run_all_tests<B: StateMachineBuilder>(builder: B) -> Result<(), Error> {
-        Self::test_start_stop(builder.build().await?).await?;
+        Self::test_start_close(builder.build().await?).await?;
         Self::test_basic_kv_operations(builder.build().await?).await?;
         Self::test_apply_chunk_functionality(builder.build().await?).await?;
         Self::test_cas_operations(builder.build().await?).await?;
@@ -51,6 +53,8 @@ impl StateMachineTestSuite {
         Self::test_data_survives_reopen(&builder).await?;
         Self::test_batch_survives_reopen(&builder).await?;
         Self::test_ungraceful_shutdown_recovery(&builder).await?;
+        Self::test_close_persists_without_drop(&builder).await?;
+        Self::test_operations_fail_after_close(builder.build().await?).await?;
         Self::test_reset_operation(builder.build().await?).await?;
 
         Self::test_get_multi_returns_values_in_key_order(builder.build().await?).await?;
@@ -76,18 +80,18 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
-    /// Test start/stop functionality
-    pub async fn test_start_stop(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
+    /// Test start/close lifecycle: a state machine is running after `start`, and not running
+    /// once `close`d. `close` is permanent and idempotent (#455), so there is no restart.
+    pub async fn test_start_close(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
         // Test default state
         assert!(state_machine.is_running());
 
-        // Test explicit start/stop
         state_machine.start().await?;
         assert!(state_machine.is_running());
-        state_machine.stop()?;
+        state_machine.close()?;
         assert!(!state_machine.is_running());
-        state_machine.start().await?;
-        assert!(state_machine.is_running());
+        state_machine.close()?; // idempotent
+        assert!(!state_machine.is_running());
 
         Ok(())
     }
@@ -152,7 +156,7 @@ impl StateMachineTestSuite {
         sm.apply_chunk(&[entry3]).await?;
         assert_eq!(sm.get(b"lock")?, Some(b"owner2".to_vec().into())); // Still owner2
 
-        sm.stop()?;
+        sm.close()?;
         Ok(())
     }
 
@@ -163,22 +167,19 @@ impl StateMachineTestSuite {
 
         sm.start().await?;
 
-        let entry = create_batch_entry(
-            1,
-            vec![
-                BatchOp::Insert {
-                    key: b"k1".to_vec().into(),
-                    value: b"v1".to_vec().into(),
-                },
-                BatchOp::Insert {
-                    key: b"k2".to_vec().into(),
-                    value: b"v2".to_vec().into(),
-                },
-                BatchOp::Delete {
-                    key: b"k1".to_vec().into(),
-                },
-            ],
-        );
+        let entry = create_batch_entry(1, vec![
+            BatchOp::Insert {
+                key: b"k1".to_vec().into(),
+                value: b"v1".to_vec().into(),
+            },
+            BatchOp::Insert {
+                key: b"k2".to_vec().into(),
+                value: b"v2".to_vec().into(),
+            },
+            BatchOp::Delete {
+                key: b"k1".to_vec().into(),
+            },
+        ]);
         sm.apply_chunk(&[entry]).await?;
 
         // k1 was deleted after insert, k2 survived
@@ -194,7 +195,7 @@ impl StateMachineTestSuite {
         );
         assert_eq!(sm.last_applied().index, 1);
 
-        sm.stop()?;
+        sm.close()?;
         Ok(())
     }
 
@@ -630,8 +631,8 @@ impl StateMachineTestSuite {
             "Data should exist before stop"
         );
 
-        // Call stop() for graceful shutdown - stop() must persist data
-        sm.stop()?;
+        // Call close() for graceful shutdown - close() must persist data
+        sm.close()?;
 
         // Explicitly drop Arc to release database locks (critical for RocksDB)
         drop(sm);
@@ -648,12 +649,12 @@ impl StateMachineTestSuite {
         assert_eq!(
             value1,
             Some(Bytes::from(b"drop_test_value1".to_vec())),
-            "BUG: Data lost after stop! StateMachine.stop() must persist data."
+            "BUG: Data lost after close! StateMachine.close() must persist data."
         );
         assert_eq!(
             value2,
             Some(Bytes::from(b"drop_test_value2".to_vec())),
-            "BUG: Data lost after stop! StateMachine.stop() must persist data."
+            "BUG: Data lost after close! StateMachine.close() must persist data."
         );
 
         Ok(())
@@ -867,8 +868,8 @@ impl StateMachineTestSuite {
             last_applied_before = sm.last_applied();
             assert_eq!(last_applied_before.index, 3);
 
-            // Graceful stop
-            sm.stop()?;
+            // Graceful close
+            sm.close()?;
         }
 
         // Step 2: Reopen and verify
@@ -914,22 +915,19 @@ impl StateMachineTestSuite {
             let sm = builder.build().await?;
             sm.start().await?;
 
-            let entry = create_batch_entry(
-                1,
-                vec![
-                    BatchOp::Insert {
-                        key: b"bk1".to_vec().into(),
-                        value: b"bv1".to_vec().into(),
-                    },
-                    BatchOp::Insert {
-                        key: b"bk2".to_vec().into(),
-                        value: b"bv2".to_vec().into(),
-                    },
-                    BatchOp::Delete {
-                        key: b"bk1".to_vec().into(),
-                    },
-                ],
-            );
+            let entry = create_batch_entry(1, vec![
+                BatchOp::Insert {
+                    key: b"bk1".to_vec().into(),
+                    value: b"bv1".to_vec().into(),
+                },
+                BatchOp::Insert {
+                    key: b"bk2".to_vec().into(),
+                    value: b"bv2".to_vec().into(),
+                },
+                BatchOp::Delete {
+                    key: b"bk1".to_vec().into(),
+                },
+            ]);
             sm.apply_chunk(&[entry]).await?;
 
             assert_eq!(sm.get(b"bk1")?, None);
@@ -955,7 +953,7 @@ impl StateMachineTestSuite {
         );
         assert_eq!(sm2.last_applied().index, 1, "last_applied must be restored");
 
-        sm2.stop()?;
+        sm2.close()?;
         Ok(())
     }
 
@@ -1043,6 +1041,102 @@ impl StateMachineTestSuite {
             2,
             "BUG: last_applied not recovered after crash! \
              Drop must persist last_applied to prevent entry replay."
+        );
+
+        Ok(())
+    }
+
+    /// `close()` alone must persist everything a restart needs, even while the developer still
+    /// holds the state machine.
+    ///
+    /// Business scenario: the node shuts down cleanly, but the application keeps its own `Arc`
+    /// to the state machine, so `Drop` never runs. A restart must still see every applied key
+    /// and the applied position; otherwise Raft replays entries that were already applied.
+    /// Every other reopen test in this suite drops the state machine first, which lets a `Drop`
+    /// impl hide a `close()` that forgot to persist.
+    pub async fn test_close_persists_without_drop<B: StateMachineBuilder>(
+        builder: &B
+    ) -> Result<(), Error> {
+        let sm = builder.build().await?;
+        sm.start().await?;
+        sm.apply_chunk(&[
+            create_insert_entry(
+                1,
+                Bytes::from_static(b"close_key1"),
+                Bytes::from_static(b"v1"),
+            ),
+            create_insert_entry(
+                2,
+                Bytes::from_static(b"close_key2"),
+                Bytes::from_static(b"v2"),
+            ),
+            create_insert_entry(
+                3,
+                Bytes::from_static(b"close_key3"),
+                Bytes::from_static(b"v3"),
+            ),
+        ])
+        .await?;
+        assert_eq!(sm.last_applied().index, 3);
+
+        sm.close()?;
+        // `sm` stays alive until the end of the test: Drop must not be what saves the state.
+
+        let sm2 = builder.build().await?;
+        sm2.start().await?;
+
+        assert_eq!(
+            sm2.last_applied().index,
+            3,
+            "close() must persist the applied position without relying on Drop"
+        );
+        assert_eq!(
+            sm2.get(b"close_key1")?,
+            Some(Bytes::from_static(b"v1")),
+            "close() must persist applied data without relying on Drop"
+        );
+        assert_eq!(sm2.get(b"close_key3")?, Some(Bytes::from_static(b"v3")));
+
+        drop(sm);
+        Ok(())
+    }
+
+    /// After `close()` every operation must fail with `NotServing`, including writes.
+    ///
+    /// Business scenario: the application retains the state machine after the node has shut
+    /// down. A late read must not answer from state that is no longer maintained, and a late
+    /// `apply_chunk` must not mutate a state machine that already persisted its final state.
+    pub async fn test_operations_fail_after_close(sm: Arc<dyn StateMachine>) -> Result<(), Error> {
+        sm.start().await?;
+        sm.apply_chunk(&[create_insert_entry(
+            1,
+            Bytes::from_static(b"serving_key"),
+            Bytes::from_static(b"v"),
+        )])
+        .await?;
+
+        sm.close()?;
+
+        let not_serving = |err: Error| format!("{err:?}").contains("NotServing");
+        assert!(
+            not_serving(sm.get(b"serving_key").expect_err("get must fail after close")),
+            "get after close must return NotServing"
+        );
+        assert!(
+            not_serving(sm.scan_prefix(b"serving").expect_err("scan_prefix must fail after close")),
+            "scan_prefix after close must return NotServing"
+        );
+        let late_write = sm
+            .apply_chunk(&[create_insert_entry(
+                2,
+                Bytes::from_static(b"late_key"),
+                Bytes::from_static(b"v"),
+            )])
+            .await
+            .expect_err("apply_chunk must fail after close");
+        assert!(
+            not_serving(late_write),
+            "apply_chunk after close must return NotServing"
         );
 
         Ok(())
@@ -1651,15 +1745,19 @@ fn create_batch_entry(
 // scan_prefix, ensuring the default arm is reachable and exercised.
 #[cfg(test)]
 mod default_scan_prefix_tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
 
     use async_trait::async_trait;
     use bytes::Bytes;
     use d_engine_proto::common::LogId;
     use d_engine_proto::server::storage::SnapshotMetadata;
 
-    use crate::storage::state_machine::{ApplyResult, StateMachine};
-    use crate::{ApplyEntry, Error, SnapshotApplyResult};
+    use crate::ApplyEntry;
+    use crate::Error;
+    use crate::SnapshotApplyResult;
+    use crate::storage::state_machine::ApplyResult;
+    use crate::storage::state_machine::StateMachine;
 
     struct MinimalSm {
         running: AtomicBool,
@@ -1672,7 +1770,7 @@ mod default_scan_prefix_tests {
             Ok(())
         }
 
-        fn stop(&self) -> Result<(), Error> {
+        fn close(&self) -> Result<(), Error> {
             self.running.store(false, Ordering::SeqCst);
             Ok(())
         }

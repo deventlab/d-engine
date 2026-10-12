@@ -1,11 +1,13 @@
 use std::time::Duration;
 
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::LogId;
 use futures::future::join_all;
 use tokio;
 
 use crate::storage::raft_log::RaftLog;
-use crate::test_utils::{RaftLogCoreTestContext, simulate_insert_command};
-use d_engine_proto::common::{Entry, LogId};
+use crate::test_utils::RaftLogCoreTestContext;
+use crate::test_utils::simulate_insert_command;
 
 #[tokio::test]
 async fn test_remove_range_with_concurrent_reads() {
@@ -102,8 +104,8 @@ async fn test_concurrent_append_and_purge() {
 /// This does NOT test the leader's own replication path (`retrieve_to_be_synced_logs_for_peers`
 /// only ever runs on the single-threaded raft core loop, serialized with its own
 /// purge calls — see 436 design docs). It tests the lower-level primitive any
-/// concurrent reader (e.g. `DefaultCommitHandler`, which runs as its own spawned
-/// task and also calls `get_entries_range` on the same shared log) depends on.
+/// concurrent reader (any task that calls `get_entries_range` on the shared log)
+/// depends on.
 ///
 /// Non-deterministic by nature: a torn read is a real, reproducible bug (fails
 /// this test if hit), but a clean pass does not prove the race is absent — only

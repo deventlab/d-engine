@@ -20,16 +20,16 @@
 //! `payloads.len() == senders.len()` at all times.
 //! Enforced by routing all mutations through `push()` and `flush()`.
 
-use rand::distr::SampleString;
 use std::sync::Arc;
 
-use crate::client::ClientResponse;
 use d_engine_proto::common::EntryPayload;
+use rand::distr::SampleString;
 use tokio::time::Instant;
 use tonic::Status;
 
 use crate::MaybeCloneOneshotSender;
 use crate::RaftRequestWithSignal;
+use crate::client::ClientResponse;
 
 /// Sender type alias for readability.
 type ProposeSender = MaybeCloneOneshotSender<std::result::Result<ClientResponse, Status>>;
@@ -48,7 +48,8 @@ pub struct ProposeBatchBuffer {
     pub last_flush: Instant,
     /// Pre-allocated metric labels for zero-allocation hot path.
     metrics_labels: Option<Arc<[(String, String)]>>,
-    /// Set when the buffer receives the first payload of a new batch, cleared on flush — measures how long the first request waited before the batch got drained (#446).
+    /// Set when the buffer receives the first payload of a new batch, cleared on flush — measures
+    /// how long the first request waited before the batch got drained (#446).
     oldest_pending_since: Option<Instant>,
 }
 

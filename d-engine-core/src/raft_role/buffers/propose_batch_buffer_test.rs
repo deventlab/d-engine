@@ -1,11 +1,10 @@
-use crate::client::ClientResponse;
 use d_engine_proto::common::EntryPayload;
 use tonic::Status;
 
+use super::propose_batch_buffer::ProposeBatchBuffer;
 use crate::MaybeCloneOneshot;
 use crate::RaftOneshot;
-
-use super::propose_batch_buffer::ProposeBatchBuffer;
+use crate::client::ClientResponse;
 
 // Helper: create a dummy sender, discarding the receiver.
 fn make_sender() -> crate::MaybeCloneOneshotSender<Result<ClientResponse, Status>> {

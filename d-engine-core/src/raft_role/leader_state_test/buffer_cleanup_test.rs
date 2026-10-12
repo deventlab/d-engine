@@ -1,3 +1,10 @@
+use std::sync::Arc;
+
+use bytes::Bytes;
+use d_engine_proto::client::WriteCommand;
+use prost::Message;
+use tokio::sync::watch;
+
 use crate::ClientCmd;
 use crate::InternalEvent;
 use crate::MaybeCloneOneshot;
@@ -9,11 +16,6 @@ use crate::client::ClientWriteRequest;
 use crate::client::ErrorCode;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::mock::mock_membership;
-use bytes::Bytes;
-use d_engine_proto::client::WriteCommand;
-use prost::Message;
-use std::sync::Arc;
-use tokio::sync::watch;
 
 // ============================================================================
 // Role-Specific Behavior Tests
@@ -99,7 +101,7 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
                 )),
             };
 
-            let cmd = ClientCmd::Propose(write_req, response_tx);
+            let cmd = ClientCmd::propose(write_req, response_tx);
             leader.push_client_cmd(cmd, &raft.ctx);
         }
 
@@ -178,7 +180,7 @@ async fn test_leader_stepdown_clears_pending_write_buffer() {
             )),
         };
 
-        let cmd = ClientCmd::Propose(write_req, response_tx);
+        let cmd = ClientCmd::propose(write_req, response_tx);
         follower.push_client_cmd(cmd, &raft.ctx);
 
         let result =

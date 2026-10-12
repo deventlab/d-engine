@@ -1,8 +1,10 @@
-use super::*;
+use std::io::Write;
+
 use config::ConfigError;
 use serial_test::serial;
-use std::io::Write;
 use temp_env::with_vars;
+
+use super::*;
 
 fn cleanup_all_raft_env_vars() {
     for (key, _) in std::env::vars() {

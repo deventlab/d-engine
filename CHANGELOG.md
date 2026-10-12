@@ -22,6 +22,10 @@ All notable changes to this project will be documented in this file.
 
 - **Write admission and CheckQuorum** (#423): A leader without a recent quorum ACK rejects new client writes with `NotLeader` after `election_timeout_min`, before anything is appended, so clients can retry safely. After `election_timeout_max x write_admission_election_timeout_multiple` (new key in `[raft.backpressure]`, default `2`) without a quorum ACK it steps down. A new leader gets one window for its first ACK; single-voter clusters are exempt.
 
+- **Queue-wait metrics** (#455): `core.raft.client_cmd.issue_to_push_ms`, `core.raft.sm_worker.queue_wait_ms` and `core.raft.central_loop.apply_completed_queue_wait_ms` show where a write waits between the client, the Raft loop and the state machine worker.
+
+- **`raft.state_machine.shutdown_apply_timeout_ms`** (#455, default `5000`): how long shutdown waits for the state machine worker to apply the entries already committed. On timeout it logs an error and shuts down anyway; a restart replays what was not applied.
+
 ### Fixed
 
 - **fix(ttl) #398**: Removed `lease.enabled` flag — TTL expiration is always active. Fixes fatal crash when calling `put_with_ttl` without setting the (now-removed) `lease.enabled = true`.
@@ -53,6 +57,14 @@ All notable changes to this project will be documented in this file.
 - **Quorum confirmation no longer derives from replicated history** (#423): In a 5+ voter cluster, a leader cut off from the majority but still reached by one follower kept renewing its read lease and never stepped down, because the commit median over every peer's stored `match_index` stayed true. A leader is now confirmed only when a quorum of voters acknowledged a newer heartbeat round; unreachable peers stop counting. Applies to lease reads, queued linearizable reads, CheckQuorum, write admission and the vote guard.
 
 ### Changed
+
+- **⚠️ `StateMachine::stop()` removed; `StateMachine::close_storage()` renamed to `close()`** (#455): `stop()` had no caller in d-engine. `close()` is now the single, permanent, idempotent end-of-life hook and also persists what must survive a restart (lease state). It returns `Result<(), Error>`: release your resources even if persisting fails, and return the first error; the node logs it at ERROR level. Custom implementations: delete `stop()`, rename `close_storage()` to `close()`, and move any lease persistence from `stop()` into `close()`. See `MIGRATION_GUIDE.md`.
+
+- **State machine worker lifecycle** (#455): the `NodeBuilder` only assembles the worker; `Node::run()` starts it and stops it. `StateMachineWorker::new` no longer takes a shutdown signal.
+
+- **Known limitation: re-opening a RocksDB directory while you still hold the storage engine** (#455): the state machine now releases its RocksDB handle at shutdown, but the log store keeps its own handle until the `RocksDBStorageEngine` is dropped. If you keep your own clone of the storage engine after `stop()`, opening the same directory again fails with a lock error until that clone is dropped. Passing the engine to `EmbeddedEngine` without keeping a clone is unaffected.
+
+- **Internal commit path** (#455): the separate commit handler task is merged into the Raft loop (`dispatch_committed`). `ClientCmd::Propose`, `StateMachineCommand::ApplyEntries` and `InternalEvent::ApplyCompleted` each carry one more timestamp field (internal types).
 
 - **MSRV raised to Rust 1.89**: The `data_dir` startup lock (prevents two node processes from
   sharing the same directory) uses `std::fs::File::try_lock()`, stable since 1.89.0. CI and
@@ -99,7 +111,7 @@ All notable changes to this project will be documented in this file.
 - **⚠️ `[raft.persistence] strategy` removed** (#446): `PersistenceStrategy` was a single-variant enum
   (`MemFirst`) left over from #268; its only meaning now lives in whether an entry has reached
   `durable_index`, which is no longer a configurable choice. Existing configs setting `strategy =
-  "MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
+"MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
   is the only persistence knob now.
 
 ---

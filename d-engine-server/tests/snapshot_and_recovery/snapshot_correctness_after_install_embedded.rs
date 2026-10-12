@@ -38,12 +38,12 @@ use crate::common::wait_for_snapshot;
 /// ## Test Flow
 ///
 /// 1. Start a 3-node cluster (`snapshot_threshold=100`, `retained_log_entries=30`).
-/// 2. Write 120 entries → snapshot fires at 100, purge up to index 70.
-///    Leader retains entries 71..120 for lagging followers.
+/// 2. Write 120 entries → snapshot fires at 100, purge up to index 70. Leader retains entries
+///    71..120 for lagging followers.
 /// 3. Wait for snapshot to appear on the leader (confirms cluster is synced).
 /// 4. Stop one non-leader follower (node C).
-/// 5. Write 20 more entries (121..140) to the leader while C is offline.
-///    C now lags by 20 entries; 20 < retained=30, so entries 121..140 remain in leader's log.
+/// 5. Write 20 more entries (121..140) to the leader while C is offline. C now lags by 20 entries;
+///    20 < retained=30, so entries 121..140 remain in leader's log.
 /// 6. Restart C with its persisted DB (state through index 120).
 /// 7. Wait for C to catch up to all 140 entries.
 ///
@@ -270,24 +270,22 @@ retained_log_entries = {RETAINED_LOGS}
 ///
 /// ## Purpose (ticket #436)
 ///
-/// This is the companion scenario to `test_follower_catchup_within_retained_buffer_and_data_consistency`
-/// above — same judgment point (`prev_log_term` lookup deciding AppendEntries vs snapshot),
-/// opposite branch. A manual, larger-scale repro (`deventlab-product-design` snapshot-test.sh
-/// scenario_4) found that a follower whose lag exceeds the retained-log window can still end
+/// This is the companion scenario to
+/// `test_follower_catchup_within_retained_buffer_and_data_consistency` above — same judgment point
+/// (`prev_log_term` lookup deciding AppendEntries vs snapshot), opposite branch. A manual,
+/// larger-scale repro found that a follower whose lag exceeds the retained-log window can still end
 /// up "catching up" through ordinary AppendEntries instead of `InstallSnapshot` — the data
 /// happened to come out correct, but the mechanism was wrong, and it stayed wrong through a
-/// leader-killed-and-reconnected cycle without any test catching it. See
-/// `d-engine/tickets/milestones/v0.2.5/436-plan-prev-log-term-fallback.md`.
+/// leader-killed-and-reconnected cycle without any test catching it.
 ///
 /// ## Test Flow
 ///
 /// 1. Start a 3-node cluster (`snapshot_threshold=20`, `retained_log_entries=5`).
 /// 2. Write 5 entries so all 3 nodes are in sync at index 5.
 /// 3. Stop one non-leader follower (node C) — it is now frozen at index 5.
-/// 4. Write 40 more entries (index 6..45) to the leader while C is offline. This crosses
-///    the snapshot threshold (20), so the leader's retained window ends up starting well
-///    above index 5 — C's frozen position is now behind the purge boundary, not just behind
-///    the leader.
+/// 4. Write 40 more entries (index 6..45) to the leader while C is offline. This crosses the
+///    snapshot threshold (20), so the leader's retained window ends up starting well above index 5
+///    — C's frozen position is now behind the purge boundary, not just behind the leader.
 /// 5. Restart C with its persisted DB and wait for it to catch up to all 45 entries.
 ///
 /// ## Expected Results (this is the assertion that must currently FAIL before #436 is fixed)

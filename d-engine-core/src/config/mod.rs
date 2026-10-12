@@ -30,14 +30,16 @@ mod raft_test;
 #[cfg(test)]
 mod tls_test;
 
-use crate::Result;
+use std::env;
+use std::fmt::Debug;
+
 use config::Config;
 use config::Environment;
 use config::File;
 use serde::Deserialize;
 use serde::Serialize;
-use std::env;
-use std::fmt::Debug;
+
+use crate::Result;
 
 /// Main configuration container for Raft consensus engine components
 ///

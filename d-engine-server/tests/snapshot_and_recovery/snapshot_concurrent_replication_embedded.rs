@@ -11,13 +11,12 @@
 //! 5. Verify no data loss during PHASE 2.5 temporary DB window
 
 #![cfg(feature = "rocksdb")]
-use d_engine_server::RocksDBUnifiedEngine;
-
-use d_engine_server::DefaultEmbeddedEngine;
-
-use serial_test::serial;
 use std::sync::Arc;
 use std::time::Duration;
+
+use d_engine_server::DefaultEmbeddedEngine;
+use d_engine_server::RocksDBUnifiedEngine;
+use serial_test::serial;
 use tracing::info;
 use tracing_test::traced_test;
 

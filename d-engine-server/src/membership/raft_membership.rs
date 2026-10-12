@@ -638,6 +638,15 @@ where
         info!("Applying membership change: {:?}", membership_change);
         match membership_change.change {
             Some(Change::AddNode(add)) => {
+                // A committed AddNode for a node the local view already has is already reflected:
+                // it happens when this node's `initial_cluster` was seeded after the node joined,
+                // and it then replays the log entry that added it. Applying it again would fail,
+                // and a failed committed membership change is fatal for the node. The existing
+                // role is kept, so a voter is never demoted back to a learner.
+                if self.retrieve_node_meta(add.node_id).is_some() {
+                    return Ok(());
+                }
+
                 let status = NodeStatus::try_from(add.status).unwrap_or(NodeStatus::Promotable);
                 self.add_learner(add.node_id, add.address, status).await
             }

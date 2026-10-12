@@ -12,6 +12,13 @@
 //! single-voter clusters — there is no majority to absorb the risk the old design
 //! accepted.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::MockReplicationCore;
@@ -19,10 +26,6 @@ use crate::raft_role::leader_state::LeaderState;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::mpsc;
-use tokio::sync::watch;
 
 async fn setup_single_voter(
     last_entry_id_val: u64

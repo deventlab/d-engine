@@ -1,6 +1,9 @@
 // Re-export LeaderInfo from proto (application layer use)
 use std::collections::VecDeque;
 use std::sync::Arc;
+
+pub use d_engine_proto::common::LeaderInfo;
+use d_engine_proto::server::election::VotedFor;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::sleep_until;
@@ -12,7 +15,6 @@ use tracing::warn;
 
 use super::InboundEvent;
 use super::InternalEvent;
-use super::NewCommitData;
 use super::RaftContext;
 use super::RaftCoreHandlers;
 use super::RaftRole;
@@ -28,8 +30,6 @@ use crate::TypeConfig;
 use crate::alias::MOF;
 use crate::alias::TROF;
 use crate::role_state::PeerReplicationState;
-pub use d_engine_proto::common::LeaderInfo;
-use d_engine_proto::server::election::VotedFor;
 
 pub struct Raft<T>
 where
@@ -57,9 +57,6 @@ where
     internal_event_tx: mpsc::UnboundedSender<InternalEvent>,
     internal_event_rx: mpsc::UnboundedReceiver<InternalEvent>,
     buffered_internal_event: VecDeque<InternalEvent>,
-
-    // For business logic to apply logs into state machine
-    new_commit_listener: Vec<mpsc::UnboundedSender<NewCommitData>>,
 
     // Leader change notification
     // Uses watch::Sender for efficient multi-subscriber pattern
@@ -153,8 +150,6 @@ where
             internal_event_rx: signal_params.internal_event_rx,
             buffered_internal_event: VecDeque::new(),
 
-            new_commit_listener: Vec::new(),
-
             shutdown_signal: signal_params.shutdown_signal,
 
             leader_change_listener: None,
@@ -230,7 +225,24 @@ where
         self.role.join_cluster(&self.ctx).await
     }
 
+    /// Runs the Raft loop until shutdown or a fatal error, then closes the log.
     pub async fn run(&mut self) -> Result<()> {
+        let result = self.run_loop().await;
+
+        // `Raft` is the log's only writer: wait for its in-flight writes before returning,
+        // on every exit path, not only on a clean shutdown.
+        self.ctx.storage.raft_log.close().await;
+
+        // Nobody consumes events any more, however the loop ended: release the senders blocked
+        // in `event_tx.send().await` (e.g. gRPC stream handlers). Without this,
+        // `serve_with_shutdown` never completes and `Arc<Node>` is never released, keeping
+        // `Arc<DB>` alive and the RocksDB LOCK held indefinitely.
+        self.event_rx.close();
+
+        result
+    }
+
+    async fn run_loop(&mut self) -> Result<()> {
         info!("Node is running");
 
         if self.role.is_timer_expired() {
@@ -248,7 +260,15 @@ where
 
                 // P0: shutdown received;
                 _ = self.shutdown_signal.changed() => {
-                    return self.handle_shutdown().await;
+                    info!("[Raft:{}] shutdown signal received.", self.node_id);
+                    // Hand over the commits this node already knows about, so the state machine
+                    // worker applies them before it stops. Only a clean shutdown does this: after
+                    // a fatal error nothing more is delivered (a restart replays from
+                    // `last_applied`).
+                    if let Err(e) = self.process_committed().await {
+                        error!(%self.node_id, ?e, "final commit delivery on shutdown failed");
+                    }
+                    return Ok(());
 
                 }
 
@@ -296,24 +316,13 @@ where
             self.process_internal_events().await?;
             self.process_client_cmds().await?;
             self.process_inbound_events().await?;
+            self.process_committed().await?;
 
             let new_deadline = self.role.next_deadline();
             if new_deadline != tick.deadline() {
                 tick.as_mut().reset(new_deadline);
             }
         }
-    }
-
-    async fn handle_shutdown(&mut self) -> Result<()> {
-        info!("[Raft:{}] shutdown signal received.", self.node_id);
-        // Close the raft log (before runtime shutdown)
-        // This ensures RocksDB file lock is released before tokio runtime shuts down
-        self.ctx.storage.raft_log.close().await;
-        // Unblock any tasks stuck in event_tx.send().await (e.g. gRPC stream handlers).
-        // Without this, serve_with_shutdown never completes and Arc<Node> is never
-        // released, keeping Arc<DB> alive and the RocksDB LOCK held indefinitely.
-        self.event_rx.close();
-        Ok(())
     }
 
     /// Drain all pending inbound events (up to max_batch_size).
@@ -421,6 +430,14 @@ where
             self.notify_inbound_event(test_event);
         }
         Ok(())
+    }
+
+    /// Last stage of an iteration: commit_index may have advanced in any of the stages above
+    /// (leader: flush / AppendResult; follower: AppendEntries; any role: snapshot install), so
+    /// hand the newly committed entries over before waiting for the next event.
+    /// Any error means committed entries can no longer be applied: the loop stops.
+    async fn process_committed(&mut self) -> Result<()> {
+        self.role.dispatch_committed(&self.ctx, &self.internal_event_tx).await
     }
 
     async fn process_client_cmds(&mut self) -> Result<()> {
@@ -586,39 +603,6 @@ where
                 #[cfg(test)]
                 self.notify_role_transition();
             }
-            InternalEvent::NotifyNewCommitIndex(mut new_commit_data) => {
-                // Drain all pending NotifyNewCommitIndex events (max_batch_size limit)
-                // This batches multiple committed entries into a single notification
-                let max_batch = self.ctx.node_config.raft.batching.max_batch_size;
-                let mut count = 1;
-
-                while count < max_batch {
-                    match self.internal_event_rx.try_recv() {
-                        Ok(InternalEvent::NotifyNewCommitIndex(next)) => {
-                            // Only keep the largest commit_index
-                            if next.new_commit_index > new_commit_data.new_commit_index {
-                                new_commit_data = next;
-                            }
-                            count += 1;
-                        }
-                        Ok(other) => {
-                            self.internal_event_tx.send(other).map_err(|e| {
-                                error!("Failed to resend internal event: {:?}", e);
-                                crate::Error::Fatal(e.to_string())
-                            })?;
-                            break;
-                        }
-                        Err(_) => break,
-                    }
-                }
-
-                debug!(
-                    "[{}] NotifyNewCommitIndex drained: {} events, max_commit_index={}",
-                    self.node_id, count, new_commit_data.new_commit_index
-                );
-
-                self.notify_new_commit(new_commit_data);
-            }
             InternalEvent::LeaderDiscovered(leader_id, term) => {
                 debug!("LeaderDiscovered: leader_id={}, term={}", leader_id, term);
                 // Notify leader change listeners - no state transition
@@ -675,8 +659,12 @@ where
             InternalEvent::ApplyCompleted {
                 last_index,
                 results,
+                sent_at,
             } => {
-                // Routed via internal_event_tx (P2) to avoid priority inversion against AppendEntries at P4.
+                metrics::histogram!("core.raft.central_loop.apply_completed_queue_wait_ms")
+                    .record(sent_at.elapsed().as_secs_f64() * 1_000.0);
+                // Routed via internal_event_tx (P2) to avoid priority inversion against
+                // AppendEntries at P4.
                 if let Err(e) = self
                     .role
                     .handle_apply_completed(last_index, results, &self.ctx, &self.internal_event_tx)
@@ -749,10 +737,11 @@ where
                     // received, silently skipping them forever.
                     match last_included_index {
                         Some(last_included_index) => {
-                            let _ = self.role.init_peers_next_index_and_match_index(
-                                last_included_index,
-                                vec![peer_id],
-                            );
+                            let _ = self
+                                .role
+                                .init_peers_next_index_and_match_index(last_included_index, vec![
+                                    peer_id,
+                                ]);
                         }
                         None => {
                             error!(
@@ -831,26 +820,6 @@ where
         };
 
         Ok(())
-    }
-
-    pub fn register_new_commit_listener(
-        &mut self,
-        tx: mpsc::UnboundedSender<NewCommitData>,
-    ) {
-        self.new_commit_listener.push(tx);
-    }
-
-    pub fn notify_new_commit(
-        &self,
-        new_commit_data: NewCommitData,
-    ) {
-        debug!(?new_commit_data, "notify_new_commit",);
-
-        for tx in &self.new_commit_listener {
-            if let Err(e) = tx.send(new_commit_data.clone()) {
-                error!("notify_new_commit failed: {:?}", e);
-            }
-        }
     }
 
     #[cfg(test)]
@@ -953,6 +922,9 @@ where
     }
 }
 
+#[cfg(test)]
+#[path = "raft_test/commit_path_tests.rs"]
+mod commit_path_tests;
 #[cfg(test)]
 #[path = "raft_test/leader_change_tests.rs"]
 mod leader_change_tests;

@@ -26,7 +26,6 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::client::ClientReadRequest;
 use d_engine_proto::common::LogId;
 use d_engine_proto::common::NodeRole::Follower;
 use d_engine_proto::common::NodeStatus;
@@ -34,7 +33,8 @@ use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::replication::AppendEntriesResponse;
 use d_engine_proto::server::replication::SuccessResult;
 use d_engine_proto::server::replication::append_entries_response;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tonic::Code;
 use tracing_test::traced_test;
@@ -47,10 +47,13 @@ use crate::MockStateMachine;
 use crate::PeerUpdate;
 use crate::RaftNodeConfig;
 use crate::ReadConsistencyPolicy;
+use crate::client::ClientReadRequest;
 use crate::convert::safe_kv_bytes;
 use crate::event::InboundEvent;
-use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
-use crate::raft_role::leader_state::{LeaderState, PendingReadBatch};
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
+use crate::raft_role::leader_state::LeaderState;
+use crate::raft_role::leader_state::PendingReadBatch;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
@@ -365,13 +368,10 @@ async fn test_pending_reads_slow_path_drained_by_apply_completed() {
         },
         resp_tx,
     ));
-    state.pending_reads.insert(
-        5,
-        PendingReadBatch {
-            deadline: Instant::now() + Duration::from_secs(5),
-            requests,
-        },
-    );
+    state.pending_reads.insert(5, PendingReadBatch {
+        deadline: Instant::now() + Duration::from_secs(5),
+        requests,
+    });
     assert_eq!(state.pending_reads.len(), 1, "precondition: read is queued");
 
     let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
@@ -506,13 +506,10 @@ async fn test_pending_reads_cleared_on_stepdown() {
             },
             resp_tx,
         ));
-        state.pending_reads.insert(
-            read_index,
-            PendingReadBatch {
-                deadline: Instant::now() + Duration::from_secs(30),
-                requests,
-            },
-        );
+        state.pending_reads.insert(read_index, PendingReadBatch {
+            deadline: Instant::now() + Duration::from_secs(30),
+            requests,
+        });
         senders.push(resp_rx);
     }
     assert_eq!(state.pending_reads.len(), 2, "precondition: 2 reads queued");
@@ -701,8 +698,8 @@ async fn test_linearizable_read_queued_when_sm_behind_despite_valid_lease() {
 ///
 /// ## Setup
 /// - 3-voter cluster, lease never refreshed (default: expired / None)
-/// - `last_applied=0 >= read_index=0` — the fast-path condition for `last_applied`
-///   is satisfied, but `is_lease_valid()` is false
+/// - `last_applied=0 >= read_index=0` — the fast-path condition for `last_applied` is satisfied,
+///   but `is_lease_valid()` is false
 ///
 /// ## Expected behavior
 /// The lease fast path is NOT taken.  The read is queued in `pending_reads` and

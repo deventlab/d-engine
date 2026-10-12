@@ -14,15 +14,21 @@ mod read_handle_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use crate::read_actor::run_read_actor;
     use bytes::Bytes;
-    use d_engine_core::client::{ClientResponse, KvEntry};
+    use d_engine_core::ClientApiError;
+    use d_engine_core::ClientCmd;
+    use d_engine_core::Error;
+    use d_engine_core::MockStateMachine;
+    use d_engine_core::ReadLease;
+    use d_engine_core::client::ClientResponse;
+    use d_engine_core::client::KvEntry;
     use d_engine_core::config::ReadConsistencyPolicy;
-    use d_engine_core::{ClientApiError, ClientCmd, Error, MockStateMachine, ReadLease, now_ms};
+    use d_engine_core::now_ms;
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
     use super::super::StandaloneReadHandle;
+    use crate::read_actor::run_read_actor;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -612,10 +618,17 @@ mod read_handle_tests {
 #[cfg(test)]
 mod error_helper_tests {
     use bytes::Bytes;
-    use d_engine_core::client::{ClientApiError, ClientResponsePayload, ErrorCode};
-    use d_engine_core::client::{KvEntry, LeaderHint, ReadResults, ScanResults};
+    use d_engine_core::client::ClientApiError;
+    use d_engine_core::client::ClientResponsePayload;
+    use d_engine_core::client::ErrorCode;
+    use d_engine_core::client::KvEntry;
+    use d_engine_core::client::LeaderHint;
+    use d_engine_core::client::ReadResults;
+    use d_engine_core::client::ScanResults;
 
-    use super::super::{extract_read_payload, map_error_response, not_leader_error};
+    use super::super::extract_read_payload;
+    use super::super::map_error_response;
+    use super::super::not_leader_error;
 
     // ─── not_leader_error ────────────────────────────────────────────────────
 

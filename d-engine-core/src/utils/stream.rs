@@ -1,5 +1,6 @@
-use bytes::BufMut;
 use std::marker::PhantomData;
+
+use bytes::BufMut;
 use tonic::Code;
 use tonic::Status;
 

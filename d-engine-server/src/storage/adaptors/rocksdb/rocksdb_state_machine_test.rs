@@ -1,16 +1,22 @@
-use super::RocksDBStorageEngine;
-use super::RocksDBUnifiedEngine;
-use crate::{Error, StateMachine};
-use async_trait::async_trait;
-use bytes::Bytes;
-use d_engine_core::file_io::compute_checksum_from_folder_path;
-use d_engine_core::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
-use d_engine_core::{ApplyEntry, Command, SnapshotApplyResult};
-use d_engine_proto::common::LogId;
-use d_engine_proto::server::storage::SnapshotMetadata;
 use std::sync::Arc;
 use std::sync::Mutex;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use d_engine_core::ApplyEntry;
+use d_engine_core::Command;
+use d_engine_core::SnapshotApplyResult;
+use d_engine_core::file_io::compute_checksum_from_folder_path;
+use d_engine_core::state_machine_test::StateMachineBuilder;
+use d_engine_core::state_machine_test::StateMachineTestSuite;
+use d_engine_proto::common::LogId;
+use d_engine_proto::server::storage::SnapshotMetadata;
 use tempfile::TempDir;
+
+use super::RocksDBStorageEngine;
+use super::RocksDBUnifiedEngine;
+use crate::Error;
+use crate::StateMachine;
 
 struct RocksDBStateMachineBuilder {
     temp_dir: TempDir,
@@ -72,78 +78,6 @@ async fn test_rocksdb_state_machine_performance() {
     StateMachineTestSuite::run_performance_tests(builder)
         .await
         .expect("RocksDBStateMachine should pass performance tests");
-}
-
-/// Test that read operations are rejected during snapshot restoration
-///
-/// This test verifies the fix for concurrent read safety during apply_snapshot_from_file().
-/// Without the is_serving check in get(), reads could access the temporary empty database
-/// during PHASE 2.5, returning incorrect empty results instead of proper errors.
-///
-/// Test flow:
-/// 1. Create state machine with data
-/// 2. Stop serving (simulating snapshot restoration PHASE 1)
-/// 3. Attempt read operation
-/// 4. Verify NotServing error is returned (not empty result)
-/// 5. Resume serving
-/// 6. Verify read succeeds
-#[tokio::test]
-async fn test_get_rejected_when_not_serving() {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let db_path = temp_dir.path().join("test_not_serving");
-    let (_storage, state_machine) =
-        RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
-
-    // Start state machine
-    state_machine.start().await.expect("Failed to start");
-
-    // Insert test data
-    let test_key = b"test_key";
-    let test_value = b"test_value";
-
-    let entry = ApplyEntry {
-        index: 1,
-        term: 1,
-        command: Command::Insert {
-            key: Bytes::from(test_key.to_vec()),
-            value: Bytes::from(test_value.to_vec()),
-            ttl_secs: None,
-        },
-    };
-
-    state_machine.apply_chunk(&[entry]).await.expect("Failed to apply entry");
-
-    // Verify data exists before stopping
-    let value = state_machine.get(test_key).expect("Failed to get");
-    assert_eq!(value, Some(Bytes::from(test_value.to_vec())));
-
-    // Simulate snapshot restoration: stop serving
-    state_machine.stop().expect("Failed to stop");
-
-    // Attempt read while not serving - should return NotServing error
-    let result = state_machine.get(test_key);
-    assert!(result.is_err(), "Read should fail when not serving");
-
-    // Check the error chain for NotServing
-    let err = result.unwrap_err();
-    let err_debug = format!("{err:?}"); // Use Debug format to see full error chain
-    assert!(
-        err_debug.contains("NotServing")
-            || err_debug.contains("not serving")
-            || err_debug.contains("restoring from snapshot"),
-        "Error should indicate not serving state, got: {err_debug}"
-    );
-
-    // Resume serving
-    state_machine.start().await.expect("Failed to restart");
-
-    // Read should succeed now
-    let value = state_machine.get(test_key).expect("Failed to get after resuming");
-    assert_eq!(
-        value,
-        Some(Bytes::from(test_value.to_vec())),
-        "Data should be accessible after resuming service"
-    );
 }
 
 // ── scan_prefix tests (#378) ──────────────────────────────────────────────────
@@ -578,52 +512,55 @@ async fn test_get_multi_two_keys_still_uses_snapshot_isolation() {
 
 // ── close_db() tests ──────────────────────────────────────────────────────────
 //
-// close_db() is a permanent, one-way shutdown that releases the RocksDB LOCK file
-// immediately, without waiting for Arc<SM> to be the sole owner.  It is separate
-// from stop() because stop()/start() must remain a reversible cycle (used during
-// snapshot restoration).
+// close() is a permanent, one-way shutdown that releases the RocksDB LOCK file
+// immediately, without waiting for Arc<SM> to be the sole owner (the developer may keep
+// their own clone).
 
-/// close_db() marks SM not-running and makes reads return an error.
+/// close() marks SM not-running and makes reads return a NotServing error, never an empty result.
 #[tokio::test]
-async fn test_close_db_prevents_reads() {
+async fn test_close_prevents_reads() {
     let dir = TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
     sm.start().await.unwrap();
     sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
     assert_eq!(sm.get(b"k").unwrap(), Some(Bytes::from_static(b"v")));
 
-    sm.close_db();
+    sm.close().unwrap();
 
-    assert!(!sm.is_running(), "is_running must be false after close_db");
-    assert!(sm.get(b"k").is_err(), "get must fail after close_db");
+    assert!(!sm.is_running(), "is_running must be false after close");
+    let err = sm.get(b"k").expect_err("get must fail after close");
+    assert!(
+        format!("{err:?}").contains("NotServing"),
+        "a closed state machine must say NotServing, got: {err:?}"
+    );
     assert!(
         sm.get_multi(&[Bytes::from_static(b"k")]).is_err(),
-        "get_multi must fail after close_db"
+        "get_multi must fail after close"
     );
 }
 
-/// stop() after close_db() must succeed without panicking.
-/// Node::stop() calls sm.stop() after EmbeddedEngine has already called close_db();
-/// that sequence must be safe.
+/// close() is idempotent: the worker closes the state machine and the `Drop` safety net may
+/// close it again, so a second call must be a harmless no-op.
 #[test]
-fn test_stop_after_close_db_is_safe() {
+fn test_close_twice_is_safe() {
     let dir = TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
-    sm.close_db();
-    assert!(sm.stop().is_ok(), "stop after close_db must not error");
+    sm.close().unwrap();
+    sm.close().unwrap();
+    assert!(!sm.is_running());
 }
 
-/// Drop after close_db() must not panic or double-flush.
-/// EmbeddedEngine::stop() calls close_db() before the Raft loop exits; the SM
-/// is then dropped — Drop must detect the closed state and skip the flush.
+/// Drop after close() must not panic or double-flush.
+/// The worker closes the state machine as its last act; the SM is dropped later (possibly by a
+/// developer who kept a clone) -- Drop must detect the closed state and skip the flush.
 #[tokio::test]
-async fn test_drop_after_close_db_does_not_panic() {
+async fn test_drop_after_close_does_not_panic() {
     let dir = TempDir::new().unwrap();
     {
         let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
         sm.start().await.unwrap();
         sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
-        sm.close_db();
+        sm.close().unwrap();
         // sm drops here — Drop must be a no-op
     }
     // reaching here without panic means the test passes
@@ -823,7 +760,8 @@ async fn test_apply_chunk_delete_removes_key() {
 /// read-only DB via swap_db_for_test to reliably trigger the error.
 #[tokio::test]
 async fn test_apply_chunk_returns_error_on_read_only_db() {
-    use rocksdb::{DB, Options};
+    use rocksdb::DB;
+    use rocksdb::Options;
 
     let dir = tempfile::TempDir::new().unwrap();
     let db_path = dir.path().join("rocksdb");

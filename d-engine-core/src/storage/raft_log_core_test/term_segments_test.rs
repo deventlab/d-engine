@@ -214,27 +214,23 @@ async fn test_entry_term_after_truncation_reappend() {
             .unwrap();
     }
     ctx.raft_log
-        .filter_out_conflicts_and_append(
-            6,
-            2,
-            vec![
-                Entry {
-                    index: 7,
-                    term: 3,
-                    payload: None,
-                },
-                Entry {
-                    index: 8,
-                    term: 3,
-                    payload: None,
-                },
-                Entry {
-                    index: 9,
-                    term: 3,
-                    payload: None,
-                },
-            ],
-        )
+        .filter_out_conflicts_and_append(6, 2, vec![
+            Entry {
+                index: 7,
+                term: 3,
+                payload: None,
+            },
+            Entry {
+                index: 8,
+                term: 3,
+                payload: None,
+            },
+            Entry {
+                index: 9,
+                term: 3,
+                payload: None,
+            },
+        ])
         .await
         .unwrap();
 

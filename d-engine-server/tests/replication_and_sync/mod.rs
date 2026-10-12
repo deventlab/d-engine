@@ -4,6 +4,7 @@
 //!
 //! ## Test Coverage
 //!
-//! - `append_entries_out_of_sync_standalone.rs` - Leader handles followers with divergent logs via backtracking (gRPC mode)
+//! - `append_entries_out_of_sync_standalone.rs` - Leader handles followers with divergent logs via
+//!   backtracking (gRPC mode)
 
 mod append_entries_out_of_sync_standalone;

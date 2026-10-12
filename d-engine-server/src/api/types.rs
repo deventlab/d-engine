@@ -16,12 +16,14 @@
 
 use bytes::Bytes;
 use d_engine_core::BatchOp;
-use d_engine_proto::client::{
-    WriteCommand,
-    write_command::{
-        Batch, BatchOp as ProtoBatchOp, CompareAndSwap, Delete, Insert, Operation, batch_op,
-    },
-};
+use d_engine_proto::client::WriteCommand;
+use d_engine_proto::client::write_command::Batch;
+use d_engine_proto::client::write_command::BatchOp as ProtoBatchOp;
+use d_engine_proto::client::write_command::CompareAndSwap;
+use d_engine_proto::client::write_command::Delete;
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::Operation;
+use d_engine_proto::client::write_command::batch_op;
 
 /// Decoded write operation — the unit submitted by a client.
 ///

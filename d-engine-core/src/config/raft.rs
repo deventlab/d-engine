@@ -39,7 +39,7 @@ pub struct RaftConfig {
     /// Configuration settings for state machine behavior
     /// Controls state machine operations like lease management, compaction, etc.
     /// For backward compatibility, can also be configured via `storage` in TOML files.
-    #[serde(default, alias = "storage")]
+    #[serde(default)]
     pub state_machine: StateMachineConfig,
 
     /// Configuration settings for snapshot feature
@@ -353,8 +353,7 @@ impl ReplicationConfig {
 /// A single value intentionally covers all drain loops because they all operate
 /// within the same heartbeat period and share the same order-of-magnitude concurrency:
 /// - `raft.rs` cmd_rx drain (client propose ingestion)
-/// - `raft.rs` internal_event_rx drain (commit index event coalescing)
-/// - `DefaultCommitHandler` new_commit_rx drain (state machine apply batching)
+/// - `raft.rs` internal_event_rx drain
 ///
 /// Also used as the initial Vec capacity for propose and linearizable-read buffers
 /// (construction-time hint only; the propose buffer retains capacity across flushes
@@ -495,7 +494,8 @@ pub struct MembershipConfig {
     #[serde(default)]
     pub promotion: PromotionConfig,
 
-    /// Bound on how long a voter waits at startup for quorum to become reachable before failing fast; independent of retry.membership.
+    /// Bound on how long a voter waits at startup for quorum to become reachable before failing
+    /// fast; independent of retry.membership.
     #[serde(default = "default_startup_quorum_timeout")]
     pub startup_quorum_timeout: Duration,
 }
@@ -524,7 +524,8 @@ fn default_verify_leadership_persistent_timeout() -> Duration {
     Duration::from_secs(3600)
 }
 
-/// Default 30s — enough for peers to finish their own bootstrap race, short enough to fail fast if truly unreachable.
+/// Default 30s — enough for peers to finish their own bootstrap race, short enough to fail fast if
+/// truly unreachable.
 fn default_startup_quorum_timeout() -> Duration {
     Duration::from_secs(30)
 }
@@ -551,19 +552,43 @@ impl MembershipConfig {
 /// and other data lifecycle features. This configuration affects how the state machine
 /// processes applied log entries and manages data.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[derive(Default)]
 pub struct StateMachineConfig {
     /// Lease (time-based expiration) configuration
     ///
     /// For backward compatibility, can also be configured via `ttl` in TOML files.
     #[serde(alias = "ttl")]
     pub lease: LeaseConfig,
+
+    /// Maximum time to wait, on shutdown, for the state machine worker to finish
+    /// applying the entries already handed to it. On timeout an error is logged and
+    /// shutdown proceeds: entries the node knew as committed may then be unapplied
+    /// until the next start. Raise it for state machines with slow batch applies.
+    #[serde(default = "default_shutdown_apply_timeout_ms")]
+    pub shutdown_apply_timeout_ms: u64,
 }
 
 impl StateMachineConfig {
     pub fn validate(&self) -> Result<()> {
         self.lease.validate()?;
+        if self.shutdown_apply_timeout_ms == 0 {
+            return Err(Error::Config(ConfigError::Message(
+                "shutdown_apply_timeout_ms must be greater than 0".into(),
+            )));
+        }
         Ok(())
+    }
+}
+
+fn default_shutdown_apply_timeout_ms() -> u64 {
+    5_000
+}
+
+impl Default for StateMachineConfig {
+    fn default() -> Self {
+        Self {
+            lease: LeaseConfig::default(),
+            shutdown_apply_timeout_ms: default_shutdown_apply_timeout_ms(),
+        }
     }
 }
 
@@ -1092,8 +1117,8 @@ pub struct ReadConsistencyConfig {
     /// The lease deadline is anchored to heartbeat *send* time, but the follower's
     /// election timer resets at *receive* time (~rtt/2 later). Without accounting for
     /// rtt/2 the safety invariant is violated under network latency — confirmed by
-    /// Jepsen set workload (19 elements lost). etcd absorbs this via `electionTimeout × 2/3`;
-    /// d-engine makes it explicit via `network_rtt_p99_ms`.
+    /// Jepsen set workload (19 elements lost). The follower timer already tolerates part of that
+    /// delay; this setting makes the allowance explicit via `network_rtt_p99_ms`.
     #[serde(default = "default_lease_duration_ms")]
     pub lease_duration_ms: u64,
 

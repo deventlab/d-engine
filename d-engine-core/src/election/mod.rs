@@ -5,14 +5,14 @@
 //! - Candidate vote collection
 //! - Voter eligibility validation
 mod election_handler;
-pub use election_handler::*;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use d_engine_proto::server::election::VoteRequest;
 use d_engine_proto::server::election::VotedFor;
+pub use election_handler::*;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
-use std::sync::Arc;
 
 use crate::RaftNodeConfig;
 use crate::Result;
@@ -71,8 +71,8 @@ where
     /// no term, vote or timer can be touched through this call.
     ///
     /// Denies when any of these holds:
-    /// - `leader_active`: the caller still has evidence of a live leader (Follower: recent
-    ///   leader contact; Leader: recent quorum ACK; Candidate: false).
+    /// - `leader_active`: the caller still has evidence of a live leader (Follower: recent leader
+    ///   contact; Leader: recent quorum ACK; Candidate: false).
     /// - `request.term <= current_term`: that term is already taken.
     /// - The requester's log is not at least as up-to-date as ours (Raft §5.4.1).
     ///

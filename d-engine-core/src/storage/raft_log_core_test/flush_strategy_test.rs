@@ -9,8 +9,10 @@
 //! Integration tests with real FileStorageEngine are in d-engine-server/tests/integration.
 
 use bytes::Bytes;
-use d_engine_proto::common::{Entry, EntryPayload};
-use tokio::time::{Duration, sleep};
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use tokio::time::Duration;
+use tokio::time::sleep;
 
 use crate::RaftLog;
 use crate::test_utils::RaftLogCoreTestContext;

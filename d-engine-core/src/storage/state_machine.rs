@@ -2,16 +2,16 @@
 //!
 //! See the [server customization guide](https://github.com/deventlab/d-engine/blob/master/d-engine/src/docs/server_guide/customize-state-machine.md) for details.
 
-use crate::Error;
-use crate::StorageError;
 use async_trait::async_trait;
 use bytes::Bytes;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
-
-use crate::ApplyEntry;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
+
+use crate::ApplyEntry;
+use crate::Error;
+use crate::StorageError;
 
 /// All `(key, value)` pairs returned by a prefix scan, plus the revision anchor.
 ///
@@ -94,20 +94,23 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Called once during node startup. Performance is not critical.
     async fn start(&self) -> Result<(), Error>;
 
-    /// Stops the state machine service gracefully.
-    /// This is typically a sync operation for state management.
-    fn stop(&self) -> Result<(), Error>;
-
-    /// Permanently close underlying storage resources (e.g. DB handle, file descriptors).
+    /// Permanently closes the state machine: stops serving, persists what must survive a
+    /// restart (e.g. lease state, metadata), flushes, and releases exclusive resources
+    /// (e.g. a DB handle or its lock file).
     ///
-    /// Called by `EmbeddedEngine::stop()` before the Raft loop exits to release
-    /// OS-level resources (e.g. RocksDB LOCK file) without waiting for all
-    /// `Arc<SM>` clones to drop.
+    /// Called once by the state machine worker as its last act, after everything queued for
+    /// it has been applied. The developer may keep their own `Arc` to the state machine, so
+    /// this must not rely on `Drop`. Must be synchronous and idempotent; afterwards every
+    /// operation returns `NotServing`.
     ///
-    /// Default is a no-op — custom state machine implementations do not need to
-    /// override this unless they hold exclusive OS resources that must be released
-    /// before the process exits or a new engine instance is started.
-    fn close_storage(&self) {}
+    /// When it returns, reopening the same storage restores every applied entry and a
+    /// `last_applied` that is not older than the one before the call, and every exclusive
+    /// resource is released. If persisting fails, still release the resources and return the
+    /// first error. A second call returns `Ok(())`.
+    /// Default is a no-op, for implementations with nothing to persist or release.
+    fn close(&self) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// Checks if the state machine is currently running.
     /// Sync operation as it just checks an atomic boolean.

@@ -7,11 +7,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
 use tokio::sync::Barrier;
 use tokio::time::Instant;
 
-use crate::{MockLogStore, MockMetaStore, MockStorageEngine, MockTypeConfig, RaftLog, RaftLogCore};
-use d_engine_proto::common::{Entry, EntryPayload};
+use crate::MockLogStore;
+use crate::MockMetaStore;
+use crate::MockStorageEngine;
+use crate::MockTypeConfig;
+use crate::RaftLog;
+use crate::RaftLogCore;
 
 // Test helper: Creates storage with controllable delay
 fn create_delayed_storage(delay_ms: u64) -> Arc<MockStorageEngine> {
@@ -115,15 +121,11 @@ async fn test_filter_conflicts_performance_during_flush() {
 
     // Measure performance during active flush
     let start = Instant::now();
-    log.filter_out_conflicts_and_append(
-        500,
-        1,
-        vec![Entry {
-            index: 501,
-            term: 1,
-            payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
-        }],
-    )
+    log.filter_out_conflicts_and_append(500, 1, vec![Entry {
+        index: 501,
+        term: 1,
+        payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
+    }])
     .await
     .unwrap();
 

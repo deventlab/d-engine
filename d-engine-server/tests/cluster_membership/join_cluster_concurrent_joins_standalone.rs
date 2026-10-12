@@ -56,7 +56,7 @@ use crate::common::test_put_get;
 ///    11) and verifies that all nodes, including the newly joined ones, successfully replicate and
 ///    persist the data to disk. This ensures:
 ///    - Raft log replication across all 5 nodes
-///    - Commit handler processing on all nodes
+///    - Commit delivery on all nodes
 ///    - State machine persistence (FileStateMachine.persist_data_async())
 ///
 /// 5. **Cluster Consistency**: Final assertions verify:
@@ -319,14 +319,14 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
 
     let mut client_manager = ClientManager::new(&create_bootstrap_urls(&all_ports)).await?;
 
-    // Insert a new entry to trigger commit handler and ensure all nodes are in sync
+    // Insert a new entry to trigger commit delivery and ensure all nodes are in sync
     test_put_get(&mut client_manager, 11, 200).await?;
 
     // Wait for all nodes to complete replication and persistence
     // This ensures entry 11 has been:
     // 1. Replicated from leader to all followers via AppendEntries RPC
     // 2. Committed by the leader once majority acknowledgment received
-    // 3. Applied to state machine on all nodes via commit handler
+    // 3. Applied to state machine on all nodes via commit delivery
     // 4. Persisted to disk via FileStateMachine.persist_data_async()
     sleep(Duration::from_secs(2)).await;
 

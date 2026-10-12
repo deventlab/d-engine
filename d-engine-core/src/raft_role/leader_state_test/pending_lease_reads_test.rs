@@ -5,6 +5,22 @@
 //! cleanup on step-down, batching of multiple requests, and
 //! Unavailable delivery when leadership is lost via higher-term step-down.
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use d_engine_proto::common::LogId;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
+use d_engine_proto::server::cluster::NodeMeta;
+use d_engine_proto::server::replication::AppendEntriesResponse;
+use d_engine_proto::server::replication::SuccessResult;
+use d_engine_proto::server::replication::append_entries_response;
+use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::time::Instant;
+use tonic::Code;
+use tracing_test::traced_test;
+
 use crate::ClientCmd;
 use crate::MockMembership;
 use crate::MockRaftLog;
@@ -14,24 +30,13 @@ use crate::RaftNodeConfig;
 use crate::ReadConsistencyPolicy;
 use crate::client::ClientReadRequest;
 use crate::convert::safe_kv_bytes;
-use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
-use crate::raft_role::leader_state::{LeaderState, PendingLeaseRead};
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
+use crate::raft_role::leader_state::LeaderState;
+use crate::raft_role::leader_state::PendingLeaseRead;
 use crate::raft_role::role_state::RaftRoleState;
 use crate::test_utils::MockBuilder;
 use crate::test_utils::mock::MockTypeConfig;
-use d_engine_proto::common::LogId;
-use d_engine_proto::common::NodeRole::Follower;
-use d_engine_proto::common::NodeStatus;
-use d_engine_proto::server::cluster::NodeMeta;
-use d_engine_proto::server::replication::AppendEntriesResponse;
-use d_engine_proto::server::replication::SuccessResult;
-use d_engine_proto::server::replication::append_entries_response;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::{mpsc, watch};
-use tokio::time::Instant;
-use tonic::Code;
-use tracing_test::traced_test;
 
 // ============================================================================
 // Helpers
@@ -467,8 +472,8 @@ async fn test_multiple_lease_reads_batched_on_single_quorum_ack() {
 /// # Flow
 /// 1. Expired lease → request queued in `pending_lease_reads`
 /// 2. Peer 2 responds with term=10 (higher than leader term=1)
-/// 3. `handle_append_result` detects higher term → `BecomeFollower` event sent
-///    → returns `Err(HigherTerm)`
+/// 3. `handle_append_result` detects higher term → `BecomeFollower` event sent → returns
+///    `Err(HigherTerm)`
 /// 4. Raft loop processes `BecomeFollower` → calls `drain_read_buffer()`
 /// 5. All pending lease reads receive `Unavailable`
 ///
@@ -479,8 +484,9 @@ async fn test_multiple_lease_reads_batched_on_single_quorum_ack() {
 #[tokio::test]
 #[traced_test]
 async fn test_pending_lease_reads_drained_on_higher_term_stepdown() {
-    use crate::event::InternalEvent;
     use d_engine_proto::server::replication::AppendEntriesResponse;
+
+    use crate::event::InternalEvent;
 
     let (mut state, mut context, internal_event_tx, mut internal_event_rx) =
         setup_multi_voter_expired_lease(

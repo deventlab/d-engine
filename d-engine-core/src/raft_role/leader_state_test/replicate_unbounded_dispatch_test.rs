@@ -3,8 +3,7 @@
 //! `next_index = effective_next_index + entries.len()` to whatever `prepare_batch_requests` hands
 //! it, on every batch, unconditionally.
 //!
-//! Background (full root-cause chain: `replication-worker-backpressure-deadlock-expert-q.md` and
-//! `446-replication-stall-case-study-2026-09-28.md` in the product-design repo): a real deadlock
+//! Background: a real deadlock
 //! reproduced on embedded-bench (100K writes, 3-node localhost) traced to `ReplicationHandler`
 //! (`retrieve_to_be_synced_logs_for_peers` / `build_append_request`) repeatedly re-offering the
 //! same un-acked range — 8955 rebuilds for 28 real acks in one capture — which starved the peer's
@@ -13,7 +12,7 @@
 //!
 //! **Important scoping correction**: the fix belongs in `ReplicationHandler`, upstream of this
 //! layer — it must stop *offering* a duplicate un-acked range at all (checked before touching the
-//! log, mirroring `raft-rs`'s `Progress::is_paused()` ahead of `maybe_send_append`'s entry fetch).
+//! log: a per-peer pause check ahead of the entry fetch).
 //! Once that lands, `build_append_request` naturally falls back to an empty (heartbeat) request
 //! for a peer with nothing new to offer (`entries_per_peer.remove(..).unwrap_or_default()`), and
 //! Phase 5's existing formula correctly no-ops on that (`entries.len() == 0` advances nothing) —
@@ -26,22 +25,30 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use bytes::Bytes;
-use d_engine_proto::common::{Entry, EntryPayload, NodeRole::Follower, NodeStatus};
+use d_engine_proto::common::Entry;
+use d_engine_proto::common::EntryPayload;
+use d_engine_proto::common::NodeRole::Follower;
+use d_engine_proto::common::NodeStatus;
 use d_engine_proto::server::cluster::NodeMeta;
 use d_engine_proto::server::replication::AppendEntriesRequest;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing_test::traced_test;
 
 use crate::MockMembership;
 use crate::MockRaftLog;
 use crate::RaftRequestWithSignal;
 use crate::event::InternalEvent;
-use crate::maybe_clone_oneshot::{MaybeCloneOneshot, RaftOneshot};
+use crate::maybe_clone_oneshot::MaybeCloneOneshot;
+use crate::maybe_clone_oneshot::RaftOneshot;
 use crate::raft_role::leader_state::LeaderState;
-use crate::raft_role::role_state::{PeerReplicationState, RaftRoleState};
-use crate::test_utils::mock::{MockTypeConfig, mock_raft_context};
+use crate::raft_role::role_state::PeerReplicationState;
+use crate::raft_role::role_state::RaftRoleState;
+use crate::test_utils::mock::MockTypeConfig;
+use crate::test_utils::mock::mock_raft_context;
 
 /// Two-voter membership (peers 2 & 3) — same shape as `probe_backpressure_test.rs`'s, duplicated
 /// here rather than shared: these helpers are private to their own test module.
@@ -120,14 +127,12 @@ async fn test_replicate_peer_dispatch_and_next_index_are_unbounded_without_any_a
     // Peer 2's worker channel held directly by the test — dispatch is observable synchronously,
     // no real transport/worker task involved (same pattern as probe_backpressure_test.rs).
     let (task_tx, mut task_rx) = mpsc::unbounded_channel();
-    state.replication_workers.insert(
-        2,
-        super::ReplicationWorkerHandle {
-            task_tx,
-            snapshot_failure_count: 0,
-            snapshot_next_retry_at: None,
-        },
-    );
+    state.replication_workers.insert(2, super::ReplicationWorkerHandle {
+        task_tx,
+        snapshot_failure_count: 0,
+        stream_open: Arc::new(AtomicBool::new(true)),
+        snapshot_next_retry_at: None,
+    });
 
     // The steady state a peer settles into after its first real ACK — where this bug lives.
     state.set_peer_replication_state(2, PeerReplicationState::Replicate);

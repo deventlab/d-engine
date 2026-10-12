@@ -5,9 +5,10 @@
 
 use std::sync::Arc;
 
-use crate::MockRaftLog;
 use d_engine_proto::common::Entry;
 use d_engine_proto::common::EntryPayload;
+
+use crate::MockRaftLog;
 
 /// Simplified test context for replication handler unit tests.
 ///

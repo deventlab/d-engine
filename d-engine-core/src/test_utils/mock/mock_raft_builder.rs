@@ -384,7 +384,7 @@ pub fn mock_state_machine() -> MockStateMachine {
     let mut mock = MockStateMachine::new();
 
     mock.expect_start().returning(|| Ok(()));
-    mock.expect_stop().returning(|| Ok(()));
+    mock.expect_close().returning(|| Ok(()));
     mock.expect_is_running().returning(|| true);
 
     mock.expect_get().returning(|_| Ok(None));
@@ -416,6 +416,8 @@ pub fn mock_state_machine() -> MockStateMachine {
 pub fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().returning(|_| {});
+    // Commit delivery (also run on shutdown) reads the applied position every iteration.
+    state_machine_handler.expect_last_applied().returning(|| 0);
     state_machine_handler.expect_read_from_state_machine().returning(|_| None);
     state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler.expect_get_latest_snapshot_metadata().returning(|| None);

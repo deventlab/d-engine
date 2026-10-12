@@ -1,10 +1,9 @@
 #![cfg(feature = "rocksdb")]
-use d_engine_server::RocksDBUnifiedEngine;
-
 use std::sync::Arc;
 use std::time::Duration;
 
 use d_engine_core::ClientApi;
+use d_engine_server::RocksDBUnifiedEngine;
 use d_engine_server::api::DefaultEmbeddedEngine;
 use tracing::info;
 use tracing_test::traced_test;

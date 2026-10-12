@@ -1,20 +1,28 @@
 use bytes::Bytes;
-use d_engine_core::client::{
-    ClientReadRequest, ClientResponse, ClientResponsePayload, ClientWriteRequest, ErrorCode,
-    KvEntry, LeaderHint, ReadResults, WriteResult,
-};
+use d_engine_core::client::ClientReadRequest;
+use d_engine_core::client::ClientResponse;
+use d_engine_core::client::ClientResponsePayload;
+use d_engine_core::client::ClientWriteRequest;
+use d_engine_core::client::ErrorCode;
+use d_engine_core::client::KvEntry;
+use d_engine_core::client::LeaderHint;
+use d_engine_core::client::ReadResults;
+use d_engine_core::client::WriteResult;
 use d_engine_core::config::ReadConsistencyPolicy;
 use d_engine_core::types::ScanResults;
 use d_engine_proto::client as proto_client;
 use d_engine_proto::client::WriteCommand;
-use d_engine_proto::client::write_command::{Insert, Operation};
+use d_engine_proto::client::write_command::Insert;
+use d_engine_proto::client::write_command::Operation;
 use d_engine_proto::error::ErrorCode as ProtoErrorCode;
 use prost::Message;
 
-use crate::proto_convert::{
-    core_error_to_proto, proto_error_to_core, to_core_read_req, to_core_response,
-    to_core_write_req, to_proto_response,
-};
+use crate::proto_convert::core_error_to_proto;
+use crate::proto_convert::proto_error_to_core;
+use crate::proto_convert::to_core_read_req;
+use crate::proto_convert::to_core_response;
+use crate::proto_convert::to_core_write_req;
+use crate::proto_convert::to_proto_response;
 // ─── to_core_write_req ────────────────────────────────────────────────────────
 
 #[test]
