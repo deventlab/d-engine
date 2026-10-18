@@ -1,109 +1,88 @@
 # d-engine v0.2.5 Benchmark Report
 
-**Test Environments**:
+**Date**: October 18, 2026 | **Platform**: AWS us-east-1, 3 x c5.2xlarge nodes + 1 x c5.4xlarge client, 50 GB gp3 root volume (3,000 IOPS, 125 MB/s) | 3-round means | 8 B keys, 256 B values
 
-- **AWS**: EC2 c5.2xlarge (8 vCPUs, 16GB RAM, 50GB SSD) × 3 nodes
-- **Key/Value**: 8 bytes / 256 bytes
+Details: [`bench_report_v0.2.5_environment.md`](bench_report_v0.2.5_environment.md) (exact setup, commands, configuration) and [`bench_report_v0.2.5_details.md`](bench_report_v0.2.5_details.md) (every number, spreads, p99).
 
----
+> This report replaces the September 26, 2026 draft. That draft compared v0.2.4 at 100 clients with v0.2.5 at 1,000 clients, and compared d-engine with etcd 3.2.0 numbers measured on Google Cloud in 2017. Its latency and "vs etcd" conclusions did not hold and are withdrawn.
 
-![d-engine v0.2.5 vs v0.2.4 Embedded Mode](d-engine_v0.2.5_vs_v0.2.4_embedded_mode.png)
+## Summary
 
-![d-engine v0.2.5 vs v0.2.4 Standalone Mode](d-engine_v0.2.5_vs_v0.2.4_standalone_mode.png)
+1. **v0.2.5 makes every commit wait for a physical `fdatasync` (RPO=0, #446), and on AWS EBS that costs one disk sync per commit.** At the same concurrency, single-client write falls from 4,393 to 337 ops/s (avg latency 0.228 to 2.962 ms) and 100-in-flight embedded write from 115,641 to 18,198 ops/s (0.864 to 5.494 ms). The added latency is close to one append `fdatasync` measured with fio on the same volume type (2.71 ms): 0.228 + 2.71 = 2.94 ms against 2.96 ms measured.
+2. **Reads are mostly unaffected or faster.** In embedded mode lease and eventual reads are 2.8x faster (ReadActor, #392); in standalone mode they gain 14.5% and 6.4%. Linearizable read is 15% lower in embedded mode and 3.3% lower in standalone mode (within noise; the v0.2.4 value is one round).
+3. **Against etcd v3.7.2 on the same AWS nodes (standalone mode), d-engine is ahead at concurrency and behind with one client.** 200 in-flight writes: 32,068 vs 17,143 ops/s (1.87x). Single-client write: 312 vs 605 ops/s (d-engine at 0.52x). Linearizable read at 200 in-flight: 0.91x; eventual read against etcd's serializable read: 1.48x. In embedded mode (in-process calls, no network hop) at 100 in-flight: write 1.81x, linearizable read 5.83x, eventual read 9.08x; single-client write is again behind, at 0.56x.
+4. **etcd's single-client write is faster because its WAL sync is cheaper: 1.05 ms per sync in etcd's own metrics, against about 2.7 ms for an appending write on this volume.** fio shows a preallocated overwrite costs 1.29 ms on average against 2.72 ms for an append, with about half the device writes per sync. Whether RocksDB's WAL behaves like the append case is a hypothesis we have not tested yet (see Limitations).
+5. **The cost depends on the disk.** On a local RAM disk (fsync about 0.05 ms) the same change adds only 35% to write latency. Numbers from RAM disks must not be used to judge the cost on EBS.
 
-![d-engine v0.2.5 vs etcd 3.2.0](d-engine_comparison_v0.2.5.png)
+![d-engine v0.2.4 vs v0.2.5, Embedded Mode, 100 in-flight](d-engine_v0.2.5_vs_v0.2.4_embedded_mode.png)
 
-## AWS 3-Node Cluster: d-engine v0.2.5 vs v0.2.4 / etcd 3.2.0
+![d-engine v0.2.4 vs v0.2.5, Standalone Mode, 200 in-flight](d-engine_v0.2.5_vs_v0.2.4_standalone_mode.png)
 
-**Hardware**: AWS EC2 c5.2xlarge (8 vCPUs, 16GB RAM, 50GB SSD) × 3 nodes
-**Date**: September 26, 2026 | 3-round average | Key/Value: 8 bytes / 256 bytes
-**Embedded mode concurrency**: `--clients 1000` (previously omitted from the AWS harness — see Benchmark Configuration note below)
-**etcd reference**: Official etcd benchmark (GCE, 8 vCPUs + 16GB + SSD × 3 nodes, etcd 3.2.0)²
+![d-engine v0.2.5 (Embedded) vs etcd v3.7.2, 100 in-flight](d-engine_comparison_v0.2.5.png)
 
-> Updated 2026-09-26: this section now reflects v0.2.5 **with #446 merged**
-> (quorum commit gated on physical fsync — durable_index only advances after
-> fdatasync, per ADR-038 Level 3 / RPO=0). The June 2, 2026 numbers previously
-> here predate #446 and measured #392 (ReadActor) alone; #446 changes write-path
-> latency substantially and is reflected below.
+Charts (log scale, same data as Sections 1 and 2): v0.2.4 vs v0.2.5 in embedded mode at 100 in-flight; the same in standalone mode at 200 in-flight; d-engine v0.2.5 embedded against etcd v3.7.2 at 100 in-flight. There is no chart for standalone against etcd; that pair is in the Section 2 table.
 
-### Embedded Mode: v0.2.5 vs v0.2.4 / etcd 3.2.0
+## 1. v0.2.5 vs v0.2.4, same concurrency
 
-| **Scenario**        | **Metric**  | **v0.2.4 (AWS)** | **v0.2.5 (AWS)** | **Δ vs v0.2.4** | **etcd 3.2.0²** | **Δ vs etcd**  |
-| ------------------- | ----------- | ---------------- | ---------------- | --------------- | --------------- | -------------- |
-| Single Client Write | Throughput  | 4,398 ops/s      | 334 ops/s        | **-92.4%** ⚠️   | 583 ops/s       | -42.8% ⚠️      |
-|                     | Avg Latency | 0.227 ms         | 2.994 ms         | **+1219%** ⚠️   | 1.6 ms          | +87.1% ⚠️      |
-|                     | p99 Latency | 0.316 ms         | 3.154 ms         | **+898%** ⚠️    | —               | —              |
-| High Conc. Write    | Throughput  | 110,798 ops/s    | 115,648 ops/s    | +4.4% →         | 44,341 ops/s    | **+2.6x** ✅   |
-|                     | Avg Latency | 0.902 ms         | 8.586 ms         | **+852%** ⚠️    | 22.0 ms         | -61.0% ✅      |
-|                     | p99 Latency | 1.063 ms         | 12.012 ms        | **+1030%** ⚠️   | —               | —              |
-| Linearizable Read   | Throughput  | 327,355 ops/s    | 404,684 ops/s    | +23.6% ✅       | 141,578 ops/s   | **+2.9x** ✅   |
-|                     | Avg Latency | 0.305 ms         | 2.454 ms         | **+705%** ⚠️    | 5.5 ms          | -55.4% ✅      |
-|                     | p99 Latency | 0.374 ms         | 4.378 ms         | **+1071%** ⚠️   | —               | —              |
-| Lease Read          | Throughput  | 341,254 ops/s    | 1,186,318 ops/s  | **+247.7%** ✅  | —³              | —              |
-|                     | Avg Latency | 0.293 ms         | 0.001 ms         | **-99.7%** ✅   | —               | —              |
-|                     | p99 Latency | 0.367 ms         | 0.002 ms         | **-99.5%** ✅   | —               | —              |
-| Eventual Read       | Throughput  | 363,407 ops/s    | 1,220,515 ops/s  | **+235.9%** ✅  | 185,758 ops/s   | **+6.6x** ✅   |
-|                     | Avg Latency | 0.274 ms         | 0.001 ms         | **-99.6%** ✅   | 2.2 ms          | **-99.95%** ✅ |
-|                     | p99 Latency | 0.343 ms         | 0.002 ms         | **-99.4%** ✅   | —               | —              |
-| Hot-Key (10 keys)   | Throughput  | 319,957 ops/s    | 410,173 ops/s    | +28.2% ✅       | —³              | —              |
-|                     | Avg Latency | 0.313 ms         | 2.421 ms         | **+674%** ⚠️    | —               | —              |
-|                     | p99 Latency | 0.360 ms         | 4.858 ms         | **+1249%** ⚠️   | —               | —              |
+Embedded mode, 100 in-flight requests (single client: 1). Cells are ops/s (average latency).
 
-**Key Findings**:
+| Scenario               | v0.2.4             | v0.2.5               | Throughput |
+| ---------------------- | ------------------ | -------------------- | ---------- |
+| Single client write    | 4,393 (0.228 ms)   | 337 (2.962 ms)       | -92.3%     |
+| High concurrency write | 115,641 (0.864 ms) | 18,198 (5.494 ms)    | -84.3%     |
+| Linearizable read      | 441,087 (0.226 ms) | 373,820 (0.267 ms)   | -15.3%     |
+| Lease read             | 470,786 (0.212 ms) | 1,319,390 (0.001 ms) | +180.3%    |
+| Eventual read          | 478,101 (0.209 ms) | 1,350,684 (0.001 ms) | +182.5%    |
+| Hot-key read (10 keys) | 467,864 (0.213 ms) | 369,349 (0.270 ms)   | -21.1%     |
 
-- **Single Client Write is the clearest #446 signal, and it's a regression**: throughput -92.4%, avg latency 0.227ms → 2.994ms (13x). No concurrency to amortize the cost — every request pays the full quorum-fsync round trip directly. d-engine's SC Write is now _slower_ than etcd's reference number (-42.8% throughput), reversing the previous +7.6x lead.
-- **Concurrent write/read throughput holds up (HC Write +4.4%, Lin Read +23.6%, Hot-Key +28.2%)** — with enough in-flight requests, individual fsync/replication latency overlaps instead of stacking, so aggregate throughput survives. But **every scenario's avg/p99 latency is 7-13x worse than v0.2.4**, including reads that don't touch fsync (Hot-Key avg +674%) — consistent with the write path now serializing behind real fsync+quorum-ack round trips that the old `MemFirst` config never paid.
-- **Lease/Eventual Read remain #392's win, untouched by #446** (+248%/+236% vs v0.2.4, both are pure in-memory reads with no Raft RPO=0 gating).
-- **This is a much larger cost than #446's own loopback A/B measurements** (`tickets/milestones/v0.2.5/RESULTS-main-vs-446.md`: +9.9% `propose_to_apply`, -2.1% throughput). AWS's EBS gp3 is network-attached storage — every fsync is a real network round trip, unlike loopback disk I/O. Confirms the loopback numbers understate #446's real-world cost by roughly an order of magnitude.
+Standalone mode, 200 in-flight (single client: 1). Starred cells use the one clean round of v0.2.4 (the cluster was not ready in rounds 1 and 2, so they logged timeouts).
 
----
+| Scenario               | v0.2.4              | v0.2.5             | Throughput |
+| ---------------------- | ------------------- | ------------------ | ---------- |
+| Single client write    | 2,042 (0.494 ms)    | 312 (3.204 ms)     | -84.7%     |
+| High concurrency write | 63,308* (3.155 ms)  | 32,068 (6.228 ms)  | -49.3%     |
+| Linearizable read      | 85,018* (2.349 ms)  | 82,215 (2.432 ms)  | -3.3%      |
+| Lease read             | 83,181 (2.403 ms)   | 95,219 (2.099 ms)  | +14.5%     |
+| Eventual read          | 204,337 (0.975 ms)  | 217,464 (0.916 ms) | +6.4%      |
+| Hot-key read (10 keys) | 104,149* (1.917 ms) | 96,553 (2.068 ms)  | -7.3%      |
 
-### Standalone Mode: v0.2.5 vs v0.2.4 / etcd 3.2.0
+## 2. d-engine v0.2.5 vs etcd v3.7.2 on the same AWS nodes
 
-| **Scenario**        | **Metric**  | **v0.2.4 (AWS)** | **v0.2.5 (AWS)** | **Δ vs v0.2.4** | **etcd 3.2.0²** | **Δ vs etcd** |
-| ------------------- | ----------- | ---------------- | ---------------- | --------------- | --------------- | ------------- |
-| Single Client Write | Throughput  | 2,305 ops/s      | 302 ops/s        | **-86.9%** ⚠️   | 583 ops/s       | -48.2% ⚠️     |
-|                     | Avg Latency | 0.433 ms         | 3.316 ms         | **+666%** ⚠️    | 1.6 ms          | +107.3% ⚠️    |
-|                     | p99 Latency | 0.567 ms         | 3.513 ms         | **+520%** ⚠️    | —               | —             |
-| High Conc. Write    | Throughput  | 59,687 ops/s     | 70,395 ops/s     | +17.9% ✅       | 44,341 ops/s    | +58.8% ✅     |
-|                     | Avg Latency | 3.346 ms         | 14.137 ms        | **+323%** ⚠️    | 22.0 ms         | -35.7% ✅     |
-|                     | p99 Latency | 7.106 ms         | 20.943 ms        | **+195%** ⚠️    | —               | —             |
-| Linearizable Read   | Throughput  | 77,907 ops/s     | 89,218 ops/s     | +14.5% ✅       | 141,578 ops/s   | -37.0% ⚠️     |
-|                     | Avg Latency | 2.563 ms         | 11.145 ms        | **+335%** ⚠️    | 5.5 ms          | +102.6% ⚠️    |
-|                     | p99 Latency | 6.308 ms         | 22.922 ms        | **+263%** ⚠️    | —               | —             |
-| Lease Read          | Throughput  | 76,144 ops/s     | 99,699 ops/s     | **+30.9%** ✅   | —³              | —             |
-|                     | Avg Latency | 2.624 ms         | 9.972 ms         | **+280%** ⚠️    | —               | —             |
-|                     | p99 Latency | 6.130 ms         | 22.058 ms        | **+260%** ⚠️    | —               | —             |
-| Eventual Read       | Throughput  | 170,000 ops/s    | 243,775 ops/s    | **+43.4%** ✅   | 185,758 ops/s   | +31.2% ✅     |
-|                     | Avg Latency | 1.171 ms         | 4.044 ms         | **+245%** ⚠️    | 2.2 ms          | +83.8% ⚠️     |
-|                     | p99 Latency | 2.245 ms         | 9.087 ms         | **+305%** ⚠️    | —               | —             |
-| Hot-Key (10 keys)   | Throughput  | 90,609 ops/s     | 104,701 ops/s    | +15.6% ✅       | —³              | —             |
-|                     | Avg Latency | 2.203 ms         | 9.493 ms         | **+331%** ⚠️    | —               | —             |
-|                     | p99 Latency | 6.127 ms         | 19.060 ms        | **+211%** ⚠️    | —               | —             |
+etcd ran in a separate session on new instances of the same shape, three times from a freshly wiped cluster, with etcd's documented `benchmark` commands (leader address instead of the removed `--target-leader`). Both d-engine modes are compared, because d-engine is used both ways. Standalone is the like-for-like pair: etcd is also reached through a network client.
 
-**Key Findings**:
+**Standalone** (200 in-flight; single client: 1)
 
-- **Same pattern as Embedded, more pronounced**: SC Write throughput -86.9%, avg latency 0.433ms → 3.316ms. Standalone adds real gRPC network RTT on top of the same fsync cost, so it's the worst-case number.
-- **Concurrent scenarios (HC Write, Lin Read, Lease/Eventual Read, Hot-Key) all gain throughput (+15-43%)** — likely #392 ReadActor + other carried-over improvements outweighing #446's per-op cost once enough concurrency hides it — **but every one of them has 2-4x worse avg/p99 latency**. Throughput alone is not the full picture for this release; latency is where #446's cost is visible everywhere.
-- **vs etcd**: d-engine has flipped from beating etcd on Single Client Write (+3.6x in v0.2.4) to losing to it (-48.2%). Linearizable Read is now worse than etcd on both throughput _and_ latency (previously only throughput was behind). This scenario deserves explicit sign-off before shipping v0.2.5 — RPO=0 is a deliberate trade-off (see ADR-038), but the "vs etcd" story materially changes.
+| Case                                                | etcd v3.7.2                         | d-engine v0.2.5 standalone           | d-engine / etcd |
+| --------------------------------------------------- | ----------------------------------- | ------------------------------------ | --------------- |
+| Write, 1 in-flight                                  | 605 ops/s, 1.65 ms, p99 5.07 ms     | 312 ops/s, 3.20 ms, p99 3.40 ms      | 0.52x           |
+| Write, 200 in-flight                                | 17,143 ops/s, 11.7 ms, p99 19.7 ms  | 32,068 ops/s, 6.23 ms, p99 7.43 ms   | 1.87x           |
+| Linearizable read, 200                              | 90,569 ops/s, 2.20 ms, p99 6.03 ms  | 82,215 ops/s, 2.43 ms, p99 4.69 ms   | 0.91x           |
+| Serializable (etcd) / eventual (d-engine) read, 200 | 147,426 ops/s, 1.23 ms, p99 6.40 ms | 217,464 ops/s, 0.916 ms, p99 1.71 ms | 1.48x           |
 
-² etcd data sourced from [etcd official benchmark documentation](https://etcd.io/docs/v3.6/op-guide/performance/), tested on GCE infrastructure. Different cloud platform; results are for reference only.
-³ etcd does not have an equivalent mode.
+**Embedded** (100 in-flight; single client: 1). The embedded bench ran at 100 in-flight, so etcd's 100 in-flight rows are the matched ones.
 
----
+| Case                                                | etcd v3.7.2                          | d-engine v0.2.5 embedded                | d-engine / etcd |
+| --------------------------------------------------- | ------------------------------------ | --------------------------------------- | --------------- |
+| Write, 1 in-flight                                  | 605 ops/s, 1.65 ms, p99 5.07 ms      | 337 ops/s, 2.96 ms, p99 3.15 ms         | 0.56x           |
+| Write, 100 in-flight                                | 10,064 ops/s, 9.93 ms, p99 17.0 ms   | 18,198 ops/s, 5.49 ms, p99 6.20 ms      | 1.81x           |
+| Linearizable read, 100                              | 64,071 ops/s, 1.57 ms, p99 3.60 ms   | 373,820 ops/s, 0.267 ms, p99 0.329 ms   | 5.83x           |
+| Serializable (etcd) / eventual (d-engine) read, 100 | 148,709 ops/s, 0.633 ms, p99 3.60 ms | 1,350,684 ops/s, 0.001 ms, p99 0.002 ms | 9.08x           |
 
-<!-- Benchmark Configuration section update: -->
+An embedded call pays no serialization and no network, so the read ratios measure that, not only the engine. The single-client write is the case where the network matters least (both sides wait for the disk sync), and there d-engine is behind etcd in both modes.
 
-```toml
-[raft]
-read_actor_channel_capacity = 10240
-read_actor_max_drain = 2000
+etcd's WAL `fdatasync` averaged 1.05 ms at 1 in-flight, 2.16 ms at 100, 2.37 ms at 200 and 3.24 ms at 1,000. Its other cases (1,000 in-flight, writes to all members, single-client reads) are in the details file. d-engine's lease read has no etcd equivalent (1,319,390 ops/s embedded, 95,219 standalone).
 
-[raft.persistence]
-flush_policy = { Batch = { idle_flush_interval_ms = 1000 } }
+## Limitations
 
-[raft.batching]
-max_batch_size = 200
-```
+- Three rounds per case on one set of instances; d-engine (set A) and etcd (set B) ran on different instances of the same shape. Treat ratios as indicative, roughly plus or minus 20%.
+- v0.2.4 standalone write, linearizable read and hot-key use a single clean round. v0.2.4 embedded single-client write varies 17.7% between rounds.
+- d-engine was not run on AWS at 1,000 in-flight, nor for single-client reads, so etcd's 1,000 in-flight results (in the details file) have no d-engine pair. etcd's reads fetch one key and last only a second or two; d-engine's read benchmark reads many keys.
+- The fsync explanation in point 4 is a hypothesis. d-engine's raft log is a RocksDB WAL; its configuration does not set `recycle_log_file_num` and leaves WAL preallocation at the defaults. We have not measured how RocksDB writes the WAL. The two-mode fio result (overwrite is bimodal: about 0.9 ms or 2.7 ms) is unexplained.
+- Single AZ, no placement group, gp3 only. Other volume types (io2, local NVMe) were not measured.
 
-Embedded-bench invocation: `--clients 1000` (AWS harness previously omitted this flag; Single Client Write always used `clients=1` regardless of this setting).
+## Corrections to the September 26 draft
+
+- Latency changes of "+852%" and "7 to 13x worse" mixed 100 and 1,000 in-flight requests. At equal concurrency the embedded write is 6.4x slower, not 10x.
+- Standalone "vs etcd" columns used etcd 3.2.0 on Google Cloud (2017, disk undocumented) and are replaced by measurements on the same AWS nodes.
+- The `flush_policy` and `read_actor_*` configuration snippet is gone: v0.2.5 has no persistence policy, and the actual settings are in the environment file.
+- The comparison charts in this directory were redrawn from the October 18 measurements; the September 26 versions are gone.
