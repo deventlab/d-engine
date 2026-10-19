@@ -35,3 +35,5 @@ data/*
 
 cobertura.xml
 .DS_Store
+
+target-raft-engine/

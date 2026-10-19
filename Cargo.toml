@@ -18,6 +18,7 @@ exclude = [
   "examples/quick-start-embedded",
   "examples/service-discovery-standalone",
   "examples/service-discovery-embedded",
+  "examples/raft-engine-log",
   "benches/standalone-bench",
   "benches/embedded-bench"
 ]

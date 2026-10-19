@@ -59,9 +59,10 @@ Usage examples demonstrating different d-engine integration modes.
 
 ## Storage Backend Examples
 
-| Example                       | Description                             |
-| ----------------------------- | --------------------------------------- |
-| [sled-cluster](sled-cluster/) | Alternative with Sled embedded database |
+| Example                             | Description                                                                         |
+| ----------------------------------- | ----------------------------------------------------------------------------------- |
+| [sled-cluster](sled-cluster/)       | Alternative with Sled embedded database                                             |
+| [raft-engine-log](raft-engine-log/) | 3-node embedded cluster with the Raft log in raft-engine instead of the RocksDB WAL (experimental) |
 
 ---
 

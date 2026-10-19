@@ -1,7 +1,7 @@
 # Makefile for embedded-bench
 # Provides benchmark commands matching embedded-bench/reports/v0.2.0/report_v0.2.0_final.md
 
-.PHONY: help build clean clean-log-db test-single-write test-high-conc-write test-linearizable-read test-lease-read test-eventual-read test-hot-key all-tests \
+.PHONY: help build build-raft-engine clean clean-log-db test-single-write test-high-conc-write test-linearizable-read test-lease-read test-eventual-read test-hot-key all-tests \
         all-ram-tests ramdisk-create clean-ram-log-db ramdisk-release
 
 # ===============================
@@ -80,6 +80,9 @@ help:
 	@echo ""
 	@echo "Build:"
 	@echo "  make build              Build release binary"
+	@echo "  make build-raft-engine  Build with the raft-engine log store (separate target dir)"
+	@echo "  make raft-engine-<target>  Run any target below on the raft-engine build,"
+	@echo "                             e.g. make raft-engine-test-single-write"
 	@echo "  make clean              Clean build artifacts"
 	@echo ""
 	@echo "Write Tests (only run on Leader - default: Node 1):"
@@ -118,6 +121,20 @@ help:
 build:
 	@echo "Building embedded-bench..."
 	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 8
+
+# Same benchmark with the Raft log stored in raft-engine instead of the RocksDB WAL.
+# Built into its own target dir so it never overwrites the default binary.
+RAFT_ENGINE_BIN := ./target-raft-engine/release/embedded-bench
+
+build-raft-engine:
+	@echo "Building embedded-bench (raft-engine log store)..."
+	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 8 --features raft-engine --target-dir target-raft-engine
+
+# Run any existing target against the raft-engine binary:
+#   make raft-engine-test-single-write
+#   make raft-engine-all-tests NODE=n2
+raft-engine-%: build-raft-engine
+	$(MAKE) $* BENCH_BIN=$(RAFT_ENGINE_BIN)
 
 clean:
 	@echo "Cleaning build artifacts and data directories..."
