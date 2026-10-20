@@ -2,6 +2,8 @@
 
 **Date**: October 18, 2026 | **Platform**: AWS us-east-1, 3 x c5.2xlarge nodes + 1 x c5.4xlarge client, 50 GB gp3 root volume (3,000 IOPS, 125 MB/s) | 3-round means | 8 B keys, 256 B values
 
+**Addendum, October 20, 2026:** embedded mode with the Raft log in raft-engine instead of the RocksDB WAL (experimental, #460): Summary point 6, Section 1b and [`bench_report_v0.2.5_raft_engine.md`](bench_report_v0.2.5_raft_engine.md).
+
 Details: [`bench_report_v0.2.5_environment.md`](bench_report_v0.2.5_environment.md) (exact setup, commands, configuration) and [`bench_report_v0.2.5_details.md`](bench_report_v0.2.5_details.md) (every number, spreads, p99).
 
 > This report replaces the September 26, 2026 draft. That draft compared v0.2.4 at 100 clients with v0.2.5 at 1,000 clients, and compared d-engine with etcd 3.2.0 numbers measured on Google Cloud in 2017. Its latency and "vs etcd" conclusions did not hold and are withdrawn.
@@ -13,6 +15,8 @@ Details: [`bench_report_v0.2.5_environment.md`](bench_report_v0.2.5_environment.
 3. **Against etcd v3.7.2 on the same AWS nodes (standalone mode), d-engine is ahead at concurrency and behind with one client.** 200 in-flight writes: 32,068 vs 17,143 ops/s (1.87x). Single-client write: 312 vs 605 ops/s (d-engine at 0.52x). Linearizable read at 200 in-flight: 0.91x; eventual read against etcd's serializable read: 1.48x. In embedded mode (in-process calls, no network hop) at 100 in-flight: write 1.81x, linearizable read 5.83x, eventual read 9.08x; single-client write is again behind, at 0.56x.
 4. **etcd's single-client write is faster because its WAL sync is cheaper: 1.05 ms per sync in etcd's own metrics, against about 2.7 ms for an appending write on this volume.** fio shows a preallocated overwrite costs 1.29 ms on average against 2.72 ms for an append, with about half the device writes per sync. Whether RocksDB's WAL behaves like the append case is a hypothesis we have not tested yet (see Limitations).
 5. **The cost depends on the disk.** On a local RAM disk (fsync about 0.05 ms) the same change adds only 35% to write latency. Numbers from RAM disks must not be used to judge the cost on EBS.
+
+6. **A log store that overwrites preallocated files makes the single-client write about twice as fast, but only 11% faster at 100 in-flight.** With the Raft log in raft-engine (embedded, 100 in-flight, October 20, new instances, control from October 18): single-client write 693 vs 337 ops/s (avg 1.485 vs 2.962 ms), 100-in-flight write 20,271 vs 18,198 ops/s (avg 4.93 vs 5.49 ms, p99 10.4 vs 6.2 ms). A commit then costs one `fdatasync` of 0.89 ms on average, close to the fio overwrite figure and well under the append figure (point 4); reads are unchanged. The control ran on another instance set, so these are indicative until a back-to-back run is done.
 
 ![d-engine v0.2.4 vs v0.2.5, Embedded Mode, 100 in-flight](d-engine_v0.2.5_vs_v0.2.4_embedded_mode.png)
 
@@ -34,6 +38,16 @@ Embedded mode, 100 in-flight requests (single client: 1). Cells are ops/s (avera
 | Lease read             | 470,786 (0.212 ms) | 1,319,390 (0.001 ms) | +180.3%    |
 | Eventual read          | 478,101 (0.209 ms) | 1,350,684 (0.001 ms) | +182.5%    |
 | Hot-key read (10 keys) | 467,864 (0.213 ms) | 369,349 (0.270 ms)   | -21.1%     |
+
+### 1b. Embedded, Raft log in raft-engine (October 20, 2026, experimental)
+
+Ops/s (average latency). Control = the v0.2.5 column above (RocksDB WAL). Full tables, setup and caveats: `bench_report_v0.2.5_raft_engine.md`.
+
+| Scenario               | RocksDB WAL (Oct 18) | raft-engine (Oct 20)  | Throughput |
+| ---------------------- | -------------------- | --------------------- | ---------- |
+| Single client write    | 337 (2.962 ms)       | 693 (1.485 ms)        | +105.4%    |
+| High concurrency write | 18,198 (5.494 ms)    | 20,271 (4.932 ms)     | +11.4%     |
+| Linearizable read      | 373,820 (0.267 ms)   | 363,803 (0.274 ms)    | -2.7%      |
 
 Standalone mode, 200 in-flight (single client: 1). Starred cells use the one clean round of v0.2.4 (the cluster was not ready in rounds 1 and 2, so they logged timeouts).
 
@@ -78,6 +92,7 @@ etcd's WAL `fdatasync` averaged 1.05 ms at 1 in-flight, 2.16 ms at 100, 2.37 ms 
 - v0.2.4 standalone write, linearizable read and hot-key use a single clean round. v0.2.4 embedded single-client write varies 17.7% between rounds.
 - d-engine was not run on AWS at 1,000 in-flight, nor for single-client reads, so etcd's 1,000 in-flight results (in the details file) have no d-engine pair. etcd's reads fetch one key and last only a second or two; d-engine's read benchmark reads many keys.
 - The fsync explanation in point 4 is a hypothesis. d-engine's raft log is a RocksDB WAL; its configuration does not set `recycle_log_file_num` and leaves WAL preallocation at the defaults. We have not measured how RocksDB writes the WAL. The two-mode fio result (overwrite is bimodal: about 0.9 ms or 2.7 ms) is unexplained.
+- The raft-engine numbers (point 6, Section 1b) come from a different instance set than the RocksDB control, from three rounds with a 42% spread on the single-client write, and from a forked build of raft-engine; the published crate's `Engine::sync()` does nothing and cannot be used.
 - Single AZ, no placement group, gp3 only. Other volume types (io2, local NVMe) were not measured.
 
 ## Corrections to the September 26 draft
