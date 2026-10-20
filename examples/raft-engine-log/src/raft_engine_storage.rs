@@ -180,9 +180,9 @@ impl LogStore for RaftEngineLogStore {
         batch
             .add_entries::<EntryAdapter>(LOG_REGION_ID, &raft_entries)
             .map_err(|e| StorageError::LogStorage(e.to_string()))?;
-        // sync=false: lands in raft-engine's pipe buffer; the IO thread's
-        // flush() (= engine.sync()) makes it durable, mirroring the RocksDB
-        // adapter's drain-then-fsync model.
+        // sync=false: lands in the OS page cache; the IO thread's flush()
+        // (`Engine::sync`) makes it durable, mirroring the RocksDB adapter's
+        // drain-then-fsync model.
         self.engine
             .write(&mut batch, false)
             .map_err(|e| StorageError::LogStorage(e.to_string()))?;
