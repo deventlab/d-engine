@@ -103,15 +103,48 @@ async fn start_dengine_server(
     println!("║  Config: {config_path:<28} ║");
     println!("╚════════════════════════════════════════╝");
 
-    // StandaloneEngine with explicit data_dir and config path
     // Blocks until shutdown signal received
-    if let Err(e) = StandaloneEngine::run_with(&data_dir, &config_path, graceful_rx).await {
+    if let Err(e) = run_engine(&data_dir, &config_path, graceful_rx).await {
         error!("Server stopped with error: {:?}", e);
     } else {
         info!("Server stopped gracefully");
     }
 
     println!("Exiting program.");
+}
+
+/// Default build: d-engine's stock RocksDB engine, explicit data_dir and config path.
+#[cfg(not(feature = "raft-engine"))]
+async fn run_engine(
+    data_dir: &str,
+    config_path: &str,
+    graceful_rx: watch::Receiver<()>,
+) -> Result<(), d_engine::Error> {
+    StandaloneEngine::run_with(data_dir, config_path, graceful_rx).await
+}
+
+/// `raft-engine` feature: only the Raft log and the hard state move to raft-engine. The state
+/// machine, the config file and the data layout are the same as the default build, so the two
+/// builds differ by the log store alone.
+#[cfg(feature = "raft-engine")]
+async fn run_engine(
+    data_dir: &str,
+    config_path: &str,
+    graceful_rx: watch::Receiver<()>,
+) -> Result<(), d_engine::Error> {
+    use std::sync::Arc;
+
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| d_engine::Error::Fatal(format!("create {data_dir}: {e}")))?;
+    let options = raft_engine_log::RaftEngineOptions::from_toml_file(config_path)?;
+    let storage = Arc::new(raft_engine_log::RaftEngineStorage::open_with(
+        format!("{data_dir}/storage"),
+        &options,
+    )?);
+    let sm = Arc::new(d_engine::RocksDBStateMachine::new(format!(
+        "{data_dir}/state_machine"
+    ))?);
+    StandaloneEngine::run_custom(data_dir, storage, sm, graceful_rx, Some(config_path)).await
 }
 
 async fn graceful_shutdown(graceful_tx: watch::Sender<()>) {

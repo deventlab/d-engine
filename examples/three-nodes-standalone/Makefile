@@ -4,7 +4,8 @@
         start-node1 start-node2 start-node3 \
         perf-node1 perf-node2 perf-node3 perf-cluster \
         tokio-console-node1 tokio-console-node2 tokio-console-node3 tokio-console-cluster \
-        start-ram-cluster ramdisk-create clean-ram-log-db ramdisk-release
+        start-ram-cluster ramdisk-create clean-ram-log-db ramdisk-release \
+        build-raft-engine start-cluster-raft-engine clean-raft-engine
 .DEFAULT_GOAL := help
 
 # ===============================
@@ -46,6 +47,7 @@ build:
 # ===============================
 # Overridable so start-ram-cluster can point these at /Volumes/RAMDiskN
 # without duplicating the node targets.
+BIN ?= ./target/release/demo
 DB_PATH_1 ?= ./db/1
 DB_PATH_2 ?= ./db/2
 DB_PATH_3 ?= ./db/3
@@ -58,7 +60,7 @@ start-node1:
 	METRICS_PORT=8081 \
 	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
-	./target/release/demo 2>&1 | sed 's/^/[Node1] /'
+	$(BIN) 2>&1 | sed 's/^/[Node1] /'
 
 start-node2:
 	@echo "🚀 Starting Node 2..."
@@ -67,7 +69,7 @@ start-node2:
 	LOG_DIR="./logs/2" \
 	METRICS_PORT=8082 \
 	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
-	./target/release/demo 2>&1 | sed 's/^/[Node2] /'
+	$(BIN) 2>&1 | sed 's/^/[Node2] /'
 
 start-node3:
 	@echo "🚀 Starting Node 3..."
@@ -76,12 +78,31 @@ start-node3:
 	LOG_DIR="./logs/3" \
 	METRICS_PORT=8083 \
 	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
-	./target/release/demo 2>&1 | sed 's/^/[Node3] /'
+	$(BIN) 2>&1 | sed 's/^/[Node3] /'
 
 
 start-cluster:
 	@echo "Starting 3-node cluster in parallel..."
 	$(MAKE) -j3 start-node1 start-node2 start-node3
+
+# Raft log in raft-engine instead of the RocksDB WAL (experimental, #460)
+# Own build directory and own data directory, so it never mixes with the RocksDB build or its files.
+RE_BIN := ./target-raft-engine/release/demo
+RE_DIR := ./db-raft-engine
+
+build-raft-engine:
+	@echo "Building release binary with the raft-engine log store..."
+	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 4 --features raft-engine --target-dir target-raft-engine
+
+start-cluster-raft-engine: build-raft-engine
+	@echo "Starting 3-node cluster with the raft-engine log store..."
+	$(MAKE) -j3 start-node1 start-node2 start-node3 \
+		BIN=$(RE_BIN) \
+		DB_PATH_1=$(RE_DIR)/1 DB_PATH_2=$(RE_DIR)/2 DB_PATH_3=$(RE_DIR)/3
+
+clean-raft-engine:
+	@echo "Cleaning raft-engine data..."
+	rm -rf $(RE_DIR)
 
 # ===============================
 # RAM Disk (macOS only, optional)
@@ -222,6 +243,9 @@ help:
 	@echo "  build                           - Build release binary"
 	@echo "  start-node1..3                  - Start individual cluster nodes"
 	@echo "  start-cluster                   - Start all 3 nodes in parallel"
+	@echo "  build-raft-engine               - Build with the raft-engine log store (separate target dir)"
+	@echo "  start-cluster-raft-engine       - Build, then start all 3 nodes with the raft-engine log store"
+	@echo "  clean-raft-engine               - Remove the raft-engine data"
 	@echo "  perf-node1..3                   - Run individual nodes under samply profiler"
 	@echo "  perf-cluster                    - Run full 3-node cluster under samply profiling"
 	@echo "  tokio-console-cluster           - Run full 3-node cluster under tokio console monitoring"
