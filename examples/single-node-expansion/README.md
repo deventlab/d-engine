@@ -163,7 +163,7 @@ make clean-logs   # Remove logs and DB only
 
 **Node 2/3 can't join:**
 
-- Verify Node 1 is running: `ps aux | grep demo`
+- Verify Node 1 is running: `ps aux | grep single-node-expansion`
 - Check addresses in config match actual IPs
 
 **Learner never promotes:**
