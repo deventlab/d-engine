@@ -1,7 +1,7 @@
 # d-engine v0.2.5 Benchmark: Test Environment
 
 Companion to `bench_report_v0.2.5.md`. Everything here was measured on **October 18, 2026**, except the raft-engine run of
-**October 20, 2026** (a new instance set E, same shapes), described in `bench_report_v0.2.5_raft_engine.md`.
+**October 20, 2026** (new instance sets E and F, same shapes), described in `bench_report_v0.2.5_raft_engine.md`.
 
 ## 1. Instance sets
 
