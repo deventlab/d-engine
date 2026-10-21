@@ -1,13 +1,22 @@
 # Makefile for embedded-bench
 # Provides benchmark commands matching embedded-bench/reports/v0.2.0/report_v0.2.0_final.md
 
-.PHONY: help build build-raft-engine clean clean-log-db test-single-write test-high-conc-write test-linearizable-read test-lease-read test-eventual-read test-hot-key all-tests \
+.PHONY: help build clean clean-log-db test-single-write test-high-conc-write test-linearizable-read test-lease-read test-eventual-read test-hot-key all-tests \
         all-ram-tests ramdisk-create clean-ram-log-db ramdisk-release
 
 # ===============================
 # Global Variables
 # ===============================
-BENCH_BIN := ./target/release/embedded-bench
+# Storage engine under test. Default: Raft log in raft-engine (experimental).
+# ENGINE=rocksdb builds and runs the stock RocksDB-WAL binary, which is the
+# configuration of the v0.2.4 / v0.2.5 reports. Each engine has its own target dir
+# and its own data dir, so switching never mixes their files.
+ENGINE ?= raft-engine
+$(if $(filter raft-engine rocksdb,$(ENGINE)),,$(error ENGINE must be raft-engine or rocksdb, got '$(ENGINE)'))
+TARGET_DIR := $(if $(filter raft-engine,$(ENGINE)),target-raft-engine,target)
+CARGO_FEATURES := $(if $(filter raft-engine,$(ENGINE)),--features raft-engine,)
+BENCH_BIN := ./$(TARGET_DIR)/release/embedded-bench
+DATA_ROOT := $(if $(filter raft-engine,$(ENGINE)),./data-raft-engine,./data)
 CONFIG_DIR := ./config
 LOG_LEVEL ?= warn
 
@@ -49,8 +58,8 @@ ifeq ($(RAMDISK),true)
 DATA_DIR := /Volumes/RAMDisk$(RAMDISK_INDEX)/$(NODE)
 SINGLE_NODE_DATA_DIR := /Volumes/RAMDisk1/single-node
 else
-DATA_DIR := ./data/$(NODE)
-SINGLE_NODE_DATA_DIR := ./data/single-node
+DATA_DIR := $(DATA_ROOT)/$(NODE)
+SINGLE_NODE_DATA_DIR := $(DATA_ROOT)/single-node
 endif
 
 # On macOS with Homebrew: auto-detect compression lib paths to skip bundled C++
@@ -79,11 +88,12 @@ help:
 	@echo "Embedded-bench Makefile - Performance Testing"
 	@echo ""
 	@echo "Build:"
-	@echo "  make build              Build release binary"
-	@echo "  make build-raft-engine  Build with the raft-engine log store (separate target dir)"
-	@echo "  make raft-engine-<target>  Run any target below on the raft-engine build,"
-	@echo "                             e.g. make raft-engine-test-single-write"
-	@echo "  make clean              Clean build artifacts"
+	@echo "  make build              Build release binary (engine: $(ENGINE))"
+	@echo "  make clean              Clean everything (both engines, local data, RAM disks)"
+	@echo ""
+	@echo "Storage engine (applies to every target below):"
+	@echo "  default                 raft-engine log store (experimental)"
+	@echo "  ENGINE=rocksdb          stock RocksDB-WAL build, e.g. make all-tests ENGINE=rocksdb"
 	@echo ""
 	@echo "Write Tests (only run on Leader - default: Node 1):"
 	@echo "  make test-single-write        Single client write (10K requests)"
@@ -119,28 +129,17 @@ help:
 	@echo "  cd ./embedded-bench && make start-cluster"
 
 build:
-	@echo "Building embedded-bench..."
-	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 8
+	@echo "Building embedded-bench (engine: $(ENGINE))..."
+	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 8 $(CARGO_FEATURES) --target-dir $(TARGET_DIR)
 
-# Same benchmark with the Raft log stored in raft-engine instead of the RocksDB WAL.
-# Built into its own target dir so it never overwrites the default binary.
-RAFT_ENGINE_BIN := ./target-raft-engine/release/embedded-bench
-
-build-raft-engine:
-	@echo "Building embedded-bench (raft-engine log store)..."
-	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 8 --features raft-engine --target-dir target-raft-engine
-
-# Run any existing target against the raft-engine binary:
-#   make raft-engine-test-single-write
-#   make raft-engine-all-tests NODE=n2
-raft-engine-%: build-raft-engine
-	$(MAKE) $* BENCH_BIN=$(RAFT_ENGINE_BIN)
-
-clean:
+# Removes everything: both engines' build output, local data, and data on the RAM disks.
+clean: clean-ram-log-db
 	@echo "Cleaning build artifacts and data directories..."
-	cargo clean
+	cargo clean --target-dir target
+	cargo clean --target-dir target-raft-engine
 	@echo "Removing data directories..."
 	rm -rf ./data/*
+	rm -rf ./data-raft-engine/*
 	rm -rf ./logs/*
 	rm -rf ./snapshots/*
 	@echo "Clean complete!"
@@ -149,6 +148,7 @@ clean-log-db:
 	@echo "Cleaning db and logs..."
 	rm -rf ./logs/*
 	rm -rf ./data/*
+	rm -rf ./data-raft-engine/*
 	rm -rf ./snapshots/*
 
 # ============================================
@@ -288,7 +288,7 @@ test-hot-key: build
 all-tests: build
 	@echo "========================================"
 	@echo "Running All Tests in Batch Mode"
-	@echo "Node: $(NODE)"
+	@echo "Node: $(NODE)   Engine: $(ENGINE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
 	DATA_DIR=$(DATA_DIR) \

@@ -4,14 +4,22 @@
         start-node1 start-node2 start-node3 \
         perf-node1 perf-node2 perf-node3 perf-cluster \
         tokio-console-node1 tokio-console-node2 tokio-console-node3 tokio-console-cluster \
-        start-ram-cluster ramdisk-create clean-ram-log-db ramdisk-release \
-        build-raft-engine start-cluster-raft-engine clean-raft-engine
+        start-ram-cluster ramdisk-create clean-ram-log-db ramdisk-release
 .DEFAULT_GOAL := help
 
 # ===============================
 # Global Variables
 # ===============================
 LOG_LEVEL ?= warn
+
+# Storage engine. Default: Raft log in raft-engine (experimental).
+# ENGINE=rocksdb builds and runs the stock RocksDB-WAL binary. Each engine has its own
+# target dir and its own data dir, so switching never mixes their files.
+ENGINE ?= raft-engine
+$(if $(filter raft-engine rocksdb,$(ENGINE)),,$(error ENGINE must be raft-engine or rocksdb, got '$(ENGINE)'))
+TARGET_DIR := $(if $(filter raft-engine,$(ENGINE)),target-raft-engine,target)
+CARGO_FEATURES := $(if $(filter raft-engine,$(ENGINE)),--features raft-engine,)
+DB_ROOT := $(if $(filter raft-engine,$(ENGINE)),./db-raft-engine,./db)
 
 # On macOS with Homebrew: auto-detect compression lib paths to skip bundled C++
 # compilation of RocksDB dependencies, which fails under macOS 26 + Xcode 26
@@ -39,18 +47,18 @@ endif
 # Build Targets
 # ===============================
 build:
-	@echo "Building release binary..."
-	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 4
+	@echo "Building release binary (engine: $(ENGINE))..."
+	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 4 $(CARGO_FEATURES) --target-dir $(TARGET_DIR)
 
 # ===============================
 # Cluster Management (Normal Mode)
 # ===============================
 # Overridable so start-ram-cluster can point these at /Volumes/RAMDiskN
 # without duplicating the node targets.
-BIN ?= ./target/release/demo
-DB_PATH_1 ?= ./db/1
-DB_PATH_2 ?= ./db/2
-DB_PATH_3 ?= ./db/3
+BIN ?= ./$(TARGET_DIR)/release/three-nodes-standalone
+DB_PATH_1 ?= $(DB_ROOT)/1
+DB_PATH_2 ?= $(DB_ROOT)/2
+DB_PATH_3 ?= $(DB_ROOT)/3
 
 start-node1:
 	@echo "🚀 Starting Node 1..."
@@ -58,7 +66,7 @@ start-node1:
 	DB_PATH="$(DB_PATH_1)" \
 	LOG_DIR="./logs/1" \
 	METRICS_PORT=8081 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_LOG=three_nodes_standalone=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
 	$(BIN) 2>&1 | sed 's/^/[Node1] /'
 
@@ -68,7 +76,7 @@ start-node2:
 	DB_PATH="$(DB_PATH_2)" \
 	LOG_DIR="./logs/2" \
 	METRICS_PORT=8082 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_LOG=three_nodes_standalone=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BIN) 2>&1 | sed 's/^/[Node2] /'
 
 start-node3:
@@ -77,32 +85,13 @@ start-node3:
 	DB_PATH="$(DB_PATH_3)" \
 	LOG_DIR="./logs/3" \
 	METRICS_PORT=8083 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_LOG=three_nodes_standalone=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	$(BIN) 2>&1 | sed 's/^/[Node3] /'
 
 
 start-cluster:
 	@echo "Starting 3-node cluster in parallel..."
 	$(MAKE) -j3 start-node1 start-node2 start-node3
-
-# Raft log in raft-engine instead of the RocksDB WAL (experimental, #460)
-# Own build directory and own data directory, so it never mixes with the RocksDB build or its files.
-RE_BIN := ./target-raft-engine/release/demo
-RE_DIR := ./db-raft-engine
-
-build-raft-engine:
-	@echo "Building release binary with the raft-engine log store..."
-	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 4 --features raft-engine --target-dir target-raft-engine
-
-start-cluster-raft-engine: build-raft-engine
-	@echo "Starting 3-node cluster with the raft-engine log store..."
-	$(MAKE) -j3 start-node1 start-node2 start-node3 \
-		BIN=$(RE_BIN) \
-		DB_PATH_1=$(RE_DIR)/1 DB_PATH_2=$(RE_DIR)/2 DB_PATH_3=$(RE_DIR)/3
-
-clean-raft-engine:
-	@echo "Cleaning raft-engine data..."
-	rm -rf $(RE_DIR)
 
 # ===============================
 # RAM Disk (macOS only, optional)
@@ -147,30 +136,30 @@ ramdisk-release:
 perf-node1:
 	@echo "Profiling Node 1 with samply..."
 	CONFIG_PATH=config/n1 \
-	DB_PATH="./db/1" \
+	DB_PATH="$(DB_PATH_1)" \
 	LOG_DIR="./logs/1" \
 	METRICS_PORT=8081 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_LOG=three_nodes_standalone=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
-	samply record -o ./samply_reports/1.profile.json -P 3001 ./target/release/demo
+	samply record -o ./samply_reports/1.profile.json -P 3001 $(BIN)
 
 perf-node2:
 	@echo "Profiling Node 2 with samply..."
 	CONFIG_PATH=config/n2 \
-	DB_PATH="./db/2" \
+	DB_PATH="$(DB_PATH_2)" \
 	LOG_DIR="./logs/2" \
 	METRICS_PORT=8082 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
-	samply record -o ./samply_reports/2.profile.json -P 3002 ./target/release/demo
+	RUST_LOG=three_nodes_standalone=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	samply record -o ./samply_reports/2.profile.json -P 3002 $(BIN)
 
 perf-node3:
 	@echo "Profiling Node 3 with samply..."
 	CONFIG_PATH=config/n3 \
-	DB_PATH="./db/3" \
+	DB_PATH="$(DB_PATH_3)" \
 	LOG_DIR="./logs/3" \
 	METRICS_PORT=8083 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
-	samply record -o ./samply_reports/3.profile.json -P 3003 ./target/release/demo
+	RUST_LOG=three_nodes_standalone=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	samply record -o ./samply_reports/3.profile.json -P 3003 $(BIN)
 
 perf-cluster: clean build
 	@echo "Starting 3-node cluster under samply profiling..."
@@ -178,43 +167,43 @@ perf-cluster: clean build
 
 
 build-tokio-console:
-	$(BREW_ROCKSDB_ENV) RUSTFLAGS="--cfg tokio_unstable" cargo build --release --jobs 4
+	$(BREW_ROCKSDB_ENV) RUSTFLAGS="--cfg tokio_unstable" cargo build --release --jobs 4 $(CARGO_FEATURES) --target-dir $(TARGET_DIR)
 
 tokio-console-node1:
 	@echo "Starting Node 1 with tokio console monitoring..."
 	TOKIO_CONSOLE=1  \
 	TOKIO_CONSOLE_PORT=6670 \
 	CONFIG_PATH=config/n1 \
-	DB_PATH="./db/1" \
+	DB_PATH="$(DB_PATH_1)" \
 	LOG_DIR="./logs/1" \
 	METRICS_PORT=8081 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_LOG=three_nodes_standalone=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
-	./target/release/demo
+	$(BIN)
 
 tokio-console-node2:
 	@echo "Starting Node 2 with tokio console monitoring..."
 	TOKIO_CONSOLE=1  \
 	TOKIO_CONSOLE_PORT=6671 \
 	CONFIG_PATH=config/n2 \
-	DB_PATH="./db/2" \
+	DB_PATH="$(DB_PATH_2)" \
 	LOG_DIR="./logs/2" \
 	METRICS_PORT=8082 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_LOG=three_nodes_standalone=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
-	./target/release/demo
+	$(BIN)
 
 tokio-console-node3:
 	@echo "Starting Node 3 with tokio console monitoring..."
 	TOKIO_CONSOLE=1 \
 	TOKIO_CONSOLE_PORT=6672 \
 	CONFIG_PATH=config/n3 \
-	DB_PATH="./db/3" \
+	DB_PATH="$(DB_PATH_3)" \
 	LOG_DIR="./logs/3" \
 	METRICS_PORT=8083 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_LOG=three_nodes_standalone=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
-	./target/release/demo
+	$(BIN)
 
 
 tokio-console-cluster: clean build-tokio-console
@@ -225,11 +214,14 @@ tokio-console-cluster: clean build-tokio-console
 # ===============================
 # Utilities
 # ===============================
-clean:
+# Removes everything: both engines' build output, local data, and data on the RAM disks.
+clean: clean-ram-log-db
 	@echo "Cleaning build artifacts..."
-	cargo clean
+	cargo clean --target-dir target
+	cargo clean --target-dir target-raft-engine
 	rm -rf logs/*
 	rm -rf db/*
+	rm -rf db-raft-engine/*
 	rm -rf snapshots/*
 	rm -rf samply_reports/*
 
@@ -237,15 +229,14 @@ clean-log-db:
 	@echo "Cleaning db and logs..."
 	rm -rf logs/*
 	rm -rf db/*
+	rm -rf db-raft-engine/*
 
 help:
 	@echo "DEngine Cluster Management Commands:"
 	@echo "  build                           - Build release binary"
 	@echo "  start-node1..3                  - Start individual cluster nodes"
 	@echo "  start-cluster                   - Start all 3 nodes in parallel"
-	@echo "  build-raft-engine               - Build with the raft-engine log store (separate target dir)"
-	@echo "  start-cluster-raft-engine       - Build, then start all 3 nodes with the raft-engine log store"
-	@echo "  clean-raft-engine               - Remove the raft-engine data"
+	@echo "  ENGINE=rocksdb                  - Any target: use the stock RocksDB-WAL build (default: raft-engine, experimental)"
 	@echo "  perf-node1..3                   - Run individual nodes under samply profiler"
 	@echo "  perf-cluster                    - Run full 3-node cluster under samply profiling"
 	@echo "  tokio-console-cluster           - Run full 3-node cluster under tokio console monitoring"
@@ -253,6 +244,6 @@ help:
 	@echo "  ramdisk-create                  - (macOS) Create RAMDisk1/2/3 if not already mounted"
 	@echo "  clean-ram-log-db                - Wipe node data off the RAM disks (keeps them mounted)"
 	@echo "  ramdisk-release                 - Unmount RAMDisk1/2/3, freeing the memory"
-	@echo "  clean                           - Remove build artifacts, logs, and profiles"
+	@echo "  clean                           - Remove everything: both engines' builds, data, logs, profiles, RAM disk data"
 	@echo "  clean-log-db                    - Remove only logs and database files"
 	@echo "  help                            - Show this help message"
