@@ -76,6 +76,8 @@ async fn main() {
 
 **→ New to d-engine?** [5-minute guide](https://docs.rs/d-engine/latest/d_engine/#-new-to-d-engine-start-here)
 
+**→ Website:** [d-engine.deventlab.com](https://d-engine.deventlab.com)
+
 ---
 
 ## Integration Modes
