@@ -91,7 +91,7 @@ d-engine = "0.2"
 **Use when**: Building Rust applications that need distributed coordination  
 **Why**: Zero-overhead (<0.1ms), single binary, zero network cost
 
-> **Performance**: AWS EC2 3-node cluster — **110K writes/sec**, **327K linearizable reads/sec**, sub-millisecond latency. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4) for details.
+> **Performance**: see [Performance](#performance) below.
 
 **→ Examples:**
 
@@ -109,7 +109,8 @@ d-engine = { version = "0.2", features = ["client"], default-features = false }
 **Use when**: Application and d-engine run as separate processes  
 **Why**: Language-agnostic (Go/Python/Java/Rust), independent scaling, easier operations
 
-> **Performance**: 59K writes/sec, 77K linearizable reads/sec via gRPC. For maximum throughput, embedded mode is 1.9× faster on writes and 4.2× on reads. See [benches/reports/v0.2.4/](https://github.com/deventlab/d-engine/tree/main/benches/reports/v0.2.4).
+> **Performance**: gRPC adds a network hop, so throughput is lower than embedded mode.
+> See the [full report](https://github.com/deventlab/d-engine/tree/main/benches/reports) for standalone results.
 
 **→ Example:** [Quick Start Standalone (Go client)](https://github.com/deventlab/d-engine/tree/main/examples/quick-start-standalone)
 
@@ -131,17 +132,25 @@ Implement the `StorageEngine` and `StateMachine` traits for custom backends:
 
 ## Performance
 
-### d-engine v0.2.5 vs etcd
+Embedded mode against etcd v3.7.2, same AWS instance shape (3 × c5.2xlarge, gp3 disk),
+256 B values, 100 requests in flight (single client: 1). d-engine runs with the optional
+raft-engine log store; storage engines are swappable and perform differently.
 
-![d-engine vs etcd comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.5/d-engine_comparison_v0.2.5.png)
+| Case                               | etcd (ops/s) | d-engine (ops/s) | d-engine ÷ etcd |
+| ---------------------------------- | -----------: | ---------------: | --------------: |
+| Write, 1 in flight                 |          605 |              836 |           1.38× |
+| Write, 100 in flight               |       10,064 |           19,860 |           1.97× |
+| Linearizable read                  |       64,071 |          368,068 |           5.74× |
+| Eventual read (etcd: serializable) |      148,709 |        1,253,650 |           8.43× |
 
-### d-engine v0.2.5 vs v0.2.4
+- Every commit is synced to disk before it is acknowledged (RPO=0), so writes are slower than
+  in releases before this guarantee, by design.
+- Embedded calls skip serialization and the network, so the read ratios measure that, not only the engine.
+- With the default RocksDB log store, single-client write is slower than etcd (0.56×);
+  100 in flight is 1.81×.
+- Three rounds per case on different instances of the same shape; ratios are indicative (about ±20%).
 
-![d-engine v0.2.5 vs v0.2.4 comparison](https://raw.githubusercontent.com/deventlab/d-engine/main/benches/reports/v0.2.5/d-engine_v0.2.5_vs_v0.2.4_embedded_mode.png)
-
-```bash
-open benches/reports/
-```
+→ [Full report, standalone results and setup](https://github.com/deventlab/d-engine/tree/main/benches/reports)
 
 ---
 
