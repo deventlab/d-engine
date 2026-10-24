@@ -56,6 +56,11 @@ async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir)
 [cluster]
 listen_address = "127.0.0.1:{}"
 single_node = true
+
+[raft]
+# The default (50ms) is the client write deadline; a write waits for fdatasync, which
+# on a loaded 2-vCPU CI runner can exceed it. These tests check CRUD results, not latency.
+general_raft_timeout_duration_in_ms = 3000
 "#,
         port
     );
