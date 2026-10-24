@@ -118,10 +118,10 @@ ramdisk-create:
 		[ -d "/Volumes/$$v" ] || diskutil erasevolume HFS+ $$v `hdiutil attach -nomount ram://$(RAMDISK_SECTORS)` >/dev/null; \
 	done
 
-# Wipes node data off the RAM disks; keeps the volumes mounted so the next
-# start-ram-cluster doesn't pay to recreate them.
+# Wipes this example's node directories off the RAM disks; keeps the volumes mounted so the
+# next start-ram-cluster doesn't pay to recreate them. Nothing else on the volumes is touched.
 clean-ram-log-db:
-	@for v in $(RAMDISK_VOLUMES); do rm -rf /Volumes/$$v/*; done
+	@rm -rf /Volumes/RAMDisk1/n1 /Volumes/RAMDisk2/n2 /Volumes/RAMDisk3/n3
 
 # Unmounts the RAM disks entirely, releasing the memory back to the OS.
 ramdisk-release:
@@ -161,7 +161,7 @@ perf-node3:
 	RUST_LOG=three_nodes_standalone=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	samply record -o ./samply_reports/3.profile.json -P 3003 $(BIN)
 
-perf-cluster: clean build
+perf-cluster: clean-log-db build
 	@echo "Starting 3-node cluster under samply profiling..."
 	$(MAKE) -j3 perf-node1 perf-node2 perf-node3
 
@@ -206,7 +206,7 @@ tokio-console-node3:
 	$(BIN)
 
 
-tokio-console-cluster: clean build-tokio-console
+tokio-console-cluster: clean-log-db build-tokio-console
 	@echo "Starting 3-node cluster under tokio console monitoring ..."
 	$(MAKE) -j3 tokio-console-node1 tokio-console-node2 tokio-console-node3
 
@@ -214,8 +214,9 @@ tokio-console-cluster: clean build-tokio-console
 # ===============================
 # Utilities
 # ===============================
-# Removes everything: both engines' build output, local data, and data on the RAM disks.
-clean: clean-ram-log-db
+# Removes both engines' build output and local data. RAM disk data is wiped separately with
+# `make clean-ram-log-db`.
+clean:
 	@echo "Cleaning build artifacts..."
 	cargo clean --target-dir target
 	cargo clean --target-dir target-raft-engine
@@ -244,6 +245,6 @@ help:
 	@echo "  ramdisk-create                  - (macOS) Create RAMDisk1/2/3 if not already mounted"
 	@echo "  clean-ram-log-db                - Wipe node data off the RAM disks (keeps them mounted)"
 	@echo "  ramdisk-release                 - Unmount RAMDisk1/2/3, freeing the memory"
-	@echo "  clean                           - Remove everything: both engines' builds, data, logs, profiles, RAM disk data"
+	@echo "  clean                           - Remove both engines' builds, data, logs and profiles (RAM disks: use clean-ram-log-db)"
 	@echo "  clean-log-db                    - Remove only logs and database files"
 	@echo "  help                            - Show this help message"

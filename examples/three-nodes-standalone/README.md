@@ -91,7 +91,9 @@ config/
 ### Log Monitoring
 
 ```bash
-tail -f logs/1/d.log# Watch node 1 logstail -f logs/2/d.log# Watch node 2 logstail -f logs/3/d.log# Watch node 3 logs
+tail -f logs/1/d.log  # Watch node 1 logs
+tail -f logs/2/d.log  # Watch node 2 logs
+tail -f logs/3/d.log  # Watch node 3 logs
 ```
 
 ## Important Notes

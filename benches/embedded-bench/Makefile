@@ -55,8 +55,8 @@ RAMDISK_VOLUMES := RAMDisk1 RAMDisk2 RAMDisk3
 RAMDISK_INDEX := $(if $(filter n2,$(NODE)),2,$(if $(filter n3,$(NODE)),3,1))
 
 ifeq ($(RAMDISK),true)
-DATA_DIR := /Volumes/RAMDisk$(RAMDISK_INDEX)/$(NODE)
-SINGLE_NODE_DATA_DIR := /Volumes/RAMDisk1/single-node
+DATA_DIR := /Volumes/RAMDisk$(RAMDISK_INDEX)/$(ENGINE)/$(NODE)
+SINGLE_NODE_DATA_DIR := /Volumes/RAMDisk1/$(ENGINE)/single-node
 else
 DATA_DIR := $(DATA_ROOT)/$(NODE)
 SINGLE_NODE_DATA_DIR := $(DATA_ROOT)/single-node
@@ -132,8 +132,9 @@ build:
 	@echo "Building embedded-bench (engine: $(ENGINE))..."
 	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 8 $(CARGO_FEATURES) --target-dir $(TARGET_DIR)
 
-# Removes everything: both engines' build output, local data, and data on the RAM disks.
-clean: clean-ram-log-db
+# Removes both engines' build output and local data. RAM disk data is wiped separately with
+# `make clean-ram-log-db`.
+clean:
 	@echo "Cleaning build artifacts and data directories..."
 	cargo clean --target-dir target
 	cargo clean --target-dir target-raft-engine
@@ -328,9 +329,12 @@ ramdisk-create:
 		[ -d "/Volumes/$$v" ] || diskutil erasevolume HFS+ $$v `hdiutil attach -nomount ram://$(RAMDISK_SECTORS)` >/dev/null; \
 	done
 
-# Wipes node data off the RAM disks; keeps the volumes mounted.
+# Wipes this benchmark's per-engine directories off the RAM disks and keeps the volumes
+# mounted. Nothing else on the volumes is touched.
 clean-ram-log-db:
-	@for v in $(RAMDISK_VOLUMES); do rm -rf /Volumes/$$v/*; done
+	@for e in raft-engine rocksdb; do \
+		rm -rf /Volumes/RAMDisk1/$$e /Volumes/RAMDisk2/$$e /Volumes/RAMDisk3/$$e; \
+	done
 
 # Unmounts the RAM disks entirely, releasing the memory back to the OS.
 ramdisk-release:
