@@ -219,7 +219,7 @@ LOG_LEVEL=info make start-node1
 
 **Cluster won't start:**
 
-- Verify `target/release/demo` exists (run `make build`)
+- Verify `target/release/three-nodes-standalone` exists (run `make build`)
 - Check port availability: `lsof -i :9081` (9082, 9083)
 - Ensure no stale processes: `pkill -f demo`
 

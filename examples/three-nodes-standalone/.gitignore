@@ -37,3 +37,6 @@ docker/jepsen/store/*/*/*
 
 cobertura.xml
 .DS_Store
+
+target-raft-engine/
+db-raft-engine/

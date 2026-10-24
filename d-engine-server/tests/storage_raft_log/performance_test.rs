@@ -62,7 +62,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                 0, // prev_log_index
                 0, // prev_log_term
                 vec![Entry {
-                    index: 501,
+                    index: 1,
                     term: 1,
                     payload: Some(EntryPayload::command(Bytes::from(vec![1; 256]))),
                 }],
@@ -79,7 +79,7 @@ mod filter_out_conflicts_and_append_performance_tests {
                 "Duration {duration}ms exceeds max {max_duration_ms}ms for {idle_flush_interval_ms}ms interval"
             );
 
-            // Verify correctness: index=501 term=1 already exists (populated above), so this
+            // Verify correctness: index=1 term=1 already exists (populated above), so this
             // prev_log_index=0 resend is a pure duplicate — must be a no-op, not a reset.
             assert_eq!(
                 log.last_entry_id(),

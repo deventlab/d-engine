@@ -493,3 +493,187 @@ async fn test_replace_range_and_submit_delegates_to_replace_range_not_truncate()
         "truncate() must not be called separately — replace_range() owns the full operation"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Follower must never store a hole.
+//
+// `filter_out_conflicts_and_append` verifies only `prev_log_index`/`prev_log_term`. It does not
+// check that the first incoming entry sits at `prev_log_index + 1`, nor that the batch has no
+// hole inside. A leader that builds such a batch (a bug, or an older leader during a rolling
+// upgrade) makes the follower store the entries and acknowledge the highest index in the batch,
+// which the leader then counts towards the majority.
+//
+// The assertions state the invariant, not an error shape: after the call the log is contiguous
+// and the follower does not claim an index it does not hold. They stay valid whichever way the
+// fix rejects the batch.
+// ---------------------------------------------------------------------------
+
+/// Follower holding `1..=last` in `term`.
+async fn follower_with_log(
+    name: &str,
+    last: u64,
+    term: u64,
+) -> RaftLogCoreTestContext {
+    let ctx = RaftLogCoreTestContext::new(name);
+    ctx.append_entries(1, last, term).await;
+    assert_eq!(ctx.raft_log.last_entry_id(), last, "precondition");
+    ctx
+}
+
+/// Every index between the first and last stored entry must be readable.
+fn assert_log_has_no_hole(ctx: &RaftLogCoreTestContext) {
+    let first = ctx.raft_log.first_entry_id();
+    let last = ctx.raft_log.last_entry_id();
+    for i in first..=last {
+        assert!(
+            ctx.raft_log.entry(i).unwrap().is_some(),
+            "hole at index {i} in a log that spans {first}..={last}"
+        );
+    }
+}
+
+/// The index returned to the leader as "matched" must be one the follower really holds.
+fn assert_ack_is_backed_by_log(
+    ctx: &RaftLogCoreTestContext,
+    result: crate::Result<Option<d_engine_proto::common::LogId>>,
+) {
+    if let Ok(Some(id)) = result {
+        for i in 1..=id.index {
+            assert!(
+                ctx.raft_log.entry(i).unwrap().is_some(),
+                "follower acknowledged index {} but does not hold index {i}",
+                id.index
+            );
+        }
+    }
+}
+
+/// Follower has 1..=10. The leader's batch claims `prev = 10` but starts at 20.
+/// Business view: the follower must not store 20..=22 and ack 22 while 11..=19 never arrived.
+#[tokio::test]
+async fn test_filter_conflicts_first_entry_past_prev_plus_one_leaves_no_hole() {
+    let ctx = follower_with_log("batch_first_entry_past_prev", 10, 1).await;
+
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(10, 1, vec![entry(20, 1), entry(21, 1), entry(22, 1)])
+        .await;
+
+    assert_log_has_no_hole(&ctx);
+    assert_ack_is_backed_by_log(&ctx, result);
+}
+
+/// Same as above, but the hole is inside the batch: 11, 12, then 14, 15.
+/// This is the shape the leader produced when a capped catch-up run was joined to the new
+/// entries of the round.
+#[tokio::test]
+async fn test_filter_conflicts_hole_inside_batch_leaves_no_hole() {
+    let ctx = follower_with_log("batch_hole_inside", 10, 1).await;
+
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(10, 1, vec![
+            entry(11, 1),
+            entry(12, 1),
+            entry(14, 1),
+            entry(15, 1),
+        ])
+        .await;
+
+    assert_log_has_no_hole(&ctx);
+    assert_ack_is_backed_by_log(&ctx, result);
+}
+
+/// Slow path: the incoming batch overlaps the follower's tail with a different term, so the
+/// follower truncates and replaces. A hole in the replacement tail must still not be stored.
+#[tokio::test]
+async fn test_filter_conflicts_hole_after_term_conflict_leaves_no_hole() {
+    let ctx = RaftLogCoreTestContext::new("batch_hole_after_conflict");
+    ctx.append_entries(1, 8, 1).await;
+    ctx.append_entries(9, 2, 2).await; // 9..=10 in term 2
+    assert_eq!(ctx.raft_log.last_entry_id(), 10, "precondition");
+
+    // New leader (term 3) overwrites 9..=10 and then skips 11.
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(8, 1, vec![entry(9, 3), entry(10, 3), entry(12, 3)])
+        .await;
+
+    assert_log_has_no_hole(&ctx);
+    assert_ack_is_backed_by_log(&ctx, result);
+}
+
+/// Control: a correct contiguous batch is still accepted. Guards against a fix that rejects
+/// everything.
+#[tokio::test]
+async fn test_filter_conflicts_contiguous_batch_is_accepted() {
+    let ctx = follower_with_log("batch_contiguous_control", 10, 1).await;
+
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(10, 1, vec![entry(11, 1), entry(12, 1), entry(13, 1)])
+        .await
+        .unwrap();
+
+    assert_eq!(result.unwrap().index, 13);
+    assert_eq!(ctx.raft_log.last_entry_id(), 13);
+    assert_log_has_no_hole(&ctx);
+}
+
+/// The first entry sits at or below `prev_log_index`: the batch overlaps the prefix the
+/// leader just vouched for, which is not the shape of any valid request.
+#[tokio::test]
+async fn test_filter_conflicts_first_entry_not_after_prev_is_rejected() {
+    let ctx = follower_with_log("batch_first_entry_not_after_prev", 10, 1).await;
+
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(10, 1, vec![entry(10, 1), entry(11, 1)])
+        .await;
+
+    assert!(
+        result.is_err(),
+        "a batch starting at prev_log_index must be rejected"
+    );
+    assert_eq!(
+        ctx.raft_log.last_entry_id(),
+        10,
+        "the log must be untouched"
+    );
+}
+
+/// Indices that go backwards must not pass the span check by wrapping around.
+#[tokio::test]
+async fn test_filter_conflicts_descending_batch_is_rejected() {
+    let ctx = follower_with_log("batch_descending", 10, 1).await;
+
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(10, 1, vec![entry(11, 1), entry(10, 1)])
+        .await;
+
+    assert!(result.is_err(), "a descending batch must be rejected");
+    assert_eq!(
+        ctx.raft_log.last_entry_id(),
+        10,
+        "the log must be untouched"
+    );
+}
+
+/// `prev_log_index + 1` would overflow: the request must be rejected, not panic.
+#[tokio::test]
+async fn test_filter_conflicts_prev_index_at_u64_max_is_rejected_without_overflow() {
+    let ctx = follower_with_log("batch_prev_u64_max", 10, 1).await;
+
+    let result = ctx
+        .raft_log
+        .filter_out_conflicts_and_append(u64::MAX, 1, vec![entry(1, 1)])
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        ctx.raft_log.last_entry_id(),
+        10,
+        "the log must be untouched"
+    );
+}

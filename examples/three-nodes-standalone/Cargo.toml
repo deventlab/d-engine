@@ -1,5 +1,5 @@
 [package]
-name = "demo"
+name = "three-nodes-standalone"
 version = "0.2.0"
 edition = "2024"
 
@@ -19,3 +19,9 @@ metrics = "0.24"
 
 # For console support
 console-subscriber = "0.4"
+
+# Optional: run the Raft log in raft-engine instead of the RocksDB WAL.
+raft-engine-log = { path = "../raft-engine-log", optional = true }
+
+[features]
+raft-engine = ["dep:raft-engine-log"]

@@ -49,9 +49,9 @@ start-node1:
 	DB_PATH="./db/1" \
 	LOG_DIR="./logs/1" \
 	METRICS_PORT=8081 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_LOG=single_node_expansion=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
-	./target/release/demo
+	./target/release/single-node-expansion
 
 # ===============================
 # Dynamic Expansion - Add Node 2
@@ -70,9 +70,9 @@ join-node2:
 	DB_PATH="./db/2" \
 	LOG_DIR="./logs/2" \
 	METRICS_PORT=8082 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_LOG=single_node_expansion=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
-	./target/release/demo
+	./target/release/single-node-expansion
 
 # ===============================
 # Dynamic Expansion - Add Node 3
@@ -91,9 +91,9 @@ join-node3:
 	DB_PATH="./db/3" \
 	LOG_DIR="./logs/3" \
 	METRICS_PORT=8083 \
-	RUST_LOG=demo=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
+	RUST_LOG=single_node_expansion=$(LOG_LEVEL),d_engine=$(LOG_LEVEL),timing=$(LOG_LEVEL) \
 	RUST_BACKTRACE=1 \
-	./target/release/demo
+	./target/release/single-node-expansion
 
 # ===============================
 # Log Monitoring

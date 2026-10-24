@@ -36,7 +36,9 @@ WORKDIR /build/examples/three-nodes-standalone
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/examples/three-nodes-standalone/target \
     cargo build --release && \
-    cp target/release/demo /usr/local/bin/demo
+    # Installed as /usr/local/bin/demo on purpose: the Jepsen harness (d-engine-jepsen) starts, kills
+    # and looks for the node by that name, and its compose file uses the image name demo:<version>.
+    cp target/release/three-nodes-standalone /usr/local/bin/demo
 
 # ------------------------
 # Runtime Stage (ARM64 Optimized)
@@ -92,4 +94,4 @@ RUN echo "$GIT_SHA" > /etc/d-engine-commit
 
 WORKDIR /app
 
-CMD ["sh", "-c", "/usr/sbin/sshd -D & CONFIG_PATH=$CONFIG_PATH LOG_DIR=$LOG_DIR METRICS_PORT=$METRICS_PORT DB_PATH=/app/db/$ID RUST_LOG=demo=$LOG_LEVEL,d_engine=$LOG_LEVEL,hyper=warn,sled=warn demo & promtail --config.file=/etc/promtail/config.yml > /app/logs/promtail.log 2>&1"]
+CMD ["sh", "-c", "/usr/sbin/sshd -D & CONFIG_PATH=$CONFIG_PATH LOG_DIR=$LOG_DIR METRICS_PORT=$METRICS_PORT DB_PATH=/app/db/$ID RUST_LOG=three_nodes_standalone=$LOG_LEVEL,d_engine=$LOG_LEVEL,hyper=warn,sled=warn demo & promtail --config.file=/etc/promtail/config.yml > /app/logs/promtail.log 2>&1"]

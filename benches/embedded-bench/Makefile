@@ -7,7 +7,16 @@
 # ===============================
 # Global Variables
 # ===============================
-BENCH_BIN := ./target/release/embedded-bench
+# Storage engine under test. Default: Raft log in raft-engine (experimental).
+# ENGINE=rocksdb builds and runs the stock RocksDB-WAL binary, which is the
+# configuration of the v0.2.4 / v0.2.5 reports. Each engine has its own target dir
+# and its own data dir, so switching never mixes their files.
+ENGINE ?= raft-engine
+$(if $(filter raft-engine rocksdb,$(ENGINE)),,$(error ENGINE must be raft-engine or rocksdb, got '$(ENGINE)'))
+TARGET_DIR := $(if $(filter raft-engine,$(ENGINE)),target-raft-engine,target)
+CARGO_FEATURES := $(if $(filter raft-engine,$(ENGINE)),--features raft-engine,)
+BENCH_BIN := ./$(TARGET_DIR)/release/embedded-bench
+DATA_ROOT := $(if $(filter raft-engine,$(ENGINE)),./data-raft-engine,./data)
 CONFIG_DIR := ./config
 LOG_LEVEL ?= warn
 
@@ -46,11 +55,11 @@ RAMDISK_VOLUMES := RAMDisk1 RAMDisk2 RAMDisk3
 RAMDISK_INDEX := $(if $(filter n2,$(NODE)),2,$(if $(filter n3,$(NODE)),3,1))
 
 ifeq ($(RAMDISK),true)
-DATA_DIR := /Volumes/RAMDisk$(RAMDISK_INDEX)/$(NODE)
-SINGLE_NODE_DATA_DIR := /Volumes/RAMDisk1/single-node
+DATA_DIR := /Volumes/RAMDisk$(RAMDISK_INDEX)/$(ENGINE)/$(NODE)
+SINGLE_NODE_DATA_DIR := /Volumes/RAMDisk1/$(ENGINE)/single-node
 else
-DATA_DIR := ./data/$(NODE)
-SINGLE_NODE_DATA_DIR := ./data/single-node
+DATA_DIR := $(DATA_ROOT)/$(NODE)
+SINGLE_NODE_DATA_DIR := $(DATA_ROOT)/single-node
 endif
 
 # On macOS with Homebrew: auto-detect compression lib paths to skip bundled C++
@@ -79,8 +88,12 @@ help:
 	@echo "Embedded-bench Makefile - Performance Testing"
 	@echo ""
 	@echo "Build:"
-	@echo "  make build              Build release binary"
-	@echo "  make clean              Clean build artifacts"
+	@echo "  make build              Build release binary (engine: $(ENGINE))"
+	@echo "  make clean              Clean everything (both engines, local data, RAM disks)"
+	@echo ""
+	@echo "Storage engine (applies to every target below):"
+	@echo "  default                 raft-engine log store (experimental)"
+	@echo "  ENGINE=rocksdb          stock RocksDB-WAL build, e.g. make all-tests ENGINE=rocksdb"
 	@echo ""
 	@echo "Write Tests (only run on Leader - default: Node 1):"
 	@echo "  make test-single-write        Single client write (10K requests)"
@@ -116,14 +129,18 @@ help:
 	@echo "  cd ./embedded-bench && make start-cluster"
 
 build:
-	@echo "Building embedded-bench..."
-	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 8
+	@echo "Building embedded-bench (engine: $(ENGINE))..."
+	$(BREW_ROCKSDB_ENV) cargo build --release --jobs 8 $(CARGO_FEATURES) --target-dir $(TARGET_DIR)
 
+# Removes both engines' build output and local data. RAM disk data is wiped separately with
+# `make clean-ram-log-db`.
 clean:
 	@echo "Cleaning build artifacts and data directories..."
-	cargo clean
+	cargo clean --target-dir target
+	cargo clean --target-dir target-raft-engine
 	@echo "Removing data directories..."
 	rm -rf ./data/*
+	rm -rf ./data-raft-engine/*
 	rm -rf ./logs/*
 	rm -rf ./snapshots/*
 	@echo "Clean complete!"
@@ -132,6 +149,7 @@ clean-log-db:
 	@echo "Cleaning db and logs..."
 	rm -rf ./logs/*
 	rm -rf ./data/*
+	rm -rf ./data-raft-engine/*
 	rm -rf ./snapshots/*
 
 # ============================================
@@ -271,7 +289,7 @@ test-hot-key: build
 all-tests: build
 	@echo "========================================"
 	@echo "Running All Tests in Batch Mode"
-	@echo "Node: $(NODE)"
+	@echo "Node: $(NODE)   Engine: $(ENGINE)"
 	@echo "========================================"
 	CONFIG_PATH=$(CONFIG_PATH) \
 	DATA_DIR=$(DATA_DIR) \
@@ -311,9 +329,12 @@ ramdisk-create:
 		[ -d "/Volumes/$$v" ] || diskutil erasevolume HFS+ $$v `hdiutil attach -nomount ram://$(RAMDISK_SECTORS)` >/dev/null; \
 	done
 
-# Wipes node data off the RAM disks; keeps the volumes mounted.
+# Wipes this benchmark's per-engine directories off the RAM disks and keeps the volumes
+# mounted. Nothing else on the volumes is touched.
 clean-ram-log-db:
-	@for v in $(RAMDISK_VOLUMES); do rm -rf /Volumes/$$v/*; done
+	@for e in raft-engine rocksdb; do \
+		rm -rf /Volumes/RAMDisk1/$$e /Volumes/RAMDisk2/$$e /Volumes/RAMDisk3/$$e; \
+	done
 
 # Unmounts the RAM disks entirely, releasing the memory back to the OS.
 ramdisk-release:

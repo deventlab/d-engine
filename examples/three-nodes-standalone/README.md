@@ -28,9 +28,9 @@ For manual control, run these in separate terminal sessions:
 CONFIG_PATH=config/n1 \
 DB_PATH="./db/1" \
 LOG_DIR="./logs/1" \
-RUST_LOG=demo=debug,d_engine=debug \
+RUST_LOG=three_nodes_standalone=debug,d_engine=debug \
 RUST_BACKTRACE=1 \
-target/release/demo
+target/release/three-nodes-standalone
 ```
 
 **Node 2:**
@@ -39,8 +39,8 @@ target/release/demo
 CONFIG_PATH=config/n2 \
 DB_PATH="./db/2" \
 LOG_DIR="./logs/2" \
-RUST_LOG=demo=debug,d_engine=debug \
-target/release/demo
+RUST_LOG=three_nodes_standalone=debug,d_engine=debug \
+target/release/three-nodes-standalone
 ```
 
 **Node 3:**
@@ -49,8 +49,8 @@ target/release/demo
 CONFIG_PATH=config/n3 \
 DB_PATH="./db/3" \
 LOG_DIR="./logs/3" \
-RUST_LOG=demo=debug,d_engine=debug \
-target/release/demo
+RUST_LOG=three_nodes_standalone=debug,d_engine=debug \
+target/release/three-nodes-standalone
 ```
 
 ## Prerequisites
@@ -91,7 +91,9 @@ config/
 ### Log Monitoring
 
 ```bash
-tail -f logs/1/demo.log# Watch node 1 logstail -f logs/2/demo.log# Watch node 2 logstail -f logs/3/demo.log# Watch node 3 logs
+tail -f logs/1/d.log  # Watch node 1 logs
+tail -f logs/2/d.log  # Watch node 2 logs
+tail -f logs/3/d.log  # Watch node 3 logs
 ```
 
 ## Important Notes

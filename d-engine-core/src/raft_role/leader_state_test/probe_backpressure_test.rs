@@ -916,6 +916,70 @@ async fn test_dispatch_metrics_record_occupancy_entries_and_gated_count() {
     );
 }
 
+/// `batch_over_cap_total` counts requests that carry more entries than the per-request cap.
+///
+/// # Scenario
+/// - Cap is 2 entries per request
+/// - Three dispatches to peer 2 carry 2, 3 and 4 entries; a fourth is a heartbeat
+///
+/// # Test Purpose
+/// A developer reads this counter to learn that the cap is too small for the real batch
+/// size. A request exactly at the cap is not over it, and a heartbeat carries no batch, so
+/// only the 3- and 4-entry requests count. Must fail if the comparison becomes `>=` or
+/// heartbeats are counted.
+#[tokio::test]
+#[traced_test]
+async fn test_batch_over_cap_counter_counts_only_requests_above_the_cap() {
+    let capture = MetricsCapture::new();
+    let _guard = metrics::set_default_local_recorder(&capture);
+
+    let (mut ctx, mut state, _task_rx, internal_event_tx) =
+        setup_gate_harness("/tmp/test_batch_over_cap_counter").await;
+
+    let mut cfg = (*ctx.node_config).clone();
+    cfg.raft.replication.append_entries_max_entries_per_replication = 2;
+    state.node_config = Arc::new(cfg);
+
+    fn request_with(entry_count: u64) -> AppendEntriesRequest {
+        AppendEntriesRequest {
+            entries: (1..=entry_count)
+                .map(|index| Entry {
+                    index,
+                    term: 1,
+                    payload: None,
+                })
+                .collect(),
+            ..AppendEntriesRequest::default()
+        }
+    }
+
+    let mut sizes = vec![2_u64, 3, 4, 0].into_iter();
+    ctx.handlers
+        .replication_handler
+        .expect_prepare_batch_requests()
+        .times(4)
+        .returning(move |_, _, _, _, _, _| {
+            let n = sizes.next().expect("one size per call");
+            Ok(crate::PrepareResult {
+                append_requests: vec![(2, request_with(n), 1)],
+                snapshot_targets: vec![],
+            })
+        });
+
+    state.set_peer_replication_state(2, PeerReplicationState::Replicate);
+    state.next_index.insert(2, 1);
+
+    for _ in 0..4 {
+        state.process_batch(one_entry_batch(), &internal_event_tx, &ctx).await.unwrap();
+    }
+
+    assert_eq!(
+        capture.counter("core.raft.peer.batch_over_cap_total", &[("peer_id", "2")]),
+        2,
+        "only the 3- and 4-entry requests exceed a cap of 2"
+    );
+}
+
 /// A heartbeat (empty entries) occupies no window slot, so it must neither be counted as
 /// gated when the window is full nor contribute to the dispatch histograms.
 #[tokio::test]

@@ -1,0 +1,18 @@
+[cluster]
+node_id = 1
+listen_address = "0.0.0.0:9081"
+initial_cluster = [
+    { id = 1, address = "0.0.0.0:9081", role = 1, status = 3 },
+    { id = 2, address = "0.0.0.0:9082", role = 1, status = 3 },
+    { id = 3, address = "0.0.0.0:9083", role = 1, status = 3 },
+]
+
+[raft.snapshot]
+enable = true
+
+# Log store settings; every key is optional and the values below are the defaults.
+[raft_engine]
+target_file_size_mib = 64    # size at which the active log file is rotated
+purge_threshold_mib = 512    # reclaim log files once the retained log exceeds this
+prefill_limit_mib = 256      # zero-filled recycle pool prepared at startup
+purge_interval_secs = 10     # how often expired log files are reclaimed

@@ -19,3 +19,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = { version = "0.1" }
 metrics-exporter-prometheus = "0.17.2"
 console-subscriber = "0.5"
+
+# Optional: benchmark the raft-engine log store instead of the RocksDB WAL.
+raft-engine-log = { path = "../../examples/raft-engine-log", optional = true }
+
+[features]
+raft-engine = ["dep:raft-engine-log"]

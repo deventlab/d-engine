@@ -259,6 +259,7 @@ impl<T: TypeConfig> ReplicationWorkerConfig<T> {
 /// Per-peer metric handles, built once so the hot path skips the label
 /// allocation and registry lookup that `metrics::gauge!(..)` does per call.
 struct PeerMetrics {
+    batch_over_cap_total: metrics::Counter,
     in_flight: metrics::Gauge,
     match_index: metrics::Gauge,
     last_ack_timestamp_seconds: metrics::Gauge,
@@ -270,6 +271,10 @@ impl PeerMetrics {
     fn new(peer_id: u32) -> Self {
         let peer = peer_id.to_string();
         Self {
+            batch_over_cap_total: metrics::counter!(
+                "core.raft.peer.batch_over_cap_total",
+                "peer_id" => peer.clone()
+            ),
             in_flight: metrics::gauge!("core.raft.peer.in_flight", "peer_id" => peer.clone()),
             match_index: metrics::gauge!("core.raft.peer.match_index", "peer_id" => peer.clone()),
             last_ack_timestamp_seconds: metrics::gauge!(
@@ -3619,6 +3624,12 @@ impl<T: TypeConfig> LeaderState<T> {
 
             if !is_heartbeat {
                 let occupancy = self.in_flight_count(peer_id) as f64;
+                if request.entries.len() as u64
+                    > self.node_config.raft.replication.append_entries_max_entries_per_replication
+                {
+                    self.peer_metrics(peer_id).batch_over_cap_total.increment(1);
+                }
+
                 self.peer_metrics(peer_id).in_flight_at_dispatch.record(occupancy);
                 metrics::histogram!("core.raft.replication.entries_per_request")
                     .record(request.entries.len() as f64);

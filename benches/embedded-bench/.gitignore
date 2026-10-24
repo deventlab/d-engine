@@ -32,6 +32,9 @@ snapshots/*
 
 data
 data/*
+data-raft-engine/
 
 cobertura.xml
 .DS_Store
+
+target-raft-engine/

@@ -44,6 +44,8 @@ impl StorageEngineTestSuite {
         Self::test_batch_persistence(builder.build().await?).await?;
         Self::test_purge_logs(builder.build().await?).await?;
         Self::test_truncation(builder.build().await?).await?;
+        Self::test_replace_range(builder.build().await?).await?;
+        Self::test_replace_range_empty_entries_truncates(builder.build().await?).await?;
         Self::test_reset_operation(builder.build().await?).await?;
         Self::test_edge_cases(builder.build().await?).await?;
         Self::test_purge_empty_range(builder.build().await?).await?;
@@ -169,6 +171,65 @@ impl StorageEngineTestSuite {
         assert!(log_store.entry(100).await?.is_none());
         assert!(log_store.entry(75).await?.is_some());
 
+        Ok(())
+    }
+
+    /// `replace_range` drops the old tail from `from_index` and stores the new entries.
+    ///
+    /// Raft requirement: on a term conflict a follower replaces its divergent suffix in one
+    /// step; nothing of the old suffix may survive past the new entries.
+    pub async fn test_replace_range<E>(engine: Arc<E>) -> Result<(), Error>
+    where
+        E: StorageEngine + Send + Sync + 'static,
+        E::LogStore: Send + Sync,
+        E::MetaStore: Send + Sync,
+    {
+        let log_store = engine.log_store();
+        log_store.reset().await?;
+        log_store.persist_entries(create_test_entries(1..=10)).await?;
+
+        let mut replacement = create_test_entries(6..=7);
+        for e in &mut replacement {
+            e.term = 99;
+        }
+        let last = log_store.replace_range(6, replacement.clone()).await?;
+
+        assert_eq!(last, 7, "replace_range must return the last replaced index");
+        assert_eq!(log_store.last_index(), 7);
+        assert_eq!(log_store.entry(6).await?.map(|e| e.term), Some(99));
+        assert_eq!(log_store.entry(7).await?.map(|e| e.term), Some(99));
+        assert!(log_store.entry(8).await?.is_none(), "old tail must be gone");
+        assert!(
+            log_store.entry(10).await?.is_none(),
+            "old tail must be gone"
+        );
+        assert_eq!(
+            log_store.entry(5).await?.map(|e| e.term),
+            Some(5),
+            "prefix is untouched"
+        );
+        Ok(())
+    }
+
+    /// `replace_range` with no new entries is a plain truncate and returns `from_index - 1`.
+    ///
+    /// This is the documented behavior of the trait, so every engine must agree on it.
+    pub async fn test_replace_range_empty_entries_truncates<E>(engine: Arc<E>) -> Result<(), Error>
+    where
+        E: StorageEngine + Send + Sync + 'static,
+        E::LogStore: Send + Sync,
+        E::MetaStore: Send + Sync,
+    {
+        let log_store = engine.log_store();
+        log_store.reset().await?;
+        log_store.persist_entries(create_test_entries(1..=10)).await?;
+
+        let last = log_store.replace_range(6, Vec::new()).await?;
+
+        assert_eq!(last, 5);
+        assert_eq!(log_store.last_index(), 5);
+        assert!(log_store.entry(6).await?.is_none());
+        assert!(log_store.entry(5).await?.is_some());
         Ok(())
     }
 

@@ -83,3 +83,17 @@ max_pending_accept_reset_streams = 2000 # Higher pending stream limit for Rapid 
 
 [storage]
 unified_db = false
+
+# == Raft log store: read only by the `raft-engine` build (`make start-cluster`, the default build);
+# the RocksDB build ignores this section. Values suit a local run (about 12 MiB of recycle pool per node);
+# the library defaults are 64 / 512 / 256 / 10 and the AWS benchmark scripts write their own values.
+# Log files are only released after d-engine purges the log, which happens after a snapshot. Snapshots
+# are disabled above, as in the benchmark configs, so nothing is released in this setup; to watch files
+# being released locally, set [raft.snapshot] enable = true (5000 entries is about 1.6 MiB of log).
+# purge_threshold_mib also caps the recycle pool at 1.5 x purge_threshold_mib / target_file_size_mib
+# files, so prefill_limit_mib above purge_threshold_mib has no effect.
+[raft_engine]
+target_file_size_mib = 1     # size at which the active log file is rotated
+purge_threshold_mib = 8      # reclaim log files once the retained log exceeds this
+prefill_limit_mib = 8        # zero-filled recycle pool prepared at startup: 1.5 x this many files
+purge_interval_secs = 2      # how often expired log files are reclaimed

@@ -1,4 +1,38 @@
-use d_engine::DefaultEmbeddedEngine;
+// Engine under test. The default build is d-engine's stock RocksDB engine. The
+// `raft-engine` feature replaces only the Raft log store (the state machine,
+// config file and data layout are unchanged), so the two builds differ by the
+// log store alone and their results stay comparable.
+#[cfg(not(feature = "raft-engine"))]
+type BenchEngine = d_engine::DefaultEmbeddedEngine;
+#[cfg(feature = "raft-engine")]
+type BenchEngine =
+    d_engine::EmbeddedEngine<raft_engine_log::RaftEngineStorage, d_engine::RocksDBStateMachine>;
+
+#[cfg(not(feature = "raft-engine"))]
+async fn start_engine(
+    data_dir: &str,
+    config_path: &str,
+) -> Result<BenchEngine, d_engine::Error> {
+    BenchEngine::start_with(data_dir, config_path).await
+}
+
+#[cfg(feature = "raft-engine")]
+async fn start_engine(
+    data_dir: &str,
+    config_path: &str,
+) -> Result<BenchEngine, d_engine::Error> {
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| d_engine::Error::Fatal(format!("create {data_dir}: {e}")))?;
+    let options = raft_engine_log::RaftEngineOptions::from_toml_file(config_path)?;
+    let storage = Arc::new(raft_engine_log::RaftEngineStorage::open_with(
+        format!("{data_dir}/storage"),
+        &options,
+    )?);
+    let sm = Arc::new(d_engine::RocksDBStateMachine::new(format!(
+        "{data_dir}/state_machine"
+    ))?);
+    BenchEngine::start_custom(data_dir, storage, sm, Some(config_path)).await
+}
 use d_engine::protocol::ReadConsistencyPolicy;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -263,7 +297,7 @@ async fn start_metrics_server(port: u16) {
 /// Run a single benchmark test with specified parameters
 #[allow(clippy::too_many_arguments)]
 async fn run_benchmark_task(
-    engine: &Arc<DefaultEmbeddedEngine>,
+    engine: &Arc<BenchEngine>,
     test_name: &str,
     command: Commands,
     total: u64,
@@ -369,7 +403,7 @@ async fn run_benchmark_task(
 
 /// Run all benchmark tests in batch mode
 async fn run_batch_tests(
-    engine: &Arc<DefaultEmbeddedEngine>,
+    engine: &Arc<BenchEngine>,
     cli: &Cli,
 ) {
     println!("\n╔════════════════════════════════════════╗");
@@ -495,7 +529,7 @@ async fn run_batch_tests(
 
 /// Helper function to run a single test in batch mode
 async fn run_single_batch_test(
-    engine: &Arc<DefaultEmbeddedEngine>,
+    engine: &Arc<BenchEngine>,
     test_name: &str,
     command: Commands,
     total: u64,
@@ -522,7 +556,7 @@ async fn run_local_benchmark(cli: Cli) {
     println!("Starting local benchmark mode...");
 
     let engine = Arc::new(
-        DefaultEmbeddedEngine::start_with(&cli.data_dir, &cli.config_path)
+        start_engine(&cli.data_dir, &cli.config_path)
             .await
             .expect("Failed to start engine"),
     );
@@ -762,7 +796,7 @@ async fn run_http_server(cli: Cli) {
     println!("Health check port: {}", cli.health_port);
 
     let engine = Arc::new(
-        DefaultEmbeddedEngine::start_with(&cli.data_dir, &cli.config_path)
+        start_engine(&cli.data_dir, &cli.config_path)
             .await
             .expect("Failed to start engine"),
     );
@@ -790,7 +824,7 @@ async fn run_http_server(cli: Cli) {
 }
 
 async fn start_health_check_server(
-    engine: Arc<DefaultEmbeddedEngine>,
+    engine: Arc<BenchEngine>,
     port: u16,
 ) {
     let app = Router::new()
@@ -807,7 +841,7 @@ async fn start_health_check_server(
     axum::serve(listener, app).await.expect("Health check server failed");
 }
 
-async fn health_primary(State(engine): State<Arc<DefaultEmbeddedEngine>>) -> StatusCode {
+async fn health_primary(State(engine): State<Arc<BenchEngine>>) -> StatusCode {
     if engine.is_leader() {
         StatusCode::OK
     } else {
@@ -815,7 +849,7 @@ async fn health_primary(State(engine): State<Arc<DefaultEmbeddedEngine>>) -> Sta
     }
 }
 
-async fn health_replica(State(engine): State<Arc<DefaultEmbeddedEngine>>) -> StatusCode {
+async fn health_replica(State(engine): State<Arc<BenchEngine>>) -> StatusCode {
     if !engine.is_leader() {
         StatusCode::OK
     } else {
@@ -824,7 +858,7 @@ async fn health_replica(State(engine): State<Arc<DefaultEmbeddedEngine>>) -> Sta
 }
 
 async fn start_business_server(
-    engine: Arc<DefaultEmbeddedEngine>,
+    engine: Arc<BenchEngine>,
     port: u16,
 ) {
     let app = Router::new()
@@ -842,7 +876,7 @@ async fn start_business_server(
 }
 
 async fn handle_put(
-    State(engine): State<Arc<DefaultEmbeddedEngine>>,
+    State(engine): State<Arc<BenchEngine>>,
     Json(req): Json<PutRequest>,
 ) -> StatusCode {
     match engine.client().put(req.key.into_bytes(), req.value.into_bytes()).await {
@@ -852,7 +886,7 @@ async fn handle_put(
 }
 
 async fn handle_get(
-    State(engine): State<Arc<DefaultEmbeddedEngine>>,
+    State(engine): State<Arc<BenchEngine>>,
     Path(key): Path<String>,
 ) -> Result<Json<GetResponse>, StatusCode> {
     match engine.client().get_eventual(key.into_bytes()).await {

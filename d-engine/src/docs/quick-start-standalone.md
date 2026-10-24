@@ -36,7 +36,7 @@ make start-cluster
 
 ```bash
 # Check processes
-ps aux | grep "target/release/demo"  # Should see 3 processes
+ps aux | grep "target/release/three-nodes-standalone"  # Should see 3 processes
 
 # Check logs for leader election
 tail -f logs/1/demo.log  # Look for ">>> switch to Leader"
