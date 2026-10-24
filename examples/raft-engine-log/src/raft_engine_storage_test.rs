@@ -140,14 +140,44 @@ async fn test_log_replace_range_invalid_input_returns_error() {
     append_durable(&storage, entries(1..=5, 1)).await;
     log.purge(LogId { term: 1, index: 2 }).await.unwrap();
 
-    // Empty replacement.
-    assert!(log.replace_range(3, vec![]).await.is_err());
     // Starts inside the purged prefix.
     assert!(log.replace_range(2, vec![entry(2, 2, "x")]).await.is_err());
     // Leaves a hole after the last index.
     assert!(log.replace_range(8, vec![entry(8, 2, "x")]).await.is_err());
     // The failed calls left the log untouched.
     assert_eq!(log.last_index(), 5);
+}
+
+/// Appending exactly at `last + 1` is a plain extension, not a hole.
+#[tokio::test]
+async fn test_log_replace_range_at_last_plus_one_extends_log() {
+    let dir = TestDir::new("replace-extend");
+    let storage = RaftEngineStorage::open(dir.path()).unwrap();
+    let log = storage.log_store();
+    append_durable(&storage, entries(1..=5, 1)).await;
+
+    let tail = vec![entry(6, 2, "n6"), entry(7, 2, "n7")];
+    assert_eq!(log.replace_range(6, tail.clone()).await.unwrap(), 7);
+
+    assert_eq!(log.last_index(), 7);
+    assert_eq!(log.get_entries(6..=7).unwrap(), tail);
+    assert_eq!(log.entry(5).await.unwrap(), Some(entry(5, 1, "cmd-5")));
+}
+
+/// After every entry has been purged the log is empty but the index space has
+/// moved on: continuing at purged_last + 1 is legitimate and must not be
+/// reported as a hole.
+#[tokio::test]
+async fn test_log_replace_range_after_full_purge_continues_at_next_index() {
+    let dir = TestDir::new("replace-after-purge");
+    let storage = RaftEngineStorage::open(dir.path()).unwrap();
+    let log = storage.log_store();
+    append_durable(&storage, entries(1..=5, 1)).await;
+    log.purge(LogId { term: 1, index: 5 }).await.unwrap();
+
+    let tail = vec![entry(6, 2, "n6")];
+    assert_eq!(log.replace_range(6, tail.clone()).await.unwrap(), 6);
+    assert_eq!(log.get_entries(6..=6).unwrap(), tail);
 }
 
 /// The purge boundary is written together with the compaction, so after a

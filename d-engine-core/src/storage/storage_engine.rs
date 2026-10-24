@@ -77,6 +77,13 @@ pub trait LogStore: Send + Sync + 'static {
 
     /// Atomically truncate from `from_index` and persist `new_entries` in one write.
     ///
+    /// # Contract
+    /// The caller guarantees `new_entries[i].index == from_index + i`: contiguous, starting at
+    /// `from_index`. Implementations do not re-check it; the Raft log rejects a malformed
+    /// AppendEntries batch before it reaches storage.
+    /// Where `from_index` sits relative to the existing log (below the purge boundary,
+    /// beyond `last_index + 1`) is the caller's responsibility; behavior there is unspecified.
+    ///
     /// Default implementation calls `truncate` then `persist_entries` sequentially
     /// (non-atomic). Override with a single WriteBatch for true crash atomicity.
     /// Returns the highest log index on disk after the operation: the last of

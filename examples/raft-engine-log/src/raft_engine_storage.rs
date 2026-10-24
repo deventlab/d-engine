@@ -297,21 +297,24 @@ impl LogStore for RaftEngineLogStore {
         new_entries: Vec<Entry>,
     ) -> Result<u64, Error> {
         if new_entries.is_empty() {
-            return Err(StorageError::LogStorage(
-                "replace_range with empty entries is unsupported".into(),
-            )
-            .into());
+            self.truncate(from_index).await?;
+            return Ok(from_index.saturating_sub(1));
         }
-        let first = self.engine.first_index(LOG_REGION_ID).unwrap_or(from_index);
-        let last = self.engine.last_index(LOG_REGION_ID).unwrap_or(0);
-        // Guard the two append panic conditions in raft-engine's MemTable.
-        if from_index < first {
+
+        // Guard the two append panic conditions in raft-engine's MemTable. An empty
+        // log (never written, or fully purged) has no span to overwrite or leave a
+        // hole in, so only a non-empty log is checked.
+        if let Some(first) = self.engine.first_index(LOG_REGION_ID)
+            && from_index < first
+        {
             return Err(StorageError::LogStorage(
                 "replace_range would overwrite compacted history".into(),
             )
             .into());
         }
-        if from_index > last + 1 {
+        if let Some(last) = self.engine.last_index(LOG_REGION_ID)
+            && from_index > last + 1
+        {
             return Err(
                 StorageError::LogStorage("replace_range would create a hole".into()).into(),
             );
