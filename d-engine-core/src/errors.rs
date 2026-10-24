@@ -476,6 +476,33 @@ pub enum ReplicationError {
     #[error("Replication requires leader role (known leader: {leader_id:?})")]
     NotLeader { leader_id: Option<u32> },
 
+    /// The entries chosen for a peer are not one contiguous run of indices. This is a bug
+    /// in how the batch was built, never a normal Raft condition.
+    #[error(
+        "non-contiguous batch for peer {peer_id}: indices {first_index}..={last_index} \
+             but {len} entries"
+    )]
+    NonContiguousBatch {
+        peer_id: u32,
+        first_index: u64,
+        last_index: u64,
+        len: usize,
+    },
+
+    /// An AppendEntries request whose entries are not consecutive indices starting at
+    /// `prev_log_index + 1`. It is rejected before the log is touched, so the log never gets a
+    /// hole.
+    #[error(
+        "non-contiguous AppendEntries: prev_log_index {prev_log_index}, \
+         entries {first_index}..={last_index}, {len} entries"
+    )]
+    NonContiguousAppend {
+        prev_log_index: u64,
+        first_index: u64,
+        last_index: u64,
+        len: usize,
+    },
+
     /// `entry_term` lookup for `prev_log_index` failed even though the index is
     /// within the leader's own retained range [first_index, last_index] — an
     /// unexplained storage-layer gap, not a normal Raft condition.

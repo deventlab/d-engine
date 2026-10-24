@@ -30,6 +30,7 @@ use crate::LogStore;
 use crate::MetaStore;
 use crate::NetworkError;
 use crate::RaftLog;
+use crate::ReplicationError;
 use crate::Result;
 use crate::StorageEngine;
 use crate::TypeConfig;
@@ -302,6 +303,8 @@ where
         new_entries: Vec<Entry>,
     ) -> Result<Option<LogId>> {
         let _timer = ScopedTimer::new("filter_out_conflicts_and_append");
+
+        Self::ensure_contiguous_from_prev(prev_log_index, &new_entries)?;
 
         // prev_log_index==0 has no real entry to compare against, not a reset signal
         let is_virtual_log_start = prev_log_index == 0 && prev_log_term == 0;
@@ -1046,6 +1049,34 @@ where
 
     pub fn is_empty(&self) -> bool {
         self.entries.read().is_empty()
+    }
+
+    /// Rejects a batch that is not consecutive indices starting at `prev_log_index + 1`.
+    /// Checked before any state is touched, so the log never gets a hole.
+    /// O(1): looks only at the first and last entry.
+    fn ensure_contiguous_from_prev(
+        prev_log_index: u64,
+        entries: &[Entry],
+    ) -> Result<()> {
+        let (Some(first), Some(last)) = (entries.first(), entries.last()) else {
+            return Ok(());
+        };
+        let contiguous = prev_log_index.checked_add(1) == Some(first.index)
+            && last.index.checked_sub(first.index).map(|d| d + 1) == Some(entries.len() as u64);
+        if contiguous {
+            Ok(())
+        } else {
+            metrics::counter!("core.raft.follower.append_rejected_total", "reason" => "non_contiguous")
+                .increment(1);
+
+            Err(ReplicationError::NonContiguousAppend {
+                prev_log_index,
+                first_index: first.index,
+                last_index: last.index,
+                len: entries.len(),
+            }
+            .into())
+        }
     }
 
     /// Returns reference to next_id atomic for test verification (test-only).

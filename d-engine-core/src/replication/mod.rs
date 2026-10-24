@@ -5,11 +5,6 @@
 //! - Follower log consistency checks
 //! - Conflict resolution algorithms
 mod replication_handler;
-pub use replication_handler::*;
-
-#[cfg(test)]
-pub mod replication_handler_test;
-
 // Client Request Extension Definition
 // -----------------------------------------------------------------------------
 use std::collections::HashMap;
@@ -24,6 +19,7 @@ use d_engine_proto::server::replication::ConflictResult;
 use d_engine_proto::server::replication::SuccessResult;
 #[cfg(any(test, feature = "__test_support"))]
 use mockall::automock;
+pub use replication_handler::*;
 use tonic::Status;
 
 use super::LeaderStateSnapshot;
@@ -178,24 +174,30 @@ where
         leader_commit_index: u64,
     ) -> Option<u64>;
 
-    /// Gathers legacy logs for lagging peers, classifying each peer's outcome.
+    /// Decides what each follower gets in this round's AppendEntries.
     ///
-    /// For each peer behind the leader's latest index:
-    /// - `next_index < first_index` (purged prefix) → `NeedSnapshot`
-    /// - Fetched range is short or has a gap despite being in-range → `CorruptGap` (storage-layer
-    ///   inconsistency, not a purge — caller must not silently fall back to snapshot)
-    /// - Otherwise → `Ready(entries)`, contiguous from `next_index` onward
+    /// The leader's log is split at `leader_last_index_before_inserting_new_entries`:
+    /// entries at or below it are "legacy" (already in the log), and `new_entries` are
+    /// the ones appended this round. A follower that is behind needs legacy first.
     ///
-    /// `first_index` is the leader's retained-log boundary (`raft_log.first_entry_id()`),
-    /// passed in so the purge check happens before the range fetch, not after.
+    /// Per follower, the result is one of:
+    /// - `NeedSnapshot`: its `next_index` is below `first_index`, the entries are already purged,
+    ///   so only a snapshot can catch it up.
+    /// - `CorruptGap`: the legacy range read back short or with a hole although it was not purged.
+    ///   That is a storage fault, so the caller must not hide it behind a snapshot.
+    /// - `Ready(entries)`: legacy entries from `next_index`. `new_entries` follow only when the
+    ///   legacy read reaches the leader's old tail; if the cap cut it short, the batch stops there
+    ///   so it stays contiguous, and the follower catches up in later rounds.
     ///
-    /// `peer_gating_decisions[peer_id] == true` means that peer's in-flight
-    /// window is full: skip it here, insert nothing into the result map. The
-    /// caller's dispatch phase sees no entries for this peer and sends an
-    /// empty-entries heartbeat instead — this is how the window-full peer
-    /// still gets a liveness heartbeat without new data. This map is computed
-    /// once by the top-level caller, not here, so the same gating decision
-    /// also governs dispatch — see `prepare_batch_requests` doc above.
+    /// Legacy is capped at `max_legacy_entries_per_peer` per follower; `0` means none.
+    ///
+    /// A follower whose in-flight window is full (`peer_gating_decisions[id] == true`) is
+    /// skipped and gets no entry in the result. The caller then sends it an empty
+    /// heartbeat, so it stays alive without receiving new data. The gating decision is
+    /// computed once by the caller, so the same answer also governs dispatch.
+    ///
+    /// `first_index` is the oldest index the leader still keeps. It is passed in so the
+    /// purge check runs before the log is read.
     fn retrieve_to_be_synced_logs_for_peers(
         &self,
         new_entries: &[Entry],
