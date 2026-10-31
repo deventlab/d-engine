@@ -9,7 +9,6 @@
 //!
 //! - **`state.data`**: Serialized key-value store (persisted after each apply_chunk)
 //! - **`wal.log`**: Write-Ahead Log for crash recovery (cleared after successful persistence)
-//! - **`ttl_state.bin`**: TTL manager state (persisted alongside state.data)
 //! - **`metadata.bin`**: Raft metadata (last_applied_index, last_applied_term)
 //!
 //! ## Write-Ahead Log (WAL) Design
@@ -24,33 +23,11 @@
 //! │ Key Length (8 bytes)  │ Key Data (N bytes)                      │
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │ Value Length (8 bytes)│ Value Data (M bytes, if present)        │
-//! ├─────────────────────────────────────────────────────────────────┤
-//! │ Expire At (8 bytes, 0 = no TTL, >0 = UNIX timestamp in seconds) │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ### TTL Semantics
-//!
-//! d-engine uses **absolute expiration time**:
-//!
-//! - When a key is created with TTL, the system calculates: `expire_at = now() + ttl_secs`
-//! - WAL stores the **absolute expiration timestamp** (UNIX seconds since epoch)
-//! - After crash recovery, expired keys are **not restored** (checked during replay)
-//! - TTL does **not reset** on restart (crash-safe)
-//!
-//! **Example:**
-//! ```text
-//! T0:  PUT key="foo", ttl=10s → expire_at = T0 + 10 = T10 (stored in WAL)
-//! T5:  CRASH
-//! T12: RESTART
-//!      → Replay WAL: expire_at = T10 < T12 (already expired)
-//!      → Key is NOT restored (correctly expired)
-//! ```
-//!
-//! **Why absolute time in WAL:**
-//! 1. Ensures expired keys stay expired after crash (durable expiration semantics)
-//! 2. Passive expiration (in get()) is crash-safe without WAL writes
-//! 3. No TTL reset on recovery (deterministic expiration)
+//! A record cut short by a crash is dropped on replay: replay stops at the first
+//! incomplete record.
 //!
 //! ### WAL Lifecycle
 //!
@@ -71,26 +48,18 @@
 //! On node startup (`new()`):
 //! 1. `load_metadata()` - Restore Raft state
 //! 2. `load_data()` - Load persisted key-value data
-//! 3. `load_ttl_data()` - Load persisted TTL state
-//! 4. `replay_wal()` - **Critical**: Replay uncommitted operations from WAL
-//!    - Restores keys AND their TTL metadata
+//! 3. `replay_wal()` - **Critical**: Replay operations written after the last checkpoint
+//!    - Entries at or below `last_applied` are skipped
 //!    - Ensures crash consistency (operations are idempotent)
-//!
-//! ## TTL Cleanup Strategy
-//!
-//! - **Background Cleanup**: Periodic async worker scans and deletes expired keys
-//! - **Zero Overhead**: When TTL feature is disabled, no lease components are initialized
 
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -98,7 +67,6 @@ use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
 use d_engine_core::Command;
 use d_engine_core::Error;
-use d_engine_core::Lease;
 use d_engine_core::ScanResult;
 use d_engine_core::SnapshotApplyResult;
 use d_engine_core::SnapshotError;
@@ -118,8 +86,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
-
-use crate::storage::TtlLease;
 
 type FileStateMachineDataType = RwLock<HashMap<Bytes, (Bytes, u64)>>;
 
@@ -179,39 +145,19 @@ fn encode_wal_entry(
             buf.push(WalOpCode::Noop as u8);
             buf.extend_from_slice(&0u64.to_be_bytes());
             buf.extend_from_slice(&0u64.to_be_bytes());
-            buf.extend_from_slice(&0u64.to_be_bytes());
         }
-        Command::Insert {
-            key,
-            value,
-            ttl_secs,
-        } => {
+        Command::Insert { key, value } => {
             buf.push(WalOpCode::Insert as u8);
             buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
             buf.extend_from_slice(key);
             buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
             buf.extend_from_slice(value);
-            // expire_at is computed at WAL-encode time, not at apply time. Any delay
-            // between Raft commit and WAL write (e.g. slow I/O) causes a small under-count
-            // (key expires slightly earlier than intended). This is a known, accepted
-            // trade-off: TTL precision is best-effort, not a hard guarantee.
-            let expire_at_secs = if let Some(ttl) = ttl_secs {
-                let expire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(*ttl);
-                expire_at
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            buf.extend_from_slice(&expire_at_secs.to_be_bytes());
         }
         Command::Delete { key } => {
             buf.push(WalOpCode::Delete as u8);
             buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
             buf.extend_from_slice(key);
             buf.extend_from_slice(&0u64.to_be_bytes()); // val_len = 0
-            buf.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
         }
         Command::CompareAndSwap { key, value, .. } => {
             if cas_success {
@@ -220,12 +166,10 @@ fn encode_wal_entry(
                 buf.extend_from_slice(key);
                 buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
                 buf.extend_from_slice(value);
-                buf.extend_from_slice(&0u64.to_be_bytes()); // no TTL
             } else {
                 buf.push(WalOpCode::CasFailed as u8);
                 buf.extend_from_slice(&0u64.to_be_bytes()); // key_len = 0
                 buf.extend_from_slice(&0u64.to_be_bytes()); // val_len = 0
-                buf.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
             }
         }
         Command::Batch { ops } => {
@@ -243,14 +187,12 @@ fn encode_wal_entry(
                         buf.extend_from_slice(key);
                         buf.extend_from_slice(&(value.len() as u64).to_be_bytes());
                         buf.extend_from_slice(value);
-                        buf.extend_from_slice(&0u64.to_be_bytes()); // no TTL in batch inserts
                     }
                     d_engine_core::BatchOp::Delete { key } => {
                         buf.push(WalOpCode::Delete as u8);
                         buf.extend_from_slice(&(key.len() as u64).to_be_bytes());
                         buf.extend_from_slice(key);
                         buf.extend_from_slice(&0u64.to_be_bytes()); // val_len = 0
-                        buf.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
                     }
                 }
             }
@@ -266,16 +208,10 @@ fn encode_wal_entry(
 /// - Write-ahead logging for crash consistency
 /// - Efficient snapshot handling with file-based storage
 /// - Thread-safe with minimal lock contention
-/// - TTL support for automatic key expiration
 #[derive(Debug)]
 pub struct FileStateMachine {
     // Key-value storage with disk persistence
     data: FileStateMachineDataType, // (value, term)
-
-    // Lease management for automatic key expiration
-    // TtlLease is thread-safe internally (uses DashMap + Mutex)
-    // Injected by NodeBuilder after construction
-    lease: Option<Arc<TtlLease>>,
 
     // Raft state with disk persistence
     last_applied_index: AtomicU64,
@@ -300,8 +236,6 @@ pub struct FileStateMachine {
 impl FileStateMachine {
     /// Creates a new file-based state machine with persistence
     ///
-    /// Lease will be injected by NodeBuilder after construction.
-    ///
     /// # Arguments
     /// * `data_dir` - Directory where data files will be stored
     ///
@@ -313,7 +247,6 @@ impl FileStateMachine {
 
         let machine = Self {
             data: RwLock::new(HashMap::new()),
-            lease: None,
             last_applied_index: AtomicU64::new(0),
             last_applied_term: AtomicU64::new(0),
             last_snapshot_metadata: RwLock::new(None),
@@ -329,21 +262,6 @@ impl FileStateMachine {
         Ok(machine)
     }
 
-    /// Sets the lease manager for this state machine.
-    ///
-    /// This is an internal method called by NodeBuilder during initialization.
-    /// The lease will also be restored from snapshot during `apply_snapshot_from_file()`.
-    /// Also available for testing and benchmarks.
-    pub fn set_lease(
-        &mut self,
-        lease: Arc<TtlLease>,
-    ) {
-        self.lease = Some(lease);
-    }
-
-    /// Injects lease configuration into this state machine.
-    ///
-    /// Framework-internal method: called by NodeBuilder::build() during initialization.
     /// Loads state machine data from disk files
     async fn load_from_disk(&self) -> Result<(), Error> {
         // Load last applied index and term from metadata file
@@ -352,43 +270,10 @@ impl FileStateMachine {
         // Load key-value data from data file
         self.load_data().await?;
 
-        // Load TTL data from disk
-        self.load_ttl_data().await?;
-
         // Replay write-ahead log for crash recovery
         self.replay_wal().await?;
 
         info!("Loaded state machine data from disk");
-        Ok(())
-    }
-
-    /// Loads TTL data from disk (if lease is configured)
-    async fn load_ttl_data(&self) -> Result<(), Error> {
-        // Lease will be injected by NodeBuilder later
-        // The lease data will be loaded after injection
-        // For now, just skip this step during construction
-        Ok(())
-    }
-
-    /// Loads TTL data into the configured lease
-    ///
-    /// Called after NodeBuilder injects the lease.
-    /// Also available for testing and benchmarks.
-    pub async fn load_lease_data(&self) -> Result<(), Error> {
-        let Some(ref lease) = self.lease else {
-            return Ok(()); // No lease configured
-        };
-
-        let ttl_path = self.data_dir.join("ttl_state.bin");
-        if !ttl_path.exists() {
-            debug!("No TTL state file found");
-            return Ok(());
-        }
-
-        let ttl_data = tokio::fs::read(&ttl_path).await?;
-        lease.reload(&ttl_data)?;
-
-        info!("Loaded TTL state from disk: {} active TTLs", lease.len());
         Ok(())
     }
 
@@ -538,6 +423,8 @@ impl FileStateMachine {
 
         let last_applied = self.last_applied_index.load(Ordering::SeqCst);
 
+        // A crash can leave the last WAL record only partly written. The length checks below
+        // stop replay at the first incomplete record and drop it; records before it are replayed.
         while pos + 17 < buffer.len() {
             // Read entry index (8 bytes)
             let index = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
@@ -592,45 +479,14 @@ impl FileStateMachine {
             let value_len = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
             pos += 8;
 
-            // Read value if present
-            let value = if value_len > 0 {
-                if pos + value_len > buffer.len() {
-                    warn!("Incomplete value data at position {}, stopping replay", pos);
-                    break;
-                }
-                let value_data = Bytes::from(buffer[pos..pos + value_len].to_vec());
-                pos += value_len;
-                Some(value_data)
-            } else {
-                None
-            };
-
-            // Read absolute expiration time (8 bytes) - 0 means no TTL
-            //
-            // WAL Format Migration Path:
-            // - Old format (pre-v0.2.0): ttl_secs (u32, 4 bytes, relative time)
-            // - New format (v0.2.0+): expire_at_secs (u64, 8 bytes, absolute time)
-            //
-            // Backward Compatibility Strategy:
-            // Since this is a breaking change and d-engine has not been deployed to production,
-            // we do NOT support reading old WAL format. All WAL entries must use the new format.
-            // If upgrading from pre-v0.2.0, users must:
-            // 1. Gracefully stop the old version (persists state.data + ttl_state.bin)
-            // 2. Upgrade to v0.2.0+
-            // 3. Start the new version (loads from persisted state, not WAL)
-            // Truncated tail: stop here rather than continuing with garbage bytes.
-            // A partial write at the WAL tail is expected on a crash; entries after
-            // the truncation point are discarded and will be re-applied via Raft.
-            if pos + 8 > buffer.len() {
-                warn!(
-                    "Incomplete WAL entry at byte offset {} (expected expire_at field), truncating replay here",
-                    pos
-                );
+            // A zero length is an empty value, not a missing one. Delete and Noop records
+            // also write 0 here; replay ignores their value.
+            if pos + value_len > buffer.len() {
+                warn!("Incomplete value data at position {}, stopping replay", pos);
                 break;
             }
-            let secs = u64::from_be_bytes(buffer[pos..pos + 8].try_into().unwrap());
-            pos += 8;
-            let expire_at_secs = if secs > 0 { Some(secs) } else { None };
+            let value = Bytes::from(buffer[pos..pos + value_len].to_vec());
+            pos += value_len;
 
             if index <= last_applied {
                 debug!(
@@ -640,7 +496,7 @@ impl FileStateMachine {
                 continue;
             }
 
-            operations.push((op_code, key, value, term, expire_at_secs));
+            operations.push((op_code, key, value, term));
             replayed_count += 1;
         }
 
@@ -651,65 +507,17 @@ impl FileStateMachine {
 
         // Apply all collected operations with a single lock acquisition
         let mut applied_count = 0;
-        let mut skipped_expired = 0;
-        let now = std::time::SystemTime::now();
         {
             let mut data = self.data.write();
 
-            for (op_code, key, value, term, expire_at_secs) in operations {
+            for (op_code, key, value, term) in operations {
                 match op_code {
                     WalOpCode::Insert => {
-                        if let Some(value_data) = value {
-                            // Check if key is already expired (crash-safe TTL semantics)
-                            let is_expired = if let Some(secs) = expire_at_secs {
-                                let expire_at =
-                                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
-                                now >= expire_at
-                            } else {
-                                false
-                            };
-
-                            if is_expired {
-                                // Skip restoring expired keys (durable expiration semantics)
-                                debug!("Skipped expired key during WAL replay: key={:?}", key);
-                                skipped_expired += 1;
-                                continue;
-                            }
-
-                            data.insert(key.clone(), (value_data, term));
-
-                            // Restore TTL from WAL (if lease configured and has expiration)
-                            if let Some(secs) = expire_at_secs {
-                                if let Some(ref lease) = self.lease {
-                                    let expire_at = std::time::UNIX_EPOCH
-                                        + std::time::Duration::from_secs(secs);
-                                    let remaining = expire_at
-                                        .duration_since(now)
-                                        .map(|d| d.as_secs())
-                                        .unwrap_or(0);
-
-                                    if remaining > 0 {
-                                        lease.register(key.clone(), remaining);
-                                        debug!(
-                                            "Replayed INSERT with TTL: key={:?}, remaining={}s",
-                                            key, remaining
-                                        );
-                                    }
-                                }
-                            } else {
-                                debug!("Replayed INSERT: key={:?}", key);
-                            }
-
-                            applied_count += 1;
-                        } else {
-                            warn!("INSERT operation without value");
-                        }
+                        data.insert(key, (value, term));
+                        applied_count += 1;
                     }
                     WalOpCode::Delete => {
                         data.remove(&key);
-                        if let Some(ref lease) = self.lease {
-                            lease.unregister(&key);
-                        }
                         applied_count += 1;
                         debug!("Replayed DELETE: key={:?}", key);
                     }
@@ -718,13 +526,9 @@ impl FileStateMachine {
                         // Current code writes CAS results as Insert (success) or Noop (failure),
                         // so this branch is only reached when replaying WAL files created before
                         // the fix. Apply new_value unconditionally as best-effort.
-                        if let Some(new_value) = value {
-                            data.insert(key.clone(), (new_value, term));
-                            applied_count += 1;
-                            debug!("Replayed legacy CAS: key={:?}", key);
-                        } else {
-                            warn!("Legacy CAS WAL entry missing new_value");
-                        }
+                        data.insert(key.clone(), (value, term));
+                        applied_count += 1;
+                        debug!("Replayed legacy CAS: key={:?}", key);
                     }
                     WalOpCode::Noop | WalOpCode::Config | WalOpCode::CasFailed => {
                         // No data modification needed
@@ -736,8 +540,8 @@ impl FileStateMachine {
         }
 
         info!(
-            "WAL replay complete: {} operations replayed, {} applied, {} expired keys skipped",
-            replayed_count, applied_count, skipped_expired
+            "WAL replay complete: {} operations replayed, {} applied",
+            replayed_count, applied_count,
         );
 
         // Unconditionally clear WAL after replay. load_data() already restored the last
@@ -995,21 +799,6 @@ impl FileStateMachine {
         }
     }
 
-    /// Writes the lease table to `ttl_state.bin`. Once a checkpoint has cleared the WAL this
-    /// file is the only record of key expiry, so it is written to a temp file and renamed: a
-    /// crash mid-write cannot leave a truncated file.
-    fn persist_lease(&self) -> Result<(), Error> {
-        let Some(ref lease) = self.lease else {
-            return Ok(());
-        };
-        let tmp_path = self.data_dir.join("ttl_state.bin.tmp");
-        let file = std::fs::File::create(&tmp_path)?;
-        std::io::Write::write_all(&mut &file, &lease.to_snapshot())?;
-        file.sync_all()?;
-        std::fs::rename(&tmp_path, self.data_dir.join("ttl_state.bin"))?;
-        Ok(())
-    }
-
     /// Batch WAL writes with proper durability guarantees.
     ///
     /// `cas_outcomes[i]` is consulted only when `entries[i].command` is
@@ -1073,12 +862,6 @@ impl StateMachine for FileStateMachine {
     async fn start(&self) -> Result<(), Error> {
         self.running.store(true, Ordering::SeqCst);
 
-        // Load persisted lease data if configured
-        if self.lease.is_some() {
-            self.load_lease_data().await?;
-            debug!("Lease data loaded during state machine initialization");
-        }
-
         info!("File state machine started");
         Ok(())
     }
@@ -1088,11 +871,9 @@ impl StateMachine for FileStateMachine {
             return Ok(()); // already closed
         }
         // The developer may keep an `Arc` to this state machine, so `Drop` may never run:
-        // persist everything a restart needs here. Both steps run; the first error is returned.
+        // persist everything a restart needs here.
         // No exclusive OS lock file to release.
-        let saved = self.save_hard_state();
-        let leased = self.persist_lease();
-        saved.and(leased)
+        self.save_hard_state()
     }
 
     fn is_running(&self) -> bool {
@@ -1104,10 +885,6 @@ impl StateMachine for FileStateMachine {
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
         self.ensure_serving()?;
-        // Lazy cleanup: only check expiration in Lazy strategy
-        // Background strategy handles cleanup in dedicated async task
-        // Background cleanup strategy: expired keys are cleaned by background worker
-        // No on-read checks needed (simplifies get() hot path)
         let data = self.data.read();
         Ok(data.get(key_buffer).map(|(value, _)| value.clone()))
     }
@@ -1248,26 +1025,12 @@ impl StateMachine for FileStateMachine {
                     Command::Noop => {
                         results.push(ApplyResult::success(entry.index));
                     }
-                    Command::Insert {
-                        key,
-                        value,
-                        ttl_secs,
-                    } => {
+                    Command::Insert { key, value } => {
                         data.insert(key.clone(), (value.clone(), entry.term));
-                        if let Some(ttl) = ttl_secs {
-                            let lease = self
-                                .lease
-                                .as_ref()
-                                .expect("lease always initialized by NodeBuilder");
-                            lease.register(key.clone(), *ttl);
-                        }
                         results.push(ApplyResult::success(entry.index));
                     }
                     Command::Delete { key } => {
                         data.remove(key.as_ref());
-                        if let Some(ref lease) = self.lease {
-                            lease.unregister(key);
-                        }
                         results.push(ApplyResult::success(entry.index));
                     }
                     Command::CompareAndSwap {
@@ -1298,9 +1061,6 @@ impl StateMachine for FileStateMachine {
                             }
                             d_engine_core::BatchOp::Delete { key } => {
                                 data.remove(key.as_ref());
-                                if let Some(ref lease) = self.lease {
-                                    lease.unregister(key);
-                                }
                             }
                         });
                         results.push(ApplyResult::success(entry.index));
@@ -1505,29 +1265,6 @@ impl StateMachine for FileStateMachine {
             new_data.insert(key, (value, term));
         }
 
-        // Read and reload lease data if present
-        if pos + 8 <= buffer.len() {
-            let ttl_len_bytes = &buffer[pos..pos + 8];
-            let ttl_len = u64::from_be_bytes([
-                ttl_len_bytes[0],
-                ttl_len_bytes[1],
-                ttl_len_bytes[2],
-                ttl_len_bytes[3],
-                ttl_len_bytes[4],
-                ttl_len_bytes[5],
-                ttl_len_bytes[6],
-                ttl_len_bytes[7],
-            ]) as usize;
-            pos += 8;
-
-            if pos + ttl_len <= buffer.len() {
-                let ttl_data = &buffer[pos..pos + ttl_len];
-                if let Some(ref lease) = self.lease {
-                    lease.reload(ttl_data)?;
-                }
-            }
-        }
-
         // Atomically replace the data
         {
             let mut data = self.data.write();
@@ -1569,15 +1306,8 @@ impl StateMachine for FileStateMachine {
         };
 
         // Batch serialize into a single buffer — eliminates per-entry async yield overhead.
-        let lease_snapshot = if let Some(ref lease) = self.lease {
-            lease.to_snapshot()
-        } else {
-            Vec::new()
-        };
         let estimated: usize =
-            data_copy.iter().map(|(k, (v, _))| 8 + k.len() + 8 + v.len() + 8).sum::<usize>()
-                + 8
-                + lease_snapshot.len();
+            data_copy.iter().map(|(k, (v, _))| 8 + k.len() + 8 + v.len() + 8).sum::<usize>();
         let mut buf = Vec::with_capacity(estimated);
 
         for (key, (value, term)) in &data_copy {
@@ -1587,9 +1317,6 @@ impl StateMachine for FileStateMachine {
             buf.extend_from_slice(value);
             buf.extend_from_slice(&term.to_be_bytes());
         }
-
-        buf.extend_from_slice(&(lease_snapshot.len() as u64).to_be_bytes());
-        buf.extend_from_slice(&lease_snapshot);
 
         file.write_all(&buf).await?;
 
@@ -1627,53 +1354,6 @@ impl StateMachine for FileStateMachine {
 
     async fn reset(&self) -> Result<(), Error> {
         self.reset().await
-    }
-
-    async fn lease_background_cleanup(&self) -> Result<Vec<Bytes>, Error> {
-        let Some(ref lease) = self.lease else {
-            return Ok(vec![]);
-        };
-
-        // Fast path: no TTL keys ever registered — single atomic load (~10ns)
-        if !lease.has_lease_keys() {
-            return Ok(vec![]);
-        }
-
-        let now = SystemTime::now();
-
-        // Fast path: sample first 10 entries — if none expired, skip full scan (~30ns)
-        if !lease.may_have_expired_keys(now) {
-            return Ok(vec![]);
-        }
-
-        let expired_keys = lease.get_expired_keys(now);
-
-        if expired_keys.is_empty() {
-            return Ok(vec![]);
-        }
-
-        debug!(
-            "Lease background cleanup: found {} expired keys",
-            expired_keys.len()
-        );
-
-        // Delete expired keys from storage
-        {
-            let mut data = self.data.write();
-            for key in &expired_keys {
-                data.remove(key);
-            }
-        }
-
-        // Persist to disk after batch deletion; propagate error so caller can retry
-        self.persist_data_async().await?;
-
-        info!(
-            "Lease background cleanup: deleted {} expired keys",
-            expired_keys.len()
-        );
-
-        Ok(expired_keys)
     }
 
     fn scan_prefix(

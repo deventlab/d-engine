@@ -1,11 +1,11 @@
-# d-engine v0.2.5 Benchmark: Full Results
+# d-engine v0.3.0 Benchmark: Full Results
 
-Companion to `bench_report_v0.2.5.md`. Environment: `bench_report_v0.2.5_environment.md`.
+Companion to `bench_report_v0.3.0.md`. Environment: `bench_report_v0.3.0_environment.md`.
 All values are 3-round means unless marked. Spread = (max - min) / mean between rounds.
 
 ## 1. Embedded, 100 in-flight (instance set A)
 
-| Scenario | v0.2.4 ops/s | avg / p99 ms | v0.2.5 ops/s | avg / p99 ms | Throughput change |
+| Scenario | v0.2.4 ops/s | avg / p99 ms | v0.3.0 ops/s | avg / p99 ms | Throughput change |
 |---|---|---|---|---|---|
 | Single client write (1 in-flight) | 4,393 (spread 17.7%) | 0.228 / 0.305 | 337 (0.5%) | 2.962 / 3.153 | -92.3% |
 | High concurrency write | 115,641 (5.4%) | 0.864 / 1.064 | 18,198 (1.1%) | 5.494 / 6.203 | -84.3% |
@@ -19,7 +19,7 @@ about 1, not 100: the client side is the limit there. Every other row measured 1
 
 ## 2. Standalone, 200 in-flight (instance set A)
 
-| Scenario | v0.2.4 ops/s | avg / p99 ms | v0.2.5 ops/s | avg / p99 ms | Throughput change |
+| Scenario | v0.2.4 ops/s | avg / p99 ms | v0.3.0 ops/s | avg / p99 ms | Throughput change |
 |---|---|---|---|---|---|
 | Single client write | 2,042 (23.7%) | 0.494 / 0.650 | 312 (1.2%) | 3.204 / 3.400 | -84.7% |
 | High concurrency write | 63,308 (round 3 only) | 3.155 / 4.727 | 32,068 (0.8%) | 6.228 / 7.428 | -49.3% |
@@ -31,7 +31,7 @@ about 1, not 100: the client side is the limit there. Every other row measured 1
 "Round 3 only": in rounds 1 and 2 of v0.2.4 the cluster was not ready when the bench started and the
 client logged `ConnectionTimeout` / `DeadlineExceeded` (write: 5,488 and 16,076 ops/s; linearizable read and
 hot-key also affected). Their means are meaningless, so only the clean round is used and the spread is unknown.
-v0.2.5 had no errors in any round.
+v0.3.0 had no errors in any round.
 
 ## 3. etcd v3.7.2 (instance set B, three fresh-cluster runs)
 

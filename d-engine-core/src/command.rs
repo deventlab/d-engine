@@ -41,9 +41,6 @@ pub enum Command {
     Insert {
         key: Bytes,
         value: Bytes,
-        /// `None` = no expiration.  Proto encodes this as `ttl_secs = 0`; we convert
-        /// to `Option` here so SM implementors use idiomatic Rust instead of magic zeros.
-        ttl_secs: Option<u64>,
     },
 
     Delete {
@@ -59,9 +56,8 @@ pub enum Command {
 
     /// Atomic batch of Insert/Delete operations — all succeed or all fail.
     ///
-    /// Individual ops within a batch do not support TTL. Batch is designed for
-    /// atomic multi-key writes (service registration, config updates, distributed
-    /// locks) where per-key expiration does not apply.
+    /// Use it for atomic multi-key writes such as service registration,
+    /// config updates and distributed locks.
     Batch {
         ops: Vec<BatchOp>,
     },
@@ -70,8 +66,7 @@ pub enum Command {
 /// Single operation within a [`Command::Batch`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum BatchOp {
-    /// Insert a key-value pair. TTL is not supported in batch mode —
-    /// use [`Command::Insert`] directly if you need per-key expiration.
+    /// Insert a key-value pair.
     Insert {
         key: Bytes,
         value: Bytes,
@@ -104,11 +99,6 @@ impl TryFrom<WriteCommand> for Command {
             Some(Operation::Insert(i)) => Ok(Command::Insert {
                 key: i.key,
                 value: i.value,
-                ttl_secs: if i.ttl_secs == 0 {
-                    None
-                } else {
-                    Some(i.ttl_secs)
-                },
             }),
             Some(Operation::Delete(d)) => Ok(Command::Delete { key: d.key }),
             Some(Operation::CompareAndSwap(c)) => Ok(Command::CompareAndSwap {
@@ -121,18 +111,10 @@ impl TryFrom<WriteCommand> for Command {
                     .ops
                     .into_iter()
                     .map(|op| match op.op {
-                        Some(batch_op::Op::Insert(i)) => {
-                            if i.ttl_secs != 0 {
-                                return Err(StorageError::StateMachineError(
-                                    "BatchOp does not support TTL; use Command::Insert directly for per-key expiration".into(),
-                                )
-                                .into());
-                            }
-                            Ok(BatchOp::Insert {
-                                key: i.key,
-                                value: i.value,
-                            })
-                        }
+                        Some(batch_op::Op::Insert(i)) => Ok(BatchOp::Insert {
+                            key: i.key,
+                            value: i.value,
+                        }),
                         Some(batch_op::Op::Delete(d)) => Ok(BatchOp::Delete { key: d.key }),
                         None => Err(StorageError::StateMachineError(
                             "BatchOp has no operation".into(),

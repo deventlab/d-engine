@@ -1,6 +1,6 @@
-# d-engine v0.2.5 Benchmark: raft-engine log store (embedded and standalone)
+# d-engine v0.3.0 Benchmark: raft-engine log store (embedded and standalone)
 
-Companion to `bench_report_v0.2.5.md`. Measured on **October 20, 2026** on two new instance sets (E and F).
+Companion to `bench_report_v0.3.0.md`. Measured on **October 20, 2026** on two new instance sets (E and F).
 Experimental: the log store is a spike (#460), not part of a release. Values are 3-round means; spread = (max - min) / mean.
 
 ## 1. What was measured
@@ -8,7 +8,7 @@ Experimental: the log store is a spike (#460), not part of a release. Values are
 | Item | Value |
 |---|---|
 | Engine | The Raft log and the hard state are stored in raft-engine (a fork pinned at `e5ef995`: upstream master `097c499` with the `lz4-sys` pin relaxed); the state machine is RocksDB. Embedded: `EmbeddedEngine<RaftEngineStorage, RocksDBStateMachine>`; standalone: `three-nodes-standalone` built with `--features raft-engine` (`StandaloneEngine::run_custom`). Branch `spike/460-fdatasync` |
-| Control | Stock v0.2.5: Raft log in a RocksDB WAL, `unified_db = false`; the October 18 report (set A). For standalone there is also a RocksDB run on set F itself (Section 3) |
+| Control | Stock v0.3.0: Raft log in a RocksDB WAL, `unified_db = false`; the October 18 report (set A). For standalone there is also a RocksDB run on set F itself (Section 3) |
 | Instances | Same shapes as the other sets: 3 x c5.2xlarge, 50 GB gp3 root volume (3,000 IOPS, 125 MB/s), us-east-1. Set E: embedded, 07:24 to 07:27 UTC. Set F: embedded 14:20 to 14:23 UTC, standalone from 14:41 UTC. Instance IDs were not recorded |
 | Bench | Embedded: `embedded-bench --mode local --batch`, 100 in-flight, leader output (set F: node2, node3, node3). Standalone: `standalone-bench` on the client, 200 in-flight, single client 1. 8 B keys, 256 B values, data wiped between rounds |
 | Config | Snapshots disabled, as in the earlier reports. `[raft_engine]`: `target_file_size_mib = 1`, `purge_threshold_mib = 512`, `prefill_limit_mib = 512` (every start created 768 files, which is 512 x 1.5) |

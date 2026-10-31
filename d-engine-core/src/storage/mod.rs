@@ -1,11 +1,9 @@
 pub(super) mod fsync_worker;
-mod lease;
 mod raft_log;
 mod raft_log_core;
 mod snapshot_path_manager;
 mod state_machine;
 mod storage_engine;
-pub use lease::*;
 #[doc(hidden)]
 pub use raft_log::*;
 pub use raft_log_core::*;

@@ -1,6 +1,6 @@
 # D-Engine Performance Benchmarks
 
-This directory contains Criterion-based performance benchmarks for the d-engine state machine and TTL functionality.
+This directory contains Criterion-based performance benchmarks for the d-engine state machine and Watch mechanism.
 
 ## Overview
 
@@ -15,28 +15,13 @@ We use [Criterion.rs](https://github.com/bheisler/criterion.rs) for benchmarking
 
 ### 1. State Machine Benchmarks (`state_machine.rs`)
 
-Tests core state machine performance with focus on TTL overhead:
+Tests core state machine performance and Watch overhead:
 
-- **apply_without_ttl** - Baseline apply performance (target: < 10ns overhead)
-- **apply_with_ttl** - Apply with TTL registration overhead
-- **get_without_ttl** - Baseline read performance
-- **get_with_ttl_check** - Read with TTL passive check (target: < 50ns overhead)
-- **get_expired_ttl** - Cost of passive deletion on read
+- **apply** - Baseline apply performance
+- **get** - Baseline read performance
 - **batch_apply** - Scaling test for batch operations (10, 100, 1000 entries)
-- **batch_apply_with_ttl** - Batch operations with TTL
-
-### 2. TTL Benchmarks (`ttl.rs`)
-
-Tests TTL-specific functionality:
-
-- **piggyback_cleanup** - Cleanup performance with varying expired key counts (target: < 1ms for 100 keys)
-- **ttl_registration** - Cost of registering TTL entries
-- **batch_ttl_registration** - TTL registration scaling (10, 100, 1000 entries)
-- **mixed_ttl_workload** - Realistic mix of active and expired entries
-- **piggyback_high_frequency** - Cost of frequent cleanup triggers
-- **varying_ttl_durations** - Performance with different TTL values (1min, 1hr, 1day)
-- **worst_case_all_expired** - All 1000 entries expired
-- **best_case_no_expired** - No cleanup needed
+- **apply_without_watch**, **apply_with_1_watcher**, **apply_with_10_watchers**, **apply_with_100_watchers** - Watch overhead on the apply path
+- **watch_e2e_latency** - Watch notification latency
 
 ## Running Benchmarks
 
@@ -48,12 +33,11 @@ cargo bench --package d-engine-server
 ### Run specific benchmark suite
 ```bash
 cargo bench --package d-engine-server --bench state_machine
-cargo bench --package d-engine-server --bench ttl
 ```
 
 ### Run specific test
 ```bash
-cargo bench --package d-engine-server --bench state_machine apply_without_ttl
+cargo bench --package d-engine-server --bench state_machine apply
 ```
 
 ### Quick run (fewer samples)
@@ -80,9 +64,7 @@ Based on our design goals:
 
 | Metric | Target | Benchmark |
 |--------|--------|-----------|
-| No TTL overhead | < 10ns | `apply_without_ttl` vs `apply_with_ttl` |
-| TTL passive check | < 50ns | `get_with_ttl_check` vs `get_without_ttl` |
-| Piggyback cleanup (100 keys) | < 1ms | `piggyback_cleanup/100` |
+| Watch overhead on apply path | < 10ns per watcher | `apply_with_*_watcher*` vs `apply_without_watch` |
 | Batch apply scaling | Linear | `batch_apply/*` |
 
 ## CI Integration
@@ -169,4 +151,3 @@ fn bench_my_new_test(c: &mut Criterion) {
 
 - [Criterion.rs Documentation](https://bheisler.github.io/criterion.rs/book/)
 - [Rust Performance Book](https://nnethercote.github.io/perf-book/)
-- [d-engine TTL Design Doc](../../d-engine-product-design/20251107/)

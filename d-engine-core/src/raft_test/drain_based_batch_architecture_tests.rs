@@ -201,9 +201,7 @@ async fn test_p0_leader_single_command_drain_immediately() {
         operation: Some(Operation::Insert(
             d_engine_proto::client::write_command::Insert {
                 key: Bytes::from("test_key"),
-                value: Bytes::from("test_value"),
-                ttl_secs: 0,
-            },
+                value: Bytes::from("test_value"),            },
         )),
     };
     let write_req = ClientWriteRequest {
@@ -307,9 +305,7 @@ async fn test_p0_leader_high_load_max_batch_cap() {
                     operation: Some(Operation::Insert(
                         d_engine_proto::client::write_command::Insert {
                             key: Bytes::from(format!("key_{round}_{i}")),
-                            value: Bytes::from(format!("value_{round}_{i}")),
-                            ttl_secs: 0,
-                        },
+                            value: Bytes::from(format!("value_{round}_{i}")),                        },
                     )),
                 };
                 let write_req = ClientWriteRequest {
@@ -466,9 +462,7 @@ async fn test_p0_follower_write_request_rejection() {
         operation: Some(Operation::Insert(
             d_engine_proto::client::write_command::Insert {
                 key: Bytes::from("test_key"),
-                value: Bytes::from("test_value"),
-                ttl_secs: 0,
-            },
+                value: Bytes::from("test_value"),            },
         )),
     };
     let write_req = ClientWriteRequest {
@@ -565,9 +559,7 @@ async fn test_p0_candidate_commands_handling() {
             operation: Some(Operation::Insert(
                 d_engine_proto::client::write_command::Insert {
                     key: Bytes::from("write_key"),
-                    value: Bytes::from("write_value"),
-                    ttl_secs: 0,
-                },
+                    value: Bytes::from("write_value"),                },
             )),
         };
         let write_req = ClientWriteRequest {
@@ -749,9 +741,7 @@ async fn test_p1_medium_load_natural_batching() {
                 operation: Some(Operation::Insert(
                     d_engine_proto::client::write_command::Insert {
                         key: Bytes::from(format!("key_{i}")),
-                        value: Bytes::from(format!("value_{i}")),
-                        ttl_secs: 0,
-                    },
+                        value: Bytes::from(format!("value_{i}")),                    },
                 )),
             };
             let write_req = ClientWriteRequest {
@@ -856,9 +846,7 @@ async fn test_p1_mixed_workload_read_write_coexistence() {
                 operation: Some(Operation::Insert(
                     d_engine_proto::client::write_command::Insert {
                         key: Bytes::from(format!("write_key_{i}")),
-                        value: Bytes::from(format!("write_value_{i}")),
-                        ttl_secs: 0,
-                    },
+                        value: Bytes::from(format!("write_value_{i}")),                    },
                 )),
             };
             let write_req = ClientWriteRequest {
@@ -964,9 +952,7 @@ async fn test_p1_burst_load_recovery_after_spike() {
                 operation: Some(Operation::Insert(
                     d_engine_proto::client::write_command::Insert {
                         key: Bytes::from(format!("burst_key_{i}")),
-                        value: Bytes::from(format!("burst_value_{i}")),
-                        ttl_secs: 0,
-                    },
+                        value: Bytes::from(format!("burst_value_{i}")),                    },
                 )),
             };
             let write_req = ClientWriteRequest {
@@ -997,9 +983,7 @@ async fn test_p1_burst_load_recovery_after_spike() {
                 operation: Some(Operation::Insert(
                     d_engine_proto::client::write_command::Insert {
                         key: Bytes::from(format!("trickle_key_{i}")),
-                        value: Bytes::from(format!("trickle_value_{i}")),
-                        ttl_secs: 0,
-                    },
+                        value: Bytes::from(format!("trickle_value_{i}")),                    },
                 )),
             };
             let write_req = ClientWriteRequest {

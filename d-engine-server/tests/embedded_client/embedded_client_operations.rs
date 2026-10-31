@@ -8,39 +8,10 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use d_engine_core::ClientApi;
 use d_engine_server::DefaultEmbeddedEngine;
 use tempfile::TempDir;
 
 use crate::common::get_available_ports;
-
-/// Helper to create a test DefaultEmbeddedEngine without any lease config section.
-///
-/// Used by regression tests that must verify behaviour with default (zero-config)
-/// settings — notably #398 where omitting [raft.state_machine.lease] previously
-/// caused a fatal crash when put_with_ttl was called.
-async fn create_test_engine_default_config(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {
-    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let db_path = temp_dir.path().join(test_name);
-    let config_path = temp_dir.path().join("d-engine.toml");
-    let mut port_guard = get_available_ports(1).await;
-    port_guard.release_listeners();
-    let port = port_guard.as_slice()[0];
-    let config_content = format!(
-        r#"
-[cluster]
-listen_address = "127.0.0.1:{}"
-single_node = true
-"#,
-        port
-    );
-    std::fs::write(&config_path, config_content).expect("Failed to write config");
-    let engine = DefaultEmbeddedEngine::start_with(&db_path, config_path.to_str().unwrap())
-        .await
-        .expect("Failed to start engine");
-    engine.wait_ready(Duration::from_secs(5)).await.expect("Engine not ready");
-    (engine, temp_dir)
-}
 
 /// Helper to create a test EmbeddedEngine
 async fn create_test_engine(test_name: &str) -> (DefaultEmbeddedEngine, TempDir) {
@@ -531,80 +502,6 @@ async fn test_concurrent_write_and_linearizable_read() {
     }
 
     println!("✅ All 100 concurrent linearizable reads saw their own writes");
-}
-
-// =============================================================================
-// put_with_ttl
-// =============================================================================
-
-/// Verifies that put_with_ttl stores a value that is immediately readable.
-///
-/// TTL expiry is not tested here (requires real time passage); this test
-/// focuses on the write path: the entry must be committed and readable
-/// via linearizable read immediately after the call returns.
-#[tokio::test]
-async fn test_put_with_ttl_readable_immediately() {
-    let (engine, _temp_dir) = create_test_engine("put_with_ttl").await;
-    let client = engine.client();
-
-    client
-        .put_with_ttl(b"ttl-key", b"ttl-value", 60)
-        .await
-        .expect("put_with_ttl should succeed");
-
-    let value = client
-        .get_linearizable(b"ttl-key")
-        .await
-        .expect("get_linearizable should succeed");
-
-    assert_eq!(
-        value,
-        Some(Bytes::from("ttl-value")),
-        "value written with TTL must be readable immediately after write completes"
-    );
-}
-
-/// Regression test for #398.
-///
-/// put_with_ttl must succeed when no [raft.state_machine.lease] section is present
-/// in the config (i.e. default/zero-config). Previously this caused a fatal crash:
-/// the state machine returned an error which the SM Worker mapped to
-/// InternalEvent::FatalError, shutting down the entire node.
-///
-/// Verification steps:
-///   1. Engine starts with default config (no lease section)
-///   2. put_with_ttl returns Ok(()) — not a crash, not an error
-///   3. The written value is readable — entry was applied correctly
-///   4. A subsequent put/get succeeds — node is still alive after the TTL write
-#[tokio::test]
-async fn test_put_with_ttl_succeeds_with_default_config() {
-    let (engine, _temp_dir) =
-        create_test_engine_default_config("put_with_ttl_default_config").await;
-    let client = engine.client();
-
-    // Must not crash the node, must return Ok
-    client
-        .put_with_ttl(b"ttl-key", b"ttl-value", 30)
-        .await
-        .expect("put_with_ttl must succeed with default config (#398 regression)");
-
-    // Value must be readable immediately (entry was applied)
-    let value = client
-        .get_linearizable(b"ttl-key")
-        .await
-        .expect("get after put_with_ttl should succeed");
-    assert_eq!(value, Some(Bytes::from("ttl-value")));
-
-    // Node must still be alive — a regular put/get must work after the TTL write
-    client
-        .put(b"probe", b"alive")
-        .await
-        .expect("node must still be alive after put_with_ttl (#398 regression)");
-    let probe = client
-        .get_linearizable(b"probe")
-        .await
-        .expect("probe read should succeed after put_with_ttl");
-    assert_eq!(probe, Some(Bytes::from("alive")));
 }
 
 // =============================================================================

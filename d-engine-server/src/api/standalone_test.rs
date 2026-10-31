@@ -257,7 +257,6 @@ mod start_node_tests {
     use crate::RocksDBStateMachine;
     use crate::RocksDBStorageEngine;
     use crate::api::StandaloneEngine;
-    use crate::storage::TtlLease;
 
     /// Build a minimal valid `RaftNodeConfig`.
     fn make_config(node_id: u32) -> d_engine_core::RaftNodeConfig {
@@ -277,7 +276,7 @@ mod start_node_tests {
         }
     }
 
-    /// Create RocksDB storage engine + state machine with lease initialized.
+    /// Create a RocksDB storage engine and state machine.
     fn create_rocksdb_se_and_sm(
         temp_dir: &tempfile::TempDir
     ) -> (Arc<RocksDBStorageEngine>, Arc<RocksDBStateMachine>) {
@@ -288,8 +287,7 @@ mod start_node_tests {
 
         let storage =
             Arc::new(RocksDBStorageEngine::new(&storage_path).expect("create storage engine"));
-        let mut sm = RocksDBStateMachine::new(&sm_path).expect("create state machine");
-        sm.set_lease(Arc::new(TtlLease::new(Default::default())));
+        let sm = RocksDBStateMachine::new(&sm_path).expect("create state machine");
         let sm = Arc::new(sm);
 
         (storage, sm)
@@ -379,8 +377,7 @@ mod start_node_tests {
         std::fs::create_dir_all(&sm_path).unwrap();
 
         let storage = Arc::new(RocksDBStorageEngine::new(&storage_path).expect("create storage"));
-        let mut sm = RocksDBStateMachine::new(&sm_path).expect("create sm");
-        sm.set_lease(Arc::new(TtlLease::new(Default::default())));
+        let sm = RocksDBStateMachine::new(&sm_path).expect("create sm");
         let sm = Arc::new(sm);
 
         let config = make_config(1);
@@ -422,9 +419,8 @@ mod run_custom_tests {
     use crate::RocksDBStateMachine;
     use crate::RocksDBStorageEngine;
     use crate::api::StandaloneEngine;
-    use crate::storage::TtlLease;
 
-    /// Create RocksDB SE/SM with lease initialized.
+    /// Create a RocksDB storage engine and state machine.
     fn create_rocksdb_se_and_sm(
         temp_dir: &tempfile::TempDir
     ) -> (Arc<RocksDBStorageEngine>, Arc<RocksDBStateMachine>) {
@@ -435,8 +431,7 @@ mod run_custom_tests {
 
         let storage =
             Arc::new(RocksDBStorageEngine::new(&storage_path).expect("create storage engine"));
-        let mut sm = RocksDBStateMachine::new(&sm_path).expect("create state machine");
-        sm.set_lease(Arc::new(TtlLease::new(Default::default())));
+        let sm = RocksDBStateMachine::new(&sm_path).expect("create state machine");
         let sm = Arc::new(sm);
 
         (storage, sm)

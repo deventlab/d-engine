@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	RaftClientService_HandleClientWrite_FullMethodName = "/d_engine.client.RaftClientService/HandleClientWrite"
 	RaftClientService_HandleClientRead_FullMethodName  = "/d_engine.client.RaftClientService/HandleClientRead"
+	RaftClientService_HandleClientScan_FullMethodName  = "/d_engine.client.RaftClientService/HandleClientScan"
 	RaftClientService_Watch_FullMethodName             = "/d_engine.client.RaftClientService/Watch"
 	RaftClientService_WatchMembership_FullMethodName   = "/d_engine.client.RaftClientService/WatchMembership"
 )
@@ -31,6 +32,7 @@ const (
 type RaftClientServiceClient interface {
 	HandleClientWrite(ctx context.Context, in *ClientWriteRequest, opts ...grpc.CallOption) (*ClientResponse, error)
 	HandleClientRead(ctx context.Context, in *ClientReadRequest, opts ...grpc.CallOption) (*ClientResponse, error)
+	HandleClientScan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (*ClientResponse, error)
 	// Watch for changes to a specific key.
 	//
 	// Returns a stream of WatchResponse events whenever the watched key changes.
@@ -88,6 +90,16 @@ func (c *raftClientServiceClient) HandleClientRead(ctx context.Context, in *Clie
 	return out, nil
 }
 
+func (c *raftClientServiceClient) HandleClientScan(ctx context.Context, in *ScanRequest, opts ...grpc.CallOption) (*ClientResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClientResponse)
+	err := c.cc.Invoke(ctx, RaftClientService_HandleClientScan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *raftClientServiceClient) Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &RaftClientService_ServiceDesc.Streams[0], RaftClientService_Watch_FullMethodName, cOpts...)
@@ -132,6 +144,7 @@ type RaftClientService_WatchMembershipClient = grpc.ServerStreamingClient[Member
 type RaftClientServiceServer interface {
 	HandleClientWrite(context.Context, *ClientWriteRequest) (*ClientResponse, error)
 	HandleClientRead(context.Context, *ClientReadRequest) (*ClientResponse, error)
+	HandleClientScan(context.Context, *ScanRequest) (*ClientResponse, error)
 	// Watch for changes to a specific key.
 	//
 	// Returns a stream of WatchResponse events whenever the watched key changes.
@@ -174,6 +187,9 @@ func (UnimplementedRaftClientServiceServer) HandleClientWrite(context.Context, *
 }
 func (UnimplementedRaftClientServiceServer) HandleClientRead(context.Context, *ClientReadRequest) (*ClientResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method HandleClientRead not implemented")
+}
+func (UnimplementedRaftClientServiceServer) HandleClientScan(context.Context, *ScanRequest) (*ClientResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method HandleClientScan not implemented")
 }
 func (UnimplementedRaftClientServiceServer) Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method Watch not implemented")
@@ -238,6 +254,24 @@ func _RaftClientService_HandleClientRead_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RaftClientService_HandleClientScan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftClientServiceServer).HandleClientScan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RaftClientService_HandleClientScan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftClientServiceServer).HandleClientScan(ctx, req.(*ScanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RaftClientService_Watch_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(WatchRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -274,6 +308,10 @@ var RaftClientService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "HandleClientRead",
 			Handler:    _RaftClientService_HandleClientRead_Handler,
+		},
+		{
+			MethodName: "HandleClientScan",
+			Handler:    _RaftClientService_HandleClientScan_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

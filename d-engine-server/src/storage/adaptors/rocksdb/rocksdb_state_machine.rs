@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::time::SystemTime;
 
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
@@ -12,7 +11,6 @@ use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
 use d_engine_core::Command;
 use d_engine_core::Error;
-use d_engine_core::Lease;
 use d_engine_core::ScanResult;
 use d_engine_core::SnapshotApplyResult;
 use d_engine_core::SnapshotError;
@@ -41,16 +39,13 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
-use tracing::warn;
 
 use super::STATE_MACHINE_CF;
 use super::STATE_MACHINE_META_CF;
-use crate::storage::TtlLease;
 
 const LAST_APPLIED_INDEX_KEY: &[u8] = b"last_applied_index";
 const LAST_APPLIED_TERM_KEY: &[u8] = b"last_applied_term";
 const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
-const TTL_STATE_KEY: &[u8] = b"ttl_state";
 
 thread_local! {
     // SM WAL is redundant — Raft log WAL guarantees entry durability.
@@ -85,7 +80,7 @@ struct CfExportFile {
     num_deletions: u64,
 }
 
-/// RocksDB-based state machine implementation with lease support
+/// RocksDB-based state machine implementation
 #[derive(Debug)]
 pub struct RocksDBStateMachine {
     // ArcSwapOption: close_db() stores None to release the RocksDB LOCK file immediately,
@@ -95,11 +90,6 @@ pub struct RocksDBStateMachine {
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
     last_snapshot_metadata: RwLock<Option<SnapshotMetadata>>,
-
-    // Lease management for automatic key expiration
-    // TtlLease is thread-safe internally (uses DashMap + Mutex)
-    // Injected by NodeBuilder after construction
-    lease: Option<Arc<TtlLease>>,
 }
 
 /// Returns the lexicographic successor of `prefix` for use as an iterator upper bound.
@@ -149,7 +139,6 @@ impl RocksDBStateMachine {
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
             last_snapshot_metadata: RwLock::new(last_snapshot_metadata),
-            lease: None,
         })
     }
 
@@ -167,20 +156,7 @@ impl RocksDBStateMachine {
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
             last_snapshot_metadata: RwLock::new(last_snapshot_metadata),
-            lease: None,
         })
-    }
-
-    /// Sets the lease manager for this state machine.
-    ///
-    /// This is an internal method called by NodeBuilder during initialization.
-    /// The lease will also be restored from snapshot during `apply_snapshot_from_file()`.
-    /// Also available for testing and benchmarks.
-    pub fn set_lease(
-        &mut self,
-        lease: Arc<TtlLease>,
-    ) {
-        self.lease = Some(lease);
     }
 
     /// Replaces the underlying DB with `new_db`. Only available in `#[cfg(test)]`.
@@ -312,61 +288,6 @@ impl RocksDBStateMachine {
         })
     }
 
-    fn persist_ttl_metadata(&self) -> Result<(), Error> {
-        let Some(ref lease) = self.lease else {
-            return Ok(());
-        };
-        let ttl_snapshot = lease.to_snapshot();
-        self.with_db(|db| {
-            let cf = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
-                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
-                    "State machine meta CF not found".to_string(),
-                )))
-            })?;
-            db.put_cf(&cf, TTL_STATE_KEY, &ttl_snapshot)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-            debug!("Persisted TTL state to RocksDB");
-            Ok(())
-        })
-    }
-
-    /// Loads TTL state from RocksDB metadata after lease injection.
-    ///
-    /// Called after NodeBuilder injects the lease.
-    /// Also available for testing and benchmarks.
-    pub async fn load_lease_data(&self) -> Result<(), Error> {
-        let Some(ref lease) = self.lease else {
-            return Ok(()); // No lease configured
-        };
-        self.with_db(|db| {
-            let cf = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
-                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
-                    "State machine meta CF not found".to_string(),
-                )))
-            })?;
-            match db
-                .get_cf(&cf, TTL_STATE_KEY)
-                .map_err(|e| StorageError::DbError(e.to_string()))?
-            {
-                Some(ttl_data) => {
-                    lease.reload(&ttl_data)?;
-                    debug!("Loaded TTL state from RocksDB: {} active TTLs", lease.len());
-                }
-                None => {
-                    debug!("No TTL state found in RocksDB");
-                }
-            }
-            Ok(())
-        })
-    }
-
-    fn apply_batch(
-        &self,
-        batch: WriteBatch,
-    ) -> Result<(), Error> {
-        self.with_db(|db| db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()).into()))
-    }
-
     // ===== Snapshot restore helpers =====
 
     /// Restore SM state from a snapshot (CF export format).
@@ -381,18 +302,6 @@ impl RocksDBStateMachine {
         self.with_db(|db| Self::restore_from_cf_export(db, snapshot_dir))?;
 
         info!("Snapshot restore complete");
-
-        // Restore lease if configured
-        if let Some(ref lease) = self.lease {
-            let ttl_path = snapshot_dir.join("ttl_state.bin");
-            if ttl_path.exists() {
-                let ttl_data = tokio::fs::read(&ttl_path).await?;
-                lease.reload(&ttl_data)?;
-                self.persist_ttl_metadata()?;
-            } else {
-                warn!("No lease state found in snapshot");
-            }
-        }
 
         *self.last_snapshot_metadata.write() = Some(metadata.clone());
         self.update_last_applied(last_included);
@@ -589,7 +498,7 @@ impl RocksDBStateMachine {
     }
 
     /// Test-only: quiesce RocksDB's background compaction/flush WITHOUT flushing
-    /// MemTable, saving hard state, or persisting TTL metadata — simulates what a
+    /// MemTable or saving hard state — simulates what a
     /// real `kill -9` leaves behind on disk (no "dying gasp" persistence a real
     /// crash would never get). Callers copy the data directory to a fresh path
     /// immediately after calling this, then open the copy to simulate restart —
@@ -617,17 +526,11 @@ impl StateMachine for RocksDBStateMachine {
     async fn start(&self) -> Result<(), Error> {
         self.is_serving.store(true, Ordering::SeqCst);
 
-        // Load persisted lease data if configured
-        if let Some(ref _lease) = self.lease {
-            self.load_lease_data().await?;
-            debug!("Lease data loaded during state machine initialization");
-        }
-
         info!("RocksDB state machine started");
         Ok(())
     }
 
-    /// Sequence: stop serving → persist TTL → flush → save hard state → cancel background
+    /// Sequence: stop serving → flush → save hard state → cancel background
     /// work → drop the DB handle (releasing the LOCK). A second call finds no DB and does nothing.
     fn close(&self) -> Result<(), Error> {
         if self.db.load().is_none() {
@@ -645,7 +548,6 @@ impl StateMachine for RocksDBStateMachine {
                 first_err.get_or_insert(e);
             }
         };
-        record("persist TTL metadata", self.persist_ttl_metadata());
         record("flush", self.flush());
         record("save hard state", self.save_hard_state());
         if let Some(db) = self.db.load().as_deref() {
@@ -731,26 +633,13 @@ impl StateMachine for RocksDBStateMachine {
                     debug!("Handling NOOP command at index {}", entry.index);
                     results.push(ApplyResult::success(entry.index));
                 }
-                Command::Insert {
-                    key,
-                    value,
-                    ttl_secs,
-                } => {
+                Command::Insert { key, value } => {
                     batch.put_cf(&cf, key, value);
-
-                    if let Some(ttl) = ttl_secs {
-                        let lease =
-                            self.lease.as_ref().expect("lease always initialized by NodeBuilder");
-                        lease.register(key.clone(), *ttl);
-                    }
 
                     results.push(ApplyResult::success(entry.index));
                 }
                 Command::Delete { key } => {
                     batch.delete_cf(&cf, key);
-                    if let Some(ref lease) = self.lease {
-                        lease.unregister(key);
-                    }
                     results.push(ApplyResult::success(entry.index));
                 }
                 Command::CompareAndSwap {
@@ -796,9 +685,6 @@ impl StateMachine for RocksDBStateMachine {
                         }
                         d_engine_core::BatchOp::Delete { key } => {
                             batch.delete_cf(&cf, key);
-                            if let Some(ref lease) = self.lease {
-                                lease.unregister(key);
-                            }
                         }
                     });
                     results.push(ApplyResult::success(entry.index));
@@ -1012,13 +898,6 @@ impl StateMachine for RocksDBStateMachine {
         .await
         .map_err(Self::map_snapshot_join_error)??;
 
-        // Persist lease state alongside the export (if configured)
-        if let Some(ref lease) = self.lease {
-            let ttl_snapshot = lease.to_snapshot();
-            let ttl_path = new_snapshot_dir.join("ttl_state.bin");
-            tokio::fs::write(&ttl_path, ttl_snapshot).await?;
-        }
-
         let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
 
         info!("Snapshot generated at {:?}", new_snapshot_dir);
@@ -1085,57 +964,6 @@ impl StateMachine for RocksDBStateMachine {
 
         info!("RocksDB state machine reset completed");
         Ok(())
-    }
-
-    async fn lease_background_cleanup(&self) -> Result<Vec<Bytes>, Error> {
-        let Some(ref lease) = self.lease else {
-            return Ok(vec![]);
-        };
-
-        // Fast path: no TTL keys ever registered — single atomic load (~10ns)
-        if !lease.has_lease_keys() {
-            return Ok(vec![]);
-        }
-
-        let now = SystemTime::now();
-
-        // Fast path: sample first 10 entries — if none expired, skip full scan (~30ns)
-        if !lease.may_have_expired_keys(now) {
-            return Ok(vec![]);
-        }
-
-        let expired_keys = lease.get_expired_keys(now);
-
-        if expired_keys.is_empty() {
-            return Ok(vec![]);
-        }
-
-        debug!(
-            "Lease background cleanup: found {} expired keys",
-            expired_keys.len()
-        );
-
-        // Delete expired keys from RocksDB
-        let batch = self.with_db(|db| {
-            let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
-                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
-                    "State machine CF not found".to_string(),
-                )))
-            })?;
-            let mut batch = WriteBatch::default();
-            for key in &expired_keys {
-                batch.delete_cf(&cf, key);
-            }
-            Ok(batch)
-        })?;
-        self.apply_batch(batch)?;
-
-        info!(
-            "Lease background cleanup: deleted {} expired keys",
-            expired_keys.len()
-        );
-
-        Ok(expired_keys)
     }
 
     fn scan_prefix(

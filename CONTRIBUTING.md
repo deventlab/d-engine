@@ -63,7 +63,7 @@ We're in **active development** based on real user feedback. Our priorities evol
 
 ## Versioning Policy
 
-Starting after v0.2.5:
+Starting after v0.2.4:
 
 - **Patch (0.2.x → 0.2.x+1)**: bug fixes, docs, performance, internal-only changes — no breaking changes
 - **Minor (0.2.x → 0.3.0)**: breaking API/behavior changes allowed

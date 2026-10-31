@@ -21,7 +21,7 @@ use crate::storage::adaptors::file::FileStateMachine;
 
 /// close() must mark the SM as not running.
 /// FileStateMachine has no exclusive OS lock, so close() is a lifecycle
-/// signal and persists lease state.
+/// signal and flushes state to disk.
 #[tokio::test]
 async fn test_file_sm_close_marks_not_running() {
     let dir = TempDir::new().unwrap();
@@ -50,7 +50,6 @@ async fn test_file_sm_reads_fail_after_close() {
         command: Command::Insert {
             key: Bytes::from_static(b"k"),
             value: Bytes::from_static(b"v"),
-            ttl_secs: None,
         },
     }])
     .await
@@ -148,7 +147,6 @@ async fn test_wal_replay_after_crash() {
             command: Command::Insert {
                 key: Bytes::from("key1"),
                 value: Bytes::from("value1"),
-                ttl_secs: None,
             },
         },
         ApplyEntry {
@@ -157,7 +155,6 @@ async fn test_wal_replay_after_crash() {
             command: Command::Insert {
                 key: Bytes::from("key2"),
                 value: Bytes::from("value2"),
-                ttl_secs: None,
             },
         },
     ];
@@ -176,7 +173,6 @@ async fn test_wal_replay_after_crash() {
         command: Command::Insert {
             key: Bytes::from("key3"),
             value: Bytes::from("value3"),
-            ttl_secs: None,
         },
     }];
     let dummy_outcomes = vec![false; crash_entries.len()]; // non-CAS entries: outcome unused
@@ -203,6 +199,60 @@ async fn test_wal_replay_after_crash() {
     );
 }
 
+/// WAL replay stops at the first truncated entry and discards the tail.
+///
+/// A truncated WAL tail is the expected outcome of a crash in the middle of a write. Replay must
+/// stop at the first incomplete entry instead of reading garbage bytes. Complete entries before
+/// the truncation point are applied; the truncated entry and anything after it are dropped.
+#[tokio::test]
+async fn test_wal_replay_truncated_tail_keeps_complete_entries() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let data_dir = temp_dir.path().to_path_buf();
+
+    let sm = FileStateMachine::new(data_dir.clone()).await.unwrap();
+    let entries = vec![
+        ApplyEntry {
+            index: 1,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from("key1"),
+                value: Bytes::from("value1"),
+            },
+        },
+        ApplyEntry {
+            index: 2,
+            term: 1,
+            command: Command::Insert {
+                key: Bytes::from("key2"),
+                value: Bytes::from("value2"),
+            },
+        },
+    ];
+    // Write to the WAL only (memory and state.data untouched), then simulate a crash.
+    sm.append_to_wal(&entries, &[false, false]).await.unwrap();
+    drop(sm);
+
+    // Cut the last bytes off the WAL so the second entry is incomplete.
+    let wal_path = data_dir.join("wal.log");
+    let wal = std::fs::OpenOptions::new().write(true).open(&wal_path).unwrap();
+    let len = wal.metadata().unwrap().len();
+    wal.set_len(len - 3).unwrap();
+    drop(wal);
+
+    let recovered = FileStateMachine::new(data_dir).await.unwrap();
+
+    assert_eq!(
+        recovered.get(b"key1").unwrap(),
+        Some(Bytes::from("value1")),
+        "complete entry before the truncation point must be replayed"
+    );
+    assert_eq!(
+        recovered.get(b"key2").unwrap(),
+        None,
+        "truncated entry must be dropped"
+    );
+}
+
 // ── CAS WAL crash-safety tests ────────────────────────────────────────────────
 
 /// A failed CAS must NOT corrupt data when the node crashes and replays WAL.
@@ -223,7 +273,6 @@ async fn test_cas_failure_wal_replay_does_not_corrupt_data() {
         command: Command::Insert {
             key: Bytes::from("k"),
             value: Bytes::from("original"),
-            ttl_secs: None,
         },
     }])
     .await
@@ -279,7 +328,6 @@ async fn test_cas_in_same_chunk_as_preceding_insert() {
                 command: Command::Insert {
                     key: Bytes::from("k"),
                     value: Bytes::from("v1"),
-                    ttl_secs: None,
                 },
             },
             ApplyEntry {
@@ -312,7 +360,6 @@ async fn test_cas_success_wal_replay_applies_new_value() {
         command: Command::Insert {
             key: Bytes::from("k"),
             value: Bytes::from("v1"),
-            ttl_secs: None,
         },
     }])
     .await
@@ -367,7 +414,6 @@ async fn test_replay_wal_unknown_opcode_returns_error() {
         command: Command::Insert {
             key: Bytes::from("k"),
             value: Bytes::from("v"),
-            ttl_secs: None,
         },
     }])
     .await
@@ -376,16 +422,15 @@ async fn test_replay_wal_unknown_opcode_returns_error() {
 
     // Append a syntactically complete WAL entry whose opcode byte (99) is not
     // defined in WalOpCode. Format: index(8) + term(8) + opcode(1) + key_len(8)
-    // + val_len(8) + expire_at(8) = 41 bytes total (matches the Noop/CasFailed layout).
+    // + val_len(8) = 33 bytes total (matches the Noop/CasFailed layout).
     let wal_path = data_dir.join("wal.log");
     let mut file = tokio::fs::OpenOptions::new().append(true).open(&wal_path).await.unwrap();
-    let mut corrupt_entry = Vec::with_capacity(41);
+    let mut corrupt_entry = Vec::with_capacity(33);
     corrupt_entry.extend_from_slice(&2u64.to_be_bytes()); // index = 2
     corrupt_entry.extend_from_slice(&1u64.to_be_bytes()); // term  = 1
     corrupt_entry.push(99u8); // unknown opcode
     corrupt_entry.extend_from_slice(&0u64.to_be_bytes()); // key_len = 0
     corrupt_entry.extend_from_slice(&0u64.to_be_bytes()); // val_len = 0
-    corrupt_entry.extend_from_slice(&0u64.to_be_bytes()); // expire_at = 0
     file.write_all(&corrupt_entry).await.unwrap();
     file.flush().await.unwrap();
     drop(file);
@@ -415,7 +460,6 @@ async fn test_file_sm_scan_prefix_returns_matching_keys() {
             command: Command::Insert {
                 key: Bytes::from("/services/node1"),
                 value: Bytes::from("10.0.0.1"),
-                ttl_secs: None,
             },
         },
         ApplyEntry {
@@ -424,7 +468,6 @@ async fn test_file_sm_scan_prefix_returns_matching_keys() {
             command: Command::Insert {
                 key: Bytes::from("/services/node2"),
                 value: Bytes::from("10.0.0.2"),
-                ttl_secs: None,
             },
         },
         ApplyEntry {
@@ -433,7 +476,6 @@ async fn test_file_sm_scan_prefix_returns_matching_keys() {
             command: Command::Insert {
                 key: Bytes::from("/other/key"),
                 value: Bytes::from("must_not_appear"),
-                ttl_secs: None,
             },
         },
     ];
@@ -466,7 +508,6 @@ async fn test_file_sm_scan_prefix_empty_namespace() {
         command: Command::Insert {
             key: Bytes::from("/other/key"),
             value: Bytes::from("v"),
-            ttl_secs: None,
         },
     }])
     .await
@@ -507,7 +548,6 @@ async fn test_get_multi_file_sm_atomic_state_transitions() {
             command: Command::Insert {
                 key: Bytes::from("/svc/addr"),
                 value: Bytes::from("10.0.0.1"),
-                ttl_secs: None,
             },
         },
         ApplyEntry {
@@ -516,7 +556,6 @@ async fn test_get_multi_file_sm_atomic_state_transitions() {
             command: Command::Insert {
                 key: Bytes::from("/svc/version"),
                 value: Bytes::from("v1"),
-                ttl_secs: None,
             },
         },
     ])
@@ -542,7 +581,6 @@ async fn test_get_multi_file_sm_atomic_state_transitions() {
             command: Command::Insert {
                 key: Bytes::from("/svc/addr"),
                 value: Bytes::from("10.0.0.2"),
-                ttl_secs: None,
             },
         },
         ApplyEntry {
@@ -551,7 +589,6 @@ async fn test_get_multi_file_sm_atomic_state_transitions() {
             command: Command::Insert {
                 key: Bytes::from("/svc/version"),
                 value: Bytes::from("v2"),
-                ttl_secs: None,
             },
         },
     ])
@@ -597,7 +634,6 @@ async fn test_file_sm_scan_prefix_revision_reflects_applied_index() {
             command: Command::Insert {
                 key: Bytes::from(format!("/s/{i}")),
                 value: Bytes::from(format!("{i}")),
-                ttl_secs: None,
             },
         })
         .collect();
@@ -627,7 +663,6 @@ fn insert_at(
         command: Command::Insert {
             key: Bytes::from(key.to_vec()),
             value: Bytes::from(value.to_vec()),
-            ttl_secs: None,
         },
     }
 }
@@ -909,4 +944,102 @@ async fn test_replay_wal_skips_stale_entries_below_last_applied() {
         LogId { term: 1, index: 10 },
         "last_applied must remain at the snapshot boundary after recovery"
     );
+}
+
+/// An empty value is a real value, and WAL replay must restore it.
+///
+/// Releasing a lock is written as a put or a CAS with an empty value. If replay treated an empty
+/// value as "no value" and skipped the entry, the key would be missing after a crash even though
+/// the write was acknowledged.
+#[tokio::test]
+async fn test_wal_replay_restores_empty_value() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let data_dir = temp_dir.path().to_path_buf();
+
+    let sm = FileStateMachine::new(data_dir.clone()).await.unwrap();
+    let entries = vec![insert_at(b"put_key", b"", 1), ApplyEntry {
+        index: 2,
+        term: 1,
+        command: Command::CompareAndSwap {
+            key: Bytes::from("cas_key"),
+            expected: None,
+            value: Bytes::new(),
+        },
+    }];
+    // Write to the WAL only (memory and state.data untouched), then simulate a crash.
+    // The second entry is a successful CAS.
+    sm.append_to_wal(&entries, &[false, true]).await.unwrap();
+    drop(sm);
+
+    let recovered = FileStateMachine::new(data_dir).await.unwrap();
+
+    assert_eq!(
+        recovered.get(b"put_key").unwrap(),
+        Some(Bytes::new()),
+        "empty-value insert must be replayed"
+    );
+    assert_eq!(
+        recovered.get(b"cas_key").unwrap(),
+        Some(Bytes::new()),
+        "successful CAS with an empty value must be replayed"
+    );
+}
+
+// ── snapshot file format ──────────────────────────────────────────────────────
+
+/// `snapshot.bin` holds only `key_len | key | value_len | value | term` records.
+///
+/// Nothing follows the last record. Guards the on-disk layout that
+/// `apply_snapshot_from_file` parses until end of file.
+#[tokio::test]
+async fn test_file_sm_snapshot_contains_only_kv_records() {
+    let dir = TempDir::new().unwrap();
+    let sm = FileStateMachine::new(dir.path().join("sm")).await.unwrap();
+    sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
+
+    let snapshot_dir = dir.path().join("snapshot");
+    sm.generate_snapshot_data(snapshot_dir.clone(), LogId { term: 1, index: 1 })
+        .await
+        .unwrap();
+
+    let len = std::fs::metadata(snapshot_dir.join("snapshot.bin")).unwrap().len();
+    // key_len(8) + "k"(1) + value_len(8) + "v"(1) + term(8)
+    assert_eq!(len, 26, "snapshot.bin must contain exactly one KV record");
+}
+
+/// A snapshot of an empty state machine must install as an empty state machine.
+///
+/// The receiver's older data has to be replaced, not kept, even though the snapshot file
+/// contains no records.
+#[tokio::test]
+async fn test_file_sm_install_empty_snapshot_clears_existing_data() {
+    let dir = TempDir::new().unwrap();
+
+    let source = FileStateMachine::new(dir.path().join("source")).await.unwrap();
+    let snapshot_dir = dir.path().join("snapshot");
+    let checksum = source
+        .generate_snapshot_data(snapshot_dir.clone(), LogId { term: 1, index: 5 })
+        .await
+        .unwrap();
+
+    let receiver = FileStateMachine::new(dir.path().join("receiver")).await.unwrap();
+    receiver.apply_chunk(&[insert_at(b"stale", b"v", 1)]).await.unwrap();
+    assert_eq!(receiver.get(b"stale").unwrap(), Some(Bytes::from("v")));
+
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { term: 1, index: 5 }),
+        checksum: Bytes::copy_from_slice(&checksum),
+    };
+    let result = receiver.apply_snapshot_from_file(&metadata, snapshot_dir).await.unwrap();
+
+    assert!(
+        matches!(result, SnapshotApplyResult::Applied { .. }),
+        "expected Applied, got: {result:?}"
+    );
+    assert_eq!(
+        receiver.get(b"stale").unwrap(),
+        None,
+        "installing an empty snapshot must replace the receiver's data"
+    );
+    assert_eq!(receiver.last_applied(), LogId { term: 1, index: 5 });
 }

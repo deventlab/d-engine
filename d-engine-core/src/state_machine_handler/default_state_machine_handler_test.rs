@@ -59,7 +59,6 @@ fn batch_entry(
                 op: Some(Op::Insert(Insert {
                     key: Bytes::copy_from_slice(key),
                     value: Bytes::copy_from_slice(value),
-                    ttl_secs: 0,
                 })),
             }],
         })),
@@ -320,7 +319,6 @@ mod apply_chunk_test {
                     op: Some(Op::Insert(Insert {
                         key: Bytes::from_static(b"k1"),
                         value: Bytes::from_static(b"v1"),
-                        ttl_secs: 0,
                     })),
                 }],
             })),
@@ -381,7 +379,6 @@ mod apply_chunk_test {
                     op: Some(Op::Insert(Insert {
                         key: Bytes::from_static(b"k1"),
                         value: Bytes::from_static(b"v1"),
-                        ttl_secs: 0,
                     })),
                 }],
             })),
@@ -530,7 +527,6 @@ mod decode_boundary_tests {
             operation: Some(Operation::Insert(Insert {
                 key: Bytes::copy_from_slice(key),
                 value: Bytes::copy_from_slice(value),
-                ttl_secs: 0,
             })),
         };
         let mut buf = Vec::new();
@@ -2152,7 +2148,6 @@ mod broadcast_watch_events_tests {
         let entry = apply_entry(1, Command::Insert {
             key: Bytes::from_static(b"key1"),
             value: Bytes::from_static(b"value1"),
-            ttl_secs: None,
         });
 
         broadcast_watch_events(&[entry], &[succeeded(1)], &tx, None);
@@ -2267,7 +2262,6 @@ mod broadcast_watch_events_tests {
             apply_entry(1, Command::Insert {
                 key: Bytes::from_static(b"k1"),
                 value: Bytes::from_static(b"v1"),
-                ttl_secs: None,
             }),
             apply_entry(2, Command::CompareAndSwap {
                 key: Bytes::from_static(b"k2"),
@@ -2516,7 +2510,6 @@ mod prev_kv_apply_tests {
             operation: Some(Operation::Insert(Insert {
                 key: Bytes::copy_from_slice(key),
                 value: Bytes::copy_from_slice(value),
-                ttl_secs: 0,
             })),
         };
         let mut buf = Vec::new();

@@ -18,7 +18,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Build context is the d-engine workspace root.
-# Run: docker build -t demo:v0.2.4 -f examples/three-nodes-standalone/docker/Dockerfile .
+# Run: docker build -t demo:v0.3.0 -f examples/three-nodes-standalone/docker/Dockerfile .
 WORKDIR /build
 
 # Disable sccache: .cargo/config.toml sets rustc-wrapper=sccache for local dev,

@@ -41,7 +41,7 @@ impl StandaloneEngine {
         // one even checks this lock.
         let data_dir_lock = crate::node::DataDirLock::acquire(data_dir.as_path())?;
 
-        let (storage, mut sm) = if config.storage.unified_db {
+        let (storage, sm) = if config.storage.unified_db {
             let db_path = data_dir.unified_db_path()?;
             tracing::info!(
                 "Starting standalone server with unified RocksDB at {:?}",
@@ -57,11 +57,6 @@ impl StandaloneEngine {
             let sm = RocksDBStateMachine::new(data_dir.state_machine_path()?)?;
             (storage, sm)
         };
-
-        let lease = Arc::new(crate::storage::TtlLease::new(
-            config.raft.state_machine.lease.clone(),
-        ));
-        sm.set_lease(lease);
 
         Self::start_node_with_lock(
             data_dir.as_path().to_path_buf(),
@@ -95,7 +90,7 @@ impl StandaloneEngine {
         let data_dir = crate::node::DataDir::new(data_dir.as_ref())?;
         let data_dir_lock = crate::node::DataDirLock::acquire(data_dir.as_path())?;
 
-        let (storage, mut sm) = if config.storage.unified_db {
+        let (storage, sm) = if config.storage.unified_db {
             let db_path = data_dir.unified_db_path()?;
             tracing::info!(
                 "Starting standalone server with unified RocksDB at {:?}",
@@ -111,11 +106,6 @@ impl StandaloneEngine {
             let sm = RocksDBStateMachine::new(data_dir.state_machine_path()?)?;
             (storage, sm)
         };
-
-        let lease = Arc::new(crate::storage::TtlLease::new(
-            config.raft.state_machine.lease.clone(),
-        ));
-        sm.set_lease(lease);
 
         // start_node_with_lock directly — config already loaded/validated,
         // lock already held.

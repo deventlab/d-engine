@@ -309,23 +309,8 @@ where
             )
         })?;
 
-        // Note: Lease configuration should be injected BEFORE wrapping in Arc.
-        // See StandaloneServer::start() or EmbeddedEngine::with_rocksdb() for correct pattern.
-        // If state_machine is passed from user code, they are responsible for lease injection.
-
         // Start state machine: flip flags and load persisted data
         state_machine.start().await?;
-
-        // Spawn lease background cleanup task (TTL is always active)
-        info!(
-            "Starting lease background cleanup worker (interval: {}ms)",
-            node_config.raft.state_machine.lease.cleanup_interval_ms
-        );
-        let lease_cleanup_handle = Some(Self::spawn_background_cleanup_worker(
-            Arc::clone(&state_machine),
-            node_config.raft.state_machine.lease.cleanup_interval_ms,
-            self.shutdown_signal.clone(),
-        ));
 
         // Handle storage engine initialization
         let storage_engine = self.storage_engine.take().ok_or_else(|| {
@@ -648,7 +633,6 @@ where
             sm_worker,
             read_actor_handle: std::sync::Mutex::new(Some(read_actor_handle)),
             rpc_server_handle: std::sync::Mutex::new(None),
-            _lease_cleanup_handle: lease_cleanup_handle,
             shutdown_signal: self.shutdown_signal.clone(),
             read_lease,
             _data_dir: data_dir,
@@ -657,61 +641,6 @@ where
 
         self.node = Some(Arc::new(node));
         Ok(self)
-    }
-
-    /// Spawn lease background cleanup task (if enabled).
-    ///
-    /// This task runs independently from Raft apply pipeline, avoiding any blocking.
-    /// Only spawns when cleanup_strategy = "background" (not "disabled" or "piggyback").
-    ///
-    /// # Arguments
-    /// * `state_machine` - Arc reference to state machine for accessing lease manager
-    /// * `lease_config` - Lease configuration determining cleanup behavior
-    /// * `shutdown_signal` - Watch channel for graceful shutdown notification
-    ///
-    /// # Returns
-    /// * `Option<JoinHandle>` - Task handle if background cleanup is enabled, None otherwise
-    ///
-    /// # Design Principles
-    /// - **Zero overhead**: If disabled, returns None immediately (no task spawned)
-    /// - **One page visible**: All long-running tasks spawned here in builder.rs
-    /// - **Graceful shutdown**: Monitors shutdown signal for clean termination
-    fn spawn_background_cleanup_worker(
-        state_machine: Arc<SM>,
-        cleanup_interval_ms: u64,
-        mut shutdown_signal: watch::Receiver<()>,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_millis(cleanup_interval_ms));
-
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        // Call state machine's lease background cleanup
-                        match state_machine.lease_background_cleanup().await {
-                            Ok(deleted_keys) => {
-                                if !deleted_keys.is_empty() {
-                                    debug!(
-                                        "Lease background cleanup: deleted {} expired keys",
-                                        deleted_keys.len()
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                error!("Lease background cleanup failed: {:?}", e);
-                            }
-                        }
-                    }
-                    _ = shutdown_signal.changed() => {
-                        info!("Lease background cleanup received shutdown signal");
-                        break;
-                    }
-                }
-            }
-
-            debug!("Lease background cleanup worker stopped");
-        })
     }
 
     /// Starts the gRPC server for cluster communication.
@@ -743,9 +672,9 @@ where
     /// Builds and starts the Raft node.
     ///
     /// This is the primary method to initialize and start a node. It performs:
-    /// 1. State machine initialization (including lease injection if applicable)
+    /// 1. State machine initialization
     /// 2. Raft core construction
-    /// 3. Background task spawning (state machine worker, read actor, lease cleanup)
+    /// 3. Background task spawning (state machine worker, read actor)
     /// 4. gRPC server startup for cluster communication
     ///
     /// # Returns

@@ -99,7 +99,7 @@ start-cluster:
 # Isolates each node's storage on its own independent RAM disk volume — use
 # this to strip physical-disk latency out of a benchmark (e.g. to study
 # fsync/scheduling behavior in isolation), not as a general fix for
-# unrelated flakiness. See tickets/milestones/v0.2.5/446-perf-batching-measurement-2026-09-13.md.
+# unrelated flakiness.
 RAMDISK_SIZE_MB ?= 1024
 RAMDISK_SECTORS := $(shell echo $$(( $(RAMDISK_SIZE_MB) * 2048 )))
 RAMDISK_VOLUMES := RAMDisk1 RAMDisk2 RAMDisk3

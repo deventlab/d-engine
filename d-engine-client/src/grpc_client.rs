@@ -322,44 +322,6 @@ impl ClientApi for GrpcClient {
         }
     }
 
-    async fn put_with_ttl(
-        &self,
-        key: impl AsRef<[u8]> + Send,
-        value: impl AsRef<[u8]> + Send,
-        ttl_secs: u64,
-    ) -> ClientApiResult<()> {
-        // Performance tracking for put_with_ttl operation
-        let _timer = ScopedTimer::new("client::put_with_ttl");
-
-        let client_inner = self.client_inner.load();
-
-        // Build write request with TTL-enabled insert command
-        let command = WriteCommand::insert_with_ttl(
-            Bytes::copy_from_slice(key.as_ref()),
-            Bytes::copy_from_slice(value.as_ref()),
-            ttl_secs,
-        );
-
-        let request = ClientWriteRequest {
-            client_id: client_inner.client_id,
-            command: Some(command),
-        };
-
-        // Send write request to leader node (strong consistency required)
-        let mut client = self.make_leader_client().await?;
-        match client.handle_client_write(request).await {
-            Ok(response) => {
-                debug!("[:GrpcClient:put_with_ttl] response: {:?}", response);
-                let client_response = response.get_ref();
-                client_response.validate_error()
-            }
-            Err(status) => {
-                error!("[:GrpcClient:put_with_ttl] status: {:?}", status);
-                Err(Into::<ClientApiError>::into(ClientApiError::from(status)))
-            }
-        }
-    }
-
     async fn batch(
         &self,
         ops: Vec<BatchOp>,
@@ -380,11 +342,7 @@ impl ClientApi for GrpcClient {
             .into_iter()
             .map(|op| match op {
                 BatchOp::Insert { key, value } => ProtoBatchOp {
-                    op: Some(batch_op::Op::Insert(Insert {
-                        key,
-                        value,
-                        ttl_secs: 0,
-                    })),
+                    op: Some(batch_op::Op::Insert(Insert { key, value })),
                 },
                 BatchOp::Delete { key } => ProtoBatchOp {
                     op: Some(batch_op::Op::Delete(Delete { key })),

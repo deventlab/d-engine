@@ -216,8 +216,6 @@ skip = [
     { crate = "socket2@0.5.10", reason = "tonic 0.13 pins socket2 0.5 internally" },
     # ring and socket2 0.5 pull windows-sys 0.52
     { crate = "windows-sys@0.52.0", reason = "transitive dep of ring 0.17 and socket2 0.5" },
-    # bindgen (rocksdb build dep) pins itertools 0.13
-    { crate = "itertools@0.13.0", reason = "bindgen (rocksdb build dep) pins itertools 0.13" },
     # tempfile/uuid pull getrandom 0.4.x while rand_core 0.9 still requires 0.3.x
     { crate = "getrandom@0.4.2", reason = "tempfile 3.27 and uuid 1.x use getrandom 0.4; rand_core 0.9 pins 0.3" },
     # getrandom 0.3.x→wasip2 and 0.4.x→wasip3 pull different wit-bindgen versions

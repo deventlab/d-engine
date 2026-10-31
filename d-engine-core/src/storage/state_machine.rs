@@ -89,13 +89,13 @@ pub trait StateMachine: Send + Sync + 'static {
     ///
     /// This method:
     /// 1. Flips internal state flags
-    /// 2. Loads persisted data (e.g., TTL state from disk)
+    /// 2. Loads persisted data from disk
     ///
     /// Called once during node startup. Performance is not critical.
     async fn start(&self) -> Result<(), Error>;
 
     /// Permanently closes the state machine: stops serving, persists what must survive a
-    /// restart (e.g. lease state, metadata), flushes, and releases exclusive resources
+    /// restart (e.g. data, metadata), flushes, and releases exclusive resources
     /// (e.g. a DB handle or its lock file).
     ///
     /// Called once by the state machine worker as its last act, after everything queued for
@@ -304,37 +304,5 @@ pub trait StateMachine: Send + Sync + 'static {
                 "scan_prefix not supported by this state machine".into(),
             ),
         )))
-    }
-
-    /// Background lease cleanup hook.
-    ///
-    /// Called periodically by the background cleanup task (if enabled).
-    /// Returns keys that were cleaned up.
-    ///
-    /// # Default Implementation
-    /// No-op, suitable for state machines without lease support.
-    ///
-    /// # Called By
-    /// Framework calls this from background cleanup task spawned in NodeBuilder::build().
-    /// Only called when cleanup_strategy = "background".
-    ///
-    /// # Returns
-    /// - Vec of deleted keys (for logging/metrics)
-    ///
-    /// # Example (d-engine built-in state machines)
-    /// ```ignore
-    /// async fn lease_background_cleanup(&self) -> Result<Vec<Bytes>, Error> {
-    ///     if let Some(ref lease) = self.lease {
-    ///         let expired_keys = lease.get_expired_keys(SystemTime::now());
-    ///         if !expired_keys.is_empty() {
-    ///             self.delete_batch(&expired_keys).await?;
-    ///         }
-    ///         return Ok(expired_keys);
-    ///     }
-    ///     Ok(vec![])
-    /// }
-    /// ```
-    async fn lease_background_cleanup(&self) -> Result<Vec<bytes::Bytes>, Error> {
-        Ok(vec![])
     }
 }

@@ -166,9 +166,7 @@ fn create_test_command_payload(index: u64) -> EntryPayload {
 
     let insert = Insert {
         key,
-        value,
-        ttl_secs: 0,
-    };
+        value,    };
     let operation = Operation::Insert(insert);
     let write_cmd = WriteCommand {
         operation: Some(operation),

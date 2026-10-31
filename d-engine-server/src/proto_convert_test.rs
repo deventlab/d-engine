@@ -33,7 +33,6 @@ fn test_to_core_write_req_insert_roundtrip() {
             operation: Some(Operation::Insert(Insert {
                 key: Bytes::from("key"),
                 value: Bytes::from("val"),
-                ttl_secs: 0,
             })),
         }),
     };
@@ -42,10 +41,7 @@ fn test_to_core_write_req_insert_roundtrip() {
     let bytes = core_req.command.expect("command must be Some");
     let decoded = WriteCommand::decode(bytes).expect("must decode to WriteCommand");
     assert!(
-        matches!(
-            decoded.operation,
-            Some(Operation::Insert(Insert { ttl_secs: 0, .. }))
-        ),
+        matches!(decoded.operation, Some(Operation::Insert(Insert { .. }))),
         "decoded command must be an Insert operation"
     );
 }

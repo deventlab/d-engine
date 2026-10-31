@@ -1,32 +1,32 @@
-# d-engine v0.2.5 Benchmark Report
+# d-engine v0.3.0 Benchmark Report
 
 **Date**: October 18, 2026 | **Platform**: AWS us-east-1, 3 x c5.2xlarge nodes + 1 x c5.4xlarge client, 50 GB gp3 root volume (3,000 IOPS, 125 MB/s) | 3-round means | 8 B keys, 256 B values
 
-**Which numbers:** the d-engine v0.2.5 columns in Summary and Sections 1 and 2 are the best configuration measured (October 20, 2026): the Raft log in the optional raft-engine log store, an experimental setting that is not part of the v0.2.5 release. The default log store (RocksDB WAL, October 18) is in Sections 1b and 1c; full tables are in [`bench_report_v0.2.5_raft_engine.md`](bench_report_v0.2.5_raft_engine.md).
+**Which numbers:** the d-engine v0.3.0 columns in Summary and Sections 1 and 2 are the best configuration measured (October 20, 2026): the Raft log in the optional raft-engine log store, an experimental setting that is not part of the v0.3.0 release. The default log store (RocksDB WAL, October 18) is in Sections 1b and 1c; full tables are in [`bench_report_v0.3.0_raft_engine.md`](bench_report_v0.3.0_raft_engine.md).
 
-Details: [`bench_report_v0.2.5_environment.md`](bench_report_v0.2.5_environment.md) (exact setup, commands, configuration) and [`bench_report_v0.2.5_details.md`](bench_report_v0.2.5_details.md) (every number, spreads, p99).
+Details: [`bench_report_v0.3.0_environment.md`](bench_report_v0.3.0_environment.md) (exact setup, commands, configuration) and [`bench_report_v0.3.0_details.md`](bench_report_v0.3.0_details.md) (every number, spreads, p99).
 
 ## Summary
 
-1. **v0.2.5 makes every commit wait for a physical `fdatasync` (RPO=0, #446), and on AWS EBS that costs one disk sync per commit.** At the same concurrency, single-client write falls from 4,393 to 836 ops/s (avg latency 0.228 to 1.196 ms) and 100-in-flight embedded write from 115,641 to 19,860 ops/s (0.864 to 5.036 ms). The added latency is close to one `fdatasync` that overwrites preallocated files, 0.89 ms measured: 0.228 + 0.89 = 1.12 ms against 1.196 ms measured. With the default log store the sync costs an append `fdatasync` (2.71 ms with fio on the same volume type) and the single-client write is 337 ops/s (2.962 ms), Section 1b.
+1. **v0.3.0 makes every commit wait for a physical `fdatasync` (RPO=0, #446), and on AWS EBS that costs one disk sync per commit.** At the same concurrency, single-client write falls from 4,393 to 836 ops/s (avg latency 0.228 to 1.196 ms) and 100-in-flight embedded write from 115,641 to 19,860 ops/s (0.864 to 5.036 ms). The added latency is close to one `fdatasync` that overwrites preallocated files, 0.89 ms measured: 0.228 + 0.89 = 1.12 ms against 1.196 ms measured. With the default log store the sync costs an append `fdatasync` (2.71 ms with fio on the same volume type) and the single-client write is 337 ops/s (2.962 ms), Section 1b.
 2. **Reads are mostly unaffected or faster.** In embedded mode lease and eventual reads are 2.6x faster (ReadActor, #392); in standalone mode they gain 12.3% and 4.1%. Linearizable read is 17% lower in embedded mode and 4.0% lower in standalone mode (within noise; the v0.2.4 value is one round).
-3. **Against etcd v3.7.2 on the same AWS nodes, d-engine is ahead on writes and on eventual reads, in both modes.** Standalone (200 in-flight): writes 35,080 vs 17,143 ops/s (**2.05x**), single-client write 712 vs 605 ops/s (**1.18x**), eventual read vs etcd's serializable read 212,625 vs 147,426 ops/s (**1.44x**); linearizable read is 0.90x. Embedded (in-process calls, no network hop, 100 in-flight): writes 1.97x, single-client write 1.38x, linearizable read 5.74x, eventual read 8.43x. Every acknowledged write is synced to disk first, as in etcd. These are the numbers with the optional raft-engine log store, an experimental setting that is not part of the v0.2.5 release; with the default log store the single-client write is behind etcd (0.52x standalone, 0.56x embedded) and the 200-in-flight write is 1.87x.
+3. **Against etcd v3.7.2 on the same AWS nodes, d-engine is ahead on writes and on eventual reads, in both modes.** Standalone (200 in-flight): writes 35,080 vs 17,143 ops/s (**2.05x**), single-client write 712 vs 605 ops/s (**1.18x**), eventual read vs etcd's serializable read 212,625 vs 147,426 ops/s (**1.44x**); linearizable read is 0.90x. Embedded (in-process calls, no network hop, 100 in-flight): writes 1.97x, single-client write 1.38x, linearizable read 5.74x, eventual read 8.43x. Every acknowledged write is synced to disk first, as in etcd. These are the numbers with the optional raft-engine log store, an experimental setting that is not part of the v0.3.0 release; with the default log store the single-client write is behind etcd (0.52x standalone, 0.56x embedded) and the 200-in-flight write is 1.87x.
 4. **With the RocksDB as storage, etcd's single-client write is faster because its WAL sync is cheaper: 1.05 ms per sync in etcd's own metrics, against about 2.7 ms for an appending write on this volume.** fio shows a preallocated overwrite costs 1.29 ms on average against 2.72 ms for an append, with about half the device writes per sync. Measured since: the RocksDB WAL sync averages 2.7 ms per commit on this volume (the append figure), against 0.9 ms for a log that overwrites preallocated files (Sections 1b and 1c).
 5. **The cost depends on the disk.** d-engine provides developer the flexibility to switch to any storage engine.
 
-![d-engine v0.2.4 vs v0.2.5, Embedded Mode, 100 in-flight](d-engine_v0.2.5_vs_v0.2.4_embedded_mode.png)
+![d-engine v0.2.4 vs v0.3.0, Embedded Mode, 100 in-flight](d-engine_v0.3.0_vs_v0.2.4_embedded_mode.png)
 
-![d-engine v0.2.4 vs v0.2.5, Standalone Mode, 200 in-flight](d-engine_v0.2.5_vs_v0.2.4_standalone_mode.png)
+![d-engine v0.2.4 vs v0.3.0, Standalone Mode, 200 in-flight](d-engine_v0.3.0_vs_v0.2.4_standalone_mode.png)
 
-![d-engine v0.2.5 (Embedded) vs etcd v3.7.2, 100 in-flight](d-engine_comparison_v0.2.5.png)
+![d-engine v0.3.0 (Embedded) vs etcd v3.7.2, 100 in-flight](d-engine_comparison_v0.3.0.png)
 
-Charts (log scale, same data as Sections 1 and 2): v0.2.4 vs v0.2.5 in embedded mode at 100 in-flight; the same in standalone mode at 200 in-flight; d-engine v0.2.5 embedded against etcd v3.7.2 at 100 in-flight. There is no chart for standalone against etcd; that pair is in the Section 2 table.
+Charts (log scale, same data as Sections 1 and 2): v0.2.4 vs v0.3.0 in embedded mode at 100 in-flight; the same in standalone mode at 200 in-flight; d-engine v0.3.0 embedded against etcd v3.7.2 at 100 in-flight. There is no chart for standalone against etcd; that pair is in the Section 2 table.
 
-## 1. v0.2.5 vs v0.2.4, same concurrency
+## 1. v0.3.0 vs v0.2.4, same concurrency
 
-Embedded mode, 100 in-flight requests (single client: 1). Cells are ops/s (average latency). v0.2.5 = the best configuration (see the note at the top).
+Embedded mode, 100 in-flight requests (single client: 1). Cells are ops/s (average latency). v0.3.0 = the best configuration (see the note at the top).
 
-| Scenario               | v0.2.4             | v0.2.5               | Throughput |
+| Scenario               | v0.2.4             | v0.3.0               | Throughput |
 | ---------------------- | ------------------ | -------------------- | ---------- |
 | Single client write    | 4,393 (0.228 ms)   | 836 (1.196 ms)       | -81.0%     |
 | High concurrency write | 115,641 (0.864 ms) | 19,860 (5.036 ms)    | -82.8%     |
@@ -37,7 +37,7 @@ Embedded mode, 100 in-flight requests (single client: 1). Cells are ops/s (avera
 
 Standalone mode, 200 in-flight (single client: 1). Starred cells use the one clean round of v0.2.4 (the cluster was not ready in rounds 1 and 2, so they logged timeouts).
 
-| Scenario               | v0.2.4              | v0.2.5             | Throughput |
+| Scenario               | v0.2.4              | v0.3.0             | Throughput |
 | ---------------------- | ------------------- | ------------------ | ---------- |
 | Single client write    | 2,042 (0.494 ms)    | 712 (1.404 ms)     | -65.1%     |
 | High concurrency write | 63,308* (3.155 ms)  | 35,080 (5.696 ms)  | -44.6%     |
@@ -48,7 +48,7 @@ Standalone mode, 200 in-flight (single client: 1). Starred cells use the one cle
 
 ### 1b. Log store effect, embedded: default RocksDB WAL vs raft-engine (experimental)
 
-Both columns are v0.2.5, ops/s (average latency). The default column is October 18 on another instance set; raft-engine is October 20.
+Both columns are v0.3.0, ops/s (average latency). The default column is October 18 on another instance set; raft-engine is October 20.
 
 | Scenario               | RocksDB WAL, default | raft-engine          | Throughput |
 | ---------------------- | -------------------- | -------------------- | ---------- |
@@ -66,13 +66,13 @@ Both columns are v0.2.5, ops/s (average latency). The default column is October 
 | Linearizable read      | 82,215 (2.432 ms)    | 81,610 (2.448 ms)  | -0.7%      |
 | Eventual read          | 217,464 (0.916 ms)   | 212,625 (0.937 ms) | -2.2%      |
 
-## 2. d-engine v0.2.5 vs etcd v3.7.2 on the same AWS nodes
+## 2. d-engine v0.3.0 vs etcd v3.7.2 on the same AWS nodes
 
 etcd ran in a separate session on new instances of the same shape, three times from a freshly wiped cluster, with etcd's documented `benchmark` commands (leader address instead of the removed `--target-leader`). Both d-engine modes are compared, because d-engine is used both ways. Standalone is the like-for-like pair: etcd is also reached through a network client. d-engine = the best configuration (see the note at the top).
 
 **Standalone** (200 in-flight; single client: 1)
 
-| Case                                                | etcd v3.7.2                         | d-engine v0.2.5 standalone           | d-engine / etcd |
+| Case                                                | etcd v3.7.2                         | d-engine v0.3.0 standalone           | d-engine / etcd |
 | --------------------------------------------------- | ----------------------------------- | ------------------------------------ | --------------- |
 | Write, 1 in-flight                                  | 605 ops/s, 1.65 ms, p99 5.07 ms     | 712 ops/s, 1.40 ms, p99 3.15 ms      | 1.18x           |
 | Write, 200 in-flight                                | 17,143 ops/s, 11.7 ms, p99 19.7 ms  | 35,080 ops/s, 5.70 ms, p99 12.28 ms  | 2.05x           |
@@ -81,7 +81,7 @@ etcd ran in a separate session on new instances of the same shape, three times f
 
 **Embedded** (100 in-flight; single client: 1). The embedded bench ran at 100 in-flight, so etcd's 100 in-flight rows are the matched ones.
 
-| Case                                                | etcd v3.7.2                          | d-engine v0.2.5 embedded                | d-engine / etcd |
+| Case                                                | etcd v3.7.2                          | d-engine v0.3.0 embedded                | d-engine / etcd |
 | --------------------------------------------------- | ------------------------------------ | --------------------------------------- | --------------- |
 | Write, 1 in-flight                                  | 605 ops/s, 1.65 ms, p99 5.07 ms      | 836 ops/s, 1.20 ms, p99 3.00 ms         | 1.38x           |
 | Write, 100 in-flight                                | 10,064 ops/s, 9.93 ms, p99 17.0 ms   | 19,860 ops/s, 5.04 ms, p99 12.04 ms     | 1.97x           |

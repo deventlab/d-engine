@@ -9,7 +9,7 @@
 # ===============================
 # Storage engine under test. Default: Raft log in raft-engine (experimental).
 # ENGINE=rocksdb builds and runs the stock RocksDB-WAL binary, which is the
-# configuration of the v0.2.4 / v0.2.5 reports. Each engine has its own target dir
+# configuration of the v0.2.4 / v0.3.0 reports. Each engine has its own target dir
 # and its own data dir, so switching never mixes their files.
 ENGINE ?= raft-engine
 $(if $(filter raft-engine rocksdb,$(ENGINE)),,$(error ENGINE must be raft-engine or rocksdb, got '$(ENGINE)'))
@@ -44,8 +44,7 @@ VERIFY_FLAG := $(if $(filter true,$(VERIFY)),--verify-write,)
 
 # RAM disk (macOS only, optional) — isolates this node's storage on its own
 # independent RAM disk volume, to strip physical-disk latency out of a
-# benchmark. Not a general fix for unrelated flakiness — see
-# tickets/milestones/v0.2.5/446-perf-batching-measurement-2026-09-13.md.
+# benchmark. Not a general fix for unrelated flakiness.
 # One-shot: `make all-ram-tests`. Manual/single-node: add RAMDISK=true to
 # any test-* target (needs the other two nodes already running for quorum).
 RAMDISK ?= false
@@ -312,7 +311,7 @@ all-tests: build
 # Isolates each node's storage on its own independent RAM disk volume — use
 # this to strip physical-disk latency out of a benchmark (e.g. to study
 # fsync/scheduling behavior in isolation), not as a general fix for
-# unrelated flakiness. See tickets/milestones/v0.2.5/446-perf-batching-measurement-2026-09-13.md.
+# unrelated flakiness.
 
 # Ensures the RAM disks exist, then runs the full --batch suite for this
 # node on its own RAM disk volume — same scope/shape as `make all-tests

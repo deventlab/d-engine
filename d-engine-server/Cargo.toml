@@ -85,17 +85,9 @@ harness = false
 required-features = ["watch"]
 
 [[bench]]
-name = "ttl"
-harness = false
-
-[[bench]]
 name = "watch_overhead"
 harness = false
 required-features = ["watch", "rocksdb"]
-
-[[bench]]
-name = "lease_performance"
-harness = false
 
 [[bench]]
 name = "file_log_store"

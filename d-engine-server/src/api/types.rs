@@ -36,8 +36,6 @@ pub enum WriteOperation {
     Insert {
         key: Bytes,
         value: Bytes,
-        /// `None` = no expiration. Proto encodes this as `ttl_secs = 0`.
-        ttl_secs: Option<u64>,
     },
     Delete {
         key: Bytes,
@@ -66,16 +64,8 @@ pub enum WriteOperation {
 impl From<WriteOperation> for WriteCommand {
     fn from(op: WriteOperation) -> Self {
         match op {
-            WriteOperation::Insert {
-                key,
-                value,
-                ttl_secs,
-            } => WriteCommand {
-                operation: Some(Operation::Insert(Insert {
-                    key,
-                    value,
-                    ttl_secs: ttl_secs.unwrap_or(0),
-                })),
+            WriteOperation::Insert { key, value } => WriteCommand {
+                operation: Some(Operation::Insert(Insert { key, value })),
             },
             WriteOperation::Delete { key } => WriteCommand {
                 operation: Some(Operation::Delete(Delete { key })),
@@ -96,11 +86,7 @@ impl From<WriteOperation> for WriteCommand {
                     .into_iter()
                     .map(|op| match op {
                         BatchOp::Insert { key, value } => ProtoBatchOp {
-                            op: Some(batch_op::Op::Insert(Insert {
-                                key,
-                                value,
-                                ttl_secs: 0,
-                            })),
+                            op: Some(batch_op::Op::Insert(Insert { key, value })),
                         },
                         BatchOp::Delete { key } => ProtoBatchOp {
                             op: Some(batch_op::Op::Delete(Delete { key })),

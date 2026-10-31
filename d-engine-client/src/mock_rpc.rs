@@ -29,6 +29,8 @@ pub struct MockRpcService {
     pub expected_update_cluster_conf_response:
         Option<Result<ClusterConfUpdateResponse, tonic::Status>>,
     pub expected_client_propose_response: Option<Result<CoreClientResponse, tonic::Status>>,
+    /// Every `ClientWriteRequest` this mock received, in arrival order.
+    pub captured_write_requests: Arc<std::sync::Mutex<Vec<ClientWriteRequest>>>,
     pub expected_client_read_response: Option<Result<CoreClientResponse, tonic::Status>>,
 
     #[allow(clippy::type_complexity)]
@@ -171,8 +173,9 @@ impl RaftClientService for MockRpcService {
 
     async fn handle_client_write(
         &self,
-        _request: tonic::Request<ClientWriteRequest>,
+        request: tonic::Request<ClientWriteRequest>,
     ) -> std::result::Result<tonic::Response<ClientResponse>, tonic::Status> {
+        self.captured_write_requests.lock().unwrap().push(request.into_inner());
         match &self.expected_client_propose_response {
             Some(Ok(response)) => Ok(tonic::Response::new(core_to_proto_response(
                 response.clone(),

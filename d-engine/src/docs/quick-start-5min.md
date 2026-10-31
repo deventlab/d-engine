@@ -176,7 +176,7 @@ No gRPC overhead - direct function calls to embedded Raft core.
 - `get_eventual(key)` - Fastest local read (may be slightly stale)
 - `delete(key)` - Delete key
 
-See docs for TTL, multi-key operations, and advanced consistency control.
+See docs for multi-key operations and advanced consistency control.
 
 ---
 
@@ -256,7 +256,7 @@ client.get_eventual(key: impl Into<Vec<u8>>) -> Result<Option<Bytes>>
 client.delete(key: Vec<u8>) -> Result<DeleteResponse>
 ```
 
-See [complete API documentation](https://docs.rs/d-engine/latest/d_engine/prelude/struct.EmbeddedClient.html) for all available methods including TTL operations, multi-key reads, and consistency control.
+See [complete API documentation](https://docs.rs/d-engine/latest/d_engine/prelude/struct.EmbeddedClient.html) for all available methods including multi-key reads and consistency control.
 
 ---
 

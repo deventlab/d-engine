@@ -80,9 +80,7 @@ async fn test_snapshot_captures_all_current_data() {
             term: 1,
             command: Command::Insert {
                 key: Bytes::from(format!("snap_key_{i}")),
-                value: Bytes::from(format!("snap_val_{i}")),
-                ttl_secs: None,
-            },
+                value: Bytes::from(format!("snap_val_{i}")),            },
         })
         .collect();
     sm.apply_chunk(&entries).await.unwrap();
@@ -118,9 +116,7 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
         term: 1,
         command: Command::Insert {
             key: Bytes::from_static(b"before"),
-            value: Bytes::from_static(b"v1"),
-            ttl_secs: None,
-        },
+            value: Bytes::from_static(b"v1"),        },
     }];
     sm.apply_chunk(&pre_entries).await.unwrap();
 
@@ -135,9 +131,7 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
         term: 1,
         command: Command::Insert {
             key: Bytes::from_static(b"after"),
-            value: Bytes::from_static(b"v2"),
-            ttl_secs: None,
-        },
+            value: Bytes::from_static(b"v2"),        },
     }];
     sm.apply_chunk(&post_entries).await.unwrap();
 
@@ -168,9 +162,7 @@ async fn test_snapshot_install_content_survives_restart() {
             term: 1,
             command: Command::Insert {
                 key: Bytes::from(format!("install_key_{i}")),
-                value: Bytes::from(format!("install_val_{i}")),
-                ttl_secs: None,
-            },
+                value: Bytes::from(format!("install_val_{i}")),            },
         })
         .collect();
     source_sm.apply_chunk(&entries).await.unwrap();
@@ -246,9 +238,7 @@ async fn test_new_recovers_backup_after_interrupted_install() {
             term: 1,
             command: Command::Insert {
                 key: Bytes::from_static(b"pre_crash_key"),
-                value: Bytes::from_static(b"pre_crash_val"),
-                ttl_secs: None,
-            },
+                value: Bytes::from_static(b"pre_crash_val"),            },
         }])
         .await
         .unwrap();

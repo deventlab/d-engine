@@ -47,11 +47,6 @@ jobs:
           echo "Running d-engine Performance Benchmarks"
           echo "========================================="
           echo ""
-          echo "Performance Targets:"
-          echo "  • Without TTL: < 10ns overhead"
-          echo "  • With TTL passive check: < 50ns overhead"
-          echo "  • Piggyback cleanup: < 1ms"
-          echo ""
 
           # Run benchmarks and save output
           cargo bench --package d-engine-server 2>&1 | tee benchmark_output.txt
