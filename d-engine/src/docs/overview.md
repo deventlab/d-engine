@@ -57,7 +57,6 @@ Both expose identical methods — pick your mode, the API below applies to both.
 | Method                               | Description                                    |
 | ------------------------------------ | ---------------------------------------------- |
 | [`EmbeddedClient::put`]              | Write a key-value pair                         |
-| [`EmbeddedClient::put_with_ttl`]     | Write with expiry (key auto-expires after TTL) |
 | [`EmbeddedClient::delete`]           | Delete a key                                   |
 | [`EmbeddedClient::compare_and_swap`] | Atomic CAS                                     |
 

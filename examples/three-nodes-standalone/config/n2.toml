@@ -47,11 +47,6 @@ max_log_entries_before_snapshot = 5000
 retained_log_entries = 100
 cleanup_retain_count = 100
 
-# == TTL Lease Configuration ==
-[raft.state_machine.lease]
-cleanup_interval_ms = 1000
-max_cleanup_duration_ms = 1
-
 # == Network Control Plane (voting, heartbeat, etc.) ==
 [network.control]
 request_timeout_in_ms = 100

@@ -15,7 +15,7 @@ mkdir -p examples/three-nodes-standalone/docker/output/{logs,db}
 
 ```bash
 # Build core component (run from d-engine workspace root)
-docker build -t demo:v0.2.4 -f examples/three-nodes-standalone/docker/Dockerfile .
+docker build -t demo:v0.3.0 -f examples/three-nodes-standalone/docker/Dockerfile .
 
 # Build monitoring component
 docker build -t prometheus:1.0 \

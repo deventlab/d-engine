@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [v0.2.5] - 2026-XX-XX
+## [v0.3.0] - 2026-XX-XX
 
 ### Added
 
@@ -27,8 +27,6 @@ All notable changes to this project will be documented in this file.
 - **`raft.state_machine.shutdown_apply_timeout_ms`** (#455, default `5000`): how long shutdown waits for the state machine worker to apply the entries already committed. On timeout it logs an error and shuts down anyway; a restart replays what was not applied.
 
 ### Fixed
-
-- **fix(ttl) #398**: Removed `lease.enabled` flag — TTL expiration is always active. Fixes fatal crash when calling `put_with_ttl` without setting the (now-removed) `lease.enabled = true`.
 
 - **🛑 Snapshot data corruption — label/data mismatch** (#418): `last_included` in snapshot metadata was computed by subtracting `retained_log_entries` from `last_applied`, but the snapshot data already reflected the full `last_applied` state. Followers installing such snapshots would re-apply entries 91–100 after restoring state through index 100, causing double-application and permanent cluster state divergence. Also fixes a fabricated `LogId` where `last_included.term` was copied from `last_applied.term` instead of queried from the log. Snapshot label is now always truthful: `last_included == last_applied`.
 
@@ -56,7 +54,11 @@ All notable changes to this project will be documented in this file.
 
 - **Quorum confirmation no longer derives from replicated history** (#423): In a 5+ voter cluster, a leader cut off from the majority but still reached by one follower kept renewing its read lease and never stepped down, because the commit median over every peer's stored `match_index` stayed true. A leader is now confirmed only when a quorum of voters acknowledged a newer heartbeat round; unreachable peers stop counting. Applies to lease reads, queued linearizable reads, CheckQuorum, write admission and the vote guard.
 
+- **File state machine lost empty values on WAL replay** (#464): `replay_wal` treated a zero value length as "no value", so an `Insert` with an empty value was dropped after a restart. It now restores the empty value.
+
 ### Changed
+
+- **⚠️ Wire protocol is not compatible with v0.2.4**: `ClientResponse.metadata` moved from field 4 to 5 (field 4 is now `scan_data`); `HandleClientScan` returns `ClientResponse` (the `ScanResponse` message is now `ScanResults`); the `ChunkStatus` values are renumbered with `CHUNK_STATUS_UNSPECIFIED = 0`; `WriteCommand.Insert.ttl_secs` (field 3) is reserved; new RPC `PreVote`. Do not run v0.2.4 and v0.3.0 nodes or clients together. See `MIGRATION_GUIDE.md`.
 
 - **⚠️ `StateMachine::stop()` removed; `StateMachine::close_storage()` renamed to `close()`** (#455): `stop()` had no caller in d-engine. `close()` is now the single, permanent, idempotent end-of-life hook and also persists what must survive a restart (lease state). It returns `Result<(), Error>`: release your resources even if persisting fails, and return the first error; the node logs it at ERROR level. Custom implementations: delete `stop()`, rename `close_storage()` to `close()`, and move any lease persistence from `stop()` into `close()`. See `MIGRATION_GUIDE.md`.
 
@@ -113,6 +115,12 @@ All notable changes to this project will be documented in this file.
   `durable_index`, which is no longer a configurable choice. Existing configs setting `strategy =
 "MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
   is the only persistence knob now.
+
+### Removed
+
+- **TTL and per-key lease** (#464): d-engine now does consensus and replication only. Removed `put_with_ttl`, the `Lease` trait, `TtlLease`, the `[raft.state_machine.lease]` config section and `StateMachine::lease_background_cleanup`. `Command::Insert` no longer has `ttl_secs`. In the proto, `WriteCommand.Insert.ttl_secs` (field 3) is removed and the number is reserved. Key expiry is now the job of the layer above d-engine. The leader read lease (`LeaseRead`) is a different feature and is unchanged.
+
+- **File state machine storage format** (#464): The WAL record no longer has an `expire_at` slot, and `snapshot.bin` no longer ends with a TTL section. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 
 ---
 

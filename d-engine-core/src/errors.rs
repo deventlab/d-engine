@@ -376,10 +376,6 @@ pub enum SystemError {
 
     #[error("Internal server error")]
     ServerUnavailable,
-
-    /// State machine does not support lease-based expiration
-    #[error("State machine does not support lease management")]
-    LeaseNotSupported,
 }
 
 // Serialization is classified separately (across protocol layers and system layers)

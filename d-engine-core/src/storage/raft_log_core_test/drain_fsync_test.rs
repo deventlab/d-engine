@@ -500,10 +500,9 @@ async fn test_reset_failure_poisons() {
 }
 
 /// A `save_hard_state()` failure (persisting current_term/voted_for) poisons
-/// the log — this is the Election Safety gap the expert flagged as highest
-/// priority: a silently-failed vote write, if not caught, lets a restarted
-/// node believe it never voted this term and cast a second vote, breaking
-/// "at most one leader per term."
+/// the log. This protects Election Safety: a silently-failed vote write, if
+/// not caught, lets a restarted node believe it never voted this term and
+/// cast a second vote, breaking "at most one leader per term."
 #[tokio::test]
 async fn test_save_hard_state_failure_poisons() {
     let storage = Arc::new(MockStorageEngine::not_durable_save_hard_state_fails(

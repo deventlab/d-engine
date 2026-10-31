@@ -577,24 +577,6 @@ fn insert_at(
         command: Command::Insert {
             key: Bytes::copy_from_slice(key),
             value: Bytes::copy_from_slice(value),
-            ttl_secs: None,
-        },
-    }
-}
-
-fn insert_with_ttl(
-    key: &[u8],
-    value: &[u8],
-    ttl_secs: u64,
-    index: u64,
-) -> ApplyEntry {
-    ApplyEntry {
-        index,
-        term: 1,
-        command: Command::Insert {
-            key: Bytes::copy_from_slice(key),
-            value: Bytes::copy_from_slice(value),
-            ttl_secs: if ttl_secs > 0 { Some(ttl_secs) } else { None },
         },
     }
 }
@@ -639,7 +621,7 @@ async fn test_apply_chunk_cas_match_succeeds_and_writes_new_value() {
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
     // Pre-populate key
-    sm.apply_chunk(&[insert_with_ttl(b"k", b"old", 0, 1)]).await.unwrap();
+    sm.apply_chunk(&[insert_at(b"k", b"old", 1)]).await.unwrap();
 
     // CAS with matching expected value
     let results = sm.apply_chunk(&[cas_at(b"k", Some(b"old"), b"new", 2)]).await.unwrap();
@@ -658,7 +640,7 @@ async fn test_apply_chunk_cas_mismatch_returns_failure_and_preserves_value() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(&[insert_with_ttl(b"k", b"current", 0, 1)]).await.unwrap();
+    sm.apply_chunk(&[insert_at(b"k", b"current", 1)]).await.unwrap();
 
     let results = sm
         .apply_chunk(&[cas_at(b"k", Some(b"wrong_expected"), b"new", 2)])
@@ -694,7 +676,7 @@ async fn test_apply_chunk_cas_none_expected_on_existing_key_fails() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(&[insert_with_ttl(b"k", b"exists", 0, 1)]).await.unwrap();
+    sm.apply_chunk(&[insert_at(b"k", b"exists", 1)]).await.unwrap();
 
     let results = sm.apply_chunk(&[cas_at(b"k", None, b"new", 2)]).await.unwrap();
 
@@ -717,7 +699,7 @@ async fn test_apply_chunk_two_cas_same_key_second_must_see_first_write() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(&[insert_with_ttl(b"k", b"v0", 0, 1)]).await.unwrap();
+    sm.apply_chunk(&[insert_at(b"k", b"v0", 1)]).await.unwrap();
 
     // CAS1: v0 → v1  (should succeed)
     // CAS2: v0 → v2  (must fail — CAS1 already changed value to v1)
@@ -747,7 +729,7 @@ async fn test_apply_chunk_delete_removes_key() {
     let dir = tempfile::TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
 
-    sm.apply_chunk(&[insert_with_ttl(b"to_delete", b"v", 0, 1)]).await.unwrap();
+    sm.apply_chunk(&[insert_at(b"to_delete", b"v", 1)]).await.unwrap();
     sm.apply_chunk(&[delete_at(b"to_delete", 2)]).await.unwrap();
 
     assert_eq!(sm.get(b"to_delete").unwrap(), None);
@@ -768,7 +750,7 @@ async fn test_apply_chunk_returns_error_on_read_only_db() {
     let (_storage, sm) = RocksDBUnifiedEngine::open(&db_path).unwrap();
 
     // Confirm the state machine works normally first
-    sm.apply_chunk(&[insert_with_ttl(b"k", b"v", 0, 1)]).await.unwrap();
+    sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
 
     // Open the same DB as read-only and inject it — writes will now return NotSupported
     let ro_db = DB::open_cf_for_read_only(
@@ -781,7 +763,7 @@ async fn test_apply_chunk_returns_error_on_read_only_db() {
     sm.swap_db_for_test(ro_db);
 
     // Write to a read-only DB must fail
-    let result = sm.apply_chunk(&[insert_with_ttl(b"k2", b"v2", 0, 2)]).await;
+    let result = sm.apply_chunk(&[insert_at(b"k2", b"v2", 2)]).await;
     assert!(
         result.is_err(),
         "apply_chunk should return Err when DB is read-only"

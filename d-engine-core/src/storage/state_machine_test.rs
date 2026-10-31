@@ -1685,11 +1685,7 @@ fn create_insert_entry(
     ApplyEntry {
         index,
         term: 1,
-        command: Command::Insert {
-            key,
-            value,
-            ttl_secs: None,
-        },
+        command: Command::Insert { key, value },
     }
 }
 

@@ -11,7 +11,7 @@ use crate::common::get_available_ports;
 /// directory validation (which normally creates the subdirectory RocksDB
 /// needs) fails on it, since a file can't be written into like a directory.
 /// This failure happens after the lock is acquired but before RocksDB is
-/// ever touched, exactly the window the expert review flagged.
+/// ever touched, which is the window where a leaked lock would go unnoticed.
 #[tokio::test]
 async fn test_lock_released_after_storage_init_failure() {
     let temp_dir = tempfile::tempdir().unwrap();

@@ -549,12 +549,6 @@ impl StateMachine for SledStateMachine {
         Ok(())
     }
 
-    async fn lease_background_cleanup(&self) -> Result<Vec<Bytes>> {
-        // SledStateMachine example doesn't implement lease support
-        // Return empty vector (no cleanup performed)
-        Ok(vec![])
-    }
-
     fn scan_prefix(
         &self,
         prefix: &[u8],

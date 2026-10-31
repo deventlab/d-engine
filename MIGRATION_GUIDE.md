@@ -6,6 +6,33 @@
 
 ---
 
+## Upgrading to v0.3.0: TTL Removed
+
+- Remove calls to `put_with_ttl` and the `ttl_secs` field of `Command::Insert`. Implement key expiry in the layer above d-engine.
+- Delete the `[raft.state_machine.lease]` section from your config files.
+- Custom state machines: remove `lease_background_cleanup`.
+- Proto: `WriteCommand.Insert.ttl_secs` (field 3) is removed. Regenerate your client code.
+- The file state machine storage format changed. Start with a fresh data directory; old files are not supported.
+
+---
+
+## For v0.2.4 Users: Wire Protocol Changes in v0.3.0
+
+v0.3.0 nodes and clients cannot talk to v0.2.4 ones. There is no rolling upgrade: stop the whole cluster, upgrade every node, then upgrade every client.
+
+| Proto item                      | v0.2.4                       | v0.3.0                                                             |
+| ------------------------------- | ---------------------------- | ------------------------------------------------------------------ |
+| `ClientResponse.metadata`       | field 4                      | field 5 (field 4 is now `scan_data`)                               |
+| `HandleClientScan` response     | `ScanResponse`               | `ClientResponse`; the scan payload is the `ScanResults` message    |
+| `ChunkStatus`                   | `ACCEPTED = 0` … `FAILED = 4` | `CHUNK_STATUS_UNSPECIFIED = 0`, `CHUNK_STATUS_ACCEPTED = 1` … `CHUNK_STATUS_FAILED = 5` |
+| `WriteCommand.Insert.ttl_secs`  | field 3                      | removed, number 3 and the name are reserved                        |
+| `StreamSnapshot` RPC            | present                      | removed (see the learner snapshot section below)                   |
+| `PreVote` RPC                   | -                            | new                                                                |
+
+Clients in other languages: regenerate your stubs from the v0.3.0 `.proto` files. Rust users get this by upgrading the crate.
+
+---
+
 ## 🚨 For v0.1.x Users: WAL Format Change
 
 ### What Changed
@@ -134,7 +161,7 @@ grep "WAL" /var/log/d-engine.log
 | v0.2.0–v0.2.2 | Absolute expiration | Compatible            | ✅ Yes (clear WAL from v0.1.x)                                                                                                  |
 | v0.2.3        | Same as v0.2.0+     | **Incompatible**      | ✅ Yes (protobuf enum changes + API changes)                                                                                    |
 | v0.2.4        | Same as v0.2.0+     | Compatible (additive) | ✅ Yes (delete `snapshot/` — format changed to CF export)                                                                       |
-| v0.2.5        | Same as v0.2.0+     | Compatible (additive) | ⚠️ Minor (remove `lease.enabled`; remove `entry_term()` from custom SM; use `start_node` instead of `start_custom_with_config`) |
+| v0.3.0        | File SM format changed | **Incompatible** (proto field and enum renumbering; upgrade all nodes and clients together) | ⚠️ Yes (TTL removed; fresh data directory; custom SM: remove `entry_term()`, `lease_background_cleanup`, rename `close_storage()` to `close()`; use `start_node` instead of `start_custom_with_config`) |
 
 ---
 
@@ -352,11 +379,11 @@ fn apply_chunk(&mut self, entries: &[ApplyEntry]) -> Result<(), ...>
 
 ---
 
-## 🚨 For v0.2.4 Users: `StateMachine` Lifecycle Changes in v0.2.5 (#455)
+## 🚨 For v0.2.4 Users: `StateMachine` Lifecycle Changes in v0.3.0 (#455)
 
 ### What Changed
 
-| Before (v0.2.4)                                                  | After (v0.2.5)                                                    |
+| Before (v0.2.4)                                                  | After (v0.3.0)                                                    |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------- |
 | `fn stop(&self) -> Result<(), Error>` (required)                 | **Removed**                                                       |
 | `fn close_storage(&self)` (default no-op)                        | **Renamed** `fn close(&self) -> Result<(), Error>` (default `Ok`) |
@@ -534,7 +561,7 @@ See [Watch Feature Guide](https://docs.rs/d-engine/latest/d_engine/docs/server_g
 
 ---
 
-## For v0.2.4 Users: `StateMachine::entry_term()` Removed in v0.2.5 (#418)
+## For v0.2.4 Users: `StateMachine::entry_term()` Removed in v0.3.0 (#418)
 
 ### What Changed
 
@@ -560,7 +587,7 @@ Compilation will fail with "method not found in trait" if you forget to remove i
 
 ---
 
-## For v0.2.4 Users: `StateMachine::apply_snapshot_from_file` Return Type Changed in v0.2.5 (#436)
+## For v0.2.4 Users: `StateMachine::apply_snapshot_from_file` Return Type Changed in v0.3.0 (#436)
 
 ### What Changed
 
@@ -591,7 +618,7 @@ async fn apply_snapshot_from_file(
     Ok(())
 }
 
-// New (v0.2.5)
+// New (v0.3.0)
 async fn apply_snapshot_from_file(
     &self,
     metadata: &SnapshotMetadata,
@@ -615,7 +642,7 @@ Compilation fails with "incompatible type for trait" until a custom implementati
 
 ---
 
-## For v0.2.4 Users: Learner Initial-Snapshot PULL Path Removed in v0.2.5 (#436)
+## For v0.2.4 Users: Learner Initial-Snapshot PULL Path Removed in v0.3.0 (#436)
 
 ### What Changed
 
@@ -649,7 +676,7 @@ The public API now exposes `start_node()` directly instead of routing through a 
 // Old (v0.2.4) — removed
 EmbeddedEngine::start_custom_with_config(storage, sm, config).await?;
 
-// New (v0.2.5)
+// New (v0.3.0)
 EmbeddedEngine::start_node(config, storage, sm).await?;           // embedded
 StandaloneEngine::start_node(config, storage, sm, shutdown_rx).await?;  // standalone
 ```
@@ -669,38 +696,12 @@ always.
 ### Impact
 
 Transparent — no action required. Nodes that installed snapshots with the old label may have
-double-applied entries; upgrading to v0.2.5 prevents this from recurring. Existing snapshots
+double-applied entries; upgrading to v0.3.0 prevents this from recurring. Existing snapshots
 are compatible.
 
 ---
 
-## For v0.2.4 Users: TTL Config Change in v0.2.5 (#398)
-
-### What Changed
-
-The `enabled` flag under `[raft.state_machine.lease]` has been removed. TTL expiration is now **always active** — no opt-in required.
-
-In v0.2.4, omitting `enabled = true` caused a fatal crash on `put_with_ttl`. This bug is fixed in v0.2.5.
-
-### Migration
-
-If your config contains `enabled = true` or `enabled = false`, remove the line:
-
-```toml
-# Old (v0.2.4) — remove this line
-[raft.state_machine.lease]
-enabled = true   # ← delete
-
-# New (v0.2.5) — TTL always active, no flag needed
-[raft.state_machine.lease]
-cleanup_interval_ms = 1000
-```
-
-**Impact**: None if you do not touch the config — unrecognised fields are ignored. The only behavioral change is that TTL expiration is now unconditionally enabled.
-
----
-
-## For v0.2.4 Users: New `[raft.read_actor]` Config Section in v0.2.5 (#392)
+## For v0.2.4 Users: New `[raft.read_actor]` Config Section in v0.3.0 (#392)
 
 This section is **optional** — both fields have defaults and existing configs work without changes.
 
@@ -718,7 +719,7 @@ No migration action required unless you want to tune read concurrency.
 
 ---
 
-## For v0.2.4 Users: `data_dir` moved out of config in v0.2.5
+## For v0.2.4 Users: `data_dir` moved out of config in v0.3.0
 
 `data_dir` (formerly `db_root_dir`) is no longer a config file field. Pass it as an explicit argument to the engine constructor instead:
 
@@ -727,7 +728,7 @@ No migration action required unless you want to tune read concurrency.
 let engine = EmbeddedEngine::start_with("config.toml").await?;
 // config.toml had [cluster] data_dir = "./db"
 
-// After (v0.2.5)
+// After (v0.3.0)
 let engine = EmbeddedEngine::start_with("./db", "config.toml").await?;
 ```
 
@@ -739,7 +740,7 @@ All engine constructors (`start`, `start_with`, `start_custom`, `start_node`, `r
 
 ---
 
-## For v0.2.4 Users: `NodeBuilder` is no longer public in v0.2.5
+## For v0.2.4 Users: `NodeBuilder` is no longer public in v0.3.0
 
 Only affects code that plugged in a custom storage engine or state machine directly via `NodeBuilder`. If you used `EmbeddedEngine` or `StandaloneEngine`, no change needed.
 
@@ -752,7 +753,7 @@ let node = NodeBuilder::new(data_dir, None, shutdown_rx)
     .await?;
 node.run().await?;
 
-// After (v0.2.5)
+// After (v0.3.0)
 EmbeddedEngine::start_custom(data_dir, storage_engine, state_machine, None).await?;
 // or, for a standalone gRPC server:
 StandaloneEngine::run_custom(data_dir, storage_engine, state_machine, shutdown_rx, None).await?;

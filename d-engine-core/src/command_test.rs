@@ -60,7 +60,6 @@ fn insert_entry(
     term: u64,
     key: &[u8],
     value: &[u8],
-    ttl_secs: u64,
 ) -> Entry {
     Entry {
         index,
@@ -69,7 +68,6 @@ fn insert_entry(
             Insert {
                 key: Bytes::copy_from_slice(key),
                 value: Bytes::copy_from_slice(value),
-                ttl_secs,
             },
         )))),
     }
@@ -121,7 +119,6 @@ fn batch_insert_op(
         op: Some(batch_op::Op::Insert(Insert {
             key: Bytes::copy_from_slice(key),
             value: Bytes::copy_from_slice(value),
-            ttl_secs: 0,
         })),
     }
 }
@@ -130,21 +127,6 @@ fn batch_delete_op(key: &[u8]) -> BatchOp {
     BatchOp {
         op: Some(batch_op::Op::Delete(Delete {
             key: Bytes::copy_from_slice(key),
-        })),
-    }
-}
-
-/// Helper: create a BatchOp::Insert with non-zero TTL for rejection testing.
-fn batch_insert_op_with_ttl(
-    key: &[u8],
-    value: &[u8],
-    ttl_secs: u64,
-) -> BatchOp {
-    BatchOp {
-        op: Some(batch_op::Op::Insert(Insert {
-            key: Bytes::copy_from_slice(key),
-            value: Bytes::copy_from_slice(value),
-            ttl_secs,
         })),
     }
 }
@@ -195,25 +177,13 @@ fn test_decode_config_entry_becomes_noop() {
 }
 
 #[test]
-fn test_decode_insert_without_ttl() {
-    let entries = vec![insert_entry(2, 1, b"k", b"v", 0)];
+fn test_decode_insert_produces_insert_command() {
+    let entries = vec![insert_entry(2, 1, b"k", b"v")];
     let result = decode_entries(entries).unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].command, Command::Insert {
         key: Bytes::from_static(b"k"),
         value: Bytes::from_static(b"v"),
-        ttl_secs: None,
-    });
-}
-
-#[test]
-fn test_decode_insert_with_ttl_converts_to_some() {
-    let entries = vec![insert_entry(3, 1, b"key", b"val", 60)];
-    let result = decode_entries(entries).unwrap();
-    assert_eq!(result[0].command, Command::Insert {
-        key: Bytes::from_static(b"key"),
-        value: Bytes::from_static(b"val"),
-        ttl_secs: Some(60),
     });
 }
 
@@ -253,10 +223,7 @@ fn test_decode_cas_with_no_expected_value_means_key_must_not_exist() {
 
 #[test]
 fn test_decode_preserves_index_and_term() {
-    let entries = vec![
-        insert_entry(10, 3, b"a", b"1", 0),
-        delete_entry(11, 3, b"b"),
-    ];
+    let entries = vec![insert_entry(10, 3, b"a", b"1"), delete_entry(11, 3, b"b")];
     let result = decode_entries(entries).unwrap();
     assert_eq!(result[0].index, 10);
     assert_eq!(result[0].term, 3);
@@ -272,7 +239,7 @@ fn test_decode_mixed_batch_config_becomes_noop_keeps_order() {
     let entries = vec![
         noop_entry(1, 1),
         config_entry(2, 1),
-        insert_entry(3, 1, b"x", b"y", 0),
+        insert_entry(3, 1, b"x", b"y"),
         delete_entry(4, 1, b"x"),
     ];
     let result = decode_entries(entries).unwrap();
@@ -395,15 +362,6 @@ fn test_decode_batch_op_without_operation_returns_error() {
     let entries = vec![batch_entry(11, 2, vec![malformed_op])];
     let result = decode_entries(entries);
     assert!(result.is_err(), "BatchOp with no operation must return Err");
-}
-
-#[test]
-fn test_decode_batch_insert_with_ttl_returns_error() {
-    // Batch ops do not support TTL — reject with a clear error.
-    let ops = vec![batch_insert_op_with_ttl(b"k", b"v", 60)];
-    let entries = vec![batch_entry(12, 2, ops)];
-    let result = decode_entries(entries);
-    assert!(result.is_err(), "BatchOp with non-zero TTL must return Err");
 }
 
 // ── decode: error cases ─────────────────────────────────────────────────────

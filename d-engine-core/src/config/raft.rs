@@ -6,7 +6,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::warn;
 
-use super::lease::LeaseConfig;
 use crate::Error;
 use crate::Result;
 
@@ -553,12 +552,6 @@ impl MembershipConfig {
 /// processes applied log entries and manages data.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StateMachineConfig {
-    /// Lease (time-based expiration) configuration
-    ///
-    /// For backward compatibility, can also be configured via `ttl` in TOML files.
-    #[serde(alias = "ttl")]
-    pub lease: LeaseConfig,
-
     /// Maximum time to wait, on shutdown, for the state machine worker to finish
     /// applying the entries already handed to it. On timeout an error is logged and
     /// shutdown proceeds: entries the node knew as committed may then be unapplied
@@ -569,7 +562,6 @@ pub struct StateMachineConfig {
 
 impl StateMachineConfig {
     pub fn validate(&self) -> Result<()> {
-        self.lease.validate()?;
         if self.shutdown_apply_timeout_ms == 0 {
             return Err(Error::Config(ConfigError::Message(
                 "shutdown_apply_timeout_ms must be greater than 0".into(),
@@ -586,7 +578,6 @@ fn default_shutdown_apply_timeout_ms() -> u64 {
 impl Default for StateMachineConfig {
     fn default() -> Self {
         Self {
-            lease: LeaseConfig::default(),
             shutdown_apply_timeout_ms: default_shutdown_apply_timeout_ms(),
         }
     }

@@ -73,33 +73,6 @@ pub trait ClientApi: Send + Sync {
         value: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<()>;
 
-    /// Stores a key-value pair with time-to-live (TTL).
-    ///
-    /// The key will automatically expire after `ttl_secs` seconds.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The key to store
-    /// * `value` - The value to store
-    /// * `ttl_secs` - Time-to-live in seconds
-    ///
-    /// # Errors
-    ///
-    /// Same as [`put()`](Self::put)
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // Session expires after 1 hour
-    /// client.put_with_ttl(b"session:abc", b"user_data", 3600).await?;
-    /// ```
-    async fn put_with_ttl(
-        &self,
-        key: impl AsRef<[u8]> + Send,
-        value: impl AsRef<[u8]> + Send,
-        ttl_secs: u64,
-    ) -> ClientApiResult<()>;
-
     /// Atomically commits multiple write operations as a single Raft log entry.
     ///
     /// All operations succeed or none apply — all-or-nothing. Accepts only writes
@@ -129,13 +102,6 @@ pub trait ClientApi: Send + Sync {
     /// Uses linearizable reads by default, ensuring the returned value
     /// reflects all previously committed writes.
     ///
-    /// # Future direction
-    /// Any TTL-expiry filtering (as noted below) is an application-specific
-    /// semantic layered on top of a generic read, not a consensus concern.
-    /// See d-lmdb's `wire::Value` envelope + `decode_live_payload`, which
-    /// implements TTL entirely outside d-engine. Don't build long-term
-    /// architecture around this method owning TTL semantics.
-    ///
     /// # Arguments
     ///
     /// * `key` - The key to retrieve
@@ -143,7 +109,7 @@ pub trait ClientApi: Send + Sync {
     /// # Returns
     ///
     /// * `Ok(Some(value))` if key exists
-    /// * `Ok(None)` if key does not exist or has expired
+    /// * `Ok(None)` if key does not exist
     /// * `Err(_)` if operation failed
     ///
     /// # Errors
@@ -313,7 +279,7 @@ pub trait ClientApi: Send + Sync {
     /// # Returns
     ///
     /// * `Ok(Some(value))` if key exists
-    /// * `Ok(None)` if key does not exist or has expired
+    /// * `Ok(None)` if key does not exist
     ///
     /// # Errors
     ///
@@ -342,7 +308,7 @@ pub trait ClientApi: Send + Sync {
     /// # Returns
     ///
     /// * `Ok(Some(value))` if key exists
-    /// * `Ok(None)` if key does not exist or has expired
+    /// * `Ok(None)` if key does not exist
     ///
     /// # Errors
     ///
@@ -371,7 +337,7 @@ pub trait ClientApi: Send + Sync {
     /// # Returns
     ///
     /// * `Ok(Some(value))` if key exists (may be stale)
-    /// * `Ok(None)` if key does not exist or has expired
+    /// * `Ok(None)` if key does not exist
     ///
     /// # Errors
     ///

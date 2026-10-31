@@ -5,36 +5,19 @@ use d_engine_proto::client::write_command::Operation;
 
 use super::WriteOperation;
 
-/// Verify Insert with TTL converts correctly to proto WriteCommand.
+/// Verify Insert converts correctly to proto WriteCommand.
 #[test]
-fn test_write_operation_insert_with_ttl() {
+fn test_write_operation_insert() {
     let op = WriteOperation::Insert {
         key: Bytes::from("k"),
         value: Bytes::from("v"),
-        ttl_secs: Some(60),
     };
     let cmd = WriteCommand::from(op);
     match cmd.operation {
         Some(Operation::Insert(ins)) => {
             assert_eq!(ins.key, Bytes::from("k"));
             assert_eq!(ins.value, Bytes::from("v"));
-            assert_eq!(ins.ttl_secs, 60);
         }
-        other => panic!("expected Insert, got {:?}", other),
-    }
-}
-
-/// Verify Insert with no TTL maps ttl_secs=None → proto ttl_secs=0.
-#[test]
-fn test_write_operation_insert_no_ttl_maps_to_zero() {
-    let op = WriteOperation::Insert {
-        key: Bytes::from("k"),
-        value: Bytes::from("v"),
-        ttl_secs: None,
-    };
-    let cmd = WriteCommand::from(op);
-    match cmd.operation {
-        Some(Operation::Insert(ins)) => assert_eq!(ins.ttl_secs, 0),
         other => panic!("expected Insert, got {:?}", other),
     }
 }
@@ -110,7 +93,6 @@ fn test_write_operation_batch_mixed_ops() {
                 Some(batch_op::Op::Insert(ins)) => {
                     assert_eq!(ins.key, Bytes::from("k1"));
                     assert_eq!(ins.value, Bytes::from("v1"));
-                    assert_eq!(ins.ttl_secs, 0);
                 }
                 other => panic!("expected Insert, got {:?}", other),
             }

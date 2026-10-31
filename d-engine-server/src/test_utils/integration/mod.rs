@@ -314,7 +314,6 @@ pub(crate) async fn insert_state_machine(
             command: Command::Insert {
                 key: Bytes::from(id.to_be_bytes().to_vec()),
                 value: Bytes::from(id.to_be_bytes().to_vec()),
-                ttl_secs: None,
             },
         });
     }

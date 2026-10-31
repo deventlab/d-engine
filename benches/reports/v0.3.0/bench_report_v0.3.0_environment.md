@@ -1,7 +1,7 @@
-# d-engine v0.2.5 Benchmark: Test Environment
+# d-engine v0.3.0 Benchmark: Test Environment
 
-Companion to `bench_report_v0.2.5.md`. Everything here was measured on **October 18, 2026**, except the raft-engine run of
-**October 20, 2026** (new instance sets E and F, same shapes), described in `bench_report_v0.2.5_raft_engine.md`.
+Companion to `bench_report_v0.3.0.md`. Everything here was measured on **October 18, 2026**, except the raft-engine run of
+**October 20, 2026** (new instance sets E and F, same shapes), described in `bench_report_v0.3.0_raft_engine.md`.
 
 ## 1. Instance sets
 
@@ -11,7 +11,7 @@ the instances differ.
 
 | Set | Used for |
 |---|---|
-| A | d-engine v0.2.4 and v0.2.5 runs (v0.2.4 first, v0.2.5 about 12 minutes later) |
+| A | d-engine v0.2.4 and v0.3.0 runs (v0.2.4 first, v0.3.0 about 12 minutes later) |
 | B | etcd v3.7.2 runs (three fresh-cluster runs) and the second fio calibration |
 | C | the first fio calibration and node-to-node ping |
 
@@ -28,13 +28,13 @@ the instances differ.
 
 ## 3. d-engine runs (set A)
 
-- v0.2.5 = `main` at `b5fce385`. v0.2.4 = tag `v0.2.4`. Both built on the instances with the release profile.
+- v0.3.0 = `main` at `b5fce385`. v0.2.4 = tag `v0.2.4`. Both built on the instances with the release profile.
 - **Embedded**: `embedded-bench --mode local --batch --key-size 8 --value-size 256 --sequential-keys put`,
   one process per node, the leader's output is used. 100 in-flight (v0.2.4's `--batch` hard-codes 100;
-  v0.2.5 gets `--clients 100`). The bench runtime has 2 worker threads on both versions (v0.2.4's bench was
-  patched to match v0.2.5's).
+  v0.3.0 gets `--clients 100`). The bench runtime has 2 worker threads on both versions (v0.2.4's bench was
+  patched to match v0.3.0's).
 - **Standalone**: `three-nodes-standalone` on each node, `standalone-bench` on the client with three
-  endpoints. `--conns 200 --clients 200` (v0.2.4 limits in-flight requests by `--conns`, v0.2.5 by `--clients`;
+  endpoints. `--conns 200 --clients 200` (v0.2.4 limits in-flight requests by `--conns`, v0.3.0 by `--clients`;
   both are 200). Single-client write: `--conns 1 --clients 1`.
 - Payload: 8 B keys, 256 B values, sequential keys; hot-key uses 10 keys. 10,000 requests for the
   single-client write, 100,000 for the others. 3 rounds; cluster restarted and data wiped before each round.
@@ -42,7 +42,7 @@ the instances differ.
   `max_batch_size = 200`, snapshot off, `unified_db = false`, backpressure 10,000 writes / 50,000 reads,
   election timeout 1,500 to 2,500 ms and lease 500 ms (standalone), ReadActor 2,048/1,024 (embedded) and
   10,240/2,000 (standalone). Replication settings are left at their defaults.
-- **Persistence**: v0.2.4 `MemFirst` (asynchronous flush, 1,000 ms idle interval). v0.2.5 advances the durable
+- **Persistence**: v0.2.4 `MemFirst` (asynchronous flush, 1,000 ms idle interval). v0.3.0 advances the durable
   index only after `fdatasync` (RPO=0). The raft log is stored in RocksDB.
 
 ## 4. etcd runs (set B)

@@ -30,7 +30,7 @@ impl StateMachine for CustomStateMachine {
     }
 
     // close() has a default no-op implementation.
-    // Override it if your backend must persist something at shutdown (e.g. lease state) or
+    // Override it if your backend must persist something at shutdown (e.g. data, metadata) or
     // holds an exclusive OS resource (a lock file, an open DB handle). d-engine calls it once,
     // as the worker's last step: after every committed entry has been applied when the worker
     // drains cleanly, but shutdown continues without that guarantee if
@@ -59,8 +59,8 @@ impl StateMachine for CustomStateMachine {
         let mut results = Vec::with_capacity(chunk.len());
         for entry in chunk {
             let result = match &entry.command {
-                Command::Insert { key, value, ttl_secs } => {
-                    self.backend.put(key, value, *ttl_secs)?;
+                Command::Insert { key, value } => {
+                    self.backend.put(key, value)?;
                     ApplyResult::success(entry.index)
                 }
                 Command::Delete { key } => {
@@ -82,7 +82,7 @@ impl StateMachine for CustomStateMachine {
                     for op in ops {
                         match op {
                             d_engine::BatchOp::Insert { key, value } => {
-                                self.backend.put(key, value, None)?;
+                                self.backend.put(key, value)?;
                             }
                             d_engine::BatchOp::Delete { key } => {
                                 self.backend.delete(key)?;

@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     client.put(b"/services/payment/node2", b"10.0.0.2:9090").await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Simulate node1 crashing (TTL expiry or explicit deregister)
+    // Simulate node1 leaving (explicit deregister)
     println!("\n--- node1 deregisters (crash / graceful shutdown) ---");
     client.delete(b"/services/payment/node1").await?;
     tokio::time::sleep(Duration::from_millis(100)).await;

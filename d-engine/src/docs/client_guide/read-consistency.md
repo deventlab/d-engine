@@ -132,7 +132,7 @@ allow_client_override = true           # Allow client to override (default: true
 
 _Measured on 3-node cluster, AWS same-region_
 
-**Why 0 RTT for Eventual/LeaseRead (v0.2.5+)**: These policies are served by a dedicated ReadActor that reads directly from the state machine — bypassing the Raft command channel entirely. The leader's read lease is validated atomically; if it expires or the node steps down, ReadActor falls back to the Raft path automatically.
+**Why 0 RTT for Eventual/LeaseRead (v0.3.0+)**: These policies are served by a dedicated ReadActor that reads directly from the state machine — bypassing the Raft command channel entirely. The leader's read lease is validated atomically; if it expires or the node steps down, ReadActor falls back to the Raft path automatically.
 
 **Important**: All policies return **correct** committed data. Difference is whether you get the **latest** or **slightly older** committed state.
 

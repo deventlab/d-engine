@@ -56,7 +56,7 @@ max_batch_size = 200  # default, suitable for most deployments
 
 > **Rule of thumb**: For embedded mode, optimal `max_batch_size ≈ concurrent_client_count`. For standalone, keep at 200 unless profiling shows cmd_rx consistently saturated.
 
-## Read Fast Path Tuning (v0.2.5+)
+## Read Fast Path Tuning (v0.3.0+)
 
 `Eventual` and `LeaseRead` bypass `cmd_rx` entirely — they never touch `max_batch_size` or `time_threshold_ms`. Two dedicated knobs:
 

@@ -6,14 +6,12 @@
 //! - Configuration file support
 //! - Component-wise validation
 mod cluster;
-mod lease;
 mod network;
 mod raft;
 mod retry;
 mod storage;
 mod tls;
 pub use cluster::*;
-pub use lease::*;
 pub use network::*;
 pub use raft::*;
 pub use retry::*;
@@ -21,8 +19,6 @@ pub use storage::*;
 pub use tls::*;
 #[cfg(test)]
 mod config_test;
-#[cfg(test)]
-mod lease_test;
 #[cfg(test)]
 mod network_test;
 #[cfg(test)]

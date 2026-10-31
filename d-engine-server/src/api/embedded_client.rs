@@ -116,7 +116,6 @@ impl<T: TypeConfig> EmbeddedClient<T> {
             command: Some(proto_convert::write_op_to_bytes(WriteOperation::Insert {
                 key: Bytes::copy_from_slice(key.as_ref()),
                 value: Bytes::copy_from_slice(value.as_ref()),
-                ttl_secs: None,
             })),
         };
 
@@ -583,48 +582,6 @@ impl<T: TypeConfig> ClientApi for EmbeddedClient<T> {
         value: impl AsRef<[u8]> + Send,
     ) -> ClientApiResult<()> {
         self.put(key, value).await
-    }
-
-    async fn put_with_ttl(
-        &self,
-        key: impl AsRef<[u8]> + Send,
-        value: impl AsRef<[u8]> + Send,
-        ttl_secs: u64,
-    ) -> ClientApiResult<()> {
-        let request = ClientWriteRequest {
-            client_id: self.client_id,
-            command: Some(proto_convert::write_op_to_bytes(WriteOperation::Insert {
-                key: Bytes::copy_from_slice(key.as_ref()),
-                value: Bytes::copy_from_slice(value.as_ref()),
-                ttl_secs: Some(ttl_secs),
-            })),
-        };
-
-        let (resp_tx, resp_rx) = MaybeCloneOneshot::new();
-
-        self.read_handle
-            .cmd_tx
-            .send(d_engine_core::ClientCmd::propose(request, resp_tx))
-            .await
-            .map_err(|_| channel_closed_error())?;
-
-        let result = tokio::time::timeout(self.timeout, resp_rx)
-            .await
-            .map_err(|_| timeout_error(self.timeout))?
-            .map_err(|_| channel_closed_error())?;
-
-        let response =
-            result.map_err(|status| server_error(format!("RPC error: {}", status.message())))?;
-
-        if response.error != ErrorCode::Success {
-            return Err(map_error_response(
-                response.error,
-                response.leader_hint,
-                response.retry_after_ms,
-            ));
-        }
-
-        Ok(())
     }
 
     /// Atomically commits multiple write operations as a single Raft log entry.

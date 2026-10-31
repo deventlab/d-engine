@@ -101,6 +101,9 @@ const (
 	// Watcher forcibly canceled by the server (e.g. buffer overflow).
 	// Client should re-sync via Read API and re-register the watch.
 	WatchEventType_WATCH_EVENT_TYPE_CANCELED WatchEventType = 2
+	// Periodic heartbeat with no data change.
+	// Carries current revision so clients can confirm the stream is alive.
+	WatchEventType_WATCH_EVENT_TYPE_PROGRESS WatchEventType = 3
 )
 
 // Enum value maps for WatchEventType.
@@ -109,11 +112,13 @@ var (
 		0: "WATCH_EVENT_TYPE_PUT",
 		1: "WATCH_EVENT_TYPE_DELETE",
 		2: "WATCH_EVENT_TYPE_CANCELED",
+		3: "WATCH_EVENT_TYPE_PROGRESS",
 	}
 	WatchEventType_value = map[string]int32{
 		"WATCH_EVENT_TYPE_PUT":      0,
 		"WATCH_EVENT_TYPE_DELETE":   1,
 		"WATCH_EVENT_TYPE_CANCELED": 2,
+		"WATCH_EVENT_TYPE_PROGRESS": 3,
 	}
 )
 
@@ -152,6 +157,7 @@ type WriteCommand struct {
 	//	*WriteCommand_Insert_
 	//	*WriteCommand_Delete_
 	//	*WriteCommand_CompareAndSwap_
+	//	*WriteCommand_Batch_
 	Operation     isWriteCommand_Operation `protobuf_oneof:"operation"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -221,6 +227,15 @@ func (x *WriteCommand) GetCompareAndSwap() *WriteCommand_CompareAndSwap {
 	return nil
 }
 
+func (x *WriteCommand) GetBatch() *WriteCommand_Batch {
+	if x != nil {
+		if x, ok := x.Operation.(*WriteCommand_Batch_); ok {
+			return x.Batch
+		}
+	}
+	return nil
+}
+
 type isWriteCommand_Operation interface {
 	isWriteCommand_Operation()
 }
@@ -237,11 +252,17 @@ type WriteCommand_CompareAndSwap_ struct {
 	CompareAndSwap *WriteCommand_CompareAndSwap `protobuf:"bytes,3,opt,name=compare_and_swap,json=compareAndSwap,proto3,oneof"`
 }
 
+type WriteCommand_Batch_ struct {
+	Batch *WriteCommand_Batch `protobuf:"bytes,4,opt,name=batch,proto3,oneof"`
+}
+
 func (*WriteCommand_Insert_) isWriteCommand_Operation() {}
 
 func (*WriteCommand_Delete_) isWriteCommand_Operation() {}
 
 func (*WriteCommand_CompareAndSwap_) isWriteCommand_Operation() {}
+
+func (*WriteCommand_Batch_) isWriteCommand_Operation() {}
 
 type ClientWriteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -411,8 +432,9 @@ type ClientResponse struct {
 	//
 	//	*ClientResponse_WriteResult
 	//	*ClientResponse_ReadData
+	//	*ClientResponse_ScanData
 	SuccessResult isClientResponse_SuccessResult `protobuf_oneof:"success_result"`
-	Metadata      *error1.ErrorMetadata          `protobuf:"bytes,4,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Metadata      *error1.ErrorMetadata          `protobuf:"bytes,5,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -479,6 +501,15 @@ func (x *ClientResponse) GetReadData() *ReadResults {
 	return nil
 }
 
+func (x *ClientResponse) GetScanData() *ScanResults {
+	if x != nil {
+		if x, ok := x.SuccessResult.(*ClientResponse_ScanData); ok {
+			return x.ScanData
+		}
+	}
+	return nil
+}
+
 func (x *ClientResponse) GetMetadata() *error1.ErrorMetadata {
 	if x != nil {
 		return x.Metadata
@@ -498,9 +529,15 @@ type ClientResponse_ReadData struct {
 	ReadData *ReadResults `protobuf:"bytes,3,opt,name=read_data,json=readData,proto3,oneof"`
 }
 
+type ClientResponse_ScanData struct {
+	ScanData *ScanResults `protobuf:"bytes,4,opt,name=scan_data,json=scanData,proto3,oneof"`
+}
+
 func (*ClientResponse_WriteResult) isClientResponse_SuccessResult() {}
 
 func (*ClientResponse_ReadData) isClientResponse_SuccessResult() {}
+
+func (*ClientResponse_ScanData) isClientResponse_SuccessResult() {}
 
 type ClientResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -598,6 +635,171 @@ func (x *ReadResults) GetResults() []*ClientResult {
 	return nil
 }
 
+// A single key-value pair returned by a prefix scan.
+type KvEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *KvEntry) Reset() {
+	*x = KvEntry{}
+	mi := &file_proto_client_client_api_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *KvEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*KvEntry) ProtoMessage() {}
+
+func (x *KvEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_client_client_api_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use KvEntry.ProtoReflect.Descriptor instead.
+func (*KvEntry) Descriptor() ([]byte, []int) {
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *KvEntry) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *KvEntry) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+// Request to scan all keys under a namespace prefix.
+// Scan is served from the leader's state machine at last_applied.
+// consistency_policy is not supported; tracked in #381.
+type ScanRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	ClientId uint32                 `protobuf:"varint,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	// Prefix to scan. Must start with '/'. e.g. b"/services/".
+	Prefix        []byte `protobuf:"bytes,2,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScanRequest) Reset() {
+	*x = ScanRequest{}
+	mi := &file_proto_client_client_api_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScanRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScanRequest) ProtoMessage() {}
+
+func (x *ScanRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_client_client_api_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScanRequest.ProtoReflect.Descriptor instead.
+func (*ScanRequest) Descriptor() ([]byte, []int) {
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ScanRequest) GetClientId() uint32 {
+	if x != nil {
+		return x.ClientId
+	}
+	return 0
+}
+
+func (x *ScanRequest) GetPrefix() []byte {
+	if x != nil {
+		return x.Prefix
+	}
+	return nil
+}
+
+// Payload carried in a successful ClientResponse for a prefix scan.
+type ScanResults struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// All (key, value) pairs whose key starts with the requested prefix.
+	Entries []*KvEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	// Raft applied index at the moment of the scan.
+	// Use as the watch-event filter anchor: skip events where event.revision <= revision.
+	Revision      uint64 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScanResults) Reset() {
+	*x = ScanResults{}
+	mi := &file_proto_client_client_api_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScanResults) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScanResults) ProtoMessage() {}
+
+func (x *ScanResults) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_client_client_api_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScanResults.ProtoReflect.Descriptor instead.
+func (*ScanResults) Descriptor() ([]byte, []int) {
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ScanResults) GetEntries() []*KvEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *ScanResults) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
 // Request to start a server-side membership watch stream.
 type WatchMembershipRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -608,7 +810,7 @@ type WatchMembershipRequest struct {
 
 func (x *WatchMembershipRequest) Reset() {
 	*x = WatchMembershipRequest{}
-	mi := &file_proto_client_client_api_proto_msgTypes[7]
+	mi := &file_proto_client_client_api_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -620,7 +822,7 @@ func (x *WatchMembershipRequest) String() string {
 func (*WatchMembershipRequest) ProtoMessage() {}
 
 func (x *WatchMembershipRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[7]
+	mi := &file_proto_client_client_api_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -633,7 +835,7 @@ func (x *WatchMembershipRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchMembershipRequest.ProtoReflect.Descriptor instead.
 func (*WatchMembershipRequest) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{7}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *WatchMembershipRequest) GetClientId() uint32 {
@@ -662,7 +864,7 @@ type MembershipSnapshot struct {
 
 func (x *MembershipSnapshot) Reset() {
 	*x = MembershipSnapshot{}
-	mi := &file_proto_client_client_api_proto_msgTypes[8]
+	mi := &file_proto_client_client_api_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -674,7 +876,7 @@ func (x *MembershipSnapshot) String() string {
 func (*MembershipSnapshot) ProtoMessage() {}
 
 func (x *MembershipSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[8]
+	mi := &file_proto_client_client_api_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -687,7 +889,7 @@ func (x *MembershipSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MembershipSnapshot.ProtoReflect.Descriptor instead.
 func (*MembershipSnapshot) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{8}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MembershipSnapshot) GetMembers() []uint32 {
@@ -711,22 +913,30 @@ func (x *MembershipSnapshot) GetCommittedIndex() uint64 {
 	return 0
 }
 
-// Request to watch for changes on a specific key
-//
-// In v1, only exact key matching is supported.
-// Prefix watching may be added in future versions.
+// Request to watch for changes on a key or key prefix.
 type WatchRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	ClientId uint32                 `protobuf:"varint,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
-	// Exact key to watch for changes
-	Key           []byte `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	// Key to watch.
+	// prefix=false: exact key match.
+	// prefix=true:  prefix match — key must start with "/" and end with "/".
+	//
+	//	e.g. "/config/" watches all keys under /config/.
+	Key []byte `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	// When true, key is treated as a path prefix (must end with "/").
+	// Default false preserves backwards-compatible exact-match behaviour.
+	Prefix bool `protobuf:"varint,3,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	// When true, each WatchResponse includes the value that existed before
+	// the mutation (prev_value). Default false; server skips the extra read
+	// when no watcher requests it.
+	PrevKv        bool `protobuf:"varint,4,opt,name=prev_kv,json=prevKv,proto3" json:"prev_kv,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WatchRequest) Reset() {
 	*x = WatchRequest{}
-	mi := &file_proto_client_client_api_proto_msgTypes[9]
+	mi := &file_proto_client_client_api_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -738,7 +948,7 @@ func (x *WatchRequest) String() string {
 func (*WatchRequest) ProtoMessage() {}
 
 func (x *WatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[9]
+	mi := &file_proto_client_client_api_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -751,7 +961,7 @@ func (x *WatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
 func (*WatchRequest) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{9}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *WatchRequest) GetClientId() uint32 {
@@ -768,6 +978,20 @@ func (x *WatchRequest) GetKey() []byte {
 	return nil
 }
 
+func (x *WatchRequest) GetPrefix() bool {
+	if x != nil {
+		return x.Prefix
+	}
+	return false
+}
+
+func (x *WatchRequest) GetPrevKv() bool {
+	if x != nil {
+		return x.PrevKv
+	}
+	return false
+}
+
 // Response containing a watch event notification
 type WatchResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -778,14 +1002,23 @@ type WatchResponse struct {
 	// Type of change that occurred
 	EventType WatchEventType `protobuf:"varint,3,opt,name=event_type,json=eventType,proto3,enum=d_engine.client.WatchEventType" json:"event_type,omitempty"`
 	// Error information if watch failed
-	Error         error1.ErrorCode `protobuf:"varint,4,opt,name=error,proto3,enum=d_engine.error.ErrorCode" json:"error,omitempty"`
+	Error error1.ErrorCode `protobuf:"varint,4,opt,name=error,proto3,enum=d_engine.error.ErrorCode" json:"error,omitempty"`
+	// Raft applied index at the time this event was produced.
+	// Monotonically increasing. Clients use this as an anchor after receiving
+	// CANCELED: re-read state, then re-register watching from revision+1.
+	Revision uint64 `protobuf:"varint,5,opt,name=revision,proto3" json:"revision,omitempty"`
+	// Value before this mutation. Empty when:
+	//   - key did not exist before the write
+	//   - event_type is PROGRESS or CANCELED
+	//   - watcher was registered with prev_kv = false
+	PrevValue     []byte `protobuf:"bytes,6,opt,name=prev_value,json=prevValue,proto3" json:"prev_value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WatchResponse) Reset() {
 	*x = WatchResponse{}
-	mi := &file_proto_client_client_api_proto_msgTypes[10]
+	mi := &file_proto_client_client_api_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -797,7 +1030,7 @@ func (x *WatchResponse) String() string {
 func (*WatchResponse) ProtoMessage() {}
 
 func (x *WatchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[10]
+	mi := &file_proto_client_client_api_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -810,7 +1043,7 @@ func (x *WatchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchResponse.ProtoReflect.Descriptor instead.
 func (*WatchResponse) Descriptor() ([]byte, []int) {
-	return file_proto_client_client_api_proto_rawDescGZIP(), []int{10}
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *WatchResponse) GetKey() []byte {
@@ -841,20 +1074,31 @@ func (x *WatchResponse) GetError() error1.ErrorCode {
 	return error1.ErrorCode(0)
 }
 
+func (x *WatchResponse) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *WatchResponse) GetPrevValue() []byte {
+	if x != nil {
+		return x.PrevValue
+	}
+	return nil
+}
+
 type WriteCommand_Insert struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Key   []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	Value []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
-	// Time-to-live in seconds. 0 means no expiration (default).
-	// Non-zero values specify expiration time in seconds from insertion.
-	TtlSecs       uint64 `protobuf:"varint,3,opt,name=ttl_secs,json=ttlSecs,proto3" json:"ttl_secs,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WriteCommand_Insert) Reset() {
 	*x = WriteCommand_Insert{}
-	mi := &file_proto_client_client_api_proto_msgTypes[11]
+	mi := &file_proto_client_client_api_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -866,7 +1110,7 @@ func (x *WriteCommand_Insert) String() string {
 func (*WriteCommand_Insert) ProtoMessage() {}
 
 func (x *WriteCommand_Insert) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[11]
+	mi := &file_proto_client_client_api_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -896,13 +1140,6 @@ func (x *WriteCommand_Insert) GetValue() []byte {
 	return nil
 }
 
-func (x *WriteCommand_Insert) GetTtlSecs() uint64 {
-	if x != nil {
-		return x.TtlSecs
-	}
-	return 0
-}
-
 type WriteCommand_Delete struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           []byte                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -912,7 +1149,7 @@ type WriteCommand_Delete struct {
 
 func (x *WriteCommand_Delete) Reset() {
 	*x = WriteCommand_Delete{}
-	mi := &file_proto_client_client_api_proto_msgTypes[12]
+	mi := &file_proto_client_client_api_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -924,7 +1161,7 @@ func (x *WriteCommand_Delete) String() string {
 func (*WriteCommand_Delete) ProtoMessage() {}
 
 func (x *WriteCommand_Delete) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[12]
+	mi := &file_proto_client_client_api_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -958,7 +1195,7 @@ type WriteCommand_CompareAndSwap struct {
 
 func (x *WriteCommand_CompareAndSwap) Reset() {
 	*x = WriteCommand_CompareAndSwap{}
-	mi := &file_proto_client_client_api_proto_msgTypes[13]
+	mi := &file_proto_client_client_api_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -970,7 +1207,7 @@ func (x *WriteCommand_CompareAndSwap) String() string {
 func (*WriteCommand_CompareAndSwap) ProtoMessage() {}
 
 func (x *WriteCommand_CompareAndSwap) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_client_client_api_proto_msgTypes[13]
+	mi := &file_proto_client_client_api_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1007,26 +1244,158 @@ func (x *WriteCommand_CompareAndSwap) GetNewValue() []byte {
 	return nil
 }
 
+type WriteCommand_BatchOp struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Op:
+	//
+	//	*WriteCommand_BatchOp_Insert
+	//	*WriteCommand_BatchOp_Delete
+	Op            isWriteCommand_BatchOp_Op `protobuf_oneof:"op"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WriteCommand_BatchOp) Reset() {
+	*x = WriteCommand_BatchOp{}
+	mi := &file_proto_client_client_api_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WriteCommand_BatchOp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WriteCommand_BatchOp) ProtoMessage() {}
+
+func (x *WriteCommand_BatchOp) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_client_client_api_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WriteCommand_BatchOp.ProtoReflect.Descriptor instead.
+func (*WriteCommand_BatchOp) Descriptor() ([]byte, []int) {
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{0, 3}
+}
+
+func (x *WriteCommand_BatchOp) GetOp() isWriteCommand_BatchOp_Op {
+	if x != nil {
+		return x.Op
+	}
+	return nil
+}
+
+func (x *WriteCommand_BatchOp) GetInsert() *WriteCommand_Insert {
+	if x != nil {
+		if x, ok := x.Op.(*WriteCommand_BatchOp_Insert); ok {
+			return x.Insert
+		}
+	}
+	return nil
+}
+
+func (x *WriteCommand_BatchOp) GetDelete() *WriteCommand_Delete {
+	if x != nil {
+		if x, ok := x.Op.(*WriteCommand_BatchOp_Delete); ok {
+			return x.Delete
+		}
+	}
+	return nil
+}
+
+type isWriteCommand_BatchOp_Op interface {
+	isWriteCommand_BatchOp_Op()
+}
+
+type WriteCommand_BatchOp_Insert struct {
+	Insert *WriteCommand_Insert `protobuf:"bytes,1,opt,name=insert,proto3,oneof"`
+}
+
+type WriteCommand_BatchOp_Delete struct {
+	Delete *WriteCommand_Delete `protobuf:"bytes,2,opt,name=delete,proto3,oneof"`
+}
+
+func (*WriteCommand_BatchOp_Insert) isWriteCommand_BatchOp_Op() {}
+
+func (*WriteCommand_BatchOp_Delete) isWriteCommand_BatchOp_Op() {}
+
+type WriteCommand_Batch struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Ops           []*WriteCommand_BatchOp `protobuf:"bytes,1,rep,name=ops,proto3" json:"ops,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WriteCommand_Batch) Reset() {
+	*x = WriteCommand_Batch{}
+	mi := &file_proto_client_client_api_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WriteCommand_Batch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WriteCommand_Batch) ProtoMessage() {}
+
+func (x *WriteCommand_Batch) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_client_client_api_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WriteCommand_Batch.ProtoReflect.Descriptor instead.
+func (*WriteCommand_Batch) Descriptor() ([]byte, []int) {
+	return file_proto_client_client_api_proto_rawDescGZIP(), []int{0, 4}
+}
+
+func (x *WriteCommand_Batch) GetOps() []*WriteCommand_BatchOp {
+	if x != nil {
+		return x.Ops
+	}
+	return nil
+}
+
 var File_proto_client_client_api_proto protoreflect.FileDescriptor
 
 const file_proto_client_client_api_proto_rawDesc = "" +
 	"\n" +
-	"\x1dproto/client/client_api.proto\x12\x0fd_engine.client\x1a\x11proto/error.proto\"\xde\x03\n" +
+	"\x1dproto/client/client_api.proto\x12\x0fd_engine.client\x1a\x11proto/error.proto\"\xe4\x05\n" +
 	"\fWriteCommand\x12>\n" +
 	"\x06insert\x18\x01 \x01(\v2$.d_engine.client.WriteCommand.InsertH\x00R\x06insert\x12>\n" +
 	"\x06delete\x18\x02 \x01(\v2$.d_engine.client.WriteCommand.DeleteH\x00R\x06delete\x12X\n" +
-	"\x10compare_and_swap\x18\x03 \x01(\v2,.d_engine.client.WriteCommand.CompareAndSwapH\x00R\x0ecompareAndSwap\x1aK\n" +
+	"\x10compare_and_swap\x18\x03 \x01(\v2,.d_engine.client.WriteCommand.CompareAndSwapH\x00R\x0ecompareAndSwap\x12;\n" +
+	"\x05batch\x18\x04 \x01(\v2#.d_engine.client.WriteCommand.BatchH\x00R\x05batch\x1a@\n" +
 	"\x06Insert\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value\x12\x19\n" +
-	"\bttl_secs\x18\x03 \x01(\x04R\attlSecs\x1a\x1a\n" +
+	"\x05value\x18\x02 \x01(\fR\x05valueJ\x04\b\x03\x10\x04R\bttl_secs\x1a\x1a\n" +
 	"\x06Delete\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x1a~\n" +
 	"\x0eCompareAndSwap\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12*\n" +
 	"\x0eexpected_value\x18\x02 \x01(\fH\x00R\rexpectedValue\x88\x01\x01\x12\x1b\n" +
 	"\tnew_value\x18\x03 \x01(\fR\bnewValueB\x11\n" +
-	"\x0f_expected_valueB\v\n" +
+	"\x0f_expected_value\x1a\x8f\x01\n" +
+	"\aBatchOp\x12>\n" +
+	"\x06insert\x18\x01 \x01(\v2$.d_engine.client.WriteCommand.InsertH\x00R\x06insert\x12>\n" +
+	"\x06delete\x18\x02 \x01(\v2$.d_engine.client.WriteCommand.DeleteH\x00R\x06deleteB\x04\n" +
+	"\x02op\x1a@\n" +
+	"\x05Batch\x127\n" +
+	"\x03ops\x18\x01 \x03(\v2%.d_engine.client.WriteCommand.BatchOpR\x03opsB\v\n" +
 	"\toperation\"j\n" +
 	"\x12ClientWriteRequest\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\rR\bclientId\x127\n" +
@@ -1037,44 +1406,61 @@ const file_proto_client_client_api_proto_rawDesc = "" +
 	"\x12consistency_policy\x18\x03 \x01(\x0e2&.d_engine.client.ReadConsistencyPolicyH\x00R\x11consistencyPolicy\x88\x01\x01B\x15\n" +
 	"\x13_consistency_policy\"+\n" +
 	"\vWriteResult\x12\x1c\n" +
-	"\tsucceeded\x18\x01 \x01(\bR\tsucceeded\"\x8e\x02\n" +
+	"\tsucceeded\x18\x01 \x01(\bR\tsucceeded\"\xcb\x02\n" +
 	"\x0eClientResponse\x12/\n" +
 	"\x05error\x18\x01 \x01(\x0e2\x19.d_engine.error.ErrorCodeR\x05error\x12A\n" +
 	"\fwrite_result\x18\x02 \x01(\v2\x1c.d_engine.client.WriteResultH\x00R\vwriteResult\x12;\n" +
-	"\tread_data\x18\x03 \x01(\v2\x1c.d_engine.client.ReadResultsH\x00R\breadData\x129\n" +
-	"\bmetadata\x18\x04 \x01(\v2\x1d.d_engine.error.ErrorMetadataR\bmetadataB\x10\n" +
+	"\tread_data\x18\x03 \x01(\v2\x1c.d_engine.client.ReadResultsH\x00R\breadData\x12;\n" +
+	"\tscan_data\x18\x04 \x01(\v2\x1c.d_engine.client.ScanResultsH\x00R\bscanData\x129\n" +
+	"\bmetadata\x18\x05 \x01(\v2\x1d.d_engine.error.ErrorMetadataR\bmetadataB\x10\n" +
 	"\x0esuccess_result\"6\n" +
 	"\fClientResult\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\"F\n" +
 	"\vReadResults\x127\n" +
-	"\aresults\x18\x01 \x03(\v2\x1d.d_engine.client.ClientResultR\aresults\"5\n" +
+	"\aresults\x18\x01 \x03(\v2\x1d.d_engine.client.ClientResultR\aresults\"1\n" +
+	"\aKvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\"B\n" +
+	"\vScanRequest\x12\x1b\n" +
+	"\tclient_id\x18\x01 \x01(\rR\bclientId\x12\x16\n" +
+	"\x06prefix\x18\x02 \x01(\fR\x06prefix\"]\n" +
+	"\vScanResults\x122\n" +
+	"\aentries\x18\x01 \x03(\v2\x18.d_engine.client.KvEntryR\aentries\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x04R\brevision\"5\n" +
 	"\x16WatchMembershipRequest\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\rR\bclientId\"s\n" +
 	"\x12MembershipSnapshot\x12\x18\n" +
 	"\amembers\x18\x01 \x03(\rR\amembers\x12\x1a\n" +
 	"\blearners\x18\x02 \x03(\rR\blearners\x12'\n" +
-	"\x0fcommitted_index\x18\x03 \x01(\x04R\x0ecommittedIndex\"=\n" +
+	"\x0fcommitted_index\x18\x03 \x01(\x04R\x0ecommittedIndex\"n\n" +
 	"\fWatchRequest\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\rR\bclientId\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\fR\x03key\"\xa8\x01\n" +
+	"\x03key\x18\x02 \x01(\fR\x03key\x12\x16\n" +
+	"\x06prefix\x18\x03 \x01(\bR\x06prefix\x12\x17\n" +
+	"\aprev_kv\x18\x04 \x01(\bR\x06prevKv\"\xe3\x01\n" +
 	"\rWatchResponse\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12>\n" +
 	"\n" +
 	"event_type\x18\x03 \x01(\x0e2\x1f.d_engine.client.WatchEventTypeR\teventType\x12/\n" +
-	"\x05error\x18\x04 \x01(\x0e2\x19.d_engine.error.ErrorCodeR\x05error*\xa0\x01\n" +
+	"\x05error\x18\x04 \x01(\x0e2\x19.d_engine.error.ErrorCodeR\x05error\x12\x1a\n" +
+	"\brevision\x18\x05 \x01(\x04R\brevision\x12\x1d\n" +
+	"\n" +
+	"prev_value\x18\x06 \x01(\fR\tprevValue*\xa0\x01\n" +
 	"\x15ReadConsistencyPolicy\x12&\n" +
 	"\"READ_CONSISTENCY_POLICY_LEASE_READ\x10\x00\x12-\n" +
 	")READ_CONSISTENCY_POLICY_LINEARIZABLE_READ\x10\x01\x120\n" +
-	",READ_CONSISTENCY_POLICY_EVENTUAL_CONSISTENCY\x10\x02*f\n" +
+	",READ_CONSISTENCY_POLICY_EVENTUAL_CONSISTENCY\x10\x02*\x85\x01\n" +
 	"\x0eWatchEventType\x12\x18\n" +
 	"\x14WATCH_EVENT_TYPE_PUT\x10\x00\x12\x1b\n" +
 	"\x17WATCH_EVENT_TYPE_DELETE\x10\x01\x12\x1d\n" +
-	"\x19WATCH_EVENT_TYPE_CANCELED\x10\x022\xf4\x02\n" +
+	"\x19WATCH_EVENT_TYPE_CANCELED\x10\x02\x12\x1d\n" +
+	"\x19WATCH_EVENT_TYPE_PROGRESS\x10\x032\xc7\x03\n" +
 	"\x11RaftClientService\x12Y\n" +
 	"\x11HandleClientWrite\x12#.d_engine.client.ClientWriteRequest\x1a\x1f.d_engine.client.ClientResponse\x12W\n" +
-	"\x10HandleClientRead\x12\".d_engine.client.ClientReadRequest\x1a\x1f.d_engine.client.ClientResponse\x12H\n" +
+	"\x10HandleClientRead\x12\".d_engine.client.ClientReadRequest\x1a\x1f.d_engine.client.ClientResponse\x12Q\n" +
+	"\x10HandleClientScan\x12\x1c.d_engine.client.ScanRequest\x1a\x1f.d_engine.client.ClientResponse\x12H\n" +
 	"\x05Watch\x12\x1d.d_engine.client.WatchRequest\x1a\x1e.d_engine.client.WatchResponse0\x01\x12a\n" +
 	"\x0fWatchMembership\x12'.d_engine.client.WatchMembershipRequest\x1a#.d_engine.client.MembershipSnapshot0\x01B,Z*github.com/deventlab/d-engine/proto/clientb\x06proto3"
 
@@ -1091,7 +1477,7 @@ func file_proto_client_client_api_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_client_client_api_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_client_client_api_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_proto_client_client_api_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_proto_client_client_api_proto_goTypes = []any{
 	(ReadConsistencyPolicy)(0),          // 0: d_engine.client.ReadConsistencyPolicy
 	(WatchEventType)(0),                 // 1: d_engine.client.WatchEventType
@@ -1102,42 +1488,55 @@ var file_proto_client_client_api_proto_goTypes = []any{
 	(*ClientResponse)(nil),              // 6: d_engine.client.ClientResponse
 	(*ClientResult)(nil),                // 7: d_engine.client.ClientResult
 	(*ReadResults)(nil),                 // 8: d_engine.client.ReadResults
-	(*WatchMembershipRequest)(nil),      // 9: d_engine.client.WatchMembershipRequest
-	(*MembershipSnapshot)(nil),          // 10: d_engine.client.MembershipSnapshot
-	(*WatchRequest)(nil),                // 11: d_engine.client.WatchRequest
-	(*WatchResponse)(nil),               // 12: d_engine.client.WatchResponse
-	(*WriteCommand_Insert)(nil),         // 13: d_engine.client.WriteCommand.Insert
-	(*WriteCommand_Delete)(nil),         // 14: d_engine.client.WriteCommand.Delete
-	(*WriteCommand_CompareAndSwap)(nil), // 15: d_engine.client.WriteCommand.CompareAndSwap
-	(error1.ErrorCode)(0),               // 16: d_engine.error.ErrorCode
-	(*error1.ErrorMetadata)(nil),        // 17: d_engine.error.ErrorMetadata
+	(*KvEntry)(nil),                     // 9: d_engine.client.KvEntry
+	(*ScanRequest)(nil),                 // 10: d_engine.client.ScanRequest
+	(*ScanResults)(nil),                 // 11: d_engine.client.ScanResults
+	(*WatchMembershipRequest)(nil),      // 12: d_engine.client.WatchMembershipRequest
+	(*MembershipSnapshot)(nil),          // 13: d_engine.client.MembershipSnapshot
+	(*WatchRequest)(nil),                // 14: d_engine.client.WatchRequest
+	(*WatchResponse)(nil),               // 15: d_engine.client.WatchResponse
+	(*WriteCommand_Insert)(nil),         // 16: d_engine.client.WriteCommand.Insert
+	(*WriteCommand_Delete)(nil),         // 17: d_engine.client.WriteCommand.Delete
+	(*WriteCommand_CompareAndSwap)(nil), // 18: d_engine.client.WriteCommand.CompareAndSwap
+	(*WriteCommand_BatchOp)(nil),        // 19: d_engine.client.WriteCommand.BatchOp
+	(*WriteCommand_Batch)(nil),          // 20: d_engine.client.WriteCommand.Batch
+	(error1.ErrorCode)(0),               // 21: d_engine.error.ErrorCode
+	(*error1.ErrorMetadata)(nil),        // 22: d_engine.error.ErrorMetadata
 }
 var file_proto_client_client_api_proto_depIdxs = []int32{
-	13, // 0: d_engine.client.WriteCommand.insert:type_name -> d_engine.client.WriteCommand.Insert
-	14, // 1: d_engine.client.WriteCommand.delete:type_name -> d_engine.client.WriteCommand.Delete
-	15, // 2: d_engine.client.WriteCommand.compare_and_swap:type_name -> d_engine.client.WriteCommand.CompareAndSwap
-	2,  // 3: d_engine.client.ClientWriteRequest.command:type_name -> d_engine.client.WriteCommand
-	0,  // 4: d_engine.client.ClientReadRequest.consistency_policy:type_name -> d_engine.client.ReadConsistencyPolicy
-	16, // 5: d_engine.client.ClientResponse.error:type_name -> d_engine.error.ErrorCode
-	5,  // 6: d_engine.client.ClientResponse.write_result:type_name -> d_engine.client.WriteResult
-	8,  // 7: d_engine.client.ClientResponse.read_data:type_name -> d_engine.client.ReadResults
-	17, // 8: d_engine.client.ClientResponse.metadata:type_name -> d_engine.error.ErrorMetadata
-	7,  // 9: d_engine.client.ReadResults.results:type_name -> d_engine.client.ClientResult
-	1,  // 10: d_engine.client.WatchResponse.event_type:type_name -> d_engine.client.WatchEventType
-	16, // 11: d_engine.client.WatchResponse.error:type_name -> d_engine.error.ErrorCode
-	3,  // 12: d_engine.client.RaftClientService.HandleClientWrite:input_type -> d_engine.client.ClientWriteRequest
-	4,  // 13: d_engine.client.RaftClientService.HandleClientRead:input_type -> d_engine.client.ClientReadRequest
-	11, // 14: d_engine.client.RaftClientService.Watch:input_type -> d_engine.client.WatchRequest
-	9,  // 15: d_engine.client.RaftClientService.WatchMembership:input_type -> d_engine.client.WatchMembershipRequest
-	6,  // 16: d_engine.client.RaftClientService.HandleClientWrite:output_type -> d_engine.client.ClientResponse
-	6,  // 17: d_engine.client.RaftClientService.HandleClientRead:output_type -> d_engine.client.ClientResponse
-	12, // 18: d_engine.client.RaftClientService.Watch:output_type -> d_engine.client.WatchResponse
-	10, // 19: d_engine.client.RaftClientService.WatchMembership:output_type -> d_engine.client.MembershipSnapshot
-	16, // [16:20] is the sub-list for method output_type
-	12, // [12:16] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	16, // 0: d_engine.client.WriteCommand.insert:type_name -> d_engine.client.WriteCommand.Insert
+	17, // 1: d_engine.client.WriteCommand.delete:type_name -> d_engine.client.WriteCommand.Delete
+	18, // 2: d_engine.client.WriteCommand.compare_and_swap:type_name -> d_engine.client.WriteCommand.CompareAndSwap
+	20, // 3: d_engine.client.WriteCommand.batch:type_name -> d_engine.client.WriteCommand.Batch
+	2,  // 4: d_engine.client.ClientWriteRequest.command:type_name -> d_engine.client.WriteCommand
+	0,  // 5: d_engine.client.ClientReadRequest.consistency_policy:type_name -> d_engine.client.ReadConsistencyPolicy
+	21, // 6: d_engine.client.ClientResponse.error:type_name -> d_engine.error.ErrorCode
+	5,  // 7: d_engine.client.ClientResponse.write_result:type_name -> d_engine.client.WriteResult
+	8,  // 8: d_engine.client.ClientResponse.read_data:type_name -> d_engine.client.ReadResults
+	11, // 9: d_engine.client.ClientResponse.scan_data:type_name -> d_engine.client.ScanResults
+	22, // 10: d_engine.client.ClientResponse.metadata:type_name -> d_engine.error.ErrorMetadata
+	7,  // 11: d_engine.client.ReadResults.results:type_name -> d_engine.client.ClientResult
+	9,  // 12: d_engine.client.ScanResults.entries:type_name -> d_engine.client.KvEntry
+	1,  // 13: d_engine.client.WatchResponse.event_type:type_name -> d_engine.client.WatchEventType
+	21, // 14: d_engine.client.WatchResponse.error:type_name -> d_engine.error.ErrorCode
+	16, // 15: d_engine.client.WriteCommand.BatchOp.insert:type_name -> d_engine.client.WriteCommand.Insert
+	17, // 16: d_engine.client.WriteCommand.BatchOp.delete:type_name -> d_engine.client.WriteCommand.Delete
+	19, // 17: d_engine.client.WriteCommand.Batch.ops:type_name -> d_engine.client.WriteCommand.BatchOp
+	3,  // 18: d_engine.client.RaftClientService.HandleClientWrite:input_type -> d_engine.client.ClientWriteRequest
+	4,  // 19: d_engine.client.RaftClientService.HandleClientRead:input_type -> d_engine.client.ClientReadRequest
+	10, // 20: d_engine.client.RaftClientService.HandleClientScan:input_type -> d_engine.client.ScanRequest
+	14, // 21: d_engine.client.RaftClientService.Watch:input_type -> d_engine.client.WatchRequest
+	12, // 22: d_engine.client.RaftClientService.WatchMembership:input_type -> d_engine.client.WatchMembershipRequest
+	6,  // 23: d_engine.client.RaftClientService.HandleClientWrite:output_type -> d_engine.client.ClientResponse
+	6,  // 24: d_engine.client.RaftClientService.HandleClientRead:output_type -> d_engine.client.ClientResponse
+	6,  // 25: d_engine.client.RaftClientService.HandleClientScan:output_type -> d_engine.client.ClientResponse
+	15, // 26: d_engine.client.RaftClientService.Watch:output_type -> d_engine.client.WatchResponse
+	13, // 27: d_engine.client.RaftClientService.WatchMembership:output_type -> d_engine.client.MembershipSnapshot
+	23, // [23:28] is the sub-list for method output_type
+	18, // [18:23] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_proto_client_client_api_proto_init() }
@@ -1149,20 +1548,26 @@ func file_proto_client_client_api_proto_init() {
 		(*WriteCommand_Insert_)(nil),
 		(*WriteCommand_Delete_)(nil),
 		(*WriteCommand_CompareAndSwap_)(nil),
+		(*WriteCommand_Batch_)(nil),
 	}
 	file_proto_client_client_api_proto_msgTypes[2].OneofWrappers = []any{}
 	file_proto_client_client_api_proto_msgTypes[4].OneofWrappers = []any{
 		(*ClientResponse_WriteResult)(nil),
 		(*ClientResponse_ReadData)(nil),
+		(*ClientResponse_ScanData)(nil),
 	}
-	file_proto_client_client_api_proto_msgTypes[13].OneofWrappers = []any{}
+	file_proto_client_client_api_proto_msgTypes[16].OneofWrappers = []any{}
+	file_proto_client_client_api_proto_msgTypes[17].OneofWrappers = []any{
+		(*WriteCommand_BatchOp_Insert)(nil),
+		(*WriteCommand_BatchOp_Delete)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_client_client_api_proto_rawDesc), len(file_proto_client_client_api_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   14,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

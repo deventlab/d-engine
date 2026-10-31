@@ -732,14 +732,12 @@ fn test_command_conversion_with_multiple_commands() {
     let commands = vec![
         WriteCommand {
             operation: Some(Operation::Insert(Insert {
-                ttl_secs: 0,
                 key: Bytes::from(b"key1".to_vec()),
                 value: Bytes::from(b"value1".to_vec()),
             })),
         },
         WriteCommand {
             operation: Some(Operation::Insert(Insert {
-                ttl_secs: 0,
                 key: Bytes::from(b"key2".to_vec()),
                 value: Bytes::from(b"value2".to_vec()),
             })),
@@ -754,7 +752,7 @@ fn test_command_conversion_with_multiple_commands() {
         let decoded = WriteCommand::decode(bytes.as_ref()).unwrap();
         assert!(matches!(
             decoded.operation,
-            Some(Operation::Insert(Insert { key, value, ttl_secs: _ }))
+            Some(Operation::Insert(Insert { key, value }))
             if key == b"key1".as_ref() && value == b"value1".as_ref()
         ));
     } else {
@@ -765,7 +763,7 @@ fn test_command_conversion_with_multiple_commands() {
         let decoded = WriteCommand::decode(bytes.as_ref()).unwrap();
         assert!(matches!(
             decoded.operation,
-            Some(Operation::Insert(Insert { key, value, ttl_secs: _ }))
+            Some(Operation::Insert(Insert { key, value }))
             if key == b"key2".as_ref() && value == b"value2".as_ref()
         ));
     } else {

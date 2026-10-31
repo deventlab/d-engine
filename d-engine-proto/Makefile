@@ -25,12 +25,14 @@ generate-go:
 	# package foo to be in foo/ directory
 
 	# Move top-level proto files (error, common)
-	@mkdir -p go/error go/common
-	@mv go/proto/error.pb.go go/error/ 2>/dev/null || true
-	@mv go/proto/common.pb.go go/common/ 2>/dev/null || true
+	@mkdir -p go/error go/common go/client
+	@mv -f go/proto/error.pb.go go/error/
+	@mv -f go/proto/common.pb.go go/common/
 
-	# Move client directory
-	@mv go/proto/client go/ 2>/dev/null || true
+	# Move client files. Move the files, not the directory: `mv go/proto/client go/`
+	# fails when go/client already exists, and the later `rm -rf go/proto` then
+	# silently throws the new files away.
+	@mv -f go/proto/client/*.go go/client/
 
 	# Move server subdirectories
 	@mkdir -p go/server

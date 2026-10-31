@@ -65,7 +65,6 @@ fn create_test_entries(
             command: Command::Insert {
                 key: Bytes::from(key.into_bytes()),
                 value: Bytes::from(value.into_bytes()),
-                ttl_secs: None,
             },
         });
     }
