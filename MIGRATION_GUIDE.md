@@ -13,6 +13,7 @@
 - Custom state machines: remove `lease_background_cleanup`.
 - Proto: `WriteCommand.Insert.ttl_secs` (field 3) is removed. Regenerate your client code.
 - The file state machine storage format changed. Start with a fresh data directory; old files are not supported.
+- RocksDB state machine: keys written with `put_with_ttl` under v0.2.x are kept forever after the upgrade. v0.3.0 neither reads the old `ttl_state` entry nor deletes expired keys. Before upgrading, either delete the keys you no longer want, or record their deadlines and have your own expiry layer delete them. Or start with a fresh data directory.
 
 ---
 
