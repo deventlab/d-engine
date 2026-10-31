@@ -1711,3 +1711,178 @@ async fn test_get_multi_with_policy_returns_native_kv_entries() {
     assert_eq!(results[0], Some(KvEntry { key: k1, value: v1 }));
     assert_eq!(results[1], Some(KvEntry { key: k2, value: v2 }));
 }
+
+// =============================================================================
+// batch tests
+// =============================================================================
+
+mod batch_tests {
+    use d_engine_core::BatchOp;
+    use d_engine_proto::client::ClientWriteRequest;
+    use d_engine_proto::client::write_command::Delete;
+    use d_engine_proto::client::write_command::Insert;
+    use d_engine_proto::client::write_command::Operation;
+    use d_engine_proto::client::write_command::batch_op;
+    use d_engine_proto::common::NodeRole;
+    use d_engine_proto::common::NodeStatus;
+    use d_engine_proto::server::cluster::NodeMeta;
+
+    use super::*;
+    use crate::mock_rpc::MockRpcService;
+
+    type Captured = Arc<std::sync::Mutex<Vec<ClientWriteRequest>>>;
+
+    /// Starts a leader mock that answers every write with `response` and records
+    /// each write request it receives. The returned sender keeps the server alive.
+    async fn start(
+        response: Result<ClientResponse, tonic::Status>
+    ) -> (GrpcClient, Captured, oneshot::Sender<()>) {
+        let (tx, rx) = oneshot::channel::<()>();
+        let service = MockRpcService {
+            expected_client_propose_response: Some(response),
+            ..Default::default()
+        }
+        .with_metadata_response(|port| {
+            Ok(ClusterMembership {
+                version: 1,
+                nodes: vec![NodeMeta {
+                    id: 1,
+                    role: NodeRole::Leader as i32,
+                    address: format!("127.0.0.1:{port}"),
+                    status: NodeStatus::Active.into(),
+                }],
+                current_leader_id: Some(1),
+            })
+        });
+        let captured = service.captured_write_requests.clone();
+        let (port, _addr) = MockNode::mock_listener(service, rx, true).await.unwrap();
+
+        let endpoints = vec![format!("http://localhost:{port}")];
+        let config = ClientConfig::default();
+        let pool = ConnectionPool::create(endpoints.clone(), config.clone())
+            .await
+            .expect("Should create connection pool");
+        let client = GrpcClient::new(Arc::new(ArcSwap::from_pointee(ClientInner {
+            pool,
+            client_id: 42,
+            config,
+            endpoints,
+        })));
+        (client, captured, tx)
+    }
+
+    /// One `batch()` call must reach the server as exactly one write request that
+    /// carries every op, in the caller's order, with keys and values unchanged.
+    /// An Insert with an empty value must stay an Insert with an empty value.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_batch_sends_all_ops_in_order_as_one_request() {
+        let (client, captured, _tx) = start(Ok(ClientResponse::write_success())).await;
+
+        client
+            .batch(vec![
+                BatchOp::Insert {
+                    key: Bytes::from("a"),
+                    value: Bytes::from("1"),
+                },
+                BatchOp::Delete {
+                    key: Bytes::from("b"),
+                },
+                BatchOp::Insert {
+                    key: Bytes::from("c"),
+                    value: Bytes::new(),
+                },
+            ])
+            .await
+            .expect("batch should succeed");
+
+        let requests = captured.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "a batch must be one write request, not one per op"
+        );
+        assert_eq!(requests[0].client_id, 42);
+
+        let Some(Operation::Batch(batch)) =
+            requests[0].command.as_ref().and_then(|c| c.operation.clone())
+        else {
+            panic!("the request must carry a Batch command");
+        };
+        let ops: Vec<batch_op::Op> =
+            batch.ops.into_iter().map(|o| o.op.expect("op must be set")).collect();
+        assert_eq!(ops, vec![
+            batch_op::Op::Insert(Insert {
+                key: Bytes::from("a"),
+                value: Bytes::from("1"),
+            }),
+            batch_op::Op::Delete(Delete {
+                key: Bytes::from("b"),
+            }),
+            batch_op::Op::Insert(Insert {
+                key: Bytes::from("c"),
+                value: Bytes::new(),
+            }),
+        ]);
+    }
+
+    /// An empty batch is rejected by the client itself: the caller gets
+    /// InvalidRequest and no request is sent, even though the server would accept it.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_batch_empty_is_rejected_without_sending() {
+        let (client, captured, _tx) = start(Ok(ClientResponse::write_success())).await;
+
+        let result = client.batch(vec![]).await;
+
+        assert_eq!(result.unwrap_err().code(), ErrorCode::InvalidRequest);
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "an empty batch must not reach the server"
+        );
+    }
+
+    /// When the server answers with an error code, the caller must see that same
+    /// code instead of a silent success.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_batch_server_error_code_is_returned() {
+        let (client, captured, _tx) = start(Ok(ClientResponse::client_error(
+            ErrorCode::ConnectionTimeout,
+        )))
+        .await;
+
+        let result = client
+            .batch(vec![BatchOp::Delete {
+                key: Bytes::from("k"),
+            }])
+            .await;
+
+        assert_eq!(result.unwrap_err().code(), ErrorCode::ConnectionTimeout);
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "the request must have been sent before the error came back"
+        );
+    }
+
+    /// A gRPC transport failure must reach the caller as an error.
+    #[tokio::test]
+    #[traced_test]
+    async fn test_batch_grpc_status_error_is_returned() {
+        let (client, _captured, _tx) =
+            start(Err(tonic::Status::unavailable("leader is down"))).await;
+
+        let result = client
+            .batch(vec![BatchOp::Insert {
+                key: Bytes::from("k"),
+                value: Bytes::from("v"),
+            }])
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a failed RPC must not be reported as success"
+        );
+    }
+}
