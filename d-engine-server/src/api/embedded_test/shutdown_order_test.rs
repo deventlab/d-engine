@@ -60,9 +60,6 @@ impl StateMachine for SlowApplyProbe {
     }
 
     // Everything below delegates unchanged.
-    async fn start(&self) -> Result<(), Error> {
-        self.inner.start().await
-    }
     fn is_running(&self) -> bool {
         self.inner.is_running()
     }
@@ -71,9 +68,6 @@ impl StateMachine for SlowApplyProbe {
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
         self.inner.get(key_buffer)
-    }
-    fn len(&self) -> usize {
-        self.inner.len()
     }
     fn update_last_applied(
         &self,

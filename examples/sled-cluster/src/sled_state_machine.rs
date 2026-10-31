@@ -8,17 +8,17 @@ use bincode::config;
 use bytes::Bytes;
 use d_engine::BatchOp;
 use d_engine::{
-    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotApplyResult, SnapshotError,
-    StateMachine, StorageError, common::LogId, server_storage::SnapshotMetadata,
+    common::LogId, server_storage::SnapshotMetadata, ApplyEntry, ApplyResult, Command, Result,
+    ScanResult, SnapshotApplyResult, SnapshotError, StateMachine, StorageError,
 };
 use parking_lot::Mutex;
 use sled::Batch;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::debug;
 use tracing::error;
@@ -88,12 +88,6 @@ impl Drop for SledStateMachine {
 
 #[async_trait]
 impl StateMachine for SledStateMachine {
-    async fn start(&self) -> Result<()> {
-        debug!("start state machine");
-        self.is_serving.store(true, Ordering::Release);
-        Ok(())
-    }
-
     fn close(&self) -> Result<()> {
         if self.db.load().is_none() {
             return Ok(());
@@ -523,10 +517,6 @@ impl StateMachine for SledStateMachine {
         Ok(SnapshotApplyResult::Applied {
             last_included: new_last_included,
         })
-    }
-
-    fn len(&self) -> usize {
-        self.current_tree().map(|t| t.len()).unwrap_or(0)
     }
 
     async fn reset(&self) -> Result<()> {

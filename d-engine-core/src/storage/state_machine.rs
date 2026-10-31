@@ -79,21 +79,12 @@ impl ApplyResult {
 ///
 /// **CRITICAL**: Implementations MUST be thread-safe.
 ///
-/// - Read methods (`get()`, `len()`) may be called concurrently
+/// - Read methods (`get()`) may be called concurrently
 /// - Write methods should use internal synchronization
 /// - No assumptions about caller's threading model
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait StateMachine: Send + Sync + 'static {
-    /// Starts the state machine service.
-    ///
-    /// This method:
-    /// 1. Flips internal state flags
-    /// 2. Loads persisted data from disk
-    ///
-    /// Called once during node startup. Performance is not critical.
-    async fn start(&self) -> Result<(), Error>;
-
     /// Permanently closes the state machine: stops serving, persists what must survive a
     /// restart (e.g. data, metadata), flushes, and releases exclusive resources
     /// (e.g. a DB handle or its lock file).
@@ -172,17 +163,6 @@ pub trait StateMachine: Send + Sync + 'static {
         &self,
         chunk: &[ApplyEntry],
     ) -> Result<Vec<ApplyResult>, Error>;
-
-    /// Returns the number of entries in the state machine.
-    /// NOTE: This may be expensive for some implementations.
-    /// Sync operation but should be used cautiously.
-    fn len(&self) -> usize;
-
-    /// Checks if the state machine is empty.
-    /// Sync operation that typically delegates to len().
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 
     /// Updates the last applied index in memory.
     /// Sync operation as it just updates atomic variables.

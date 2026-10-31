@@ -383,13 +383,11 @@ pub fn mock_replication_handler() -> MockReplicationCore<MockTypeConfig> {
 pub fn mock_state_machine() -> MockStateMachine {
     let mut mock = MockStateMachine::new();
 
-    mock.expect_start().returning(|| Ok(()));
     mock.expect_close().returning(|| Ok(()));
     mock.expect_is_running().returning(|| true);
 
     mock.expect_get().returning(|_| Ok(None));
     mock.expect_apply_chunk().returning(|_| Ok(vec![]));
-    mock.expect_len().returning(|| 0);
 
     mock.expect_update_last_applied().returning(|_| ());
     mock.expect_last_applied().return_const(LogId::default());

@@ -26,7 +26,6 @@ use crate::storage::adaptors::file::FileStateMachine;
 async fn test_file_sm_close_marks_not_running() {
     let dir = TempDir::new().unwrap();
     let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
-    sm.start().await.unwrap();
     assert!(sm.is_running());
 
     sm.close().unwrap();
@@ -43,7 +42,6 @@ async fn test_file_sm_close_marks_not_running() {
 async fn test_file_sm_reads_fail_after_close() {
     let dir = TempDir::new().unwrap();
     let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
-    sm.start().await.unwrap();
     sm.apply_chunk(&[ApplyEntry {
         index: 1,
         term: 1,
@@ -673,7 +671,6 @@ fn insert_at(
 async fn test_file_apply_snapshot_from_file_rejects_stale_snapshot() {
     let dir = TempDir::new().expect("Failed to create temp dir");
     let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create sm");
-    sm.start().await.expect("start");
 
     let early: Vec<ApplyEntry> = (1..=20)
         .map(|i| insert_at(format!("key_{i}").as_bytes(), b"early", i))
@@ -726,7 +723,6 @@ async fn test_file_apply_snapshot_from_file_rejects_stale_snapshot() {
 async fn test_file_apply_snapshot_from_file_ignores_duplicate_snapshot() {
     let dir = TempDir::new().expect("Failed to create temp dir");
     let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create sm");
-    sm.start().await.expect("start");
 
     let entries: Vec<ApplyEntry> =
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
@@ -764,7 +760,6 @@ async fn test_file_apply_snapshot_from_file_ignores_duplicate_snapshot() {
 async fn test_file_apply_snapshot_from_file_rejects_boundary_conflict() {
     let dir = TempDir::new().expect("Failed to create temp dir");
     let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create sm");
-    sm.start().await.expect("start");
 
     let entries: Vec<ApplyEntry> =
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
@@ -798,7 +793,6 @@ async fn test_file_apply_snapshot_from_file_rejects_boundary_conflict() {
 async fn test_file_apply_snapshot_from_file_reports_applied_for_newer_snapshot() {
     let dir = TempDir::new().expect("Failed to create temp dir");
     let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create sm");
-    sm.start().await.expect("start");
 
     let entries: Vec<ApplyEntry> =
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
@@ -838,7 +832,6 @@ async fn test_file_apply_snapshot_from_file_reports_applied_for_newer_snapshot()
 async fn test_file_apply_snapshot_from_file_rejects_missing_last_included() {
     let dir = TempDir::new().expect("Failed to create temp dir");
     let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create sm");
-    sm.start().await.expect("start");
 
     let early_entries: Vec<ApplyEntry> =
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
@@ -883,14 +876,12 @@ async fn test_replay_wal_skips_stale_entries_below_last_applied() {
 
     // Follower applies key_1..key_5 = "old" at indexes 1..=5.
     let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create follower");
-    sm.start().await.expect("start follower");
     let stale: Vec<ApplyEntry> =
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"old", i)).collect();
     sm.apply_chunk(&stale).await.expect("apply pre-snapshot entries");
 
     // Snapshot at index 10 overwrites the same keys with newer values.
     let gen_sm = FileStateMachine::new(dir.path().join("gen")).await.expect("create generator");
-    gen_sm.start().await.expect("start generator");
     let newer: Vec<ApplyEntry> =
         (1..=10).map(|i| insert_at(format!("key_{i}").as_bytes(), b"new", i)).collect();
     gen_sm.apply_chunk(&newer).await.expect("apply generator entries");
@@ -926,7 +917,6 @@ async fn test_replay_wal_skips_stale_entries_below_last_applied() {
     drop(sm);
 
     let recovered = FileStateMachine::new(dir.path().join("sm")).await.expect("reload after crash");
-    recovered.start().await.expect("start recovered");
 
     // The snapshot's newer values must survive; stale WAL must NOT clobber them.
     assert_eq!(

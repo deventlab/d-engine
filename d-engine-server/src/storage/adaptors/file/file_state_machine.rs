@@ -859,13 +859,6 @@ impl Drop for FileStateMachine {
 
 #[async_trait]
 impl StateMachine for FileStateMachine {
-    async fn start(&self) -> Result<(), Error> {
-        self.running.store(true, Ordering::SeqCst);
-
-        info!("File state machine started");
-        Ok(())
-    }
-
     fn close(&self) -> Result<(), Error> {
         if !self.running.swap(false, Ordering::SeqCst) {
             return Ok(()); // already closed
@@ -1084,10 +1077,6 @@ impl StateMachine for FileStateMachine {
         }
 
         Ok(results)
-    }
-
-    fn len(&self) -> usize {
-        self.data.read().len()
     }
 
     fn update_last_applied(

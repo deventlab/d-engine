@@ -309,9 +309,6 @@ where
             )
         })?;
 
-        // Start state machine: flip flags and load persisted data
-        state_machine.start().await?;
-
         // Handle storage engine initialization
         let storage_engine = self.storage_engine.take().ok_or_else(|| {
             SystemError::NodeStartFailed(

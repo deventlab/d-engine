@@ -521,7 +521,6 @@ async fn test_get_multi_two_keys_still_uses_snapshot_isolation() {
 async fn test_close_prevents_reads() {
     let dir = TempDir::new().unwrap();
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
-    sm.start().await.unwrap();
     sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
     assert_eq!(sm.get(b"k").unwrap(), Some(Bytes::from_static(b"v")));
 
@@ -558,7 +557,6 @@ async fn test_drop_after_close_does_not_panic() {
     let dir = TempDir::new().unwrap();
     {
         let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
-        sm.start().await.unwrap();
         sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
         sm.close().unwrap();
         // sm drops here — Drop must be a no-op
@@ -815,7 +813,6 @@ async fn test_apply_snapshot_from_file_rejects_stale_snapshot() {
     let db_path = temp_dir.path().join("test_stale_snapshot");
     let (_storage, state_machine) =
         RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
-    state_machine.start().await.expect("Failed to start");
 
     // 1. Apply entries 1..=20 — the state a snapshot generated "now" would capture.
     let early_entries: Vec<ApplyEntry> = (1..=20)
@@ -890,7 +887,6 @@ async fn test_apply_snapshot_from_file_ignores_duplicate_snapshot() {
     let db_path = temp_dir.path().join("test_duplicate_snapshot");
     let (_storage, state_machine) =
         RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
-    state_machine.start().await.expect("Failed to start");
 
     let entries: Vec<ApplyEntry> =
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
@@ -935,7 +931,6 @@ async fn test_apply_snapshot_from_file_rejects_boundary_conflict() {
     let db_path = temp_dir.path().join("test_boundary_conflict");
     let (_storage, state_machine) =
         RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
-    state_machine.start().await.expect("Failed to start");
 
     let entries: Vec<ApplyEntry> =
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
@@ -980,7 +975,6 @@ async fn test_apply_snapshot_from_file_reports_applied_for_newer_snapshot() {
     let db_path = temp_dir.path().join("test_applied_snapshot");
     let (_storage, state_machine) =
         RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
-    state_machine.start().await.expect("Failed to start");
 
     let entries: Vec<ApplyEntry> =
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
@@ -1025,7 +1019,6 @@ async fn test_apply_snapshot_from_file_rejects_missing_last_included() {
     let db_path = temp_dir.path().join("test_none_last_included");
     let (_storage, state_machine) =
         RocksDBUnifiedEngine::open(&db_path).expect("Failed to open unified DB");
-    state_machine.start().await.expect("Failed to start");
 
     // Snapshot captured early, containing only key_1..key_5.
     let early_entries: Vec<ApplyEntry> =

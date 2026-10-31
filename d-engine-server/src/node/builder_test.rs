@@ -81,10 +81,16 @@ async fn test_set_raft_log_replaces_default() {
         builder.storage_engine.as_ref().unwrap().log_store().last_index(),
         expected_raft_log_ids[1]
     );
-    assert_eq!(
-        builder.state_machine.as_ref().unwrap().len(),
-        expected_state_machine_ids.len()
-    );
+    // Verify the builder kept the customized state machine: every pre-inserted entry is readable
+    let state_machine = builder.state_machine.as_ref().unwrap();
+    for id in &expected_state_machine_ids {
+        let key = id.to_be_bytes();
+        assert_eq!(
+            state_machine.get(&key).unwrap(),
+            Some(bytes::Bytes::from(key.to_vec())),
+            "pre-inserted entry {id} missing from the builder's state machine"
+        );
+    }
 }
 
 #[tokio::test]

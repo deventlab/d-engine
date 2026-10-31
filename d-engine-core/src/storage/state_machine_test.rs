@@ -36,7 +36,7 @@ pub trait StateMachineBuilder: Send + Sync {
 impl StateMachineTestSuite {
     /// Run all state machine tests
     pub async fn run_all_tests<B: StateMachineBuilder>(builder: B) -> Result<(), Error> {
-        Self::test_start_close(builder.build().await?).await?;
+        Self::test_close_is_idempotent_and_stops_running(builder.build().await?).await?;
         Self::test_basic_kv_operations(builder.build().await?).await?;
         Self::test_apply_chunk_functionality(builder.build().await?).await?;
         Self::test_cas_operations(builder.build().await?).await?;
@@ -80,14 +80,14 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
-    /// Test start/close lifecycle: a state machine is running after `start`, and not running
+    /// Test close lifecycle: a freshly built state machine is already running, and not running
     /// once `close`d. `close` is permanent and idempotent (#455), so there is no restart.
-    pub async fn test_start_close(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
-        // Test default state
+    pub async fn test_close_is_idempotent_and_stops_running(
+        state_machine: Arc<dyn StateMachine>
+    ) -> Result<(), Error> {
+        // Running as soon as it is built: there is no separate start step
         assert!(state_machine.is_running());
 
-        state_machine.start().await?;
-        assert!(state_machine.is_running());
         state_machine.close()?;
         assert!(!state_machine.is_running());
         state_machine.close()?; // idempotent
@@ -129,8 +129,6 @@ impl StateMachineTestSuite {
 
     /// Test CAS operations
     pub async fn test_cas_operations(sm: Arc<dyn StateMachine>) -> Result<(), Error> {
-        sm.start().await?;
-
         // Test 1: CAS on non-existent key (expected None)
         let entry1 = create_cas_entry(1, b"lock".to_vec().into(), None, b"owner1".to_vec().into());
         sm.apply_chunk(&[entry1]).await?;
@@ -164,8 +162,6 @@ impl StateMachineTestSuite {
     /// within a single entry must all take effect.
     pub async fn test_batch_operations(sm: Arc<dyn StateMachine>) -> Result<(), Error> {
         use crate::BatchOp;
-
-        sm.start().await?;
 
         let entry = create_batch_entry(1, vec![
             BatchOp::Insert {
@@ -607,7 +603,6 @@ impl StateMachineTestSuite {
     pub async fn test_drop_flushes_data<B: StateMachineBuilder>(builder: &B) -> Result<(), Error> {
         // Step 1: Create state machine, write data, call stop()
         let sm = builder.build().await?;
-        sm.start().await?;
 
         // Write test data
         let entries = vec![
@@ -640,7 +635,6 @@ impl StateMachineTestSuite {
 
         // Step 2: Reopen state machine from same path
         let sm2 = builder.build().await?;
-        sm2.start().await?;
 
         // Step 3: Verify data survived
         let value1 = sm2.get(b"drop_test_key1")?;
@@ -678,7 +672,6 @@ impl StateMachineTestSuite {
         // Step 1: Write data - NO explicit stop() or flush() before drop
         {
             let sm = builder.build().await?;
-            sm.start().await?;
 
             let entries = vec![
                 create_insert_entry(
@@ -716,7 +709,6 @@ impl StateMachineTestSuite {
 
         // Step 2: Reopen
         let sm2 = builder.build().await?;
-        sm2.start().await?;
 
         // Step 3: Critical assertion - last_applied must be persisted by Drop
         assert_eq!(
@@ -756,7 +748,6 @@ impl StateMachineTestSuite {
 
         {
             let sm = builder.build().await?;
-            sm.start().await?;
 
             let entries = vec![
                 create_insert_entry(
@@ -808,7 +799,6 @@ impl StateMachineTestSuite {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let sm2 = builder.build().await?;
-        sm2.start().await?;
 
         assert_eq!(
             sm2.last_applied(),
@@ -844,7 +834,6 @@ impl StateMachineTestSuite {
         // Step 1: Create, write, stop gracefully
         {
             let sm = builder.build().await?;
-            sm.start().await?;
 
             let entries = vec![
                 create_insert_entry(
@@ -874,7 +863,6 @@ impl StateMachineTestSuite {
 
         // Step 2: Reopen and verify
         let sm2 = builder.build().await?;
-        sm2.start().await?;
 
         // Verify all data
         assert_eq!(
@@ -913,7 +901,6 @@ impl StateMachineTestSuite {
         // Step 1: apply a batch with mixed Insert + Delete, then drop without stop()
         {
             let sm = builder.build().await?;
-            sm.start().await?;
 
             let entry = create_batch_entry(1, vec![
                 BatchOp::Insert {
@@ -939,7 +926,6 @@ impl StateMachineTestSuite {
 
         // Step 2: reopen from same path — WAL must replay correctly
         let sm2 = builder.build().await?;
-        sm2.start().await?;
 
         assert_eq!(
             sm2.get(b"bk1")?,
@@ -984,7 +970,6 @@ impl StateMachineTestSuite {
     ) -> Result<(), Error> {
         // Step 1: Write data and drop ungracefully (no stop())
         let sm = builder.build().await?;
-        sm.start().await?;
 
         let entries = vec![
             create_insert_entry(
@@ -1015,7 +1000,6 @@ impl StateMachineTestSuite {
 
         // Step 2: Simulate restart - create new instance from same path
         let sm2 = builder.build().await?;
-        sm2.start().await?;
 
         // Step 3: Verify crash recovery - both data and metadata
         let value1 = sm2.get(b"crash_key1")?;
@@ -1058,7 +1042,6 @@ impl StateMachineTestSuite {
         builder: &B
     ) -> Result<(), Error> {
         let sm = builder.build().await?;
-        sm.start().await?;
         sm.apply_chunk(&[
             create_insert_entry(
                 1,
@@ -1083,7 +1066,6 @@ impl StateMachineTestSuite {
         // `sm` stays alive until the end of the test: Drop must not be what saves the state.
 
         let sm2 = builder.build().await?;
-        sm2.start().await?;
 
         assert_eq!(
             sm2.last_applied().index,
@@ -1107,7 +1089,6 @@ impl StateMachineTestSuite {
     /// down. A late read must not answer from state that is no longer maintained, and a late
     /// `apply_chunk` must not mutate a state machine that already persisted its final state.
     pub async fn test_operations_fail_after_close(sm: Arc<dyn StateMachine>) -> Result<(), Error> {
-        sm.start().await?;
         sm.apply_chunk(&[create_insert_entry(
             1,
             Bytes::from_static(b"serving_key"),
@@ -1761,11 +1742,6 @@ mod default_scan_prefix_tests {
 
     #[async_trait]
     impl StateMachine for MinimalSm {
-        async fn start(&self) -> Result<(), Error> {
-            self.running.store(true, Ordering::SeqCst);
-            Ok(())
-        }
-
         fn close(&self) -> Result<(), Error> {
             self.running.store(false, Ordering::SeqCst);
             Ok(())
@@ -1787,10 +1763,6 @@ mod default_scan_prefix_tests {
             _chunk: &[ApplyEntry],
         ) -> Result<Vec<ApplyResult>, Error> {
             Ok(vec![])
-        }
-
-        fn len(&self) -> usize {
-            0
         }
 
         fn update_last_applied(

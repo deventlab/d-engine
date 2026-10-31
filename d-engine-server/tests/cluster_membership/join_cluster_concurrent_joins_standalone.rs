@@ -334,7 +334,15 @@ async fn test_join_cluster_scenario2() -> Result<(), ClientApiError> {
     let node1_sm = FileStateMachine::new(PathBuf::from(format!("{db_dir}/cs/1/state_machine")))
         .await
         .expect("Failed to open node 1 state machine for verification");
-    assert_eq!(node1_sm.len(), 11);
+    // Node 1 reopened from disk must hold the seeded entries plus entry 11.
+    for i in 1..=last_log_id {
+        let value = node1_sm.get(&safe_kv(i)).unwrap();
+        assert_eq!(value, Some(Bytes::from(safe_kv(i).to_vec())));
+    }
+    assert!(
+        node1_sm.get(&safe_kv(11)).unwrap().is_some(),
+        "entry 11 was not persisted on node 1"
+    );
 
     // Verify leader is still node 3
     assert_eq!(client_manager.list_leader_id().await.unwrap(), Some(3));

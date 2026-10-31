@@ -523,13 +523,6 @@ impl RocksDBStateMachine {
 
 #[async_trait]
 impl StateMachine for RocksDBStateMachine {
-    async fn start(&self) -> Result<(), Error> {
-        self.is_serving.store(true, Ordering::SeqCst);
-
-        info!("RocksDB state machine started");
-        Ok(())
-    }
-
     /// Sequence: stop serving → flush → save hard state → cancel background
     /// work → drop the DB handle (releasing the LOCK). A second call finds no DB and does nothing.
     fn close(&self) -> Result<(), Error> {
@@ -714,18 +707,6 @@ impl StateMachine for RocksDBStateMachine {
         }
 
         Ok(results)
-    }
-
-    fn len(&self) -> usize {
-        let guard = self.db.load();
-        let Some(db) = guard.as_deref() else {
-            return 0;
-        };
-        let Some(cf) = db.cf_handle(STATE_MACHINE_CF) else {
-            return 0;
-        };
-        // Note: This is an expensive operation because it iterates over all keys.
-        db.iterator_cf(&cf, IteratorMode::Start).count()
     }
 
     fn update_last_applied(
