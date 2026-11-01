@@ -8,6 +8,7 @@ use d_engine_proto::server::storage::SnapshotMetadata;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
+use tracing::warn;
 
 use super::StateMachineWriterOps;
 use crate::ApplyResult;
@@ -25,6 +26,7 @@ use crate::decode_entries;
 use crate::file_io::compute_checksum_from_folder_path;
 use crate::scoped_timer::ScopedTimer;
 use crate::state_machine_handler::applied_state::AppliedState;
+use crate::state_machine_handler::snapshot_catalog::SnapshotCatalog;
 
 /// The only type allowed to run destructive state-machine mutations — held exclusively
 /// by `StateMachineWorker`. Shares `state_machine`/`applied` with its paired
@@ -44,6 +46,9 @@ where
     /// build/cleanup (reader side) never drift apart.
     path_mgr: Arc<SnapshotPathManager>,
 
+    /// Shared with the paired handler: records the snapshots this node holds.
+    catalog: Arc<SnapshotCatalog>,
+
     #[cfg(feature = "watch")]
     watch_event_tx: Option<tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>>,
     #[cfg(feature = "watch")]
@@ -56,6 +61,7 @@ impl<T: TypeConfig> DefaultStateMachineWriter<T> {
         state_machine: Arc<SMOF<T>>,
         applied: Arc<AppliedState>,
         path_mgr: Arc<SnapshotPathManager>,
+        catalog: Arc<SnapshotCatalog>,
         #[cfg_attr(not(feature = "watch"), allow(unused_variables))] watch_event_tx: Option<
             tokio::sync::broadcast::Sender<d_engine_proto::client::WatchResponse>,
         >,
@@ -68,6 +74,7 @@ impl<T: TypeConfig> DefaultStateMachineWriter<T> {
             state_machine,
             applied,
             path_mgr,
+            catalog,
             #[cfg(feature = "watch")]
             watch_event_tx,
             #[cfg(feature = "watch")]
@@ -234,6 +241,21 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
         }
 
         self.applied.advance(incoming.index);
+
+        // The snapshot is installed, so this node now holds it: the archive was kept at its final
+        // path when it was received. A failure to record it does not undo the install.
+        let archive = self.path_mgr.final_snapshot_path(&incoming);
+        if tokio::fs::try_exists(&archive).await.unwrap_or(false) {
+            if let Err(e) = self.catalog.publish(&metadata).await {
+                error!(?e, "Failed to record the installed snapshot");
+            }
+        } else {
+            warn!(
+                ?archive,
+                "The installed snapshot's archive is missing; not recorded"
+            );
+        }
+
         Ok(SnapshotApplyResult::Applied {
             last_included: incoming,
         })

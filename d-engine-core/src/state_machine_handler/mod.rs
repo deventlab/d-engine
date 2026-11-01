@@ -35,6 +35,7 @@ mod applied_state;
 mod command;
 mod default_state_machine_handler;
 mod snapshot_assembler;
+mod snapshot_catalog;
 mod snapshot_policy;
 mod worker;
 mod worker_handle;
@@ -146,12 +147,11 @@ where
         captured: crate::CapturedLocalSnapshot,
     ) -> Result<(SnapshotMetadata, std::path::PathBuf)>;
 
-    /// Cleans up old snapshots before specified version
+    /// Deletes the snapshots this node no longer needs, keeping the newest `retain_count`
+    /// recorded ones.
     async fn cleanup_snapshot(
         &self,
-        before_version: u64,
-        snapshot_dir: &std::path::Path,
-        snapshot_dir_prefix: &str,
+        retain_count: u64,
     ) -> crate::Result<()>;
 
     /// Retrieves metadata of the latest valid snapshot

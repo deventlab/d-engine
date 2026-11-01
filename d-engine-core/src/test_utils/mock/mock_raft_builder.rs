@@ -398,13 +398,22 @@ pub fn mock_state_machine() -> MockStateMachine {
 }
 
 pub fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeConfig> {
+    mock_state_machine_handler_with_snapshot(None)
+}
+
+/// Like [`mock_state_machine_handler`], for a node whose latest snapshot is `latest_snapshot`.
+pub fn mock_state_machine_handler_with_snapshot(
+    latest_snapshot: Option<d_engine_proto::server::storage::SnapshotMetadata>
+) -> MockStateMachineHandler<MockTypeConfig> {
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_update_pending().returning(|_| {});
     // Commit delivery (also run on shutdown) reads the applied position every iteration.
     state_machine_handler.expect_last_applied().returning(|| 0);
     state_machine_handler.expect_read_from_state_machine().returning(|_| Ok(vec![]));
     state_machine_handler.expect_should_snapshot().returning(|_| false);
-    state_machine_handler.expect_get_latest_snapshot_metadata().returning(|| None);
+    state_machine_handler
+        .expect_get_latest_snapshot_metadata()
+        .returning(move || latest_snapshot.clone());
     // handle_create_snapshot (#436 Task #21) always acquires/releases this guard
     // before it can even reach the Worker round-trip, regardless of whether the
     // test cares about snapshot creation — give every default-builder test a

@@ -3653,7 +3653,7 @@ impl<T: TypeConfig> LeaderState<T> {
         // Peers within an active backoff window (after consecutive failures) are skipped
         // to protect the leader from repeatedly pushing to unreachable peers.
         if !requests.snapshot_targets.is_empty() {
-            let snapshot_metadata = ctx.state_machine().snapshot_metadata();
+            let snapshot_metadata = ctx.state_machine_handler().get_latest_snapshot_metadata();
             if let Some(metadata) = snapshot_metadata {
                 for peer_id in requests.snapshot_targets {
                     // Respect per-peer backoff window: if recent push attempts failed,

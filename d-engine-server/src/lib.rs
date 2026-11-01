@@ -166,14 +166,6 @@ pub use d_engine_core::Result;
 pub use d_engine_core::ScanResult;
 /// Client-facing prefix scan result, returned by `EmbeddedClient::scan_prefix()`.
 pub use d_engine_core::ScanResults;
-/// Outcome the engine reports for a received snapshot.
-///
-/// Distinguishes "the install actually ran" (`Applied`) from two no-op cases that are not
-/// errors: the incoming snapshot is behind what's already applied (`IgnoredStale`), or is an
-/// idempotent retry of the currently-applied boundary (`IgnoredDuplicate`). The engine decides
-/// this itself before it calls [`StateMachine::apply_snapshot_from_file`], which only ever
-/// receives a snapshot to install and returns `Result<()>`.
-pub use d_engine_core::SnapshotApplyResult;
 /// Snapshot-specific error type. Return one from [`StateMachine::apply_snapshot_from_file`] to
 /// report a genuine install failure; stale, duplicate and conflicting snapshots never reach
 /// that method, because the engine rejects them first.
