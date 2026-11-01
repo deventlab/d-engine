@@ -3044,3 +3044,41 @@ async fn test_install_prepared_snapshot_matching_checksum_installs_once() {
         "expected Applied, got: {result:?}"
     );
 }
+
+/// A follower receives a RocksDB-style snapshot (data files in a sub-directory) in which one data
+/// file was corrupted after the leader recorded the checksum.
+///
+/// Purpose: the install must be rejected and the state machine never called. If the checksum only
+/// covered top-level files, this corruption would be installed silently.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_nested_file_corruption_rejects_without_calling_state_machine()
+ {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let received = temp_dir.path().join("received");
+    fs::create_dir_all(received.join("sm")).unwrap();
+    fs::write(received.join("sm_metadata.bin"), b"metadata").unwrap();
+    fs::write(received.join("sm").join("000008.sst"), b"table-data").unwrap();
+    let recorded = crate::file_io::compute_checksum_from_folder_path(&received).await.unwrap();
+
+    // Corrupted in transit, after the checksum was recorded.
+    fs::write(received.join("sm").join("000008.sst"), b"table-dat!").unwrap();
+
+    let mut sm = MockStateMachine::new();
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: Bytes::copy_from_slice(&recorded),
+    };
+    let err = writer
+        .install_prepared_snapshot(metadata, received)
+        .await
+        .expect_err("a snapshot with a corrupted nested file must be rejected");
+
+    assert!(
+        format!("{err:?}").contains("ChecksumMismatch"),
+        "expected ChecksumMismatch, got: {err:?}"
+    );
+}
