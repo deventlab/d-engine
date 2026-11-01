@@ -28,7 +28,7 @@ mod grpc_fast_path_tests {
     use tonic::Request;
 
     use crate::Node;
-    use crate::api::StandaloneReadHandle;
+    use crate::api::ReadHandle;
     use crate::read_actor::run_read_actor;
     use crate::test_utils::mock_node;
 
@@ -82,7 +82,7 @@ mod grpc_fast_path_tests {
             drop(cmd_rx);
         }
         let handle = tokio::spawn(run_read_actor(read_rx, lease, Arc::new(sm), 64));
-        let rh = StandaloneReadHandle::new(Some(read_tx), cmd_tx);
+        let rh = ReadHandle::new(Some(read_tx), cmd_tx);
 
         let (_, graceful_rx) = tokio::sync::watch::channel(());
         let mut node = mock_node("/tmp/grpc_fast_path_test", graceful_rx, None);
@@ -336,7 +336,7 @@ mod grpc_fast_path_tests {
 
         let (_, graceful_rx) = tokio::sync::watch::channel(());
         let mut node = mock_node("/tmp/grpc_fast_path_test_no_rt", graceful_rx, None);
-        node.read_handle = StandaloneReadHandle::new(None, cmd_tx);
+        node.read_handle = ReadHandle::new(None, cmd_tx);
         node.ready.store(true, Ordering::SeqCst);
 
         for policy in [

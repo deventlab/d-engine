@@ -67,8 +67,7 @@ async fn start_dengine_server(
 ) {
     let storage_engine =
         Arc::new(SledStorageEngine::new(db_path.join("storage_engine"), node_id).unwrap());
-    let state_machine =
-        Arc::new(SledStateMachine::new(db_path.join("state_machine"), node_id).unwrap());
+    let state_machine = SledStateMachine::new(db_path.join("state_machine"), node_id).unwrap();
 
     // Start Node — blocks until shutdown.
     if let Err(e) = StandaloneEngine::run_custom(

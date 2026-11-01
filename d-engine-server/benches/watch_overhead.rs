@@ -101,7 +101,6 @@ watcher_buffer_size = 100
 
     let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_open_path)?;
     let storage = Arc::new(storage);
-    let state_machine = Arc::new(state_machine);
 
     let engine = DefaultEmbeddedEngine::start_custom(
         &db_path,

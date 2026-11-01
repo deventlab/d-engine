@@ -2,11 +2,7 @@
 // `raft-engine` feature replaces only the Raft log store (the state machine,
 // config file and data layout are unchanged), so the two builds differ by the
 // log store alone and their results stay comparable.
-#[cfg(not(feature = "raft-engine"))]
-type BenchEngine = d_engine::DefaultEmbeddedEngine;
-#[cfg(feature = "raft-engine")]
-type BenchEngine =
-    d_engine::EmbeddedEngine<raft_engine_log::RaftEngineStorage, d_engine::RocksDBStateMachine>;
+type BenchEngine = d_engine::EmbeddedEngine;
 
 #[cfg(not(feature = "raft-engine"))]
 async fn start_engine(
@@ -28,9 +24,7 @@ async fn start_engine(
         format!("{data_dir}/storage"),
         &options,
     )?);
-    let sm = Arc::new(d_engine::RocksDBStateMachine::new(format!(
-        "{data_dir}/state_machine"
-    ))?);
+    let sm = d_engine::RocksDBStateMachine::new(format!("{data_dir}/state_machine"))?;
     BenchEngine::start_custom(data_dir, storage, sm, Some(config_path)).await
 }
 use d_engine::protocol::ReadConsistencyPolicy;

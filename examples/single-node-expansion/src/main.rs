@@ -95,7 +95,7 @@ async fn start_dengine_server(
 ) {
     // Option 1: RAW FILE
     // let storage_engine = Arc::new(FileStorageEngine::new(db_path.join("storage_engine")).unwrap());
-    // let state_machine = Arc::new(FileStateMachine::new(db_path.join("state_machine")).await.unwrap());
+    // let state_machine = FileStateMachine::new(db_path.join("state_machine")).await.unwrap();
 
     // Option 2: ROCKSDB (unified engine — single DB instance, 4 column families)
     let (storage_engine, state_machine) = RocksDBUnifiedEngine::open(db_path.join("db")).unwrap();
@@ -104,7 +104,7 @@ async fn start_dengine_server(
     if let Err(e) = StandaloneEngine::run_custom(
         &db_path,
         Arc::new(storage_engine),
-        Arc::new(state_machine),
+        state_machine,
         graceful_rx,
         None::<&str>,
     )

@@ -8,14 +8,12 @@ mod embedded_engine_tests {
     use crate::api::EmbeddedEngine;
     use crate::storage::FileStateMachine;
     use crate::storage::FileStorageEngine;
+    use crate::test_utils::SharedStateMachine;
 
-    type TestEngine = EmbeddedEngine<FileStorageEngine, FileStateMachine>;
+    type TestEngine = EmbeddedEngine;
 
-    async fn create_test_storage_and_sm() -> (
-        Arc<FileStorageEngine>,
-        Arc<FileStateMachine>,
-        tempfile::TempDir,
-    ) {
+    async fn create_test_storage_and_sm()
+    -> (Arc<FileStorageEngine>, FileStateMachine, tempfile::TempDir) {
         // Clear CONFIG_PATH to avoid external config interference
         unsafe {
             std::env::remove_var("CONFIG_PATH");
@@ -30,8 +28,7 @@ mod embedded_engine_tests {
 
         let storage =
             Arc::new(FileStorageEngine::new(storage_path).expect("Failed to create storage"));
-        let sm =
-            Arc::new(FileStateMachine::new(sm_path).await.expect("Failed to create state machine"));
+        let sm = FileStateMachine::new(sm_path).await.expect("Failed to create state machine");
 
         (storage, sm, temp_dir)
     }
@@ -592,7 +589,10 @@ listen_addr = "127.0.0.1:0"
         #[serial(start_node)]
         async fn test_start_node_uses_passed_se_and_sm_instances() {
             let (storage, sm, temp_dir) = create_test_storage_and_sm().await;
-            let sm_for_direct_read = Arc::clone(&sm);
+            // The engine takes the state machine by value; the shared wrapper lets this test keep
+            // a reference to the very instance the engine writes to.
+            let sm_for_direct_read = Arc::new(sm);
+            let sm = SharedStateMachine::new(Arc::clone(&sm_for_direct_read));
             let config = make_config(1);
 
             let engine =
@@ -735,9 +735,8 @@ listen_addr = "127.0.0.1:0"
                 let storage = Arc::new(
                     FileStorageEngine::new(storage_path).expect("Failed to create storage"),
                 );
-                let sm = Arc::new(
-                    FileStateMachine::new(sm_path).await.expect("Failed to create state machine"),
-                );
+                let sm =
+                    FileStateMachine::new(sm_path).await.expect("Failed to create state machine");
 
                 (storage, sm)
                 // temp_dir dropped here — underlying paths are now invalid
@@ -793,9 +792,7 @@ listen_addr = "127.0.0.1:0"
 
             let storage =
                 Arc::new(FileStorageEngine::new(storage_path).expect("Failed to create storage"));
-            let sm = Arc::new(
-                FileStateMachine::new(sm_path).await.expect("Failed to create state machine"),
-            );
+            let sm = FileStateMachine::new(sm_path).await.expect("Failed to create state machine");
 
             println!("Created storage and SM, TempDir kept alive");
 

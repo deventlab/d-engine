@@ -1,6 +1,6 @@
-/// Unit tests for StandaloneReadHandle routing logic.
+/// Unit tests for ReadHandle routing logic.
 ///
-/// StandaloneReadHandle is the single source of truth for read routing:
+/// ReadHandle is the single source of truth for read routing:
 ///   Eventual/LeaseRead  → ReadActor fast path; fallback to cmd_tx on LeaseInvalid/SmUnavailable
 ///   LinearizableRead    → cmd_tx always
 ///   SmError             → returned directly, NO cmd_tx fallback
@@ -29,7 +29,7 @@ mod read_handle_tests {
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
 
-    use super::super::StandaloneReadHandle;
+    use super::super::ReadHandle;
     use crate::read_actor::run_read_actor;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ mod read_handle_tests {
         sm
     }
 
-    /// Build a StandaloneReadHandle with a live ReadActor.
+    /// Build a ReadHandle with a live ReadActor.
     ///
     /// `drop_cmd_rx=true` closes the cmd_tx receiver — any cmd_tx fallback
     /// returns a channel-closed Network error (proof the fast path was NOT taken).
@@ -86,14 +86,14 @@ mod read_handle_tests {
         sm: MockStateMachine,
         lease: Arc<ReadLease>,
         drop_cmd_rx: bool,
-    ) -> (StandaloneReadHandle, JoinHandle<()>) {
+    ) -> (ReadHandle, JoinHandle<()>) {
         let (read_tx, read_rx) = mpsc::channel(8);
         let (cmd_tx, cmd_rx) = mpsc::channel(1);
         if drop_cmd_rx {
             drop(cmd_rx);
         }
         let handle = tokio::spawn(run_read_actor(read_rx, lease, Arc::new(sm), 64));
-        let rh = StandaloneReadHandle::new(Some(read_tx), cmd_tx);
+        let rh = ReadHandle::new(Some(read_tx), cmd_tx);
         (rh, handle)
     }
 
@@ -312,12 +312,12 @@ mod read_handle_tests {
 
     // ── No read_tx — always cmd_tx ────────────────────────────────────────────
 
-    /// StandaloneReadHandle without read_tx (None) always falls through to cmd_tx for any policy.
+    /// ReadHandle without read_tx (None) always falls through to cmd_tx for any policy.
     #[tokio::test]
     async fn test_no_read_tx_all_policies_use_cmd_tx() {
         let (cmd_tx, cmd_rx) = mpsc::channel::<d_engine_core::ClientCmd>(1);
         drop(cmd_rx);
-        let rh = StandaloneReadHandle::new(None, cmd_tx);
+        let rh = ReadHandle::new(None, cmd_tx);
 
         for policy in [
             ReadConsistencyPolicy::EventualConsistency,
@@ -344,7 +344,7 @@ mod read_handle_tests {
         drop(read_rx); // ReadActor is gone
         drop(cmd_rx); // cmd_tx also closed — proves fallback was attempted
 
-        let rh = StandaloneReadHandle::new(Some(read_tx), cmd_tx);
+        let rh = ReadHandle::new(Some(read_tx), cmd_tx);
         let result = rh.get(b"k", ReadConsistencyPolicy::EventualConsistency, 1, TIMEOUT).await;
         assert!(
             matches!(result, Err(ClientApiError::Network { .. })),
@@ -355,19 +355,19 @@ mod read_handle_tests {
 
     // ── cmd_tx path: alignment helper ────────────────────────────────────────
 
-    /// Builds a StandaloneReadHandle wired to a one-shot mock Raft responder.
+    /// Builds a ReadHandle wired to a one-shot mock Raft responder.
     ///
     /// The responder returns the given sparse `entries` exactly as
     /// `read_from_state_machine` would — caller is responsible for verifying
     /// that `get_batch` re-aligns them to the input key positions.
-    async fn make_cmd_tx_handle(entries: Vec<KvEntry>) -> StandaloneReadHandle {
+    async fn make_cmd_tx_handle(entries: Vec<KvEntry>) -> ReadHandle {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
         tokio::spawn(async move {
             if let Some(ClientCmd::Read(_, resp_tx)) = cmd_rx.recv().await {
                 let _ = resp_tx.send(Ok(ClientResponse::read_results(entries)));
             }
         });
-        StandaloneReadHandle::new(None, cmd_tx)
+        ReadHandle::new(None, cmd_tx)
     }
 
     // ── cmd_tx path: HashMap re-alignment correctness ─────────────────────────
@@ -646,7 +646,7 @@ mod read_handle_tests {
         let (cmd_tx, cmd_rx) = mpsc::channel::<d_engine_core::ClientCmd>(1);
         drop(cmd_rx);
 
-        let rh = StandaloneReadHandle::new(Some(read_tx), cmd_tx);
+        let rh = ReadHandle::new(Some(read_tx), cmd_tx);
 
         let short_timeout = Duration::from_millis(50);
         let start = tokio::time::Instant::now();
@@ -674,8 +674,8 @@ mod read_handle_tests {
 
 // ── Error helper tests ────────────────────────────────────────────────────────
 //
-// These functions live in standalone_read_handle.rs and are shared by both
-// StandaloneReadHandle and EmbeddedReadHandle (via re-export).  Testing them
+// These functions live in read_handle.rs and are shared by both
+// ReadHandle and EmbeddedReadHandle (via re-export).  Testing them
 // here keeps the coverage co-located with the implementation.
 
 #[cfg(test)]

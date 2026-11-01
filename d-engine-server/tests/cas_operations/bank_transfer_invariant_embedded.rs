@@ -83,7 +83,7 @@ async fn test_concurrent_transfers_preserve_bank_invariant()
         let engine = DefaultEmbeddedEngine::start_custom(
             &node_db_root,
             Arc::new(storage),
-            Arc::new(state_machine),
+            state_machine,
             Some(&config_path),
         )
         .await?;

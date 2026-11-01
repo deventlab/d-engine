@@ -213,7 +213,7 @@ Run performance tests locally: `cargo test -- --ignored`
 use d_engine::{EmbeddedEngine, FileStorageEngine};
 
 let storage_engine = Arc::new(FileStorageEngine::new("./data/storage").await?);
-let state_machine = Arc::new(CustomStateMachine::new().await?);
+let state_machine = CustomStateMachine::new().await?;
 
 let engine = EmbeddedEngine::start_custom(
     "./data",       // data_dir

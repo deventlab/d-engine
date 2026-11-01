@@ -391,31 +391,23 @@ max_batch_size = 1
 // also the only way to force a NotLeader response, since a real single-node
 // engine (used by `integration_tests` above) is always its own leader.
 mod scan_prefix_error_handling {
-    use std::sync::Arc;
     use std::time::Duration;
 
     use d_engine_core::ClientCmd;
-    use d_engine_core::MockStateMachine;
-    use d_engine_core::MockTypeConfig;
-    use d_engine_core::ReadLease;
     use d_engine_core::client::ClientApiError;
     use d_engine_core::client::ClientResponse;
     use d_engine_core::client::ErrorCode;
     use d_engine_core::client::LeaderHint;
     use tokio::sync::mpsc;
 
+    use crate::api::ReadHandle;
     use crate::api::embedded_client::EmbeddedClient;
-    use crate::api::embedded_read_handle::EmbeddedReadHandle;
 
-    /// Build a client wired to a manually-controlled cmd channel. sm/lease are
-    /// unused by scan_prefix (it only goes through cmd_tx), so bare stand-ins suffice.
-    fn make_client(cmd_tx: mpsc::Sender<ClientCmd>) -> EmbeddedClient<MockTypeConfig> {
+    /// Build a client wired to a manually-controlled cmd channel. scan_prefix only goes through
+    /// cmd_tx, so the read handle has no ReadActor.
+    fn make_client(cmd_tx: mpsc::Sender<ClientCmd>) -> EmbeddedClient {
         let (event_tx, _event_rx) = mpsc::channel(1);
-        let read_handle = EmbeddedReadHandle::new(
-            Arc::new(MockStateMachine::new()),
-            Arc::new(ReadLease::new()),
-            cmd_tx,
-        );
+        let read_handle = ReadHandle::new(None, cmd_tx);
         EmbeddedClient::new_internal(event_tx, read_handle, 1, Duration::from_millis(200))
     }
 

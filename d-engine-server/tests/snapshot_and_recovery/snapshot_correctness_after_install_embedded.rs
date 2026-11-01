@@ -117,7 +117,7 @@ retained_log_entries = {RETAINED_LOGS}
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),
-            Arc::new(sm),
+            sm,
             Some(config_path.to_str().unwrap()),
         )
         .await?;
@@ -194,7 +194,7 @@ retained_log_entries = {RETAINED_LOGS}
     let restarted = DefaultEmbeddedEngine::start_custom(
         &follower_db_path,
         Arc::new(storage),
-        Arc::new(sm),
+        sm,
         Some(follower_config_path.to_str().unwrap()),
     )
     .await?;
@@ -351,7 +351,7 @@ retained_log_entries = {RETAINED_LOGS}
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),
-            Arc::new(sm),
+            sm,
             Some(config_path.to_str().unwrap()),
         )
         .await?;
@@ -427,7 +427,7 @@ retained_log_entries = {RETAINED_LOGS}
     let restarted = DefaultEmbeddedEngine::start_custom(
         &follower_db_path,
         Arc::new(storage),
-        Arc::new(sm),
+        sm,
         Some(follower_config_path.to_str().unwrap()),
     )
     .await?;
@@ -559,7 +559,7 @@ retained_log_entries = {RETAINED_LOGS}
     let leader = DefaultEmbeddedEngine::start_custom(
         &leader_db,
         Arc::new(storage),
-        Arc::new(sm),
+        sm,
         Some(leader_config_path.to_str().unwrap()),
     )
     .await?;
@@ -608,7 +608,7 @@ retained_log_entries = {RETAINED_LOGS}
     let learner = DefaultEmbeddedEngine::start_custom(
         &learner_db,
         Arc::new(storage),
-        Arc::new(sm),
+        sm,
         Some(learner_config_path.to_str().unwrap()),
     )
     .await?;

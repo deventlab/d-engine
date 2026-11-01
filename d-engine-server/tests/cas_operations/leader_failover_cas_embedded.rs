@@ -68,7 +68,7 @@ async fn test_leader_failover_cas_embedded() -> Result<(), Box<dyn std::error::E
         let engine = DefaultEmbeddedEngine::start_custom(
             &node_db_root,
             Arc::new(storage),
-            Arc::new(state_machine),
+            state_machine,
             Some(&config_path),
         )
         .await?;

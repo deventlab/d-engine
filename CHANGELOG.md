@@ -116,6 +116,8 @@ All notable changes to this project will be documented in this file.
 "MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
   is the only persistence knob now.
 
+- **⚠️ The engine takes the state machine by value** (#400): `EmbeddedEngine::start_custom`/`start_node`, `StandaloneEngine::run_custom`/`start_node` take `SM` instead of `Arc<SM>`; the `Arc` is created inside the engine. Nothing outside the engine holds the state machine, so `stop()` returns only after it is dropped and its resources are released. Embedded reads now go through the ReadActor like standalone reads (`EmbeddedReadHandle` is removed). `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+
 ### Removed
 
 - **TTL and per-key lease** (#464): d-engine now does consensus and replication only. Removed `put_with_ttl`, the `Lease` trait, `TtlLease`, the `[raft.state_machine.lease]` config section and `StateMachine::lease_background_cleanup`. `Command::Insert` no longer has `ttl_secs`. In the proto, `WriteCommand.Insert.ttl_secs` (field 3) is removed and the number is reserved. Key expiry is now the job of the layer above d-engine. The leader read lease (`LeaseRead`) is a different feature and is unchanged.

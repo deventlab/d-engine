@@ -106,7 +106,7 @@ listen_address = '127.0.0.1:{}'
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_data_dir,
         Arc::new(storage1),
-        Arc::new(sm1),
+        sm1,
         Some(node1_config_path),
     )
     .await?;
@@ -118,7 +118,7 @@ listen_address = '127.0.0.1:{}'
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &node2_data_dir,
         Arc::new(storage2),
-        Arc::new(sm2),
+        sm2,
         Some(node2_config_path),
     )
     .await?;
@@ -130,7 +130,7 @@ listen_address = '127.0.0.1:{}'
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &node3_data_dir,
         Arc::new(storage3),
-        Arc::new(sm3),
+        sm3,
         Some(node3_config_path),
     )
     .await?;
@@ -254,7 +254,7 @@ general_raft_timeout_duration_in_ms = 3000
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_data_dir,
         Arc::new(storage1),
-        Arc::new(sm1),
+        sm1,
         Some(node1_config_path),
     )
     .await?;
@@ -266,7 +266,7 @@ general_raft_timeout_duration_in_ms = 3000
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &node2_data_dir,
         Arc::new(storage2),
-        Arc::new(sm2),
+        sm2,
         Some(node2_config_path),
     )
     .await?;
@@ -278,7 +278,7 @@ general_raft_timeout_duration_in_ms = 3000
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &node3_data_dir,
         Arc::new(storage3),
-        Arc::new(sm3),
+        sm3,
         Some(node3_config_path),
     )
     .await?;
@@ -434,7 +434,7 @@ general_raft_timeout_duration_in_ms = 3000
     let engine1 = DefaultEmbeddedEngine::start_custom(
         &node1_data_dir,
         Arc::new(storage1),
-        Arc::new(sm1),
+        sm1,
         Some(node1_config_path),
     )
     .await?;
@@ -446,7 +446,7 @@ general_raft_timeout_duration_in_ms = 3000
     let engine2 = DefaultEmbeddedEngine::start_custom(
         &node2_data_dir,
         Arc::new(storage2),
-        Arc::new(sm2),
+        sm2,
         Some(node2_config_path),
     )
     .await?;
@@ -458,7 +458,7 @@ general_raft_timeout_duration_in_ms = 3000
     let engine3 = DefaultEmbeddedEngine::start_custom(
         &node3_data_dir,
         Arc::new(storage3),
-        Arc::new(sm3),
+        sm3,
         Some(node3_config_path),
     )
     .await?;

@@ -61,7 +61,7 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),
-            Arc::new(state_machine),
+            state_machine,
             Some(&config_path),
         )
         .await?;
@@ -120,7 +120,7 @@ async fn test_snapshot_recovery_embedded() -> Result<(), Box<dyn std::error::Err
     let new_engine = DefaultEmbeddedEngine::start_custom(
         &db_paths[follower_idx],
         Arc::new(storage),
-        Arc::new(state_machine),
+        state_machine,
         Some(&config_path),
     )
     .await?;

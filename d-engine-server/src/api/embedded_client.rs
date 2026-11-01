@@ -24,7 +24,6 @@ use d_engine_core::BatchOp;
 use d_engine_core::InboundEvent;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftOneshot;
-use d_engine_core::TypeConfig;
 use d_engine_core::client::ClientApi;
 use d_engine_core::client::ClientApiError;
 use d_engine_core::client::ClientApiResult;
@@ -37,30 +36,30 @@ use d_engine_core::types::ScanResults;
 use d_engine_core::watch::WatchRegistry;
 use tokio::sync::mpsc;
 
-use super::embedded_read_handle::EmbeddedReadHandle;
-pub(crate) use super::standalone_read_handle::channel_closed_error;
-pub(crate) use super::standalone_read_handle::map_error_response;
-pub(crate) use super::standalone_read_handle::server_error;
-pub(crate) use super::standalone_read_handle::timeout_error;
+pub(crate) use super::read_handle::channel_closed_error;
+pub(crate) use super::read_handle::map_error_response;
+pub(crate) use super::read_handle::server_error;
+pub(crate) use super::read_handle::timeout_error;
+use crate::api::ReadHandle;
 use crate::api::types::WriteOperation;
 use crate::proto_convert;
 
-/// Zero-overhead KV client for embedded mode. Obtained via `EmbeddedEngine::client()`.
+/// KV client for embedded mode. Obtained via `EmbeddedEngine::client()`.
 ///
-/// `T` is the [`TypeConfig`] that carries the concrete `StateMachine` type, enabling
-/// direct monomorphized calls to `T::SM::get()` on the fast path — no vtable dispatch.
+/// Eventual and lease reads are answered by the ReadActor, the only reader of the state machine
+/// besides the Raft loop; linearizable reads and all writes go through Raft.
 ///
 /// For standalone/gRPC mode use `GrpcClient` instead. Both implement `ClientApi`.
-pub struct EmbeddedClient<T: TypeConfig> {
+pub struct EmbeddedClient {
     event_tx: mpsc::Sender<InboundEvent>,
-    read_handle: EmbeddedReadHandle<T>,
+    read_handle: ReadHandle,
     client_id: u32,
     timeout: Duration,
     #[cfg(feature = "watch")]
     watch_registry: Option<Arc<WatchRegistry>>,
 }
 
-impl<T: TypeConfig> Clone for EmbeddedClient<T> {
+impl Clone for EmbeddedClient {
     fn clone(&self) -> Self {
         Self {
             event_tx: self.event_tx.clone(),
@@ -73,11 +72,11 @@ impl<T: TypeConfig> Clone for EmbeddedClient<T> {
     }
 }
 
-impl<T: TypeConfig> EmbeddedClient<T> {
+impl EmbeddedClient {
     /// Internal constructor (used by EmbeddedEngine).
     pub(crate) fn new_internal(
         event_tx: mpsc::Sender<InboundEvent>,
-        read_handle: EmbeddedReadHandle<T>,
+        read_handle: ReadHandle,
         client_id: u32,
         timeout: Duration,
     ) -> Self {
@@ -561,7 +560,7 @@ impl<T: TypeConfig> EmbeddedClient<T> {
     }
 }
 
-impl<T: TypeConfig> std::fmt::Debug for EmbeddedClient<T> {
+impl std::fmt::Debug for EmbeddedClient {
     fn fmt(
         &self,
         f: &mut std::fmt::Formatter<'_>,
@@ -575,7 +574,7 @@ impl<T: TypeConfig> std::fmt::Debug for EmbeddedClient<T> {
 
 // Implement ClientApi trait
 #[async_trait::async_trait]
-impl<T: TypeConfig> ClientApi for EmbeddedClient<T> {
+impl ClientApi for EmbeddedClient {
     async fn put(
         &self,
         key: impl AsRef<[u8]> + Send,

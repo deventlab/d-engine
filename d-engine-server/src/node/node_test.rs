@@ -1085,7 +1085,7 @@ mod sm_worker_lifecycle_tests {
 
         let storage =
             Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
-        let sm = Arc::new(FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"));
+        let sm = FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm");
         let node = NodeBuilder::<FileStorageEngine, FileStateMachine>::from_node_config(
             temp_dir.path(),
             config,
@@ -1135,7 +1135,7 @@ mod sm_worker_lifecycle_tests {
 
         let storage =
             Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
-        let sm = Arc::new(FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"));
+        let sm = FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm");
         let node = NodeBuilder::<FileStorageEngine, FileStateMachine>::from_node_config(
             temp_dir.path(),
             config,

@@ -26,6 +26,7 @@ use d_engine_server::StateMachine;
 use d_engine_server::api::DefaultEmbeddedEngine;
 use tracing_test::traced_test;
 
+use crate::common::SharedStateMachine;
 use crate::common::create_node_config;
 use crate::common::get_available_ports;
 
@@ -86,7 +87,7 @@ async fn start_single_node(
     let engine = DefaultEmbeddedEngine::start_custom(
         &node1_data_dir,
         Arc::clone(&storage_arc),
-        Arc::clone(&sm_arc),
+        SharedStateMachine::new(Arc::clone(&sm_arc)),
         Some(config_path),
     )
     .await?;

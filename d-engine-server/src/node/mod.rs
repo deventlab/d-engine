@@ -133,7 +133,7 @@ where
     pub(crate) _data_dir_lock: DataDirLock,
 
     /// Fast-path read routing. Always set; `read_tx = None` means no ReadActor.
-    pub(crate) read_handle: crate::api::StandaloneReadHandle,
+    pub(crate) read_handle: crate::api::ReadHandle,
 }
 
 impl<T> Debug for Node<T>

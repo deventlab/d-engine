@@ -16,6 +16,25 @@
 - RocksDB state machine: keys written with `put_with_ttl` under v0.2.x are kept forever after the upgrade. v0.3.0 neither reads the old `ttl_state` entry nor deletes expired keys. Before upgrading, either delete the keys you no longer want, or record their deadlines and have your own expiry layer delete them. Or start with a fresh data directory.
 - A read that fails in the state machine now returns an error code instead of an empty result: `StorageIoError`, `DataCorruption` (the stored data may be damaged), `RetryRequired` (the state machine is replacing its state; retry) or `Uncategorized`. Before, such a read looked like "key not found". Handle these errors in your client.
 
+## Upgrading to v0.3.0: The Engine Owns the State Machine
+
+`start_custom`, `start_node` and `run_custom` (embedded and standalone) now take the state machine by value. The engine creates the `Arc` itself, so by the time `stop()` returns it has dropped the state machine and released whatever it held (a database handle, a lock file).
+
+```rust
+// before
+let sm = Arc::new(MyStateMachine::new()?);
+EmbeddedEngine::<MyStorage, MyStateMachine>::start_custom(dir, storage, sm, None).await?;
+
+// after
+let sm = MyStateMachine::new()?;
+EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
+```
+
+- **`EmbeddedEngine<SE, SM>` and `EmbeddedClient<SE, SM>` no longer have type parameters.** Write `EmbeddedEngine` and `EmbeddedClient`. `DefaultEmbeddedEngine` and `DefaultEmbeddedClient` still exist and are now plain aliases of them.
+- **If you kept a clone of your `Arc<StateMachine>` to read local data directly** (for example `DLmdb` reading its own LMDB), you can no longer clone the instance the engine uses. Share a handle to your storage instead: put the handles (LMDB `Env`, sled `Db`, `Arc<rocksdb::DB>`) behind an `Arc` inside your state machine type, derive `Clone` on it, give the engine one clone and keep the other.
+- **Embedded reads (`get_eventual`, lease reads) are answered by the ReadActor**, as they already were in standalone mode, instead of reading the state machine on the caller's thread. Expect one extra channel hop per read.
+- When `stop()` returns, the engine has dropped the state machine. If your state machine releases its resources in `Drop` (a database handle, a lock file), they are free at that point and the same data directory can be reopened.
+
 ---
 
 ## For v0.2.4 Users: Wire Protocol Changes in v0.3.0

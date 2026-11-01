@@ -333,7 +333,7 @@ async fn test_read_index_fixed_with_concurrent_writes_multi_node()
         let engine = DefaultEmbeddedEngine::start_custom(
             &db_path,
             Arc::new(storage),
-            Arc::new(state_machine),
+            state_machine,
             Some(&config_path),
         )
         .await?;

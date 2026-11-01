@@ -63,7 +63,7 @@ async fn test_set_raft_log_replaces_default() {
     insert_raft_log(&buffered_raft_log, expected_raft_log_ids.clone(), 1).await;
 
     let mock_state_machine =
-        Arc::new(FileStateMachine::new(temp_dir.path().join("state_machine")).await.unwrap());
+        FileStateMachine::new(temp_dir.path().join("state_machine")).await.unwrap();
 
     let expected_state_machine_ids = vec![1, 2, 3];
     insert_state_machine(&mock_state_machine, expected_state_machine_ids.clone(), 1).await;
@@ -108,7 +108,7 @@ async fn test_build_creates_node() {
         temp_dir.path().to_str().unwrap(),
         shutdown_rx,
     )
-    .state_machine(Arc::new(file_sm))
+    .state_machine(file_sm)
     .storage_engine(Arc::new(MockStorageEngine::new()))
     .build()
     .await
