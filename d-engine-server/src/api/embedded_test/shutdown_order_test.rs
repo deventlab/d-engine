@@ -60,9 +60,6 @@ impl StateMachine for SlowApplyProbe {
     }
 
     // Everything below delegates unchanged.
-    fn is_running(&self) -> bool {
-        self.inner.is_running()
-    }
     fn get(
         &self,
         key_buffer: &[u8],

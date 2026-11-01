@@ -19,18 +19,22 @@ use crate::storage::adaptors::file::FileStateMachine;
 
 // ── close() tests ─────────────────────────────────────────────────────────────
 
-/// close() must mark the SM as not running.
+/// close() must stop the SM from serving: reads answer NotServing afterwards.
 /// FileStateMachine has no exclusive OS lock, so close() is a lifecycle
 /// signal and flushes state to disk.
 #[tokio::test]
-async fn test_file_sm_close_marks_not_running() {
+async fn test_file_sm_close_stops_serving() {
     let dir = TempDir::new().unwrap();
     let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
-    assert!(sm.is_running());
+    assert!(
+        sm.get(b"k").is_ok(),
+        "a freshly built state machine serves reads"
+    );
 
     sm.close().unwrap();
 
-    assert!(!sm.is_running(), "close must mark SM not running");
+    let err = sm.get(b"k").expect_err("close must stop serving");
+    assert!(format!("{err:?}").contains("NotServing"), "got: {err:?}");
 }
 
 /// Business scenario: the node shuts down while the developer still holds a clone of the state
@@ -80,7 +84,8 @@ async fn test_file_sm_close_twice_is_safe() {
     let sm = FileStateMachine::new(dir.path().to_path_buf()).await.unwrap();
     sm.close().unwrap();
     sm.close().unwrap();
-    assert!(!sm.is_running());
+    let err = sm.get(b"k").expect_err("still closed after the second close");
+    assert!(format!("{err:?}").contains("NotServing"), "got: {err:?}");
 }
 
 /// Builder for FileStateMachine test instances

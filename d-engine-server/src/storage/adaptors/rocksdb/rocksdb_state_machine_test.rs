@@ -516,7 +516,7 @@ async fn test_get_multi_two_keys_still_uses_snapshot_isolation() {
 // immediately, without waiting for Arc<SM> to be the sole owner (the developer may keep
 // their own clone).
 
-/// close() marks SM not-running and makes reads return a NotServing error, never an empty result.
+/// close() makes reads return a NotServing error, never an empty result.
 #[tokio::test]
 async fn test_close_prevents_reads() {
     let dir = TempDir::new().unwrap();
@@ -526,7 +526,6 @@ async fn test_close_prevents_reads() {
 
     sm.close().unwrap();
 
-    assert!(!sm.is_running(), "is_running must be false after close");
     let err = sm.get(b"k").expect_err("get must fail after close");
     assert!(
         format!("{err:?}").contains("NotServing"),
@@ -546,7 +545,8 @@ fn test_close_twice_is_safe() {
     let (_storage, sm) = RocksDBUnifiedEngine::open(dir.path()).unwrap();
     sm.close().unwrap();
     sm.close().unwrap();
-    assert!(!sm.is_running());
+    let err = sm.get(b"k").expect_err("still closed after the second close");
+    assert!(format!("{err:?}").contains("NotServing"), "got: {err:?}");
 }
 
 /// Drop after close() must not panic or double-flush.

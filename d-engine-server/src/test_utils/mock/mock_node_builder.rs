@@ -626,7 +626,6 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
     let mut mock = MockStateMachine::new();
 
     mock.expect_close().returning(|| Ok(()));
-    mock.expect_is_running().returning(|| true);
 
     mock.expect_get().returning(|_| Ok(None));
     mock.expect_apply_chunk().returning(|_| Ok(vec![]));
@@ -659,7 +658,7 @@ pub(crate) fn mock_state_machine_handler() -> MockStateMachineHandler<MockTypeCo
     state_machine_handler.expect_update_pending().returning(|_| {});
     // Commit delivery (also run on shutdown) reads the applied position every iteration.
     state_machine_handler.expect_last_applied().returning(|| 0);
-    state_machine_handler.expect_read_from_state_machine().returning(|_| None);
+    state_machine_handler.expect_read_from_state_machine().returning(|_| Ok(vec![]));
     state_machine_handler.expect_should_snapshot().returning(|_| false);
     state_machine_handler
 }

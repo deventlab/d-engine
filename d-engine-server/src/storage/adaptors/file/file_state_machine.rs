@@ -869,10 +869,6 @@ impl StateMachine for FileStateMachine {
         self.save_hard_state()
     }
 
-    fn is_running(&self) -> bool {
-        self.running.load(Ordering::SeqCst)
-    }
-
     fn get(
         &self,
         key_buffer: &[u8],

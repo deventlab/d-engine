@@ -40,11 +40,6 @@ impl StateMachine for CustomStateMachine {
     //     flushed
     // }
 
-    fn is_running(&self) -> bool {
-        // Return running status
-        true
-    }
-
     fn get(&self, key_buffer: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         // Retrieve value by key
         self.backend.get(key_buffer)
@@ -114,7 +109,6 @@ impl StateMachine for CustomStateMachine {
 | Method                             | Purpose                                                                                                                                                                                              | Sync/Async | Criticality |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | `close()`                          | Final step at shutdown: persist what must survive a restart and release exclusive OS resources (e.g. DB lock file), even if persisting fails; returns the first error. Idempotent. Default `Ok(())`. | Sync       | Medium      |
-| `is_running()`                     | Check service status                                                                                                                                                                                 | Sync       | Medium      |
 | `get()`                            | Read value by key                                                                                                                                                                                    | Sync       | High        |
 | `apply_chunk()`                    | Apply committed entries                                                                                                                                                                              | Async      | Critical    |
 | `update_last_applied()`            | Update applied index in memory                                                                                                                                                                       | Sync       | High        |
@@ -157,14 +151,10 @@ async fn test_custom_state_machine() -> Result<(), Error> {
     let builder = TestStateMachineBuilder::new();
     let sm = builder.build().await?;
 
-    // Test basic functionality
-    sm.start()?;
-    assert!(sm.is_running());
-
     // Test apply_chunk with sample entries
     let entries = vec![create_test_entry(1, 1)];
     sm.apply_chunk(&entries).await?;
-    assert_eq!(sm.len(), 1);
+    assert_eq!(sm.last_applied().index, 1);
 
     // Test snapshot operations
     let temp_dir = TempDir::new()?;

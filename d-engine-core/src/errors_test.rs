@@ -552,3 +552,28 @@ fn test_is_not_fatal_storage_log_storage() {
     let err: Error = StorageError::LogStorage("write failed".to_string()).into();
     assert!(!err.is_fatal());
 }
+
+/// `NotServing` is the state machine saying "not right now" (it is replacing its state or has
+/// been closed). Callers route around it or ask the client to retry, so it must not be confused
+/// with a real failure of the data.
+#[test]
+fn test_is_not_serving_is_true_only_for_not_serving() {
+    let not_serving: Error = StorageError::NotServing("restoring".to_string()).into();
+    assert!(not_serving.is_not_serving());
+
+    let failures: [Error; 4] = [
+        StorageError::DbError("disk failure".to_string()).into(),
+        StorageError::IoError(std::io::Error::other("disk failure")).into(),
+        StorageError::DataCorruption {
+            location: "sst".to_string(),
+        }
+        .into(),
+        Error::Fatal("boom".to_string()),
+    ];
+    for error in failures {
+        assert!(
+            !error.is_not_serving(),
+            "{error:?} is a failure, not 'not serving'"
+        );
+    }
+}

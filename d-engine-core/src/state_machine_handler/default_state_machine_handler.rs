@@ -189,19 +189,13 @@ where
     fn read_from_state_machine(
         &self,
         keys: Vec<Bytes>,
-    ) -> Option<Vec<KvEntry>> {
-        let mut result = Vec::new();
-        for key in keys {
-            if let Ok(Some(value)) = self.state_machine.get(&key) {
-                result.push(KvEntry { key, value });
-            }
-        }
-
-        if !result.is_empty() {
-            Some(result)
-        } else {
-            None
-        }
+    ) -> Result<Vec<KvEntry>> {
+        let values = self.state_machine.get_multi(&keys)?;
+        Ok(keys
+            .into_iter()
+            .zip(values)
+            .filter_map(|(key, value)| value.map(|value| KvEntry { key, value }))
+            .collect())
     }
 
     async fn prepare_snapshot_stream(

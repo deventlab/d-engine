@@ -47,6 +47,18 @@ impl Error {
                 ))
         )
     }
+
+    /// Returns true if the state machine refused the operation because it cannot serve right
+    /// now: it is replacing its state (snapshot install) or it has been closed.
+    ///
+    /// Transient from the caller's point of view: route the request through another path, or
+    /// ask the client to retry. Not an error in the data.
+    pub fn is_not_serving(&self) -> bool {
+        matches!(
+            self,
+            Error::System(SystemError::Storage(StorageError::NotServing(_)))
+        )
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

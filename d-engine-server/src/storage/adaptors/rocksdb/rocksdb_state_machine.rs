@@ -552,10 +552,6 @@ impl StateMachine for RocksDBStateMachine {
         first_err.map_or(Ok(()), Err)
     }
 
-    fn is_running(&self) -> bool {
-        self.is_serving.load(Ordering::SeqCst)
-    }
-
     fn get(
         &self,
         key_buffer: &[u8],

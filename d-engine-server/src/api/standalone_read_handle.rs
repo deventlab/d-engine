@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
+use d_engine_core::Error;
 use d_engine_core::MaybeCloneOneshot;
 use d_engine_core::RaftOneshot;
 use d_engine_core::client::ClientApiError;
@@ -21,6 +22,7 @@ use d_engine_core::client::ReadResults;
 use d_engine_core::config::ReadConsistencyPolicy;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tracing::error;
 
 use crate::read_actor::ReadActorError;
 use crate::read_actor::ReadCmd;
@@ -119,6 +121,34 @@ pub(crate) fn extract_read_payload(
         }),
     }
 }
+/// Turns a state machine read failure into a client error without internal detail.
+/// The original error goes to the log and to a counter, so operators still see the cause.
+pub(crate) fn read_failure(e: &Error) -> ClientApiError {
+    let code = ErrorCode::for_read_failure(e);
+    // The failure class a dashboard groups by.
+    let kind = match code {
+        ErrorCode::StorageIoError => "storage_io",
+        ErrorCode::DataCorruption => "data_corruption",
+        ErrorCode::RetryRequired => "not_serving",
+        _ => "other",
+    };
+    error!(error = ?e, kind, "state machine read failed");
+    metrics::counter!("server.read.errors", "kind" => kind).increment(1);
+
+    match code {
+        // Fixed, friendly messages from the error code, e.g. "Storage I/O error"
+        ErrorCode::StorageIoError | ErrorCode::DataCorruption | ErrorCode::RetryRequired => {
+            ClientApiError::from(code)
+        }
+        _ => ClientApiError::Business {
+            code,
+            message:
+                "Read failed due to an internal error. Please retry or contact the administrator."
+                    .to_string(),
+            required_action: None,
+        },
+    }
+}
 
 // ── StandaloneReadHandle ──────────────────────────────────────────────────────
 
@@ -200,9 +230,9 @@ impl StandaloneReadHandle {
             {
                 match tokio::time::timeout(timeout, reply_rx).await {
                     Ok(Ok(Ok(values))) => return Ok(values),
-                    Ok(Ok(Err(ReadActorError::SmError(e)))) => return Err(server_error(e)),
-                    // LeaseInvalid / SmStopped → fall through to cmd_tx
-                    Ok(Ok(Err(ReadActorError::LeaseInvalid | ReadActorError::SmStopped))) => {}
+                    Ok(Ok(Err(ReadActorError::SmError(e)))) => return Err(read_failure(&e)),
+                    // LeaseInvalid / SmUnavailable → fall through to cmd_tx
+                    Ok(Ok(Err(ReadActorError::LeaseInvalid | ReadActorError::SmUnavailable))) => {}
                     // ReadActor exited without replying → fall through
                     Ok(Err(_)) => {}
                     // ReadActor stalled beyond timeout → fall through to cmd_tx

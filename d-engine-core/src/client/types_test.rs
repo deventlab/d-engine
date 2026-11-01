@@ -343,3 +343,72 @@ fn test_is_propose_failure_true() {
 fn test_is_propose_failure_false_for_success() {
     assert!(!ClientResponse::write_success().is_propose_failure());
 }
+
+// ── State machine read failures ──────────────────────────────────────────────
+
+fn read_failure_cases() -> [(crate::Error, ErrorCode); 5] {
+    [
+        // Transient: the state machine is replacing its state, a retry will succeed.
+        (
+            crate::StorageError::NotServing("restoring".into()).into(),
+            ErrorCode::RetryRequired,
+        ),
+        (
+            crate::StorageError::DbError("disk failure".into()).into(),
+            ErrorCode::StorageIoError,
+        ),
+        (
+            crate::StorageError::IoError(std::io::Error::other("disk failure")).into(),
+            ErrorCode::StorageIoError,
+        ),
+        // The client is told the stored data may be damaged and decides what to do.
+        (
+            crate::StorageError::DataCorruption {
+                location: "sst".into(),
+            }
+            .into(),
+            ErrorCode::DataCorruption,
+        ),
+        (crate::Error::Fatal("boom".into()), ErrorCode::Uncategorized),
+    ]
+}
+
+/// Each failure class maps to one stable code, so clients can tell "retry", "storage problem",
+/// "data may be damaged" and "internal bug" apart.
+#[test]
+fn test_for_read_failure_maps_each_failure_class_to_its_code() {
+    for (error, expected) in read_failure_cases() {
+        assert_eq!(
+            ErrorCode::for_read_failure(&error),
+            expected,
+            "for {error:?}"
+        );
+    }
+}
+
+/// A failed read is answered with an error code and no payload. It is never answered as a
+/// successful empty read, which a client would take for "key not found".
+#[test]
+fn test_from_read_failure_is_an_error_response_without_result() {
+    for (error, expected) in read_failure_cases() {
+        let response = ClientResponse::from_read(Err(error));
+        assert_eq!(response.error, expected);
+        assert!(response.result.is_none());
+    }
+}
+
+#[test]
+fn test_from_read_success_carries_the_entries() {
+    let entries = vec![KvEntry {
+        key: Bytes::from_static(b"k"),
+        value: Bytes::from_static(b"v"),
+    }];
+
+    let response = ClientResponse::from_read(Ok(entries.clone()));
+
+    assert_eq!(response.error, ErrorCode::Success);
+    assert_eq!(
+        response.result,
+        Some(ClientResponsePayload::Read(ReadResults { entries }))
+    );
+}

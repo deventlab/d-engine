@@ -36,7 +36,7 @@ pub trait StateMachineBuilder: Send + Sync {
 impl StateMachineTestSuite {
     /// Run all state machine tests
     pub async fn run_all_tests<B: StateMachineBuilder>(builder: B) -> Result<(), Error> {
-        Self::test_close_is_idempotent_and_stops_running(builder.build().await?).await?;
+        Self::test_close_is_idempotent_and_stops_serving(builder.build().await?).await?;
         Self::test_basic_kv_operations(builder.build().await?).await?;
         Self::test_apply_chunk_functionality(builder.build().await?).await?;
         Self::test_cas_operations(builder.build().await?).await?;
@@ -80,18 +80,24 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
-    /// Test close lifecycle: a freshly built state machine is already running, and not running
-    /// once `close`d. `close` is permanent and idempotent (#455), so there is no restart.
-    pub async fn test_close_is_idempotent_and_stops_running(
+    /// Test close lifecycle: a freshly built state machine already serves, and answers
+    /// `NotServing` once `close`d. `close` is permanent and idempotent (#455), so there is no
+    /// restart.
+    pub async fn test_close_is_idempotent_and_stops_serving(
         state_machine: Arc<dyn StateMachine>
     ) -> Result<(), Error> {
-        // Running as soon as it is built: there is no separate start step
-        assert!(state_machine.is_running());
+        let is_closed = |sm: &Arc<dyn StateMachine>| {
+            sm.get(b"lifecycle-probe")
+                .is_err_and(|err| format!("{err:?}").contains("NotServing"))
+        };
+
+        // Serving as soon as it is built: there is no separate start step
+        assert!(!is_closed(&state_machine));
 
         state_machine.close()?;
-        assert!(!state_machine.is_running());
+        assert!(is_closed(&state_machine));
         state_machine.close()?; // idempotent
-        assert!(!state_machine.is_running());
+        assert!(is_closed(&state_machine));
 
         Ok(())
     }
@@ -1167,9 +1173,6 @@ impl StateMachineTestSuite {
         // Note: snapshot_metadata may or may not be None depending on previous tests
         // The test focuses on verifying reset() clears everything, not initial state
 
-        // Store running state for verification
-        let was_running = state_machine.is_running();
-
         // Perform reset
         state_machine.reset().await?;
 
@@ -1182,8 +1185,7 @@ impl StateMachineTestSuite {
         assert_eq!(state_machine.last_applied(), LogId { index: 0, term: 0 });
         assert!(state_machine.snapshot_metadata().is_none());
 
-        // Verify operational state is maintained
-        assert_eq!(state_machine.is_running(), was_running);
+        // Verify operational state is maintained: reads above succeeded, so it still serves
 
         // Test that we can add new data after reset
         let new_entries = vec![
@@ -1745,10 +1747,6 @@ mod default_scan_prefix_tests {
         fn close(&self) -> Result<(), Error> {
             self.running.store(false, Ordering::SeqCst);
             Ok(())
-        }
-
-        fn is_running(&self) -> bool {
-            self.running.load(Ordering::SeqCst)
         }
 
         fn get(

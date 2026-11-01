@@ -9,9 +9,13 @@ mod embedded_read_handle_tests {
     use std::time::Duration;
 
     use bytes::Bytes;
+    use d_engine_core::ClientApiError;
+    use d_engine_core::Error;
     use d_engine_core::MockStateMachine;
     use d_engine_core::MockTypeConfig;
     use d_engine_core::ReadLease;
+    use d_engine_core::StorageError;
+    use d_engine_core::client::ErrorCode;
     use d_engine_core::config::ReadConsistencyPolicy;
     use d_engine_core::now_ms;
     use tokio::sync::mpsc;
@@ -39,8 +43,8 @@ mod embedded_read_handle_tests {
         sm
     }
 
-    fn sm_stopped() -> MockStateMachine {
-        // SM stopped: get_multi returns NotServing error
+    fn sm_unavailable() -> MockStateMachine {
+        // SM unavailable: get_multi returns NotServing error
         let mut sm = MockStateMachine::new();
         sm.expect_get_multi().returning(|_| {
             Err(d_engine_core::StorageError::NotServing("state machine stopped".into()).into())
@@ -61,6 +65,58 @@ mod embedded_read_handle_tests {
         EmbeddedReadHandle::new(Arc::new(sm), lease, cmd_tx)
     }
 
+    fn sm_failing_with(make_error: fn() -> Error) -> MockStateMachine {
+        let mut sm = MockStateMachine::new();
+        sm.expect_get_multi().returning(move |_| Err(make_error()));
+        sm
+    }
+
+    // ── Hard failures are reported, never retried through cmd_tx ─────────────
+
+    /// A storage failure is returned to the caller with its storage code. cmd_rx is dropped: a
+    /// fallback would produce a Network error instead, so a Storage error proves there was none.
+    #[tokio::test]
+    async fn test_hard_failure_is_reported_without_falling_back() {
+        let cases: [(fn() -> Error, ErrorCode); 2] = [
+            (
+                || StorageError::DbError("secret detail".into()).into(),
+                ErrorCode::StorageIoError,
+            ),
+            (
+                // The client is told the data may be damaged; the decision is theirs.
+                || {
+                    StorageError::DataCorruption {
+                        location: "secret detail".into(),
+                    }
+                    .into()
+                },
+                ErrorCode::DataCorruption,
+            ),
+        ];
+
+        for consistency in [
+            ReadConsistencyPolicy::EventualConsistency,
+            ReadConsistencyPolicy::LeaseRead,
+        ] {
+            for (make_error, expected) in &cases {
+                let handle = make_handle(sm_failing_with(*make_error), valid_lease(), true);
+                let result =
+                    handle.get(b"k", consistency.clone(), 1, Duration::from_millis(100)).await;
+
+                match result {
+                    Err(ClientApiError::Storage { code, message }) => {
+                        assert_eq!(code, *expected);
+                        assert!(
+                            !message.contains("secret detail"),
+                            "detail leaked: {message}"
+                        );
+                    }
+                    other => panic!("expected a Storage error for {expected:?}, got: {other:?}"),
+                }
+            }
+        }
+    }
+
     // ── Eventual fast path ────────────────────────────────────────────────────
 
     /// Eventual read goes directly to SM; cmd_rx dropped proves cmd_tx was not used.
@@ -78,11 +134,11 @@ mod embedded_read_handle_tests {
         assert_eq!(result.unwrap(), Some(Bytes::from("v")));
     }
 
-    /// Eventual read when SM is stopped falls back to cmd_tx.
+    /// Eventual read when the SM is unavailable falls back to cmd_tx.
     /// cmd_rx dropped → fallback returns error (proves fallback was taken, not panic).
     #[tokio::test]
-    async fn test_eventual_sm_stopped_falls_back_to_cmd_tx() {
-        let handle = make_handle(sm_stopped(), valid_lease(), true);
+    async fn test_eventual_sm_unavailable_falls_back_to_cmd_tx() {
+        let handle = make_handle(sm_unavailable(), valid_lease(), true);
         let result = handle
             .get(
                 b"k",
@@ -91,7 +147,7 @@ mod embedded_read_handle_tests {
                 Duration::from_millis(100),
             )
             .await;
-        assert!(result.is_err(), "stopped SM must fall back to cmd_tx");
+        assert!(result.is_err(), "unavailable SM must fall back to cmd_tx");
     }
 
     // ── LeaseRead fast path ───────────────────────────────────────────────────
@@ -130,10 +186,10 @@ mod embedded_read_handle_tests {
         assert!(result.is_err(), "invalid lease must fall back to cmd_tx");
     }
 
-    /// LeaseRead with valid lease but stopped SM falls back to cmd_tx.
+    /// LeaseRead with valid lease but unavailable SM falls back to cmd_tx.
     #[tokio::test]
-    async fn test_lease_read_sm_stopped_falls_back_to_cmd_tx() {
-        let handle = make_handle(sm_stopped(), valid_lease(), true);
+    async fn test_lease_read_sm_unavailable_falls_back_to_cmd_tx() {
+        let handle = make_handle(sm_unavailable(), valid_lease(), true);
         let result = handle
             .get(
                 b"k",
@@ -142,7 +198,7 @@ mod embedded_read_handle_tests {
                 Duration::from_millis(100),
             )
             .await;
-        assert!(result.is_err(), "stopped SM must fall back to cmd_tx");
+        assert!(result.is_err(), "unavailable SM must fall back to cmd_tx");
     }
 
     // ── LinearizableRead ─────────────────────────────────────────────────────

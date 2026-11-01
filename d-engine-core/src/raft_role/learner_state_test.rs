@@ -1512,7 +1512,7 @@ async fn test_learner_serves_eventual_read_locally() {
         .times(1)
         .withf(|keys| keys.len() == 1 && keys[0] == "eventual_key")
         .returning(|_| {
-            Some(vec![KvEntry {
+            Ok(vec![KvEntry {
                 key: bytes::Bytes::from("eventual_key"),
                 value: bytes::Bytes::from("eventual_value"),
             }])

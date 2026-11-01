@@ -2853,3 +2853,72 @@ mod wait_applied_tests {
         );
     }
 }
+
+// ── read_from_state_machine ──────────────────────────────────────────────────
+
+fn handler_over(
+    state_machine: MockStateMachine,
+    temp_dir: &Path,
+) -> DefaultStateMachineHandler<MockTypeConfig> {
+    DefaultStateMachineHandler::new(
+        1,
+        0,
+        Arc::new(state_machine),
+        temp_dir.to_path_buf(),
+        snapshot_config(temp_dir.to_path_buf()),
+        MockSnapshotPolicy::new(),
+    )
+}
+
+/// A state machine failure must come back as an error. Turning it into "no keys found" would
+/// make a failing disk look like an empty database.
+#[test]
+fn test_read_from_state_machine_returns_the_state_machine_error() {
+    let temp_dir = tempdir().unwrap();
+    let mut state_machine = MockStateMachine::new();
+    state_machine
+        .expect_get_multi()
+        .returning(|_| Err(crate::StorageError::DbError("disk failure".into()).into()));
+    let handler = handler_over(state_machine, temp_dir.path());
+
+    let err = handler
+        .read_from_state_machine(vec![bytes::Bytes::from_static(b"k")])
+        .expect_err("a failing state machine must not look like an empty one");
+
+    assert!(format!("{err:?}").contains("disk failure"), "got: {err:?}");
+}
+
+/// Keys that do not exist are left out; the others keep the order they were asked in. All keys
+/// are read with one `get_multi` call, so they come from one consistent view.
+#[test]
+fn test_read_from_state_machine_skips_missing_keys_and_reads_one_view() {
+    let temp_dir = tempdir().unwrap();
+    let mut state_machine = MockStateMachine::new();
+    state_machine.expect_get_multi().times(1).returning(|_| {
+        Ok(vec![
+            Some(bytes::Bytes::from_static(b"a")),
+            None,
+            Some(bytes::Bytes::from_static(b"c")),
+        ])
+    });
+    let handler = handler_over(state_machine, temp_dir.path());
+
+    let entries = handler
+        .read_from_state_machine(vec![
+            bytes::Bytes::from_static(b"k1"),
+            bytes::Bytes::from_static(b"k2"),
+            bytes::Bytes::from_static(b"k3"),
+        ])
+        .unwrap();
+
+    let keys: Vec<_> = entries.iter().map(|e| e.key.clone()).collect();
+    let values: Vec<_> = entries.iter().map(|e| e.value.clone()).collect();
+    assert_eq!(keys, vec![
+        bytes::Bytes::from_static(b"k1"),
+        bytes::Bytes::from_static(b"k3")
+    ]);
+    assert_eq!(values, vec![
+        bytes::Bytes::from_static(b"a"),
+        bytes::Bytes::from_static(b"c")
+    ]);
+}

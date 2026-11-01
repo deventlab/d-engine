@@ -1526,7 +1526,7 @@ mod handle_client_read_request {
         state_machine_handler
             .expect_read_from_state_machine()
             .times(1)
-            .returning(|_| Some(vec![]));
+            .returning(|_| Ok(vec![]));
         context.handlers.state_machine_handler = Arc::new(state_machine_handler);
 
         let mut state = CandidateState::<MockTypeConfig>::new(1, context.node_config.clone());
@@ -2176,7 +2176,6 @@ async fn candidate_with_unapplied_range(
     let temp_dir = tempfile::tempdir().unwrap();
     let nc = node_config(temp_dir.path().to_str().unwrap());
     let mut state_machine = crate::MockStateMachine::new();
-    state_machine.expect_is_running().returning(|| true);
     state_machine.expect_last_applied().return_const(d_engine_proto::common::LogId {
         index: applied,
         term: 1,
@@ -2512,7 +2511,6 @@ async fn test_candidate_tick_does_not_campaign_when_the_unapplied_range_cannot_b
     let temp_dir = tempfile::tempdir().unwrap();
     let nc = node_config(temp_dir.path().to_str().unwrap());
     let mut state_machine = crate::MockStateMachine::new();
-    state_machine.expect_is_running().returning(|| true);
     state_machine
         .expect_last_applied()
         .return_const(d_engine_proto::common::LogId { index: 5, term: 1 });

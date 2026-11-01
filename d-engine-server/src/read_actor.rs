@@ -21,6 +21,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use d_engine_core::Error;
 use d_engine_core::ReadLease;
 use d_engine_core::StateMachine;
 use d_engine_core::config::ReadConsistencyPolicy;
@@ -49,16 +50,18 @@ pub(crate) struct ReadCmd {
 
 /// Error returned by the ReadActor to the caller.
 ///
-/// `LeaseInvalid` and `SmStopped` are recoverable: fall back to `cmd_tx`.
+/// `LeaseInvalid` and `SmUnavailable` are recoverable: fall back to `cmd_tx`.
 /// `SmError` is a hard failure; do NOT retry via cmd_tx.
 #[derive(Debug)]
 pub(crate) enum ReadActorError {
     /// Lease has been revoked or expired. Retry via cmd_tx.
     LeaseInvalid,
-    /// State machine is not running (node is stopping). Retry via cmd_tx.
-    SmStopped,
-    /// SM returned a hard error.
-    SmError(String),
+    /// The state machine cannot serve reads right now: it is installing a snapshot or has been
+    /// closed. Retry via cmd_tx, which waits behind the install or reports the shutdown.
+    SmUnavailable,
+    /// The state machine failed to read. Keeps the original error for logging and
+    /// classification; it must not reach the client as is.
+    SmError(Error),
 }
 
 // ── run_read_actor ─────────────────────────────────────────────────────────────
@@ -113,13 +116,9 @@ where
     SM: StateMachine,
 {
     match cmd.consistency {
-        ReadConsistencyPolicy::EventualConsistency => {
-            if !sm.is_running() {
-                return Err(ReadActorError::SmStopped);
-            }
-        }
+        ReadConsistencyPolicy::EventualConsistency => {}
         ReadConsistencyPolicy::LeaseRead => {
-            if !lease.is_valid(now_ms()) || !sm.is_running() {
+            if !lease.is_valid(now_ms()) {
                 return Err(ReadActorError::LeaseInvalid);
             }
         }
@@ -127,5 +126,11 @@ where
         _ => return Err(ReadActorError::LeaseInvalid),
     }
 
-    sm.get_multi(&cmd.keys).map_err(|e| ReadActorError::SmError(e.to_string()))
+    sm.get_multi(&cmd.keys).map_err(|e| {
+        if e.is_not_serving() {
+            ReadActorError::SmUnavailable
+        } else {
+            ReadActorError::SmError(e)
+        }
+    })
 }

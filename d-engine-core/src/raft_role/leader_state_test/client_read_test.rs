@@ -511,9 +511,7 @@ async fn test_linearizable_read_quorum_success() {
     // read_from_state_machine is called by execute_pending_reads when ApplyCompleted fires.
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_should_snapshot().returning(|_| false);
-    state_machine_handler
-        .expect_read_from_state_machine()
-        .returning(|_| Some(vec![]));
+    state_machine_handler.expect_read_from_state_machine().returning(|_| Ok(vec![]));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
@@ -889,9 +887,7 @@ async fn test_unspecified_policy_defaults_to_linearizable_read() {
     // read_from_state_machine called by execute_pending_reads when ApplyCompleted fires.
     let mut state_machine_handler = MockStateMachineHandler::new();
     state_machine_handler.expect_should_snapshot().returning(|_| false);
-    state_machine_handler
-        .expect_read_from_state_machine()
-        .returning(|_| Some(vec![]));
+    state_machine_handler.expect_read_from_state_machine().returning(|_| Ok(vec![]));
 
     let (_graceful_tx, graceful_rx) = watch::channel(());
 
@@ -1209,7 +1205,6 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     // Built from scratch: with the default mock, its `last_applied() == 0` expectation is
     // registered first and wins over a later one.
     let mut state_machine = crate::MockStateMachine::new();
-    state_machine.expect_is_running().returning(|| true);
     state_machine
         .expect_last_applied()
         .return_const(d_engine_proto::common::LogId { index: 1, term: 1 });
@@ -2334,4 +2329,46 @@ async fn test_scan_cmd_leader_propagates_sm_error() {
     // The tonic Status is created from e.to_string() which renders as "Storage operation
     // failed" (the outer SystemError::Storage variant). Verify it's Internal.
     assert_eq!(err.code(), Code::Internal);
+}
+
+/// A lease read that fails in the state machine must reach the client as an error. The data
+/// may be damaged, so the client gets the corruption code and decides what to do; it must not get
+/// an empty result that looks like "key not found".
+#[tokio::test]
+async fn test_lease_read_reports_state_machine_failure_as_error() {
+    let mut state_machine_handler = MockStateMachineHandler::new();
+    state_machine_handler.expect_read_from_state_machine().times(1).returning(|_| {
+        Err(crate::StorageError::DataCorruption {
+            location: "sst".into(),
+        }
+        .into())
+    });
+    let (_graceful_tx, graceful_rx) = watch::channel(());
+    let context = MockBuilder::new(graceful_rx)
+        .with_db_path("/tmp/test_lease_read_reports_state_machine_failure_as_error")
+        .with_state_machine_handler(state_machine_handler)
+        .build_context();
+
+    let mut state = LeaderState::<MockTypeConfig>::new(1, context.node_config.clone());
+    state.test_update_lease_timestamp(); // lease valid: served immediately
+
+    let (resp_tx, mut resp_rx) = MaybeCloneOneshot::new();
+    let (internal_event_tx, _internal_event_rx) = mpsc::unbounded_channel();
+    state
+        .process_lease_read(
+            ClientReadRequest {
+                client_id: 1,
+                consistency_policy: Some(ReadConsistencyPolicy::LeaseRead),
+                keys: vec![safe_kv_bytes(1)],
+            },
+            resp_tx,
+            &context,
+            &internal_event_tx,
+        )
+        .await
+        .expect("answering the client is not a node failure");
+
+    let response = resp_rx.recv().await.unwrap().unwrap();
+    assert_eq!(response.error, ErrorCode::DataCorruption);
+    assert!(response.result.is_none());
 }

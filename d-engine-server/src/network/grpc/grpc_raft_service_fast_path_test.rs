@@ -1,8 +1,8 @@
 /// Fast-path tests for `handle_client_read` via `ReadHandle`.
 ///
 /// Routing rules under test:
-///   Eventual/LeaseRead (any key count) → ReadActor fast path; fallback on LeaseInvalid/SmStopped
-///   LinearizableRead                   → cmd_tx always
+///   Eventual/LeaseRead (any key count) → ReadActor fast path; fallback on
+/// LeaseInvalid/SmUnavailable   LinearizableRead                   → cmd_tx always
 ///   SmError                            → error returned directly (no cmd_tx fallback)
 ///
 /// Proof technique (identical to read_handle_test.rs):
@@ -48,21 +48,20 @@ mod grpc_fast_path_tests {
 
     fn sm_running_with(value: Bytes) -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
         sm.expect_get_multi()
             .returning(move |keys| Ok(keys.iter().map(|_| Some(value.clone())).collect()));
         sm
     }
 
-    fn sm_stopped() -> MockStateMachine {
+    fn sm_unavailable() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| false);
+        sm.expect_get_multi()
+            .returning(|_| Err(d_engine_core::StorageError::NotServing("stopped".into()).into()));
         sm
     }
 
     fn sm_with_error() -> MockStateMachine {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
         sm.expect_get_multi()
             .returning(|_| Err(d_engine_core::Error::Fatal("disk failure".into())));
         sm
@@ -144,7 +143,6 @@ mod grpc_fast_path_tests {
     #[tokio::test]
     async fn test_eventual_single_key_fast_path_returns_empty_for_missing_key() {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
         sm.expect_get_multi().returning(|keys| Ok(keys.iter().map(|_| None).collect()));
 
         let (node, handle) = make_node(sm, valid_lease(), true).await;
@@ -167,11 +165,11 @@ mod grpc_fast_path_tests {
         handle.await.unwrap();
     }
 
-    /// Eventual, SM stopped → SmStopped → fallback to cmd_tx.
+    /// Eventual, SM unavailable → SmUnavailable → fallback to cmd_tx.
     /// cmd_rx dropped: error proves fallback was triggered.
     #[tokio::test]
-    async fn test_eventual_sm_stopped_falls_back_to_cmd_tx() {
-        let (node, handle) = make_node(sm_stopped(), valid_lease(), true).await;
+    async fn test_eventual_sm_unavailable_falls_back_to_cmd_tx() {
+        let (node, handle) = make_node(sm_unavailable(), valid_lease(), true).await;
 
         let result = node
             .handle_client_read(Request::new(req(b"k", ProtoPolicy::EventualConsistency)))
@@ -179,7 +177,7 @@ mod grpc_fast_path_tests {
 
         assert!(
             result.is_err(),
-            "SM stopped must fall back to closed cmd_tx"
+            "SM unavailable must fall back to closed cmd_tx"
         );
         drop(node);
         handle.await.unwrap();
@@ -216,16 +214,16 @@ mod grpc_fast_path_tests {
         handle.await.unwrap();
     }
 
-    /// LeaseRead, SM stopped (even valid lease) → LeaseInvalid → fallback.
+    /// LeaseRead, SM unavailable (even valid lease) → SmUnavailable → fallback to cmd_tx.
     #[tokio::test]
-    async fn test_lease_read_sm_stopped_falls_back_to_cmd_tx() {
-        let (node, handle) = make_node(sm_stopped(), valid_lease(), true).await;
+    async fn test_lease_read_sm_unavailable_falls_back_to_cmd_tx() {
+        let (node, handle) = make_node(sm_unavailable(), valid_lease(), true).await;
 
         let result = node.handle_client_read(Request::new(req(b"k", ProtoPolicy::LeaseRead))).await;
 
         assert!(
             result.is_err(),
-            "SM stopped must fall back to closed cmd_tx"
+            "SM unavailable must fall back to closed cmd_tx"
         );
         drop(node);
         handle.await.unwrap();
@@ -260,8 +258,7 @@ mod grpc_fast_path_tests {
     /// cmd_rx dropped: error proves cmd_tx was used (not fast path).
     #[tokio::test]
     async fn test_linearizable_always_uses_cmd_tx() {
-        let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
+        let sm = MockStateMachine::new();
         // no expect_get_multi() — any get_multi() call panics
 
         let (node, handle) = make_node(sm, valid_lease(), true).await;
@@ -282,7 +279,6 @@ mod grpc_fast_path_tests {
     #[tokio::test]
     async fn test_multi_key_eventual_fast_path_returns_values() {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
         sm.expect_get_multi()
             .returning(|keys| Ok(keys.iter().map(|_| Some(Bytes::from_static(b"val"))).collect()));
 
@@ -309,7 +305,6 @@ mod grpc_fast_path_tests {
     #[tokio::test]
     async fn test_multi_key_lease_read_fast_path_returns_values() {
         let mut sm = MockStateMachine::new();
-        sm.expect_is_running().returning(|| true);
         sm.expect_get_multi()
             .returning(|keys| Ok(keys.iter().map(|_| Some(Bytes::from_static(b"val"))).collect()));
 

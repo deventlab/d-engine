@@ -103,10 +103,6 @@ pub trait StateMachine: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Checks if the state machine is currently running.
-    /// Sync operation as it just checks an atomic boolean.
-    fn is_running(&self) -> bool;
-
     /// Retrieves a value by key from the state machine.
     /// Sync operation as it accesses in-memory data structures.
     fn get(

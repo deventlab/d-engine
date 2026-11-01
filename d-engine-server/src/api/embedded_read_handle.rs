@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! Eventual / LeaseRead (valid)  →  sm.get_multi()       (direct, zero channel)
-//! Eventual / LeaseRead (error)  →  cmd_tx fallback       (SM stopped or error)
+//! Eventual / LeaseRead (error)  →  cmd_tx fallback       (SM unavailable or error)
 //! LeaseRead (invalid lease)     →  cmd_tx fallback
 //! LinearizableRead              →  cmd_tx always         (Raft readIndex)
 //! ```
@@ -42,6 +42,7 @@ use super::standalone_read_handle::extract_read_payload;
 use super::standalone_read_handle::map_error_response;
 use super::standalone_read_handle::server_error;
 use super::standalone_read_handle::timeout_error;
+use crate::api::standalone_read_handle::read_failure;
 
 // ── EmbeddedReadHandle ────────────────────────────────────────────────────────
 
@@ -107,20 +108,21 @@ impl<T: TypeConfig> EmbeddedReadHandle<T> {
         client_id: u32,
         timeout: Duration,
     ) -> ClientApiResult<Vec<Option<Bytes>>> {
+        // Only `NotServing` (the state machine is replacing its state or is closed) falls through
+        // to cmd_tx. A hard failure would fail again on the Raft path, so it is reported now.
         match consistency {
-            ReadConsistencyPolicy::EventualConsistency => {
-                if let Ok(values) = self.sm.get_multi(keys) {
-                    return Ok(values);
-                }
-                // SM stopped or hard error → fall through to cmd_tx
-            }
+            ReadConsistencyPolicy::EventualConsistency => match self.sm.get_multi(keys) {
+                Ok(values) => return Ok(values),
+                Err(e) if e.is_not_serving() => {}
+                Err(e) => return Err(read_failure(&e)),
+            },
             ReadConsistencyPolicy::LeaseRead => {
-                if self.lease.is_valid(now_ms())
-                    && let Ok(values) = self.sm.get_multi(keys)
-                {
-                    return Ok(values);
-
-                    // SM stopped or hard error → fall through
+                if self.lease.is_valid(now_ms()) {
+                    match self.sm.get_multi(keys) {
+                        Ok(values) => return Ok(values),
+                        Err(e) if e.is_not_serving() => {}
+                        Err(e) => return Err(read_failure(&e)),
+                    }
                 }
                 // invalid lease → fall through to cmd_tx
             }

@@ -100,12 +100,12 @@ where
         timeout: std::time::Duration,
     ) -> Result<()>;
 
-    /// Reads values from the state machine for given keys
-    /// Returns None if any key doesn't exist
+    /// Reads `keys` from one consistent view of the state machine. Keys that do not exist are left
+    /// out of the result. A state machine failure is returned.
     fn read_from_state_machine(
         &self,
         keys: Vec<bytes::Bytes>,
-    ) -> Option<Vec<KvEntry>>;
+    ) -> Result<Vec<KvEntry>>;
 
     /// Receives the remaining chunks of a snapshot stream, ACKs each one, and assembles
     /// + decompresses them into a `PreparedSnapshot`.

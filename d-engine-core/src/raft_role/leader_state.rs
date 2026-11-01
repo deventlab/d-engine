@@ -4087,12 +4087,10 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
     ) {
         for (req, sender) in read_batch {
-            let results = ctx
-                .handlers
-                .state_machine_handler
-                .read_from_state_machine(req.keys)
-                .unwrap_or_default();
-            let _ = sender.send(Ok(ClientResponse::read_results(results)));
+            let response = ClientResponse::from_read(
+                ctx.handlers.state_machine_handler.read_from_state_machine(req.keys),
+            );
+            let _ = sender.send(Ok(response));
         }
     }
 
@@ -4104,12 +4102,10 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
     ) {
         while let Some(entry) = self.pending_lease_reads.pop_front() {
-            let results = ctx
-                .handlers
-                .state_machine_handler
-                .read_from_state_machine(entry.request.keys)
-                .unwrap_or_default();
-            let _ = entry.sender.send(Ok(ClientResponse::read_results(results)));
+            let response = ClientResponse::from_read(
+                ctx.handlers.state_machine_handler.read_from_state_machine(entry.request.keys),
+            );
+            let _ = entry.sender.send(Ok(response));
         }
     }
 
@@ -4208,12 +4204,9 @@ impl<T: TypeConfig> LeaderState<T> {
     ) -> Result<()> {
         if self.is_lease_valid() {
             // Lease valid - serve immediately
-            let results = ctx
-                .handlers
-                .state_machine_handler
-                .read_from_state_machine(req.keys)
-                .unwrap_or_default();
-            let response = ClientResponse::read_results(results);
+            let response = ClientResponse::from_read(
+                ctx.handlers.state_machine_handler.read_from_state_machine(req.keys),
+            );
             let _ = sender.send(Ok(response));
         } else {
             // Lease expired - need to confirm leadership before serving.
@@ -4224,12 +4217,10 @@ impl<T: TypeConfig> LeaderState<T> {
                     ctx.node_config().raft.read_consistency.lease_duration_ms,
                     ctx.state_machine().last_applied().index,
                 );
-                let results = ctx
-                    .handlers
-                    .state_machine_handler
-                    .read_from_state_machine(req.keys)
-                    .unwrap_or_default();
-                let _ = sender.send(Ok(ClientResponse::read_results(results)));
+                let response = ClientResponse::from_read(
+                    ctx.handlers.state_machine_handler.read_from_state_machine(req.keys),
+                );
+                let _ = sender.send(Ok(response));
             } else {
                 // Multi-voter: queue the request and trigger a heartbeat.
                 // drain_pending_lease_reads() is called from handle_append_result after
@@ -4259,12 +4250,9 @@ impl<T: TypeConfig> LeaderState<T> {
         ctx: &RaftContext<T>,
     ) {
         // Eventual consistency: serve immediately without any verification
-        let results = ctx
-            .handlers
-            .state_machine_handler
-            .read_from_state_machine(req.keys)
-            .unwrap_or_default();
-        let response = ClientResponse::read_results(results);
+        let response = ClientResponse::from_read(
+            ctx.handlers.state_machine_handler.read_from_state_machine(req.keys),
+        );
         let _ = sender.send(Ok(response));
     }
 

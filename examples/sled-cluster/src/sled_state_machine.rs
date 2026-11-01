@@ -8,17 +8,17 @@ use bincode::config;
 use bytes::Bytes;
 use d_engine::BatchOp;
 use d_engine::{
-    common::LogId, server_storage::SnapshotMetadata, ApplyEntry, ApplyResult, Command, Result,
-    ScanResult, SnapshotApplyResult, SnapshotError, StateMachine, StorageError,
+    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotApplyResult, SnapshotError,
+    StateMachine, StorageError, common::LogId, server_storage::SnapshotMetadata,
 };
 use parking_lot::Mutex;
 use sled::Batch;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Instant;
 use tracing::debug;
 use tracing::error;
@@ -98,10 +98,6 @@ impl StateMachine for SledStateMachine {
         let saved = self.save_hard_state();
         self.db.store(None);
         saved
-    }
-
-    fn is_running(&self) -> bool {
-        self.is_serving.load(Ordering::Acquire)
     }
 
     fn update_last_applied(
