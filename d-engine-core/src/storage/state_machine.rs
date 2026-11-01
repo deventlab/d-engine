@@ -121,7 +121,10 @@ pub trait StateMachine: Send + Sync + 'static {
     }
 
     /// Retrieves a value by key from the state machine.
-    /// Sync operation as it accesses in-memory data structures.
+    ///
+    /// Called concurrently from the read path, so it must be thread-safe and cheap. Return
+    /// `StorageError::NotServing` while the state machine cannot answer (for example during a
+    /// snapshot install, or after `close()`): the engine then routes the read through Raft.
     fn get(
         &self,
         key_buffer: &[u8],
@@ -129,12 +132,8 @@ pub trait StateMachine: Send + Sync + 'static {
 
     /// Retrieves multiple values by key from the state machine in a single call.
     ///
-    /// # Why this belongs in the protocol layer
-    ///
-    /// `get()` is already part of the protocol interface because the ReadActor hot path
-    /// requires direct SM access. `get_multi` is its natural batch extension — the same
-    /// reasoning applies. An Iterator's `fold` has a default impl; `Vec` overrides it for
-    /// performance. Users don't need to know which path executes.
+    /// The engine reads through this method, so a request with several keys is answered in one
+    /// call, from one consistent state.
     ///
     /// # Read coherence requirement
     ///
@@ -185,33 +184,30 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Sync operation as it reads from in-memory structures.
     fn snapshot_metadata(&self) -> Option<SnapshotMetadata>;
 
-    /// Persists snapshot metadata to durable storage.
-    /// Should be async as it involves disk I/O.
+    /// Persists snapshot metadata durably and makes it visible to `snapshot_metadata()`.
+    ///
+    /// The engine calls this once per snapshot it builds, after the archive is durably built.
     fn persist_last_snapshot_metadata(
         &self,
         snapshot_metadata: &SnapshotMetadata,
     ) -> Result<(), Error>;
 
-    /// Applies a snapshot received from the Raft leader to the local state machine
+    /// Installs a snapshot received from the Raft leader.
     ///
-    /// # Critical Security and Integrity Measures
-    /// 1. Checksum Validation: Verifies snapshot integrity before application
-    /// 2. Version Validation: Ensures snapshot is newer than current state
-    /// 3. Atomic Application: Uses locking to prevent concurrent modifications
-    /// 4. File Validation: Confirms compressed format before decompression
+    /// The engine decides whether to install: this is called only for a snapshot that is newer
+    /// than `last_applied()`. `snapshot_path` is a directory the engine has already decompressed
+    /// the archive into and whose checksum it has verified against `metadata`.
     ///
-    /// # Workflow
-    /// 1. Validate snapshot metadata and version
-    /// 2. Verify compressed file format
-    /// 3. Decompress to temporary directory
-    /// 4. Validate checklsum
-    /// 5. Atomically replace current state with the decompressed data
-    /// 6. Update Raft metadata and indexes
+    /// The implementation must:
+    /// 1. Replace its state atomically. A concurrent reader sees the old state, the new state, or
+    ///    `NotServing`, never a mix.
+    /// 2. Set `last_applied()` to `metadata.last_included` and make that durable. The engine checks
+    ///    this after the call and reports an error if it did not happen.
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
         snapshot_path: std::path::PathBuf,
-    ) -> Result<SnapshotApplyResult, Error>;
+    ) -> Result<(), Error>;
 
     /// Generates a snapshot of the state machine's current key-value entries
     /// up to the specified `last_included_index`.
@@ -231,8 +227,7 @@ pub trait StateMachine: Send + Sync + 'static {
     ///
     /// # Arguments
     /// * `new_snapshot_dir` - Temporary path to store the snapshot data.
-    /// * `last_included_index` - Last log index included in the snapshot.
-    /// * `last_included_term` - Last log term included in the snapshot.
+    /// * `last_included` - Index and term of the last log entry the snapshot includes.
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,

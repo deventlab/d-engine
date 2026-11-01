@@ -17,7 +17,6 @@ use d_engine_core::ApplyEntry;
 use d_engine_core::ApplyResult;
 use d_engine_core::Error;
 use d_engine_core::ScanResult;
-use d_engine_core::SnapshotApplyResult;
 use d_engine_core::StateMachine;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
@@ -71,7 +70,7 @@ impl<SM: StateMachine + Debug> StateMachine for SharedStateMachine<SM> {
         &self,
         metadata: &SnapshotMetadata,
         snapshot_path: std::path::PathBuf,
-    ) -> Result<SnapshotApplyResult, Error> {
+    ) -> Result<(), Error> {
         self.0.apply_snapshot_from_file(metadata, snapshot_path).await
     }
     async fn generate_snapshot_data(

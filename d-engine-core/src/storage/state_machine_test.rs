@@ -12,7 +12,6 @@ use tempfile::TempDir;
 use crate::ApplyEntry;
 use crate::Command;
 use crate::Error;
-use crate::SnapshotApplyResult;
 use crate::storage::StateMachine;
 
 /// Test suite for StateMachine implementations
@@ -43,7 +42,6 @@ impl StateMachineTestSuite {
         Self::test_batch_operations(builder.build().await?).await?;
         Self::test_last_applied_detection(builder.build().await?).await?;
         Self::test_snapshot_operations(builder.build().await?).await?;
-        Self::test_snapshot_apply_rejects_missing_boundary(builder.build().await?).await?;
         Self::test_snapshot_metadata_survives_reopen(&builder).await?;
 
         Self::test_drop_flushes_data(&builder).await?;
@@ -376,32 +374,6 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
-    /// `apply_snapshot_from_file` must reject `last_included: None` outright — a missing
-    /// boundary can't be classified stale/duplicate/conflict/eligible, so silently
-    /// defaulting it (`unwrap_or_default()`) turns malformed metadata into a fake no-op.
-    pub async fn test_snapshot_apply_rejects_missing_boundary(
-        state_machine: Arc<dyn StateMachine>
-    ) -> Result<(), Error> {
-        let metadata = SnapshotMetadata {
-            last_included: None,
-            checksum: Bytes::from(vec![0; 32]),
-        };
-        let temp_dir = TempDir::new()?;
-
-        let result = state_machine
-            .apply_snapshot_from_file(&metadata, temp_dir.path().to_path_buf())
-            .await;
-
-        assert!(
-            result.is_err(),
-            "apply_snapshot_from_file accepted SnapshotMetadata{{last_included: None}} — a \
-             missing boundary can't be classified as stale/duplicate/conflict/eligible, it \
-             must be rejected, not silently substituted with a default LogId"
-        );
-
-        Ok(())
-    }
-
     /// Snapshot metadata published through `persist_last_snapshot_metadata` must survive a
     /// restart.
     ///
@@ -725,11 +697,7 @@ impl StateMachineTestSuite {
                 last_included: Some(last_included),
                 checksum: Bytes::from(checksum.to_vec()),
             };
-            let result = sm.apply_snapshot_from_file(&metadata, snapshot_dir).await?;
-            assert!(
-                matches!(result, SnapshotApplyResult::Applied { .. }),
-                "expected Applied, got: {result:?}"
-            );
+            sm.apply_snapshot_from_file(&metadata, snapshot_dir).await?;
             assert_eq!(
                 sm.last_applied(),
                 last_included,
@@ -1673,7 +1641,6 @@ mod default_scan_prefix_tests {
 
     use crate::ApplyEntry;
     use crate::Error;
-    use crate::SnapshotApplyResult;
     use crate::storage::state_machine::ApplyResult;
     use crate::storage::state_machine::StateMachine;
 
@@ -1719,12 +1686,10 @@ mod default_scan_prefix_tests {
 
         async fn apply_snapshot_from_file(
             &self,
-            metadata: &SnapshotMetadata,
+            _metadata: &SnapshotMetadata,
             _snapshot_path: std::path::PathBuf,
-        ) -> Result<SnapshotApplyResult, Error> {
-            Ok(SnapshotApplyResult::Applied {
-                last_included: metadata.last_included.unwrap_or_default(),
-            })
+        ) -> Result<(), Error> {
+            Ok(())
         }
 
         async fn generate_snapshot_data(

@@ -2994,6 +2994,8 @@ async fn test_install_prepared_snapshot_checksum_mismatch_rejects_without_callin
     fs::write(received.join("data.bin"), b"content").unwrap();
 
     let mut sm = MockStateMachine::new();
+    // A node that has applied nothing yet, receiving a snapshot that ends at log 5.
+    sm.expect_last_applied().return_const(LogId::default());
     sm.expect_apply_snapshot_from_file().times(0);
     let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
 
@@ -3025,11 +3027,18 @@ async fn test_install_prepared_snapshot_matching_checksum_installs_once() {
     fs::write(received.join("data.bin"), b"content").unwrap();
     let checksum = crate::file_io::compute_checksum_from_folder_path(&received).await.unwrap();
 
+    // A node that has applied nothing yet; installing the snapshot moves it to log 5.
+    let position = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut sm = MockStateMachine::new();
-    sm.expect_apply_snapshot_from_file().times(1).returning(|metadata, _| {
-        Ok(crate::SnapshotApplyResult::Applied {
-            last_included: metadata.last_included.unwrap(),
-        })
+    let reported = position.clone();
+    sm.expect_last_applied().returning(move || LogId {
+        index: reported.load(std::sync::atomic::Ordering::SeqCst),
+        term: 1,
+    });
+    let installer = position.clone();
+    sm.expect_apply_snapshot_from_file().times(1).returning(move |_, _| {
+        installer.store(5, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     });
     let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
 
@@ -3065,6 +3074,8 @@ async fn test_install_prepared_snapshot_nested_file_corruption_rejects_without_c
     fs::write(received.join("sm").join("000008.sst"), b"table-dat!").unwrap();
 
     let mut sm = MockStateMachine::new();
+    // A node that has applied nothing yet, receiving a snapshot that ends at log 5.
+    sm.expect_last_applied().return_const(LogId::default());
     sm.expect_apply_snapshot_from_file().times(0);
     let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
 
@@ -3080,5 +3091,247 @@ async fn test_install_prepared_snapshot_nested_file_corruption_rejects_without_c
     assert!(
         format!("{err:?}").contains("ChecksumMismatch"),
         "expected ChecksumMismatch, got: {err:?}"
+    );
+}
+
+// ── install_prepared_snapshot: boundary decision and result verification ─────────────────────
+//
+// The engine, not the state machine, decides whether a received snapshot is installed, and it
+// checks afterwards that the state machine really moved to the snapshot's boundary.
+
+/// A snapshot directory with real content, and the metadata (boundary + real checksum) a leader
+/// would have recorded for it.
+async fn received_snapshot(
+    root: &Path,
+    last_included: Option<LogId>,
+) -> (PathBuf, SnapshotMetadata) {
+    let dir = root.join("received");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("data.bin"), b"content").unwrap();
+    let checksum = crate::file_io::compute_checksum_from_folder_path(&dir).await.unwrap();
+    (dir, SnapshotMetadata {
+        last_included,
+        checksum: Bytes::copy_from_slice(&checksum),
+    })
+}
+
+/// Node B has applied up to log 100 and receives a delayed snapshot that ends at log 50.
+///
+/// Purpose: installing it would roll B back to 50 and lose data. The engine must ignore it and
+/// never call the state machine.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_older_than_applied_is_ignored_without_calling_state_machine()
+ {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) =
+        received_snapshot(temp_dir.path(), Some(LogId { index: 50, term: 3 })).await;
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
+
+    assert_eq!(result, crate::SnapshotApplyResult::IgnoredStale {
+        current: LogId {
+            index: 100,
+            term: 3
+        }
+    });
+}
+
+/// B receives the snapshot it already has (same index, same term).
+///
+/// Purpose: nothing to install; the state machine is not called.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_same_boundary_is_ignored_without_calling_state_machine() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) = received_snapshot(
+        temp_dir.path(),
+        Some(LogId {
+            index: 100,
+            term: 3,
+        }),
+    )
+    .await;
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
+
+    assert_eq!(result, crate::SnapshotApplyResult::IgnoredDuplicate {
+        current: LogId {
+            index: 100,
+            term: 3
+        }
+    });
+}
+
+/// B is at log 100 of term 3; the snapshot says log 100 belongs to term 4.
+///
+/// Purpose: two histories disagree about the same log index. That is a serious error, not
+/// something to ignore or to overwrite silently. The state machine is not called.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_same_index_different_term_is_a_conflict_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) = received_snapshot(
+        temp_dir.path(),
+        Some(LogId {
+            index: 100,
+            term: 4,
+        }),
+    )
+    .await;
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let err = writer
+        .install_prepared_snapshot(metadata, dir)
+        .await
+        .expect_err("a conflicting boundary must be an error");
+
+    assert!(
+        format!("{err:?}").contains("BoundaryConflict"),
+        "got: {err:?}"
+    );
+}
+
+/// Metadata without a boundary cannot be classified as older, equal or newer.
+///
+/// Purpose: reject it outright instead of guessing, and never call the state machine.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_without_boundary_is_rejected() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) = received_snapshot(temp_dir.path(), None).await;
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await;
+
+    assert!(
+        result.is_err(),
+        "a snapshot without a boundary must be rejected"
+    );
+}
+
+/// A snapshot that is older than B's state also has a wrong checksum.
+///
+/// Purpose: the boundary is decided first. A snapshot that would be ignored anyway is not read
+/// and hashed (it can be large), and the answer is "ignored", not "corrupt".
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_stale_is_ignored_before_its_checksum_is_checked() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, mut metadata) =
+        received_snapshot(temp_dir.path(), Some(LogId { index: 50, term: 3 })).await;
+    metadata.checksum = Bytes::from(vec![0; 32]);
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
+
+    assert!(
+        matches!(result, crate::SnapshotApplyResult::IgnoredStale { .. }),
+        "got: {result:?}"
+    );
+}
+
+/// B at log 100 receives a newer snapshot (log 500) and the state machine installs it correctly,
+/// including moving its position to 500.
+///
+/// Purpose: the normal path still works: installed exactly once, reported as applied.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_newer_is_installed_once() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) = received_snapshot(
+        temp_dir.path(),
+        Some(LogId {
+            index: 500,
+            term: 3,
+        }),
+    )
+    .await;
+    let position = Arc::new(std::sync::atomic::AtomicU64::new(100));
+    let mut sm = MockStateMachine::new();
+    let reported = position.clone();
+    sm.expect_last_applied().returning(move || LogId {
+        index: reported.load(std::sync::atomic::Ordering::SeqCst),
+        term: 3,
+    });
+    let installer = position.clone();
+    sm.expect_apply_snapshot_from_file().times(1).returning(move |_, _| {
+        installer.store(500, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    });
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await.unwrap();
+
+    assert_eq!(result, crate::SnapshotApplyResult::Applied {
+        last_included: LogId {
+            index: 500,
+            term: 3
+        }
+    });
+}
+
+/// The state machine installs the data but forgets to move its position: it still reports log 100
+/// after being given a snapshot that ends at 500.
+///
+/// Purpose: the engine must notice and fail loudly. Otherwise it would treat B as still at 100
+/// and replay logs 101..500 on top of state that already contains them.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_state_machine_not_advanced_is_an_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (dir, metadata) = received_snapshot(
+        temp_dir.path(),
+        Some(LogId {
+            index: 500,
+            term: 3,
+        }),
+    )
+    .await;
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().return_const(LogId {
+        index: 100,
+        term: 3,
+    });
+    sm.expect_apply_snapshot_from_file().times(1).returning(|_, _| Ok(()));
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.install_prepared_snapshot(metadata, dir).await;
+
+    assert!(
+        result.is_err(),
+        "a state machine that did not move to the snapshot's boundary must be reported"
     );
 }

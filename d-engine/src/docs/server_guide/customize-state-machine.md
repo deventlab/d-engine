@@ -102,6 +102,7 @@ impl StateMachine for CustomStateMachine {
 - **Idempotency**: Handle duplicate entries safely—Raft may resend committed entries
 - **Snapshot Isolation**: `apply_snapshot_from_file()` must atomically replace state
 - **Snapshot Checksums**: The engine computes the checksum of the directory your `generate_snapshot_data()` writes, and verifies it before it calls `apply_snapshot_from_file()`. You neither compute nor check one
+- **Snapshot Install**: The engine decides whether a snapshot is installed. `apply_snapshot_from_file()` is called only for a snapshot newer than `last_applied()`, and the engine checks afterwards that `last_applied()` equals the snapshot boundary
 - **Restore On Open**: The engine never asks you to restore state. When your state machine is opened, `last_applied()` must return the last entry whose effects are durable (persist it together with the data it describes), and `snapshot_metadata()` must return the value most recently passed to `persist_last_snapshot_metadata()`
 - **Concurrency Control**: Use appropriate locking for state mutations
 - **Resource Cleanup**: Implement `Drop` to ensure proper flush on shutdown

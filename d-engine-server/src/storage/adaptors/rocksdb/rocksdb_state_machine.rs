@@ -12,7 +12,6 @@ use d_engine_core::ApplyResult;
 use d_engine_core::Command;
 use d_engine_core::Error;
 use d_engine_core::ScanResult;
-use d_engine_core::SnapshotApplyResult;
 use d_engine_core::SnapshotError;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
@@ -774,42 +773,10 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         snapshot_dir: std::path::PathBuf,
-    ) -> Result<SnapshotApplyResult, Error> {
-        // A snapshot with no boundary can't be classified (stale/duplicate/conflict/
-        // eligible) at all — reject outright rather than silently falling through to
-        // an unconditional install (#436). Mirrors prepare_transfer_meta's handling
-        // of the same missing-field case.
+    ) -> Result<(), Error> {
         let incoming = metadata.last_included.ok_or_else(|| {
             SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
         })?;
-
-        let current = self.last_applied();
-        match incoming.index.cmp(&current.index) {
-            std::cmp::Ordering::Less => {
-                // Case 1: incoming index behind current progress — stale, no-op.
-                info!(?incoming, ?current, "Ignoring stale snapshot");
-                return Ok(SnapshotApplyResult::IgnoredStale { current });
-            }
-            std::cmp::Ordering::Equal if incoming.term == current.term => {
-                // Case 2: same boundary, same term — idempotent duplicate, no-op.
-                info!(?incoming, ?current, "Ignoring duplicate snapshot");
-                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
-            }
-            std::cmp::Ordering::Equal => {
-                // Case 3: same index, different term — not a normal stale/duplicate
-                // case. This is a real inconsistency (bad metadata, wrong cluster,
-                // or local corruption) — must not be silently ignored or auto-installed.
-                return Err(SnapshotError::BoundaryConflict {
-                    index: current.index,
-                    local_term: current.term,
-                    incoming_term: incoming.term,
-                }
-                .into());
-            }
-            std::cmp::Ordering::Greater => {
-                // Case 4: incoming index ahead — eligible to install, fall through.
-            }
-        }
 
         info!("Applying snapshot from: {:?}", snapshot_dir);
 
@@ -829,9 +796,7 @@ impl StateMachine for RocksDBStateMachine {
             self.is_serving.store(true, Ordering::SeqCst);
         }
 
-        result.map(|()| SnapshotApplyResult::Applied {
-            last_included: incoming,
-        })
+        result
     }
 
     async fn generate_snapshot_data(

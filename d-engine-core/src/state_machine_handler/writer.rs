@@ -6,6 +6,7 @@ use bytes::Bytes;
 use d_engine_proto::common::Entry;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use tracing::error;
+use tracing::info;
 use tracing::trace;
 
 use super::StateMachineWriterOps;
@@ -179,8 +180,36 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
         metadata: SnapshotMetadata,
         dir: PathBuf,
     ) -> Result<SnapshotApplyResult> {
-        // The framework verifies the snapshot's end-to-end checksum, so a state machine only
-        // ever receives a directory whose content matches what the leader exported.
+        // The engine, not the state machine, decides whether a snapshot is installed. A snapshot
+        // without a boundary cannot be classified at all, so it is rejected rather than guessed.
+        let incoming = metadata.last_included.ok_or_else(|| {
+            SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
+        })?;
+        let current = self.state_machine.last_applied();
+        match incoming.index.cmp(&current.index) {
+            std::cmp::Ordering::Less => {
+                info!(?incoming, ?current, "Ignoring stale snapshot");
+                return Ok(SnapshotApplyResult::IgnoredStale { current });
+            }
+            std::cmp::Ordering::Equal if incoming.term == current.term => {
+                info!(?incoming, ?current, "Ignoring duplicate snapshot");
+                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
+            }
+            // The same log index with a different term means the two histories disagree. That
+            // is a real inconsistency: it must be neither ignored nor installed over.
+            std::cmp::Ordering::Equal => {
+                return Err(SnapshotError::BoundaryConflict {
+                    index: current.index,
+                    local_term: current.term,
+                    incoming_term: incoming.term,
+                }
+                .into());
+            }
+            std::cmp::Ordering::Greater => {}
+        }
+
+        // Only a snapshot that will be installed is read and hashed. The checksum guarantees a
+        // state machine only ever receives a directory that matches what the leader exported.
         let computed = compute_checksum_from_folder_path(&dir).await?;
         if metadata.checksum.as_ref() != computed.as_ref() {
             error!(
@@ -190,11 +219,24 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
             return Err(SnapshotError::ChecksumMismatch.into());
         }
 
-        let result = self.state_machine.apply_snapshot_from_file(&metadata, dir).await?;
-        if let SnapshotApplyResult::Applied { last_included } = &result {
-            self.applied.advance(last_included.index);
+        self.state_machine.apply_snapshot_from_file(&metadata, dir).await?;
+
+        // The state machine must now be at the snapshot's boundary. If it is not, the engine
+        // would believe the node is still behind and replay entries that the installed state
+        // already contains, so this is reported instead of carried on from.
+        let reached = self.state_machine.last_applied();
+        if reached != incoming {
+            return Err(SnapshotError::OperationFailed(format!(
+                "state machine reports last_applied {reached:?} after installing a snapshot that \
+                 ends at {incoming:?}"
+            ))
+            .into());
         }
-        Ok(result)
+
+        self.applied.advance(incoming.index);
+        Ok(SnapshotApplyResult::Applied {
+            last_included: incoming,
+        })
     }
     async fn capture_local_snapshot(&self) -> Result<CapturedLocalSnapshot> {
         let last_included = self.state_machine.last_applied();

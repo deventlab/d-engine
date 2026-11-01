@@ -1,17 +1,5 @@
 //! It works as KV storage for client business CRUDs.
 
-use crate::{safe_kv, safe_vk_ivec};
-use arc_swap::ArcSwapOption;
-use async_trait::async_trait;
-use bincode::config;
-use bytes::Bytes;
-use d_engine::BatchOp;
-use d_engine::{
-    ApplyEntry, ApplyResult, Command, Result, ScanResult, SnapshotApplyResult, SnapshotError,
-    StateMachine, StorageError, common::LogId, server_storage::SnapshotMetadata,
-};
-use parking_lot::Mutex;
-use sled::Batch;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,11 +7,32 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+
+use arc_swap::ArcSwapOption;
+use async_trait::async_trait;
+use bincode::config;
+use bytes::Bytes;
+use d_engine::ApplyEntry;
+use d_engine::ApplyResult;
+use d_engine::BatchOp;
+use d_engine::Command;
+use d_engine::Result;
+use d_engine::ScanResult;
+use d_engine::SnapshotError;
+use d_engine::StateMachine;
+use d_engine::StorageError;
+use d_engine::common::LogId;
+use d_engine::server_storage::SnapshotMetadata;
+use parking_lot::Mutex;
+use sled::Batch;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
 use tracing::warn;
+
+use crate::safe_kv;
+use crate::safe_vk_ivec;
 
 /// Sled database tree namespaces
 pub(crate) const STATE_MACHINE_TREE: &str = "_state_machine_tree";
@@ -304,42 +313,16 @@ impl StateMachine for SledStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         decompressed_snapshot_path: PathBuf,
-    ) -> Result<SnapshotApplyResult> {
+    ) -> Result<()> {
         // No internal locking needed — see generate_snapshot_data. `StateMachineWorker`
         // processes ApplyEntries/InstallSnapshot/CaptureLocalSnapshot one at a time from a
         // single queue (#436), so this call never races a concurrent snapshot generation
         // or another install.
 
-        // Boundary classification (#436, every StateMachine impl must honor this): stale or
-        // duplicate is a no-op, same-index-different-term is a conflict error, and a missing
-        // boundary can't be classified at all — reject it outright (mirrors
-        // prepare_transfer_meta's handling of the same field).
+        // The engine only calls this for a snapshot newer than `last_applied()`.
         let new_last_included = metadata.last_included.ok_or_else(|| {
             SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
         })?;
-
-        let current = self.last_applied();
-        match new_last_included.index.cmp(&current.index) {
-            std::cmp::Ordering::Less => {
-                info!(?new_last_included, ?current, "Ignoring stale snapshot");
-                return Ok(SnapshotApplyResult::IgnoredStale { current });
-            }
-            std::cmp::Ordering::Equal if new_last_included.term == current.term => {
-                info!(?new_last_included, ?current, "Ignoring duplicate snapshot");
-                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
-            }
-            std::cmp::Ordering::Equal => {
-                return Err(SnapshotError::BoundaryConflict {
-                    index: current.index,
-                    local_term: current.term,
-                    incoming_term: new_last_included.term,
-                }
-                .into());
-            }
-            std::cmp::Ordering::Greater => {
-                // Eligible to install, fall through.
-            }
-        }
 
         // `decompressed_snapshot_path` is a temporary directory owned by the caller
         // (see `PreparedSnapshot`), not this state machine's own `self.path`. Opening a
@@ -408,9 +391,7 @@ impl StateMachine for SledStateMachine {
 
         self.save_hard_state()?;
 
-        Ok(SnapshotApplyResult::Applied {
-            last_included: new_last_included,
-        })
+        Ok(())
     }
 
     async fn reset(&self) -> Result<()> {

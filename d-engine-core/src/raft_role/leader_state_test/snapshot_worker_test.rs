@@ -51,7 +51,6 @@ use crate::MockRaftLog;
 use crate::MockStateMachine;
 use crate::MockTransport;
 use crate::RaftRequestWithSignal;
-use crate::SnapshotApplyResult;
 use crate::event::InternalEvent;
 use crate::maybe_clone_oneshot::MaybeCloneOneshot;
 use crate::maybe_clone_oneshot::RaftOneshot;
@@ -108,11 +107,7 @@ fn state_machine_with_snapshot() -> MockStateMachine {
     // Return a valid snapshot so Phase 6 fires the Snapshot task to the worker.
     sm.expect_snapshot_metadata().returning(|| Some(stub_snapshot_metadata()));
     sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
-    sm.expect_apply_snapshot_from_file().returning(|_, _| {
-        Ok(SnapshotApplyResult::Applied {
-            last_included: LogId::default(),
-        })
-    });
+    sm.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
     sm.expect_generate_snapshot_data().returning(|_, _| Ok(()));
     sm
 }

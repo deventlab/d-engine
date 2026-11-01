@@ -28,7 +28,6 @@ use crate::RaftNodeConfig;
 use crate::RaftRole;
 use crate::RaftStorageHandles;
 use crate::SignalParams;
-use crate::SnapshotApplyResult;
 use crate::StateMachine;
 use crate::follower_state::FollowerState;
 
@@ -392,11 +391,7 @@ pub fn mock_state_machine() -> MockStateMachine {
     mock.expect_snapshot_metadata().returning(|| None);
     mock.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
-    mock.expect_apply_snapshot_from_file().returning(|_, _| {
-        Ok(SnapshotApplyResult::Applied {
-            last_included: LogId::default(),
-        })
-    });
+    mock.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
     mock.expect_generate_snapshot_data().returning(|_, _| Ok(()));
 
     mock

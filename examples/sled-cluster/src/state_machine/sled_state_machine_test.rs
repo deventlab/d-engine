@@ -4,12 +4,17 @@
 //! SledStateMachine to that suite and adds sled-specific scenarios not covered
 //! by the standard suite.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::Bytes;
+use d_engine::ApplyEntry;
+use d_engine::Command;
+use d_engine::Error;
+use d_engine::StateMachine;
 use d_engine::common::LogId;
-use d_engine::state_machine_test::{StateMachineBuilder, StateMachineTestSuite};
-use d_engine::{ApplyEntry, Command, Error, StateMachine};
-use std::sync::Arc;
+use d_engine::state_machine_test::StateMachineBuilder;
+use d_engine::state_machine_test::StateMachineTestSuite;
 use tempfile::TempDir;
 
 use crate::SledStateMachine;
@@ -80,7 +85,8 @@ async fn test_snapshot_captures_all_current_data() {
             term: 1,
             command: Command::Insert {
                 key: Bytes::from(format!("snap_key_{i}")),
-                value: Bytes::from(format!("snap_val_{i}")),            },
+                value: Bytes::from(format!("snap_val_{i}")),
+            },
         })
         .collect();
     sm.apply_chunk(&entries).await.unwrap();
@@ -116,7 +122,8 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
         term: 1,
         command: Command::Insert {
             key: Bytes::from_static(b"before"),
-            value: Bytes::from_static(b"v1"),        },
+            value: Bytes::from_static(b"v1"),
+        },
     }];
     sm.apply_chunk(&pre_entries).await.unwrap();
 
@@ -131,7 +138,8 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
         term: 1,
         command: Command::Insert {
             key: Bytes::from_static(b"after"),
-            value: Bytes::from_static(b"v2"),        },
+            value: Bytes::from_static(b"v2"),
+        },
     }];
     sm.apply_chunk(&post_entries).await.unwrap();
 
@@ -162,7 +170,8 @@ async fn test_snapshot_install_content_survives_restart() {
             term: 1,
             command: Command::Insert {
                 key: Bytes::from(format!("install_key_{i}")),
-                value: Bytes::from(format!("install_val_{i}")),            },
+                value: Bytes::from(format!("install_val_{i}")),
+            },
         })
         .collect();
     source_sm.apply_chunk(&entries).await.unwrap();
@@ -186,14 +195,10 @@ async fn test_snapshot_install_content_survives_restart() {
     let node_b_path = node_b_dir.path().to_path_buf();
     {
         let node_b = SledStateMachine::new(&node_b_path, 2).unwrap();
-        let result = node_b
+        node_b
             .apply_snapshot_from_file(&metadata, export_dir.path().to_path_buf())
             .await
             .unwrap();
-        assert!(
-            matches!(result, d_engine::SnapshotApplyResult::Applied { .. }),
-            "expected Applied, got: {result:?}"
-        );
         assert_eq!(
             node_b.get(b"install_key_1").unwrap(),
             Some(Bytes::from_static(b"install_val_1")),
@@ -240,7 +245,8 @@ async fn test_new_recovers_backup_after_interrupted_install() {
             term: 1,
             command: Command::Insert {
                 key: Bytes::from_static(b"pre_crash_key"),
-                value: Bytes::from_static(b"pre_crash_val"),            },
+                value: Bytes::from_static(b"pre_crash_val"),
+            },
         }])
         .await
         .unwrap();

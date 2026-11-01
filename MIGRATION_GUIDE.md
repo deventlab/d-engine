@@ -34,6 +34,7 @@ EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
 - **If you kept a clone of your `Arc<StateMachine>` to read local data directly** (for example `DLmdb` reading its own LMDB), you can no longer clone the instance the engine uses. Share a handle to your storage instead: put the handles (LMDB `Env`, sled `Db`, `Arc<rocksdb::DB>`) behind an `Arc` inside your state machine type, derive `Clone` on it, give the engine one clone and keep the other.
 - **Embedded reads (`get_eventual`, lease reads) are answered by the ReadActor**, as they already were in standalone mode, instead of reading the state machine on the caller's thread. Expect one extra channel hop per read.
 - **Snapshot checksums belong to the engine.** `generate_snapshot_data` now returns `Result<()>`: write the snapshot into the directory you are given and return. The engine computes the checksum of that directory itself, and verifies it before it calls `apply_snapshot_from_file`, so you no longer compute or check a checksum. Delete that code (and any hashing dependency you added only for it).
+- **`apply_snapshot_from_file` returns `Result<()>` again, and you no longer classify snapshots.** The engine compares the snapshot's boundary with `last_applied()` first and calls you only for a newer snapshot, so delete your stale / duplicate / conflict handling and return `Ok(())` after installing. After your call the engine checks that `last_applied()` equals `metadata.last_included` and reports an error if it does not, so make sure you set it (durably) as part of the install.
 - **Six methods left the trait:** `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush` and `flush_async`. The engine never called them, so deleting them from your `impl StateMachine` block changes no behaviour. Keep any your own code still uses as plain methods on your type.
 - **Restore your state when you open it.** The engine does not do it for you: after reopening, `last_applied()` must return the last entry whose effects are durable, and `snapshot_metadata()` must return the value most recently passed to `persist_last_snapshot_metadata()` (which must therefore update memory and write to disk). `StateMachineTestSuite` now checks the snapshot metadata case.
 - **The snapshot directory must contain only regular files and directories.** The engine rejects symbolic links and other special entries instead of skipping them.
@@ -612,58 +613,11 @@ Compilation will fail with "method not found in trait" if you forget to remove i
 
 ---
 
-## For v0.2.4 Users: `StateMachine::apply_snapshot_from_file` Return Type Changed in v0.3.0 (#436)
+## For v0.2.4 Users: `StateMachine::apply_snapshot_from_file` Now Receives Only Snapshots To Install (#436, #400)
 
-### What Changed
+The signature is unchanged: it still returns `Result<()>`. What changed is who decides.
 
-`apply_snapshot_from_file` now returns `Result<SnapshotApplyResult>` instead of `Result<()>`, so
-the caller knows whether the install actually ran or was a no-op instead of every outcome looking
-identical.
-
-```rust
-pub enum SnapshotApplyResult {
-    Applied { last_included: LogId },    // install actually ran
-    IgnoredStale { current: LogId },     // incoming.index < current — no-op, not an error
-    IgnoredDuplicate { current: LogId }, // incoming == current, same term — no-op, not an error
-}
-```
-
-### Impact
-
-⚠️ **Breaking for custom `StateMachine` implementations.**
-
-```rust
-// Old (v0.2.4)
-async fn apply_snapshot_from_file(
-    &self,
-    metadata: &SnapshotMetadata,
-    path: PathBuf,
-) -> Result<()> {
-    // ... install logic ...
-    Ok(())
-}
-
-// New (v0.3.0)
-async fn apply_snapshot_from_file(
-    &self,
-    metadata: &SnapshotMetadata,
-    path: PathBuf,
-) -> Result<SnapshotApplyResult> {
-    // ... same install logic ...
-    Ok(SnapshotApplyResult::Applied { last_included: new_last_included })
-}
-```
-
-Return `IgnoredStale` for a snapshot strictly older than what's already applied, and
-`IgnoredDuplicate` only when the index **and** term both match what's already applied — that's
-Raft's own idempotency check on the install call, not a failure. An equal index with a
-**different** term is not a duplicate: it means two different leadership terms produced
-conflicting content at the same boundary, which the public error contract classifies as fatal —
-return `Err(SnapshotError::BoundaryConflict { .. })` for that case. Reserve `Err` generally for a
-genuine failure (checksum mismatch, I/O error, corrupted data, or this boundary conflict).
-
-Built-in implementations (`FileStateMachine`, `RocksDBStateMachine`) are already updated.
-Compilation fails with "incompatible type for trait" until a custom implementation is updated.
+In v0.2.4 every state machine had to decide whether a received snapshot should be installed. In v0.3.0 the engine decides before it calls you, so stale, duplicate and conflicting snapshots (older than `last_applied()`, equal to it, or the same index with a different term) never reach your code. If your implementation compared the snapshot's boundary with its own position, delete that code. After your call the engine checks that `last_applied()` equals `metadata.last_included`, and reports an error if it does not.
 
 ---
 

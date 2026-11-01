@@ -68,7 +68,6 @@ use d_engine_core::ApplyResult;
 use d_engine_core::Command;
 use d_engine_core::Error;
 use d_engine_core::ScanResult;
-use d_engine_core::SnapshotApplyResult;
 use d_engine_core::SnapshotError;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
@@ -1190,34 +1189,10 @@ impl StateMachine for FileStateMachine {
         &self,
         metadata: &SnapshotMetadata,
         snapshot_dir: std::path::PathBuf,
-    ) -> Result<SnapshotApplyResult, Error> {
-        // (#436) — every StateMachine backend must honor this contract, not just RocksDB.
-        // A missing boundary can't be classified — reject rather than fall through
-        // to an unconditional install.
+    ) -> Result<(), Error> {
         let incoming = metadata.last_included.ok_or_else(|| {
             SnapshotError::OperationFailed("Missing last_included in snapshot metadata".into())
         })?;
-
-        let current = self.last_applied();
-        match incoming.index.cmp(&current.index) {
-            std::cmp::Ordering::Less => {
-                info!(?incoming, ?current, "Ignoring stale snapshot");
-                return Ok(SnapshotApplyResult::IgnoredStale { current });
-            }
-            std::cmp::Ordering::Equal if incoming.term == current.term => {
-                info!(?incoming, ?current, "Ignoring duplicate snapshot");
-                return Ok(SnapshotApplyResult::IgnoredDuplicate { current });
-            }
-            std::cmp::Ordering::Equal => {
-                return Err(SnapshotError::BoundaryConflict {
-                    index: current.index,
-                    local_term: current.term,
-                    incoming_term: incoming.term,
-                }
-                .into());
-            }
-            std::cmp::Ordering::Greater => {}
-        }
 
         info!("Applying snapshot from file: {:?}", snapshot_dir);
 
@@ -1327,9 +1302,7 @@ impl StateMachine for FileStateMachine {
 
         info!("Snapshot applied successfully");
 
-        Ok(SnapshotApplyResult::Applied {
-            last_included: incoming,
-        })
+        Ok(())
     }
 
     async fn generate_snapshot_data(

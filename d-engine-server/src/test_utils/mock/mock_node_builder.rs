@@ -26,7 +26,6 @@ use d_engine_core::RaftRole;
 use d_engine_core::RaftStorageHandles;
 use d_engine_core::SignalParams;
 use d_engine_core::SmWorkerHandle;
-use d_engine_core::SnapshotApplyResult;
 use d_engine_core::StateMachine;
 use d_engine_core::StateMachineCommand;
 use d_engine_core::StateMachineWorker;
@@ -634,11 +633,7 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
     mock.expect_snapshot_metadata().returning(|| None);
     mock.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
-    mock.expect_apply_snapshot_from_file().returning(|_, _| {
-        Ok(SnapshotApplyResult::Applied {
-            last_included: LogId::default(),
-        })
-    });
+    mock.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
     mock.expect_generate_snapshot_data().returning(|_, _| Ok(()));
 
     mock

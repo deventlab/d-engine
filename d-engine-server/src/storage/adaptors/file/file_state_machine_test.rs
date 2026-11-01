@@ -5,7 +5,6 @@ use bytes::Bytes;
 use d_engine_core::ApplyEntry;
 use d_engine_core::Command;
 use d_engine_core::Error;
-use d_engine_core::SnapshotApplyResult;
 use d_engine_core::StateMachine;
 use d_engine_core::file_io::compute_checksum_from_folder_path;
 use d_engine_core::storage::state_machine_test::StateMachineBuilder;
@@ -670,128 +669,6 @@ fn insert_at(
     }
 }
 
-/// A stale snapshot (`last_included` behind current `last_applied`) must not be
-/// installed — doing so rolls back already-applied data.
-#[tokio::test]
-async fn test_file_apply_snapshot_from_file_rejects_stale_snapshot() {
-    let dir = TempDir::new().expect("Failed to create temp dir");
-    let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create sm");
-
-    let early: Vec<ApplyEntry> = (1..=20)
-        .map(|i| insert_at(format!("key_{i}").as_bytes(), b"early", i))
-        .collect();
-    sm.apply_chunk(&early).await.expect("apply early entries");
-
-    let stale_snapshot_dir = dir.path().join("stale_snapshot");
-    let stale_last_included = LogId { term: 1, index: 20 };
-    sm.generate_snapshot_data(stale_snapshot_dir.clone(), stale_last_included)
-        .await
-        .expect("generate stale snapshot");
-
-    let later: Vec<ApplyEntry> = (21..=33)
-        .map(|i| insert_at(format!("key_{i}").as_bytes(), b"later", i))
-        .collect();
-    sm.apply_chunk(&later).await.expect("apply later entries");
-    assert_eq!(
-        sm.last_applied().index,
-        33,
-        "sanity: advanced past the stale snapshot's index"
-    );
-
-    let stale_metadata = SnapshotMetadata {
-        last_included: Some(stale_last_included),
-        checksum: Bytes::from_static(&[0; 32]),
-    };
-    let result = sm
-        .apply_snapshot_from_file(&stale_metadata, stale_snapshot_dir)
-        .await
-        .expect("apply_snapshot_from_file should not error even when rejecting a stale snapshot");
-    assert!(
-        matches!(result, SnapshotApplyResult::IgnoredStale { current } if current.index == 33),
-        "expected IgnoredStale{{current.index: 33}}, got: {result:?}"
-    );
-    assert_eq!(
-        sm.last_applied().index,
-        33,
-        "must not roll back last_applied"
-    );
-    assert_eq!(
-        sm.get(b"key_23").expect("read after install"),
-        Some(Bytes::from_static(b"later")),
-        "key_23 must survive installing a stale snapshot"
-    );
-}
-
-/// A duplicate snapshot (`last_included` == current `last_applied`, same term) is an
-/// idempotent no-op — not an error, and must not re-run the destructive install.
-#[tokio::test]
-async fn test_file_apply_snapshot_from_file_ignores_duplicate_snapshot() {
-    let dir = TempDir::new().expect("Failed to create temp dir");
-    let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create sm");
-
-    let entries: Vec<ApplyEntry> =
-        (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
-    sm.apply_chunk(&entries).await.expect("apply entries");
-
-    let last_included = LogId { term: 1, index: 5 };
-    let snapshot_dir = dir.path().join("snapshot");
-    sm.generate_snapshot_data(snapshot_dir.clone(), last_included)
-        .await
-        .expect("generate snapshot");
-
-    let metadata = SnapshotMetadata {
-        last_included: Some(last_included),
-        checksum: Bytes::from_static(&[0; 32]),
-    };
-    let result = sm
-        .apply_snapshot_from_file(&metadata, snapshot_dir)
-        .await
-        .expect("duplicate snapshot must not error");
-    assert!(
-        matches!(result, SnapshotApplyResult::IgnoredDuplicate { current } if current.index == 5 && current.term == 1),
-        "expected IgnoredDuplicate{{current: (5,1)}}, got: {result:?}"
-    );
-    assert_eq!(
-        sm.last_applied(),
-        last_included,
-        "duplicate install must not change last_applied"
-    );
-}
-
-/// Same index, DIFFERENT term than current `last_applied` — can't happen under a
-/// correctly-functioning Raft cluster (Log Matching Property); must be rejected as a
-/// hard inconsistency, not silently ignored or auto-installed.
-#[tokio::test]
-async fn test_file_apply_snapshot_from_file_rejects_boundary_conflict() {
-    let dir = TempDir::new().expect("Failed to create temp dir");
-    let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create sm");
-
-    let entries: Vec<ApplyEntry> =
-        (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
-    sm.apply_chunk(&entries).await.expect("apply entries");
-    assert_eq!(sm.last_applied(), LogId { term: 1, index: 5 });
-
-    let snapshot_dir = dir.path().join("snapshot");
-    sm.generate_snapshot_data(snapshot_dir.clone(), LogId { term: 2, index: 5 })
-        .await
-        .expect("generate snapshot");
-    let conflicting_metadata = SnapshotMetadata {
-        last_included: Some(LogId { term: 2, index: 5 }),
-        checksum: Bytes::from_static(&[0; 32]),
-    };
-
-    let result = sm.apply_snapshot_from_file(&conflicting_metadata, snapshot_dir).await;
-    assert!(
-        result.is_err(),
-        "same index, different term must be rejected as a boundary conflict, not silently accepted"
-    );
-    assert_eq!(
-        sm.last_applied(),
-        LogId { term: 1, index: 5 },
-        "a rejected boundary conflict must not change last_applied"
-    );
-}
-
 /// A genuinely newer snapshot (`last_included.index` > current `last_applied`) must
 /// actually run the destructive install and report `Applied`.
 #[tokio::test]
@@ -819,57 +696,10 @@ async fn test_file_apply_snapshot_from_file_reports_applied_for_newer_snapshot()
         last_included: Some(last_included),
         checksum: Bytes::copy_from_slice(&checksum),
     };
-    let result = sm
-        .apply_snapshot_from_file(&metadata, snapshot_dir)
+    sm.apply_snapshot_from_file(&metadata, snapshot_dir)
         .await
         .expect("newer snapshot must install successfully");
-    assert!(
-        matches!(result, SnapshotApplyResult::Applied { last_included: li } if li == last_included),
-        "expected Applied{{last_included: {last_included:?}}}, got: {result:?}"
-    );
     assert_eq!(sm.last_applied(), last_included);
-}
-
-/// #436-adjacent: same as the RocksDB adaptor's
-/// `test_apply_snapshot_from_file_rejects_missing_last_included` — `last_included: None`
-/// must be rejected outright, not silently fall through to an unconditional install.
-#[tokio::test]
-async fn test_file_apply_snapshot_from_file_rejects_missing_last_included() {
-    let dir = TempDir::new().expect("Failed to create temp dir");
-    let sm = FileStateMachine::new(dir.path().join("sm")).await.expect("create sm");
-
-    let early_entries: Vec<ApplyEntry> =
-        (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
-    sm.apply_chunk(&early_entries).await.expect("apply early entries");
-    let snapshot_dir = dir.path().join("snapshot");
-    sm.generate_snapshot_data(snapshot_dir.clone(), LogId { term: 1, index: 5 })
-        .await
-        .expect("generate snapshot");
-
-    let later_entries: Vec<ApplyEntry> =
-        (6..=8).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
-    sm.apply_chunk(&later_entries).await.expect("apply later entries");
-    assert_eq!(sm.last_applied(), LogId { term: 1, index: 8 });
-
-    let metadata = SnapshotMetadata {
-        last_included: None,
-        checksum: Bytes::from_static(&[0; 32]),
-    };
-    let result = sm.apply_snapshot_from_file(&metadata, snapshot_dir).await;
-
-    assert!(
-        result.is_err(),
-        "a snapshot with no boundary must be rejected, not installed — got: {result:?}"
-    );
-    assert!(
-        sm.get(b"key_6").unwrap().is_some(),
-        "key_6 (applied after the snapshot boundary) must survive a rejected install"
-    );
-    assert_eq!(
-        sm.last_applied(),
-        LogId { term: 1, index: 8 },
-        "last_applied must be unchanged after a rejected install"
-    );
 }
 
 /// A snapshot advances `last_applied` past the follower's pre-snapshot WAL entries.
@@ -904,14 +734,9 @@ async fn test_replay_wal_skips_stale_entries_below_last_applied() {
         last_included: Some(LogId { term: 1, index: 10 }),
         checksum: Bytes::copy_from_slice(&checksum),
     };
-    let result = sm
-        .apply_snapshot_from_file(&metadata, snapshot_dir)
+    sm.apply_snapshot_from_file(&metadata, snapshot_dir)
         .await
         .expect("install snapshot");
-    assert!(
-        matches!(result, SnapshotApplyResult::Applied { last_included } if last_included.index == 10),
-        "expected Applied{{index:10}}, got: {result:?}"
-    );
 
     // Simulate the crash window: stale pre-snapshot WAL entries survive while
     // last_applied is already 10 — the state the old persist order could leave.
@@ -1028,12 +853,7 @@ async fn test_file_sm_install_empty_snapshot_clears_existing_data() {
         last_included: Some(LogId { term: 1, index: 5 }),
         checksum: Bytes::copy_from_slice(&checksum),
     };
-    let result = receiver.apply_snapshot_from_file(&metadata, snapshot_dir).await.unwrap();
-
-    assert!(
-        matches!(result, SnapshotApplyResult::Applied { .. }),
-        "expected Applied, got: {result:?}"
-    );
+    receiver.apply_snapshot_from_file(&metadata, snapshot_dir).await.unwrap();
     assert_eq!(
         receiver.get(b"stale").unwrap(),
         None,
