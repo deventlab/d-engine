@@ -513,8 +513,8 @@ async fn test_get_multi_two_keys_still_uses_snapshot_isolation() {
 // ── close_db() tests ──────────────────────────────────────────────────────────
 //
 // close() is a permanent, one-way shutdown that releases the RocksDB LOCK file
-// immediately, without waiting for Arc<SM> to be the sole owner (the developer may keep
-// their own clone).
+// immediately, without waiting for every reference to the state machine to be dropped (a
+// handle the developer shares may outlive the engine).
 
 /// close() makes reads return a NotServing error, never an empty result.
 #[tokio::test]

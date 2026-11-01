@@ -55,26 +55,8 @@ impl<SM: StateMachine + Debug> StateMachine for SharedStateMachine<SM> {
     ) -> Result<Vec<ApplyResult>, Error> {
         self.0.apply_chunk(chunk).await
     }
-    fn update_last_applied(
-        &self,
-        last_applied: LogId,
-    ) {
-        self.0.update_last_applied(last_applied)
-    }
     fn last_applied(&self) -> LogId {
         self.0.last_applied()
-    }
-    fn persist_last_applied(
-        &self,
-        last_applied: LogId,
-    ) -> Result<(), Error> {
-        self.0.persist_last_applied(last_applied)
-    }
-    fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        self.0.update_last_snapshot_metadata(snapshot_metadata)
     }
     fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
         self.0.snapshot_metadata()
@@ -98,15 +80,6 @@ impl<SM: StateMachine + Debug> StateMachine for SharedStateMachine<SM> {
         last_included: LogId,
     ) -> Result<(), Error> {
         self.0.generate_snapshot_data(new_snapshot_dir, last_included).await
-    }
-    fn save_hard_state(&self) -> Result<(), Error> {
-        self.0.save_hard_state()
-    }
-    fn flush(&self) -> Result<(), Error> {
-        self.0.flush()
-    }
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.0.flush_async().await
     }
     async fn reset(&self) -> Result<(), Error> {
         self.0.reset().await

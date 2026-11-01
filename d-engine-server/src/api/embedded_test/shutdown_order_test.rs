@@ -81,26 +81,8 @@ impl StateMachine for SlowApplyProbe {
     ) -> Result<Option<Bytes>, Error> {
         self.inner.get(key_buffer)
     }
-    fn update_last_applied(
-        &self,
-        last_applied: LogId,
-    ) {
-        self.inner.update_last_applied(last_applied)
-    }
     fn last_applied(&self) -> LogId {
         self.inner.last_applied()
-    }
-    fn persist_last_applied(
-        &self,
-        last_applied: LogId,
-    ) -> Result<(), Error> {
-        self.inner.persist_last_applied(last_applied)
-    }
-    fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        self.inner.update_last_snapshot_metadata(snapshot_metadata)
     }
     fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
         self.inner.snapshot_metadata()
@@ -124,15 +106,6 @@ impl StateMachine for SlowApplyProbe {
         last_included: LogId,
     ) -> Result<(), Error> {
         self.inner.generate_snapshot_data(new_snapshot_dir, last_included).await
-    }
-    fn save_hard_state(&self) -> Result<(), Error> {
-        self.inner.save_hard_state()
-    }
-    fn flush(&self) -> Result<(), Error> {
-        self.inner.flush()
-    }
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.inner.flush_async().await
     }
     async fn reset(&self) -> Result<(), Error> {
         self.inner.reset().await

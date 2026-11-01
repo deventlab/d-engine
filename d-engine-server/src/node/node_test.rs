@@ -1175,7 +1175,7 @@ mod sm_worker_lifecycle_tests {
     /// fails at its first step, before anything else was started.
     ///
     /// Purpose: the unconditional tail still runs and hands the state machine back closed even
-    /// though the worker never ran, because the developer may keep their own `Arc` to it.
+    /// though the worker never ran, because a handle the developer shares may keep it alive.
     #[test]
     fn test_run_failing_to_start_the_worker_still_closes_the_state_machine() {
         let closed = Arc::new(std::sync::atomic::AtomicUsize::new(0));

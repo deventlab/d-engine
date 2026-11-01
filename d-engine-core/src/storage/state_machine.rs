@@ -82,6 +82,22 @@ impl ApplyResult {
 /// - Read methods (`get()`) may be called concurrently
 /// - Write methods should use internal synchronization
 /// - No assumptions about caller's threading model
+///
+/// # Durability contract
+///
+/// The engine never asks a state machine to restore itself; it only calls the methods below. An
+/// implementation therefore has to restore its own state whenever it is opened:
+///
+/// - After reopening the same storage, [`last_applied`](Self::last_applied) returns the position of
+///   the last entry whose effects are durable. Persist it together with the data it describes (in
+///   one transaction or write batch where the storage allows), so a restart never replays an entry
+///   that was already applied.
+/// - After reopening, [`snapshot_metadata`](Self::snapshot_metadata) returns the value most
+///   recently passed to [`persist_last_snapshot_metadata`](Self::persist_last_snapshot_metadata).
+///   The engine publishes snapshot metadata only through that method, so it must update what
+///   `snapshot_metadata()` returns and write it durably.
+///
+/// `StateMachineTestSuite` checks these rules; run it against your implementation.
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait StateMachine: Send + Sync + 'static {
@@ -90,9 +106,10 @@ pub trait StateMachine: Send + Sync + 'static {
     /// (e.g. a DB handle or its lock file).
     ///
     /// Called once by the state machine worker as its last act, after everything queued for
-    /// it has been applied. The developer may keep their own `Arc` to the state machine, so
-    /// this must not rely on `Drop`. Must be synchronous and idempotent; afterwards every
-    /// operation returns `NotServing`.
+    /// it has been applied. The engine owns the state machine, but a state machine that shares
+    /// its storage handle with the developer (a cheap `Clone`) is not dropped when the engine
+    /// stops, so this must not rely on `Drop`. Must be synchronous and idempotent; afterwards
+    /// every operation returns `NotServing`.
     ///
     /// When it returns, reopening the same storage restores every applied entry and a
     /// `last_applied` that is not older than the one before the call, and every exclusive
@@ -160,30 +177,9 @@ pub trait StateMachine: Send + Sync + 'static {
         chunk: &[ApplyEntry],
     ) -> Result<Vec<ApplyResult>, Error>;
 
-    /// Updates the last applied index in memory.
-    /// Sync operation as it just updates atomic variables.
-    fn update_last_applied(
-        &self,
-        last_applied: LogId,
-    );
-
     /// Gets the last applied log index and term.
     /// Sync operation as it reads from atomic variables.
     fn last_applied(&self) -> LogId;
-
-    /// Persists the last applied index to durable storage.
-    /// Should be async as it involves disk I/O.
-    fn persist_last_applied(
-        &self,
-        last_applied: LogId,
-    ) -> Result<(), Error>;
-
-    /// Updates snapshot metadata in memory.
-    /// Sync operation as it updates in-memory structures.
-    fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error>;
 
     /// Retrieves the current snapshot metadata.
     /// Sync operation as it reads from in-memory structures.
@@ -242,18 +238,6 @@ pub trait StateMachine: Send + Sync + 'static {
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
     ) -> Result<(), Error>;
-
-    /// Saves the hard state of the state machine.
-    /// Sync operation as it typically just delegates to other persistence methods.
-    fn save_hard_state(&self) -> Result<(), Error>;
-
-    /// Flushes any pending writes to durable storage.
-    /// Sync operation that may block but provides a synchronous interface.
-    fn flush(&self) -> Result<(), Error>;
-
-    /// Flushes any pending writes to durable storage.
-    /// Async operation as it involves disk I/O.
-    async fn flush_async(&self) -> Result<(), Error>;
 
     /// Resets the state machine to its initial state.
     /// Async operation as it may involve cleaning up files and data.

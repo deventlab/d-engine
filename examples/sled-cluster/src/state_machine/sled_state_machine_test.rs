@@ -174,10 +174,11 @@ async fn test_snapshot_install_content_survives_restart() {
         .await
         .unwrap();
 
-    // The framework checksums and verifies snapshots; the state machine ignores this field.
+    // The engine verifies the checksum before it calls the state machine, which only stores it,
+    // so any 32-byte value will do here.
     let metadata = d_engine::server_storage::SnapshotMetadata {
         last_included: Some(last_included),
-        checksum: Bytes::new(),
+        checksum: Bytes::from(vec![0u8; 32]),
     };
 
     // Node B: fresh, empty, behind the purge boundary — installs the snapshot.

@@ -629,11 +629,8 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
     mock.expect_get().returning(|_| Ok(None));
     mock.expect_apply_chunk().returning(|_| Ok(vec![]));
 
-    mock.expect_update_last_applied().returning(|_| ());
     mock.expect_last_applied().return_const(LogId::default());
-    mock.expect_persist_last_applied().returning(|_| Ok(()));
 
-    mock.expect_update_last_snapshot_metadata().returning(|_| Ok(()));
     mock.expect_snapshot_metadata().returning(|| None);
     mock.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
@@ -643,9 +640,6 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
         })
     });
     mock.expect_generate_snapshot_data().returning(|_, _| Ok(()));
-
-    mock.expect_save_hard_state().returning(|| Ok(()));
-    mock.expect_flush().returning(|| Ok(()));
 
     mock
 }

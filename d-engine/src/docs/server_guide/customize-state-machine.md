@@ -32,7 +32,8 @@ impl StateMachine for CustomStateMachine {
     // drains cleanly, but shutdown continues without that guarantee if
     // `shutdown_apply_timeout_ms` expires. It must be synchronous and idempotent, release its
     // resources even if persisting fails, and return the first error.
-    // You may keep your own Arc to the state machine, so do not rely on Drop alone.
+    // If you share your storage handle with the application (a cloneable state machine), the
+    // state machine is not dropped when the engine stops, so do not rely on Drop alone.
     //
     // fn close(&self) -> Result<(), Error> {
     //     let flushed = self.backend.flush();
@@ -100,7 +101,8 @@ impl StateMachine for CustomStateMachine {
 - **Atomic Operations**: Ensure `apply_chunk()` either fully applies or fails the entire batch
 - **Idempotency**: Handle duplicate entries safely—Raft may resend committed entries
 - **Snapshot Isolation**: `apply_snapshot_from_file()` must atomically replace state
-- **Checksum Validation**: Mandatory for snapshot integrity—validate before application
+- **Snapshot Checksums**: The engine computes the checksum of the directory your `generate_snapshot_data()` writes, and verifies it before it calls `apply_snapshot_from_file()`. You neither compute nor check one
+- **Restore On Open**: The engine never asks you to restore state. When your state machine is opened, `last_applied()` must return the last entry whose effects are durable (persist it together with the data it describes), and `snapshot_metadata()` must return the value most recently passed to `persist_last_snapshot_metadata()`
 - **Concurrency Control**: Use appropriate locking for state mutations
 - **Resource Cleanup**: Implement `Drop` to ensure proper flush on shutdown
 
@@ -111,17 +113,11 @@ impl StateMachine for CustomStateMachine {
 | `close()`                          | Final step at shutdown: persist what must survive a restart and release exclusive OS resources (e.g. DB lock file), even if persisting fails; returns the first error. Idempotent. Default `Ok(())`. | Sync       | Medium      |
 | `get()`                            | Read value by key                                                                                                                                                                                    | Sync       | High        |
 | `apply_chunk()`                    | Apply committed entries                                                                                                                                                                              | Async      | Critical    |
-| `update_last_applied()`            | Update applied index in memory                                                                                                                                                                       | Sync       | High        |
 | `last_applied()`                   | Get last applied index                                                                                                                                                                               | Sync       | High        |
-| `persist_last_applied()`           | Persist applied index                                                                                                                                                                                | Sync       | High        |
-| `update_last_snapshot_metadata()`  | Update snapshot metadata in memory                                                                                                                                                                   | Sync       | Medium      |
 | `snapshot_metadata()`              | Get current snapshot metadata                                                                                                                                                                        | Sync       | Medium      |
 | `persist_last_snapshot_metadata()` | Persist snapshot metadata                                                                                                                                                                            | Sync       | Medium      |
 | `apply_snapshot_from_file()`       | Replace state with snapshot                                                                                                                                                                          | Async      | Critical    |
-| `generate_snapshot_data()`         | Create new snapshot                                                                                                                                                                                  | Async      | High        |
-| `save_hard_state()`                | Persist term/vote state                                                                                                                                                                              | Sync       | High        |
-| `flush()`                          | Sync writes to storage                                                                                                                                                                               | Sync       | High        |
-| `flush_async()`                    | Async flush                                                                                                                                                                                          | Async      | High        |
+| `generate_snapshot_data()`         | Export a snapshot into the given directory (the engine checksums it)                                                                                                                                                                                  | Async      | High        |
 | `reset()`                          | Reset to initial state                                                                                                                                                                               | Async      | Medium      |
 
 ## 4. Testing Your Implementation
@@ -158,8 +154,7 @@ async fn test_custom_state_machine() -> Result<(), Error> {
 
     // Test snapshot operations
     let temp_dir = TempDir::new()?;
-    let checksum = sm.generate_snapshot_data(temp_dir.path().to_path_buf(), LogId::new(1, 1)).await?;
-    assert!(!checksum.is_zero());
+    sm.generate_snapshot_data(temp_dir.path().to_path_buf(), LogId::new(1, 1)).await?;
 
     sm.close()?;
     Ok(())

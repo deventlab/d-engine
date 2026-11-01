@@ -104,10 +104,7 @@ fn state_machine_with_snapshot() -> MockStateMachine {
     sm.expect_close().returning(|| Ok(()));
     sm.expect_get().returning(|_| Ok(None));
     sm.expect_apply_chunk().returning(|_| Ok(vec![]));
-    sm.expect_update_last_applied().returning(|_| ());
     sm.expect_last_applied().return_const(LogId::default());
-    sm.expect_persist_last_applied().returning(|_| Ok(()));
-    sm.expect_update_last_snapshot_metadata().returning(|_| Ok(()));
     // Return a valid snapshot so Phase 6 fires the Snapshot task to the worker.
     sm.expect_snapshot_metadata().returning(|| Some(stub_snapshot_metadata()));
     sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
@@ -117,8 +114,6 @@ fn state_machine_with_snapshot() -> MockStateMachine {
         })
     });
     sm.expect_generate_snapshot_data().returning(|_, _| Ok(()));
-    sm.expect_save_hard_state().returning(|| Ok(()));
-    sm.expect_flush().returning(|| Ok(()));
     sm
 }
 

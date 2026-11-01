@@ -1208,8 +1208,6 @@ async fn test_lease_reuse_after_linearizable_read_refresh() {
     state_machine
         .expect_last_applied()
         .return_const(d_engine_proto::common::LogId { index: 1, term: 1 });
-    state_machine.expect_update_last_applied().returning(|_| ());
-    state_machine.expect_persist_last_applied().returning(|_| Ok(()));
 
     let ctx = MockBuilder::new(shutdown_rx)
         .with_db_path("/tmp/test_lease_reuse")

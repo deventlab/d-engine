@@ -56,6 +56,10 @@ All notable changes to this project will be documented in this file.
 
 - **File state machine lost empty values on WAL replay** (#464): `replay_wal` treated a zero value length as "no value", so an `Insert` with an empty value was dropped after a restart. It now restores the empty value.
 
+- **File state machine forgot its snapshot metadata on restart** (#400): `persist_last_snapshot_metadata` only updated memory, and `metadata.bin` stores only `last_applied`. The metadata is now written to `snapshot_metadata.bin` (temporary file, `fsync`, rename) and loaded when the state machine opens; a file that cannot be decoded fails the open instead of being ignored.
+
+- **Snapshot checksum ignored files in sub-directories and file boundaries** (#400): see the snapshot checksum entry under Changed.
+
 ### Changed
 
 - **⚠️ Wire protocol is not compatible with v0.2.4**: `ClientResponse.metadata` moved from field 4 to 5 (field 4 is now `scan_data`); `HandleClientScan` returns `ClientResponse` (the `ScanResponse` message is now `ScanResults`); the `ChunkStatus` values are renumbered with `CHUNK_STATUS_UNSPECIFIED = 0`; `WriteCommand.Insert.ttl_secs` (field 3) is reserved; new RPC `PreVote`. Do not run v0.2.4 and v0.3.0 nodes or clients together. See `MIGRATION_GUIDE.md`.
@@ -116,7 +120,9 @@ All notable changes to this project will be documented in this file.
 "MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
   is the only persistence knob now.
 
-- **⚠️ `StateMachine::generate_snapshot_data` returns `Result<()>`; the engine owns snapshot checksums** (#400): the engine computes the SHA-256 of the exported snapshot directory and verifies it before calling `apply_snapshot_from_file`, which now only ever receives a directory that matches the recorded checksum. A state machine neither returns nor checks a checksum. The checksum algorithm is unchanged. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+- **⚠️ `StateMachine` no longer declares `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush` and `flush_async`** (#400): the engine never called them. Keep any you still need as methods on your own type. Your state machine must restore `last_applied` and its snapshot metadata when it is opened; the `StateMachine` docs now state this as a durability contract, and `StateMachineTestSuite` checks it. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+
+- **⚠️ `StateMachine::generate_snapshot_data` returns `Result<()>`; the engine owns snapshot checksums** (#400): the engine computes the SHA-256 of the exported snapshot directory and verifies it before calling `apply_snapshot_from_file`, which now only ever receives a directory that matches the recorded checksum. A state machine neither returns nor checks a checksum. The checksum now covers every file at any depth together with its relative path and length; before, it covered only top-level files, so the data files RocksDB exports into sub-directories were not protected. Snapshot archives created before the upgrade fail verification, so remove old snapshot archives when upgrading. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 
 - **⚠️ The engine takes the state machine by value** (#400): `EmbeddedEngine::start_custom`/`start_node`, `StandaloneEngine::run_custom`/`start_node` take `SM` instead of `Arc<SM>`; the `Arc` is created inside the engine. Nothing outside the engine holds the state machine, so `stop()` returns only after it is dropped and its resources are released. Embedded reads now go through the ReadActor like standalone reads (`EmbeddedReadHandle` is removed). `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 

@@ -99,31 +99,6 @@ impl StateMachine for SledStateMachine {
         saved
     }
 
-    fn update_last_applied(
-        &self,
-        last_applied: LogId,
-    ) {
-        debug!(%self.node_id, ?last_applied, "update_last_applied");
-        self.last_applied_index.store(last_applied.index, Ordering::SeqCst);
-        self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
-    }
-
-    fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<()> {
-        debug!(%self.node_id, ?snapshot_metadata, "update_last_snapshot_metadata");
-        let last_included = snapshot_metadata.last_included.unwrap();
-        self.last_included_index.store(last_included.index, Ordering::SeqCst);
-        self.last_included_term.store(last_included.term, Ordering::SeqCst);
-        let checksum = snapshot_metadata
-            .checksum_array()
-            .map_err(|e| SnapshotError::OperationFailed(format!("{e:?}")))?;
-        *self.last_snapshot_checksum.lock() = Some(checksum);
-
-        Ok(())
-    }
-
     fn last_applied(&self) -> LogId {
         LogId {
             index: self.last_applied_index.load(Ordering::SeqCst),
@@ -261,47 +236,14 @@ impl StateMachine for SledStateMachine {
         Ok(results)
     }
 
-    fn save_hard_state(&self) -> Result<()> {
-        let last_applied = self.last_applied();
-        self.persist_last_applied(last_applied)?;
-
-        if let Some(last_snapshot_metadata) = self.snapshot_metadata() {
-            self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
-        }
-
-        self.flush()?;
-        Ok(())
-    }
-
-    fn persist_last_applied(
-        &self,
-        last_applied: LogId,
-    ) -> Result<()> {
-        debug!(%self.node_id, ?last_applied, "persist_last_applied");
-        let db = self.db()?;
-        let tree = db
-            .open_tree(STATE_MACHINE_META_NAMESPACE)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        tree.insert(
-            STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX,
-            safe_kv(last_applied.index),
-        )
-        .map_err(|e| StorageError::DbError(e.to_string()))?;
-        tree.insert(
-            STATE_MACHINE_META_KEY_LAST_APPLIED_TERM,
-            safe_kv(last_applied.term),
-        )
-        .map_err(|e| StorageError::DbError(e.to_string()))?;
-
-        tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
-    }
-
     fn persist_last_snapshot_metadata(
         &self,
         last_snapshot_metadata: &SnapshotMetadata,
     ) -> Result<()> {
         debug!(%self.node_id, ?last_snapshot_metadata, "persist_last_snapshot_metadata");
+        // The engine only ever calls this method, so it must also update the in-memory copy that
+        // `snapshot_metadata()` reads and that `close()` writes back.
+        self.update_last_snapshot_metadata(last_snapshot_metadata)?;
         let db = self.db()?;
         let tree = db
             .open_tree(STATE_SNAPSHOT_METADATA_TREE)
@@ -309,20 +251,6 @@ impl StateMachine for SledStateMachine {
         self.persist_last_snapshot_metadata_with_tree(tree, last_snapshot_metadata)?;
 
         Ok(())
-    }
-
-    fn flush(&self) -> Result<()> {
-        let db = self.db()?;
-        let bytes = db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
-        info!(
-            "Successfully flushed State Machine, bytes flushed: {}",
-            bytes
-        );
-        Ok(())
-    }
-
-    async fn flush_async(&self) -> Result<()> {
-        self.flush()
     }
 
     async fn generate_snapshot_data(
@@ -675,6 +603,77 @@ impl SledStateMachine {
         info!("persist_last_snapshot_metadata_with_tree successfully!");
 
         tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        Ok(())
+    }
+
+    pub(crate) fn update_last_applied(
+        &self,
+        last_applied: LogId,
+    ) {
+        debug!(%self.node_id, ?last_applied, "update_last_applied");
+        self.last_applied_index.store(last_applied.index, Ordering::SeqCst);
+        self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
+    }
+
+    pub(crate) fn persist_last_applied(
+        &self,
+        last_applied: LogId,
+    ) -> Result<()> {
+        debug!(%self.node_id, ?last_applied, "persist_last_applied");
+        let db = self.db()?;
+        let tree = db
+            .open_tree(STATE_MACHINE_META_NAMESPACE)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
+        tree.insert(
+            STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX,
+            safe_kv(last_applied.index),
+        )
+        .map_err(|e| StorageError::DbError(e.to_string()))?;
+        tree.insert(
+            STATE_MACHINE_META_KEY_LAST_APPLIED_TERM,
+            safe_kv(last_applied.term),
+        )
+        .map_err(|e| StorageError::DbError(e.to_string()))?;
+
+        tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        Ok(())
+    }
+
+    pub(crate) fn update_last_snapshot_metadata(
+        &self,
+        snapshot_metadata: &SnapshotMetadata,
+    ) -> Result<()> {
+        debug!(%self.node_id, ?snapshot_metadata, "update_last_snapshot_metadata");
+        let last_included = snapshot_metadata.last_included.unwrap();
+        self.last_included_index.store(last_included.index, Ordering::SeqCst);
+        self.last_included_term.store(last_included.term, Ordering::SeqCst);
+        let checksum = snapshot_metadata
+            .checksum_array()
+            .map_err(|e| SnapshotError::OperationFailed(format!("{e:?}")))?;
+        *self.last_snapshot_checksum.lock() = Some(checksum);
+
+        Ok(())
+    }
+
+    pub(crate) fn save_hard_state(&self) -> Result<()> {
+        let last_applied = self.last_applied();
+        self.persist_last_applied(last_applied)?;
+
+        if let Some(last_snapshot_metadata) = self.snapshot_metadata() {
+            self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
+        }
+
+        self.flush()?;
+        Ok(())
+    }
+
+    pub(crate) fn flush(&self) -> Result<()> {
+        let db = self.db()?;
+        let bytes = db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
+        info!(
+            "Successfully flushed State Machine, bytes flushed: {}",
+            bytes
+        );
         Ok(())
     }
 }

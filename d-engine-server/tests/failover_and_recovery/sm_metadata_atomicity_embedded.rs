@@ -127,7 +127,7 @@ async fn test_flush_then_crash_preserves_data_and_last_applied_together()
             )
             .await?;
     }
-    // Guarantees the SM has applied every write above before flush_async() runs.
+    // Guarantees the SM has applied every write above before flush() runs.
     let last = engine
         .client()
         .get_linearizable(format!("key-{:02}", N - 1).into_bytes())
@@ -137,7 +137,7 @@ async fn test_flush_then_crash_preserves_data_and_last_applied_together()
         Some(format!("val-{:02}", N - 1).as_bytes())
     );
 
-    sm_arc.flush_async().await?;
+    sm_arc.flush()?;
     let last_applied_after_flush = sm_arc.last_applied().index;
 
     // True crash: no graceful close, no further flush.

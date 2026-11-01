@@ -44,7 +44,7 @@ impl StateMachineTestSuite {
         Self::test_last_applied_detection(builder.build().await?).await?;
         Self::test_snapshot_operations(builder.build().await?).await?;
         Self::test_snapshot_apply_rejects_missing_boundary(builder.build().await?).await?;
-        Self::test_persistence(builder.build().await?).await?;
+        Self::test_snapshot_metadata_survives_reopen(&builder).await?;
 
         Self::test_drop_flushes_data(&builder).await?;
         Self::test_drop_persists_last_applied(&builder).await?;
@@ -402,36 +402,43 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
-    /// Test data persistence
-    pub async fn test_persistence(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
-        // Add test data
-        let entries = vec![
-            create_insert_entry(
-                1,
-                Bytes::from(b"key1".to_vec()),
-                Bytes::from(b"value1".to_vec()),
-            ),
-            create_insert_entry(
-                2,
-                Bytes::from(b"key2".to_vec()),
-                Bytes::from(b"value2".to_vec()),
-            ),
-        ];
-        state_machine.apply_chunk(&entries).await?;
+    /// Snapshot metadata published through `persist_last_snapshot_metadata` must survive a
+    /// restart.
+    ///
+    /// # Scenario
+    /// A node builds a snapshot and the engine publishes its metadata, once the archive is
+    /// durably built, by calling `persist_last_snapshot_metadata`. The node then restarts.
+    ///
+    /// # Expected
+    /// The reopened state machine reports exactly that metadata from `snapshot_metadata()`.
+    /// Otherwise the node forgets which snapshot it holds and can no longer tell followers
+    /// where its snapshot ends.
+    pub async fn test_snapshot_metadata_survives_reopen<B: StateMachineBuilder>(
+        builder: &B
+    ) -> Result<(), Error> {
+        let sm = builder.build().await?;
+        sm.apply_chunk(&[
+            create_insert_entry(1, Bytes::from_static(b"k1"), Bytes::from_static(b"v1")),
+            create_insert_entry(2, Bytes::from_static(b"k2"), Bytes::from_static(b"v2")),
+            create_insert_entry(3, Bytes::from_static(b"k3"), Bytes::from_static(b"v3")),
+        ])
+        .await?;
 
-        // Update last applied
-        let last_applied = LogId { index: 2, term: 1 };
-        state_machine.persist_last_applied(last_applied)?;
-
-        // Update snapshot metadata
-        let snapshot_metadata = SnapshotMetadata {
-            last_included: Some(last_applied),
-            checksum: Bytes::from(vec![0; 32]),
+        let metadata = SnapshotMetadata {
+            last_included: Some(LogId { index: 3, term: 1 }),
+            checksum: Bytes::from(vec![7; 32]),
         };
-        state_machine.persist_last_snapshot_metadata(&snapshot_metadata)?;
+        sm.persist_last_snapshot_metadata(&metadata)?;
+        sm.close()?;
+        // `sm` stays alive until the end of the test: Drop must not be what saves the state.
 
-        // Flush to ensure persistence
-        state_machine.flush()?;
+        let reopened = builder.build().await?;
+        assert_eq!(
+            reopened.snapshot_metadata(),
+            Some(metadata),
+            "snapshot metadata published with persist_last_snapshot_metadata must survive a \
+             restart"
+        );
 
         Ok(())
     }
@@ -1695,28 +1702,8 @@ mod default_scan_prefix_tests {
             Ok(vec![])
         }
 
-        fn update_last_applied(
-            &self,
-            _last_applied: LogId,
-        ) {
-        }
-
         fn last_applied(&self) -> LogId {
             LogId::default()
-        }
-
-        fn persist_last_applied(
-            &self,
-            _last_applied: LogId,
-        ) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn update_last_snapshot_metadata(
-            &self,
-            _snapshot_metadata: &SnapshotMetadata,
-        ) -> Result<(), Error> {
-            Ok(())
         }
 
         fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
@@ -1745,18 +1732,6 @@ mod default_scan_prefix_tests {
             _new_snapshot_dir: std::path::PathBuf,
             _last_included: LogId,
         ) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn save_hard_state(&self) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn flush(&self) -> Result<(), Error> {
-            Ok(())
-        }
-
-        async fn flush_async(&self) -> Result<(), Error> {
             Ok(())
         }
 

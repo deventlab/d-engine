@@ -496,6 +496,53 @@ impl RocksDBStateMachine {
         Ok(ScanResult { entries, revision })
     }
 
+    pub(crate) fn update_last_applied(
+        &self,
+        last_applied: LogId,
+    ) {
+        self.last_applied_index.store(last_applied.index, Ordering::SeqCst);
+        self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
+    }
+
+    pub(crate) fn update_last_snapshot_metadata(
+        &self,
+        snapshot_metadata: &SnapshotMetadata,
+    ) -> Result<(), Error> {
+        *self.last_snapshot_metadata.write() = Some(snapshot_metadata.clone());
+        Ok(())
+    }
+
+    pub(crate) fn save_hard_state(&self) -> Result<(), Error> {
+        // last_applied_index/term are now persisted atomically with each
+        // apply_chunk() batch (see apply_chunk()) — no longer written here.
+        self.persist_snapshot_metadata()
+    }
+
+    /// Flushes the WAL and both state machine column families to disk.
+    pub fn flush(&self) -> Result<(), Error> {
+        self.with_db(|db| {
+            db.flush_wal(true).map_err(|e| StorageError::DbError(e.to_string()))?;
+
+            // db.flush() with no CF argument only flushes RocksDB's implicit
+            // "default" column family, which this state machine never writes to —
+            // it is a silent no-op for STATE_MACHINE_CF and STATE_MACHINE_META_CF.
+            // Both must be flushed explicitly, matching the precedent already used
+            // in create_snapshot()'s pre-export flush.
+            let cf_sm = db
+                .cf_handle(STATE_MACHINE_CF)
+                .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
+            let cf_sm_meta = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
+                StorageError::DbError("State machine meta CF not found".to_string())
+            })?;
+            let flush_opts = rocksdb::FlushOptions::default();
+            db.flush_cfs_opt(&[&cf_sm, &cf_sm_meta], &flush_opts)
+                .map_err(|e| StorageError::DbError(e.to_string()))?;
+            Ok(())
+        })
+        // last_applied is already durable as of apply_chunk() — no separate
+        // persist_state_machine_metadata() call needed here anymore.
+    }
+
     /// Test-only: quiesce RocksDB's background compaction/flush WITHOUT flushing
     /// MemTable or saving hard state — simulates what a
     /// real `kill -9` leaves behind on disk (no "dying gasp" persistence a real
@@ -704,35 +751,11 @@ impl StateMachine for RocksDBStateMachine {
         Ok(results)
     }
 
-    fn update_last_applied(
-        &self,
-        last_applied: LogId,
-    ) {
-        self.last_applied_index.store(last_applied.index, Ordering::SeqCst);
-        self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
-    }
-
     fn last_applied(&self) -> LogId {
         LogId {
             index: self.last_applied_index.load(Ordering::SeqCst),
             term: self.last_applied_term.load(Ordering::SeqCst),
         }
-    }
-
-    fn persist_last_applied(
-        &self,
-        last_applied: LogId,
-    ) -> Result<(), Error> {
-        self.update_last_applied(last_applied);
-        self.persist_state_machine_metadata()
-    }
-
-    fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        *self.last_snapshot_metadata.write() = Some(snapshot_metadata.clone());
-        Ok(())
     }
 
     fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
@@ -868,40 +891,6 @@ impl StateMachine for RocksDBStateMachine {
         Ok(())
     }
 
-    fn save_hard_state(&self) -> Result<(), Error> {
-        // last_applied_index/term are now persisted atomically with each
-        // apply_chunk() batch (see apply_chunk()) — no longer written here.
-        self.persist_snapshot_metadata()
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        self.with_db(|db| {
-            db.flush_wal(true).map_err(|e| StorageError::DbError(e.to_string()))?;
-
-            // db.flush() with no CF argument only flushes RocksDB's implicit
-            // "default" column family, which this state machine never writes to —
-            // it is a silent no-op for STATE_MACHINE_CF and STATE_MACHINE_META_CF.
-            // Both must be flushed explicitly, matching the precedent already used
-            // in create_snapshot()'s pre-export flush.
-            let cf_sm = db
-                .cf_handle(STATE_MACHINE_CF)
-                .ok_or_else(|| StorageError::DbError("State machine CF not found".to_string()))?;
-            let cf_sm_meta = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
-                StorageError::DbError("State machine meta CF not found".to_string())
-            })?;
-            let flush_opts = rocksdb::FlushOptions::default();
-            db.flush_cfs_opt(&[&cf_sm, &cf_sm_meta], &flush_opts)
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-            Ok(())
-        })
-        // last_applied is already durable as of apply_chunk() — no separate
-        // persist_state_machine_metadata() call needed here anymore.
-    }
-
-    async fn flush_async(&self) -> Result<(), Error> {
-        self.flush()
-    }
-
     async fn reset(&self) -> Result<(), Error> {
         self.with_db(|db| {
             let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
@@ -978,7 +967,8 @@ impl StateMachine for RocksDBStateMachine {
 }
 impl Drop for RocksDBStateMachine {
     fn drop(&mut self) {
-        // Safety net for an owner that never called `close()`; a no-op if it already did.
+        // Safety net when the state machine is dropped without `close()` having been called;
+        // a no-op if it already was.
         if let Err(e) = StateMachine::close(self) {
             error!("RocksDB state machine: close on drop failed: {e:?}");
         }
