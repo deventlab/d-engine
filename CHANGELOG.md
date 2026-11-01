@@ -116,6 +116,8 @@ All notable changes to this project will be documented in this file.
 "MemFirst"` or `"DiskFirst"` are silently ignored, not an error — remove the field, `flush_policy`
   is the only persistence knob now.
 
+- **⚠️ `StateMachine::generate_snapshot_data` returns `Result<()>`; the engine owns snapshot checksums** (#400): the engine computes the SHA-256 of the exported snapshot directory and verifies it before calling `apply_snapshot_from_file`, which now only ever receives a directory that matches the recorded checksum. A state machine neither returns nor checks a checksum. The checksum algorithm is unchanged. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+
 - **⚠️ The engine takes the state machine by value** (#400): `EmbeddedEngine::start_custom`/`start_node`, `StandaloneEngine::run_custom`/`start_node` take `SM` instead of `Arc<SM>`; the `Arc` is created inside the engine. Nothing outside the engine holds the state machine, so `stop()` returns only after it is dropped and its resources are released. Embedded reads now go through the ReadActor like standalone reads (`EmbeddedReadHandle` is removed). `EmbeddedEngine` and `EmbeddedClient` no longer have type parameters. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 
 ### Removed

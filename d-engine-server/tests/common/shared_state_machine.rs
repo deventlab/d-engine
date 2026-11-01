@@ -96,7 +96,7 @@ impl<SM: StateMachine + Debug> StateMachine for SharedStateMachine<SM> {
         &self,
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
-    ) -> Result<Bytes, Error> {
+    ) -> Result<(), Error> {
         self.0.generate_snapshot_data(new_snapshot_dir, last_included).await
     }
     fn save_hard_state(&self) -> Result<(), Error> {

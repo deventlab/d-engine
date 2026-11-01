@@ -16,7 +16,6 @@ use d_engine_core::SnapshotApplyResult;
 use d_engine_core::SnapshotError;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
-use d_engine_core::file_io::compute_checksum_from_folder_path;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
@@ -789,16 +788,6 @@ impl StateMachine for RocksDBStateMachine {
             }
         }
 
-        // Verify the snapshot's end-to-end checksum before installing (#436).
-        let computed_checksum = compute_checksum_from_folder_path(&snapshot_dir).await?;
-        if metadata.checksum.as_ref() != computed_checksum.as_ref() {
-            error!(
-                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
-                computed_checksum, metadata.checksum
-            );
-            return Err(SnapshotError::ChecksumMismatch.into());
-        }
-
         info!("Applying snapshot from: {:?}", snapshot_dir);
 
         // Stop serving — prevents SM reads/writes during restore
@@ -826,7 +815,7 @@ impl StateMachine for RocksDBStateMachine {
         &self,
         new_snapshot_dir: std::path::PathBuf,
         _last_included: LogId,
-    ) -> Result<Bytes, Error> {
+    ) -> Result<(), Error> {
         // Export only SM CFs: compact SST-only export, no Raft log data.
         // export_column_family() creates only the final subdirectory (e.g. "sm"), so the parent
         // (new_snapshot_dir) must already exist before calling it.
@@ -875,10 +864,8 @@ impl StateMachine for RocksDBStateMachine {
         .await
         .map_err(Self::map_snapshot_join_error)??;
 
-        let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
-
         info!("Snapshot generated at {:?}", new_snapshot_dir);
-        Ok(Bytes::copy_from_slice(&checksum))
+        Ok(())
     }
 
     fn save_hard_state(&self) -> Result<(), Error> {

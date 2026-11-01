@@ -4,7 +4,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use bytes::Bytes;
 use d_engine_core::ElectionConfig;
 use d_engine_core::InboundEvent;
 use d_engine_core::InternalEvent;
@@ -643,8 +642,7 @@ pub(crate) fn mock_state_machine() -> MockStateMachine {
             last_included: LogId::default(),
         })
     });
-    mock.expect_generate_snapshot_data()
-        .returning(|_, _| Ok(Bytes::copy_from_slice(&[0u8; 32])));
+    mock.expect_generate_snapshot_data().returning(|_, _| Ok(()));
 
     mock.expect_save_hard_state().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));

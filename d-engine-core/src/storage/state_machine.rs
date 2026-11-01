@@ -220,11 +220,11 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Generates a snapshot of the state machine's current key-value entries
     /// up to the specified `last_included_index`.
     ///
-    /// Exports the current state (as of `last_included`) to `new_snapshot_dir` and
-    /// returns its checksum. Does NOT publish snapshot metadata — the caller publishes
-    /// it (via `persist_last_snapshot_metadata`) only after the final archive is
-    /// durably built, so a crash mid-snapshot never leaves metadata pointing at a
-    /// missing archive.
+    /// Exports the current state (as of `last_included`) to `new_snapshot_dir`. The framework
+    /// computes the checksum of that directory itself; the state machine does not. Does NOT
+    /// publish snapshot metadata — the caller publishes it (via
+    /// `persist_last_snapshot_metadata`) only after the final archive is durably built, so a
+    /// crash mid-snapshot never leaves metadata pointing at a missing archive.
     ///
     /// # Concurrency contract (#436)
     /// May run concurrently with `apply_chunk` (never with `apply_snapshot_from_file` — the two
@@ -237,14 +237,11 @@ pub trait StateMachine: Send + Sync + 'static {
     /// * `new_snapshot_dir` - Temporary path to store the snapshot data.
     /// * `last_included_index` - Last log index included in the snapshot.
     /// * `last_included_term` - Last log term included in the snapshot.
-    ///
-    /// # Returns
-    /// * if success, checksum will be returned
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
-    ) -> Result<Bytes, Error>;
+    ) -> Result<(), Error>;
 
     /// Saves the hard state of the state machine.
     /// Sync operation as it typically just delegates to other persistence methods.

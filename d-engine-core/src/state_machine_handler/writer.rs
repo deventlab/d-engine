@@ -2,8 +2,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use d_engine_proto::common::Entry;
 use d_engine_proto::server::storage::SnapshotMetadata;
+use tracing::error;
 use tracing::trace;
 
 use super::StateMachineWriterOps;
@@ -19,6 +21,7 @@ use crate::TypeConfig;
 use crate::alias::SMOF;
 use crate::convert::classify_error;
 use crate::decode_entries;
+use crate::file_io::compute_checksum_from_folder_path;
 use crate::scoped_timer::ScopedTimer;
 use crate::state_machine_handler::applied_state::AppliedState;
 
@@ -176,6 +179,17 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
         metadata: SnapshotMetadata,
         dir: PathBuf,
     ) -> Result<SnapshotApplyResult> {
+        // The framework verifies the snapshot's end-to-end checksum, so a state machine only
+        // ever receives a directory whose content matches what the leader exported.
+        let computed = compute_checksum_from_folder_path(&dir).await?;
+        if metadata.checksum.as_ref() != computed.as_ref() {
+            error!(
+                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
+                computed, metadata.checksum
+            );
+            return Err(SnapshotError::ChecksumMismatch.into());
+        }
+
         let result = self.state_machine.apply_snapshot_from_file(&metadata, dir).await?;
         if let SnapshotApplyResult::Applied { last_included } = &result {
             self.applied.advance(last_included.index);
@@ -198,16 +212,20 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
             .into());
         }
 
-        // generate_snapshot_data commits SnapshotMetadata as the state machine's
-        // current snapshot internally (each StateMachine adapter does this as part
-        // of the same call) — by the time this returns, the boundary is durable,
-        // not just captured in memory.
-        let checksum = match self
+        // generate_snapshot_data only exports the state; it does not publish snapshot
+        // metadata. The metadata is published later, once the archive is durably built.
+        if let Err(e) = self
             .state_machine
             .generate_snapshot_data(temp_path.clone(), last_included)
             .await
         {
-            Ok(bytes) => bytes,
+            let _ = tokio::fs::remove_dir_all(&temp_path).await;
+            return Err(e);
+        }
+
+        // The framework, not the state machine, checksums the exported directory.
+        let checksum = match compute_checksum_from_folder_path(&temp_path).await {
+            Ok(sum) => Bytes::copy_from_slice(&sum),
             Err(e) => {
                 let _ = tokio::fs::remove_dir_all(&temp_path).await;
                 return Err(e);

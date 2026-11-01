@@ -99,7 +99,6 @@ fn stub_snapshot_metadata() -> SnapshotMetadata {
 }
 
 fn state_machine_with_snapshot() -> MockStateMachine {
-    use bytes::Bytes;
     use d_engine_proto::common::LogId;
     let mut sm = MockStateMachine::new();
     sm.expect_close().returning(|| Ok(()));
@@ -117,8 +116,7 @@ fn state_machine_with_snapshot() -> MockStateMachine {
             last_included: LogId::default(),
         })
     });
-    sm.expect_generate_snapshot_data()
-        .returning(|_, _| Ok(Bytes::copy_from_slice(&[0u8; 32])));
+    sm.expect_generate_snapshot_data().returning(|_, _| Ok(()));
     sm.expect_save_hard_state().returning(|| Ok(()));
     sm.expect_flush().returning(|| Ok(()));
     sm

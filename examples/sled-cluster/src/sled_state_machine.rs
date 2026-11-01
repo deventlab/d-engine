@@ -1,6 +1,5 @@
 //! It works as KV storage for client business CRUDs.
 
-use crate::compute_checksum_from_folder_path;
 use crate::{safe_kv, safe_vk_ivec};
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
@@ -330,7 +329,7 @@ impl StateMachine for SledStateMachine {
         &self,
         new_snapshot_dir: PathBuf,
         _last_included: LogId,
-    ) -> Result<Bytes> {
+    ) -> Result<()> {
         // No internal locking needed: `StateMachineWorker` is the sole caller of
         // generate_snapshot_data/apply_snapshot_from_file/apply_chunk, and it processes
         // them one at a time from a single queue (#436) — concurrent snapshot
@@ -370,10 +369,7 @@ impl StateMachine for SledStateMachine {
         // Make sure flush into disk
         new_db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
 
-        // Calculate the checksum after generating snapshot data
-        let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
-
-        Ok(Bytes::copy_from_slice(&checksum))
+        Ok(())
     }
 
     async fn apply_snapshot_from_file(
@@ -415,32 +411,6 @@ impl StateMachine for SledStateMachine {
             std::cmp::Ordering::Greater => {
                 // Eligible to install, fall through.
             }
-        }
-
-        debug!(
-            ?decompressed_snapshot_path,
-            "Validating checksum before install"
-        );
-        // CRITICAL SECURITY STEP: prevents tampered or corrupted snapshots from being applied.
-        let computed_checksum =
-            compute_checksum_from_folder_path(&decompressed_snapshot_path).await?;
-
-        if metadata.checksum.as_ref() != computed_checksum.as_ref() {
-            error!(
-                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
-                computed_checksum, metadata.checksum
-            );
-
-            metrics::counter!(
-                "snapshot.checksum_failures",
-                &[
-                    ("node_id", self.node_id.to_string()),
-                    ("snapshot_index", new_last_included.index.to_string()),
-                ]
-            )
-            .increment(1);
-
-            return Err(SnapshotError::ChecksumMismatch.into());
         }
 
         // `decompressed_snapshot_path` is a temporary directory owned by the caller

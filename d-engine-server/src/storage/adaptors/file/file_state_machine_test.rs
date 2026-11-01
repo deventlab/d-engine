@@ -1012,8 +1012,11 @@ async fn test_file_sm_install_empty_snapshot_clears_existing_data() {
 
     let source = FileStateMachine::new(dir.path().join("source")).await.unwrap();
     let snapshot_dir = dir.path().join("snapshot");
-    let checksum = source
+    source
         .generate_snapshot_data(snapshot_dir.clone(), LogId { term: 1, index: 5 })
+        .await
+        .unwrap();
+    let checksum = d_engine_core::file_io::compute_checksum_from_folder_path(&snapshot_dir)
         .await
         .unwrap();
 

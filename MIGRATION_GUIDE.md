@@ -33,6 +33,7 @@ EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
 - **`EmbeddedEngine<SE, SM>` and `EmbeddedClient<SE, SM>` no longer have type parameters.** Write `EmbeddedEngine` and `EmbeddedClient`. `DefaultEmbeddedEngine` and `DefaultEmbeddedClient` still exist and are now plain aliases of them.
 - **If you kept a clone of your `Arc<StateMachine>` to read local data directly** (for example `DLmdb` reading its own LMDB), you can no longer clone the instance the engine uses. Share a handle to your storage instead: put the handles (LMDB `Env`, sled `Db`, `Arc<rocksdb::DB>`) behind an `Arc` inside your state machine type, derive `Clone` on it, give the engine one clone and keep the other.
 - **Embedded reads (`get_eventual`, lease reads) are answered by the ReadActor**, as they already were in standalone mode, instead of reading the state machine on the caller's thread. Expect one extra channel hop per read.
+- **Snapshot checksums belong to the engine.** `generate_snapshot_data` now returns `Result<()>`: write the snapshot into the directory you are given and return. The engine computes the checksum of that directory itself, and verifies it before it calls `apply_snapshot_from_file`, so you no longer compute or check a checksum. Delete that code (and any hashing dependency you added only for it).
 - When `stop()` returns, the engine has dropped the state machine. If your state machine releases its resources in `Drop` (a database handle, a lock file), they are free at that point and the same data directory can be reopened.
 
 ---

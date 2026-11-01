@@ -122,7 +122,7 @@ impl StateMachine for SlowApplyProbe {
         &self,
         new_snapshot_dir: std::path::PathBuf,
         last_included: LogId,
-    ) -> Result<Bytes, Error> {
+    ) -> Result<(), Error> {
         self.inner.generate_snapshot_data(new_snapshot_dir, last_included).await
     }
     fn save_hard_state(&self) -> Result<(), Error> {

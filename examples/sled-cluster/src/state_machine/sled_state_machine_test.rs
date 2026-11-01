@@ -169,14 +169,15 @@ async fn test_snapshot_install_content_survives_restart() {
 
     let last_included = LogId { index: 3, term: 1 };
     let export_dir = TempDir::new().unwrap();
-    let checksum = source_sm
+    source_sm
         .generate_snapshot_data(export_dir.path().to_path_buf(), last_included)
         .await
         .unwrap();
 
+    // The framework checksums and verifies snapshots; the state machine ignores this field.
     let metadata = d_engine::server_storage::SnapshotMetadata {
         last_included: Some(last_included),
-        checksum: Bytes::from(checksum.to_vec()),
+        checksum: Bytes::new(),
     };
 
     // Node B: fresh, empty, behind the purge boundary — installs the snapshot.

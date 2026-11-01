@@ -909,7 +909,7 @@ mod create_snapshot_tests {
 
                 path.ends_with("temp-5-1") && last_included.index == 5 && last_included.term == 1
             })
-            .returning(|_, _| Ok(Bytes::from(vec![0; 32])));
+            .returning(|_, _| Ok(()));
         sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
@@ -979,7 +979,7 @@ mod create_snapshot_tests {
             .returning(|path, _| {
                 fs::create_dir_all(path.clone()).unwrap();
                 fs::create_dir(path.join("state_machine")).unwrap();
-                Ok(Bytes::from(vec![0; 32]))
+                Ok(())
             });
         // The publish must come after generate_snapshot_data (capture), i.e. during
         // build_local_snapshot once the archive exists — never during capture.
@@ -1037,7 +1037,7 @@ mod create_snapshot_tests {
                 fs::create_dir_all(path.clone()).unwrap();
                 let db_path = path.join("state_machine");
                 fs::create_dir(&db_path).unwrap();
-                Ok(Bytes::copy_from_slice(&[0; 32]))
+                Ok(())
             } else {
                 Err(SnapshotError::OperationFailed("Concurrency failure".into()).into())
             }
@@ -1120,7 +1120,7 @@ mod create_snapshot_tests {
             debug!(?path, "expect_generate_snapshot_data");
             std::fs::create_dir_all(path).expect("Failed to create directory");
 
-            Ok(Bytes::copy_from_slice(&[0; 32]))
+            Ok(())
         });
         sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
         let snapshot_dir = temp_path.to_path_buf();
@@ -1202,7 +1202,7 @@ mod create_snapshot_tests {
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
         sm.expect_generate_snapshot_data().returning(|path, _| {
             fs::create_dir_all(path).unwrap();
-            Ok(Bytes::from(vec![0; 32]))
+            Ok(())
         });
         sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
@@ -1303,7 +1303,7 @@ mod create_snapshot_tests {
             })
             .returning(|path, _| {
                 fs::create_dir_all(path).unwrap();
-                Ok(Bytes::from(vec![0; 32]))
+                Ok(())
             });
         sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
@@ -1380,7 +1380,7 @@ mod create_snapshot_tests {
                 // New code: last_included = last_applied = { index: 100, term: 2 } — truthful
                 last_included.index == 100 && last_included.term == 2
             })
-            .returning(|_, _| Ok(Bytes::from(vec![0; 32])));
+            .returning(|_, _| Ok(()));
         sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
@@ -1440,7 +1440,7 @@ mod create_snapshot_tests {
             .withf(|_, last_included| last_included.index == 0 && last_included.term == 0)
             .returning(|path, _| {
                 fs::create_dir_all(path).unwrap();
-                Ok(Bytes::from(vec![0; 32]))
+                Ok(())
             });
         sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
@@ -1518,7 +1518,7 @@ mod create_snapshot_tests {
                 return Err(SnapshotError::OperationFailed("mkdir: File exists".into()).into());
             }
             fs::create_dir_all(&path).unwrap();
-            Ok(Bytes::from(vec![0; 32]))
+            Ok(())
         });
         sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
@@ -1970,7 +1970,7 @@ async fn test_snapshot_compression() {
         std::fs::write(&file1, "This is a test file").unwrap();
         std::fs::write(&file2, vec![0u8; 1024]).unwrap();
 
-        Ok(Bytes::from(vec![0; 32]))
+        Ok(())
     });
     sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
@@ -2046,22 +2046,9 @@ async fn test_build_local_snapshot_removes_partial_archive_on_compression_failur
     let mut sm = MockStateMachine::new();
 
     sm.expect_last_applied().returning(|| LogId { index: 10, term: 2 });
-    sm.expect_generate_snapshot_data().returning(|path, _| {
-        fs::create_dir_all(&path).unwrap();
-        fs::write(path.join("readable.txt"), "fine").unwrap();
-
-        // Unreadable file: tar_builder.append_dir_all must fail trying to
-        // read its content, after compress_directory has already created
-        // final_path via File::create.
-        let unreadable = path.join("unreadable.bin");
-        fs::write(&unreadable, vec![0u8; 16]).unwrap();
-        fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
-
-        Ok(Bytes::from(vec![0; 32]))
-    });
 
     let config = snapshot_config(snapshot_dir.clone());
-    let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
+    let (handler, _writer) = new_reader_writer_pair::<MockTypeConfig>(
         1,
         0,
         Arc::new(sm),
@@ -2072,10 +2059,26 @@ async fn test_build_local_snapshot_removes_partial_archive_on_compression_failur
         Arc::new(AtomicUsize::new(0)),
     );
 
-    handler.try_begin_local_snapshot_capture().unwrap();
-    let captured = writer.capture_local_snapshot().await.unwrap();
-    let captured_temp_dir = captured.temp_dir.path().to_path_buf();
+    // The staging directory a capture would have produced. It is built by hand because a real
+    // capture now reads every exported file to checksum it, so an unreadable file would fail the
+    // capture before compression, and this test is about compression failing.
+    let captured_temp_dir = snapshot_dir.join("staging");
+    fs::create_dir_all(&captured_temp_dir).unwrap();
+    fs::write(captured_temp_dir.join("readable.txt"), "fine").unwrap();
+    // Unreadable file: tar_builder.append_dir_all must fail trying to read its content, after
+    // compress_directory has already created final_path via File::create.
+    let unreadable = captured_temp_dir.join("unreadable.bin");
+    fs::write(&unreadable, vec![0u8; 16]).unwrap();
+    fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let captured = crate::CapturedLocalSnapshot {
+        metadata: SnapshotMetadata {
+            last_included: Some(LogId { index: 10, term: 2 }),
+            checksum: Bytes::new(),
+        },
+        temp_dir: crate::OwnedSnapshotDir::from_existing(captured_temp_dir.clone()).unwrap(),
+    };
 
+    handler.try_begin_local_snapshot_capture().unwrap();
     let result = handler.build_local_snapshot(captured).await;
     handler.end_local_snapshot_capture();
 
@@ -2921,4 +2924,123 @@ fn test_read_from_state_machine_skips_missing_keys_and_reads_one_view() {
         bytes::Bytes::from_static(b"a"),
         bytes::Bytes::from_static(b"c")
     ]);
+}
+
+fn writer_with_mock_state_machine(
+    sm: MockStateMachine,
+    root: &Path,
+) -> (
+    DefaultStateMachineHandler<MockTypeConfig>,
+    DefaultStateMachineWriter<MockTypeConfig>,
+) {
+    new_reader_writer_pair::<MockTypeConfig>(
+        1,
+        0,
+        Arc::new(sm),
+        root.to_path_buf(),
+        snapshot_config(root.to_path_buf()),
+        MockSnapshotPolicy::new(),
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    )
+}
+
+/// A leader exports a snapshot for a lagging follower and records the checksum the follower will
+/// verify against. The state machine only writes files; it never returns a checksum.
+///
+/// Purpose: the framework must record the SHA-256 of the exported directory itself. If it did not,
+/// followers would verify against a value nobody produced.
+#[tokio::test]
+#[traced_test]
+async fn test_capture_local_snapshot_records_checksum_of_exported_directory() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut sm = MockStateMachine::new();
+    sm.expect_last_applied().returning(|| LogId { index: 10, term: 2 });
+    sm.expect_generate_snapshot_data().returning(|path, _| {
+        fs::create_dir_all(path.clone()).unwrap();
+        fs::write(path.join("a.bin"), b"alpha").unwrap();
+        fs::write(path.join("b.bin"), b"beta").unwrap();
+        Ok(())
+    });
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let captured = writer.capture_local_snapshot().await.unwrap();
+
+    let expected = crate::file_io::compute_checksum_from_folder_path(captured.temp_dir.path())
+        .await
+        .unwrap();
+    assert_eq!(
+        captured.metadata.checksum.as_ref(),
+        expected.as_ref(),
+        "recorded checksum must be the checksum of the exported directory"
+    );
+    assert!(
+        captured.metadata.checksum.iter().any(|&b| b != 0),
+        "recorded checksum must not be an all-zero placeholder"
+    );
+}
+
+/// A follower receives a snapshot whose files do not match the checksum the leader recorded
+/// (corrupted or tampered in transit, after the per-chunk crc32 checks passed).
+///
+/// Purpose: the framework rejects the install and the state machine is never called, so the
+/// follower keeps its current state instead of replacing it with bad data.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_checksum_mismatch_rejects_without_calling_state_machine() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let received = temp_dir.path().join("received");
+    fs::create_dir_all(&received).unwrap();
+    fs::write(received.join("data.bin"), b"content").unwrap();
+
+    let mut sm = MockStateMachine::new();
+    sm.expect_apply_snapshot_from_file().times(0);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: Bytes::from(vec![0; 32]),
+    };
+    let err = writer
+        .install_prepared_snapshot(metadata, received)
+        .await
+        .expect_err("a snapshot with a mismatched checksum must be rejected");
+
+    assert!(
+        format!("{err:?}").contains("ChecksumMismatch"),
+        "expected ChecksumMismatch, got: {err:?}"
+    );
+}
+
+/// The same follower receives an intact snapshot.
+///
+/// Purpose: when the checksum matches, the framework hands the directory to the state machine
+/// exactly once and returns its result, so the verification does not block valid installs.
+#[tokio::test]
+#[traced_test]
+async fn test_install_prepared_snapshot_matching_checksum_installs_once() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let received = temp_dir.path().join("received");
+    fs::create_dir_all(&received).unwrap();
+    fs::write(received.join("data.bin"), b"content").unwrap();
+    let checksum = crate::file_io::compute_checksum_from_folder_path(&received).await.unwrap();
+
+    let mut sm = MockStateMachine::new();
+    sm.expect_apply_snapshot_from_file().times(1).returning(|metadata, _| {
+        Ok(crate::SnapshotApplyResult::Applied {
+            last_included: metadata.last_included.unwrap(),
+        })
+    });
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let metadata = SnapshotMetadata {
+        last_included: Some(LogId { index: 5, term: 1 }),
+        checksum: Bytes::copy_from_slice(&checksum),
+    };
+    let result = writer.install_prepared_snapshot(metadata, received).await.unwrap();
+
+    assert!(
+        matches!(result, crate::SnapshotApplyResult::Applied { .. }),
+        "expected Applied, got: {result:?}"
+    );
 }

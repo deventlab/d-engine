@@ -24,7 +24,6 @@ bincode = { version = "2.0", features = ["serde"] }
 arc-swap = "1.7"
 parking_lot = "0.12"
 anyhow = "1.0"
-sha2 = "0.10"
 uuid = { version = "1.4", features = ["v4"] }
 
 [dev-dependencies]

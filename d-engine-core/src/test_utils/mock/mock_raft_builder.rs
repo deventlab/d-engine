@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use bytes::Bytes;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::cluster::ClusterMembership;
 use tokio::sync::mpsc;
@@ -401,8 +400,7 @@ pub fn mock_state_machine() -> MockStateMachine {
             last_included: LogId::default(),
         })
     });
-    mock.expect_generate_snapshot_data()
-        .returning(|_, _| Ok(Bytes::copy_from_slice(&[0u8; 32])));
+    mock.expect_generate_snapshot_data().returning(|_, _| Ok(()));
 
     mock.expect_save_hard_state().returning(|| Ok(()));
     mock.expect_flush().returning(|| Ok(()));

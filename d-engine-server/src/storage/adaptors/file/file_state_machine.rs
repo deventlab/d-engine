@@ -72,7 +72,6 @@ use d_engine_core::SnapshotApplyResult;
 use d_engine_core::SnapshotError;
 use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
-use d_engine_core::file_io::compute_checksum_from_folder_path;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
@@ -1150,16 +1149,6 @@ impl StateMachine for FileStateMachine {
             std::cmp::Ordering::Greater => {}
         }
 
-        // Verify the snapshot's end-to-end checksum before installing (#436).
-        let computed_checksum = compute_checksum_from_folder_path(&snapshot_dir).await?;
-        if metadata.checksum.as_ref() != computed_checksum.as_ref() {
-            error!(
-                "Snapshot checksum mismatch! Computed: {:?}, Expected: {:?}",
-                computed_checksum, metadata.checksum
-            );
-            return Err(SnapshotError::ChecksumMismatch.into());
-        }
-
         info!("Applying snapshot from file: {:?}", snapshot_dir);
 
         // Read from the snapshot.bin file inside the directory
@@ -1277,7 +1266,7 @@ impl StateMachine for FileStateMachine {
         &self,
         new_snapshot_dir: std::path::PathBuf,
         _last_included: LogId,
-    ) -> Result<Bytes, Error> {
+    ) -> Result<(), Error> {
         // Create snapshot directory
         fs::create_dir_all(&new_snapshot_dir).await?;
 
@@ -1309,8 +1298,7 @@ impl StateMachine for FileStateMachine {
 
         info!("Snapshot generated at {:?}", snapshot_path);
 
-        let checksum = compute_checksum_from_folder_path(&new_snapshot_dir).await?;
-        Ok(Bytes::copy_from_slice(&checksum))
+        Ok(())
     }
 
     fn save_hard_state(&self) -> Result<(), Error> {
