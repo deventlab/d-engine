@@ -24,6 +24,8 @@ struct RocksDBStateMachineBuilder {
     storage: Mutex<Option<RocksDBStorageEngine>>,
     // Partner storage of the crash image; kept alive while the image is in use.
     image_storage: Mutex<Option<RocksDBStorageEngine>>,
+    // How many times `build()` ran: every build gets its own directory.
+    builds: std::sync::atomic::AtomicUsize,
 }
 
 impl RocksDBStateMachineBuilder {
@@ -32,30 +34,43 @@ impl RocksDBStateMachineBuilder {
             temp_dir: TempDir::new().expect("Failed to create temp dir"),
             storage: Mutex::new(None),
             image_storage: Mutex::new(None),
+            builds: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// The directory the last `build()` used.
+    fn current_dir(&self) -> std::path::PathBuf {
+        let n = self.builds.load(std::sync::atomic::Ordering::SeqCst);
+        self.temp_dir.path().join(format!("rocksdb_sm_{n}"))
+    }
+
+    fn open_current(&self) -> Result<Arc<dyn StateMachine>, Error> {
+        let (storage, sm) = RocksDBUnifiedEngine::open(self.current_dir())?;
+        *self.storage.lock().unwrap() = Some(storage);
+        Ok(Arc::new(sm))
     }
 }
 
 #[async_trait]
 impl StateMachineBuilder for RocksDBStateMachineBuilder {
     async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
-        // Drop old storage so Arc<DB> refcount falls to 0 and RocksDB releases the lock.
-        {
-            *self.storage.lock().unwrap() = None;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        *self.storage.lock().unwrap() = None;
+        self.builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.open_current()
+    }
 
-        let path = self.temp_dir.path().join("rocksdb_sm");
-        let (storage, sm) = RocksDBUnifiedEngine::open(&path)?;
-        *self.storage.lock().unwrap() = Some(storage);
-        Ok(Arc::new(sm))
+    async fn reopen(&self) -> Result<Arc<dyn StateMachine>, Error> {
+        // Drop old storage so Arc<DB> refcount falls to 0 and RocksDB releases the lock.
+        *self.storage.lock().unwrap() = None;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        self.open_current()
     }
 
     async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
         *self.image_storage.lock().unwrap() = None;
         let image = self.temp_dir.path().join("rocksdb_sm_crash_image");
         let _ = std::fs::remove_dir_all(&image);
-        copy_storage_dir(&self.temp_dir.path().join("rocksdb_sm"), &image)?;
+        copy_storage_dir(&self.current_dir(), &image)?;
         let (storage, sm) = RocksDBUnifiedEngine::open(&image)?;
         *self.image_storage.lock().unwrap() = Some(storage);
         Ok(Some(Arc::new(sm)))
@@ -840,8 +855,11 @@ async fn test_apply_snapshot_from_file_reports_applied_for_newer_snapshot() {
         .expect("generate snapshot");
     assert_eq!(last_included, LogId { term: 1, index: 5 });
 
-    // Fall behind, then receive the (now newer-than-current) snapshot.
-    state_machine.reset().await.expect("reset");
+    // Fall behind (a node that starts empty), then receive the (now newer-than-current) snapshot.
+    drop(state_machine);
+    drop(_storage);
+    let (_storage, state_machine) =
+        RocksDBUnifiedEngine::open(temp_dir.path().join("test_behind")).expect("open behind");
     assert_eq!(state_machine.last_applied(), LogId::default());
 
     let checksum = compute_checksum_from_folder_path(&snapshot_dir)

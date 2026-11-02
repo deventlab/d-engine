@@ -120,7 +120,6 @@ impl StateMachine for CustomStateMachine {
 | `last_applied()`             | Get last applied index                                                                                                                                                                                                                                   | Sync       | High        |
 | `apply_snapshot_from_file()` | Replace state with snapshot                                                                                                                                                                                                                              | Async      | Critical    |
 | `generate_snapshot_data()`   | Export a snapshot into the given directory and return the position of the last entry it contains (the engine checksums it)                                                                                                                               | Async      | High        |
-| `reset()`                    | Reset to initial state                                                                                                                                                                                                                                   | Async      | Medium      |
 
 ## 4. Testing Your Implementation
 
@@ -180,8 +179,13 @@ async fn test_performance() -> Result<(), Error> {
     #[async_trait]
     impl StateMachineBuilder for MyStateMachineBuilder {
         async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
-            // Create your state machine
+            // A state machine on new, empty storage (a new directory on every call)
             Ok(Arc::new(MyStateMachine::new().await?))
+        }
+
+        async fn reopen(&self) -> Result<Arc<dyn StateMachine>, Error> {
+            // The storage the last build() used, with whatever it holds now (a restart)
+            Ok(Arc::new(MyStateMachine::open_existing().await?))
         }
 
         async fn cleanup(&self) -> Result<(), Error> {

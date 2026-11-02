@@ -91,29 +91,40 @@ async fn test_file_sm_close_twice_is_safe() {
 /// Builder for FileStateMachine test instances
 struct FileStateMachineBuilder {
     temp_dir: TempDir,
+    // How many times `build()` ran: every build gets its own directory.
+    builds: std::sync::atomic::AtomicUsize,
 }
 
 impl FileStateMachineBuilder {
     fn new() -> Self {
         Self {
             temp_dir: TempDir::new().expect("Failed to create temp dir"),
+            builds: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// The directory the last `build()` used.
+    fn current_dir(&self) -> std::path::PathBuf {
+        let n = self.builds.load(std::sync::atomic::Ordering::SeqCst);
+        self.temp_dir.path().join(format!("file_sm_{n}"))
     }
 }
 
 #[async_trait]
 impl StateMachineBuilder for FileStateMachineBuilder {
     async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
-        // Use fixed path to support restart recovery testing
-        let path = self.temp_dir.path().to_path_buf().join("file_sm");
-        let sm = FileStateMachine::new(path).await?;
-        Ok(Arc::new(sm))
+        self.builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Arc::new(FileStateMachine::new(self.current_dir()).await?))
+    }
+
+    async fn reopen(&self) -> Result<Arc<dyn StateMachine>, Error> {
+        Ok(Arc::new(FileStateMachine::new(self.current_dir()).await?))
     }
 
     async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
         let image = self.temp_dir.path().join("file_sm_crash_image");
         let _ = std::fs::remove_dir_all(&image);
-        copy_storage_dir(&self.temp_dir.path().join("file_sm"), &image)?;
+        copy_storage_dir(&self.current_dir(), &image)?;
         Ok(Some(Arc::new(FileStateMachine::new(image).await?)))
     }
 
@@ -695,7 +706,9 @@ async fn test_file_apply_snapshot_from_file_reports_applied_for_newer_snapshot()
         .expect("generate snapshot");
     assert_eq!(last_included, LogId { term: 1, index: 5 });
 
-    sm.reset().await.expect("reset");
+    // The node that receives the snapshot starts empty.
+    drop(sm);
+    let sm = FileStateMachine::new(dir.path().join("sm_behind")).await.expect("create sm");
     assert_eq!(sm.last_applied(), LogId::default());
 
     let checksum = compute_checksum_from_folder_path(&snapshot_dir)

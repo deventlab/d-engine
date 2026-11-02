@@ -765,68 +765,6 @@ impl FileStateMachine {
         Ok(())
     }
 
-    /// Resets the state machine to its initial empty state
-    ///
-    /// This method:
-    /// 1. Clears all in-memory data
-    /// 2. Resets Raft state to initial values
-    /// 3. Clears all persisted files
-    /// 4. Maintains operational state (running status, node ID)
-    pub async fn reset(&self) -> Result<(), Error> {
-        info!("Resetting state machine");
-
-        // Clear in-memory data
-        {
-            let mut data = self.data.write();
-            data.clear();
-        }
-
-        // Reset Raft state
-        self.last_applied_index.store(0, Ordering::SeqCst);
-        self.last_applied_term.store(0, Ordering::SeqCst);
-
-        // Clear all persisted files
-        self.clear_data_file().await?;
-        self.clear_metadata_file().await?;
-        self.clear_wal_async().await?;
-
-        info!("State machine reset completed");
-        Ok(())
-    }
-
-    /// Clears the data file
-    async fn clear_data_file(&self) -> Result<(), Error> {
-        let data_path = self.data_dir.join("state.data");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(data_path)
-            .await?;
-
-        file.set_len(0).await?;
-        file.flush().await?;
-        Ok(())
-    }
-
-    /// Clears the metadata file
-    async fn clear_metadata_file(&self) -> Result<(), Error> {
-        let metadata_path = self.data_dir.join("metadata.bin");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(metadata_path)
-            .await?;
-
-        // Write default values (0 for both index and term)
-        file.write_all(&0u64.to_be_bytes()).await?;
-        file.write_all(&0u64.to_be_bytes()).await?;
-        file.flush().await?;
-
-        Ok(())
-    }
-
     /// Reads are served only while running. After `close()` the state machine may still be
     /// reachable through a handle the developer shares, and it must not answer from state that
     /// is no longer maintained.
@@ -1280,10 +1218,6 @@ impl StateMachine for FileStateMachine {
         info!("Snapshot generated at {:?}", snapshot_path);
 
         Ok(position)
-    }
-
-    async fn reset(&self) -> Result<(), Error> {
-        self.reset().await
     }
 
     fn scan_prefix(

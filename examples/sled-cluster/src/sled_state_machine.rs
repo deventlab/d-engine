@@ -365,19 +365,6 @@ impl StateMachine for SledStateMachine {
         Ok(())
     }
 
-    async fn reset(&self) -> Result<()> {
-        let db = self.db()?;
-        for tree_name in &[STATE_MACHINE_TREE, STATE_MACHINE_META_NAMESPACE] {
-            db.open_tree(tree_name)
-                .map_err(|e| StorageError::DbError(e.to_string()))?
-                .clear()
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-        }
-        self.last_applied_index.store(0, Ordering::SeqCst);
-        self.last_applied_term.store(0, Ordering::SeqCst);
-        Ok(())
-    }
-
     fn scan_prefix(
         &self,
         prefix: &[u8],

@@ -25,13 +25,20 @@ pub struct StateMachineTestSuite;
 /// Builder trait for creating StateMachine instances for testing
 #[async_trait]
 pub trait StateMachineBuilder: Send + Sync {
-    /// Create a new StateMachine instance for testing
+    /// Creates a state machine on new, empty storage. Every call starts from nothing: whatever an
+    /// earlier call wrote is not visible, so a test never has to wipe a state machine first.
     async fn build(&self) -> Result<Arc<dyn StateMachine>, Error>;
 
-    /// Opens a state machine on a copy of the storage exactly as it is on disk right now, without
-    /// closing or dropping the live one: what a restart after a crash (the process killed, nothing
-    /// flushed, no `close()`, no `Drop`) would find. Return `None` if the builder cannot do this;
-    /// the crash test is then skipped. [`copy_storage_dir`] copies a directory.
+    /// Opens a state machine on the storage the last `build()` or `reopen()` used, with whatever
+    /// that storage holds now: a restart. The instance returned by that call has been closed or
+    /// dropped first.
+    async fn reopen(&self) -> Result<Arc<dyn StateMachine>, Error>;
+
+    /// Opens a state machine on a copy of the storage the last `build()` or `reopen()` used,
+    /// exactly as it is on disk right now, without closing or dropping the live one: what a restart
+    /// after a crash (the process killed, nothing flushed, no `close()`, no `Drop`) would find.
+    /// Return `None` if the builder cannot do this; the crash test is then skipped.
+    /// [`copy_storage_dir`] copies a directory.
     async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
         Ok(None)
     }
@@ -68,7 +75,7 @@ impl StateMachineTestSuite {
         Self::test_cas_operations(builder.build().await?).await?;
         Self::test_batch_operations(builder.build().await?).await?;
         Self::test_last_applied_detection(builder.build().await?).await?;
-        Self::test_snapshot_operations(builder.build().await?).await?;
+        Self::test_snapshot_operations(&builder).await?;
         Self::test_reads_during_snapshot_install_see_old_new_or_not_serving(&builder).await?;
         Self::test_snapshot_taken_during_writes_never_skips_entries_after_restart(&builder).await?;
         Self::test_restart_after_crash_finds_position_and_data_of_the_same_entry(&builder).await?;
@@ -80,7 +87,6 @@ impl StateMachineTestSuite {
         Self::test_batch_survives_reopen(&builder).await?;
         Self::test_ungraceful_shutdown_recovery(&builder).await?;
         Self::test_close_persists_without_drop(&builder).await?;
-        Self::test_reset_operation(builder.build().await?).await?;
 
         Self::test_get_multi_returns_values_in_key_order(builder.build().await?).await?;
         Self::test_get_multi_absent_keys_return_none(builder.build().await?).await?;
@@ -290,11 +296,12 @@ impl StateMachineTestSuite {
         };
 
         // 1. A snapshot of the state in which every key holds the new value.
-        let sm = builder.build().await?;
-        sm.apply_chunk(&entries(1..=KEYS, b"new")).await?;
+        let source = builder.build().await?;
+        source.apply_chunk(&entries(1..=KEYS, b"new")).await?;
         let temp_dir = TempDir::new()?;
         let snapshot_dir = temp_dir.path().join("snapshot");
-        let last_included = sm.generate_snapshot_data(snapshot_dir.clone()).await?;
+        let last_included = source.generate_snapshot_data(snapshot_dir.clone()).await?;
+        drop(source);
         assert_eq!(
             last_included,
             LogId {
@@ -309,7 +316,7 @@ impl StateMachineTestSuite {
         };
 
         // 2. The node is behind: it only has the old values for the first keys.
-        sm.reset().await?;
+        let sm = builder.build().await?;
         sm.apply_chunk(&entries(1..=READ_KEYS, b"old")).await?;
 
         // 3. Readers keep reading while the snapshot is installed.
@@ -396,7 +403,6 @@ impl StateMachineTestSuite {
         for attempt in 0..3 {
             // 1. Orders keep arriving: entry n sets `orders` to n, one entry at a time.
             let sm = builder.build().await?;
-            sm.reset().await?;
             let stop = Arc::new(AtomicBool::new(false));
             let writer = {
                 let (sm, stop) = (sm.clone(), stop.clone());
@@ -424,15 +430,16 @@ impl StateMachineTestSuite {
             writer.await.expect("the writer must not panic");
 
             // 3. A lagging node (an empty one) installs it and restarts.
-            sm.reset().await?;
+            drop(sm);
+            let lagging = builder.build().await?;
             let metadata = SnapshotMetadata {
                 last_included: Some(LogId { index: 1, term: 1 }),
                 checksum: Bytes::from(vec![0; 32]),
             };
-            sm.apply_snapshot_from_file(&metadata, snapshot_dir).await?;
-            sm.close()?;
-            drop(sm);
-            let restarted = builder.build().await?;
+            lagging.apply_snapshot_from_file(&metadata, snapshot_dir).await?;
+            lagging.close()?;
+            drop(lagging);
+            let restarted = builder.reopen().await?;
 
             let position = restarted.last_applied().index;
             let data: u64 = restarted
@@ -470,7 +477,6 @@ impl StateMachineTestSuite {
         builder: &B
     ) -> Result<(), Error> {
         let sm = builder.build().await?;
-        sm.reset().await?;
         for n in 1..=200u64 {
             sm.apply_chunk(&[create_insert_entry(
                 n,
@@ -504,7 +510,6 @@ impl StateMachineTestSuite {
     pub async fn test_last_applied_detection(
         state_machine: Arc<dyn StateMachine>
     ) -> Result<(), Error> {
-        assert!(state_machine.reset().await.is_ok());
         // Initial state
         assert_eq!(state_machine.last_applied(), LogId { index: 0, term: 0 });
 
@@ -534,9 +539,11 @@ impl StateMachineTestSuite {
     }
 
     /// Test snapshot operations
-    pub async fn test_snapshot_operations(
-        state_machine: Arc<dyn StateMachine>
+    pub async fn test_snapshot_operations<B: StateMachineBuilder>(
+        builder: &B
     ) -> Result<(), Error> {
+        let state_machine = builder.build().await?;
+
         // Add some test data
         let entries = vec![
             create_insert_entry(
@@ -577,8 +584,9 @@ impl StateMachineTestSuite {
             checksum: Bytes::from(checksum.to_vec()),
         };
 
-        //Reset State Machine to make sure it is fresh
-        state_machine.reset().await?;
+        // The node that receives the snapshot starts empty.
+        drop(state_machine);
+        let state_machine = builder.build().await?;
         assert_eq!(state_machine.get(b"key1")?, None);
         assert_eq!(state_machine.get(b"key2")?, None);
         assert_eq!(state_machine.get(b"key3")?, None);
@@ -767,7 +775,7 @@ impl StateMachineTestSuite {
         tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
         // Step 2: Reopen state machine from same path
-        let sm2 = builder.build().await?;
+        let sm2 = builder.reopen().await?;
 
         // Step 3: Verify data survived
         let value1 = sm2.get(b"drop_test_key1")?;
@@ -841,7 +849,7 @@ impl StateMachineTestSuite {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Step 2: Reopen
-        let sm2 = builder.build().await?;
+        let sm2 = builder.reopen().await?;
 
         // Step 3: Critical assertion - last_applied must be persisted by Drop
         assert_eq!(
@@ -912,7 +920,8 @@ impl StateMachineTestSuite {
 
             // Fresh node receiving this snapshot for the first time (current == default),
             // so the install is strictly "Greater" — eligible, not a stale/duplicate no-op.
-            sm.reset().await?;
+            drop(sm);
+            let sm = builder.build().await?;
             assert_eq!(sm.last_applied(), LogId::default());
 
             let metadata = SnapshotMetadata {
@@ -932,7 +941,7 @@ impl StateMachineTestSuite {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let sm2 = builder.build().await?;
+        let sm2 = builder.reopen().await?;
 
         assert_eq!(
             sm2.last_applied(),
@@ -996,7 +1005,7 @@ impl StateMachineTestSuite {
         }
 
         // Step 2: Reopen and verify
-        let sm2 = builder.build().await?;
+        let sm2 = builder.reopen().await?;
 
         // Verify all data
         assert_eq!(
@@ -1059,7 +1068,7 @@ impl StateMachineTestSuite {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Step 2: reopen from same path — WAL must replay correctly
-        let sm2 = builder.build().await?;
+        let sm2 = builder.reopen().await?;
 
         assert_eq!(
             sm2.get(b"bk1")?,
@@ -1133,7 +1142,7 @@ impl StateMachineTestSuite {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Step 2: Simulate restart - create new instance from same path
-        let sm2 = builder.build().await?;
+        let sm2 = builder.reopen().await?;
 
         // Step 3: Verify crash recovery - both data and metadata
         let value1 = sm2.get(b"crash_key1")?;
@@ -1199,7 +1208,7 @@ impl StateMachineTestSuite {
         sm.close()?;
         // `sm` stays alive until the end of the test: Drop must not be what saves the state.
 
-        let sm2 = builder.build().await?;
+        let sm2 = builder.reopen().await?;
 
         assert_eq!(
             sm2.last_applied().index,
@@ -1214,91 +1223,6 @@ impl StateMachineTestSuite {
         assert_eq!(sm2.get(b"close_key3")?, Some(Bytes::from_static(b"v3")));
 
         drop(sm);
-        Ok(())
-    }
-
-    ///
-    /// This test verifies that the reset operation:
-    /// 1. Clears all data from memory
-    /// 2. Resets Raft state to initial values
-    /// 3. Clears all persisted files
-    /// 4. Maintains operational state (running status)
-    pub async fn test_reset_operation(state_machine: Arc<dyn StateMachine>) -> Result<(), Error> {
-        // Add test data
-        let entries = vec![
-            create_insert_entry(
-                1,
-                Bytes::from(b"key1".to_vec()),
-                Bytes::from(b"value1".to_vec()),
-            ),
-            create_insert_entry(
-                2,
-                Bytes::from(b"key2".to_vec()),
-                Bytes::from(b"value2".to_vec()),
-            ),
-            create_insert_entry(
-                3,
-                Bytes::from(b"key3".to_vec()),
-                Bytes::from(b"value3".to_vec()),
-            ),
-        ];
-        state_machine.apply_chunk(&entries).await?;
-
-        // Verify data exists
-        assert_eq!(
-            state_machine.get(b"key1")?,
-            Some(Bytes::from(b"value1".to_vec()))
-        );
-        assert_eq!(
-            state_machine.get(b"key2")?,
-            Some(Bytes::from(b"value2".to_vec()))
-        );
-        assert_eq!(
-            state_machine.get(b"key3")?,
-            Some(Bytes::from(b"value3".to_vec()))
-        );
-        assert_eq!(state_machine.last_applied(), LogId { index: 3, term: 1 });
-        // The test focuses on verifying reset() clears everything, not initial state
-
-        // Perform reset
-        state_machine.reset().await?;
-
-        // Verify all data is cleared
-        assert!(state_machine.get(b"key1")?.is_none());
-        assert!(state_machine.get(b"key2")?.is_none());
-        assert!(state_machine.get(b"key3")?.is_none());
-
-        // Verify Raft state is reset
-        assert_eq!(state_machine.last_applied(), LogId { index: 0, term: 0 });
-
-        // Verify operational state is maintained: reads above succeeded, so it still serves
-
-        // Test that we can add new data after reset
-        let new_entries = vec![
-            create_insert_entry(
-                1,
-                Bytes::from(b"new_key1".to_vec()),
-                Bytes::from(b"new_value1".to_vec()),
-            ),
-            create_insert_entry(
-                2,
-                Bytes::from(b"new_key2".to_vec()),
-                Bytes::from(b"new_value2".to_vec()),
-            ),
-        ];
-        state_machine.apply_chunk(&new_entries).await?;
-
-        // Verify new data exists
-        assert_eq!(
-            state_machine.get(b"new_key1")?,
-            Some(Bytes::from(b"new_value1".to_vec()))
-        );
-        assert_eq!(
-            state_machine.get(b"new_key2")?,
-            Some(Bytes::from(b"new_value2".to_vec()))
-        );
-        assert_eq!(state_machine.last_applied(), LogId { index: 2, term: 1 });
-
         Ok(())
     }
 
@@ -1662,7 +1586,7 @@ impl StateMachineTestSuite {
 
         // Racing phase: keep every round's exported directory around (don't verify yet) —
         // `StateMachineBuilder` implementations (e.g. RocksDB) only support one live handle
-        // per path, so verifying via reset+reload here would clobber `live` mid-race.
+        // per path, so verifying on `live` here would clobber it mid-race.
         let mut rounds = Vec::with_capacity(200);
         let mut next_index = 3u64;
         for round_num in 0u32..200 {
@@ -1714,18 +1638,20 @@ impl StateMachineTestSuite {
             prev_version = new_version;
         }
 
-        // Verification phase: now that racing is done, reuse `live` sequentially
-        // (reset + reload) to inspect what each round's export actually captured.
+        // Verification phase: now that racing is done, install every round's export, oldest first,
+        // into a separate empty state machine and inspect what the export actually captured. Each
+        // snapshot is newer than the previous one and replaces the whole state, so the rounds do
+        // not affect each other.
+        let target = builder.build().await?;
         for r in &rounds {
-            live.reset().await?;
             let metadata = SnapshotMetadata {
                 last_included: Some(r.last_included),
                 checksum: r.checksum.clone(),
             };
-            live.apply_snapshot_from_file(&metadata, r.snapshot_dir.clone()).await?;
+            target.apply_snapshot_from_file(&metadata, r.snapshot_dir.clone()).await?;
 
-            let got_addr = live.get(&addr_key)?;
-            let got_version = live.get(&version_key)?;
+            let got_addr = target.get(&addr_key)?;
+            let got_version = target.get(&version_key)?;
 
             let matches_before =
                 got_addr.as_ref() == Some(&r.before.0) && got_version.as_ref() == Some(&r.before.1);
@@ -1868,9 +1794,6 @@ mod default_scan_prefix_tests {
             Ok(LogId::default())
         }
 
-        async fn reset(&self) -> Result<(), Error> {
-            Ok(())
-        }
         // scan_prefix intentionally omitted → exercises the trait default implementation
     }
 
@@ -2085,18 +2008,11 @@ mod install_reader_suite_tests {
             *self.pending_position.write().unwrap() = position;
             Ok(())
         }
-
-        async fn reset(&self) -> Result<(), Error> {
-            self.durable.data.write().unwrap().clear();
-            *self.durable.applied.write().unwrap() = LogId::default();
-            *self.pending_position.write().unwrap() = LogId::default();
-            Ok(())
-        }
     }
 
     #[derive(Default)]
     struct InMemoryBuilder {
-        durable: Arc<Durable>,
+        durable: std::sync::Mutex<Arc<Durable>>,
         faulty: bool,
         late_position: bool,
         position_on_close_only: bool,
@@ -2105,8 +2021,19 @@ mod install_reader_suite_tests {
     #[async_trait]
     impl StateMachineBuilder for InMemoryBuilder {
         async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
+            let fresh = Arc::new(Durable::default());
+            *self.durable.lock().unwrap() = fresh.clone();
             Ok(Arc::new(InMemorySm::new(
-                self.durable.clone(),
+                fresh,
+                self.faulty,
+                self.late_position,
+                self.position_on_close_only,
+            )))
+        }
+
+        async fn reopen(&self) -> Result<Arc<dyn StateMachine>, Error> {
+            Ok(Arc::new(InMemorySm::new(
+                self.durable.lock().unwrap().clone(),
                 self.faulty,
                 self.late_position,
                 self.position_on_close_only,
@@ -2115,7 +2042,7 @@ mod install_reader_suite_tests {
 
         async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
             Ok(Some(Arc::new(InMemorySm::new(
-                Arc::new(self.durable.copy()),
+                Arc::new(self.durable.lock().unwrap().copy()),
                 self.faulty,
                 self.late_position,
                 self.position_on_close_only,

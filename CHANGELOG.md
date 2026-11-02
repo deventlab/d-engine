@@ -134,6 +134,8 @@ All notable changes to this project will be documented in this file.
 
 ### Removed
 
+- **`StateMachine::reset` removed** (#400): the engine never called it; only tests used it. `StateMachineBuilder::build()` now returns a state machine on new, empty storage, and the new required method `reopen()` opens the storage the last `build()` used (a restart), so the suite no longer wipes a state machine before a test. `test_reset_operation` is removed from `StateMachineTestSuite`; `test_snapshot_operations` now takes the builder. See `MIGRATION_GUIDE.md`.
+
 - **TTL and per-key lease** (#464): d-engine now does consensus and replication only. Removed `put_with_ttl`, the `Lease` trait, `TtlLease`, the `[raft.state_machine.lease]` config section and `StateMachine::lease_background_cleanup`. `Command::Insert` no longer has `ttl_secs`. In the proto, `WriteCommand.Insert.ttl_secs` (field 3) is removed and the number is reserved. Key expiry is now the job of the layer above d-engine. The leader read lease (`LeaseRead`) is a different feature and is unchanged.
 
 - **File state machine storage format** (#464): The WAL record no longer has an `expire_at` slot, and `snapshot.bin` no longer ends with a TTL section. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).

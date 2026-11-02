@@ -257,10 +257,6 @@ pub trait StateMachine: Send + Sync + 'static {
         new_snapshot_dir: std::path::PathBuf,
     ) -> Result<LogId, Error>;
 
-    /// Resets the state machine to its initial state.
-    /// Async operation as it may involve cleaning up files and data.
-    async fn reset(&self) -> Result<(), Error>;
-
     /// Returns all `(key, value)` pairs whose key starts with `prefix`, plus
     /// the `last_applied_index` at the time of the scan.
     ///

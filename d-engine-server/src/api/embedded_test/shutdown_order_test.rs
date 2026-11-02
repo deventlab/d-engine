@@ -111,9 +111,6 @@ impl StateMachine for SlowApplyProbe {
     ) -> Result<LogId, Error> {
         self.inner.generate_snapshot_data(new_snapshot_dir).await
     }
-    async fn reset(&self) -> Result<(), Error> {
-        self.inner.reset().await
-    }
     fn scan_prefix(
         &self,
         prefix: &[u8],

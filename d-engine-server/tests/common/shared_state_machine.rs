@@ -70,9 +70,6 @@ impl<SM: StateMachine + Debug> StateMachine for SharedStateMachine<SM> {
     ) -> Result<LogId, Error> {
         self.0.generate_snapshot_data(new_snapshot_dir).await
     }
-    async fn reset(&self) -> Result<(), Error> {
-        self.0.reset().await
-    }
     fn scan_prefix(
         &self,
         prefix: &[u8],

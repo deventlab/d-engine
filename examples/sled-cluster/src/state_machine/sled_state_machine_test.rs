@@ -29,26 +29,39 @@ use crate::SledStateMachine;
 /// so that data written by the first instance is readable by the second.
 struct SledBuilder {
     temp_dir: TempDir,
+    // How many times `build()` ran: every build gets its own directory.
+    builds: std::sync::atomic::AtomicUsize,
 }
 
 impl SledBuilder {
     fn new() -> Self {
         Self {
             temp_dir: TempDir::new().expect("create TempDir"),
+            builds: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// The directory the last `build()` used.
+    fn current_dir(&self) -> std::path::PathBuf {
+        let n = self.builds.load(std::sync::atomic::Ordering::SeqCst);
+        self.temp_dir.path().join(format!("sled_{n}"))
     }
 }
 
 #[async_trait]
 impl StateMachineBuilder for SledBuilder {
     async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
-        let sm = SledStateMachine::new(self.temp_dir.path(), 1)?;
-        Ok(Arc::new(sm))
+        self.builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Arc::new(SledStateMachine::new(self.current_dir(), 1)?))
+    }
+
+    async fn reopen(&self) -> Result<Arc<dyn StateMachine>, Error> {
+        Ok(Arc::new(SledStateMachine::new(self.current_dir(), 1)?))
     }
 
     async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
         let image = TempDir::new()?.keep();
-        copy_storage_dir(self.temp_dir.path(), &image)?;
+        copy_storage_dir(&self.current_dir(), &image)?;
         Ok(Some(Arc::new(SledStateMachine::new(&image, 1)?)))
     }
 

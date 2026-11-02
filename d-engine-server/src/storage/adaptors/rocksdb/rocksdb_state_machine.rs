@@ -27,7 +27,6 @@ use rocksdb::IteratorMode;
 use rocksdb::LiveFile;
 use rocksdb::Options;
 use rocksdb::ReadOptions;
-use rocksdb::WriteBatch;
 use rocksdb::WriteBatchWithIndex;
 use rocksdb::WriteOptions;
 use serde::Deserialize;
@@ -225,23 +224,6 @@ impl RocksDBStateMachine {
         };
 
         Ok((index, term))
-    }
-
-    fn persist_state_machine_metadata(&self) -> Result<(), Error> {
-        let index = self.last_applied_index.load(Ordering::SeqCst);
-        let term = self.last_applied_term.load(Ordering::SeqCst);
-        self.with_db(|db| {
-            let cf = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
-                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
-                    "State machine meta CF not found".to_string(),
-                )))
-            })?;
-            db.put_cf(&cf, LAST_APPLIED_INDEX_KEY, index.to_be_bytes())
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-            db.put_cf(&cf, LAST_APPLIED_TERM_KEY, term.to_be_bytes())
-                .map_err(|e| StorageError::DbError(e.to_string()))?;
-            Ok(())
-        })
     }
 
     // ===== Snapshot restore helpers =====
@@ -825,32 +807,6 @@ impl StateMachine for RocksDBStateMachine {
 
         info!("Snapshot generated at {:?}", new_snapshot_dir);
         Ok(position)
-    }
-
-    async fn reset(&self) -> Result<(), Error> {
-        self.with_db(|db| {
-            let cf = db.cf_handle(STATE_MACHINE_CF).ok_or_else(|| {
-                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
-                    "State machine CF not found".to_string(),
-                )))
-            })?;
-            let mut batch = WriteBatch::default();
-            let iter = db.iterator_cf(&cf, IteratorMode::Start);
-            for item in iter {
-                let (key, _) = item.map_err(|e| StorageError::DbError(e.to_string()))?;
-                batch.delete_cf(&cf, &key);
-            }
-            db.write(&batch).map_err(|e| StorageError::DbError(e.to_string()))?;
-            Ok(())
-        })?;
-
-        self.last_applied_index.store(0, Ordering::SeqCst);
-        self.last_applied_term.store(0, Ordering::SeqCst);
-
-        self.persist_state_machine_metadata()?;
-
-        info!("RocksDB state machine reset completed");
-        Ok(())
     }
 
     fn scan_prefix(
