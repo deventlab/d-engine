@@ -9,6 +9,7 @@ use d_engine_core::StateMachine;
 use d_engine_core::file_io::compute_checksum_from_folder_path;
 use d_engine_core::storage::state_machine_test::StateMachineBuilder;
 use d_engine_core::storage::state_machine_test::StateMachineTestSuite;
+use d_engine_core::storage::state_machine_test::copy_storage_dir;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use tempfile::TempDir;
@@ -107,6 +108,13 @@ impl StateMachineBuilder for FileStateMachineBuilder {
         let path = self.temp_dir.path().to_path_buf().join("file_sm");
         let sm = FileStateMachine::new(path).await?;
         Ok(Arc::new(sm))
+    }
+
+    async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
+        let image = self.temp_dir.path().join("file_sm_crash_image");
+        let _ = std::fs::remove_dir_all(&image);
+        copy_storage_dir(&self.temp_dir.path().join("file_sm"), &image)?;
+        Ok(Some(Arc::new(FileStateMachine::new(image).await?)))
     }
 
     async fn cleanup(&self) -> Result<(), Error> {

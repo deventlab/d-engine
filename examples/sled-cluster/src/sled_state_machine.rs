@@ -22,7 +22,7 @@ use d_engine::StateMachine;
 use d_engine::StorageError;
 use d_engine::common::LogId;
 use d_engine::server_storage::SnapshotMetadata;
-use sled::Batch;
+use sled::Transactional;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -124,12 +124,9 @@ impl StateMachine for SledStateMachine {
         chunk: &[ApplyEntry],
     ) -> Result<Vec<ApplyResult>> {
         trace!("Applying chunk: {} entries", chunk.len());
-        self.db()?;
+        let db = self.db()?;
 
         let mut highest_log_id: Option<LogId> = None;
-        let mut batch = Batch::default();
-        let mut results = Vec::with_capacity(chunk.len());
-
         for entry in chunk {
             if let Some(prev) = &highest_log_id {
                 assert!(
@@ -143,75 +140,97 @@ impl StateMachine for SledStateMachine {
                 index: entry.index,
                 term: entry.term,
             });
+        }
+        let Some(position) = highest_log_id else {
+            return Ok(Vec::new());
+        };
 
-            match &entry.command {
-                Command::Noop => {
-                    debug!("NOOP at index {}", entry.index);
-                    results.push(ApplyResult::success(entry.index));
-                }
-                Command::Insert { key, value, .. } => {
-                    batch.insert(key.as_ref(), value.as_ref());
-                    results.push(ApplyResult::success(entry.index));
-                }
-                Command::Delete { key } => {
-                    batch.remove(key.as_ref());
-                    results.push(ApplyResult::success(entry.index));
-                }
-                Command::CompareAndSwap {
-                    key,
-                    expected,
-                    value: new_value,
-                } => {
-                    // Flush pending batch before CAS (Sled batch doesn't support atomic CAS)
-                    self.apply_batch(std::mem::take(&mut batch))?;
+        // The whole chunk and the new position are one transaction over the data tree and the
+        // metadata tree: after a crash the position is exactly the last entry whose effects are in
+        // the data. A compare-and-swap reads and writes inside the same transaction, so it sees
+        // the entries applied before it in this chunk. sled may run the closure more than once on
+        // a conflict, so it builds its results from scratch every time.
+        let data_tree = self.current_tree()?;
+        let meta_tree = db
+            .open_tree(STATE_MACHINE_META_NAMESPACE)
+            .map_err(|e| StorageError::DbError(e.to_string()))?;
 
-                    // Perform native Sled CAS
-                    let tree = self.current_tree()?;
-                    let old = expected.as_ref().map(|v| v.as_ref());
-
-                    let cas_success =
-                        match tree.compare_and_swap(key.as_ref(), old, Some(new_value.as_ref())) {
-                            Ok(Ok(_)) => true,
-                            Ok(Err(_)) => false,
-                            Err(e) => {
-                                error!("CAS error at index {}: {:?}", entry.index, e);
-                                return Err(StorageError::DbError(e.to_string()).into());
+        let results = (&data_tree, &meta_tree)
+            .transaction(|(data, meta)| {
+                let mut results = Vec::with_capacity(chunk.len());
+                for entry in chunk {
+                    match &entry.command {
+                        Command::Noop => {
+                            debug!("NOOP at index {}", entry.index);
+                            results.push(ApplyResult::success(entry.index));
+                        }
+                        Command::Insert { key, value, .. } => {
+                            data.insert(key.as_ref(), value.as_ref())?;
+                            results.push(ApplyResult::success(entry.index));
+                        }
+                        Command::Delete { key } => {
+                            data.remove(key.as_ref())?;
+                            results.push(ApplyResult::success(entry.index));
+                        }
+                        Command::CompareAndSwap {
+                            key,
+                            expected,
+                            value: new_value,
+                        } => {
+                            let current = data.get(key.as_ref())?;
+                            let cas_success = match (&current, expected) {
+                                (None, None) => true,
+                                (Some(current), Some(expected)) => {
+                                    current.as_ref() == expected.as_ref()
+                                }
+                                _ => false,
+                            };
+                            if cas_success {
+                                data.insert(key.as_ref(), new_value.as_ref())?;
                             }
-                        };
-
-                    debug!(
-                        "CAS at index {}: key={:?}, success={}",
-                        entry.index,
-                        String::from_utf8_lossy(key),
-                        cas_success
-                    );
-                    results.push(if cas_success {
-                        ApplyResult::success(entry.index)
-                    } else {
-                        ApplyResult::failure(entry.index)
-                    });
-                }
-                Command::Batch { ops } => {
-                    ops.iter().for_each(|op| match op {
-                        BatchOp::Insert { key, value } => {
-                            batch.insert(key.as_ref(), value.as_ref())
+                            debug!(
+                                "CAS at index {}: key={:?}, success={}",
+                                entry.index,
+                                String::from_utf8_lossy(key),
+                                cas_success
+                            );
+                            results.push(if cas_success {
+                                ApplyResult::success(entry.index)
+                            } else {
+                                ApplyResult::failure(entry.index)
+                            });
                         }
-                        BatchOp::Delete { key } => {
-                            batch.remove(key.as_ref());
+                        Command::Batch { ops } => {
+                            for op in ops {
+                                match op {
+                                    BatchOp::Insert { key, value } => {
+                                        data.insert(key.as_ref(), value.as_ref())?;
+                                    }
+                                    BatchOp::Delete { key } => {
+                                        data.remove(key.as_ref())?;
+                                    }
+                                }
+                            }
+                            results.push(ApplyResult::success(entry.index));
                         }
-                    });
-                    results.push(ApplyResult::success(entry.index));
+                    }
                 }
-            }
-        }
+                meta.insert(
+                    STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX.as_bytes(),
+                    safe_kv(position.index),
+                )?;
+                meta.insert(
+                    STATE_MACHINE_META_KEY_LAST_APPLIED_TERM.as_bytes(),
+                    safe_kv(position.term),
+                )?;
+                Ok(results)
+            })
+            .map_err(|e: sled::transaction::TransactionError| {
+                error!("state_machine apply_chunk failed: {}", e);
+                StorageError::DbError(e.to_string())
+            })?;
 
-        // Apply final batch
-        self.apply_batch(batch)?;
-
-        // Update last applied index
-        if let Some(log_id) = highest_log_id {
-            self.update_last_applied(log_id);
-        }
+        self.update_last_applied(position);
 
         Ok(results)
     }
@@ -440,17 +459,6 @@ impl SledStateMachine {
             .unwrap_or(Ok(0))?;
 
         Ok((index, term))
-    }
-
-    pub(super) fn apply_batch(
-        &self,
-        batch: Batch,
-    ) -> Result<()> {
-        if let Err(e) = self.current_tree()?.apply_batch(batch) {
-            error!("state_machine apply_batch failed: {}", e);
-            return Err(StorageError::DbError(e.to_string()).into());
-        }
-        Ok(())
     }
 
     // Dynamically obtain the current Tree (lock-free cache optimization)

@@ -28,8 +28,35 @@ pub trait StateMachineBuilder: Send + Sync {
     /// Create a new StateMachine instance for testing
     async fn build(&self) -> Result<Arc<dyn StateMachine>, Error>;
 
+    /// Opens a state machine on a copy of the storage exactly as it is on disk right now, without
+    /// closing or dropping the live one: what a restart after a crash (the process killed, nothing
+    /// flushed, no `close()`, no `Drop`) would find. Return `None` if the builder cannot do this;
+    /// the crash test is then skipped. [`copy_storage_dir`] copies a directory.
+    async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
+        Ok(None)
+    }
+
     /// Clean up any resources after testing
     async fn cleanup(&self) -> Result<(), Error>;
+}
+
+/// Copies `from` and everything under it to `to`; for implementing
+/// [`StateMachineBuilder::build_from_crash_image`] on a directory-based storage.
+pub fn copy_storage_dir(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_storage_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 impl StateMachineTestSuite {
@@ -44,6 +71,7 @@ impl StateMachineTestSuite {
         Self::test_snapshot_operations(builder.build().await?).await?;
         Self::test_reads_during_snapshot_install_see_old_new_or_not_serving(&builder).await?;
         Self::test_snapshot_taken_during_writes_never_skips_entries_after_restart(&builder).await?;
+        Self::test_restart_after_crash_finds_position_and_data_of_the_same_entry(&builder).await?;
 
         Self::test_drop_flushes_data(&builder).await?;
         Self::test_drop_persists_last_applied(&builder).await?;
@@ -418,6 +446,57 @@ impl StateMachineTestSuite {
                 data + 1
             );
         }
+        Ok(())
+    }
+
+    /// A node is killed while orders keep arriving: nothing is flushed, `close()` and `Drop` never
+    /// run. After the restart the position it reports must be exactly the entry its data has
+    /// reached.
+    ///
+    /// Orders service: entry `n` sets `orders` to `n`, so the value of `orders` is the entry the
+    /// data has reached. The engine starts replaying the log right after the reported position. A
+    /// position behind the data (typically: the position is only written at `close()`) makes it
+    /// replay entries the data already contains, which gives a different result for operations
+    /// such as compare-and-swap; a position ahead of the data skips entries for good. Both are
+    /// avoided by committing the position in the same transaction as the data. Storage that loses
+    /// both (no write-ahead log, nothing flushed yet) reports position 0 and an empty state,
+    /// which is fine: the engine replays everything.
+    ///
+    /// Skipped, with a message, when the builder does not implement
+    /// [`StateMachineBuilder::build_from_crash_image`].
+    pub async fn test_restart_after_crash_finds_position_and_data_of_the_same_entry<
+        B: StateMachineBuilder,
+    >(
+        builder: &B
+    ) -> Result<(), Error> {
+        let sm = builder.build().await?;
+        sm.reset().await?;
+        for n in 1..=200u64 {
+            sm.apply_chunk(&[create_insert_entry(
+                n,
+                Bytes::from_static(b"orders"),
+                Bytes::from(n.to_string()),
+            )])
+            .await?;
+        }
+
+        // The node is killed here: no close(), no drop.
+        let Some(restarted) = builder.build_from_crash_image().await? else {
+            eprintln!("crash image not supported by this builder; crash test skipped");
+            return Ok(());
+        };
+        let position = restarted.last_applied().index;
+        let data: u64 = restarted
+            .get(b"orders")?
+            .map(|v| String::from_utf8_lossy(&v).parse().expect("a number"))
+            .unwrap_or(0);
+
+        assert_eq!(
+            position, data,
+            "after a crash the reported position {position} and the data (entry {data}) must \
+             describe the same entry: the position has to be committed with the data, not only \
+             at close()"
+        );
         Ok(())
     }
 
@@ -1858,10 +1937,41 @@ mod install_reader_suite_tests {
         applied: RwLock<LogId>,
     }
 
+    impl Durable {
+        /// What a crash leaves on disk: a copy of what is durable right now.
+        fn copy(&self) -> Durable {
+            Durable {
+                data: RwLock::new(self.data.read().unwrap().clone()),
+                applied: RwLock::new(*self.applied.read().unwrap()),
+            }
+        }
+    }
+
     struct InMemorySm {
         durable: Arc<Durable>,
         faulty: bool,
         late_position: bool,
+        /// Wrong: the position is kept in memory and only made durable by `close()`.
+        position_on_close_only: bool,
+        pending_position: RwLock<LogId>,
+    }
+
+    impl InMemorySm {
+        fn new(
+            durable: Arc<Durable>,
+            faulty: bool,
+            late_position: bool,
+            position_on_close_only: bool,
+        ) -> Self {
+            let pending_position = RwLock::new(*durable.applied.read().unwrap());
+            Self {
+                durable,
+                faulty,
+                late_position,
+                position_on_close_only,
+                pending_position,
+            }
+        }
     }
 
     #[async_trait]
@@ -1883,16 +1993,32 @@ mod install_reader_suite_tests {
                 if let Command::Insert { key, value } = &entry.command {
                     data.insert(key.clone(), value.clone());
                 }
-                *self.durable.applied.write().unwrap() = LogId {
+                let at = LogId {
                     index: entry.index,
                     term: entry.term,
                 };
+                if self.position_on_close_only {
+                    *self.pending_position.write().unwrap() = at;
+                } else {
+                    *self.durable.applied.write().unwrap() = at;
+                }
             }
             Ok(chunk.iter().map(|e| ApplyResult::success(e.index)).collect())
         }
 
         fn last_applied(&self) -> LogId {
-            *self.durable.applied.read().unwrap()
+            if self.position_on_close_only {
+                *self.pending_position.read().unwrap()
+            } else {
+                *self.durable.applied.read().unwrap()
+            }
+        }
+
+        fn close(&self) -> Result<(), Error> {
+            if self.position_on_close_only {
+                *self.durable.applied.write().unwrap() = *self.pending_position.read().unwrap();
+            }
+            Ok(())
         }
 
         async fn generate_snapshot_data(
@@ -1956,12 +2082,14 @@ mod install_reader_suite_tests {
                 *self.durable.data.write().unwrap() = new_data;
             }
             *self.durable.applied.write().unwrap() = position;
+            *self.pending_position.write().unwrap() = position;
             Ok(())
         }
 
         async fn reset(&self) -> Result<(), Error> {
             self.durable.data.write().unwrap().clear();
             *self.durable.applied.write().unwrap() = LogId::default();
+            *self.pending_position.write().unwrap() = LogId::default();
             Ok(())
         }
     }
@@ -1971,16 +2099,27 @@ mod install_reader_suite_tests {
         durable: Arc<Durable>,
         faulty: bool,
         late_position: bool,
+        position_on_close_only: bool,
     }
 
     #[async_trait]
     impl StateMachineBuilder for InMemoryBuilder {
         async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
-            Ok(Arc::new(InMemorySm {
-                durable: self.durable.clone(),
-                faulty: self.faulty,
-                late_position: self.late_position,
-            }))
+            Ok(Arc::new(InMemorySm::new(
+                self.durable.clone(),
+                self.faulty,
+                self.late_position,
+                self.position_on_close_only,
+            )))
+        }
+
+        async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
+            Ok(Some(Arc::new(InMemorySm::new(
+                Arc::new(self.durable.copy()),
+                self.faulty,
+                self.late_position,
+                self.position_on_close_only,
+            ))))
         }
 
         async fn cleanup(&self) -> Result<(), Error> {
@@ -2031,6 +2170,30 @@ mod install_reader_suite_tests {
         let _ = StateMachineTestSuite::test_snapshot_taken_during_writes_never_skips_entries_after_restart(
             &InMemoryBuilder {
                 late_position: true,
+                ..Default::default()
+            },
+        )
+        .await;
+    }
+
+    /// Purpose: a state machine that commits the position with the data passes the crash test.
+    #[tokio::test]
+    async fn test_crash_suite_accepts_a_state_machine_that_commits_position_with_data() {
+        StateMachineTestSuite::test_restart_after_crash_finds_position_and_data_of_the_same_entry(
+            &InMemoryBuilder::default(),
+        )
+        .await
+        .expect("position committed with the data must pass");
+    }
+
+    /// Purpose: a state machine that only makes the position durable at `close()` is caught: after
+    /// a crash its data is there but its position is not.
+    #[tokio::test]
+    #[should_panic(expected = "must describe the same entry")]
+    async fn test_crash_suite_rejects_a_state_machine_that_persists_position_only_at_close() {
+        let _ = StateMachineTestSuite::test_restart_after_crash_finds_position_and_data_of_the_same_entry(
+            &InMemoryBuilder {
+                position_on_close_only: true,
                 ..Default::default()
             },
         )

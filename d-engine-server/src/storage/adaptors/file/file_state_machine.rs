@@ -416,6 +416,10 @@ impl FileStateMachine {
         let mut pos = 0;
         let mut operations = Vec::new();
         let mut replayed_count = 0;
+        // The position of the last record replayed: the WAL carries the index and term of every
+        // entry, and the data replayed below is only consistent with the position once it
+        // reaches that record.
+        let mut replayed_up_to: Option<LogId> = None;
 
         let last_applied = self.last_applied_index.load(Ordering::SeqCst);
 
@@ -493,6 +497,7 @@ impl FileStateMachine {
             }
 
             operations.push((op_code, key, value, term));
+            replayed_up_to = Some(LogId { index, term });
             replayed_count += 1;
         }
 
@@ -539,6 +544,17 @@ impl FileStateMachine {
             "WAL replay complete: {} operations replayed, {} applied",
             replayed_count, applied_count,
         );
+
+        // The replayed entries are now part of the data, so last_applied moves to the last of
+        // them; otherwise a restart would report the position of the last checkpoint and the
+        // engine would apply entries again that the data already contains. The WAL is the only
+        // durable copy of these entries until the next checkpoint, so data and position are
+        // written out before it is cleared.
+        if let Some(position) = replayed_up_to {
+            self.update_last_applied(position);
+            self.persist_data_async().await?;
+            self.persist_metadata_async().await?;
+        }
 
         // Unconditionally clear WAL after replay. load_data() already restored the last
         // checkpoint; WAL is only the post-checkpoint delta. Even if 0 entries were applied

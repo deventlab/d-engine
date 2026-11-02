@@ -15,6 +15,7 @@ use d_engine::StateMachine;
 use d_engine::common::LogId;
 use d_engine::state_machine_test::StateMachineBuilder;
 use d_engine::state_machine_test::StateMachineTestSuite;
+use d_engine::state_machine_test::copy_storage_dir;
 use tempfile::TempDir;
 
 use crate::SledStateMachine;
@@ -43,6 +44,12 @@ impl StateMachineBuilder for SledBuilder {
     async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
         let sm = SledStateMachine::new(self.temp_dir.path(), 1)?;
         Ok(Arc::new(sm))
+    }
+
+    async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
+        let image = TempDir::new()?.keep();
+        copy_storage_dir(self.temp_dir.path(), &image)?;
+        Ok(Some(Arc::new(SledStateMachine::new(&image, 1)?)))
     }
 
     async fn cleanup(&self) -> Result<(), Error> {
@@ -92,9 +99,7 @@ async fn test_snapshot_captures_all_current_data() {
     sm.apply_chunk(&entries).await.unwrap();
 
     let snap_dir = temp.path().join("snapshot");
-    sm.generate_snapshot_data(snap_dir.clone())
-        .await
-        .unwrap();
+    sm.generate_snapshot_data(snap_dir.clone()).await.unwrap();
 
     // Open the snapshot as a fresh SM and verify all 5 keys were captured.
     let snap_sm = SledStateMachine::new(&snap_dir, 1).unwrap();
@@ -128,9 +133,7 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
     sm.apply_chunk(&pre_entries).await.unwrap();
 
     let snap_dir = temp.path().join("partial_snapshot");
-    sm.generate_snapshot_data(snap_dir.clone())
-        .await
-        .unwrap();
+    sm.generate_snapshot_data(snap_dir.clone()).await.unwrap();
 
     // Write another key AFTER snapshot
     let post_entries = vec![ApplyEntry {
@@ -178,10 +181,7 @@ async fn test_snapshot_install_content_survives_restart() {
 
     let last_included = LogId { index: 3, term: 1 };
     let export_dir = TempDir::new().unwrap();
-    source_sm
-        .generate_snapshot_data(export_dir.path().to_path_buf())
-        .await
-        .unwrap();
+    source_sm.generate_snapshot_data(export_dir.path().to_path_buf()).await.unwrap();
 
     // The engine verifies the checksum before it calls the state machine, which only stores it,
     // so any 32-byte value will do here.

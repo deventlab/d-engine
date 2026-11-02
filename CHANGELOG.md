@@ -26,6 +26,8 @@ All notable changes to this project will be documented in this file.
 
 - **`raft.state_machine.shutdown_apply_timeout_ms`** (#455, default `5000`): how long shutdown waits for the state machine worker to apply the entries already committed. On timeout it logs an error and shuts down anyway; a restart replays what was not applied.
 
+- **Crash-recovery test for state machines** (#400): `StateMachineTestSuite` checks that after a crash (no `close()`, no `Drop`) a restart reports a `last_applied` equal to the last entry whose effects are in the data. `StateMachineBuilder` has a new method `build_from_crash_image`, with a default implementation that returns `None`; implement it to open a copy of your storage as it is on disk, otherwise the crash test is skipped. `copy_storage_dir` copies a directory for that purpose.
+
 ### Fixed
 
 - **🛑 Snapshot data corruption — label/data mismatch** (#418): `last_included` in snapshot metadata was computed by subtracting `retained_log_entries` from `last_applied`, but the snapshot data already reflected the full `last_applied` state. Followers installing such snapshots would re-apply entries 91–100 after restoring state through index 100, causing double-application and permanent cluster state divergence. Also fixes a fabricated `LogId` where `last_included.term` was copied from `last_applied.term` instead of queried from the log. Snapshot label is now always truthful: `last_included == last_applied`.
@@ -57,6 +59,10 @@ All notable changes to this project will be documented in this file.
 - **File state machine lost empty values on WAL replay** (#464): `replay_wal` treated a zero value length as "no value", so an `Insert` with an empty value was dropped after a restart. It now restores the empty value.
 
 - **Snapshot checksum ignored files in sub-directories and file boundaries** (#400): see the snapshot checksum entry under Changed.
+
+- **RocksDB snapshots could hold a position ahead of their data** (#400): a snapshot exported while writes continued took `sm` (data) and `sm_meta` (`last_applied`) from the live database one after the other, so a node installing it could report a position newer than its data and skip the entries in between for good. The export now takes a checkpoint of the database and exports both column families from that frozen copy, and the database is opened with `atomic_flush` so the two column families always reach disk together. A snapshot export is slower (about 100 ms on a small database, measured with a test database; measure on your data). The engine also labels every snapshot with the position the state machine reports for its exported data.
+
+- **File state machine: `last_applied` after crash recovery** (#400): replaying the write-ahead log restored the data but did not move `last_applied`, and then cleared the log, so a restart reported the position of the last checkpoint and the engine applied entries again that the data already contained (a different result for compare-and-swap). Replay now advances `last_applied` to the last replayed record and writes data and position out before the log is cleared. The sled example and d-lmdb now commit the applied position in the same transaction as the data.
 
 ### Changed
 

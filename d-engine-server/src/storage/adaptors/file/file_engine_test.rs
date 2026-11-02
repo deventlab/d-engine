@@ -5,6 +5,7 @@ use d_engine_core::Error;
 use d_engine_core::StateMachine;
 use d_engine_core::state_machine_test::StateMachineBuilder;
 use d_engine_core::state_machine_test::StateMachineTestSuite;
+use d_engine_core::state_machine_test::copy_storage_dir;
 use d_engine_core::storage_engine_test::StorageEngineBuilder;
 use d_engine_core::storage_engine_test::StorageEngineTestSuite;
 use tempfile::TempDir;
@@ -47,6 +48,13 @@ impl StateMachineBuilder for FileStateMachineBuilder {
                 .await
                 .expect("Expect file init successfully"),
         ))
+    }
+
+    async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
+        let image = self.temp_dir.path().join("state_machine_crash_image");
+        let _ = std::fs::remove_dir_all(&image);
+        copy_storage_dir(&self.temp_dir.path().join("state_machine"), &image)?;
+        Ok(Some(Arc::new(FileStateMachine::new(image).await?)))
     }
 
     async fn cleanup(&self) -> Result<(), Error> {

@@ -7,6 +7,7 @@ use d_engine_core::LogStore;
 use d_engine_core::StorageEngine;
 use d_engine_core::state_machine_test::StateMachineBuilder;
 use d_engine_core::state_machine_test::StateMachineTestSuite;
+use d_engine_core::state_machine_test::copy_storage_dir;
 use d_engine_core::storage_engine_test::StorageEngineBuilder;
 use d_engine_core::storage_engine_test::StorageEngineTestSuite;
 use tempfile::TempDir;
@@ -83,6 +84,8 @@ struct UnifiedStateMachineBuilder {
     temp_dir: TempDir,
     // Partner storage kept alive alongside SM; must be dropped before the next build().
     storage: Mutex<Option<RocksDBStorageEngine>>,
+    // Partner storage of the crash image; kept alive while the image is in use.
+    image_storage: Mutex<Option<RocksDBStorageEngine>>,
 }
 
 impl UnifiedStateMachineBuilder {
@@ -90,6 +93,7 @@ impl UnifiedStateMachineBuilder {
         Self {
             temp_dir: TempDir::new().expect("temp dir"),
             storage: Mutex::new(None),
+            image_storage: Mutex::new(None),
         }
     }
 }
@@ -108,8 +112,18 @@ impl StateMachineBuilder for UnifiedStateMachineBuilder {
         Ok(Arc::new(sm))
     }
 
+    async fn build_from_crash_image(&self) -> Result<Option<Arc<dyn StateMachine>>, Error> {
+        *self.image_storage.lock().unwrap() = None;
+        let image = TempDir::new()?.keep();
+        copy_storage_dir(self.temp_dir.path(), &image)?;
+        let (storage, sm) = RocksDBUnifiedEngine::open(&image)?;
+        *self.image_storage.lock().unwrap() = Some(storage);
+        Ok(Some(Arc::new(sm)))
+    }
+
     async fn cleanup(&self) -> Result<(), Error> {
         *self.storage.lock().unwrap() = None;
+        *self.image_storage.lock().unwrap() = None;
         let delay = if std::env::var("CI").is_ok() {
             std::time::Duration::from_millis(500)
         } else {
