@@ -770,6 +770,24 @@ mod error_helper_tests {
         }
     }
 
+    /// A read that goes through the Raft command channel (linearizable reads, eventual reads on a
+    /// follower, a fast-path read that fell back after `NotServing`) reports a state machine read
+    /// failure with one of these three codes.
+    ///
+    /// Purpose: the client must still be able to tell "retry" from "storage failure" from "the data
+    /// may be damaged", as it can on the fast path; mapping them to a generic error would hide it.
+    #[test]
+    fn test_map_error_response_keeps_each_read_failure_code_distinct() {
+        for code in [
+            ErrorCode::StorageIoError,
+            ErrorCode::DataCorruption,
+            ErrorCode::RetryRequired,
+        ] {
+            let err = map_error_response(code, None, None);
+            assert_eq!(err.code(), code, "{code:?} must reach the client unchanged");
+        }
+    }
+
     // ─── extract_read_payload ────────────────────────────────────────────────
 
     #[test]

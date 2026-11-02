@@ -133,7 +133,7 @@ impl StandaloneEngine {
     /// # Example
     /// ```ignore
     /// let storage = Arc::new(MyCustomStorage::new()?);
-    /// let sm = Arc::new(MyCustomStateMachine::new()?);
+    /// let sm = MyCustomStateMachine::new()?;
     ///
     /// let (shutdown_tx, shutdown_rx) = watch::channel(());
     /// StandaloneEngine::run_custom("./data/my-node", storage, sm, shutdown_rx, Some("config.toml")).await?;

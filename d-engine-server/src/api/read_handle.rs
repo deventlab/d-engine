@@ -94,6 +94,11 @@ pub(crate) fn map_error_response(
             };
             not_leader_error(leader_id, leader_address, retry_after_ms)
         }
+        // A state machine read failure keeps its own code and its fixed message, as on the
+        // ReadActor fast path (`read_failure`).
+        ErrorCode::StorageIoError | ErrorCode::DataCorruption | ErrorCode::RetryRequired => {
+            ClientApiError::from(error)
+        }
         _ => server_error(format!("Error code: {error:?}")),
     }
 }

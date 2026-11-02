@@ -425,7 +425,7 @@ impl StateMachineTestSuite {
             // 2. A snapshot is taken in the middle of the writes.
             let temp_dir = TempDir::new()?;
             let snapshot_dir = temp_dir.path().join("snapshot");
-            sm.generate_snapshot_data(snapshot_dir.clone()).await?;
+            let exported = sm.generate_snapshot_data(snapshot_dir.clone()).await?;
             stop.store(true, Ordering::Relaxed);
             writer.await.expect("the writer must not panic");
 
@@ -433,7 +433,10 @@ impl StateMachineTestSuite {
             drop(sm);
             let lagging = builder.build().await?;
             let metadata = SnapshotMetadata {
-                last_included: Some(LogId { index: 1, term: 1 }),
+                // The engine labels the snapshot with the position the export reports, and the
+                // installing state machine adopts that label as its `last_applied`, so a position
+                // ahead of the data shows up after the restart.
+                last_included: Some(exported),
                 checksum: Bytes::from(vec![0; 32]),
             };
             lagging.apply_snapshot_from_file(&metadata, snapshot_dir).await?;
