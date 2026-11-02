@@ -99,10 +99,9 @@ impl ApplyResult {
 ///
 /// # `NotServing`
 ///
-/// While a state machine cannot answer reads correctly, `get` and `get_multi` return
-/// `StorageError::NotServing`, for example
-/// `Err(StorageError::NotServing("installing a snapshot".into()).into())`. This happens in two
-/// situations: the state machine is replacing its state from a snapshot, and it has been closed.
+/// While a state machine is replacing its state from a snapshot and cannot answer reads
+/// correctly, `get` and `get_multi` return `StorageError::NotServing`, for example
+/// `Err(StorageError::NotServing("installing a snapshot".into()).into())`.
 ///
 /// It means "not now", not "the data is damaged". The engine answers that read through Raft
 /// instead, from the state machine after the install, so the client still gets a correct answer.
@@ -111,20 +110,26 @@ impl ApplyResult {
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait StateMachine: Send + Sync + 'static {
-    /// Permanently closes the state machine: stops serving, persists what must survive a
-    /// restart (e.g. data, metadata), flushes, and releases exclusive resources
-    /// (e.g. a DB handle or its lock file).
+    /// Persists what must survive a restart (e.g. data, metadata), flushes, and releases exclusive
+    /// resources (e.g. a DB handle or its lock file).
     ///
-    /// Called once by the state machine worker as its last act, after everything queued for
-    /// it has been applied. The engine owns the state machine, but a state machine that shares
-    /// its storage handle with the developer (a cheap `Clone`) is not dropped when the engine
-    /// stops, so this must not rely on `Drop`. Must be synchronous and idempotent; afterwards
-    /// every operation returns `NotServing`.
+    /// Called once by the state machine worker as its last act, after the engine has stopped its
+    /// read path. The engine calls nothing on the state machine once `close()` has started, so you
+    /// do not need to define what a closed state machine does when it is asked to read or write.
+    /// The engine owns the state machine, but one that shares its storage handle with the
+    /// developer (a cheap `Clone`) is not dropped when the engine stops, so this must not rely on
+    /// `Drop`. Must be synchronous and may be called more than once; later calls return `Ok(())`.
     ///
     /// When it returns, reopening the same storage restores every applied entry and a
     /// `last_applied` that is not older than the one before the call, and every exclusive
     /// resource is released. If persisting fails, still release the resources and return the
-    /// first error. A second call returns `Ok(())`.
+    /// first error.
+    ///
+    /// Do not rely on `close()` for crash safety. When `shutdown_apply_timeout_ms` expires the
+    /// node stops waiting for the worker: `close()` then runs after the node has returned, or not
+    /// at all if the process exits first. A restart must be correct without it, which is why
+    /// `last_applied` has to be persisted together with the data it describes.
+    ///
     /// Default is a no-op, for implementations with nothing to persist or release.
     fn close(&self) -> Result<(), Error> {
         Ok(())
@@ -133,8 +138,8 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Retrieves a value by key from the state machine.
     ///
     /// Called concurrently from the read path, so it must be thread-safe and cheap. Return
-    /// `StorageError::NotServing` while the state machine cannot answer (for example during a
-    /// snapshot install, or after `close()`): the engine then routes the read through Raft.
+    /// `StorageError::NotServing` while the state machine cannot answer (during a snapshot
+    /// install): the engine then routes the read through Raft.
     fn get(
         &self,
         key_buffer: &[u8],
@@ -211,7 +216,6 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Exports the state machine's current state into `new_snapshot_dir` and returns the position
     /// of the last applied entry that the exported state contains.
     ///
-    /// Exports the current state (as of `last_included`) to `new_snapshot_dir`. The framework
     /// The engine checksums the directory itself, labels the snapshot with the returned position,
     /// and records the snapshot only once the final archive is durably built, so a crash
     /// mid-snapshot never leaves a record pointing at a missing archive; the state machine does
@@ -241,7 +245,6 @@ pub trait StateMachine: Send + Sync + 'static {
     /// - take a checkpoint of the storage engine and export from that frozen copy;
     /// - hold a read lock while copying the data and reading the position, with `apply_chunk`
     ///   taking the write lock and updating the position under it.
-    ///
     ///
     /// # Concurrency contract (#436)
     /// May run concurrently with `apply_chunk` (never with `apply_snapshot_from_file` — the two

@@ -31,6 +31,9 @@ use crate::storage::FileStorageEngine;
 struct SlowApplyProbe {
     inner: FileStateMachine,
     apply_delay: Duration,
+    /// How long `close()` takes after it has marked the storage closed (a large database
+    /// flushing).
+    close_delay: Duration,
     flags: Arc<ProbeFlags>,
 }
 
@@ -42,8 +45,18 @@ struct ProbeFlags {
     storage_closed: AtomicBool,
     /// Entries whose apply started or finished after `close_storage()` had been called.
     applied_after_close: AtomicUsize,
+    /// Reads (`get`, `scan_prefix`) that reached the state machine after `close()` had started.
+    reads_after_close: AtomicUsize,
     /// Set when the probe (the state machine) is dropped.
     dropped: AtomicBool,
+}
+
+impl SlowApplyProbe {
+    fn note_read(&self) {
+        if self.flags.storage_closed.load(Ordering::SeqCst) {
+            self.flags.reads_after_close.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 }
 
 impl Drop for SlowApplyProbe {
@@ -70,6 +83,7 @@ impl StateMachine for SlowApplyProbe {
 
     fn close(&self) -> Result<(), Error> {
         self.flags.storage_closed.store(true, Ordering::SeqCst);
+        std::thread::sleep(self.close_delay);
         self.inner.close()
     }
 
@@ -78,6 +92,7 @@ impl StateMachine for SlowApplyProbe {
         &self,
         key_buffer: &[u8],
     ) -> Result<Option<Bytes>, Error> {
+        self.note_read();
         self.inner.get(key_buffer)
     }
     fn last_applied(&self) -> LogId {
@@ -103,6 +118,7 @@ impl StateMachine for SlowApplyProbe {
         &self,
         prefix: &[u8],
     ) -> Result<ScanResult, Error> {
+        self.note_read();
         self.inner.scan_prefix(prefix)
     }
 }
@@ -126,6 +142,7 @@ async fn test_stop_closes_state_machine_storage_only_after_in_flight_applies_fin
     let probe = SlowApplyProbe {
         inner: FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"),
         apply_delay: Duration::from_millis(300),
+        close_delay: Duration::ZERO,
         flags: Arc::clone(&flags),
     };
 
@@ -176,6 +193,7 @@ async fn test_stop_drops_state_machine_before_returning() {
     let probe = SlowApplyProbe {
         inner: FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"),
         apply_delay: Duration::ZERO,
+        close_delay: Duration::ZERO,
         flags: Arc::clone(&flags),
     };
 
@@ -198,5 +216,52 @@ async fn test_stop_drops_state_machine_before_returning() {
     assert!(
         flags.dropped.load(Ordering::SeqCst),
         "stop() returned while the state machine was still referenced by an internal holder"
+    );
+}
+
+/// Business scenario: a single-node embedded service is serving reads when its operator stops it.
+/// Closing a large state machine takes a while (it flushes everything to disk), and clients keep
+/// reading during that time.
+///
+/// Purpose: the engine calls nothing on the state machine after `close()` has started, so an
+/// implementation need not define what a closed state machine does when asked to read. The read
+/// path must therefore be stopped before the state machine is closed.
+#[tokio::test]
+async fn test_stop_sends_no_reads_to_the_state_machine_once_it_is_closing() {
+    unsafe {
+        std::env::remove_var("CONFIG_PATH");
+    }
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let storage =
+        Arc::new(FileStorageEngine::new(temp_dir.path().join("storage")).expect("storage"));
+    let flags = Arc::new(ProbeFlags::default());
+    let probe = SlowApplyProbe {
+        inner: FileStateMachine::new(temp_dir.path().join("sm")).await.expect("sm"),
+        apply_delay: Duration::ZERO,
+        close_delay: Duration::from_millis(300),
+        flags: Arc::clone(&flags),
+    };
+
+    let engine = EmbeddedEngine::start_custom(temp_dir.path(), storage, probe, None)
+        .await
+        .expect("start engine");
+    engine.wait_ready(Duration::from_secs(5)).await.expect("leader");
+    let client = engine.client();
+    client.put("key", "value").await.expect("put");
+
+    // Clients keep reading until the engine refuses them.
+    let reader = {
+        let client = client.clone();
+        tokio::spawn(async move { while client.get_eventual("key").await.is_ok() {} })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    engine.stop().await.expect("stop");
+    let _ = tokio::time::timeout(Duration::from_secs(2), reader).await;
+
+    assert_eq!(
+        flags.reads_after_close.load(Ordering::SeqCst),
+        0,
+        "a read reached the state machine after close() had started"
     );
 }

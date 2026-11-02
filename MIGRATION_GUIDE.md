@@ -419,6 +419,9 @@ fn apply_chunk(&mut self, entries: &[ApplyEntry]) -> Result<(), ...>
 `stop()` was never called by d-engine. `close()` is now the one end-of-life hook. d-engine calls it once, as the last step of the
 state machine worker. When the worker drains cleanly, every committed entry has been applied by then; if
 `shutdown_apply_timeout_ms` expires first, shutdown continues and committed entries may remain unapplied until the next start.
+d-engine stops serving reads before it calls `close()` and calls nothing on the state machine afterwards, so you do not need to
+define what a closed state machine does. If the timeout expires, `close()` runs after the node has returned, or not at all if the
+process exits first: do not rely on it for crash safety, and persist `last_applied` together with the data it describes.
 Because you may keep your own `Arc` to the state machine, do not rely on `Drop` alone. `close()` returns an error if persisting
 fails: release your resources anyway and return the first error. The node logs it at ERROR level.
 
@@ -427,7 +430,7 @@ fails: release your resources anyway and return the first error. The node logs i
 1. Delete your `fn stop(...)`.
 2. Rename `fn close_storage(&self)` to `fn close(&self) -> Result<(), Error>`.
 3. If your `stop()` persisted something that must survive a restart (for example lease state), do it in `close()`.
-4. `close()` must be synchronous and idempotent: after it returns, every operation should return a "not serving" error.
+4. `close()` must be synchronous and may be called more than once (a later call returns `Ok(())`). You no longer have to make operations return a "not serving" error after it.
 5. In config files, rename `[raft.storage]` to `[raft.state_machine]`.
 
 ```rust

@@ -35,7 +35,7 @@ pub trait StateMachineBuilder: Send + Sync {
 impl StateMachineTestSuite {
     /// Run all state machine tests
     pub async fn run_all_tests<B: StateMachineBuilder>(builder: B) -> Result<(), Error> {
-        Self::test_close_is_idempotent_and_stops_serving(builder.build().await?).await?;
+        Self::test_close_may_be_called_twice(builder.build().await?).await?;
         Self::test_basic_kv_operations(builder.build().await?).await?;
         Self::test_apply_chunk_functionality(builder.build().await?).await?;
         Self::test_cas_operations(builder.build().await?).await?;
@@ -52,7 +52,6 @@ impl StateMachineTestSuite {
         Self::test_batch_survives_reopen(&builder).await?;
         Self::test_ungraceful_shutdown_recovery(&builder).await?;
         Self::test_close_persists_without_drop(&builder).await?;
-        Self::test_operations_fail_after_close(builder.build().await?).await?;
         Self::test_reset_operation(builder.build().await?).await?;
 
         Self::test_get_multi_returns_values_in_key_order(builder.build().await?).await?;
@@ -78,24 +77,17 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
-    /// Test close lifecycle: a freshly built state machine already serves, and answers
-    /// `NotServing` once `close`d. `close` is permanent and idempotent (#455), so there is no
-    /// restart.
-    pub async fn test_close_is_idempotent_and_stops_serving(
+    /// Test close lifecycle: a freshly built state machine already serves, and `close` may be
+    /// called more than once. The engine calls nothing on a state machine after `close`, so what a
+    /// closed one answers is not part of the contract.
+    pub async fn test_close_may_be_called_twice(
         state_machine: Arc<dyn StateMachine>
     ) -> Result<(), Error> {
-        let is_closed = |sm: &Arc<dyn StateMachine>| {
-            sm.get(b"lifecycle-probe")
-                .is_err_and(|err| format!("{err:?}").contains("NotServing"))
-        };
-
         // Serving as soon as it is built: there is no separate start step
-        assert!(!is_closed(&state_machine));
+        assert!(state_machine.get(b"lifecycle-probe").is_ok());
 
         state_machine.close()?;
-        assert!(is_closed(&state_machine));
-        state_machine.close()?; // idempotent
-        assert!(is_closed(&state_machine));
+        state_machine.close()?; // a second call returns Ok
 
         Ok(())
     }
@@ -1143,46 +1135,6 @@ impl StateMachineTestSuite {
         assert_eq!(sm2.get(b"close_key3")?, Some(Bytes::from_static(b"v3")));
 
         drop(sm);
-        Ok(())
-    }
-
-    /// After `close()` every operation must fail with `NotServing`, including writes.
-    ///
-    /// Business scenario: the application retains the state machine after the node has shut
-    /// down. A late read must not answer from state that is no longer maintained, and a late
-    /// `apply_chunk` must not mutate a state machine that already persisted its final state.
-    pub async fn test_operations_fail_after_close(sm: Arc<dyn StateMachine>) -> Result<(), Error> {
-        sm.apply_chunk(&[create_insert_entry(
-            1,
-            Bytes::from_static(b"serving_key"),
-            Bytes::from_static(b"v"),
-        )])
-        .await?;
-
-        sm.close()?;
-
-        let not_serving = |err: Error| format!("{err:?}").contains("NotServing");
-        assert!(
-            not_serving(sm.get(b"serving_key").expect_err("get must fail after close")),
-            "get after close must return NotServing"
-        );
-        assert!(
-            not_serving(sm.scan_prefix(b"serving").expect_err("scan_prefix must fail after close")),
-            "scan_prefix after close must return NotServing"
-        );
-        let late_write = sm
-            .apply_chunk(&[create_insert_entry(
-                2,
-                Bytes::from_static(b"late_key"),
-                Bytes::from_static(b"v"),
-            )])
-            .await
-            .expect_err("apply_chunk must fail after close");
-        assert!(
-            not_serving(late_write),
-            "apply_chunk after close must return NotServing"
-        );
-
         Ok(())
     }
 

@@ -28,10 +28,12 @@ impl StateMachine for CustomStateMachine {
     // close() has a default no-op implementation.
     // Override it if your backend must persist something at shutdown (e.g. data, metadata) or
     // holds an exclusive OS resource (a lock file, an open DB handle). d-engine calls it once,
-    // as the worker's last step: after every committed entry has been applied when the worker
-    // drains cleanly, but shutdown continues without that guarantee if
-    // `shutdown_apply_timeout_ms` expires. It must be synchronous and idempotent, release its
-    // resources even if persisting fails, and return the first error.
+    // as the worker's last step, after it has stopped serving reads: nothing is called on the
+    // state machine once close() has started. It must be synchronous, release its resources even
+    // if persisting fails, and return the first error; a second call returns Ok(()).
+    // Do not rely on it for crash safety: if `shutdown_apply_timeout_ms` expires it runs after the
+    // node has returned, or not at all if the process exits first. A restart must be correct
+    // without it, so persist last_applied together with the data it describes.
     // If you share your storage handle with the application (a cloneable state machine), the
     // state machine is not dropped when the engine stops, so do not rely on Drop alone.
     //
@@ -110,15 +112,15 @@ impl StateMachine for CustomStateMachine {
 
 ## 3. StateMachine API Reference
 
-| Method                       | Purpose                                                                                                                                                                                              | Sync/Async | Criticality |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
-| `close()`                    | Final step at shutdown: persist what must survive a restart and release exclusive OS resources (e.g. DB lock file), even if persisting fails; returns the first error. Idempotent. Default `Ok(())`. | Sync       | Medium      |
-| `get()`                      | Read value by key                                                                                                                                                                                    | Sync       | High        |
-| `apply_chunk()`              | Apply committed entries                                                                                                                                                                              | Async      | Critical    |
-| `last_applied()`             | Get last applied index                                                                                                                                                                               | Sync       | High        |
-| `apply_snapshot_from_file()` | Replace state with snapshot                                                                                                                                                                          | Async      | Critical    |
-| `generate_snapshot_data()`   | Export a snapshot into the given directory and return the position of the last entry it contains (the engine checksums it)                                                                           | Async      | High        |
-| `reset()`                    | Reset to initial state                                                                                                                                                                               | Async      | Medium      |
+| Method                       | Purpose                                                                                                                                                                                                                                                  | Sync/Async | Criticality |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
+| `close()`                    | Last step at shutdown: persist what must survive a restart and release exclusive OS resources (e.g. DB lock file), even if persisting fails; returns the first error. May be called more than once. Nothing is called after it starts. Default `Ok(())`. | Sync       | Medium      |
+| `get()`                      | Read value by key                                                                                                                                                                                                                                        | Sync       | High        |
+| `apply_chunk()`              | Apply committed entries                                                                                                                                                                                                                                  | Async      | Critical    |
+| `last_applied()`             | Get last applied index                                                                                                                                                                                                                                   | Sync       | High        |
+| `apply_snapshot_from_file()` | Replace state with snapshot                                                                                                                                                                                                                              | Async      | Critical    |
+| `generate_snapshot_data()`   | Export a snapshot into the given directory and return the position of the last entry it contains (the engine checksums it)                                                                                                                               | Async      | High        |
+| `reset()`                    | Reset to initial state                                                                                                                                                                                                                                   | Async      | Medium      |
 
 ## 4. Testing Your Implementation
 
