@@ -57,15 +57,6 @@ impl<SM: StateMachine + Debug> StateMachine for SharedStateMachine<SM> {
     fn last_applied(&self) -> LogId {
         self.0.last_applied()
     }
-    fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
-        self.0.snapshot_metadata()
-    }
-    fn persist_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        self.0.persist_last_snapshot_metadata(snapshot_metadata)
-    }
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,

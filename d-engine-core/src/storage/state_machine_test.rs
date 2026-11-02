@@ -42,7 +42,8 @@ impl StateMachineTestSuite {
         Self::test_batch_operations(builder.build().await?).await?;
         Self::test_last_applied_detection(builder.build().await?).await?;
         Self::test_snapshot_operations(builder.build().await?).await?;
-        Self::test_snapshot_metadata_survives_reopen(&builder).await?;
+        Self::test_reads_during_snapshot_install_see_old_new_or_not_serving(&builder).await?;
+        Self::test_snapshot_taken_during_writes_never_skips_entries_after_restart(&builder).await?;
 
         Self::test_drop_flushes_data(&builder).await?;
         Self::test_drop_persists_last_applied(&builder).await?;
@@ -239,6 +240,192 @@ impl StateMachineTestSuite {
         Ok(())
     }
 
+    /// A lagging node installs a snapshot while clients keep reading from it.
+    ///
+    /// Scenario: the node holds old values for keys 1..=50 and receives a snapshot in which every
+    /// key holds a new value. Reads that bypass Raft are served straight from the state machine,
+    /// so they run while the install replaces the state.
+    ///
+    /// Expected: every read returns the old value, the new value, or `NotServing` ("not now",
+    /// see the trait documentation). It never returns "not found", an error of another kind, or
+    /// any other value: that would show a client a state that never existed. After the install
+    /// every key holds the new value.
+    pub async fn test_reads_during_snapshot_install_see_old_new_or_not_serving<
+        B: StateMachineBuilder,
+    >(
+        builder: &B
+    ) -> Result<(), Error> {
+        use std::sync::Mutex;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        const KEYS: u64 = 300;
+        const READ_KEYS: u64 = 50;
+        let key = |i: u64| Bytes::from(format!("key-{i}"));
+        let entries = |range: std::ops::RangeInclusive<u64>, value: &'static [u8]| {
+            range
+                .map(|i| create_insert_entry(i, key(i), Bytes::from_static(value)))
+                .collect::<Vec<_>>()
+        };
+
+        // 1. A snapshot of the state in which every key holds the new value.
+        let sm = builder.build().await?;
+        sm.apply_chunk(&entries(1..=KEYS, b"new")).await?;
+        let temp_dir = TempDir::new()?;
+        let snapshot_dir = temp_dir.path().join("snapshot");
+        let last_included = LogId {
+            index: KEYS,
+            term: 1,
+        };
+        sm.generate_snapshot_data(snapshot_dir.clone(), last_included).await?;
+        let metadata = SnapshotMetadata {
+            last_included: Some(last_included),
+            checksum: Bytes::from(vec![0; 32]),
+        };
+
+        // 2. The node is behind: it only has the old values for the first keys.
+        sm.reset().await?;
+        sm.apply_chunk(&entries(1..=READ_KEYS, b"old")).await?;
+
+        // 3. Readers keep reading while the snapshot is installed.
+        let stop = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let violations = Arc::new(Mutex::new(Vec::<String>::new()));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let (sm, stop, reads, violations) =
+                    (sm.clone(), stop.clone(), reads.clone(), violations.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        for i in 1..=READ_KEYS {
+                            let seen = match sm.get(&key(i)) {
+                                Ok(Some(v)) if v == "old" || v == "new" => None,
+                                Ok(Some(other)) => {
+                                    Some(format!("key {i}: unexpected value {other:?}"))
+                                }
+                                Ok(None) => Some(format!("key {i}: reported as not found")),
+                                Err(e) if e.is_not_serving() => None,
+                                Err(e) => Some(format!("key {i}: {e:?}")),
+                            };
+                            reads.fetch_add(1, Ordering::Relaxed);
+                            if let Some(violation) = seen {
+                                violations.lock().unwrap().push(violation);
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        while reads.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let installed = sm.apply_snapshot_from_file(&metadata, snapshot_dir).await;
+
+        stop.store(true, Ordering::Relaxed);
+        for reader in readers {
+            reader.join().expect("a reader thread panicked");
+        }
+        installed?;
+
+        let violations = violations.lock().unwrap();
+        assert!(
+            violations.is_empty(),
+            "reads during the snapshot install saw a state that never existed, for example: {:?} \
+             ({} reads, {} violations)",
+            &violations[..violations.len().min(3)],
+            reads.load(Ordering::Relaxed),
+            violations.len()
+        );
+        for i in 1..=KEYS {
+            assert_eq!(
+                sm.get(&key(i))?,
+                Some(Bytes::from_static(b"new")),
+                "key {i} must hold the new value after the install"
+            );
+        }
+        Ok(())
+    }
+
+    /// A snapshot taken while orders keep arriving must not make a restarted node skip orders.
+    ///
+    /// Scenario: an order service keeps writing. Order number `n` is log entry `n`, and the key
+    /// `orders` always holds the number of the latest order. The leader takes a snapshot while the
+    /// writes continue and a lagging node installs it. The lagging node then restarts.
+    ///
+    /// Expected: after the restart the node's position is not ahead of its data. A position ahead
+    /// of the data (say "applied up to order 17197" while the data stops at order 15993) makes
+    /// the node continue from order 17198, so orders 15994 to 17197 are never replayed and are
+    /// lost without any error.
+    ///
+    /// The position may be behind the data: the engine then replays a few orders that the data
+    /// already contains, which is harmless for a key-value store.
+    pub async fn test_snapshot_taken_during_writes_never_skips_entries_after_restart<
+        B: StateMachineBuilder,
+    >(
+        builder: &B
+    ) -> Result<(), Error> {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+
+        for attempt in 0..3 {
+            // 1. Orders keep arriving: entry n sets `orders` to n, one entry at a time.
+            let sm = builder.build().await?;
+            sm.reset().await?;
+            let stop = Arc::new(AtomicBool::new(false));
+            let writer = {
+                let (sm, stop) = (sm.clone(), stop.clone());
+                tokio::spawn(async move {
+                    let mut n = 1u64;
+                    while !stop.load(Ordering::Relaxed) {
+                        let entry = create_insert_entry(
+                            n,
+                            Bytes::from_static(b"orders"),
+                            Bytes::from(n.to_string()),
+                        );
+                        sm.apply_chunk(&[entry]).await.expect("apply");
+                        n += 1;
+                        tokio::task::yield_now().await;
+                    }
+                })
+            };
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // 2. A snapshot is taken in the middle of the writes.
+            let temp_dir = TempDir::new()?;
+            let snapshot_dir = temp_dir.path().join("snapshot");
+            sm.generate_snapshot_data(snapshot_dir.clone(), LogId { index: 1, term: 1 })
+                .await?;
+            stop.store(true, Ordering::Relaxed);
+            writer.await.expect("the writer must not panic");
+
+            // 3. A lagging node (an empty one) installs it and restarts.
+            sm.reset().await?;
+            let metadata = SnapshotMetadata {
+                last_included: Some(LogId { index: 1, term: 1 }),
+                checksum: Bytes::from(vec![0; 32]),
+            };
+            sm.apply_snapshot_from_file(&metadata, snapshot_dir).await?;
+            sm.close()?;
+            drop(sm);
+            let restarted = builder.build().await?;
+
+            let position = restarted.last_applied().index;
+            let data: u64 = restarted
+                .get(b"orders")?
+                .map(|v| String::from_utf8_lossy(&v).parse().expect("a number"))
+                .unwrap_or(0);
+            assert!(
+                position <= data,
+                "attempt {attempt}: after the restart the node believes it applied up to {position}, \
+                 but its data only reaches {data}: entries {}..={position} would never be replayed",
+                data + 1
+            );
+        }
+        Ok(())
+    }
+
     /// Test last applied index detection
     pub async fn test_last_applied_detection(
         state_machine: Arc<dyn StateMachine>
@@ -307,10 +494,6 @@ impl StateMachineTestSuite {
             .await?;
         let checksum = crate::file_io::compute_checksum_from_folder_path(&snapshot_dir).await?;
 
-        // (#436) generate_snapshot_data no longer publishes snapshot metadata — that
-        // moved to build_local_snapshot (the handler), after the archive is durable.
-        // So snapshot_metadata() is expected to remain unchanged here.
-
         // Apply snapshot (simulate receiving from leader)
         // let snapshot_path = snapshot_dir.join("snapshot.bin");
         let metadata = SnapshotMetadata {
@@ -370,47 +553,6 @@ impl StateMachineTestSuite {
         assert_eq!(state_machine.get(b"old_key2")?, None);
         assert_eq!(state_machine.get(b"old_key3")?, None);
         assert_eq!(state_machine.last_applied(), last_included);
-
-        Ok(())
-    }
-
-    /// Snapshot metadata published through `persist_last_snapshot_metadata` must survive a
-    /// restart.
-    ///
-    /// # Scenario
-    /// A node builds a snapshot and the engine publishes its metadata, once the archive is
-    /// durably built, by calling `persist_last_snapshot_metadata`. The node then restarts.
-    ///
-    /// # Expected
-    /// The reopened state machine reports exactly that metadata from `snapshot_metadata()`.
-    /// Otherwise the node forgets which snapshot it holds and can no longer tell followers
-    /// where its snapshot ends.
-    pub async fn test_snapshot_metadata_survives_reopen<B: StateMachineBuilder>(
-        builder: &B
-    ) -> Result<(), Error> {
-        let sm = builder.build().await?;
-        sm.apply_chunk(&[
-            create_insert_entry(1, Bytes::from_static(b"k1"), Bytes::from_static(b"v1")),
-            create_insert_entry(2, Bytes::from_static(b"k2"), Bytes::from_static(b"v2")),
-            create_insert_entry(3, Bytes::from_static(b"k3"), Bytes::from_static(b"v3")),
-        ])
-        .await?;
-
-        let metadata = SnapshotMetadata {
-            last_included: Some(LogId { index: 3, term: 1 }),
-            checksum: Bytes::from(vec![7; 32]),
-        };
-        sm.persist_last_snapshot_metadata(&metadata)?;
-        sm.close()?;
-        // `sm` stays alive until the end of the test: Drop must not be what saves the state.
-
-        let reopened = builder.build().await?;
-        assert_eq!(
-            reopened.snapshot_metadata(),
-            Some(metadata),
-            "snapshot metadata published with persist_last_snapshot_metadata must survive a \
-             restart"
-        );
 
         Ok(())
     }
@@ -1076,7 +1218,6 @@ impl StateMachineTestSuite {
             Some(Bytes::from(b"value3".to_vec()))
         );
         assert_eq!(state_machine.last_applied(), LogId { index: 3, term: 1 });
-        // Note: snapshot_metadata may or may not be None depending on previous tests
         // The test focuses on verifying reset() clears everything, not initial state
 
         // Perform reset
@@ -1089,7 +1230,6 @@ impl StateMachineTestSuite {
 
         // Verify Raft state is reset
         assert_eq!(state_machine.last_applied(), LogId { index: 0, term: 0 });
-        assert!(state_machine.snapshot_metadata().is_none());
 
         // Verify operational state is maintained: reads above succeeded, so it still serves
 
@@ -1673,17 +1813,6 @@ mod default_scan_prefix_tests {
             LogId::default()
         }
 
-        fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
-            None
-        }
-
-        fn persist_last_snapshot_metadata(
-            &self,
-            _snapshot_metadata: &SnapshotMetadata,
-        ) -> Result<(), Error> {
-            Ok(())
-        }
-
         async fn apply_snapshot_from_file(
             &self,
             _metadata: &SnapshotMetadata,
@@ -1729,5 +1858,223 @@ mod default_scan_prefix_tests {
             err_debug.contains("scan_prefix not supported"),
             "error should mention 'scan_prefix not supported', got: {err_debug}"
         );
+    }
+}
+
+/// The suite tests for a snapshot install and for a snapshot taken during writes must be able to
+/// fail.
+///
+/// `InMemorySm` is a small state machine with three ways to go wrong, each switched on by a flag:
+/// - `faulty`: it installs a snapshot by emptying its state, pausing, and refilling it, so a read
+///   in between sees an empty state.
+/// - `late_position`: it records the position of a snapshot after it has copied the data, so a
+///   write in between leaves the position ahead of the data. Without a flag it replaces its state
+///   in one step and exports data and position together.
+#[cfg(test)]
+mod install_reader_suite_tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use d_engine_proto::common::LogId;
+    use d_engine_proto::server::storage::SnapshotMetadata;
+
+    use super::StateMachineBuilder;
+    use super::StateMachineTestSuite;
+    use crate::ApplyEntry;
+    use crate::Command;
+    use crate::Error;
+    use crate::storage::StateMachine;
+    use crate::storage::state_machine::ApplyResult;
+
+    /// What survives a restart: shared by every state machine the builder creates.
+    #[derive(Default)]
+    struct Durable {
+        data: RwLock<HashMap<Bytes, Bytes>>,
+        applied: RwLock<LogId>,
+    }
+
+    struct InMemorySm {
+        durable: Arc<Durable>,
+        faulty: bool,
+        late_position: bool,
+    }
+
+    #[async_trait]
+    impl StateMachine for InMemorySm {
+        fn get(
+            &self,
+            key: &[u8],
+        ) -> Result<Option<Bytes>, Error> {
+            Ok(self.durable.data.read().unwrap().get(key).cloned())
+        }
+
+        async fn apply_chunk(
+            &self,
+            chunk: &[ApplyEntry],
+        ) -> Result<Vec<ApplyResult>, Error> {
+            // Data and position change under one lock, like a database transaction.
+            let mut data = self.durable.data.write().unwrap();
+            for entry in chunk {
+                if let Command::Insert { key, value } = &entry.command {
+                    data.insert(key.clone(), value.clone());
+                }
+                *self.durable.applied.write().unwrap() = LogId {
+                    index: entry.index,
+                    term: entry.term,
+                };
+            }
+            Ok(chunk.iter().map(|e| ApplyResult::success(e.index)).collect())
+        }
+
+        fn last_applied(&self) -> LogId {
+            *self.durable.applied.read().unwrap()
+        }
+
+        async fn generate_snapshot_data(
+            &self,
+            new_snapshot_dir: PathBuf,
+            _last_included: LogId,
+        ) -> Result<(), Error> {
+            std::fs::create_dir_all(&new_snapshot_dir)?;
+            // Right: copy the data and read the position under the same lock.
+            let (lines, mut position) = {
+                let data = self.durable.data.read().unwrap();
+                let lines: Vec<String> = data
+                    .iter()
+                    .map(|(k, v)| {
+                        format!(
+                            "{}={}",
+                            String::from_utf8_lossy(k),
+                            String::from_utf8_lossy(v)
+                        )
+                    })
+                    .collect();
+                (lines, *self.durable.applied.read().unwrap())
+            };
+            if self.late_position {
+                // Wrong: the position is read after the data was copied, and writes may have
+                // happened in between.
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                position = *self.durable.applied.read().unwrap();
+            }
+            std::fs::write(new_snapshot_dir.join("data.txt"), lines.join("\n"))?;
+            std::fs::write(
+                new_snapshot_dir.join("position.txt"),
+                format!("{} {}", position.index, position.term),
+            )?;
+            Ok(())
+        }
+
+        async fn apply_snapshot_from_file(
+            &self,
+            _metadata: &SnapshotMetadata,
+            snapshot_path: PathBuf,
+        ) -> Result<(), Error> {
+            let text = std::fs::read_to_string(snapshot_path.join("data.txt"))?;
+            let new_data: HashMap<Bytes, Bytes> = text
+                .lines()
+                .filter_map(|l| l.split_once('='))
+                .map(|(k, v)| (Bytes::from(k.to_string()), Bytes::from(v.to_string())))
+                .collect();
+            let position = std::fs::read_to_string(snapshot_path.join("position.txt"))?;
+            let (index, term) = position.split_once(' ').expect("index and term");
+            let position = LogId {
+                index: index.parse().unwrap(),
+                term: term.parse().unwrap(),
+            };
+            if self.faulty {
+                // Wrong: readers can run between the clear and the refill.
+                self.durable.data.write().unwrap().clear();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                *self.durable.data.write().unwrap() = new_data;
+            } else {
+                // Right: the whole state is replaced in one step.
+                *self.durable.data.write().unwrap() = new_data;
+            }
+            *self.durable.applied.write().unwrap() = position;
+            Ok(())
+        }
+
+        async fn reset(&self) -> Result<(), Error> {
+            self.durable.data.write().unwrap().clear();
+            *self.durable.applied.write().unwrap() = LogId::default();
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct InMemoryBuilder {
+        durable: Arc<Durable>,
+        faulty: bool,
+        late_position: bool,
+    }
+
+    #[async_trait]
+    impl StateMachineBuilder for InMemoryBuilder {
+        async fn build(&self) -> Result<Arc<dyn StateMachine>, Error> {
+            Ok(Arc::new(InMemorySm {
+                durable: self.durable.clone(),
+                faulty: self.faulty,
+                late_position: self.late_position,
+            }))
+        }
+
+        async fn cleanup(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    /// Purpose: a state machine that replaces its state in one step passes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_reader_suite_accepts_a_state_machine_that_swaps_its_state_atomically() {
+        StateMachineTestSuite::test_reads_during_snapshot_install_see_old_new_or_not_serving(
+            &InMemoryBuilder::default(),
+        )
+        .await
+        .expect("an atomic install must pass");
+    }
+
+    /// Purpose: a state machine that empties its state and then refills it is caught, because a
+    /// reader that runs in between sees keys as not found.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[should_panic(expected = "saw a state that never existed")]
+    async fn test_reader_suite_rejects_a_state_machine_that_empties_its_state_during_install() {
+        let _ =
+            StateMachineTestSuite::test_reads_during_snapshot_install_see_old_new_or_not_serving(
+                &InMemoryBuilder {
+                    faulty: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+    }
+
+    /// Purpose: a state machine that exports its data and position together passes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_snapshot_suite_accepts_a_state_machine_that_exports_data_and_position_together() {
+        StateMachineTestSuite::test_snapshot_taken_during_writes_never_skips_entries_after_restart(
+            &InMemoryBuilder::default(),
+        )
+        .await
+        .expect("a consistent export must pass");
+    }
+
+    /// Purpose: a state machine that records the position after copying the data is caught: after
+    /// the restart its position is ahead of its data.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[should_panic(expected = "would never be replayed")]
+    async fn test_snapshot_suite_rejects_a_state_machine_whose_exported_position_runs_ahead() {
+        let _ = StateMachineTestSuite::test_snapshot_taken_during_writes_never_skips_entries_after_restart(
+            &InMemoryBuilder {
+                late_position: true,
+                ..Default::default()
+            },
+        )
+        .await;
     }
 }

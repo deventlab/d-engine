@@ -17,7 +17,6 @@ use d_engine_core::StateMachine;
 use d_engine_core::StorageError;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
-use parking_lot::RwLock;
 use rocksdb::Cache;
 use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::DB;
@@ -43,7 +42,6 @@ use super::STATE_MACHINE_META_CF;
 
 const LAST_APPLIED_INDEX_KEY: &[u8] = b"last_applied_index";
 const LAST_APPLIED_TERM_KEY: &[u8] = b"last_applied_term";
-const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
 
 thread_local! {
     // SM WAL is redundant — Raft log WAL guarantees entry durability.
@@ -87,7 +85,6 @@ pub struct RocksDBStateMachine {
     is_serving: AtomicBool,
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
-    last_snapshot_metadata: RwLock<Option<SnapshotMetadata>>,
 }
 
 /// Returns the lexicographic successor of `prefix` for use as an iterator upper bound.
@@ -129,14 +126,12 @@ impl RocksDBStateMachine {
         let db_arc = Arc::new(db);
 
         let (last_applied_index, last_applied_term) = Self::load_state_machine_metadata(&db_arc)?;
-        let last_snapshot_metadata = Self::load_snapshot_metadata(&db_arc)?;
 
         Ok(Self {
             db: ArcSwapOption::new(Some(db_arc)),
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
-            last_snapshot_metadata: RwLock::new(last_snapshot_metadata),
         })
     }
 
@@ -146,14 +141,11 @@ impl RocksDBStateMachine {
     /// `STATE_MACHINE_CF` and `STATE_MACHINE_META_CF` column families open.
     pub(super) fn from_shared_db(db: Arc<DB>) -> Result<Self, Error> {
         let (last_applied_index, last_applied_term) = Self::load_state_machine_metadata(&db)?;
-        let last_snapshot_metadata = Self::load_snapshot_metadata(&db)?;
-
         Ok(Self {
             db: ArcSwapOption::new(Some(db)),
             is_serving: AtomicBool::new(true),
             last_applied_index: AtomicU64::new(last_applied_index),
             last_applied_term: AtomicU64::new(last_applied_term),
-            last_snapshot_metadata: RwLock::new(last_snapshot_metadata),
         })
     }
 
@@ -235,23 +227,6 @@ impl RocksDBStateMachine {
         Ok((index, term))
     }
 
-    fn load_snapshot_metadata(db: &Arc<DB>) -> Result<Option<SnapshotMetadata>, Error> {
-        let cf = db
-            .cf_handle(STATE_MACHINE_META_CF)
-            .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
-
-        match db
-            .get_cf(&cf, SNAPSHOT_METADATA_KEY)
-            .map_err(|e| StorageError::DbError(e.to_string()))?
-        {
-            Some(bytes) => {
-                let metadata = bincode::deserialize(&bytes).map_err(StorageError::BincodeError)?;
-                Ok(Some(metadata))
-            }
-            None => Ok(None),
-        }
-    }
-
     fn persist_state_machine_metadata(&self) -> Result<(), Error> {
         let index = self.last_applied_index.load(Ordering::SeqCst);
         let term = self.last_applied_term.load(Ordering::SeqCst);
@@ -269,23 +244,6 @@ impl RocksDBStateMachine {
         })
     }
 
-    fn persist_snapshot_metadata(&self) -> Result<(), Error> {
-        let snapshot = self.last_snapshot_metadata.read().clone();
-        self.with_db(|db| {
-            let cf = db.cf_handle(STATE_MACHINE_META_CF).ok_or_else(|| {
-                Error::System(d_engine_core::SystemError::Storage(StorageError::DbError(
-                    "State machine meta CF not found".to_string(),
-                )))
-            })?;
-            if let Some(metadata) = &snapshot {
-                let bytes = bincode::serialize(metadata).map_err(StorageError::BincodeError)?;
-                db.put_cf(&cf, SNAPSHOT_METADATA_KEY, bytes)
-                    .map_err(|e| StorageError::DbError(e.to_string()))?;
-            }
-            Ok(())
-        })
-    }
-
     // ===== Snapshot restore helpers =====
 
     /// Restore SM state from a snapshot (CF export format).
@@ -293,7 +251,6 @@ impl RocksDBStateMachine {
     /// Uses CF export: drop+import, O(1), no tombstones.
     async fn restore_from_snapshot(
         &self,
-        metadata: &SnapshotMetadata,
         last_included: LogId,
         snapshot_dir: &std::path::Path,
     ) -> Result<(), Error> {
@@ -301,7 +258,6 @@ impl RocksDBStateMachine {
 
         info!("Snapshot restore complete");
 
-        *self.last_snapshot_metadata.write() = Some(metadata.clone());
         self.update_last_applied(last_included);
 
         self.is_serving.store(true, Ordering::SeqCst);
@@ -361,6 +317,78 @@ impl RocksDBStateMachine {
             .map_err(|e| StorageError::DbError(e.to_string()))?;
         }
 
+        Ok(())
+    }
+
+    /// Exports the `sm` and `sm_meta` column families from one frozen view of the database.
+    ///
+    /// `apply_chunk` keeps writing while a snapshot is taken, and it commits data (`sm`) and
+    /// `last_applied` (`sm_meta`) in one write batch. Exporting the two column families from the
+    /// live database one after the other would let writes land in between, so the exported
+    /// `last_applied` could be ahead of the exported data: a node that installs such a snapshot
+    /// would skip the entries in between forever.
+    ///
+    /// A checkpoint is a frozen copy of the database (hard links to immutable SST files, made after
+    /// flushing the memtables, which RocksDB does for every column family together because
+    /// `atomic_flush` is on). Both column families are exported from that copy, which no writer
+    /// touches, so the exported data and position describe the same applied entry. The checkpoint
+    /// is a sibling of `snapshot_dir`, not inside it, so it never becomes part of the snapshot,
+    /// and it is removed afterwards.
+    fn export_frozen_view(
+        db: &DB,
+        snapshot_dir: &std::path::Path,
+    ) -> Result<(), Error> {
+        let name = snapshot_dir
+            .file_name()
+            .ok_or_else(|| StorageError::DbError("snapshot dir has no name".to_string()))?
+            .to_string_lossy();
+        let checkpoint_dir = snapshot_dir.with_file_name(format!(".{name}.checkpoint"));
+        if checkpoint_dir.exists() {
+            std::fs::remove_dir_all(&checkpoint_dir)?;
+        }
+        let result = Self::create_checkpoint_and_export(db, &checkpoint_dir, snapshot_dir);
+        if let Err(e) = std::fs::remove_dir_all(&checkpoint_dir) {
+            error!("Failed to remove snapshot checkpoint {checkpoint_dir:?}: {e}");
+        }
+        result
+    }
+
+    fn create_checkpoint_and_export(
+        db: &DB,
+        checkpoint_dir: &std::path::Path,
+        snapshot_dir: &std::path::Path,
+    ) -> Result<(), Error> {
+        let to_err = |e: rocksdb::Error| StorageError::DbError(e.to_string());
+        rocksdb::checkpoint::Checkpoint::new(db)
+            .and_then(|c| c.create_checkpoint(checkpoint_dir))
+            .map_err(to_err)?;
+
+        // Open the frozen copy with every column family it contains. Exporting needs a writable
+        // handle; background compaction is off so that nothing rewrites the files being exported.
+        let mut opts = Options::default();
+        opts.set_disable_auto_compactions(true);
+        opts.set_max_background_jobs(1);
+        let cf_names = DB::list_cf(&opts, checkpoint_dir).map_err(to_err)?;
+        let frozen = DB::open_cf(&opts, checkpoint_dir, &cf_names).map_err(to_err)?;
+        let checkpoint = rocksdb::checkpoint::Checkpoint::new(&frozen).map_err(to_err)?;
+
+        let cf_sm = frozen
+            .cf_handle(STATE_MACHINE_CF)
+            .ok_or_else(|| StorageError::DbError("SM CF not found".to_string()))?;
+        let cf_sm_meta = frozen
+            .cf_handle(STATE_MACHINE_META_CF)
+            .ok_or_else(|| StorageError::DbError("SM meta CF not found".to_string()))?;
+
+        // export_column_family() creates only the final subdirectory (e.g. "sm"); the parent
+        // (snapshot_dir) already exists.
+        let sm_export = checkpoint
+            .export_column_family(&cf_sm, snapshot_dir.join("sm"))
+            .map_err(to_err)?;
+        let sm_meta_export = checkpoint
+            .export_column_family(&cf_sm_meta, snapshot_dir.join("sm_meta"))
+            .map_err(to_err)?;
+        Self::save_cf_export_metadata(&sm_export, &snapshot_dir.join("sm_metadata.bin"))?;
+        Self::save_cf_export_metadata(&sm_meta_export, &snapshot_dir.join("sm_meta_metadata.bin"))?;
         Ok(())
     }
 
@@ -503,20 +531,6 @@ impl RocksDBStateMachine {
         self.last_applied_term.store(last_applied.term, Ordering::SeqCst);
     }
 
-    pub(crate) fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        *self.last_snapshot_metadata.write() = Some(snapshot_metadata.clone());
-        Ok(())
-    }
-
-    pub(crate) fn save_hard_state(&self) -> Result<(), Error> {
-        // last_applied_index/term are now persisted atomically with each
-        // apply_chunk() batch (see apply_chunk()) — no longer written here.
-        self.persist_snapshot_metadata()
-    }
-
     /// Flushes the WAL and both state machine column families to disk.
     pub fn flush(&self) -> Result<(), Error> {
         self.with_db(|db| {
@@ -587,7 +601,6 @@ impl StateMachine for RocksDBStateMachine {
             }
         };
         record("flush", self.flush());
-        record("save hard state", self.save_hard_state());
         if let Some(db) = self.db.load().as_deref() {
             db.cancel_all_background_work(true);
         }
@@ -757,18 +770,6 @@ impl StateMachine for RocksDBStateMachine {
         }
     }
 
-    fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
-        self.last_snapshot_metadata.read().clone()
-    }
-
-    fn persist_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        self.update_last_snapshot_metadata(snapshot_metadata)?;
-        self.persist_snapshot_metadata()
-    }
-
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
@@ -783,7 +784,7 @@ impl StateMachine for RocksDBStateMachine {
         // Stop serving — prevents SM reads/writes during restore
         self.is_serving.store(false, Ordering::SeqCst);
 
-        let result = self.restore_from_snapshot(metadata, incoming, &snapshot_dir).await;
+        let result = self.restore_from_snapshot(incoming, &snapshot_dir).await;
 
         if let Err(ref e) = result {
             error!(
@@ -816,38 +817,7 @@ impl StateMachine for RocksDBStateMachine {
         let dir = new_snapshot_dir.clone();
         tokio::task::spawn_blocking(move || -> Result<(), Error> {
             std::fs::create_dir_all(&dir)?;
-            {
-                let checkpoint = rocksdb::checkpoint::Checkpoint::new(db.as_ref())
-                    .map_err(|e| StorageError::DbError(e.to_string()))?;
-                let cf_sm = db
-                    .cf_handle(STATE_MACHINE_CF)
-                    .ok_or_else(|| StorageError::DbError("SM CF not found".to_string()))?;
-                let cf_sm_meta = db
-                    .cf_handle(STATE_MACHINE_META_CF)
-                    .ok_or_else(|| StorageError::DbError("SM meta CF not found".to_string()))?;
-
-                // Flush both CFs before export: export_column_family only captures SST files,
-                // not MemTable data. Without this, small CFs (e.g. sm_meta with only a few
-                // metadata keys) may never have been flushed and would export 0 files.
-                // Synchronous flush (FlushOptions::wait = true by default) is intentional:
-                // we must wait for flush to complete before export or in-flight writes are lost.
-                let flush_opts = rocksdb::FlushOptions::default();
-                db.flush_cf_opt(&cf_sm, &flush_opts)
-                    .map_err(|e| StorageError::DbError(e.to_string()))?;
-                db.flush_cf_opt(&cf_sm_meta, &flush_opts)
-                    .map_err(|e| StorageError::DbError(e.to_string()))?;
-
-                let sm_export = checkpoint
-                    .export_column_family(&cf_sm, dir.join("sm"))
-                    .map_err(|e| StorageError::DbError(e.to_string()))?;
-                let sm_meta_export = checkpoint
-                    .export_column_family(&cf_sm_meta, dir.join("sm_meta"))
-                    .map_err(|e| StorageError::DbError(e.to_string()))?;
-
-                Self::save_cf_export_metadata(&sm_export, &dir.join("sm_metadata.bin"))?;
-                Self::save_cf_export_metadata(&sm_meta_export, &dir.join("sm_meta_metadata.bin"))?;
-            } // checkpoint and CF handles dropped here
-            Ok(())
+            Self::export_frozen_view(&db, &dir)
         })
         .await
         .map_err(Self::map_snapshot_join_error)??;
@@ -875,10 +845,8 @@ impl StateMachine for RocksDBStateMachine {
 
         self.last_applied_index.store(0, Ordering::SeqCst);
         self.last_applied_term.store(0, Ordering::SeqCst);
-        *self.last_snapshot_metadata.write() = None;
 
         self.persist_state_machine_metadata()?;
-        self.persist_snapshot_metadata()?;
 
         info!("RocksDB state machine reset completed");
         Ok(())

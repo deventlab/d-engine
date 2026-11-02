@@ -959,7 +959,6 @@ mod create_snapshot_tests {
                 path.ends_with("temp-5-1") && last_included.index == 5 && last_included.term == 1
             })
             .returning(|_, _| Ok(()));
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -1030,12 +1029,6 @@ mod create_snapshot_tests {
                 fs::create_dir(path.join("state_machine")).unwrap();
                 Ok(())
             });
-        // The publish must come after generate_snapshot_data (capture), i.e. during
-        // build_local_snapshot once the archive exists — never during capture.
-        sm.expect_persist_last_snapshot_metadata()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -1069,12 +1062,6 @@ mod create_snapshot_tests {
         // Setup slow snapshot generation
         let (tx, _rx) = tokio::sync::oneshot::channel();
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
-        sm.expect_snapshot_metadata().returning(move || {
-            Some(SnapshotMetadata {
-                last_included: Some(LogId { index: 1, term: 1 }),
-                checksum: Bytes::from(vec![1; 8]),
-            })
-        });
         sm.expect_generate_snapshot_data().times(1..=2).returning(move |path, _| {
             // Track invocation count
             let mut count = counter_clone.lock().unwrap();
@@ -1091,7 +1078,6 @@ mod create_snapshot_tests {
                 Err(SnapshotError::OperationFailed("Concurrency failure".into()).into())
             }
         });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut snapshot_policy = MockSnapshotPolicy::new();
         snapshot_policy.expect_should_trigger().returning(|_| true);
@@ -1171,7 +1157,6 @@ mod create_snapshot_tests {
 
             Ok(())
         });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
         let snapshot_dir = temp_path.to_path_buf();
 
         let mut config = snapshot_config(snapshot_dir.clone());
@@ -1253,7 +1238,6 @@ mod create_snapshot_tests {
             fs::create_dir_all(path).unwrap();
             Ok(())
         });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let config = snapshot_config(temp_path.clone());
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
@@ -1354,7 +1338,6 @@ mod create_snapshot_tests {
                 fs::create_dir_all(path).unwrap();
                 Ok(())
             });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.clone());
         config.retained_log_entries = 10;
@@ -1430,7 +1413,6 @@ mod create_snapshot_tests {
                 last_included.index == 100 && last_included.term == 2
             })
             .returning(|_, _| Ok(()));
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         // retained=60: old code would subtract and land in term 1 territory (index 40)
@@ -1491,7 +1473,6 @@ mod create_snapshot_tests {
                 fs::create_dir_all(path).unwrap();
                 Ok(())
             });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 10;
@@ -1569,7 +1550,6 @@ mod create_snapshot_tests {
             fs::create_dir_all(&path).unwrap();
             Ok(())
         });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
         let config = snapshot_config(snapshot_dir.clone());
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
@@ -2032,7 +2012,6 @@ async fn test_snapshot_compression() {
 
         Ok(())
     });
-    sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
 
     let mut config = snapshot_config(temp_path.to_path_buf());
     config.retained_log_entries = 0;
@@ -3421,9 +3400,6 @@ mod snapshot_catalog_behavior_tests {
             .unwrap();
             Ok(())
         });
-        sm.expect_persist_last_snapshot_metadata().returning(|_| Ok(()));
-        // The state machine knows nothing about snapshots.
-        sm.expect_snapshot_metadata().returning(|| None);
         sm
     }
 

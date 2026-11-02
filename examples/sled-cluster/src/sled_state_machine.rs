@@ -10,7 +10,6 @@ use std::time::Instant;
 
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
-use bincode::config;
 use bytes::Bytes;
 use d_engine::ApplyEntry;
 use d_engine::ApplyResult;
@@ -23,7 +22,6 @@ use d_engine::StateMachine;
 use d_engine::StorageError;
 use d_engine::common::LogId;
 use d_engine::server_storage::SnapshotMetadata;
-use parking_lot::Mutex;
 use sled::Batch;
 use tracing::debug;
 use tracing::error;
@@ -37,13 +35,10 @@ use crate::safe_vk_ivec;
 /// Sled database tree namespaces
 pub(crate) const STATE_MACHINE_TREE: &str = "_state_machine_tree";
 pub(crate) const STATE_MACHINE_META_NAMESPACE: &str = "_state_machine_metadata";
-pub(crate) const STATE_SNAPSHOT_METADATA_TREE: &str = "_snapshot_metadata";
 
 /// Sled entry key namespaces
 pub(crate) const STATE_MACHINE_META_KEY_LAST_APPLIED_INDEX: &str = "_raft_last_applied_index";
 pub(crate) const STATE_MACHINE_META_KEY_LAST_APPLIED_TERM: &str = "_raft_last_applied_term";
-
-pub(crate) const LAST_SNAPSHOT_METADATA_KEY: &str = "_raft_last_snapshot_metadata";
 
 pub struct SledStateMachine {
     node_id: u32,
@@ -64,11 +59,6 @@ pub struct SledStateMachine {
     /// The last submitted log index and term (atomic operation ensures lock-free)
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
-
-    /// Snapshot metadata
-    last_included_index: AtomicU64, // load from STATE_SNAPSHOT_METADATA_TREE
-    last_included_term: AtomicU64,
-    last_snapshot_checksum: Mutex<Option<[u8; 32]>>, //SHA-256
 }
 
 impl std::fmt::Debug for SledStateMachine {
@@ -112,25 +102,6 @@ impl StateMachine for SledStateMachine {
         LogId {
             index: self.last_applied_index.load(Ordering::SeqCst),
             term: self.last_applied_term.load(Ordering::SeqCst),
-        }
-    }
-
-    fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
-        let last_included_index = self.last_included_index.load(Ordering::SeqCst);
-        if last_included_index > 0 {
-            Some(SnapshotMetadata {
-                last_included: Some(LogId {
-                    index: self.last_included_index.load(Ordering::SeqCst),
-                    term: self.last_included_term.load(Ordering::SeqCst),
-                }),
-                checksum: self
-                    .last_snapshot_checksum
-                    .lock()
-                    .as_ref()
-                    .map(|arr| Bytes::copy_from_slice(arr))?,
-            })
-        } else {
-            None
         }
     }
 
@@ -243,23 +214,6 @@ impl StateMachine for SledStateMachine {
         }
 
         Ok(results)
-    }
-
-    fn persist_last_snapshot_metadata(
-        &self,
-        last_snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<()> {
-        debug!(%self.node_id, ?last_snapshot_metadata, "persist_last_snapshot_metadata");
-        // The engine only ever calls this method, so it must also update the in-memory copy that
-        // `snapshot_metadata()` reads and that `close()` writes back.
-        self.update_last_snapshot_metadata(last_snapshot_metadata)?;
-        let db = self.db()?;
-        let tree = db
-            .open_tree(STATE_SNAPSHOT_METADATA_TREE)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        self.persist_last_snapshot_metadata_with_tree(tree, last_snapshot_metadata)?;
-
-        Ok(())
     }
 
     async fn generate_snapshot_data(
@@ -387,7 +341,6 @@ impl StateMachine for SledStateMachine {
             "Updating Raft metadata and indexes"
         );
         self.update_last_applied(new_last_included);
-        self.update_last_snapshot_metadata(metadata)?;
 
         self.save_hard_state()?;
 
@@ -396,11 +349,7 @@ impl StateMachine for SledStateMachine {
 
     async fn reset(&self) -> Result<()> {
         let db = self.db()?;
-        for tree_name in &[
-            STATE_MACHINE_TREE,
-            STATE_MACHINE_META_NAMESPACE,
-            STATE_SNAPSHOT_METADATA_TREE,
-        ] {
+        for tree_name in &[STATE_MACHINE_TREE, STATE_MACHINE_META_NAMESPACE] {
             db.open_tree(tree_name)
                 .map_err(|e| StorageError::DbError(e.to_string()))?
                 .clear()
@@ -408,9 +357,6 @@ impl StateMachine for SledStateMachine {
         }
         self.last_applied_index.store(0, Ordering::SeqCst);
         self.last_applied_term.store(0, Ordering::SeqCst);
-        self.last_included_index.store(0, Ordering::SeqCst);
-        self.last_included_term.store(0, Ordering::SeqCst);
-        *self.last_snapshot_checksum.lock() = None;
         Ok(())
     }
 
@@ -462,10 +408,6 @@ impl SledStateMachine {
         let (last_applied_index, last_applied_term) =
             Self::load_state_machine_metadata(&state_machine_meta_tree)?;
 
-        let snapshot_meta_tree = db
-            .open_tree(STATE_SNAPSHOT_METADATA_TREE)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-
         let sm = SledStateMachine {
             db: ArcSwapOption::from(Some(db)),
             path,
@@ -474,10 +416,6 @@ impl SledStateMachine {
 
             last_applied_index: AtomicU64::new(0),
             last_applied_term: AtomicU64::new(0),
-
-            last_included_index: AtomicU64::new(0),
-            last_included_term: AtomicU64::new(0),
-            last_snapshot_checksum: Mutex::new(None),
         };
 
         // Important to sync the last applied index into memory
@@ -485,17 +423,6 @@ impl SledStateMachine {
             index: last_applied_index,
             term: last_applied_term,
         });
-
-        // Update last snapshot metadata
-        if let Some(last_snapshot_metadata) = Self::load_snapshot_metadata(&snapshot_meta_tree)? {
-            trace!(
-                ?last_snapshot_metadata,
-                "Updating last snapshot metadata from local database when node starts"
-            );
-            sm.update_last_snapshot_metadata(&last_snapshot_metadata)?;
-        } else {
-            info!("No snapshot metadata found in DB");
-        }
 
         Ok(sm)
     }
@@ -514,34 +441,6 @@ impl SledStateMachine {
             .unwrap_or(Ok(0))?;
 
         Ok((index, term))
-    }
-
-    pub(super) fn load_snapshot_metadata(tree: &sled::Tree) -> Result<Option<SnapshotMetadata>> {
-        if let Ok(Some(v)) = tree.get(LAST_SNAPSHOT_METADATA_KEY) {
-            info!(
-                "found SnapshotMetadata from DB with key: {}",
-                LAST_SNAPSHOT_METADATA_KEY
-            );
-            let v = v.to_vec();
-
-            let config = config::standard();
-            match bincode::serde::decode_from_slice::<SnapshotMetadata, _>(&v, config) {
-                Ok((last_snapshot_metadata, _)) => {
-                    info!(
-                        "load_snapshot_metadata: last_included={:?}",
-                        last_snapshot_metadata.last_included
-                    );
-                    return Ok(Some(last_snapshot_metadata));
-                }
-                Err(e) => {
-                    return Err(SnapshotError::OperationFailed(format!(
-                        "state:load_snapshot_metadata deserialize error. {e}"
-                    ))
-                    .into());
-                }
-            }
-        }
-        Ok(None)
     }
 
     pub(super) fn apply_batch(
@@ -568,23 +467,6 @@ impl SledStateMachine {
         self.db
             .load_full()
             .ok_or_else(|| StorageError::NotServing("state machine stopped".into()).into())
-    }
-
-    pub(super) fn persist_last_snapshot_metadata_with_tree(
-        &self,
-        tree: sled::Tree,
-        last_snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<()> {
-        let config = config::standard();
-        let v = bincode::serde::encode_to_vec(last_snapshot_metadata, config)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-
-        tree.insert(LAST_SNAPSHOT_METADATA_KEY, v)
-            .map_err(|e| StorageError::DbError(e.to_string()))?;
-        info!("persist_last_snapshot_metadata_with_tree successfully!");
-
-        tree.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
-        Ok(())
     }
 
     pub(crate) fn update_last_applied(
@@ -620,29 +502,9 @@ impl SledStateMachine {
         Ok(())
     }
 
-    pub(crate) fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<()> {
-        debug!(%self.node_id, ?snapshot_metadata, "update_last_snapshot_metadata");
-        let last_included = snapshot_metadata.last_included.unwrap();
-        self.last_included_index.store(last_included.index, Ordering::SeqCst);
-        self.last_included_term.store(last_included.term, Ordering::SeqCst);
-        let checksum = snapshot_metadata
-            .checksum_array()
-            .map_err(|e| SnapshotError::OperationFailed(format!("{e:?}")))?;
-        *self.last_snapshot_checksum.lock() = Some(checksum);
-
-        Ok(())
-    }
-
     pub(crate) fn save_hard_state(&self) -> Result<()> {
         let last_applied = self.last_applied();
         self.persist_last_applied(last_applied)?;
-
-        if let Some(last_snapshot_metadata) = self.snapshot_metadata() {
-            self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
-        }
 
         self.flush()?;
         Ok(())

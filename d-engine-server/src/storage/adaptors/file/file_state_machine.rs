@@ -74,7 +74,6 @@ use d_engine_core::StorageError;
 use d_engine_proto::common::LogId;
 use d_engine_proto::server::storage::SnapshotMetadata;
 use parking_lot::RwLock;
-use prost::Message;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::fs::OpenOptions;
@@ -85,9 +84,6 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
-
-/// File holding the snapshot metadata published by `persist_last_snapshot_metadata`.
-const SNAPSHOT_METADATA_FILE: &str = "snapshot_metadata.bin";
 
 type FileStateMachineDataType = RwLock<HashMap<Bytes, (Bytes, u64)>>;
 
@@ -218,7 +214,6 @@ pub struct FileStateMachine {
     // Raft state with disk persistence
     last_applied_index: AtomicU64,
     last_applied_term: AtomicU64,
-    last_snapshot_metadata: RwLock<Option<SnapshotMetadata>>,
 
     // Operational state
     running: AtomicBool,
@@ -251,7 +246,6 @@ impl FileStateMachine {
             data: RwLock::new(HashMap::new()),
             last_applied_index: AtomicU64::new(0),
             last_applied_term: AtomicU64::new(0),
-            last_snapshot_metadata: RwLock::new(None),
             running: AtomicBool::new(true),
             wal_entries_since_checkpoint: AtomicU64::new(0),
             last_checkpoint: Mutex::new(Instant::now()),
@@ -269,9 +263,6 @@ impl FileStateMachine {
         // Load last applied index and term from metadata file
         self.load_metadata().await?;
 
-        // Load the snapshot metadata published by the last persist_last_snapshot_metadata
-        self.load_snapshot_metadata().await?;
-
         // Load key-value data from data file
         self.load_data().await?;
 
@@ -282,40 +273,6 @@ impl FileStateMachine {
         Ok(())
     }
 
-    /// Loads the snapshot metadata file, if one was ever persisted.
-    ///
-    /// A file that exists but cannot be decoded is an error: silently starting without it would
-    /// make the node forget which snapshot it holds.
-    async fn load_snapshot_metadata(&self) -> Result<(), Error> {
-        let path = self.data_dir.join(SNAPSHOT_METADATA_FILE);
-        if !path.exists() {
-            return Ok(());
-        }
-        let bytes = fs::read(&path).await?;
-        let metadata = SnapshotMetadata::decode(bytes.as_slice()).map_err(|e| {
-            StorageError::StateMachineError(format!("corrupt {SNAPSHOT_METADATA_FILE}: {e}"))
-        })?;
-        *self.last_snapshot_metadata.write() = Some(metadata);
-        Ok(())
-    }
-
-    /// Writes the snapshot metadata durably: to a temporary file first, then renamed over the
-    /// real one, so a crash leaves either the old file or the new one, never a partial file.
-    fn persist_snapshot_metadata(
-        &self,
-        metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        let path = self.data_dir.join(SNAPSHOT_METADATA_FILE);
-        let temp_path = self.data_dir.join(format!("{SNAPSHOT_METADATA_FILE}.tmp"));
-        {
-            let mut file = std::fs::File::create(&temp_path)?;
-            file.write_all(&metadata.encode_to_vec())?;
-            file.sync_all()?;
-        }
-        std::fs::rename(&temp_path, &path)?;
-        std::fs::File::open(&self.data_dir)?.sync_all()?;
-        Ok(())
-    }
     /// Loads metadata from disk
     async fn load_metadata(&self) -> Result<(), Error> {
         let metadata_path = self.data_dir.join("metadata.bin");
@@ -675,21 +632,9 @@ impl FileStateMachine {
         self.persist_metadata()
     }
 
-    pub(crate) fn update_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        *self.last_snapshot_metadata.write() = Some(snapshot_metadata.clone());
-        Ok(())
-    }
-
     pub(crate) fn save_hard_state(&self) -> Result<(), Error> {
         let last_applied = self.last_applied();
         self.persist_last_applied(last_applied)?;
-
-        if let Some(last_snapshot_metadata) = self.snapshot_metadata() {
-            self.persist_last_snapshot_metadata(&last_snapshot_metadata)?;
-        }
 
         self.flush()?;
         Ok(())
@@ -824,11 +769,6 @@ impl FileStateMachine {
         self.last_applied_index.store(0, Ordering::SeqCst);
         self.last_applied_term.store(0, Ordering::SeqCst);
 
-        {
-            let mut snapshot_metadata = self.last_snapshot_metadata.write();
-            *snapshot_metadata = None;
-        }
-
         // Clear all persisted files
         self.clear_data_file().await?;
         self.clear_metadata_file().await?;
@@ -866,15 +806,7 @@ impl FileStateMachine {
         // Write default values (0 for both index and term)
         file.write_all(&0u64.to_be_bytes()).await?;
         file.write_all(&0u64.to_be_bytes()).await?;
-
         file.flush().await?;
-
-        // The snapshot metadata is part of the state being reset
-        match fs::remove_file(self.data_dir.join(SNAPSHOT_METADATA_FILE)).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
 
         Ok(())
     }
@@ -1173,18 +1105,6 @@ impl StateMachine for FileStateMachine {
         }
     }
 
-    fn snapshot_metadata(&self) -> Option<SnapshotMetadata> {
-        self.last_snapshot_metadata.read().clone()
-    }
-
-    fn persist_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error> {
-        self.update_last_snapshot_metadata(snapshot_metadata)?;
-        self.persist_snapshot_metadata(snapshot_metadata)
-    }
-
     async fn apply_snapshot_from_file(
         &self,
         metadata: &SnapshotMetadata,
@@ -1289,9 +1209,6 @@ impl StateMachine for FileStateMachine {
             let mut data = self.data.write();
             *data = new_data;
         }
-
-        // Update metadata
-        *self.last_snapshot_metadata.write() = Some(metadata.clone());
 
         self.update_last_applied(incoming);
 

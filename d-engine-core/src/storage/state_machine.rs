@@ -92,12 +92,22 @@ impl ApplyResult {
 ///   the last entry whose effects are durable. Persist it together with the data it describes (in
 ///   one transaction or write batch where the storage allows), so a restart never replays an entry
 ///   that was already applied.
-/// - After reopening, [`snapshot_metadata`](Self::snapshot_metadata) returns the value most
-///   recently passed to [`persist_last_snapshot_metadata`](Self::persist_last_snapshot_metadata).
-///   The engine publishes snapshot metadata only through that method, so it must update what
-///   `snapshot_metadata()` returns and write it durably.
+/// The engine keeps its own record of the snapshots it holds, so a state machine stores nothing
+/// about snapshots.
 ///
-/// `StateMachineTestSuite` checks these rules; run it against your implementation.
+/// `StateMachineTestSuite` checks this rule; run it against your implementation.
+///
+/// # `NotServing`
+///
+/// While a state machine cannot answer reads correctly, `get` and `get_multi` return
+/// `StorageError::NotServing`, for example
+/// `Err(StorageError::NotServing("installing a snapshot".into()).into())`. This happens in two
+/// situations: the state machine is replacing its state from a snapshot, and it has been closed.
+///
+/// It means "not now", not "the data is damaged". The engine answers that read through Raft
+/// instead, from the state machine after the install, so the client still gets a correct answer.
+/// A simple implementation keeps an `AtomicBool` that it clears just before it starts replacing
+/// its state and sets again when it has finished.
 #[cfg_attr(any(test, feature = "__test_support"), automock)]
 #[async_trait]
 pub trait StateMachine: Send + Sync + 'static {
@@ -180,18 +190,6 @@ pub trait StateMachine: Send + Sync + 'static {
     /// Sync operation as it reads from atomic variables.
     fn last_applied(&self) -> LogId;
 
-    /// Retrieves the current snapshot metadata.
-    /// Sync operation as it reads from in-memory structures.
-    fn snapshot_metadata(&self) -> Option<SnapshotMetadata>;
-
-    /// Persists snapshot metadata durably and makes it visible to `snapshot_metadata()`.
-    ///
-    /// The engine calls this once per snapshot it builds, after the archive is durably built.
-    fn persist_last_snapshot_metadata(
-        &self,
-        snapshot_metadata: &SnapshotMetadata,
-    ) -> Result<(), Error>;
-
     /// Installs a snapshot received from the Raft leader.
     ///
     /// The engine decides whether to install: this is called only for a snapshot that is newer
@@ -199,8 +197,9 @@ pub trait StateMachine: Send + Sync + 'static {
     /// the archive into and whose checksum it has verified against `metadata`.
     ///
     /// The implementation must:
-    /// 1. Replace its state atomically. A concurrent reader sees the old state, the new state, or
-    ///    `NotServing`, never a mix.
+    /// 1. Replace its state so that a concurrent reader sees the old state, the new state, or
+    ///    `NotServing` (see the trait documentation), never a mix. Either swap the state in one
+    ///    atomic step, or return `NotServing` from reads for as long as the replacement takes.
     /// 2. Set `last_applied()` to `metadata.last_included` and make that durable. The engine checks
     ///    this after the call and reports an error if it did not happen.
     async fn apply_snapshot_from_file(
@@ -213,10 +212,9 @@ pub trait StateMachine: Send + Sync + 'static {
     /// up to the specified `last_included_index`.
     ///
     /// Exports the current state (as of `last_included`) to `new_snapshot_dir`. The framework
-    /// computes the checksum of that directory itself; the state machine does not. Does NOT
-    /// publish snapshot metadata — the caller publishes it (via
-    /// `persist_last_snapshot_metadata`) only after the final archive is durably built, so a
-    /// crash mid-snapshot never leaves metadata pointing at a missing archive.
+    /// computes the checksum of that directory itself and records the snapshot only once the
+    /// final archive is durably built, so a crash mid-snapshot never leaves a record pointing at
+    /// a missing archive; the state machine does neither.
     ///
     /// # Concurrency contract (#436)
     /// May run concurrently with `apply_chunk` (never with `apply_snapshot_from_file` — the two

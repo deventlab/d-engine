@@ -366,7 +366,6 @@ where
         // this point leaves the old record on disk, so the leader re-sends the snapshot
         // instead of advertising one whose archive is missing.
         self.catalog.publish(&metadata).await?;
-        self.state_machine.persist_last_snapshot_metadata(&metadata)?;
 
         debug!(%self.snapshot_config.cleanup_retain_count, "build_local_snapshot: cleanup old versions");
         if let Err(e) = self.cleanup_snapshot(self.snapshot_config.cleanup_retain_count).await {

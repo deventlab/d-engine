@@ -56,8 +56,6 @@ All notable changes to this project will be documented in this file.
 
 - **File state machine lost empty values on WAL replay** (#464): `replay_wal` treated a zero value length as "no value", so an `Insert` with an empty value was dropped after a restart. It now restores the empty value.
 
-- **File state machine forgot its snapshot metadata on restart** (#400): `persist_last_snapshot_metadata` only updated memory, and `metadata.bin` stores only `last_applied`. The metadata is now written to `snapshot_metadata.bin` (temporary file, `fsync`, rename) and loaded when the state machine opens; a file that cannot be decoded fails the open instead of being ignored.
-
 - **Snapshot checksum ignored files in sub-directories and file boundaries** (#400): see the snapshot checksum entry under Changed.
 
 ### Changed
@@ -119,6 +117,8 @@ All notable changes to this project will be documented in this file.
   is the only persistence knob now.
 
 - **⚠️ `StateMachine::apply_snapshot_from_file` returns `Result<()>`; the engine decides which snapshots are installed** (#400): the engine compares the snapshot's boundary with `last_applied()` before it calls the state machine, so stale, duplicate and conflicting snapshots never reach it, and it checks afterwards that `last_applied()` equals the snapshot's boundary, reporting an error if not. Before, every state machine had to implement this decision itself, and one that did not (d-lmdb) would install a stale snapshot and roll its data back. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
+
+- **⚠️ `StateMachine` no longer declares `snapshot_metadata` and `persist_last_snapshot_metadata`; the engine records the snapshots a node holds** (#400): the engine keeps `snapshot-{index}-{term}.meta` (boundary and checksum) next to each snapshot archive, written after the archive is complete and, on a follower, after the snapshot is installed. The snapshot trigger policy, the leader's snapshot push and the join response read it. Cleanup goes by these records and also removes archives without a record that are older than the newest recorded snapshot. Before, every state machine had to store and restore this metadata, and the file state machine, sled and d-lmdb did not do it correctly. Archives created before the upgrade have no record, so the node reports no snapshot until it builds its next one. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 
 - **⚠️ `StateMachine` no longer declares `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush` and `flush_async`** (#400): the engine never called them. Keep any you still need as methods on your own type. Your state machine must restore `last_applied` and its snapshot metadata when it is opened; the `StateMachine` docs now state this as a durability contract, and `StateMachineTestSuite` checks it. See [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md).
 

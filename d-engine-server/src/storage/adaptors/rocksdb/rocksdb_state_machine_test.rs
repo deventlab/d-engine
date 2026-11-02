@@ -842,3 +842,107 @@ async fn test_apply_snapshot_from_file_reports_applied_for_newer_snapshot() {
         .expect("newer snapshot must install successfully");
     assert_eq!(state_machine.last_applied(), last_included);
 }
+
+/// Purpose: a snapshot exported while orders keep arriving holds the data and the position of the
+/// same applied entry, so after a restart the position equals the data exactly.
+///
+/// Orders service: entry `n` sets `orders` to `n`, so the value of `orders` is the entry the data
+/// has reached. `data` and `last_applied` are committed in one write batch, which means a
+/// consistent export always has `last_applied == orders`. A position larger than `orders` means the
+/// two column families were exported at different moments: the node would skip the entries in
+/// between. A position smaller than `orders` would mean entries are replayed on top of data that
+/// already contains them. The generic suite only checks `position <= data`; RocksDB exports from
+/// one frozen view, so it has to be exact.
+#[tokio::test]
+async fn test_snapshot_taken_during_writes_exports_position_equal_to_data() {
+    for attempt in 0..3 {
+        let source_dir = TempDir::new().expect("source dir");
+        let (source_storage, source) =
+            RocksDBUnifiedEngine::open(source_dir.path()).expect("open source");
+        let source = Arc::new(source);
+
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let source = source.clone();
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                let mut n = 1u64;
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    source
+                        .apply_chunk(&[insert_at(b"orders", n.to_string().as_bytes(), n)])
+                        .await
+                        .expect("apply");
+                    n += 1;
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let snapshot_dir = source_dir.path().join("snapshot-out");
+        source
+            .generate_snapshot_data(snapshot_dir.clone(), LogId { index: 1, term: 1 })
+            .await
+            .expect("generate snapshot");
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        writer.await.expect("writer");
+
+        let target_dir = TempDir::new().expect("target dir");
+        let target_path = target_dir.path().join("target");
+        {
+            let (_target_storage, target) =
+                RocksDBUnifiedEngine::open(&target_path).expect("open target");
+            let checksum =
+                compute_checksum_from_folder_path(&snapshot_dir).await.expect("checksum");
+            let metadata = SnapshotMetadata {
+                last_included: Some(LogId { index: 1, term: 1 }),
+                checksum: Bytes::copy_from_slice(&checksum),
+            };
+            target.apply_snapshot_from_file(&metadata, snapshot_dir).await.expect("install");
+            target.close().expect("close");
+        }
+        drop(source);
+        drop(source_storage);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (_restarted_storage, restarted) =
+            RocksDBUnifiedEngine::open(&target_path).expect("reopen target");
+        let position = restarted.last_applied().index;
+        let data: u64 = restarted
+            .get(b"orders")
+            .expect("get")
+            .map(|v| String::from_utf8_lossy(&v).parse().expect("number"))
+            .unwrap_or(0);
+        assert_eq!(
+            position, data,
+            "attempt {attempt}: the exported position {position} and data {data} must describe the same entry"
+        );
+    }
+}
+
+/// Purpose: the database runs with `atomic_flush`. State machine writes skip the WAL and put data
+/// and `last_applied` in different column families; only an atomic flush guarantees the two reach
+/// disk together, which both snapshot export (checkpoint) and crash recovery rely on. Without it
+/// `last_applied` can be on disk while the data it describes is lost.
+///
+/// RocksDB records the options a database was opened with in its `OPTIONS-*` file, so the setting
+/// is read back from there instead of being assumed.
+#[tokio::test]
+async fn test_state_machine_database_opens_with_atomic_flush() {
+    let dir = TempDir::new().expect("dir");
+    let (_storage, _sm) = RocksDBUnifiedEngine::open(dir.path()).expect("open");
+
+    let options_file = std::fs::read_dir(dir.path())
+        .expect("read db dir")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("OPTIONS-")))
+        .max()
+        .expect("RocksDB writes an OPTIONS file when it opens a database");
+    let text = std::fs::read_to_string(options_file).expect("read options");
+
+    assert!(
+        text.contains("atomic_flush=true"),
+        "atomic_flush must be on for the state machine database"
+    );
+}
