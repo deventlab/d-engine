@@ -680,11 +680,12 @@ async fn test_file_apply_snapshot_from_file_reports_applied_for_newer_snapshot()
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
     sm.apply_chunk(&entries).await.expect("apply entries");
 
-    let last_included = LogId { term: 1, index: 5 };
     let snapshot_dir = dir.path().join("snapshot");
-    sm.generate_snapshot_data(snapshot_dir.clone(), last_included)
+    let last_included = sm
+        .generate_snapshot_data(snapshot_dir.clone())
         .await
         .expect("generate snapshot");
+    assert_eq!(last_included, LogId { term: 1, index: 5 });
 
     sm.reset().await.expect("reset");
     assert_eq!(sm.last_applied(), LogId::default());
@@ -722,7 +723,7 @@ async fn test_replay_wal_skips_stale_entries_below_last_applied() {
     gen_sm.apply_chunk(&newer).await.expect("apply generator entries");
     let snapshot_dir = dir.path().join("snapshot");
     gen_sm
-        .generate_snapshot_data(snapshot_dir.clone(), LogId { term: 1, index: 10 })
+        .generate_snapshot_data(snapshot_dir.clone())
         .await
         .expect("generate snapshot");
 
@@ -818,9 +819,7 @@ async fn test_file_sm_snapshot_contains_only_kv_records() {
     sm.apply_chunk(&[insert_at(b"k", b"v", 1)]).await.unwrap();
 
     let snapshot_dir = dir.path().join("snapshot");
-    sm.generate_snapshot_data(snapshot_dir.clone(), LogId { term: 1, index: 1 })
-        .await
-        .unwrap();
+    sm.generate_snapshot_data(snapshot_dir.clone()).await.unwrap();
 
     let len = std::fs::metadata(snapshot_dir.join("snapshot.bin")).unwrap().len();
     // key_len(8) + "k"(1) + value_len(8) + "v"(1) + term(8)
@@ -837,10 +836,7 @@ async fn test_file_sm_install_empty_snapshot_clears_existing_data() {
 
     let source = FileStateMachine::new(dir.path().join("source")).await.unwrap();
     let snapshot_dir = dir.path().join("snapshot");
-    source
-        .generate_snapshot_data(snapshot_dir.clone(), LogId { term: 1, index: 5 })
-        .await
-        .unwrap();
+    source.generate_snapshot_data(snapshot_dir.clone()).await.unwrap();
     let checksum = d_engine_core::file_io::compute_checksum_from_folder_path(&snapshot_dir)
         .await
         .unwrap();

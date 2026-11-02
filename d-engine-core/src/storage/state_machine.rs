@@ -208,13 +208,40 @@ pub trait StateMachine: Send + Sync + 'static {
         snapshot_path: std::path::PathBuf,
     ) -> Result<(), Error>;
 
-    /// Generates a snapshot of the state machine's current key-value entries
-    /// up to the specified `last_included_index`.
+    /// Exports the state machine's current state into `new_snapshot_dir` and returns the position
+    /// of the last applied entry that the exported state contains.
     ///
     /// Exports the current state (as of `last_included`) to `new_snapshot_dir`. The framework
-    /// computes the checksum of that directory itself and records the snapshot only once the
-    /// final archive is durably built, so a crash mid-snapshot never leaves a record pointing at
-    /// a missing archive; the state machine does neither.
+    /// The engine checksums the directory itself, labels the snapshot with the returned position,
+    /// and records the snapshot only once the final archive is durably built, so a crash
+    /// mid-snapshot never leaves a record pointing at a missing archive; the state machine does
+    /// none of that. `new_snapshot_dir` exists and is empty. Put any regular files in it, with
+    /// names of your choice; the engine archives the whole directory and hands it back to
+    /// [`apply_snapshot_from_file`](Self::apply_snapshot_from_file) unchanged.
+    ///
+    /// # The position must describe the exported data
+    ///
+    /// Read the position from the same consistent view the data is read from, never from a
+    /// separate in-memory counter: `apply_chunk` keeps running during the export, so a counter read
+    /// a moment earlier or later describes a different state. A snapshot whose position is ahead of
+    /// its data makes the node that installs it skip entries for good; one whose position is
+    /// behind makes it replay entries on top of data that already contains them, which gives a
+    /// different result for operations such as compare-and-swap.
+    ///
+    /// The engine reads [`last_applied`](Self::last_applied) before and after the call and rejects
+    /// a position outside that range; the snapshot is then discarded and the node keeps running.
+    /// That check only catches a position that is plainly wrong, so it does not replace the
+    /// consistency described above.
+    ///
+    /// # Exporting a consistent view
+    ///
+    /// Any of these works:
+    /// - read everything inside one read transaction or snapshot of the storage engine, position
+    ///   included (MVCC databases);
+    /// - take a checkpoint of the storage engine and export from that frozen copy;
+    /// - hold a read lock while copying the data and reading the position, with `apply_chunk`
+    ///   taking the write lock and updating the position under it.
+    ///
     ///
     /// # Concurrency contract (#436)
     /// May run concurrently with `apply_chunk` (never with `apply_snapshot_from_file` — the two
@@ -222,15 +249,10 @@ pub trait StateMachine: Send + Sync + 'static {
     /// `apply_chunk` runs mid-export, the result must reflect strictly before or strictly after
     /// it, never a mix — a torn read across related keys silently corrupts data. Verified by
     /// `test_generate_snapshot_data_is_atomic_under_concurrent_apply`.
-    ///
-    /// # Arguments
-    /// * `new_snapshot_dir` - Temporary path to store the snapshot data.
-    /// * `last_included` - Index and term of the last log entry the snapshot includes.
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        last_included: LogId,
-    ) -> Result<(), Error>;
+    ) -> Result<LogId, Error>;
 
     /// Resets the state machine to its initial state.
     /// Async operation as it may involve cleaning up files and data.

@@ -67,9 +67,8 @@ impl<SM: StateMachine + Debug> StateMachine for SharedStateMachine<SM> {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        last_included: LogId,
-    ) -> Result<(), Error> {
-        self.0.generate_snapshot_data(new_snapshot_dir, last_included).await
+    ) -> Result<LogId, Error> {
+        self.0.generate_snapshot_data(new_snapshot_dir).await
     }
     async fn reset(&self) -> Result<(), Error> {
         self.0.reset().await

@@ -93,9 +93,8 @@ impl StateMachine for SlowApplyProbe {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        last_included: LogId,
-    ) -> Result<(), Error> {
-        self.inner.generate_snapshot_data(new_snapshot_dir, last_included).await
+    ) -> Result<LogId, Error> {
+        self.inner.generate_snapshot_data(new_snapshot_dir).await
     }
     async fn reset(&self) -> Result<(), Error> {
         self.inner.reset().await

@@ -1079,15 +1079,18 @@ impl StateMachine for FileStateMachine {
                     }
                 }
             }
+
+            // last_applied changes under the same write lock as the data, so a snapshot that
+            // reads both under the read lock never sees one without the other.
+            if let Some(log_id) = highest_log_id {
+                debug!("State machine - updated last_applied: {:?}", log_id);
+                self.update_last_applied(log_id);
+            }
         } // Lock released immediately - no awaits inside!
 
-        // PHASE 4: Update last applied index and conditionally checkpoint.
+        // PHASE 4: Conditionally checkpoint.
         // WAL (written in PHASE 2) is the primary crash-safety path.
         // Checkpoint snapshots full data periodically to bound WAL replay time on recovery.
-        if let Some(log_id) = highest_log_id {
-            debug!("State machine - updated last_applied: {:?}", log_id);
-            self.update_last_applied(log_id);
-        }
 
         self.wal_entries_since_checkpoint.fetch_add(chunk_len as u64, Ordering::Relaxed);
 
@@ -1225,8 +1228,7 @@ impl StateMachine for FileStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        _last_included: LogId,
-    ) -> Result<(), Error> {
+    ) -> Result<LogId, Error> {
         // Create snapshot directory
         fs::create_dir_all(&new_snapshot_dir).await?;
 
@@ -1234,9 +1236,12 @@ impl StateMachine for FileStateMachine {
         let snapshot_path = new_snapshot_dir.join("snapshot.bin");
         let mut file = File::create(&snapshot_path).await?;
 
-        let data_copy: HashMap<Bytes, (Bytes, u64)> = {
+        // The data and the position are read under one read lock; apply_chunk updates both under
+        // the write lock, so they describe the same applied entry.
+        let (data_copy, position): (HashMap<Bytes, (Bytes, u64)>, LogId) = {
             let data = self.data.read();
-            data.iter().map(|(k, (v, t))| (k.clone(), (v.clone(), *t))).collect()
+            let copy = data.iter().map(|(k, (v, t))| (k.clone(), (v.clone(), *t))).collect();
+            (copy, self.last_applied())
         };
 
         // Batch serialize into a single buffer — eliminates per-entry async yield overhead.
@@ -1258,7 +1263,7 @@ impl StateMachine for FileStateMachine {
 
         info!("Snapshot generated at {:?}", snapshot_path);
 
-        Ok(())
+        Ok(position)
     }
 
     async fn reset(&self) -> Result<(), Error> {

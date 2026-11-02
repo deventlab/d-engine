@@ -943,22 +943,26 @@ mod create_snapshot_tests {
         // Mock state machine behavior
         let mut seq = Sequence::new();
         sm.expect_last_applied()
-            .times(1)
+            .times(1) // before the export
             .in_sequence(&mut seq)
             .returning(|| LogId { index: 5, term: 1 });
         sm.expect_generate_snapshot_data()
             .times(1)
-            .withf(|path, last_included| {
-                debug!(?path, ?last_included);
+            .withf(|path| {
+                debug!(?path);
                 // Create the directory structure correctly
                 fs::create_dir_all(path.clone()).unwrap();
 
                 let db_path = path.join("state_machine");
                 fs::create_dir(&db_path).unwrap();
 
-                path.ends_with("temp-5-1") && last_included.index == 5 && last_included.term == 1
+                path.ends_with("temp-5-1")
             })
-            .returning(|_, _| Ok(()));
+            .returning(|_| Ok(LogId { index: 5, term: 1 }));
+        sm.expect_last_applied()
+            .times(1) // after the export
+            .in_sequence(&mut seq)
+            .returning(|| LogId { index: 5, term: 1 });
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -1018,17 +1022,21 @@ mod create_snapshot_tests {
 
         let mut seq = Sequence::new();
         sm.expect_last_applied()
-            .times(1)
+            .times(1) // before the export
             .in_sequence(&mut seq)
             .returning(|| LogId { index: 5, term: 1 });
         sm.expect_generate_snapshot_data()
             .times(1)
             .in_sequence(&mut seq)
-            .returning(|path, _| {
+            .returning(|path| {
                 fs::create_dir_all(path.clone()).unwrap();
                 fs::create_dir(path.join("state_machine")).unwrap();
-                Ok(())
+                Ok(LogId { index: 5, term: 1 })
             });
+        sm.expect_last_applied()
+            .times(1) // after the export
+            .in_sequence(&mut seq)
+            .returning(|| LogId { index: 5, term: 1 });
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -1062,7 +1070,7 @@ mod create_snapshot_tests {
         // Setup slow snapshot generation
         let (tx, _rx) = tokio::sync::oneshot::channel();
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
-        sm.expect_generate_snapshot_data().times(1..=2).returning(move |path, _| {
+        sm.expect_generate_snapshot_data().times(1..=2).returning(move |path| {
             // Track invocation count
             let mut count = counter_clone.lock().unwrap();
             *count += 1;
@@ -1073,7 +1081,7 @@ mod create_snapshot_tests {
                 fs::create_dir_all(path.clone()).unwrap();
                 let db_path = path.join("state_machine");
                 fs::create_dir(&db_path).unwrap();
-                Ok(())
+                Ok(LogId { term: 1, index: 1 })
             } else {
                 Err(SnapshotError::OperationFailed("Concurrency failure".into()).into())
             }
@@ -1143,19 +1151,20 @@ mod create_snapshot_tests {
         let temp_path = temp_dir.path().join("test_create_snapshot_case3");
 
         let mut sm = MockStateMachine::new();
-        let mut count = 0;
-        sm.expect_last_applied().returning(move || {
-            count += 1;
-            LogId {
-                term: 1,
-                index: count,
-            }
+        // Every export moves the state machine one entry further, so each snapshot gets the next
+        // index: 1, 2, 3, 4.
+        let applied = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let applied_for_read = applied.clone();
+        sm.expect_last_applied().returning(move || LogId {
+            term: 1,
+            index: applied_for_read.load(std::sync::atomic::Ordering::SeqCst),
         });
-        sm.expect_generate_snapshot_data().returning(|path, _| {
+        sm.expect_generate_snapshot_data().returning(move |path| {
             debug!(?path, "expect_generate_snapshot_data");
             std::fs::create_dir_all(path).expect("Failed to create directory");
 
-            Ok(())
+            let index = applied.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            Ok(LogId { term: 1, index })
         });
         let snapshot_dir = temp_path.to_path_buf();
 
@@ -1202,7 +1211,7 @@ mod create_snapshot_tests {
         // Setup failing snapshot generation
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
         sm.expect_generate_snapshot_data()
-            .returning(|_, _| Err(SnapshotError::OperationFailed("test failure".into()).into()));
+            .returning(|_| Err(SnapshotError::OperationFailed("test failure".into()).into()));
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 0;
@@ -1234,9 +1243,9 @@ mod create_snapshot_tests {
         let mut sm = MockStateMachine::new();
 
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
-        sm.expect_generate_snapshot_data().returning(|path, _| {
+        sm.expect_generate_snapshot_data().returning(|path| {
             fs::create_dir_all(path).unwrap();
-            Ok(())
+            Ok(LogId { term: 1, index: 5 })
         });
 
         let config = snapshot_config(temp_path.clone());
@@ -1272,7 +1281,7 @@ mod create_snapshot_tests {
 
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 1 });
         sm.expect_generate_snapshot_data()
-            .returning(|_, _| Err(SnapshotError::OperationFailed("test error".into()).into()));
+            .returning(|_| Err(SnapshotError::OperationFailed("test error".into()).into()));
 
         let config = snapshot_config(temp_path.clone());
         let (handler, writer) = new_reader_writer_pair::<MockTypeConfig>(
@@ -1329,15 +1338,13 @@ mod create_snapshot_tests {
             term: 1,
             index: 100,
         });
-        sm.expect_generate_snapshot_data()
-            .times(1)
-            .withf(|_path, last_included| {
-                last_included.index == 100 && last_included.term == 1 // NOT 90
+        sm.expect_generate_snapshot_data().times(1).returning(|path| {
+            fs::create_dir_all(path).unwrap();
+            Ok(LogId {
+                term: 1,
+                index: 100,
             })
-            .returning(|path, _| {
-                fs::create_dir_all(path).unwrap();
-                Ok(())
-            });
+        });
 
         let mut config = snapshot_config(temp_path.clone());
         config.retained_log_entries = 10;
@@ -1403,16 +1410,16 @@ mod create_snapshot_tests {
             term: 2,
             index: 100,
         });
-        sm.expect_generate_snapshot_data()
-            .times(1)
-            .withf(|path, last_included| {
-                fs::create_dir_all(path).unwrap();
-                // Old code: index = 100 - 60 = 40, term = 2 (copied from last_applied.term)
-                // → forged LogId { index: 40, term: 2 } — entry 40 was in term 1, not term 2
-                // New code: last_included = last_applied = { index: 100, term: 2 } — truthful
-                last_included.index == 100 && last_included.term == 2
+        // The state machine reports { index: 100, term: 2 }. Subtracting retained_log_entries
+        // (60) and keeping the term would forge { index: 40, term: 2 }, an entry that was in term
+        // 1; the snapshot must carry exactly what the state machine reported.
+        sm.expect_generate_snapshot_data().times(1).returning(|path| {
+            fs::create_dir_all(path).unwrap();
+            Ok(LogId {
+                term: 2,
+                index: 100,
             })
-            .returning(|_, _| Ok(()));
+        });
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         // retained=60: old code would subtract and land in term 1 territory (index 40)
@@ -1466,13 +1473,10 @@ mod create_snapshot_tests {
         let mut sm = MockStateMachine::new();
 
         sm.expect_last_applied().returning(|| LogId { term: 0, index: 0 });
-        sm.expect_generate_snapshot_data()
-            .times(1)
-            .withf(|_, last_included| last_included.index == 0 && last_included.term == 0)
-            .returning(|path, _| {
-                fs::create_dir_all(path).unwrap();
-                Ok(())
-            });
+        sm.expect_generate_snapshot_data().times(1).returning(|path| {
+            fs::create_dir_all(path).unwrap();
+            Ok(LogId { term: 0, index: 0 })
+        });
 
         let mut config = snapshot_config(temp_path.to_path_buf());
         config.retained_log_entries = 10;
@@ -1503,7 +1507,7 @@ mod create_snapshot_tests {
         let mut sm = MockStateMachine::new();
 
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
-        sm.expect_generate_snapshot_data().returning(|path, _| {
+        sm.expect_generate_snapshot_data().returning(|path| {
             // Simulate a partial write before the failure (e.g. checkpoint killed mid-copy).
             fs::create_dir_all(&path).unwrap();
             Err(SnapshotError::OperationFailed("simulated crash".into()).into())
@@ -1539,7 +1543,7 @@ mod create_snapshot_tests {
 
         let mut sm = MockStateMachine::new();
         sm.expect_last_applied().returning(|| LogId { term: 1, index: 5 });
-        sm.expect_generate_snapshot_data().returning(|path, _| {
+        sm.expect_generate_snapshot_data().returning(|path| {
             // Real engines (e.g. RocksDB checkpoint) fail with "File exists" if `path`
             // is already present — mirror that here instead of using the idempotent
             // `create_dir_all`, otherwise this test can't distinguish "cleaned up" from
@@ -1548,7 +1552,7 @@ mod create_snapshot_tests {
                 return Err(SnapshotError::OperationFailed("mkdir: File exists".into()).into());
             }
             fs::create_dir_all(&path).unwrap();
-            Ok(())
+            Ok(LogId { term: 1, index: 5 })
         });
 
         let config = snapshot_config(snapshot_dir.clone());
@@ -2000,7 +2004,7 @@ async fn test_snapshot_compression() {
 
     // Mock state machine to create test data
     sm.expect_last_applied().returning(|| LogId { index: 10, term: 2 });
-    sm.expect_generate_snapshot_data().returning(|path, _| {
+    sm.expect_generate_snapshot_data().returning(|path| {
         // Create the directory structure correctly
         fs::create_dir_all(path.clone()).unwrap();
         // Create test files in the temp directory
@@ -2010,7 +2014,7 @@ async fn test_snapshot_compression() {
         std::fs::write(&file1, "This is a test file").unwrap();
         std::fs::write(&file2, vec![0u8; 1024]).unwrap();
 
-        Ok(())
+        Ok(LogId { index: 10, term: 2 })
     });
 
     let mut config = snapshot_config(temp_path.to_path_buf());
@@ -2984,6 +2988,99 @@ fn writer_with_mock_state_machine(
     )
 }
 
+/// Mock state machine whose `last_applied()` is `before` until the export runs and `after` once it
+/// has, and whose export reports `exported`.
+fn mock_sm_applying_during_export(
+    before: u64,
+    after: u64,
+    exported: u64,
+) -> MockStateMachine {
+    let position = Arc::new(std::sync::atomic::AtomicU64::new(before));
+    let mut sm = MockStateMachine::new();
+    let reader = position.clone();
+    sm.expect_last_applied().returning(move || LogId {
+        index: reader.load(std::sync::atomic::Ordering::SeqCst),
+        term: 2,
+    });
+    sm.expect_generate_snapshot_data().returning(move |path| {
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("data.bin"), b"state").unwrap();
+        // Entries keep being applied while the export runs.
+        position.store(after, std::sync::atomic::Ordering::SeqCst);
+        Ok(LogId {
+            index: exported,
+            term: 2,
+        })
+    });
+    sm
+}
+
+/// Orders service: the node applies entries 10..=12 while its state machine exports, and the export
+/// holds everything up to entry 11.
+///
+/// Purpose: the snapshot is labelled with the position the state machine reports for what it
+/// exported (11), not with the position the engine saw before the export started (10), which would
+/// make the label older than the data.
+#[tokio::test]
+async fn test_capture_local_snapshot_is_labelled_with_the_position_the_state_machine_exported() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = mock_sm_applying_during_export(10, 12, 11);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let captured = writer.capture_local_snapshot().await.unwrap();
+
+    assert_eq!(
+        captured.metadata.last_included,
+        Some(LogId { index: 11, term: 2 })
+    );
+}
+
+/// The state machine reports an export at entry 7 although the node had applied up to 10 before the
+/// export started.
+///
+/// Purpose: a position older than anything the node applied cannot describe an export made now, so
+/// the snapshot is rejected and its directory removed; the node keeps running.
+#[tokio::test]
+async fn test_capture_local_snapshot_rejects_a_position_before_the_export_started() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = mock_sm_applying_during_export(10, 12, 7);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.capture_local_snapshot().await;
+
+    assert!(
+        result.is_err(),
+        "a position before the export started must be rejected"
+    );
+    assert!(
+        std::fs::read_dir(temp_dir.path()).unwrap().next().is_none(),
+        "the rejected export must not be left on disk"
+    );
+}
+
+/// The state machine reports an export at entry 15 although the node had applied only up to 12 when
+/// the export finished.
+///
+/// Purpose: a position the node has not reached yet cannot be right, so the snapshot is rejected
+/// and its directory removed.
+#[tokio::test]
+async fn test_capture_local_snapshot_rejects_a_position_the_node_has_not_reached() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sm = mock_sm_applying_during_export(10, 12, 15);
+    let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
+
+    let result = writer.capture_local_snapshot().await;
+
+    assert!(
+        result.is_err(),
+        "a position the node has not reached must be rejected"
+    );
+    assert!(
+        std::fs::read_dir(temp_dir.path()).unwrap().next().is_none(),
+        "the rejected export must not be left on disk"
+    );
+}
+
 /// A leader exports a snapshot for a lagging follower and records the checksum the follower will
 /// verify against. The state machine only writes files; it never returns a checksum.
 ///
@@ -2995,11 +3092,11 @@ async fn test_capture_local_snapshot_records_checksum_of_exported_directory() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mut sm = MockStateMachine::new();
     sm.expect_last_applied().returning(|| LogId { index: 10, term: 2 });
-    sm.expect_generate_snapshot_data().returning(|path, _| {
+    sm.expect_generate_snapshot_data().returning(|path| {
         fs::create_dir_all(path.clone()).unwrap();
         fs::write(path.join("a.bin"), b"alpha").unwrap();
         fs::write(path.join("b.bin"), b"beta").unwrap();
-        Ok(())
+        Ok(LogId { index: 10, term: 2 })
     });
     let (_handler, writer) = writer_with_mock_state_machine(sm, temp_dir.path());
 
@@ -3391,14 +3488,15 @@ mod snapshot_catalog_behavior_tests {
             index: position.load(std::sync::atomic::Ordering::SeqCst),
             term: 2,
         });
-        sm.expect_generate_snapshot_data().returning(|path, last_included| {
+        let exported = index.clone();
+        sm.expect_generate_snapshot_data().returning(move |path| {
+            let at = LogId {
+                index: exported.load(std::sync::atomic::Ordering::SeqCst),
+                term: 2,
+            };
             fs::create_dir_all(&path).unwrap();
-            fs::write(
-                path.join("data.bin"),
-                format!("state at {}", last_included.index),
-            )
-            .unwrap();
-            Ok(())
+            fs::write(path.join("data.bin"), format!("state at {}", at.index)).unwrap();
+            Ok(at)
         });
         sm
     }

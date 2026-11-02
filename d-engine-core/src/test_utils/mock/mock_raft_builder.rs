@@ -389,7 +389,7 @@ pub fn mock_state_machine() -> MockStateMachine {
     mock.expect_last_applied().return_const(LogId::default());
 
     mock.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
-    mock.expect_generate_snapshot_data().returning(|_, _| Ok(()));
+    mock.expect_generate_snapshot_data().returning(|_| Ok(LogId::default()));
 
     mock
 }

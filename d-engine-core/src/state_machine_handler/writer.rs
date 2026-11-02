@@ -261,8 +261,11 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
         })
     }
     async fn capture_local_snapshot(&self) -> Result<CapturedLocalSnapshot> {
-        let last_included = self.state_machine.last_applied();
-        let temp_path = self.path_mgr.temp_work_path(&last_included);
+        // The position is read before and after the export only to bound what the state machine
+        // may return; the label comes from the state machine, which reads it from the view it
+        // exported.
+        let before = self.state_machine.last_applied();
+        let temp_path = self.path_mgr.temp_work_path(&before);
 
         // A crashed/killed previous attempt at this exact index can leave temp_path
         // behind; without removing it first, generate_snapshot_data fails with
@@ -278,14 +281,22 @@ impl<T: TypeConfig> StateMachineWriterOps<T> for DefaultStateMachineWriter<T> {
 
         // generate_snapshot_data only exports the state; it does not publish snapshot
         // metadata. The metadata is published later, once the archive is durably built.
-        if let Err(e) = self
-            .state_machine
-            .generate_snapshot_data(temp_path.clone(), last_included)
-            .await
-        {
+        let exported = match self.state_machine.generate_snapshot_data(temp_path.clone()).await {
+            Ok(position) => position,
+            Err(e) => {
+                let _ = tokio::fs::remove_dir_all(&temp_path).await;
+                return Err(e);
+            }
+        };
+        let after = self.state_machine.last_applied();
+        if exported.index < before.index || exported.index > after.index {
             let _ = tokio::fs::remove_dir_all(&temp_path).await;
-            return Err(e);
+            return Err(SnapshotError::OperationFailed(format!(
+                "state machine exported a snapshot at {exported:?}, outside the range                  {before:?}..={after:?} that it applied while exporting"
+            ))
+            .into());
         }
+        let last_included = exported;
 
         // The framework, not the state machine, checksums the exported directory.
         let checksum = match compute_checksum_from_folder_path(&temp_path).await {

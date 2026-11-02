@@ -818,12 +818,12 @@ async fn test_apply_snapshot_from_file_reports_applied_for_newer_snapshot() {
         (1..=5).map(|i| insert_at(format!("key_{i}").as_bytes(), b"v", i)).collect();
     state_machine.apply_chunk(&entries).await.expect("apply entries");
 
-    let last_included = LogId { term: 1, index: 5 };
     let snapshot_dir = temp_dir.path().join("snapshot");
-    state_machine
-        .generate_snapshot_data(snapshot_dir.clone(), last_included)
+    let last_included = state_machine
+        .generate_snapshot_data(snapshot_dir.clone())
         .await
         .expect("generate snapshot");
+    assert_eq!(last_included, LogId { term: 1, index: 5 });
 
     // Fall behind, then receive the (now newer-than-current) snapshot.
     state_machine.reset().await.expect("reset");
@@ -881,7 +881,7 @@ async fn test_snapshot_taken_during_writes_exports_position_equal_to_data() {
 
         let snapshot_dir = source_dir.path().join("snapshot-out");
         source
-            .generate_snapshot_data(snapshot_dir.clone(), LogId { index: 1, term: 1 })
+            .generate_snapshot_data(snapshot_dir.clone())
             .await
             .expect("generate snapshot");
         stop.store(true, std::sync::atomic::Ordering::SeqCst);

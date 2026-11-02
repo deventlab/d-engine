@@ -219,12 +219,13 @@ impl StateMachine for SledStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: PathBuf,
-        _last_included: LogId,
-    ) -> Result<()> {
-        // No internal locking needed: `StateMachineWorker` is the sole caller of
-        // generate_snapshot_data/apply_snapshot_from_file/apply_chunk, and it processes
-        // them one at a time from a single queue (#436) — concurrent snapshot
-        // generation from this trait's methods cannot happen.
+    ) -> Result<LogId> {
+        // Known limits of this example: the tree is iterated while `apply_chunk` may run, so the
+        // copy is not a point-in-time view, and the position below comes from memory, not from the
+        // exported data. Reading it before the copy keeps it at or behind the data. A state machine
+        // that must export a consistent view has to exclude `apply_chunk` while it copies and read
+        // the position under the same lock (see `StateMachine::generate_snapshot_data`).
+        let position = self.last_applied();
 
         // 2. Create a new state machine database instance
         let new_db = init_sled_state_machine_db(&new_snapshot_dir)
@@ -260,7 +261,7 @@ impl StateMachine for SledStateMachine {
         // Make sure flush into disk
         new_db.flush().map_err(|e| StorageError::DbError(e.to_string()))?;
 
-        Ok(())
+        Ok(position)
     }
 
     async fn apply_snapshot_from_file(
@@ -268,10 +269,8 @@ impl StateMachine for SledStateMachine {
         metadata: &SnapshotMetadata,
         decompressed_snapshot_path: PathBuf,
     ) -> Result<()> {
-        // No internal locking needed — see generate_snapshot_data. `StateMachineWorker`
-        // processes ApplyEntries/InstallSnapshot/CaptureLocalSnapshot one at a time from a
-        // single queue (#436), so this call never races a concurrent snapshot generation
-        // or another install.
+        // `StateMachineWorker` never runs this concurrently with `apply_chunk`, a snapshot
+        // export or another install (#436).
 
         // The engine only calls this for a snapshot newer than `last_applied()`.
         let new_last_included = metadata.last_included.ok_or_else(|| {

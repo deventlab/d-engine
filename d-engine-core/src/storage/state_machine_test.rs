@@ -274,11 +274,15 @@ impl StateMachineTestSuite {
         sm.apply_chunk(&entries(1..=KEYS, b"new")).await?;
         let temp_dir = TempDir::new()?;
         let snapshot_dir = temp_dir.path().join("snapshot");
-        let last_included = LogId {
-            index: KEYS,
-            term: 1,
-        };
-        sm.generate_snapshot_data(snapshot_dir.clone(), last_included).await?;
+        let last_included = sm.generate_snapshot_data(snapshot_dir.clone()).await?;
+        assert_eq!(
+            last_included,
+            LogId {
+                index: KEYS,
+                term: 1
+            },
+            "the exported position must be the last entry applied before the export"
+        );
         let metadata = SnapshotMetadata {
             last_included: Some(last_included),
             checksum: Bytes::from(vec![0; 32]),
@@ -395,8 +399,7 @@ impl StateMachineTestSuite {
             // 2. A snapshot is taken in the middle of the writes.
             let temp_dir = TempDir::new()?;
             let snapshot_dir = temp_dir.path().join("snapshot");
-            sm.generate_snapshot_data(snapshot_dir.clone(), LogId { index: 1, term: 1 })
-                .await?;
+            sm.generate_snapshot_data(snapshot_dir.clone()).await?;
             stop.store(true, Ordering::Relaxed);
             writer.await.expect("the writer must not panic");
 
@@ -488,10 +491,12 @@ impl StateMachineTestSuite {
         let snapshot_dir = temp_dir.path().join("snapshot");
 
         // Generate snapshot
-        let last_included = LogId { index: 3, term: 1 };
-        state_machine
-            .generate_snapshot_data(snapshot_dir.clone(), last_included)
-            .await?;
+        let last_included = state_machine.generate_snapshot_data(snapshot_dir.clone()).await?;
+        assert_eq!(
+            last_included,
+            LogId { index: 3, term: 1 },
+            "the exported position must be the last entry applied before the export"
+        );
         let checksum = crate::file_io::compute_checksum_from_folder_path(&snapshot_dir).await?;
 
         // Apply snapshot (simulate receiving from leader)
@@ -827,7 +832,11 @@ impl StateMachineTestSuite {
 
             let temp_dir = TempDir::new()?;
             let snapshot_dir = temp_dir.path().join("snapshot");
-            sm.generate_snapshot_data(snapshot_dir.clone(), last_included).await?;
+            let exported = sm.generate_snapshot_data(snapshot_dir.clone()).await?;
+            assert_eq!(
+                exported, last_included,
+                "the exported position must be the last entry applied before the export"
+            );
             let checksum = crate::file_io::compute_checksum_from_folder_path(&snapshot_dir).await?;
 
             // Fresh node receiving this snapshot for the first time (current == default),
@@ -1639,7 +1648,7 @@ impl StateMachineTestSuite {
             let export_fut = {
                 let live = live.clone();
                 let dir = snapshot_dir.clone();
-                async move { live.generate_snapshot_data(dir, last_included).await }
+                async move { live.generate_snapshot_data(dir).await }
             };
             let apply_fut = {
                 let live = live.clone();
@@ -1824,9 +1833,8 @@ mod default_scan_prefix_tests {
         async fn generate_snapshot_data(
             &self,
             _new_snapshot_dir: std::path::PathBuf,
-            _last_included: LogId,
-        ) -> Result<(), Error> {
-            Ok(())
+        ) -> Result<LogId, Error> {
+            Ok(LogId::default())
         }
 
         async fn reset(&self) -> Result<(), Error> {
@@ -1938,8 +1946,7 @@ mod install_reader_suite_tests {
         async fn generate_snapshot_data(
             &self,
             new_snapshot_dir: PathBuf,
-            _last_included: LogId,
-        ) -> Result<(), Error> {
+        ) -> Result<LogId, Error> {
             std::fs::create_dir_all(&new_snapshot_dir)?;
             // Right: copy the data and read the position under the same lock.
             let (lines, mut position) = {
@@ -1967,7 +1974,7 @@ mod install_reader_suite_tests {
                 new_snapshot_dir.join("position.txt"),
                 format!("{} {}", position.index, position.term),
             )?;
-            Ok(())
+            Ok(position)
         }
 
         async fn apply_snapshot_from_file(

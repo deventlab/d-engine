@@ -199,7 +199,7 @@ impl RocksDBStateMachine {
             .ok_or_else(|| StorageError::NotServing("state machine stopped".into()).into())
     }
 
-    fn load_state_machine_metadata(db: &Arc<DB>) -> Result<(u64, u64), Error> {
+    fn load_state_machine_metadata(db: &DB) -> Result<(u64, u64), Error> {
         let cf = db
             .cf_handle(STATE_MACHINE_META_CF)
             .ok_or_else(|| StorageError::DbError("State machine meta CF not found".to_string()))?;
@@ -337,7 +337,7 @@ impl RocksDBStateMachine {
     fn export_frozen_view(
         db: &DB,
         snapshot_dir: &std::path::Path,
-    ) -> Result<(), Error> {
+    ) -> Result<LogId, Error> {
         let name = snapshot_dir
             .file_name()
             .ok_or_else(|| StorageError::DbError("snapshot dir has no name".to_string()))?
@@ -357,7 +357,7 @@ impl RocksDBStateMachine {
         db: &DB,
         checkpoint_dir: &std::path::Path,
         snapshot_dir: &std::path::Path,
-    ) -> Result<(), Error> {
+    ) -> Result<LogId, Error> {
         let to_err = |e: rocksdb::Error| StorageError::DbError(e.to_string());
         rocksdb::checkpoint::Checkpoint::new(db)
             .and_then(|c| c.create_checkpoint(checkpoint_dir))
@@ -389,7 +389,9 @@ impl RocksDBStateMachine {
             .map_err(to_err)?;
         Self::save_cf_export_metadata(&sm_export, &snapshot_dir.join("sm_metadata.bin"))?;
         Self::save_cf_export_metadata(&sm_meta_export, &snapshot_dir.join("sm_meta_metadata.bin"))?;
-        Ok(())
+        // The position is read from the frozen copy, the same view the data was exported from.
+        let (index, term) = Self::load_state_machine_metadata(&frozen)?;
+        Ok(LogId { index, term })
     }
 
     /// Serialize `ExportImportFilesMetaData` to a bincode file at `path`.
@@ -803,8 +805,7 @@ impl StateMachine for RocksDBStateMachine {
     async fn generate_snapshot_data(
         &self,
         new_snapshot_dir: std::path::PathBuf,
-        _last_included: LogId,
-    ) -> Result<(), Error> {
+    ) -> Result<LogId, Error> {
         // Export only SM CFs: compact SST-only export, no Raft log data.
         // export_column_family() creates only the final subdirectory (e.g. "sm"), so the parent
         // (new_snapshot_dir) must already exist before calling it.
@@ -815,7 +816,7 @@ impl StateMachine for RocksDBStateMachine {
         // writes (#315).
         let db = self.load_db()?; // Arc<DB>: Send, safe to move into spawn_blocking
         let dir = new_snapshot_dir.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), Error> {
+        let position = tokio::task::spawn_blocking(move || -> Result<LogId, Error> {
             std::fs::create_dir_all(&dir)?;
             Self::export_frozen_view(&db, &dir)
         })
@@ -823,7 +824,7 @@ impl StateMachine for RocksDBStateMachine {
         .map_err(Self::map_snapshot_join_error)??;
 
         info!("Snapshot generated at {:?}", new_snapshot_dir);
-        Ok(())
+        Ok(position)
     }
 
     async fn reset(&self) -> Result<(), Error> {

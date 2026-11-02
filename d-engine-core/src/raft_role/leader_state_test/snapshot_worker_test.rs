@@ -106,7 +106,7 @@ fn state_machine_with_snapshot() -> MockStateMachine {
     sm.expect_apply_chunk().returning(|_| Ok(vec![]));
     sm.expect_last_applied().return_const(LogId::default());
     sm.expect_apply_snapshot_from_file().returning(|_, _| Ok(()));
-    sm.expect_generate_snapshot_data().returning(|_, _| Ok(()));
+    sm.expect_generate_snapshot_data().returning(|_| Ok(LogId::default()));
     sm
 }
 

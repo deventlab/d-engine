@@ -92,7 +92,7 @@ async fn test_snapshot_captures_all_current_data() {
     sm.apply_chunk(&entries).await.unwrap();
 
     let snap_dir = temp.path().join("snapshot");
-    sm.generate_snapshot_data(snap_dir.clone(), LogId { index: 5, term: 1 })
+    sm.generate_snapshot_data(snap_dir.clone())
         .await
         .unwrap();
 
@@ -128,7 +128,7 @@ async fn test_snapshot_does_not_include_post_snapshot_entries() {
     sm.apply_chunk(&pre_entries).await.unwrap();
 
     let snap_dir = temp.path().join("partial_snapshot");
-    sm.generate_snapshot_data(snap_dir.clone(), LogId { index: 1, term: 1 })
+    sm.generate_snapshot_data(snap_dir.clone())
         .await
         .unwrap();
 
@@ -179,7 +179,7 @@ async fn test_snapshot_install_content_survives_restart() {
     let last_included = LogId { index: 3, term: 1 };
     let export_dir = TempDir::new().unwrap();
     source_sm
-        .generate_snapshot_data(export_dir.path().to_path_buf(), last_included)
+        .generate_snapshot_data(export_dir.path().to_path_buf())
         .await
         .unwrap();
 

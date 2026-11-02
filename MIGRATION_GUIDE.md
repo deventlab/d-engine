@@ -33,7 +33,7 @@ EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
 - **`EmbeddedEngine<SE, SM>` and `EmbeddedClient<SE, SM>` no longer have type parameters.** Write `EmbeddedEngine` and `EmbeddedClient`. `DefaultEmbeddedEngine` and `DefaultEmbeddedClient` still exist and are now plain aliases of them.
 - **If you kept a clone of your `Arc<StateMachine>` to read local data directly** (for example `DLmdb` reading its own LMDB), you can no longer clone the instance the engine uses. Share a handle to your storage instead: put the handles (LMDB `Env`, sled `Db`, `Arc<rocksdb::DB>`) behind an `Arc` inside your state machine type, derive `Clone` on it, give the engine one clone and keep the other.
 - **Embedded reads (`get_eventual`, lease reads) are answered by the ReadActor**, as they already were in standalone mode, instead of reading the state machine on the caller's thread. Expect one extra channel hop per read.
-- **Snapshot checksums belong to the engine.** `generate_snapshot_data` now returns `Result<()>`: write the snapshot into the directory you are given and return. The engine computes the checksum of that directory itself, and verifies it before it calls `apply_snapshot_from_file`, so you no longer compute or check a checksum. Delete that code (and any hashing dependency you added only for it).
+- **Snapshot checksums belong to the engine.** `generate_snapshot_data(dir)` now returns `Result<LogId>` and no longer takes `last_included`: write the snapshot into the directory you are given and return the position of the last applied entry the exported data contains, read from the same consistent view as the data (not from a separate counter, because `apply_chunk` keeps running). The engine labels the snapshot with it. The engine computes the checksum of that directory itself, and verifies it before it calls `apply_snapshot_from_file`, so you no longer compute or check a checksum. Delete that code (and any hashing dependency you added only for it).
 - **`apply_snapshot_from_file` returns `Result<()>` again, and you no longer classify snapshots.** The engine compares the snapshot's boundary with `last_applied()` first and calls you only for a newer snapshot, so delete your stale / duplicate / conflict handling and return `Ok(())` after installing. After your call the engine checks that `last_applied()` equals `metadata.last_included` and reports an error if it does not, so make sure you set it (durably) as part of the install.
 - **Eight methods left the trait:** `update_last_applied`, `persist_last_applied`, `update_last_snapshot_metadata`, `save_hard_state`, `flush`, `flush_async`, `snapshot_metadata` and `persist_last_snapshot_metadata`. The first six were never called by the engine, so deleting them from your `impl StateMachine` block changes no behaviour. The last two are replaced by the engine's own record of the snapshots it holds (see below). Keep any your own code still uses as plain methods on your type.
 - **Restore your position when you open the state machine.** The engine does not do it for you: after reopening, `last_applied()` must return the last entry whose effects are durable. You no longer store or return anything about snapshots; delete your snapshot-metadata storage and its loading code.
@@ -47,14 +47,14 @@ EmbeddedEngine::start_custom(dir, storage, sm, None).await?;
 
 v0.3.0 nodes and clients cannot talk to v0.2.4 ones. There is no rolling upgrade: stop the whole cluster, upgrade every node, then upgrade every client.
 
-| Proto item                      | v0.2.4                       | v0.3.0                                                             |
-| ------------------------------- | ---------------------------- | ------------------------------------------------------------------ |
-| `ClientResponse.metadata`       | field 4                      | field 5 (field 4 is now `scan_data`)                               |
-| `HandleClientScan` response     | `ScanResponse`               | `ClientResponse`; the scan payload is the `ScanResults` message    |
-| `ChunkStatus`                   | `ACCEPTED = 0` … `FAILED = 4` | `CHUNK_STATUS_UNSPECIFIED = 0`, `CHUNK_STATUS_ACCEPTED = 1` … `CHUNK_STATUS_FAILED = 5` |
-| `WriteCommand.Insert.ttl_secs`  | field 3                      | removed, number 3 and the name are reserved                        |
-| `StreamSnapshot` RPC            | present                      | removed (see the learner snapshot section below)                   |
-| `PreVote` RPC                   | -                            | new                                                                |
+| Proto item                     | v0.2.4                        | v0.3.0                                                                                  |
+| ------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------- |
+| `ClientResponse.metadata`      | field 4                       | field 5 (field 4 is now `scan_data`)                                                    |
+| `HandleClientScan` response    | `ScanResponse`                | `ClientResponse`; the scan payload is the `ScanResults` message                         |
+| `ChunkStatus`                  | `ACCEPTED = 0` … `FAILED = 4` | `CHUNK_STATUS_UNSPECIFIED = 0`, `CHUNK_STATUS_ACCEPTED = 1` … `CHUNK_STATUS_FAILED = 5` |
+| `WriteCommand.Insert.ttl_secs` | field 3                       | removed, number 3 and the name are reserved                                             |
+| `StreamSnapshot` RPC           | present                       | removed (see the learner snapshot section below)                                        |
+| `PreVote` RPC                  | -                             | new                                                                                     |
 
 Clients in other languages: regenerate your stubs from the v0.3.0 `.proto` files. Rust users get this by upgrading the crate.
 
@@ -182,12 +182,12 @@ grep "WAL" /var/log/d-engine.log
 
 ## Timeline
 
-| Version       | WAL Format          | Wire Protocol         | Migration Required                                                                                                              |
-| ------------- | ------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1.x        | Relative TTL        | Compatible            | -                                                                                                                               |
-| v0.2.0–v0.2.2 | Absolute expiration | Compatible            | ✅ Yes (clear WAL from v0.1.x)                                                                                                  |
-| v0.2.3        | Same as v0.2.0+     | **Incompatible**      | ✅ Yes (protobuf enum changes + API changes)                                                                                    |
-| v0.2.4        | Same as v0.2.0+     | Compatible (additive) | ✅ Yes (delete `snapshot/` — format changed to CF export)                                                                       |
+| Version       | WAL Format             | Wire Protocol                                                                               | Migration Required                                                                                                                                                                                      |
+| ------------- | ---------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v0.1.x        | Relative TTL           | Compatible                                                                                  | -                                                                                                                                                                                                       |
+| v0.2.0–v0.2.2 | Absolute expiration    | Compatible                                                                                  | ✅ Yes (clear WAL from v0.1.x)                                                                                                                                                                          |
+| v0.2.3        | Same as v0.2.0+        | **Incompatible**                                                                            | ✅ Yes (protobuf enum changes + API changes)                                                                                                                                                            |
+| v0.2.4        | Same as v0.2.0+        | Compatible (additive)                                                                       | ✅ Yes (delete `snapshot/` — format changed to CF export)                                                                                                                                               |
 | v0.3.0        | File SM format changed | **Incompatible** (proto field and enum renumbering; upgrade all nodes and clients together) | ⚠️ Yes (TTL removed; fresh data directory; custom SM: remove `entry_term()`, `lease_background_cleanup`, rename `close_storage()` to `close()`; use `start_node` instead of `start_custom_with_config`) |
 
 ---
@@ -410,11 +410,11 @@ fn apply_chunk(&mut self, entries: &[ApplyEntry]) -> Result<(), ...>
 
 ### What Changed
 
-| Before (v0.2.4)                                                  | After (v0.3.0)                                                    |
-| ---------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `fn stop(&self) -> Result<(), Error>` (required)                 | **Removed**                                                       |
-| `fn close_storage(&self)` (default no-op)                        | **Renamed** `fn close(&self) -> Result<(), Error>` (default `Ok`) |
-| `[raft.storage]` accepted as an alias of `[raft.state_machine]`  | Use `[raft.state_machine]`                                        |
+| Before (v0.2.4)                                                 | After (v0.3.0)                                                    |
+| --------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `fn stop(&self) -> Result<(), Error>` (required)                | **Removed**                                                       |
+| `fn close_storage(&self)` (default no-op)                       | **Renamed** `fn close(&self) -> Result<(), Error>` (default `Ok`) |
+| `[raft.storage]` accepted as an alias of `[raft.state_machine]` | Use `[raft.state_machine]`                                        |
 
 `stop()` was never called by d-engine. `close()` is now the one end-of-life hook. d-engine calls it once, as the last step of the
 state machine worker. When the worker drains cleanly, every committed entry has been applied by then; if

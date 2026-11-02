@@ -102,6 +102,7 @@ impl StateMachine for CustomStateMachine {
 - **Idempotency**: Handle duplicate entries safely—Raft may resend committed entries
 - **Snapshot Isolation**: `apply_snapshot_from_file()` must atomically replace state
 - **Snapshot Checksums**: The engine computes the checksum of the directory your `generate_snapshot_data()` writes, and verifies it before it calls `apply_snapshot_from_file()`. You neither compute nor check one
+- **Snapshot Position**: `generate_snapshot_data()` returns the position of the last applied entry the exported data contains. Read it from the same consistent view the data comes from (one read transaction, a checkpoint, or a read lock that `apply_chunk` also takes when it updates the position), never from a separate counter: `apply_chunk` keeps running during the export
 - **Snapshot Install**: The engine decides whether a snapshot is installed. `apply_snapshot_from_file()` is called only for a snapshot newer than `last_applied()`, and the engine checks afterwards that `last_applied()` equals the snapshot boundary
 - **Restore On Open**: The engine never asks you to restore state. When your state machine is opened, `last_applied()` must return the last entry whose effects are durable (persist it together with the data it describes). You store nothing about snapshots: the engine records the snapshots it holds itself
 - **Concurrency Control**: Use appropriate locking for state mutations
@@ -109,15 +110,15 @@ impl StateMachine for CustomStateMachine {
 
 ## 3. StateMachine API Reference
 
-| Method                             | Purpose                                                                                                                                                                                              | Sync/Async | Criticality |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
-| `close()`                          | Final step at shutdown: persist what must survive a restart and release exclusive OS resources (e.g. DB lock file), even if persisting fails; returns the first error. Idempotent. Default `Ok(())`. | Sync       | Medium      |
-| `get()`                            | Read value by key                                                                                                                                                                                    | Sync       | High        |
-| `apply_chunk()`                    | Apply committed entries                                                                                                                                                                              | Async      | Critical    |
-| `last_applied()`                   | Get last applied index                                                                                                                                                                               | Sync       | High        |
-| `apply_snapshot_from_file()`       | Replace state with snapshot                                                                                                                                                                          | Async      | Critical    |
-| `generate_snapshot_data()`         | Export a snapshot into the given directory (the engine checksums it)                                                                                                                                                                                  | Async      | High        |
-| `reset()`                          | Reset to initial state                                                                                                                                                                               | Async      | Medium      |
+| Method                       | Purpose                                                                                                                                                                                              | Sync/Async | Criticality |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
+| `close()`                    | Final step at shutdown: persist what must survive a restart and release exclusive OS resources (e.g. DB lock file), even if persisting fails; returns the first error. Idempotent. Default `Ok(())`. | Sync       | Medium      |
+| `get()`                      | Read value by key                                                                                                                                                                                    | Sync       | High        |
+| `apply_chunk()`              | Apply committed entries                                                                                                                                                                              | Async      | Critical    |
+| `last_applied()`             | Get last applied index                                                                                                                                                                               | Sync       | High        |
+| `apply_snapshot_from_file()` | Replace state with snapshot                                                                                                                                                                          | Async      | Critical    |
+| `generate_snapshot_data()`   | Export a snapshot into the given directory and return the position of the last entry it contains (the engine checksums it)                                                                           | Async      | High        |
+| `reset()`                    | Reset to initial state                                                                                                                                                                               | Async      | Medium      |
 
 ## 4. Testing Your Implementation
 
@@ -153,7 +154,8 @@ async fn test_custom_state_machine() -> Result<(), Error> {
 
     // Test snapshot operations
     let temp_dir = TempDir::new()?;
-    sm.generate_snapshot_data(temp_dir.path().to_path_buf(), LogId::new(1, 1)).await?;
+    let position = sm.generate_snapshot_data(temp_dir.path().to_path_buf()).await?;
+    assert_eq!(position.index, 1);
 
     sm.close()?;
     Ok(())
