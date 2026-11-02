@@ -18,6 +18,8 @@ const BANK_KEY: &[u8] = b"bank";
 const INITIAL_BALANCE: u64 = 1_000;
 const TRANSFERS_PER_WORKER: usize = 50;
 const TRANSFER_AMOUNT: u64 = 1;
+// The transfers take a few seconds; this only has to turn a hang into a failure.
+const WORKER_DEADLINE: Duration = Duration::from_secs(90);
 
 // Pack 3 account balances into a single u64 (21 bits each, max ~2M per account).
 fn pack(balances: [u64; 3]) -> [u8; 8] {
@@ -77,14 +79,17 @@ async fn test_concurrent_transfers_preserve_bank_invariant()
         tokio::fs::create_dir_all(&db_path).await?;
 
         let (storage, state_machine) = RocksDBUnifiedEngine::open(&db_path)?;
-        let config_path = format!("/tmp/d-engine-bank-node{node_id}.toml");
+        // In this test's own temp dir: a fixed path under /tmp is shared by every process that
+        // runs this test at the same time, and each would then start its nodes from another
+        // run's ports and data directory.
+        let config_path = temp_dir.path().join(format!("node{node_id}.toml"));
         tokio::fs::write(&config_path, &config_str).await?;
 
         let engine = DefaultEmbeddedEngine::start_custom(
             &node_db_root,
             Arc::new(storage),
             state_machine,
-            Some(&config_path),
+            config_path.to_str(),
         )
         .await?;
         engines.push(engine);
@@ -115,47 +120,57 @@ async fn test_concurrent_transfers_preserve_bank_invariant()
         let to = (worker_id + 1) % 3;
 
         worker_handles.push(tokio::spawn(async move {
-            for _ in 0..TRANSFERS_PER_WORKER {
-                // CAS retry loop: read current state → compute new → atomic swap.
-                loop {
-                    let current = match client.get_linearizable(BANK_KEY).await {
-                        Ok(Some(v)) => v,
-                        Ok(None) => panic!("bank key disappeared"),
-                        Err(_) => {
-                            // Transient error (e.g. replication lag); retry.
-                            tokio::time::sleep(Duration::from_millis(10)).await;
+            // A worker retries on every error, so without a deadline a cluster that never
+            // recovers would keep it spinning forever and the test would hang instead of fail.
+            tokio::time::timeout(WORKER_DEADLINE, async move {
+                for _ in 0..TRANSFERS_PER_WORKER {
+                    // CAS retry loop: read current state → compute new → atomic swap.
+                    loop {
+                        let current = match client.get_linearizable(BANK_KEY).await {
+                            Ok(Some(v)) => v,
+                            Ok(None) => panic!("bank key disappeared"),
+                            Err(_) => {
+                                // Transient error (e.g. replication lag); retry.
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+                                continue;
+                            }
+                        };
+
+                        let mut balances = unpack(&current);
+                        // Circular transfers always have sufficient funds,
+                        // but guard defensively.
+                        if balances[from] < TRANSFER_AMOUNT {
+                            tokio::task::yield_now().await;
                             continue;
                         }
-                    };
+                        balances[from] -= TRANSFER_AMOUNT;
+                        balances[to] += TRANSFER_AMOUNT;
+                        let new_bytes = pack(balances);
 
-                    let mut balances = unpack(&current);
-                    // Circular transfers always have sufficient funds,
-                    // but guard defensively.
-                    if balances[from] < TRANSFER_AMOUNT {
-                        tokio::task::yield_now().await;
-                        continue;
-                    }
-                    balances[from] -= TRANSFER_AMOUNT;
-                    balances[to] += TRANSFER_AMOUNT;
-                    let new_bytes = pack(balances);
-
-                    match client
-                        .compare_and_swap(BANK_KEY, Some(current.as_ref()), new_bytes.as_slice())
-                        .await
-                    {
-                        Ok(true) => break, // committed
-                        Ok(false) => {
-                            // Concurrent update; retry without delay.
-                            tokio::task::yield_now().await;
-                        }
-                        Err(_) => {
-                            // Transient error; brief backoff.
-                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        match client
+                            .compare_and_swap(
+                                BANK_KEY,
+                                Some(current.as_ref()),
+                                new_bytes.as_slice(),
+                            )
+                            .await
+                        {
+                            Ok(true) => break, // committed
+                            Ok(false) => {
+                                // Concurrent update; retry without delay.
+                                tokio::task::yield_now().await;
+                            }
+                            Err(_) => {
+                                // Transient error; brief backoff.
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+                            }
                         }
                     }
                 }
-            }
-            Ok::<_, ClientApiError>(())
+                Ok::<_, ClientApiError>(())
+            })
+            .await
+            .expect("transfers did not finish before the deadline: the cluster stopped serving")
         }));
     }
 
